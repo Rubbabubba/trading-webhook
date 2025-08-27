@@ -151,9 +151,17 @@ def status():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    # Optional auth
-    if WEBHOOK_TOKEN and request.headers.get("X-Webhook-Token") != WEBHOOK_TOKEN:
-        return jsonify(ok=False, error="Unauthorized"), 401
+    # Get body first so we can check token in body too
+    data = request.get_json(force=True, silent=True) or {}
+
+    # Accept token from header OR body
+    if WEBHOOK_TOKEN:
+        header_token = request.headers.get("X-Webhook-Token")
+        body_token = data.get("token")
+        if WEBHOOK_TOKEN not in (header_token, body_token):
+            return jsonify(ok=False, error="Unauthorized"), 401
+
+
 
     data = request.get_json(force=True, silent=True) or {}
 
@@ -217,3 +225,4 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","5000")))
+    
