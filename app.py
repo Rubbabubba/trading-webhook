@@ -377,9 +377,12 @@ def _compute_performance(days: int) -> dict:
     orders = list_closed_orders(after_iso=after_iso)
 
     by_symbol = {}
+    fills = []  # NEW: flat list of each filled order
+
     for o in orders:
         if o.get("status") != "filled":
             continue
+
         sym = o.get("symbol")
         side = o.get("side")
         try:
@@ -389,6 +392,18 @@ def _compute_performance(days: int) -> dict:
             qty, avgpx = 0.0, 0.0
         if qty == 0:
             continue
+
+        # collect the fill row
+        fills.append({
+            "filled_at": o.get("filled_at") or o.get("updated_at") or o.get("submitted_at"),
+            "symbol": sym,
+            "side": side,
+            "qty": qty,
+            "avg_price": avgpx,
+            "order_class": o.get("order_class"),
+            "id": o.get("id"),
+            "client_order_id": o.get("client_order_id")
+        })
 
         d = by_symbol.setdefault(sym, {
             "buy_qty": 0.0, "buy_value": 0.0,
@@ -413,11 +428,11 @@ def _compute_performance(days: int) -> dict:
             "status": o.get("status")
         })
 
+    # simple realized PnL per symbol via average-price matching
     total_pnl = 0.0
     wins = 0
     losses = 0
     details = []
-
     for sym, d in by_symbol.items():
         matched_qty = min(d["buy_qty"], d["sell_qty"])
         realized = 0.0
@@ -451,6 +466,12 @@ def _compute_performance(days: int) -> dict:
 
     positions = list_positions()
 
+    # Sort fills newest-first for nicer display
+    try:
+        fills.sort(key=lambda r: (r.get("filled_at") or ""), reverse=True)
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "window_days": days,
@@ -461,7 +482,8 @@ def _compute_performance(days: int) -> dict:
         "wins": wins,
         "losses": losses,
         "symbols": details,
-        "open_positions": positions
+        "open_positions": positions,
+        "fills": fills  # NEW
     }
 
 @app.route("/performance.json", methods=["GET"])
@@ -476,14 +498,15 @@ def performance_json():
 @app.route("/performance", methods=["GET"])
 def performance_html():
     try:
-        days = int(request.args.get("days", "14"))
+        days = int(request.args.get("days", "7"))
     except Exception:
-        days = 14
+        days = 7
+
     perf = _compute_performance(days)
     pnl = perf.get("realized_pnl_est", 0.0)
     pnl_color = "#16a34a" if (pnl or 0.0) >= 0.0 else "#dc2626"
 
-    # rows
+    # by-symbol rows
     rows_html = ""
     for d in perf.get("symbols", []):
         rows_html += (
@@ -496,6 +519,7 @@ def performance_html():
             "</tr>"
         )
 
+    # open positions rows
     pos_html = ""
     for p in perf.get("open_positions", []):
         pos_html += (
@@ -507,7 +531,21 @@ def performance_html():
             "</tr>"
         )
 
-    # minimal, safe HTML (no f-string with braces inside)
+    # filled orders (flat list) rows
+    fills_html = ""
+    for f in perf.get("fills", []):
+        fills_html += (
+            "<tr>"
+            "<td>" + str(f.get("filled_at")) + "</td>"
+            "<td>" + str(f.get("symbol")) + "</td>"
+            "<td>" + str(f.get("side")).upper() + "</td>"
+            "<td>" + str(f.get("qty")) + "</td>"
+            "<td>" + str(f.get("avg_price")) + "</td>"
+            "<td>" + str(f.get("order_class")) + "</td>"
+            "<td style='max-width:260px;overflow-wrap:anywhere'>" + str(f.get("client_order_id")) + "</td>"
+            "</tr>"
+        )
+
     html = (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<title>Performance</title>"
@@ -515,8 +553,9 @@ def performance_html():
         "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:24px;color:#111}"
         ".card{border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:16px}"
         "table{border-collapse:collapse;width:100%}"
-        "th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #f3f4f6}"
+        "th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #f3f4f6;vertical-align:top}"
         ".muted{color:#6b7280}"
+        ".pill{display:inline-block;padding:2px 6px;border-radius:999px;border:1px solid #e5e7eb;font-size:12px}"
         "</style></head><body>"
         "<h1>Performance</h1>"
         "<div class='card'>"
@@ -529,17 +568,29 @@ def performance_html():
         + str(perf.get("winrate_pct_est")) + "% "
         "<span class='muted'>(" + str(perf.get("wins")) + " W / " + str(perf.get("losses")) + " L)</span></div>"
         "</div>"
+
         "<div class='card'>"
         "<h3>By Symbol</h3>"
         "<table><thead><tr><th>Symbol</th><th>Avg Buy</th><th>Avg Sell</th>"
         "<th>Matched Qty</th><th>Realized P&amp;L (est)</th></tr></thead>"
         "<tbody>" + rows_html + "</tbody></table>"
         "</div>"
+
         "<div class='card'>"
         "<h3>Open Positions</h3>"
         "<table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Unrealized P&amp;L</th></tr></thead>"
         "<tbody>" + pos_html + "</tbody></table>"
         "</div>"
+
+        "<div class='card'>"
+        "<h3>Filled Orders (last " + str(days) + " day(s))</h3>"
+        "<table><thead><tr>"
+        "<th>Filled At (UTC)</th><th>Symbol</th><th>Side</th><th>Qty</th>"
+        "<th>Avg Price</th><th>Order Class</th><th>Client Order ID</th>"
+        "</tr></thead>"
+        "<tbody>" + fills_html + "</tbody></table>"
+        "</div>"
+
         "<div class='muted'>JSON: <code>/performance.json?days=" + str(days) + "</code></div>"
         "</body></html>"
     )
