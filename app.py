@@ -3,7 +3,7 @@ import os
 import json
 import time
 import hashlib
-from typing import Dict
+from typing import Dict, Optional
 import requests
 from flask import Flask, request, jsonify
 
@@ -11,7 +11,7 @@ from flask import Flask, request, jsonify
 from order_mapper import (
     build_entry_order_payload,
     under_position_caps,
-    load_strategy_config,  # used for TP/SL on 422 retry
+    load_strategy_config,  # used for TP/SL and qty
 )
 
 app = Flask(__name__)
@@ -33,6 +33,10 @@ MAX_OPEN_POSITIONS         = int(os.getenv("MAX_OPEN_POSITIONS", 5))
 MAX_POSITIONS_PER_SYMBOL   = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", 1))
 MAX_POSITIONS_PER_STRATEGY = int(os.getenv("MAX_POSITIONS_PER_STRATEGY", 3))
 STRICT_POSITION_CHECK      = os.getenv("STRICT_POSITION_CHECK", "false").lower() == "true"
+
+# ===== Optional OCO after plain entry =====
+ATTACH_OCO_ON_PLAIN = os.getenv("ATTACH_OCO_ON_PLAIN", "true").lower() == "true"
+OCO_TIF = os.getenv("OCO_TIF", "day")  # gtc|day
 
 # ===== Idempotency (suppress duplicate alerts briefly) =====
 _IDEM_CACHE: Dict[str, float] = {}
@@ -82,7 +86,7 @@ def get_open_positions_snapshot():
         # Otherwise, allow trading even if positions endpoint errored
         return {"TOTAL": 0, "BY_SYMBOL": {}, "BY_STRATEGY": {}}
 
-def get_symbol_position(symbol: str):
+def get_symbol_position(symbol: str) -> Optional[dict]:
     """Return the Alpaca position object for a symbol, or None if flat."""
     try:
         r = requests.get(f"{ALPACA_BASE}/positions/{symbol}", headers=HEADERS, timeout=5)
@@ -91,7 +95,6 @@ def get_symbol_position(symbol: str):
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
-        # Treat 404 as flat; otherwise follow STRICT flag
         if getattr(e, "response", None) and e.response is not None and e.response.status_code == 404:
             return None
         app.logger.error(f"get_symbol_position error: {e}")
@@ -100,7 +103,7 @@ def get_symbol_position(symbol: str):
         app.logger.error(f"get_symbol_position error: {e}")
         return None if not STRICT_POSITION_CHECK else {"error": "unknown"}
 
-def build_plain_entry(symbol: str, side: str, price: float, system: str):
+def build_plain_entry(symbol: str, side: str, price: float, system: str) -> dict:
     """
     Build a plain (non-bracket) order payload for cases where a position already exists.
     Uses the same per-strategy order_type/tif and qty envs as brackets.
@@ -139,6 +142,39 @@ def adjust_bracket_to_base_price(payload: dict, side: str, base_price: float, tp
     new_payload["take_profit"]["limit_price"] = f"{tp:.2f}"
     new_payload["stop_loss"]["stop_price"]    = f"{sl:.2f}"
     return new_payload
+
+def build_oco_close(symbol: str, position_side: str, qty: int, ref_price: float, tp_pct: float, sl_pct: float, tif: str = "day") -> dict:
+    """
+    Build an OCO close order for an EXISTING position.
+    position_side: 'long' or 'short' (as Alpaca returns in the position object)
+    Ref price usually avg_entry_price; fallback to alert price if not available.
+    """
+    pos_side = (position_side or "").lower()
+    if pos_side not in ("long", "short"):
+        raise ValueError(f"Invalid position_side for OCO: {position_side}")
+
+    rp = float(ref_price)
+    if pos_side == "long":
+        # closing a long -> place SELL OCO, TP above, SL below
+        side = "sell"
+        tp = rp * (1 + tp_pct)
+        sl = rp * (1 - sl_pct)
+    else:
+        # closing a short -> place BUY OCO, TP below, SL above
+        side = "buy"
+        tp = rp * (1 - tp_pct)
+        sl = rp * (1 + sl_pct)
+
+    return {
+        "symbol": symbol,
+        "qty": int(qty),
+        "side": side,
+        "time_in_force": tif,
+        "order_class": "oco",
+        "take_profit": {"limit_price": f"{tp:.2f}"},
+        "stop_loss": {"stop_price": f"{sl:.2f}"},
+        "client_order_id": f"OCO-{symbol}-{int(time.time()*1000)}",
+    }
 
 # ===== Health endpoint =====
 @app.get("/health")
@@ -230,6 +266,7 @@ def webhook():
                     app.logger.error(f"ALPACA_POST_ERROR (retry) status={o2.status_code} body={body2} sent={adj_payload}")
                     return jsonify({"ok": False, "alpaca_error": body2}), 422
 
+                # On success (retry), return success
                 return jsonify({"ok": True, "order": o2.json(), "note": "placed on retry using Alpaca base_price"}), 200
 
             # Different 422 reason (or no base_price) -> bubble up
@@ -242,8 +279,45 @@ def webhook():
             app.logger.error(f"ALPACA_POST_ERROR status={o.status_code} body={body} sent={payload}")
             return jsonify({"ok": False, "alpaca_error": body}), 422
 
-        # Success
-        return jsonify({"ok": True, "order": o.json()}), 200
+        # ===== Success path =====
+        order_json = o.json()
+
+        # If this was a PLAIN entry and OCO attachment is enabled, try to post an OCO for the *newly added* qty
+        if not use_bracket and ATTACH_OCO_ON_PLAIN:
+            try:
+                cfg = load_strategy_config(system)
+                # Prefer the position avg entry (if we have it), else use alert price
+                # Refresh position snapshot to include this new add (best-effort)
+                pos_after = get_symbol_position(symbol) or pos  # fallback to earlier pos
+                pos_side = (pos_after or {}).get("side") or ((pos or {}).get("side"))
+                avg_entry = (pos_after or {}).get("avg_entry_price") or ((pos or {}).get("avg_entry_price")) or price
+                qty_new = int(payload.get("qty", 1))
+
+                oco_payload = build_oco_close(
+                    symbol=symbol,
+                    position_side=pos_side,
+                    qty=qty_new,
+                    ref_price=float(avg_entry),
+                    tp_pct=cfg.tp_pct,
+                    sl_pct=cfg.sl_pct,
+                    tif=OCO_TIF,
+                )
+                app.logger.info(f"ATTACH OCO: {oco_payload}")
+                oco_resp = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(oco_payload), timeout=8)
+                if oco_resp.status_code >= 400:
+                    ctype3 = oco_resp.headers.get("content-type", "")
+                    body3 = oco_resp.json() if ctype3.startswith("application/json") else oco_resp.text
+                    app.logger.error(f"OCO_POST_ERROR status={oco_resp.status_code} body={body3} sent={oco_payload}")
+                    # Do not fail the original success; just include note
+                    return jsonify({"ok": True, "order": order_json, "oco_error": body3}), 200
+                else:
+                    return jsonify({"ok": True, "order": order_json, "oco": oco_resp.json()}), 200
+            except Exception as e:
+                app.logger.error(f"OCO_BUILD_OR_POST_ERROR: {e}")
+                return jsonify({"ok": True, "order": order_json, "oco_error": str(e)}), 200
+
+        # If bracket or OCO disabled, just return the order success
+        return jsonify({"ok": True, "order": order_json}), 200
 
     except Exception as e:
         app.logger.error(f"ORDER ERROR: {e}")
