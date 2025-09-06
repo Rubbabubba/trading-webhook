@@ -108,6 +108,38 @@ def adjust_bracket_to_base_price(payload: dict, side: str, base_price: float, tp
     new_payload["stop_loss"]["stop_price"]    = f"{sl:.2f}"
     return new_payload
 
+def get_symbol_position(symbol: str):
+    """Return the Alpaca position object for a symbol, or None if flat."""
+    try:
+        r = requests.get(f"{ALPACA_BASE}/positions/{symbol}", headers=HEADERS, timeout=5)
+        if r.status_code == 404:
+            return None  # flat
+        r.raise_for_status()
+        return r.json()
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return None
+        app.logger.error(f"get_symbol_position error: {e}")
+        # Be permissive: treat as flat if positions endpoint hiccups and STRICT is False
+        return None if not STRICT_POSITION_CHECK else {"error": "unknown"}
+
+def build_plain_entry(symbol: str, side: str, price: float, system: str):
+    """
+    Build a plain (non-bracket) order payload for cases where a position already exists.
+    Uses the same per-strategy order_type/tif and qty envs as brackets.
+    """
+    from order_mapper import load_strategy_config  # local import to avoid cycles
+    cfg = load_strategy_config(system)
+    return {
+        "symbol": symbol,
+        "qty": int(cfg.qty),
+        "side": "buy" if side.upper() == "LONG" else "sell",
+        "type": cfg.order_type,        # market or limit
+        "time_in_force": cfg.tif,      # day or gtc
+        # no order_class here (plain order)
+        "client_order_id": f"{system}-{symbol}-plain-{int(time.time()*1000)}",
+    }
+
 # ===== Health endpoint =====
 @app.get("/health")
 def health():
@@ -150,13 +182,26 @@ def webhook():
         return jsonify({"ok": True, "skipped": "max_positions"}), 200
 
     # Build a VALID ENTRY bracket (fixes 422 'bracket orders must be entry orders')
-    try:
-        payload = build_entry_order_payload(symbol, side, float(price), system)
-    except Exception as e:
-        app.logger.error(f"PAYLOAD_ERROR: {e}")
-        return jsonify({"ok": False, "error": f"payload_error: {e}"}), 400
+    # Decide bracket vs plain based on current position in this symbol
+pos = get_symbol_position(symbol)
+use_bracket = pos is None  # flat => bracket; has position => plain
 
-    app.logger.info(f"PLACE: {symbol} {payload['side']} qty={payload['qty']} @{price} system={system} payload={payload}")
+try:
+    if use_bracket:
+        # Flat in this symbol -> bracket entry allowed
+        payload = build_entry_order_payload(symbol, side, float(price), system)
+    else:
+        # Already have a position -> send a plain order (no bracket)
+        payload = build_plain_entry(symbol, side, float(price), system)
+except Exception as e:
+    app.logger.error(f"PAYLOAD_ERROR: {e}")
+    return jsonify({"ok": False, "error": f"payload_error: {e}"}), 400
+
+app.logger.info(
+    f"PLACE: {symbol} {payload['side']} qty={payload.get('qty')} @{price} "
+    f"system={system} bracket={use_bracket} payload={payload}"
+)
+
 
     # ===== Place order with one smart retry if TP/SL violate Alpaca base_price constraints =====
     try:
