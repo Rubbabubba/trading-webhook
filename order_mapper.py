@@ -45,33 +45,32 @@ def compute_bracket_prices(side: str, entry_price: float, tp_pct: float, sl_pct:
 def build_client_order_id(system: str, symbol: str) -> str:
     return f"{system}-{symbol}-{int(time.time()*1000)}-{random.randint(100000,999999)}"
 
-def build_entry_order_payload(
-    symbol: str,
-    side: str,
-    price: float,
-    strategy: str,
-    qty: Optional[int] = None
-) -> Dict[str, Any]:
-    """
-    Returns a valid Alpaca ENTRY bracket order.
-    LONG -> 'buy' entry
-    SHORT -> 'sell' entry
-    """
+def build_entry_order_payload(symbol: str,
+                              side: str,
+                              price: float,
+                              strategy: str,
+                              qty: Optional[int] = None) -> Dict[str, Any]:
     cfg = load_strategy_config(strategy)
     q = int(qty if qty is not None else cfg.qty)
     bracket = compute_bracket_prices(side, float(price), cfg.tp_pct, cfg.sl_pct)
 
-    return {
+    payload = {
         "symbol": symbol,
         "qty": q,
         "side": "buy" if side.upper() == "LONG" else "sell",
-        "type": cfg.order_type,
-        "time_in_force": cfg.tif,
+        "type": cfg.order_type,            # "market" or "limit"
+        "time_in_force": cfg.tif,          # "day" or "gtc"
         "order_class": "bracket",
         "take_profit": {"limit_price": f"{bracket['tp']:.2f}"},
         "stop_loss": {"stop_price": f"{bracket['sl']:.2f}"},
         "client_order_id": build_client_order_id(strategy, symbol),
     }
+    
+    # ✅ If entry is LIMIT, you must include limit_price
+    if cfg.order_type.lower() == "limit":
+        payload["limit_price"] = f"{float(price):.2f}"
+    return payload
+
 
 def under_position_caps(open_positions: Dict[str, int], symbol: str, strategy: str) -> bool:
     """

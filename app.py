@@ -123,9 +123,12 @@ def cancel_open_orders_for_symbol(symbol: str):
         app.logger.info(f"CANCELLED {len(to_cancel)} open orders for {symbol}")
 
 def build_plain_entry(symbol: str, side: str, price: float, system: str) -> dict:
-    """Plain (non-bracket) entry when a position already exists."""
+    """
+    Build a plain (non-bracket) order payload for cases where a position already exists.
+    Uses the same per-strategy order_type/tif and qty envs as brackets.
+    """
     cfg = load_strategy_config(system)
-    return {
+    payload = {
         "symbol": symbol,
         "qty": int(cfg.qty),
         "side": "buy" if side.upper() == "LONG" else "sell",
@@ -133,6 +136,11 @@ def build_plain_entry(symbol: str, side: str, price: float, system: str) -> dict
         "time_in_force": cfg.tif,      # day or gtc
         "client_order_id": f"{system}-{symbol}-plain-{int(time.time()*1000)}",
     }
+    # ✅ If entry is LIMIT, include limit_price
+    if cfg.order_type.lower() == "limit":
+        payload["limit_price"] = f"{float(price):.2f}"
+    return payload
+
 
 def adjust_bracket_to_base_price(payload: dict, side: str, base_price: float, tp_pct: float, sl_pct: float) -> dict:
     """
