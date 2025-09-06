@@ -1,3 +1,8 @@
-flask>=2.3,<3.0
-requests>=2.31
-gunicorn>=21.2
+# Core web framework
+Flask==3.0.3
+
+# HTTP client for Alpaca API calls
+requests==2.32.3
+
+# Production server for Render
+gunicorn==23.0.0
