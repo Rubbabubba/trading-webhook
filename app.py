@@ -162,7 +162,8 @@ def adjust_bracket_to_base_price(payload: dict, side: str, base_price: float, tp
     new_payload["stop_loss"]["stop_price"]    = f"{sl:.2f}"
     return new_payload
 
-def build_oco_close(symbol: str, position_side: str, qty: int, ref_price: float, tp_pct: float, sl_pct: float, tif: str = "day") -> dict:
+def build_oco_close(symbol: str, position_side: str, qty: int, ref_price: float,
+                    tp_pct: float, sl_pct: float, tif: str = "day") -> dict:
     """
     OCO close for an EXISTING position. position_side: 'long' or 'short'.
     qty is the FULL position size we want to protect.
@@ -187,6 +188,7 @@ def build_oco_close(symbol: str, position_side: str, qty: int, ref_price: float,
         "symbol": symbol,
         "qty": int(qty),
         "side": side,
+        "type": "limit",                 # ✅ REQUIRED by Alpaca for OCO
         "time_in_force": tif,
         "order_class": "oco",
         "take_profit": {"limit_price": f"{tp:.2f}"},
