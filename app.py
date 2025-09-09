@@ -6,10 +6,9 @@ import hashlib
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta, timezone
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 
-# ==== Order helpers (provided by your local order_mapper.py) ====
-# Must exist in the same folder as app.py
+# ==== Order helpers (must exist in order_mapper.py next to this file) ====
 from order_mapper import (
     build_entry_order_payload,  # builds bracket payload for flat entries
     under_position_caps,        # checks MAX_* caps
@@ -19,7 +18,6 @@ from order_mapper import (
 app = Flask(__name__)
 
 # ===== Alpaca config =====
-# Note: Base explicitly includes /v2
 ALPACA_BASE = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets/v2")
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID", "")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY", "")
@@ -53,7 +51,6 @@ def _idem_key(system: str, side: str, symbol: str, price: float, ts_hint: str = 
 
 def _idem_check_and_set(key: str) -> bool:
     now = time.time()
-    # purge expired
     expired = [k for k, t in _IDEM_CACHE.items() if now - t > IDEM_TTL_SEC]
     for k in expired:
         _IDEM_CACHE.pop(k, None)
@@ -87,7 +84,7 @@ def get_symbol_position(symbol: str) -> Optional[dict]:
     try:
         r = requests.get(f"{ALPACA_BASE}/positions/{symbol}", headers=HEADERS, timeout=6)
         if r.status_code == 404:
-            return None  # flat
+            return None
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
@@ -100,7 +97,6 @@ def get_symbol_position(symbol: str) -> Optional[dict]:
         return None if not STRICT_POSITION_CHECK else {"error": "unknown"}
 
 def list_open_orders() -> List[dict]:
-    """Return list of open orders (we'll filter by symbol)."""
     try:
         r = requests.get(f"{ALPACA_BASE}/orders?status=open&limit=200&nested=false", headers=HEADERS, timeout=6)
         r.raise_for_status()
@@ -116,7 +112,6 @@ def cancel_order(order_id: str):
         app.logger.error(f"cancel_order {order_id} error: {e}")
 
 def cancel_open_orders_for_symbol(symbol: str):
-    """Cancel all open orders for a symbol. This prevents 'wash trade' rejections."""
     orders = list_open_orders()
     to_cancel = [o for o in orders if (o.get("symbol") == symbol)]
     for o in to_cancel:
@@ -125,17 +120,14 @@ def cancel_open_orders_for_symbol(symbol: str):
         app.logger.info(f"CANCELLED {len(to_cancel)} open orders for {symbol}")
 
 def build_plain_entry(symbol: str, side: str, price: float, system: str) -> dict:
-    """
-    Plain (non-bracket) entry when a position already exists.
-    Adds limit_price automatically if type == limit.
-    """
+    """Plain (non-bracket) entry when a position already exists. Adds limit_price if needed."""
     cfg = load_strategy_config(system)
     payload = {
         "symbol": symbol,
         "qty": int(cfg.qty),
         "side": "buy" if side.upper() == "LONG" else "sell",
-        "type": cfg.order_type,        # market or limit
-        "time_in_force": cfg.tif,      # day or gtc
+        "type": cfg.order_type,
+        "time_in_force": cfg.tif,
         "client_order_id": f"{system}-{symbol}-plain-{int(time.time()*1000)}",
     }
     if str(cfg.order_type).lower() == "limit":
@@ -143,10 +135,7 @@ def build_plain_entry(symbol: str, side: str, price: float, system: str) -> dict
     return payload
 
 def adjust_bracket_to_base_price(payload: dict, side: str, base_price: float, tp_pct: float, sl_pct: float) -> dict:
-    """
-    Rebuild take_profit/stop_loss around Alpaca's base_price to satisfy bracket rules.
-    Adds $0.02 cushion to clear +/-$0.01 constraint.
-    """
+    """Rebuild TP/SL around Alpaca base_price to satisfy bracket rules (+/- $0.02 cushion)."""
     side = side.upper()
     bp = float(base_price)
     if side == "LONG":
@@ -164,36 +153,26 @@ def adjust_bracket_to_base_price(payload: dict, side: str, base_price: float, tp
 
 def build_oco_close(symbol: str, system: str, position_side: str, qty: int, ref_price: float,
                     tp_pct: float, sl_pct: float, tif: str = "day") -> dict:
-    """
-    OCO close for an EXISTING position. position_side: 'long' or 'short'.
-    qty is the FULL position size we want to protect.
-    Includes type='limit' (required by Alpaca) and tags client_order_id with system.
-    """
+    """OCO close for an EXISTING position; includes type='limit' and tags client_order_id with system."""
     pos_side = (position_side or "").lower()
     if pos_side not in ("long", "short"):
         raise ValueError(f"Invalid position_side for OCO: {position_side}")
 
     rp = float(ref_price)
     if pos_side == "long":
-        # closing a long -> SELL OCO
-        side = "sell"
-        tp = rp * (1 + tp_pct)
-        sl = rp * (1 - sl_pct)
+        side = "sell"; tp = rp * (1 + tp_pct); sl = rp * (1 - sl_pct)
     else:
-        # closing a short -> BUY OCO
-        side = "buy"
-        tp = rp * (1 - tp_pct)
-        sl = rp * (1 + sl_pct)
+        side = "buy";  tp = rp * (1 - tp_pct); sl = rp * (1 + sl_pct)
 
     return {
         "symbol": symbol,
         "qty": int(qty),
         "side": side,
-        "type": "limit",                 # REQUIRED by Alpaca for OCO TP leg
+        "type": "limit",  # required by Alpaca for OCO TP leg
         "time_in_force": tif,
         "order_class": "oco",
         "take_profit": {"limit_price": f"{tp:.2f}"},
-        "stop_loss": {"stop_price": f"{sl:.2f}"},
+        "stop_loss":  {"stop_price":  f"{sl:.2f}"},
         "client_order_id": f"OCO-{system}-{symbol}-{int(time.time()*1000)}",
     }
 
@@ -213,7 +192,7 @@ def _alpaca_get(path, params=None, timeout=10):
     return requests.get(f"{ALPACA_BASE}{path}", headers=HEADERS, params=params or {}, timeout=timeout)
 
 def fetch_trade_activities(start_iso: str, end_iso: str):
-    # Try trades endpoint first, then generic activities with FILL
+    """Fetch fills from Alpaca activities."""
     items = []
     try:
         params = {"after": start_iso, "until": end_iso, "direction": "asc", "page_size": 100}
@@ -226,13 +205,7 @@ def fetch_trade_activities(start_iso: str, end_iso: str):
         pass
     if not items:
         try:
-            params = {
-                "after": start_iso,
-                "until": end_iso,
-                "direction": "asc",
-                "page_size": 100,
-                "activity_types": "FILL",
-            }
+            params = {"after": start_iso, "until": end_iso, "direction": "asc", "page_size": 100, "activity_types": "FILL"}
             r = _alpaca_get("/account/activities", params=params)
             if r.status_code < 400:
                 data = r.json()
@@ -256,22 +229,16 @@ def fetch_client_order_ids(order_ids):
 
 def infer_system(symbol: str, client_id: str, sym_map: dict):
     if client_id:
-        # Entry client IDs look like: "{SYSTEM}-{SYMBOL}-..."
         prefix = client_id.split("-", 1)[0]
         if prefix in KNOWN_SYSTEMS:
             return prefix
-        # OCO client IDs: "OCO-{SYSTEM}-{SYMBOL}-..."
         parts = client_id.split("-", 3)
         if len(parts) >= 3 and parts[0] == "OCO" and parts[1] in KNOWN_SYSTEMS:
             return parts[1]
-    # Fallback by symbol mapping
     return sym_map.get(symbol)
 
 def compute_performance(trade_acts, client_ids_map, sym_map):
-    """
-    FIFO match per (system, symbol) to compute realized P&L from fills.
-    Returns: dict with by_strategy, equity series, raw realized trades, total_pnl.
-    """
+    """FIFO realized P&L from fills with strategy attribution."""
     fills = []
     for a in trade_acts:
         try:
@@ -289,20 +256,17 @@ def compute_performance(trade_acts, client_ids_map, sym_map):
         except Exception:
             continue
 
-    # Attach strategy using order client IDs (and symbol fallback)
     cid_map = client_ids_map or fetch_client_order_ids([f["order_id"] for f in fills])
     for f in fills:
         cid = cid_map.get(f["order_id"], "")
         sysname = infer_system(f["symbol"], cid, sym_map)
         f["system"] = sysname or "UNKNOWN"
 
-    # Sort by time
     fills.sort(key=lambda x: x["t"])
 
-    # FIFO per (system, symbol)
     from collections import defaultdict, deque
-    lots = defaultdict(deque)  # key -> deque of open lots: {"side": long/short, "qty": q, "price": p, "t": time}
-    trades = []                # realized round-trips
+    lots = defaultdict(deque)  # (system,symbol) -> deque of open lots
+    trades = []
 
     def close_against(key, incoming_side, incoming_qty, incoming_price, tstamp):
         realized = []
@@ -332,28 +296,21 @@ def compute_performance(trade_acts, client_ids_map, sym_map):
         return realized, q
 
     for f in fills:
-        sysname = f["system"]
-        symbol  = f["symbol"]
+        sysname = f["system"]; symbol = f["symbol"]
         if sysname == "UNKNOWN":
-            # Skip if we can't attribute; or bucket under UNASSIGNED if you prefer
             continue
         key = (sysname, symbol)
-        side = f["side"]   # "buy" or "sell"
-        price= f["price"]
-        qty  = f["qty"]
-        t    = f["t"]
+        side = f["side"]; price = f["price"]; qty = f["qty"]; t = f["t"]
 
         realized, rem_qty = close_against(key, side, qty, price, t)
         trades.extend(realized)
 
-        # Remaining becomes a new lot
         if rem_qty > 1e-9:
             lots[key].append({
                 "side": "long" if side == "buy" else "short",
                 "qty": rem_qty, "price": price, "t": t
             })
 
-    # Aggregate
     from collections import defaultdict
     by_strategy = defaultdict(lambda: {"trades": 0, "realized_pnl": 0.0, "wins": 0})
     for tr in trades:
@@ -382,6 +339,24 @@ def compute_performance(trade_acts, client_ids_map, sym_map):
         "total_pnl": round(sum(t["pnl"] for t in trades), 2)
     }
 
+def bucket_daily(trades):
+    """Bucket realized round-trips into daily totals (UTC)."""
+    from collections import defaultdict
+    daily = defaultdict(lambda: {"pnl": 0.0, "by_strategy": {}})
+    for t in trades:
+        day = str(t["exit_time"]).split("T", 1)[0]
+        daily[day]["pnl"] += t["pnl"]
+        d = daily[day]["by_strategy"]
+        d[t["system"]] = d.get(t["system"], 0.0) + t["pnl"]
+    out = []
+    for day in sorted(daily.keys()):
+        out.append({
+            "date": day,
+            "pnl": round(daily[day]["pnl"], 2),
+            "by_strategy": {k: round(v, 2) for k, v in daily[day]["by_strategy"].items()}
+        })
+    return out
+
 # ===== Routes =====
 @app.get("/health")
 def health():
@@ -389,16 +364,6 @@ def health():
 
 @app.post("/webhook")
 def webhook():
-    """
-    Expected JSON:
-    {
-      "system": "SMA10D_MACD" | "SPY_VWAP_EMA20",
-      "side": "LONG" | "SHORT",
-      "ticker": "COIN" | "SPY" | ...,
-      "price": 123.45,
-      "time": "2025-09-05T13:35:01Z"   # optional, but recommended
-    }
-    """
     data = request.get_json(force=True, silent=True) or {}
     system  = data.get("system")
     side    = data.get("side")
@@ -409,31 +374,25 @@ def webhook():
     if not all([system, side, symbol, price is not None]):
         return jsonify({"ok": False, "error": "missing fields: system/side/ticker/price"}), 400
 
-    # Idempotency
     key = _idem_key(system, side, symbol, float(price), tv_time[:19])
     if _idem_check_and_set(key):
         app.logger.info(f"SKIP: Idempotent duplicate {system} {side} {symbol} @{price}")
         return jsonify({"ok": True, "skipped": "duplicate"}), 200
 
-    # Caps
     open_pos = get_open_positions_snapshot()
     if not under_position_caps(open_pos, symbol, system):
         app.logger.info("SKIP: Max positions reached")
         return jsonify({"ok": True, "skipped": "max_positions"}), 200
 
-    # Choose bracket vs plain
     pos_before = get_symbol_position(symbol)
     use_bracket = pos_before is None  # flat => bracket; has position => plain
 
-    # If going to place a PLAIN entry, cancel all open orders first (prevents wash-trade)
     if not use_bracket and CANCEL_OPEN_ORDERS_BEFORE_PLAIN:
         cancel_open_orders_for_symbol(symbol)
 
-    # Build payload
     try:
         if use_bracket:
             payload = build_entry_order_payload(symbol, side, float(price), system)
-            # Safety: if limit entry and limit_price missing (older order_mapper), add it
             if payload.get("type", "").lower() == "limit" and "limit_price" not in payload:
                 payload["limit_price"] = f"{float(price):.2f}"
         else:
@@ -447,7 +406,6 @@ def webhook():
         f"system={system} bracket={use_bracket} payload={payload}"
     )
 
-    # Place order (with base_price retry ONLY for bracket orders)
     try:
         o = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(payload), timeout=10)
 
@@ -475,28 +433,20 @@ def webhook():
                     return jsonify({"ok": False, "alpaca_error": body2}), 422
                 return jsonify({"ok": True, "order": o2.json(), "note": "placed on retry using Alpaca base_price"}), 200
 
-            # Different 422
             return jsonify({"ok": False, "alpaca_error": body}), 422
 
-        # Other non-2xx
         if o.status_code >= 400:
             ctype = o.headers.get("content-type", "")
             body = o.json() if str(ctype).startswith("application/json") else o.text
             app.logger.error(f"ALPACA_POST_ERROR status={o.status_code} body={body} sent={payload}")
             return jsonify({"ok": False, "alpaca_error": body}), 422
 
-        # ===== Success =====
         order_json = o.json()
 
-        # If PLAIN and OCO enabled, attach a single OCO for the FULL current position
         if not use_bracket and ATTACH_OCO_ON_PLAIN:
             try:
                 cfg = load_strategy_config(system)
-                # Refresh position AFTER entry so qty/avg_entry are up-to-date
-                pos_after = get_symbol_position(symbol)
-                if pos_after is None:
-                    pos_after = pos_before
-
+                pos_after = get_symbol_position(symbol) or pos_before
                 pos_side = (pos_after or {}).get("side") or ((pos_before or {}).get("side"))
                 qty_total = int(abs(float((pos_after or {}).get("qty") or (pos_before or {}).get("qty") or 0)))
                 ref_price = float((pos_after or {}).get("avg_entry_price") or price)
@@ -504,7 +454,7 @@ def webhook():
                 if qty_total > 0 and pos_side:
                     oco_payload = build_oco_close(
                         symbol=symbol,
-                        system=system,  # tag strategy
+                        system=system,
                         position_side=pos_side,
                         qty=qty_total,
                         ref_price=ref_price,
@@ -528,7 +478,6 @@ def webhook():
                 app.logger.error(f"OCO_BUILD_OR_POST_ERROR: {e}")
                 return jsonify({"ok": True, "order": order_json, "oco_error": str(e)}), 200
 
-        # Bracket path or OCO disabled
         return jsonify({"ok": True, "order": order_json}), 200
 
     except Exception as e:
@@ -537,12 +486,7 @@ def webhook():
 
 @app.get("/performance")
 def performance():
-    """
-    Realized P&L from Alpaca fills (FIFO) with strategy attribution.
-    Query params:
-      days (int) default 7
-      include_trades=1 to include raw realized trades
-    """
+    """Realized P&L from Alpaca fills (FIFO)."""
     days_s = request.args.get("days", "7")
     include_trades = request.args.get("include_trades", "0") == "1"
     try:
@@ -555,14 +499,9 @@ def performance():
     start_iso = _iso(start_dt)
     end_iso   = _iso(end_dt)
 
-    # Pull fills
     acts = fetch_trade_activities(start_iso, end_iso)
-
-    # Map order_id -> client_order_id for strategy inference
     order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
     cid_map = fetch_client_order_ids(order_ids)
-
-    # Strategy attribution (prefers client_order_id; falls back to SYMBOL_SYSTEM_MAP)
     sym_map = _load_symbol_system_map()
     perf = compute_performance(acts, cid_map, sym_map)
 
@@ -577,6 +516,209 @@ def performance():
     if include_trades:
         out["trades"] = perf["trades"]
     return jsonify(out), 200
+
+@app.get("/performance/daily")
+def performance_daily():
+    """Daily buckets of realized P&L (UTC), with per-strategy splits."""
+    days_s = request.args.get("days", "30")
+    try:
+        days = max(1, int(days_s))
+    except Exception:
+        days = 30
+
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=days)
+    start_iso = _iso(start_dt); end_iso = _iso(end_dt)
+
+    acts = fetch_trade_activities(start_iso, end_iso)
+    order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
+    cid_map = fetch_client_order_ids(order_ids)
+    sym_map = _load_symbol_system_map()
+    perf = compute_performance(acts, cid_map, sym_map)
+    daily = bucket_daily(perf["trades"])
+
+    return jsonify({"ok": True, "days": days, "daily": daily}), 200
+
+@app.get("/positions")
+def positions():
+    """Proxy Alpaca positions (JSON)."""
+    try:
+        r = requests.get(f"{ALPACA_BASE}/positions", headers=HEADERS, timeout=6)
+        return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/orders/open")
+def orders_open():
+    """Proxy Alpaca open orders (JSON)."""
+    try:
+        r = requests.get(f"{ALPACA_BASE}/orders?status=open&limit=200&nested=false", headers=HEADERS, timeout=6)
+        return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/config")
+def config():
+    """Effective runtime config snapshot (JSON)."""
+    def cfg_for(system):
+        c = load_strategy_config(system)
+        return {
+            "qty": c.qty,
+            "order_type": c.order_type,
+            "tif": c.tif,
+            "tp_pct": c.tp_pct,
+            "sl_pct": c.sl_pct,
+        }
+    out = {
+        "alpaca_base": ALPACA_BASE,
+        "safety": {
+            "cancel_open_orders_before_plain": CANCEL_OPEN_ORDERS_BEFORE_PLAIN,
+            "attach_oco_on_plain": ATTACH_OCO_ON_PLAIN,
+            "oco_tif": OCO_TIF,
+        },
+        "caps": {
+            "MAX_OPEN_POSITIONS": MAX_OPEN_POSITIONS,
+            "MAX_POSITIONS_PER_SYMBOL": MAX_POSITIONS_PER_SYMBOL,
+            "MAX_POSITIONS_PER_STRATEGY": MAX_POSITIONS_PER_STRATEGY,
+        },
+        "systems": {
+            "SPY_VWAP_EMA20": cfg_for("SPY_VWAP_EMA20"),
+            "SMA10D_MACD": cfg_for("SMA10D_MACD"),
+        }
+    }
+    return jsonify(out), 200
+
+@app.get("/dashboard")
+def dashboard():
+    """Simple HTML dashboard using /performance and /performance/daily."""
+    html = f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Trading Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    h1 {{ margin: 0 0 16px 0; }}
+    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
+    .card {{ border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #eee; }}
+    th {{ background: #fafafa; }}
+    .muted {{ color: #666; font-size: 12px; }}
+    @media (max-width: 900px) {{ .grid {{ grid-template-columns: 1fr; }} }}
+  </style>
+</head>
+<body>
+  <h1>Trading Dashboard</h1>
+  <div class="muted">Origin: <code id="origin"></code></div>
+  <br/>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Summary (last 7 days)</h2>
+      <div id="summary"></div>
+      <h3>By Strategy</h3>
+      <table id="byStrategy">
+        <thead><tr><th>Strategy</th><th>Trades</th><th>Win %</th><th>Realized P&amp;L ($)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Daily P&amp;L (last 30 days)</h2>
+      <canvas id="dailyChart" height="180"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Equity Curve (realized)</h2>
+      <canvas id="equityChart" height="180"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Recent Realized Trades</h2>
+      <table id="trades">
+        <thead><tr><th>Exit Time (UTC)</th><th>System</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&amp;L</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script>
+    const origin = window.location.origin;
+    document.getElementById('origin').textContent = origin;
+
+    async function getJSON(url) {{
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }}
+
+    function fmt(n) {{ return (n>=0?'+':'') + n.toFixed(2); }}
+
+    (async () => {{
+      // Summary (7d)
+      const perf7 = await getJSON(`${{origin}}/performance?days=7&include_trades=1`);
+      const s = document.getElementById('summary');
+      s.innerHTML = `<div>Total realized P&amp;L: <b>$${{perf7.total_realized_pnl.toFixed(2)}}</b></div>`;
+
+      // By strategy table
+      const tbody = document.querySelector('#byStrategy tbody');
+      tbody.innerHTML = '';
+      Object.entries(perf7.by_strategy).forEach(([k,v]) => {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${{k}}</td><td>${{v.trades}}</td><td>${{v.win_rate}}%</td><td>${{v.realized_pnl.toFixed(2)}}</td>`;
+        tbody.appendChild(tr);
+      }});
+
+      // Equity chart
+      const eq = perf7.equity || [];
+      const eqLabels = eq.map(x => x.time);
+      const eqData = eq.map(x => x.equity);
+      const ec = document.getElementById('equityChart').getContext('2d');
+      new Chart(ec, {{
+        type: 'line',
+        data: {{ labels: eqLabels, datasets: [{{ label: 'Equity ($)', data: eqData }}] }},
+        options: {{ responsive: true, plugins: {{ legend: {{ display: false }} }} }}
+      }});
+
+      // Daily (30d)
+      const daily = await getJSON(`${{origin}}/performance/daily?days=30`);
+      const dLabels = daily.daily.map(x => x.date);
+      const dData = daily.daily.map(x => x.pnl);
+      const dc = document.getElementById('dailyChart').getContext('2d');
+      new Chart(dc, {{
+        type: 'bar',
+        data: {{ labels: dLabels, datasets: [{{ label: 'Daily P&L ($)', data: dData }}] }},
+        options: {{ responsive: true, plugins: {{ legend: {{ display: false }} }} }}
+      }});
+
+      // Trades table (last 25)
+      const tBody = document.querySelector('#trades tbody');
+      (perf7.trades || []).slice(-25).forEach(t => {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${{t.exit_time}}</td>
+          <td>${{t.system}}</td>
+          <td>${{t.symbol}}</td>
+          <td>${{t.side}}</td>
+          <td>$${{Number(t.entry_price).toFixed(2)}}</td>
+          <td>$${{Number(t.exit_price).toFixed(2)}}</td>
+          <td>${{fmt(Number(t.pnl))}}</td>`;
+        tBody.appendChild(tr);
+      }});
+    }})().catch(err => {{
+      document.body.insertAdjacentHTML('beforeend', `<pre style="color:#b00;">Dashboard error: ${{err.message}}</pre>`);
+    }});
+  </script>
+</body>
+</html>
+    """
+    resp = make_response(html, 200)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    return resp
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
