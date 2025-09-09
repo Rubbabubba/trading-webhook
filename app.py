@@ -7,6 +7,7 @@ from typing import Dict, Optional, List
 from datetime import datetime, timedelta, timezone
 import requests
 from flask import Flask, request, jsonify, make_response
+from zoneinfo import ZoneInfo
 
 # ==== Order helpers (must exist in order_mapper.py next to this file) ====
 from order_mapper import (
@@ -17,7 +18,8 @@ from order_mapper import (
 
 app = Flask(__name__)
 
-# ===== Alpaca config =====
+# ===== Alpaca trading API config =====
+# Note the explicit /v2 suffix
 ALPACA_BASE = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets/v2")
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID", "")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY", "")
@@ -27,6 +29,11 @@ HEADERS = {
     "APCA-API-SECRET-KEY": ALPACA_SECRET,
     "Content-Type": "application/json",
 }
+
+# ===== Alpaca Market Data (scanner) =====
+APCA_DATA_BASE_URL = os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets/v2")
+APCA_DATA_FEED     = os.getenv("APCA_DATA_FEED", "iex")   # "iex" (paper/free) or "sip" (paid)
+SELF_BASE_URL      = os.getenv("SELF_BASE_URL", "")       # e.g. https://trading-webhook-xxxx.onrender.com
 
 # ===== Position caps (env-driven) =====
 MAX_OPEN_POSITIONS         = int(os.getenv("MAX_OPEN_POSITIONS", 5))
@@ -59,7 +66,7 @@ def _idem_check_and_set(key: str) -> bool:
     _IDEM_CACHE[key] = now
     return False
 
-# ===== Helpers =====
+# ===== Helpers (trading) =====
 def get_open_positions_snapshot():
     """Counts for TOTAL / BY_SYMBOL; permissive if positions endpoint fails and STRICT is false."""
     try:
@@ -357,6 +364,163 @@ def bucket_daily(trades):
         })
     return out
 
+# ====== Scanner helpers (S2 alert-less) ======
+NY = ZoneInfo("America/New_York")
+
+def _data_get(path, params=None, timeout=10):
+    # Same auth headers work for data API
+    return requests.get(f"{APCA_DATA_BASE_URL}{path}", headers=HEADERS, params=params or {}, timeout=timeout)
+
+def _canon_timeframe(tf: str) -> str:
+    tf = (tf or "").lower().strip()
+    if tf in ("60", "60m", "1h", "1hour", "hour", "1hr"): return "1Hour"
+    if tf in ("30", "30m", "0.5h"): return "30Min"
+    if tf in ("120","120m","2h","2hour"): return "2Hour"
+    if tf in ("d","1d","day","daily"): return "1Day"
+    return "1Hour"
+
+def fetch_bars(symbol: str, timeframe: str, limit: int = 300):
+    """Return list of bars [{t,o,h,l,c,v}], newest last."""
+    tf = _canon_timeframe(timeframe)
+    params = {"timeframe": tf, "limit": int(limit), "feed": APCA_DATA_FEED, "adjustment": "raw"}
+    r = _data_get(f"/stocks/{symbol}/bars", params=params)
+    if r.status_code >= 400:
+        raise RuntimeError(f"bars {symbol} {tf} {r.status_code}: {r.text}")
+    js = r.json() or {}
+    return js.get("bars", [])
+
+def sma(series: List[float], length: int) -> List[float]:
+    out: List[float] = []
+    s = 0.0
+    for i, x in enumerate(series):
+        s += x
+        if i >= length: s -= series[i-length]
+        out.append(s/length if i+1 >= length else float('nan'))
+    return out
+
+def ema(series: List[float], length: int) -> List[float]:
+    out: List[float] = []
+    if length <= 1: return series[:]
+    k = 2.0 / (length + 1.0)
+    prev = None
+    for x in series:
+        prev = x if prev is None else (x - prev) * k + prev
+        out.append(prev)
+    return out
+
+def macd_line(close: List[float], fast=12, slow=26) -> List[float]:
+    ef = ema(close, fast); es = ema(close, slow)
+    return [ (ef[i] - es[i]) for i in range(len(close)) ]
+
+def macd_signal(macd: List[float], length=9) -> List[float]:
+    return ema(macd, length)
+
+def crossover(a: List[float], b: List[float]) -> bool:
+    return len(a) >= 2 and len(b) >= 2 and (a[-2] <= b[-2]) and (a[-1] > b[-1])
+
+def crossunder(a: List[float], b: List[float]) -> bool:
+    return len(a) >= 2 and len(b) >= 2 and (a[-2] >= b[-2]) and (a[-1] < b[-1])
+
+def in_regular_hours(utc_dt: datetime) -> bool:
+    """9:30-16:00 America/New_York, weekdays."""
+    local = utc_dt.astimezone(NY)
+    if local.weekday() >= 5:  # 5=Sat,6=Sun
+        return False
+    hhmm = local.hour * 100 + local.minute
+    return 930 <= hhmm <= 1600
+
+def scan_s2_symbols(
+    symbols: List[str],
+    tf: str = os.getenv("S2_TF_DEFAULT", "60"),
+    mode: str = os.getenv("S2_MODE_DEFAULT", "either"),
+    use_rth: bool = os.getenv("S2_USE_RTH_DEFAULT", "true").lower() == "true",
+    use_vol: bool = os.getenv("S2_USE_VOL_DEFAULT", "false").lower() == "true",
+    dry_run: bool = True,
+):
+    """
+    Return a dict with 'triggers' (what fired) and optionally self-POST to /webhook when dry_run=False.
+    """
+    tf_canon = _canon_timeframe(tf)
+    results = {"ok": True, "timeframe": tf_canon, "mode": mode, "use_rth": use_rth, "use_vol": use_vol, "dry_run": dry_run, "checked": [], "triggers": []}
+
+    for sym in [s.strip().upper() for s in symbols if s.strip()]:
+        try:
+            # --- Daily trend (SMA10)
+            daily = fetch_bars(sym, "1Day", limit=15)
+            d_close = [float(b["c"]) for b in daily]
+            d_sma10 = sma(d_close, 10)
+            if len(d_close) < 11 or len(d_sma10) < 10:
+                results["checked"].append({sym: "insufficient daily bars"})
+                continue
+            daily_up   = d_close[-1] > d_sma10[-1]
+            daily_down = d_close[-1] < d_sma10[-1]
+
+            # --- Intraday MACD on tf_canon
+            bars = fetch_bars(sym, tf_canon, limit=200)
+            if len(bars) < 35:
+                results["checked"].append({sym: "insufficient intraday bars"})
+                continue
+
+            last_bar = bars[-1]
+            last_t = datetime.fromisoformat(str(last_bar["t"]).replace("Z","+00:00"))
+            if use_rth and not in_regular_hours(last_t):
+                results["checked"].append({sym: "outside RTH"})
+                continue
+
+            c = [float(b["c"]) for b in bars]
+            v = [float(b.get("v", 0)) for b in bars]
+
+            m  = macd_line(c, 12, 26)
+            sg = macd_signal(m, 9)
+            long_x  = crossover(m, sg)
+            short_x = crossunder(m, sg)
+
+            # Momentum fallback for "either" mode
+            c_sma10 = sma(c, 10)
+            mom_up  = len(c_sma10) and c[-1] > c_sma10[-1]
+            mom_dn  = len(c_sma10) and c[-1] < c_sma10[-1]
+
+            # Volume filter on TF
+            vol_ok = True
+            if use_vol:
+                v_sma20 = sma(v, 20)
+                vol_ok = len(v_sma20) and (v[-1] > v_sma20[-1])
+
+            # Decide triggers
+            strict_long  = daily_up   and long_x  and vol_ok
+            strict_short = daily_down and short_x and vol_ok
+            loose_long   = (daily_up   and vol_ok) and (long_x  or mom_up)
+            loose_short  = (daily_down and vol_ok) and (short_x or mom_dn)
+
+            go_long  = strict_long  if mode.lower()=="strict" else loose_long
+            go_short = strict_short if mode.lower()=="strict" else loose_short
+
+            fired = []
+            if go_long:
+                fired.append({"system":"SMA10D_MACD","side":"LONG","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
+            if go_short:
+                fired.append({"system":"SMA10D_MACD","side":"SHORT","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
+
+            results["checked"].append({sym: {"daily_up": daily_up, "long_x": long_x, "short_x": short_x, "vol_ok": bool(vol_ok)}})
+
+            for payload in fired:
+                results["triggers"].append(payload)
+                if not dry_run:
+                    base = SELF_BASE_URL.rstrip("/") if SELF_BASE_URL else f"http://127.0.0.1:{int(os.getenv('PORT','8080'))}"
+                    try:
+                        pr = requests.post(f"{base}/webhook", headers={"Content-Type":"application/json"}, data=json.dumps(payload), timeout=10)
+                        if pr.status_code >= 400:
+                            app.logger.error(f"scan_s2 post error {sym}: {pr.status_code} {pr.text}")
+                    except Exception as e:
+                        app.logger.error(f"scan_s2 post exception {sym}: {e}")
+
+        except Exception as e:
+            app.logger.error(f"scan_s2 error {sym}: {e}")
+            results["checked"].append({sym: f"error: {e}"})
+            continue
+
+    return results
+
 # ===== Routes =====
 @app.get("/health")
 def health():
@@ -364,6 +528,16 @@ def health():
 
 @app.post("/webhook")
 def webhook():
+    """
+    Expected JSON:
+    {
+      "system": "SMA10D_MACD" | "SPY_VWAP_EMA20",
+      "side": "LONG" | "SHORT",
+      "ticker": "COIN" | "SPY" | ...,
+      "price": 123.45,
+      "time": "2025-09-05T13:35:01Z"   # optional
+    }
+    """
     data = request.get_json(force=True, silent=True) or {}
     system  = data.get("system")
     side    = data.get("side")
@@ -374,22 +548,27 @@ def webhook():
     if not all([system, side, symbol, price is not None]):
         return jsonify({"ok": False, "error": "missing fields: system/side/ticker/price"}), 400
 
+    # Idempotency
     key = _idem_key(system, side, symbol, float(price), tv_time[:19])
     if _idem_check_and_set(key):
         app.logger.info(f"SKIP: Idempotent duplicate {system} {side} {symbol} @{price}")
         return jsonify({"ok": True, "skipped": "duplicate"}), 200
 
+    # Caps
     open_pos = get_open_positions_snapshot()
     if not under_position_caps(open_pos, symbol, system):
         app.logger.info("SKIP: Max positions reached")
         return jsonify({"ok": True, "skipped": "max_positions"}), 200
 
+    # Choose bracket vs plain
     pos_before = get_symbol_position(symbol)
     use_bracket = pos_before is None  # flat => bracket; has position => plain
 
+    # If going to place a PLAIN entry, cancel all open orders first (prevents wash-trade)
     if not use_bracket and CANCEL_OPEN_ORDERS_BEFORE_PLAIN:
         cancel_open_orders_for_symbol(symbol)
 
+    # Build payload
     try:
         if use_bracket:
             payload = build_entry_order_payload(symbol, side, float(price), system)
@@ -406,6 +585,7 @@ def webhook():
         f"system={system} bracket={use_bracket} payload={payload}"
     )
 
+    # Place order (with base_price retry ONLY for bracket orders)
     try:
         o = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(payload), timeout=10)
 
@@ -443,9 +623,11 @@ def webhook():
 
         order_json = o.json()
 
+        # If PLAIN and OCO enabled, attach a single OCO for the FULL current position
         if not use_bracket and ATTACH_OCO_ON_PLAIN:
             try:
                 cfg = load_strategy_config(system)
+                # Refresh position AFTER entry so qty/avg_entry are up-to-date
                 pos_after = get_symbol_position(symbol) or pos_before
                 pos_side = (pos_after or {}).get("side") or ((pos_before or {}).get("side"))
                 qty_total = int(abs(float((pos_after or {}).get("qty") or (pos_before or {}).get("qty") or 0)))
@@ -454,7 +636,7 @@ def webhook():
                 if qty_total > 0 and pos_side:
                     oco_payload = build_oco_close(
                         symbol=symbol,
-                        system=system,
+                        system=system,  # tag strategy
                         position_side=pos_side,
                         qty=qty_total,
                         ref_price=ref_price,
@@ -562,13 +744,7 @@ def config():
     """Effective runtime config snapshot (JSON)."""
     def cfg_for(system):
         c = load_strategy_config(system)
-        return {
-            "qty": c.qty,
-            "order_type": c.order_type,
-            "tif": c.tif,
-            "tp_pct": c.tp_pct,
-            "sl_pct": c.sl_pct,
-        }
+        return {"qty": c.qty, "order_type": c.order_type, "tif": c.tif, "tp_pct": c.tp_pct, "sl_pct": c.sl_pct}
     out = {
         "alpaca_base": ALPACA_BASE,
         "safety": {
@@ -601,21 +777,13 @@ def dashboard():
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
     :root {
-      /* Dark palette */
-      --bg:#0b0f14;          /* page background */
-      --panel:#0f172a;       /* card background (slate-900/800) */
-      --border:#1f2937;      /* card border (slate-700) */
-      --ink:#e2e8f0;         /* text (slate-200) */
-      --muted:#94a3b8;       /* muted text (slate-400) */
-      --grid:#334155;        /* chart grid (slate-700) */
-      --pos-h:142;           /* green hue */
-      --neg-h:0;             /* red hue */
+      --bg:#0b0f14; --panel:#0f172a; --border:#1f2937; --ink:#e2e8f0; --muted:#94a3b8; --grid:#334155;
+      --pos-h:142; --neg-h:0;
     }
     html, body { background: var(--bg); color: var(--ink); }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
     h1 { margin: 0 0 16px 0; }
     h2 { margin: 0 0 12px 0; }
-    a { color: #93c5fd; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
     .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -623,7 +791,6 @@ def dashboard():
     th { color: var(--muted); font-weight: 600; }
     .muted { color: var(--muted); font-size: 12px; }
 
-    /* Calendar */
     .cal-wrap { display: grid; gap: 12px; }
     .cal-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     .cal-title { font-weight: 700; font-size: 18px; }
@@ -713,21 +880,21 @@ def dashboard():
     }
     function fmt(n) { return (n>=0?'+':'') + n.toFixed(2); }
 
-    // Tell Chart.js to use light text + muted grids for dark background
+    // Chart.js defaults for dark background
     Chart.defaults.color = '#e2e8f0';
     Chart.defaults.borderColor = '#334155';
 
-    // -------- Calendar helpers (same logic, darker fill) --------
+    // Calendar helpers
     const DOW = ['Su','Mo','Tu','We','Th','Fr','Sa'];
     function ymd(d) { return d.toISOString().slice(0,10); }
     function endOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0)); }
     function startOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); }
     function colorForPL(v, maxAbs) {
       if (!v) return null;
-      const a = Math.min(1, Math.abs(v)/Math.max(1, maxAbs)); // 0..1
-      const alpha = 0.15 + a*0.45; // more pop on big days
+      const a = Math.min(1, Math.abs(v)/Math.max(1, maxAbs));
+      const alpha = 0.15 + a*0.45;
       const hue = v >= 0 ? 142 : 0;
-      return `hsla(${hue}, 70%, 45%, ${alpha})`;  // translucent overlay on dark tiles
+      return `hsla(${hue}, 70%, 45%, ${alpha})`;
     }
 
     (function() {
@@ -769,10 +936,7 @@ def dashboard():
         const firstDow = start.getUTCDay();
         const daysInMonth = end.getUTCDate();
 
-        for (let i=0; i<firstDow; i++) {
-          const blank = document.createElement('div');
-          grid.appendChild(blank);
-        }
+        for (let i=0; i<firstDow; i++) grid.appendChild(document.createElement('div'));
 
         let totalMonth = 0; let totalTrades = 0;
 
@@ -809,8 +973,7 @@ def dashboard():
 
       // Summary (7d)
       const perf7 = await getJSON(origin + '/performance?days=7&include_trades=1');
-      const s = document.getElementById('summary');
-      s.innerHTML = '<div>Total realized P&amp;L: <b>$' + perf7.total_realized_pnl.toFixed(2) + '</b></div>';
+      document.getElementById('summary').innerHTML = '<div>Total realized P&amp;L: <b>$' + perf7.total_realized_pnl.toFixed(2) + '</b></div>';
 
       // By strategy
       const tbody = document.querySelector('#byStrategy tbody');
@@ -881,6 +1044,29 @@ def dashboard():
         return resp
     except Exception as e:
         return f"<pre>dashboard render error: {e}</pre>", 500
+
+@app.get("/scan/s2")
+def scan_s2_route():
+    """
+    Server-side scanner for Strategy 2 (MACD x SMA10 with daily trend filter).
+    Query params:
+      symbols=CSV            (default: env S2_WHITELIST)
+      tf=60|30               (default: env S2_TF_DEFAULT)
+      mode=strict|either     (default: env S2_MODE_DEFAULT)
+      rth=true|false         (default: env S2_USE_RTH_DEFAULT)
+      vol=true|false         (default: env S2_USE_VOL_DEFAULT)
+      dry=1|0                (default: 1 = dry-run only)
+    """
+    default_syms = os.getenv("S2_WHITELIST", "SPY,QQQ,TSLA,NVDA,COIN,GOOGL,META,MSFT,AMZN,AAPL")
+    symbols = request.args.get("symbols", default_syms).split(",")
+    tf      = request.args.get("tf", os.getenv("S2_TF_DEFAULT", "60"))
+    mode    = request.args.get("mode", os.getenv("S2_MODE_DEFAULT", "either"))
+    rth     = (request.args.get("rth", os.getenv("S2_USE_RTH_DEFAULT", "true")).lower() == "true")
+    vol     = (request.args.get("vol", os.getenv("S2_USE_VOL_DEFAULT", "false")).lower() == "true")
+    dry     = request.args.get("dry", "1") == "1"
+
+    res = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=dry)
+    return jsonify(res), 200
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
