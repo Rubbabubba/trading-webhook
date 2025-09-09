@@ -590,29 +590,37 @@ def config():
 
 @app.get("/dashboard")
 def dashboard():
-    """HTML dashboard with Summary, Equity/Daily charts, Trades, and a Monthly P&L Calendar."""
+    """Dark-mode HTML dashboard with Monthly P&L Calendar, Summary, Charts, Trades."""
     try:
         html = """
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>Trading Dashboard</title>
+  <title>Trading Dashboard — Dark</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
     :root {
-      --card-border:#e5e7eb; --muted:#666; --bg:#fff; --ink:#111;
-      --pos: 140; /* green hue */
-      --neg: 0;   /* red hue */
+      /* Dark palette */
+      --bg:#0b0f14;          /* page background */
+      --panel:#0f172a;       /* card background (slate-900/800) */
+      --border:#1f2937;      /* card border (slate-700) */
+      --ink:#e2e8f0;         /* text (slate-200) */
+      --muted:#94a3b8;       /* muted text (slate-400) */
+      --grid:#334155;        /* chart grid (slate-700) */
+      --pos-h:142;           /* green hue */
+      --neg-h:0;             /* red hue */
     }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: var(--ink); }
+    html, body { background: var(--bg); color: var(--ink); }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
     h1 { margin: 0 0 16px 0; }
     h2 { margin: 0 0 12px 0; }
+    a { color: #93c5fd; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-    .card { border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); background: var(--bg); }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
-    th { background: #fafafa; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
     .muted { color: var(--muted); font-size: 12px; }
 
     /* Calendar */
@@ -620,21 +628,21 @@ def dashboard():
     .cal-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     .cal-title { font-weight: 700; font-size: 18px; }
     .cal-ctl button {
-      padding: 6px 10px; border-radius: 8px; border: 1px solid var(--card-border); background:#fff; cursor:pointer;
+      padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+      background: #0b1220; color: var(--ink); cursor: pointer;
     }
     .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
-    .dow { text-align:center; font-size:12px; color:#555; margin-bottom: -6px; }
+    .dow { text-align:center; font-size:12px; color: var(--muted); margin-bottom: -6px; }
     .day {
-      min-height: 82px; border: 1px solid #eee; border-radius: 10px; padding: 6px 8px; position: relative;
-      background: #fff; display:flex; flex-direction:column; justify-content:flex-end;
+      min-height: 82px; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; position: relative;
+      background: #0b1220; display:flex; flex-direction:column; justify-content:flex-end;
     }
-    .day .date { position:absolute; top:6px; right:8px; font-size:12px; color:#555; }
-    .day .pl { font-weight:700; font-size:14px; }
-    .day .trades { font-size:12px; color:#333; }
-    .day.zero { background: #fafafa; }
+    .day .date { position:absolute; top:6px; right:8px; font-size:12px; color: var(--muted); }
+    .day .pl { font-weight:700; font-size:14px; color: var(--ink); }
+    .day .trades { font-size:12px; color: var(--muted); }
     .day.today { outline: 2px dashed #8b5cf6; outline-offset: 2px; }
-    .legend { display:flex; gap:10px; align-items:center; font-size:12px; color:#555; }
-    .swatch { width: 48px; height: 10px; border-radius: 6px; background: linear-gradient(90deg, hsl(var(--neg),70%,70%), #eee, hsl(var(--pos),70%,55%)); border:1px solid #ddd; }
+    .legend { display:flex; gap:10px; align-items:center; font-size:12px; color: var(--muted); }
+    .swatch { width: 48px; height: 10px; border-radius: 6px; background: linear-gradient(90deg, hsl(var(--neg-h),80%,55%), #273041, hsl(var(--pos-h),70%,45%)); border:1px solid var(--border); }
     @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -654,7 +662,7 @@ def dashboard():
     </div>
     <div class="legend">
       <span>Loss</span><span class="swatch"></span><span>Gain</span>
-      <span class="muted">— background intensity scales with |P&amp;L|</span>
+      <span class="muted">— intensity scales with |P&amp;L|</span>
     </div>
     <div class="cal-grid" id="dowRow"></div>
     <div class="cal-grid" id="calGrid"></div>
@@ -676,12 +684,12 @@ def dashboard():
 
     <div class="card">
       <h2>Daily P&amp;L (last 30 days)</h2>
-      <canvas id="dailyChart" height="180"></canvas>
+      <canvas id="dailyChart" height="200"></canvas>
     </div>
 
     <div class="card">
       <h2>Equity Curve (realized)</h2>
-      <canvas id="equityChart" height="180"></canvas>
+      <canvas id="equityChart" height="200"></canvas>
     </div>
 
     <div class="card">
@@ -705,21 +713,26 @@ def dashboard():
     }
     function fmt(n) { return (n>=0?'+':'') + n.toFixed(2); }
 
+    // Tell Chart.js to use light text + muted grids for dark background
+    Chart.defaults.color = '#e2e8f0';
+    Chart.defaults.borderColor = '#334155';
+
+    // -------- Calendar helpers (same logic, darker fill) --------
     const DOW = ['Su','Mo','Tu','We','Th','Fr','Sa'];
     function ymd(d) { return d.toISOString().slice(0,10); }
     function endOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0)); }
     function startOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); }
     function colorForPL(v, maxAbs) {
       if (!v) return null;
-      const a = Math.min(1, Math.abs(v)/Math.max(1, maxAbs));
-      const light = 90 - Math.max(15, a*50);
-      const hue = v >= 0 ? 140 : 0;
-      return `hsl(${hue}, 70%, ${light}%)`;
+      const a = Math.min(1, Math.abs(v)/Math.max(1, maxAbs)); // 0..1
+      const alpha = 0.15 + a*0.45; // more pop on big days
+      const hue = v >= 0 ? 142 : 0;
+      return `hsla(${hue}, 70%, 45%, ${alpha})`;  // translucent overlay on dark tiles
     }
 
     (function() {
       const dowRow = document.getElementById('dowRow');
-      ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(d => {
+      DOW.forEach(d => {
         const el = document.createElement('div');
         el.className = 'dow';
         el.textContent = d;
@@ -769,7 +782,7 @@ def dashboard():
           const pnl = dayPNL.get(key) || 0;
           const trades = dayTrades.get(key) || 0;
           const cell = document.createElement('div');
-          cell.className = 'day' + (pnl===0 ? ' zero':'');
+          cell.className = 'day';
           const bg = colorForPL(pnl, maxAbs);
           if (bg) cell.style.background = bg;
           if (ymd(cDate) === ymd(new Date())) cell.classList.add('today');
@@ -815,7 +828,14 @@ def dashboard():
       new Chart(document.getElementById('equityChart').getContext('2d'), {
         type: 'line',
         data: { labels: eqLabels, datasets: [{ label: 'Equity ($)', data: eqData }] },
-        options: { responsive: true, plugins: { legend: { display: false } } }
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } },
+            y: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } }
+          }
+        }
       });
 
       // Daily (30d)
@@ -825,7 +845,14 @@ def dashboard():
       new Chart(document.getElementById('dailyChart').getContext('2d'), {
         type: 'bar',
         data: { labels: dLabels, datasets: [{ label: 'Daily P&L ($)', data: dData }] },
-        options: { responsive: true, plugins: { legend: { display: false } } }
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } },
+            y: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } }
+          }
+        }
       });
 
       // Trades table (last 25)
@@ -843,7 +870,7 @@ def dashboard():
         tBody.appendChild(tr);
       });
     })().catch(err => {
-      document.body.insertAdjacentHTML('beforeend', '<pre style="color:#b00;">Dashboard error: ' + err.message + '</pre>');
+      document.body.insertAdjacentHTML('beforeend', '<pre style="color:#fca5a5;">Dashboard error: ' + err.message + '</pre>');
     });
   </script>
 </body>
