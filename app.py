@@ -590,7 +590,7 @@ def config():
 
 @app.get("/dashboard")
 def dashboard():
-    """Simple HTML dashboard using /performance and /performance/daily."""
+    """HTML dashboard with Summary, Equity/Daily charts, Trades, and a Monthly P&L Calendar."""
     html = f"""
 <!doctype html>
 <html>
@@ -599,20 +599,67 @@ def dashboard():
   <title>Trading Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    :root {{
+      --card-border:#e5e7eb; --muted:#666; --bg:#fff; --ink:#111;
+      --pos: 140; /* green hue */
+      --neg: 0;   /* red hue */
+    }}
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: var(--ink); }}
     h1 {{ margin: 0 0 16px 0; }}
+    h2 {{ margin: 0 0 12px 0; }}
     .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
-    .card {{ border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }}
-    table {{ width: 100%; border-collapse: collapse; }}
+    .card {{ border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); background: var(--bg); }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
     th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #eee; }}
     th {{ background: #fafafa; }}
-    .muted {{ color: #666; font-size: 12px; }}
-    @media (max-width: 900px) {{ .grid {{ grid-template-columns: 1fr; }} }}
+    .muted {{ color: var(--muted); font-size: 12px; }}
+
+    /* Calendar */
+    .cal-wrap {{ display: grid; gap: 12px; }}
+    .cal-head {{ display: flex; align-items: center; gap: 8px; justify-content: space-between; }}
+    .cal-title {{ font-weight: 700; font-size: 18px; }}
+    .cal-ctl button {{
+      padding: 6px 10px; border-radius: 8px; border: 1px solid var(--card-border); background:#fff; cursor:pointer;
+    }}
+    .cal-grid {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }}
+    .dow {{ text-align:center; font-size:12px; color:#555; margin-bottom: -6px; }}
+    .day {{
+      min-height: 82px; border: 1px solid #eee; border-radius: 10px; padding: 6px 8px; position: relative;
+      background: #fff; display:flex; flex-direction:column; justify-content:flex-end;
+    }}
+    .day .date {{ position:absolute; top:6px; right:8px; font-size:12px; color:#555; }}
+    .day .pl {{ font-weight:700; font-size:14px; }}
+    .day .trades {{ font-size:12px; color:#333; }}
+    .day.zero {{ background: #fafafa; }}
+    .day.today {{ outline: 2px dashed #8b5cf6; outline-offset: 2px; }}
+    .legend {{ display:flex; gap:10px; align-items:center; font-size:12px; color:#555; }}
+    .swatch {{ width: 48px; height: 10px; border-radius: 6px; background: linear-gradient(90deg, hsl(var(--neg),70%,70%), #eee, hsl(var(--pos),70%,55%)); border:1px solid #ddd; }}
+    @media (max-width: 1100px) {{ .grid {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
   <h1>Trading Dashboard</h1>
   <div class="muted">Origin: <code id="origin"></code></div>
+  <br/>
+
+  <div class="card cal-wrap">
+    <div class="cal-head">
+      <div class="cal-title">Monthly P&amp;L Calendar: <span id="calMonth"></span></div>
+      <div class="cal-ctl">
+        <button id="prevBtn" title="Previous month">&#x276E;</button>
+        <button id="todayBtn">Today</button>
+        <button id="nextBtn" title="Next month">&#x276F;</button>
+      </div>
+    </div>
+    <div class="legend">
+      <span>Loss</span><span class="swatch"></span><span>Gain</span>
+      <span class="muted">— background intensity scales with |P&amp;L|</span>
+    </div>
+    <div class="cal-grid" id="dowRow"></div>
+    <div class="cal-grid" id="calGrid"></div>
+    <div class="muted" id="calTotals"></div>
+  </div>
+
   <br/>
 
   <div class="grid">
@@ -655,16 +702,136 @@ def dashboard():
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     }}
-
     function fmt(n) {{ return (n>=0?'+':'') + n.toFixed(2); }}
 
+    // ---------- Monthly calendar helpers ----------
+    const DOW = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+    function ymd(d) {{ return d.toISOString().slice(0,10); }}
+    function endOfMonth(d) {{
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0));
+    }}
+    function startOfMonth(d) {{
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+    }}
+    function colorForPL(v, maxAbs) {{
+      if (!v) return null;
+      const a = Math.min(1, Math.abs(v)/Math.max(1, maxAbs));
+      const light = 90 - Math.max(15, a*50); // 75→40 with intensity
+      const hue = v >= 0 ? 140 : 0;
+      return `hsl(${hue}, 70%, ${light}%)`;
+    }}
+
+    // Build DOW header once
+    (function() {{
+      const dowRow = document.getElementById('dowRow');
+      DOW.forEach(d => {{
+        const el = document.createElement('div');
+        el.className = 'dow';
+        el.textContent = d;
+        dowRow.appendChild(el);
+      }});
+    }})();
+
     (async () => {{
+      // Pull wide window so nav works (covers +/- 2 months)
+      const perfAll = await getJSON(`${{origin}}/performance?days=120&include_trades=1`);
+      const daily = await getJSON(`${{origin}}/performance/daily?days=120`);
+
+      // Build maps: day -> { pnl, trades }
+      const dayPNL = new Map();
+      daily.daily.forEach(d => dayPNL.set(d.date, d.pnl));
+      const dayTrades = new Map();
+      (perfAll.trades || []).forEach(tr => {{
+        const day = String(tr.exit_time).slice(0,10);
+        dayTrades.set(day, (dayTrades.get(day) || 0) + 1);
+      }});
+
+      // Intensity scale
+      const maxAbs = Math.max(1, ...Array.from(dayPNL.values()).map(v => Math.abs(v)));
+
+      // Calendar state
+      let current = new Date(); // today UTC
+      function setMonthLabel(dt) {{
+        const m = dt.toLocaleString('en-US', {{ month: 'long', timeZone: 'UTC' }});
+        const y = dt.getUTCFullYear();
+        document.getElementById('calMonth').textContent = `${{m}} ${{y}}`;
+      }}
+
+      function renderCalendar(dt) {{
+        const grid = document.getElementById('calGrid');
+        grid.innerHTML = '';
+        const start = startOfMonth(dt);
+        const end = endOfMonth(dt);
+        const firstDow = start.getUTCDay();
+        const daysInMonth = end.getUTCDate();
+
+        // blanks before 1st
+        for (let i=0; i<firstDow; i++) {{
+          const blank = document.createElement('div');
+          grid.appendChild(blank);
+        }}
+
+        // rows of days
+        let weeklyTotal = 0; let weeklyTrades = 0; let weekDayIndex = firstDow; // 0..6
+        let totalMonth = 0; let totalTrades = 0;
+
+        for (let d=1; d<=daysInMonth; d++) {{
+          const cDate = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), d));
+          const key = ymd(cDate);
+          const pnl = dayPNL.get(key) || 0;
+          const trades = dayTrades.get(key) || 0;
+          const cell = document.createElement('div');
+          cell.className = 'day' + (pnl===0 ? ' zero':'');
+          const bg = colorForPL(pnl, maxAbs);
+          if (bg) cell.style.background = bg;
+          if (ymd(cDate) === ymd(new Date())) cell.classList.add('today');
+
+          cell.innerHTML = `
+            <div class="date">${{d}}</div>
+            <div class="pl">$${{(pnl||0).toFixed(2)}}</div>
+            <div class="trades">${{trades}} trades</div>
+          `;
+          grid.appendChild(cell);
+
+          // weekly/monthly running totals (for footer)
+          weeklyTotal += pnl; weeklyTrades += trades; totalMonth += pnl; totalTrades += trades;
+          weekDayIndex++;
+          if (weekDayIndex > 6 && d !== daysInMonth) {{
+            // row wrap (insert subtle divider)
+            weekDayIndex = 0;
+          }}
+        }}
+
+        // Month totals footer
+        const footer = document.getElementById('calTotals');
+        footer.textContent = `Month total: $${{totalMonth.toFixed(2)}} across ${{totalTrades}} trades`;
+        setMonthLabel(dt);
+      }}
+
+      // Initial render
+      renderCalendar(current);
+
+      // Controls
+      document.getElementById('prevBtn').onclick = () => {{
+        current = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth()-1, 1));
+        renderCalendar(current);
+      }};
+      document.getElementById('nextBtn').onclick = () => {{
+        current = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth()+1, 1));
+        renderCalendar(current);
+      }};
+      document.getElementById('todayBtn').onclick = () => {{
+        current = new Date();
+        renderCalendar(current);
+      }};
+
+      // -------- Existing sections --------
       // Summary (7d)
       const perf7 = await getJSON(`${{origin}}/performance?days=7&include_trades=1`);
       const s = document.getElementById('summary');
       s.innerHTML = `<div>Total realized P&amp;L: <b>$${{perf7.total_realized_pnl.toFixed(2)}}</b></div>`;
 
-      // By strategy table
+      // By strategy
       const tbody = document.querySelector('#byStrategy tbody');
       tbody.innerHTML = '';
       Object.entries(perf7.by_strategy).forEach(([k,v]) => {{
@@ -677,19 +844,17 @@ def dashboard():
       const eq = perf7.equity || [];
       const eqLabels = eq.map(x => x.time);
       const eqData = eq.map(x => x.equity);
-      const ec = document.getElementById('equityChart').getContext('2d');
-      new Chart(ec, {{
+      new Chart(document.getElementById('equityChart').getContext('2d'), {{
         type: 'line',
         data: {{ labels: eqLabels, datasets: [{{ label: 'Equity ($)', data: eqData }}] }},
         options: {{ responsive: true, plugins: {{ legend: {{ display: false }} }} }}
       }});
 
       // Daily (30d)
-      const daily = await getJSON(`${{origin}}/performance/daily?days=30`);
-      const dLabels = daily.daily.map(x => x.date);
-      const dData = daily.daily.map(x => x.pnl);
-      const dc = document.getElementById('dailyChart').getContext('2d');
-      new Chart(dc, {{
+      const d30 = await getJSON(`${{origin}}/performance/daily?days=30`);
+      const dLabels = d30.daily.map(x => x.date);
+      const dData = d30.daily.map(x => x.pnl);
+      new Chart(document.getElementById('dailyChart').getContext('2d'), {{
         type: 'bar',
         data: {{ labels: dLabels, datasets: [{{ label: 'Daily P&L ($)', data: dData }}] }},
         options: {{ responsive: true, plugins: {{ legend: {{ display: false }} }} }}
@@ -719,6 +884,7 @@ def dashboard():
     resp = make_response(html, 200)
     resp.headers["Content-Type"] = "text/html; charset=utf-8"
     return resp
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
