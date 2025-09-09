@@ -1,91 +1,139 @@
 # order_mapper.py
+import os
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
-import os, time, random
 
+# ---------- Config model ----------
 @dataclass
 class StrategyConfig:
-    name: str
-    qty: int = 1
-    tp_pct: float = 0.01     # 1% default as decimal (0.01 = 1%)
-    sl_pct: float = 0.005    # 0.5% default (0.005 = 0.5%)
-    order_type: str = "market"  # 'market' or 'limit'
-    tif: str = "day"            # 'day' or 'gtc'
+    qty: int
+    order_type: str   # "market" or "limit"
+    tif: str          # "day" or "gtc"
+    tp_pct: float     # take-profit percent, e.g., 0.012 = 1.2%
+    sl_pct: float     # stop-loss percent, e.g., 0.006 = 0.6%
 
-def _pct_from_env_decimal(key: str, default: float) -> float:
-    """Interpret env as DECIMAL FRACTION (0.01 = 1%)."""
+# ---------- Helpers ----------
+def _get_pct(var: str, default: float) -> float:
     try:
-        return float(os.getenv(key, default))
+        v = os.getenv(var, "")
+        return float(v) if v != "" else default
     except Exception:
         return default
 
-def load_strategy_config(strategy: str) -> StrategyConfig:
-    upper = strategy.upper()
-    return StrategyConfig(
-        name=strategy,
-        qty=int(os.getenv(f"{upper}_QTY", os.getenv("DEFAULT_QTY", 1))),
-        tp_pct=_pct_from_env_decimal(f"{upper}_TP_PCT", 0.01),
-        sl_pct=_pct_from_env_decimal(f"{upper}_SL_PCT", 0.005),
-        order_type=os.getenv(f"{upper}_ORDER_TYPE", os.getenv("DEFAULT_ORDER_TYPE", "market")),
-        tif=os.getenv(f"{upper}_TIF", os.getenv("DEFAULT_TIF", "day"))
-    )
+def _get_int(var: str, default: int) -> int:
+    try:
+        v = os.getenv(var, "")
+        return int(v) if v != "" else default
+    except Exception:
+        return default
 
-def compute_bracket_prices(side: str, entry_price: float, tp_pct: float, sl_pct: float) -> Dict[str, float]:
-    side = side.upper()
-    if side == "LONG":
-        tp = entry_price * (1 + tp_pct)
-        sl = entry_price * (1 - sl_pct)
-    elif side == "SHORT":
-        tp = entry_price * (1 - tp_pct)
-        sl = entry_price * (1 + sl_pct)
+def _norm_order_type(val: str) -> str:
+    v = (val or "").strip().lower()
+    return "limit" if v == "limit" else "market"
+
+def _norm_tif(val: str) -> str:
+    v = (val or "").strip().lower()
+    return "gtc" if v == "gtc" else "day"
+
+# ---------- Strategy defaults ----------
+def _defaults_for(system: str) -> StrategyConfig:
+    sys = (system or "").upper()
+
+    # Base knobs
+    qty = _get_int(f"{sys}_QTY", _get_int("DEFAULT_QTY", 1))
+    order_type = _norm_order_type(os.getenv(f"{sys}_ORDER_TYPE", os.getenv("DEFAULT_ORDER_TYPE", "market")))
+    tif = _norm_tif(os.getenv(f"{sys}_TIF", os.getenv("DEFAULT_TIF", "day")))
+
+    # Exit percents (global for the system)
+    if sys == "SMA10D_MACD":
+        tp = _get_pct("SMA10D_MACD_TP_PCT", 0.012)
+        sl = _get_pct("SMA10D_MACD_SL_PCT", 0.006)
+    elif sys == "SPY_VWAP_EMA20":
+        tp = _get_pct("SPY_VWAP_EMA20_TP_PCT", 0.0025)
+        sl = _get_pct("SPY_VWAP_EMA20_SL_PCT", 0.0020)
     else:
-        raise ValueError(f"Invalid side: {side}")
-    return {"tp": float(f"{tp:.2f}"), "sl": float(f"{sl:.2f}")}
+        tp = _get_pct(f"{sys}_TP_PCT", 0.01)
+        sl = _get_pct(f"{sys}_SL_PCT", 0.005)
 
-def build_client_order_id(system: str, symbol: str) -> str:
-    return f"{system}-{symbol}-{int(time.time()*1000)}-{random.randint(100000,999999)}"
+    return StrategyConfig(qty=qty, order_type=order_type, tif=tif, tp_pct=tp, sl_pct=sl)
 
-def build_entry_order_payload(symbol: str,
-                              side: str,
-                              price: float,
-                              strategy: str,
-                              qty: Optional[int] = None) -> Dict[str, Any]:
-    cfg = load_strategy_config(strategy)
-    q = int(qty if qty is not None else cfg.qty)
-    bracket = compute_bracket_prices(side, float(price), cfg.tp_pct, cfg.sl_pct)
+def _symbol_overrides(system: str, symbol: str, base: StrategyConfig) -> StrategyConfig:
+    """Apply env overrides like SMA10D_MACD_TP_PCT_TSLA / SMA10D_MACD_SL_PCT_TSLA if present."""
+    sys = (system or "").upper()
+    sym = (symbol or "").upper()
+
+    tp = os.getenv(f"{sys}_TP_PCT_{sym}")
+    sl = os.getenv(f"{sys}_SL_PCT_{sym}")
+
+    tp_pct = base.tp_pct if not tp else float(tp)
+    sl_pct = base.sl_pct if not sl else float(sl)
+
+    # Optional per-symbol qty/type/tif if you ever want them:
+    qty = _get_int(f"{sys}_QTY_{sym}", base.qty)
+    otype = _norm_order_type(os.getenv(f"{sys}_ORDER_TYPE_{sym}", base.order_type))
+    tif = _norm_tif(os.getenv(f"{sys}_TIF_{sym}", base.tif))
+
+    return StrategyConfig(qty=qty, order_type=otype, tif=tif, tp_pct=tp_pct, sl_pct=sl_pct)
+
+# ---------- Public API (imported by app.py) ----------
+def load_strategy_config(system: str, symbol: str | None = None) -> StrategyConfig:
+    """Load strategy config; applies per-symbol TP/SL if symbol is provided."""
+    base = _defaults_for(system)
+    return _symbol_overrides(system, symbol, base) if symbol else base
+
+def build_entry_order_payload(symbol: str, side: str, price: float, system: str) -> dict:
+    """
+    Build a BRACKET entry (used when flat). TP/SL use per-symbol overrides if defined.
+    """
+    cfg = load_strategy_config(system, symbol)
+    side_norm = (side or "").upper()
+    if side_norm not in ("LONG", "SHORT"):
+        raise ValueError(f"invalid side: {side}")
+
+    qty = int(cfg.qty) if int(cfg.qty) > 0 else 1
+    entry_type = cfg.order_type  # "market" | "limit"
+
+    # Compute TP/SL around the provided price (app.py will retry with Alpaca base_price if needed)
+    p = float(price)
+    if side_norm == "LONG":
+        tp = p * (1 + cfg.tp_pct)
+        sl = p * (1 - cfg.sl_pct)
+        entry_side = "buy"
+    else:
+        tp = p * (1 - cfg.tp_pct)
+        sl = p * (1 + cfg.sl_pct)
+        entry_side = "sell"
 
     payload = {
-        "symbol": symbol,
-        "qty": q,
-        "side": "buy" if side.upper() == "LONG" else "sell",
-        "type": cfg.order_type,            # "market" or "limit"
-        "time_in_force": cfg.tif,          # "day" or "gtc"
+        "symbol": symbol.upper(),
+        "qty": qty,
+        "side": entry_side,
+        "type": entry_type,
+        "time_in_force": cfg.tif,
         "order_class": "bracket",
-        "take_profit": {"limit_price": f"{bracket['tp']:.2f}"},
-        "stop_loss": {"stop_price": f"{bracket['sl']:.2f}"},
-        "client_order_id": build_client_order_id(strategy, symbol),
+        "take_profit": {"limit_price": f"{tp:.2f}"},
+        "stop_loss":  {"stop_price":  f"{sl:.2f}"},
+        "client_order_id": f"{system}-{symbol}-bracket",
     }
-    
-    # ✅ If entry is LIMIT, you must include limit_price
-    if cfg.order_type.lower() == "limit":
-        payload["limit_price"] = f"{float(price):.2f}"
+    if entry_type == "limit":
+        payload["limit_price"] = f"{p:.2f}"
     return payload
 
-
-def under_position_caps(open_positions: Dict[str, int], symbol: str, strategy: str) -> bool:
+def under_position_caps(open_snapshot: dict, symbol: str, system: str) -> bool:
     """
-    open_positions shape example:
-    {
-      "TOTAL": 2,
-      "BY_SYMBOL": {"SPY": 1, "COIN": 1},
-      "BY_STRATEGY": {"SPY_VWAP_EMA20": 1, "SMA10D_MACD": 1}
-    }
+    Enforce MAX_* caps. open_snapshot is produced by app.get_open_positions_snapshot().
     """
-    max_total = int(os.getenv("MAX_OPEN_POSITIONS", 5))
-    max_per_symbol = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", 1))
-    max_per_strategy = int(os.getenv("MAX_POSITIONS_PER_STRATEGY", 3))
+    total = int(open_snapshot.get("TOTAL", 0))
+    by_symbol = open_snapshot.get("BY_SYMBOL", {}) or {}
+    by_strategy = open_snapshot.get("BY_STRATEGY", {}) or {}
 
-    total_ok = open_positions.get("TOTAL", 0) < max_total
-    sym_ok = open_positions.get("BY_SYMBOL", {}).get(symbol, 0) < max_per_symbol
-    strat_ok = open_positions.get("BY_STRATEGY", {}).get(strategy, 0) < max_per_strategy
-    return total_ok and sym_ok and strat_ok
+    max_total = _get_int("MAX_OPEN_POSITIONS", 5)
+    max_per_symbol = _get_int("MAX_POSITIONS_PER_SYMBOL", 1)
+    max_per_strategy = _get_int("MAX_POSITIONS_PER_STRATEGY", 3)
+
+    if total >= max_total:
+        return False
+    if by_symbol.get(symbol.upper(), 0) >= max_per_symbol:
+        return False
+    if by_strategy.get(system, 0) >= max_per_strategy:
+        return False
+    return True
