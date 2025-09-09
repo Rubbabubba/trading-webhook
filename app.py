@@ -591,7 +591,8 @@ def config():
 @app.get("/dashboard")
 def dashboard():
     """HTML dashboard with Summary, Equity/Daily charts, Trades, and a Monthly P&L Calendar."""
-    html = f"""
+    try:
+        html = """
 <!doctype html>
 <html>
 <head>
@@ -599,42 +600,42 @@ def dashboard():
   <title>Trading Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    :root {{
+    :root {
       --card-border:#e5e7eb; --muted:#666; --bg:#fff; --ink:#111;
       --pos: 140; /* green hue */
       --neg: 0;   /* red hue */
-    }}
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: var(--ink); }}
-    h1 {{ margin: 0 0 16px 0; }}
-    h2 {{ margin: 0 0 12px 0; }}
-    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
-    .card {{ border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); background: var(--bg); }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
-    th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #eee; }}
-    th {{ background: #fafafa; }}
-    .muted {{ color: var(--muted); font-size: 12px; }}
+    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: var(--ink); }
+    h1 { margin: 0 0 16px 0; }
+    h2 { margin: 0 0 12px 0; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .card { border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); background: var(--bg); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; }
+    .muted { color: var(--muted); font-size: 12px; }
 
     /* Calendar */
-    .cal-wrap {{ display: grid; gap: 12px; }}
-    .cal-head {{ display: flex; align-items: center; gap: 8px; justify-content: space-between; }}
-    .cal-title {{ font-weight: 700; font-size: 18px; }}
-    .cal-ctl button {{
+    .cal-wrap { display: grid; gap: 12px; }
+    .cal-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+    .cal-title { font-weight: 700; font-size: 18px; }
+    .cal-ctl button {
       padding: 6px 10px; border-radius: 8px; border: 1px solid var(--card-border); background:#fff; cursor:pointer;
-    }}
-    .cal-grid {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }}
-    .dow {{ text-align:center; font-size:12px; color:#555; margin-bottom: -6px; }}
-    .day {{
+    }
+    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+    .dow { text-align:center; font-size:12px; color:#555; margin-bottom: -6px; }
+    .day {
       min-height: 82px; border: 1px solid #eee; border-radius: 10px; padding: 6px 8px; position: relative;
       background: #fff; display:flex; flex-direction:column; justify-content:flex-end;
-    }}
-    .day .date {{ position:absolute; top:6px; right:8px; font-size:12px; color:#555; }}
-    .day .pl {{ font-weight:700; font-size:14px; }}
-    .day .trades {{ font-size:12px; color:#333; }}
-    .day.zero {{ background: #fafafa; }}
-    .day.today {{ outline: 2px dashed #8b5cf6; outline-offset: 2px; }}
-    .legend {{ display:flex; gap:10px; align-items:center; font-size:12px; color:#555; }}
-    .swatch {{ width: 48px; height: 10px; border-radius: 6px; background: linear-gradient(90deg, hsl(var(--neg),70%,70%), #eee, hsl(var(--pos),70%,55%)); border:1px solid #ddd; }}
-    @media (max-width: 1100px) {{ .grid {{ grid-template-columns: 1fr; }} }}
+    }
+    .day .date { position:absolute; top:6px; right:8px; font-size:12px; color:#555; }
+    .day .pl { font-weight:700; font-size:14px; }
+    .day .trades { font-size:12px; color:#333; }
+    .day.zero { background: #fafafa; }
+    .day.today { outline: 2px dashed #8b5cf6; outline-offset: 2px; }
+    .legend { display:flex; gap:10px; align-items:center; font-size:12px; color:#555; }
+    .swatch { width: 48px; height: 10px; border-radius: 6px; background: linear-gradient(90deg, hsl(var(--neg),70%,70%), #eee, hsl(var(--pos),70%,55%)); border:1px solid #ddd; }
+    @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -697,67 +698,57 @@ def dashboard():
     const origin = window.location.origin;
     document.getElementById('origin').textContent = origin;
 
-    async function getJSON(url) {{
+    async function getJSON(url) {
       const r = await fetch(url);
       if (!r.ok) throw new Error(await r.text());
       return r.json();
-    }}
-    function fmt(n) {{ return (n>=0?'+':'') + n.toFixed(2); }}
+    }
+    function fmt(n) { return (n>=0?'+':'') + n.toFixed(2); }
 
-    // ---------- Monthly calendar helpers ----------
     const DOW = ['Su','Mo','Tu','We','Th','Fr','Sa'];
-    function ymd(d) {{ return d.toISOString().slice(0,10); }}
-    function endOfMonth(d) {{
-      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0));
-    }}
-    function startOfMonth(d) {{
-      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-    }}
-    function colorForPL(v, maxAbs) {{
+    function ymd(d) { return d.toISOString().slice(0,10); }
+    function endOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0)); }
+    function startOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); }
+    function colorForPL(v, maxAbs) {
       if (!v) return null;
       const a = Math.min(1, Math.abs(v)/Math.max(1, maxAbs));
-      const light = 90 - Math.max(15, a*50); // 75→40 with intensity
+      const light = 90 - Math.max(15, a*50);
       const hue = v >= 0 ? 140 : 0;
       return `hsl(${hue}, 70%, ${light}%)`;
-    }}
+    }
 
-    // Build DOW header once
-    (function() {{
+    (function() {
       const dowRow = document.getElementById('dowRow');
-      DOW.forEach(d => {{
+      ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(d => {
         const el = document.createElement('div');
         el.className = 'dow';
         el.textContent = d;
         dowRow.appendChild(el);
-      }});
-    }})();
+      });
+    })();
 
-    (async () => {{
-      // Pull wide window so nav works (covers +/- 2 months)
-      const perfAll = await getJSON(`${{origin}}/performance?days=120&include_trades=1`);
-      const daily = await getJSON(`${{origin}}/performance/daily?days=120`);
+    (async () => {
+      const perfAll = await getJSON(origin + '/performance?days=120&include_trades=1');
+      const daily   = await getJSON(origin + '/performance/daily?days=120');
 
-      // Build maps: day -> { pnl, trades }
       const dayPNL = new Map();
       daily.daily.forEach(d => dayPNL.set(d.date, d.pnl));
       const dayTrades = new Map();
-      (perfAll.trades || []).forEach(tr => {{
+      (perfAll.trades || []).forEach(tr => {
         const day = String(tr.exit_time).slice(0,10);
         dayTrades.set(day, (dayTrades.get(day) || 0) + 1);
-      }});
+      });
 
-      // Intensity scale
       const maxAbs = Math.max(1, ...Array.from(dayPNL.values()).map(v => Math.abs(v)));
 
-      // Calendar state
       let current = new Date(); // today UTC
-      function setMonthLabel(dt) {{
-        const m = dt.toLocaleString('en-US', {{ month: 'long', timeZone: 'UTC' }});
+      function setMonthLabel(dt) {
+        const m = dt.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
         const y = dt.getUTCFullYear();
-        document.getElementById('calMonth').textContent = `${{m}} ${{y}}`;
-      }}
+        document.getElementById('calMonth').textContent = m + ' ' + y;
+      }
 
-      function renderCalendar(dt) {{
+      function renderCalendar(dt) {
         const grid = document.getElementById('calGrid');
         grid.innerHTML = '';
         const start = startOfMonth(dt);
@@ -765,17 +756,14 @@ def dashboard():
         const firstDow = start.getUTCDay();
         const daysInMonth = end.getUTCDate();
 
-        // blanks before 1st
-        for (let i=0; i<firstDow; i++) {{
+        for (let i=0; i<firstDow; i++) {
           const blank = document.createElement('div');
           grid.appendChild(blank);
-        }}
+        }
 
-        // rows of days
-        let weeklyTotal = 0; let weeklyTrades = 0; let weekDayIndex = firstDow; // 0..6
         let totalMonth = 0; let totalTrades = 0;
 
-        for (let d=1; d<=daysInMonth; d++) {{
+        for (let d=1; d<=daysInMonth; d++) {
           const cDate = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), d));
           const key = ymd(cDate);
           const pnl = dayPNL.get(key) || 0;
@@ -787,104 +775,85 @@ def dashboard():
           if (ymd(cDate) === ymd(new Date())) cell.classList.add('today');
 
           cell.innerHTML = `
-            <div class="date">${{d}}</div>
-            <div class="pl">$${{(pnl||0).toFixed(2)}}</div>
-            <div class="trades">${{trades}} trades</div>
+            <div class="date">${d}</div>
+            <div class="pl">$${(pnl||0).toFixed(2)}</div>
+            <div class="trades">${trades} trades</div>
           `;
           grid.appendChild(cell);
 
-          // weekly/monthly running totals (for footer)
-          weeklyTotal += pnl; weeklyTrades += trades; totalMonth += pnl; totalTrades += trades;
-          weekDayIndex++;
-          if (weekDayIndex > 6 && d !== daysInMonth) {{
-            // row wrap (insert subtle divider)
-            weekDayIndex = 0;
-          }}
-        }}
+          totalMonth += pnl; totalTrades += trades;
+        }
 
-        // Month totals footer
         const footer = document.getElementById('calTotals');
-        footer.textContent = `Month total: $${{totalMonth.toFixed(2)}} across ${{totalTrades}} trades`;
+        footer.textContent = 'Month total: $' + totalMonth.toFixed(2) + ' across ' + totalTrades + ' trades';
         setMonthLabel(dt);
-      }}
+      }
 
-      // Initial render
       renderCalendar(current);
+      document.getElementById('prevBtn').onclick = () => { current = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth()-1, 1)); renderCalendar(current); };
+      document.getElementById('nextBtn').onclick = () => { current = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth()+1, 1)); renderCalendar(current); };
+      document.getElementById('todayBtn').onclick = () => { current = new Date(); renderCalendar(current); };
 
-      // Controls
-      document.getElementById('prevBtn').onclick = () => {{
-        current = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth()-1, 1));
-        renderCalendar(current);
-      }};
-      document.getElementById('nextBtn').onclick = () => {{
-        current = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth()+1, 1));
-        renderCalendar(current);
-      }};
-      document.getElementById('todayBtn').onclick = () => {{
-        current = new Date();
-        renderCalendar(current);
-      }};
-
-      // -------- Existing sections --------
       // Summary (7d)
-      const perf7 = await getJSON(`${{origin}}/performance?days=7&include_trades=1`);
+      const perf7 = await getJSON(origin + '/performance?days=7&include_trades=1');
       const s = document.getElementById('summary');
-      s.innerHTML = `<div>Total realized P&amp;L: <b>$${{perf7.total_realized_pnl.toFixed(2)}}</b></div>`;
+      s.innerHTML = '<div>Total realized P&amp;L: <b>$' + perf7.total_realized_pnl.toFixed(2) + '</b></div>';
 
       // By strategy
       const tbody = document.querySelector('#byStrategy tbody');
       tbody.innerHTML = '';
-      Object.entries(perf7.by_strategy).forEach(([k,v]) => {{
+      Object.entries(perf7.by_strategy).forEach(([k,v]) => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${{k}}</td><td>${{v.trades}}</td><td>${{v.win_rate}}%</td><td>${{v.realized_pnl.toFixed(2)}}</td>`;
+        tr.innerHTML = '<td>'+k+'</td><td>'+v.trades+'</td><td>'+v.win_rate+'%</td><td>'+v.realized_pnl.toFixed(2)+'</td>';
         tbody.appendChild(tr);
-      }});
+      });
 
       // Equity chart
       const eq = perf7.equity || [];
       const eqLabels = eq.map(x => x.time);
       const eqData = eq.map(x => x.equity);
-      new Chart(document.getElementById('equityChart').getContext('2d'), {{
+      new Chart(document.getElementById('equityChart').getContext('2d'), {
         type: 'line',
-        data: {{ labels: eqLabels, datasets: [{{ label: 'Equity ($)', data: eqData }}] }},
-        options: {{ responsive: true, plugins: {{ legend: {{ display: false }} }} }}
-      }});
+        data: { labels: eqLabels, datasets: [{ label: 'Equity ($)', data: eqData }] },
+        options: { responsive: true, plugins: { legend: { display: false } } }
+      });
 
       // Daily (30d)
-      const d30 = await getJSON(`${{origin}}/performance/daily?days=30`);
+      const d30 = await getJSON(origin + '/performance/daily?days=30');
       const dLabels = d30.daily.map(x => x.date);
       const dData = d30.daily.map(x => x.pnl);
-      new Chart(document.getElementById('dailyChart').getContext('2d'), {{
+      new Chart(document.getElementById('dailyChart').getContext('2d'), {
         type: 'bar',
-        data: {{ labels: dLabels, datasets: [{{ label: 'Daily P&L ($)', data: dData }}] }},
-        options: {{ responsive: true, plugins: {{ legend: {{ display: false }} }} }}
-      }});
+        data: { labels: dLabels, datasets: [{ label: 'Daily P&L ($)', data: dData }] },
+        options: { responsive: true, plugins: { legend: { display: false } } }
+      });
 
       // Trades table (last 25)
       const tBody = document.querySelector('#trades tbody');
-      (perf7.trades || []).slice(-25).forEach(t => {{
+      (perf7.trades || []).slice(-25).forEach(t => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${{t.exit_time}}</td>
-          <td>${{t.system}}</td>
-          <td>${{t.symbol}}</td>
-          <td>${{t.side}}</td>
-          <td>$${{Number(t.entry_price).toFixed(2)}}</td>
-          <td>$${{Number(t.exit_price).toFixed(2)}}</td>
-          <td>${{fmt(Number(t.pnl))}}</td>`;
+          <td>${t.exit_time}</td>
+          <td>${t.system}</td>
+          <td>${t.symbol}</td>
+          <td>${t.side}</td>
+          <td>$${Number(t.entry_price).toFixed(2)}</td>
+          <td>$${Number(t.exit_price).toFixed(2)}</td>
+          <td>${fmt(Number(t.pnl))}</td>`;
         tBody.appendChild(tr);
-      }});
-    }})().catch(err => {{
-      document.body.insertAdjacentHTML('beforeend', `<pre style="color:#b00;">Dashboard error: ${{err.message}}</pre>`);
-    }});
+      });
+    })().catch(err => {
+      document.body.insertAdjacentHTML('beforeend', '<pre style="color:#b00;">Dashboard error: ' + err.message + '</pre>');
+    });
   </script>
 </body>
 </html>
-    """
-    resp = make_response(html, 200)
-    resp.headers["Content-Type"] = "text/html; charset=utf-8"
-    return resp
-
+        """
+        resp = make_response(html, 200)
+        resp.headers["Content-Type"] = "text/html; charset=utf-8"
+        return resp
+    except Exception as e:
+        return f"<pre>dashboard render error: {e}</pre>", 500
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
