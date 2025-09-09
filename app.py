@@ -626,7 +626,7 @@ def webhook():
         # If PLAIN and OCO enabled, attach a single OCO for the FULL current position
         if not use_bracket and ATTACH_OCO_ON_PLAIN:
             try:
-                cfg = load_strategy_config(system)
+                cfg = load_strategy_config(system, symbol)
                 # Refresh position AFTER entry so qty/avg_entry are up-to-date
                 pos_after = get_symbol_position(symbol) or pos_before
                 pos_side = (pos_after or {}).get("side") or ((pos_before or {}).get("side"))
