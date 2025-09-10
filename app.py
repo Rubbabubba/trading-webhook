@@ -380,9 +380,16 @@ def _canon_timeframe(tf: str) -> str:
     return "1Hour"
 
 def fetch_bars(symbol: str, timeframe: str, limit: int = 300):
-    """Return list of bars [{t,o,h,l,c,v}], newest last."""
+    """Return list of bars [{t,o,h,l,c,v}], newest last. Always send a start window."""
     tf = _canon_timeframe(timeframe)
     params = {"timeframe": tf, "limit": int(limit), "feed": APCA_DATA_FEED, "adjustment": "raw"}
+
+    # Add a lookback window so Alpaca reliably returns data (paper/free feeds can be picky)
+    now = datetime.now(timezone.utc)
+    lookback_days = 150 if tf == "1Day" else 30
+    start_dt = now - timedelta(days=lookback_days)
+    params["start"] = start_dt.isoformat().replace("+00:00", "Z")
+
     r = _data_get(f"/stocks/{symbol}/bars", params=params)
     if r.status_code >= 400:
         raise RuntimeError(f"bars {symbol} {tf} {r.status_code}: {r.text}")
