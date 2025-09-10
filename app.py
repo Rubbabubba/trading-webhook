@@ -3,7 +3,7 @@ import os
 import json
 import time
 import hashlib
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -39,7 +39,6 @@ HEADERS = {
 # ===== Alpaca Market Data (scanner) =====
 APCA_DATA_BASE_URL = os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets/v2")
 APCA_DATA_FEED     = os.getenv("APCA_DATA_FEED", "iex")   # "iex" (free/paper) or "sip" (paid)
-SELF_BASE_URL      = os.getenv("SELF_BASE_URL", "")       # not used anymore for self-posts
 
 # ===== Position caps (env-driven) =====
 MAX_OPEN_POSITIONS         = int(os.getenv("MAX_OPEN_POSITIONS", 5))
@@ -71,6 +70,16 @@ def _idem_check_and_set(key: str) -> bool:
         return True
     _IDEM_CACHE[key] = now
     return False
+
+def _unique_coid(base: str) -> str:
+    """
+    Make an Alpaca-safe unique client_order_id (<= 48 chars).
+    We add a short time-based hex suffix.
+    """
+    ts = int(time.time() * 1000) & 0xFFFFFFFF  # 8 hex chars
+    suffix = format(ts, '08x')
+    base = (base or "order").strip()
+    return (f"{base}-{suffix}")[:48]
 
 # ===== Helpers (trading) =====
 def get_open_positions_snapshot():
@@ -141,7 +150,7 @@ def build_plain_entry(symbol: str, side: str, price: float, system: str) -> dict
         "side": "buy" if side.upper() == "LONG" else "sell",
         "type": cfg.order_type,
         "time_in_force": cfg.tif,
-        "client_order_id": f"{system}-{symbol}-plain-{int(time.time()*1000)}",
+        "client_order_id": f"{system}-{symbol}-plain",
     }
     if str(cfg.order_type).lower() == "limit":
         payload["limit_price"] = f"{float(price):.2f}"
@@ -186,7 +195,7 @@ def build_oco_close(symbol: str, system: str, position_side: str, qty: int, ref_
         "order_class": "oco",
         "take_profit": {"limit_price": f"{tp:.2f}"},
         "stop_loss":  {"stop_price":  f"{sl:.2f}"},
-        "client_order_id": f"OCO-{system}-{symbol}-{int(time.time()*1000)}",
+        "client_order_id": f"OCO-{system}-{symbol}",
     }
 
 # ===== Performance helpers =====
@@ -388,7 +397,7 @@ def fetch_bars(symbol: str, timeframe: str, limit: int = 300):
     """
     Return list of bars [{t,o,h,l,c,v}], newest last.
     Added a start window to make daily bars reliable on IEX/paper feeds.
-    Now robust to non-JSON / transient responses.
+    Robust to non-JSON / transient responses.
     """
     tf = _canon_timeframe(timeframe)
     params = {"timeframe": tf, "limit": int(limit), "feed": APCA_DATA_FEED, "adjustment": "raw"}
@@ -464,140 +473,7 @@ def is_market_open_now() -> bool:
     return False
 
 # ---- Fire-once-per-bar cache: {(symbol, timeframe): last_bar_time_iso}
-_LAST_BAR_FIRED: Dict[tuple, str] = {}
-
-# ===== Core signal processor (shared by /webhook and /scan/s2) =====
-def process_signal(data: dict):
-    """
-    Accepts a signal dict and executes the same logic the /webhook route used to.
-    Returns (status_code, response_dict).
-    """
-    system  = data.get("system")
-    side    = data.get("side")
-    symbol  = data.get("ticker")
-    price   = data.get("price")
-    tv_time = data.get("time", "")
-
-    if not all([system, side, symbol, price is not None]):
-        return 400, {"ok": False, "error": "missing fields: system/side/ticker/price"}
-
-    # Idempotency
-    key = _idem_key(system, side, symbol, float(price), tv_time[:19])
-    if _idem_check_and_set(key):
-        app.logger.info(f"SKIP: Idempotent duplicate {system} {side} {symbol} @{price}")
-        return 200, {"ok": True, "skipped": "duplicate"}
-
-    # Caps
-    open_pos = get_open_positions_snapshot()
-    if not under_position_caps(open_pos, symbol, system):
-        app.logger.info("SKIP: Max positions reached")
-        return 200, {"ok": True, "skipped": "max_positions"}
-
-    # Choose bracket vs plain
-    pos_before = get_symbol_position(symbol)
-    use_bracket = pos_before is None  # flat => bracket; has position => plain
-
-    # If going to place a PLAIN entry, cancel all open orders first (prevents wash-trade)
-    if not use_bracket and CANCEL_OPEN_ORDERS_BEFORE_PLAIN:
-        cancel_open_orders_for_symbol(symbol)
-
-    # Build payload
-    try:
-        if use_bracket:
-            payload = build_entry_order_payload(symbol, side, float(price), system)
-            if payload.get("type", "").lower() == "limit" and "limit_price" not in payload:
-                payload["limit_price"] = f"{float(price):.2f}"
-        else:
-            payload = build_plain_entry(symbol, side, float(price), system)
-    except Exception as e:
-        app.logger.error(f"PAYLOAD_ERROR: {e}")
-        return 400, {"ok": False, "error": f"payload_error: {e}"}
-
-    app.logger.info(
-        f"PLACE: {symbol} {payload['side']} qty={payload.get('qty')} @{price} "
-        f"system={system} bracket={use_bracket} payload={payload}"
-    )
-
-    # Place order (with base_price retry ONLY for bracket orders)
-    try:
-        o = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(payload), timeout=10)
-
-        if use_bracket and o.status_code == 422:
-            ctype = o.headers.get("content-type", "")
-            body = o.json() if str(ctype).startswith("application/json") else {"message": o.text}
-            app.logger.error(f"ALPACA_POST_ERROR status=422 body={body} sent={payload}")
-
-            err_obj = body if isinstance(body, dict) else {}
-            alpaca_err = err_obj.get("alpaca_error", err_obj)
-            msg = (str(alpaca_err.get("message")) or "").lower()
-            base_price = alpaca_err.get("base_price")
-
-            retry_reasons = ("take_profit.limit_price must be", "stop_loss.stop_price must be")
-            if base_price and any(r in msg for r in retry_reasons):
-                cfg = load_strategy_config(system, symbol)  # per-symbol exits
-                adj_payload = adjust_bracket_to_base_price(payload, side, float(base_price), cfg.tp_pct, cfg.sl_pct)
-                app.logger.info(f"RETRY with base_price={base_price}: {adj_payload}")
-
-                o2 = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(adj_payload), timeout=10)
-                if o2.status_code >= 400:
-                    ctype2 = o2.headers.get("content-type", "")
-                    body2 = o2.json() if str(ctype2).startswith("application/json") else o2.text
-                    app.logger.error(f"ALPACA_POST_ERROR (retry) status={o2.status_code} body={body2} sent={adj_payload}")
-                    return 422, {"ok": False, "alpaca_error": body2}
-                return 200, {"ok": True, "order": o2.json(), "note": "placed on retry using Alpaca base_price"}
-
-            return 422, {"ok": False, "alpaca_error": body}
-
-        if o.status_code >= 400:
-            ctype = o.headers.get("content-type", "")
-            body = o.json() if str(ctype).startswith("application/json") else o.text
-            app.logger.error(f"ALPACA_POST_ERROR status={o.status_code} body={body} sent={payload}")
-            return 422, {"ok": False, "alpaca_error": body}
-
-        order_json = o.json()
-
-        # If PLAIN and OCO enabled, attach a single OCO for the FULL current position
-        if not use_bracket and ATTACH_OCO_ON_PLAIN:
-            try:
-                cfg = load_strategy_config(system, symbol)  # per-symbol exits for OCO
-                # Refresh position AFTER entry so qty/avg_entry are up-to-date
-                pos_after = get_symbol_position(symbol) or pos_before
-                pos_side = (pos_after or {}).get("side") or ((pos_before or {}).get("side"))
-                qty_total = int(abs(float((pos_after or {}).get("qty") or (pos_before or {}).get("qty") or 0)))
-                ref_price = float((pos_after or {}).get("avg_entry_price") or price)
-
-                if qty_total > 0 and pos_side:
-                    oco_payload = build_oco_close(
-                        symbol=symbol,
-                        system=system,  # tag strategy
-                        position_side=pos_side,
-                        qty=qty_total,
-                        ref_price=ref_price,
-                        tp_pct=cfg.tp_pct,
-                        sl_pct=cfg.sl_pct,
-                        tif=OCO_TIF,
-                    )
-                    app.logger.info(f"ATTACH OCO (full position): {oco_payload}")
-                    oco_resp = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(oco_payload), timeout=10)
-                    if oco_resp.status_code >= 400:
-                        ctype3 = oco_resp.headers.get("content-type", "")
-                        body3 = oco_resp.json() if str(ctype3).startswith("application/json") else oco_resp.text
-                        app.logger.error(f"OCO_POST_ERROR status={oco_resp.status_code} body={body3} sent={oco_payload}")
-                        return 200, {"ok": True, "order": order_json, "oco_error": body3}
-                    else:
-                        return 200, {"ok": True, "order": order_json, "oco": oco_resp.json()}
-                else:
-                    app.logger.info("OCO skipped: no position qty detected after plain entry.")
-                    return 200, {"ok": True, "order": order_json, "note": "no position qty detected for OCO"}
-            except Exception as e:
-                app.logger.error(f"OCO_BUILD_OR_POST_ERROR: {e}")
-                return 200, {"ok": True, "order": order_json, "oco_error": str(e)}
-
-        return 200, {"ok": True, "order": order_json}
-
-    except Exception as e:
-        app.logger.error(f"ORDER ERROR: {e}")
-        return 500, {"ok": False, "error": str(e)}
+_LAST_BAR_FIRED: Dict[Tuple[str, str], str] = {}
 
 def scan_s2_symbols(
     symbols: List[str],
@@ -613,7 +489,7 @@ def scan_s2_symbols(
       • Intraday: MACD(12/26/9) cross; fallback momentum vs SMA10 on TF
       • Optional volume filter on TF
       • Per-bar dedupe: fires once per completed bar per (symbol, timeframe)
-      • Does NOT place orders — it only returns triggers. (Route calls process_signal)
+      • Returns triggers; route decides whether to place orders.
     """
     tf_canon = _canon_timeframe(tf)
     results = {"ok": True, "timeframe": tf_canon, "mode": mode, "use_rth": use_rth, "use_vol": use_vol,
@@ -676,7 +552,7 @@ def scan_s2_symbols(
             # ---- Per-bar dedupe
             bar_key = (sym, tf_canon)
             bar_ts = str(last_bar["t"])  # ISO from Alpaca
-            if _LAST_BAR_FIRED.get(bar_key) == bar_ts:
+            if _LAST_BAR_FIRED.get(bar_key) == bar_ts and not dry_run:
                 results["checked"].append({sym: "already_fired_this_bar"})
                 continue
 
@@ -688,7 +564,7 @@ def scan_s2_symbols(
                 results["triggers"].append({"system":"SMA10D_MACD","side":"SHORT","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
                 fired_any = True
 
-            # Mark bar as fired only in live mode (prevents duplicates across cron runs)
+            # Mark bar as fired only in live mode
             if fired_any and not dry_run:
                 _LAST_BAR_FIRED[bar_key] = bar_ts
 
@@ -698,6 +574,148 @@ def scan_s2_symbols(
             continue
 
     return results
+
+# ===== Core signal processor (shared by /webhook and /scan/s2) =====
+def process_signal(data: dict):
+    """
+    Accepts a signal dict and executes the same logic the /webhook route used to.
+    Returns (status_code, response_dict).
+    """
+    system  = data.get("system")
+    side    = data.get("side")
+    symbol  = data.get("ticker")
+    price   = data.get("price")
+    tv_time = data.get("time", "")
+
+    if not all([system, side, symbol, price is not None]):
+        return 400, {"ok": False, "error": "missing fields: system/side/ticker/price"}
+
+    # Idempotency
+    key = _idem_key(system, side, symbol, float(price), tv_time[:19])
+    if _idem_check_and_set(key):
+        app.logger.info(f"SKIP: Idempotent duplicate {system} {side} {symbol} @{price}")
+        return 200, {"ok": True, "skipped": "duplicate"}
+
+    # Caps
+    open_pos = get_open_positions_snapshot()
+    if not under_position_caps(open_pos, symbol, system):
+        app.logger.info("SKIP: Max positions reached")
+        return 200, {"ok": True, "skipped": "max_positions"}
+
+    # Choose bracket vs plain
+    pos_before = get_symbol_position(symbol)
+    use_bracket = pos_before is None  # flat => bracket; has position => plain
+
+    # If going to place a PLAIN entry, cancel all open orders first (prevents wash-trade)
+    if not use_bracket and CANCEL_OPEN_ORDERS_BEFORE_PLAIN:
+        cancel_open_orders_for_symbol(symbol)
+
+    # Build payload
+    try:
+        if use_bracket:
+            payload = build_entry_order_payload(symbol, side, float(price), system)
+            if payload.get("type", "").lower() == "limit" and "limit_price" not in payload:
+                payload["limit_price"] = f"{float(price):.2f}"
+        else:
+            payload = build_plain_entry(symbol, side, float(price), system)
+    except Exception as e:
+        app.logger.error(f"PAYLOAD_ERROR: {e}")
+        return 400, {"ok": False, "error": f"payload_error: {e}"}
+
+    # Always ensure unique client_order_id before posting
+    cid_base = payload.get("client_order_id") or f"{system}-{symbol}-entry"
+    payload["client_order_id"] = _unique_coid(cid_base)
+
+    app.logger.info(
+        f"PLACE: {symbol} {payload['side']} qty={payload.get('qty')} @{price} "
+        f"system={system} bracket={use_bracket} payload={payload}"
+    )
+
+    # Place order (with base_price retry ONLY for bracket orders)
+    try:
+        o = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(payload), timeout=10)
+
+        if use_bracket and o.status_code == 422:
+            ctype = o.headers.get("content-type", "")
+            body = o.json() if str(ctype).startswith("application/json") else {"message": o.text}
+            app.logger.error(f"ALPACA_POST_ERROR status=422 body={body} sent={payload}")
+
+            err_obj = body if isinstance(body, dict) else {}
+            alpaca_err = err_obj.get("alpaca_error", err_obj)
+            msg = (str(alpaca_err.get("message")) or "").lower()
+            base_price = alpaca_err.get("base_price")
+
+            retry_reasons = ("take_profit.limit_price must be", "stop_loss.stop_price must be")
+            if base_price and any(r in msg for r in retry_reasons):
+                cfg = load_strategy_config(system, symbol)  # per-symbol exits
+                adj_payload = adjust_bracket_to_base_price(payload, side, float(base_price), cfg.tp_pct, cfg.sl_pct)
+                # ensure unique id on retry too
+                adj_payload["client_order_id"] = _unique_coid(adj_payload.get("client_order_id") or cid_base)
+                app.logger.info(f"RETRY with base_price={base_price}: {adj_payload}")
+
+                o2 = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(adj_payload), timeout=10)
+                if o2.status_code >= 400:
+                    ctype2 = o2.headers.get("content-type", "")
+                    body2 = o2.json() if str(ctype2).startswith("application/json") else o2.text
+                    app.logger.error(f"ALPACA_POST_ERROR (retry) status={o2.status_code} body={body2} sent={adj_payload}")
+                    return 422, {"ok": False, "alpaca_error": body2}
+                return 200, {"ok": True, "order": o2.json(), "note": "placed on retry using Alpaca base_price"}
+
+            return 422, {"ok": False, "alpaca_error": body}
+
+        if o.status_code >= 400:
+            ctype = o.headers.get("content-type", "")
+            body = o.json() if str(ctype).startswith("application/json") else o.text
+            app.logger.error(f"ALPACA_POST_ERROR status={o.status_code} body={body} sent={payload}")
+            return 422, {"ok": False, "alpaca_error": body}
+
+        order_json = o.json()
+
+        # If PLAIN and OCO enabled, attach a single OCO for the FULL current position
+        if not use_bracket and ATTACH_OCO_ON_PLAIN:
+            try:
+                cfg = load_strategy_config(system, symbol)  # per-symbol exits for OCO
+                # Refresh position AFTER entry so qty/avg_entry are up-to-date
+                pos_after = get_symbol_position(symbol) or pos_before
+                pos_side = (pos_after or {}).get("side") or ((pos_before or {}).get("side"))
+                qty_total = int(abs(float((pos_after or {}).get("qty") or (pos_before or {}).get("qty") or 0)))
+                ref_price = float((pos_after or {}).get("avg_entry_price") or price)
+
+                if qty_total > 0 and pos_side:
+                    oco_payload = build_oco_close(
+                        symbol=symbol,
+                        system=system,  # tag strategy
+                        position_side=pos_side,
+                        qty=qty_total,
+                        ref_price=ref_price,
+                        tp_pct=cfg.tp_pct,
+                        sl_pct=cfg.sl_pct,
+                        tif=OCO_TIF,
+                    )
+                    # Ensure unique client id for OCO
+                    oco_payload["client_order_id"] = _unique_coid(oco_payload.get("client_order_id") or f"OCO-{system}-{symbol}")
+
+                    app.logger.info(f"ATTACH OCO (full position): {oco_payload}")
+                    oco_resp = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(oco_payload), timeout=10)
+                    if oco_resp.status_code >= 400:
+                        ctype3 = oco_resp.headers.get("content-type", "")
+                        body3 = oco_resp.json() if str(ctype3).startswith("application/json") else oco_resp.text
+                        app.logger.error(f"OCO_POST_ERROR status={oco_resp.status_code} body={body3} sent={oco_payload}")
+                        return 200, {"ok": True, "order": order_json, "oco_error": body3}
+                    else:
+                        return 200, {"ok": True, "order": order_json, "oco": oco_resp.json()}
+                else:
+                    app.logger.info("OCO skipped: no position qty detected after plain entry.")
+                    return 200, {"ok": True, "order": order_json, "note": "no position qty detected for OCO"}
+            except Exception as e:
+                app.logger.error(f"OCO_BUILD_OR_POST_ERROR: {e}")
+                return 200, {"ok": True, "order": order_json, "oco_error": str(e)}
+
+        return 200, {"ok": True, "order": order_json}
+
+    except Exception as e:
+        app.logger.error(f"ORDER ERROR: {e}")
+        return 500, {"ok": False, "error": str(e)}
 
 # ===== Routes =====
 @app.get("/health")
@@ -1099,7 +1117,7 @@ def scan_s2_route():
         vol     = (request.args.get("vol", os.getenv("S2_USE_VOL_DEFAULT", "false")).lower() == "true")
         dry     = request.args.get("dry", "1") == "1"
 
-        # Always run scan in dry mode first to collect diagnostics
+        # Run scan (use caller's dry flag so dedupe updates in live)
         scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=dry)
 
         res = {
@@ -1128,6 +1146,7 @@ def scan_s2_route():
 
     except Exception as e:
         app.logger.exception(f"/scan/s2 route error: {e}")
+        # Return 200 with an error payload so crons don't mark as failed
         return jsonify({"ok": False, "error": str(e)}), 200
 
 if __name__ == "__main__":
