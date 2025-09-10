@@ -520,6 +520,17 @@ def scan_s2_symbols(
             continue
 
     return results
+    
+def is_market_open_now() -> bool:
+    try:
+        r = requests.get(f"{ALPACA_BASE}/clock", headers=HEADERS, timeout=5)
+        if r.status_code < 400:
+            js = r.json() or {}
+            return bool(js.get("is_open", False))
+    except Exception as e:
+        app.logger.error(f"clock error: {e}")
+    return False
+    
 
 # ===== Routes =====
 @app.get("/health")
