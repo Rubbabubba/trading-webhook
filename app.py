@@ -388,6 +388,7 @@ def fetch_bars(symbol: str, timeframe: str, limit: int = 300):
     """
     Return list of bars [{t,o,h,l,c,v}], newest last.
     Added a start window to make daily bars reliable on IEX/paper feeds.
+    Now robust to non-JSON / transient responses.
     """
     tf = _canon_timeframe(timeframe)
     params = {"timeframe": tf, "limit": int(limit), "feed": APCA_DATA_FEED, "adjustment": "raw"}
@@ -400,9 +401,16 @@ def fetch_bars(symbol: str, timeframe: str, limit: int = 300):
 
     r = _data_get(f"/stocks/{symbol}/bars", params=params)
     if r.status_code >= 400:
-        raise RuntimeError(f"bars {symbol} {tf} {r.status_code}: {r.text}")
-    js = r.json() or {}
-    return js.get("bars", [])
+        app.logger.error(f"bars {symbol} {tf} {r.status_code}: {r.text[:200]}")
+        return []
+
+    try:
+        js = r.json() or {}
+    except Exception as je:
+        app.logger.error(f"bars json error {symbol} {tf}: {je} body={r.text[:200]}")
+        return []
+
+    return js.get("bars", []) if isinstance(js, dict) else []
 
 def sma(series: List[float], length: int) -> List[float]:
     out: List[float] = []
@@ -977,41 +985,50 @@ def scan_s2_route():
       dry=1|0                (default: 1 = dry-run only)
       force=1                (optional) bypass market-open gate
     """
-    # Auto-skip when market closed unless force=1
-    if request.args.get("force", "0") != "1":
-        if not is_market_open_now():
-            return jsonify({"ok": True, "skipped": "market_closed"}), 200
+    try:
+        # Auto-skip when market closed unless force=1
+        if request.args.get("force", "0") != "1":
+            if not is_market_open_now():
+                return jsonify({"ok": True, "skipped": "market_closed"}), 200
 
-    default_syms = os.getenv("S2_WHITELIST", "SPY,QQQ,TSLA,NVDA,COIN,GOOGL,META,MSFT,AMZN,AAPL")
-    symbols = request.args.get("symbols", default_syms).split(",")
-    tf      = request.args.get("tf", os.getenv("S2_TF_DEFAULT", "60"))
-    mode    = request.args.get("mode", os.getenv("S2_MODE_DEFAULT", "either"))
-    rth     = (request.args.get("rth", os.getenv("S2_USE_RTH_DEFAULT", "true")).lower() == "true")
-    vol     = (request.args.get("vol", os.getenv("S2_USE_VOL_DEFAULT", "false")).lower() == "true")
-    dry     = request.args.get("dry", "1") == "1"
+        default_syms = os.getenv("S2_WHITELIST", "SPY,QQQ,TSLA,NVDA,COIN,GOOGL,META,MSFT,AMZN,AAPL")
+        symbols = request.args.get("symbols", default_syms).split(",")
+        tf      = request.args.get("tf", os.getenv("S2_TF_DEFAULT", "60"))
+        mode    = request.args.get("mode", os.getenv("S2_MODE_DEFAULT", "either"))
+        rth     = (request.args.get("rth", os.getenv("S2_USE_RTH_DEFAULT", "true")).lower() == "true")
+        vol     = (request.args.get("vol", os.getenv("S2_USE_VOL_DEFAULT", "false")).lower() == "true")
+        dry     = request.args.get("dry", "1") == "1"
 
-    # Run scan
-    res = {"ok": True, "timeframe": _canon_timeframe(tf), "mode": mode, "use_rth": rth, "use_vol": vol, "dry_run": dry, "checked": [], "triggers": []}
-    scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=True)
+        # Always run scan in dry mode first to collect diagnostics
+        scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=True)
 
-    # Copy diagnostics
-    res["checked"] = scan["checked"]
+        res = {
+            "ok": True,
+            "timeframe": _canon_timeframe(tf),
+            "mode": mode,
+            "use_rth": rth,
+            "use_vol": vol,
+            "dry_run": dry,
+            "checked": scan.get("checked", []),
+            "triggers": [],
+        }
 
-    # If dry, just return what would fire
-    if dry:
-        res["triggers"] = scan["triggers"]
+        if dry:
+            res["triggers"] = scan.get("triggers", [])
+            return jsonify(res), 200
+
+        # Live: execute triggers in-process
+        for payload in scan.get("triggers", []):
+            status, out = process_signal(payload)
+            if status >= 400:
+                app.logger.error(f"scan_s2 live execute error {payload.get('ticker')}: {status} {out}")
+            res["triggers"].append(payload)
+
         return jsonify(res), 200
 
-    # Live mode: execute triggers in-process (no HTTP self-call)
-    for payload in scan["triggers"]:
-        # per-bar deduper is already handled inside scan_s2_symbols;
-        # we just feed the payload to the shared processor.
-        status, out = process_signal(payload)
-        if status >= 400:
-            app.logger.error(f"scan_s2 live execute error {payload.get('ticker')}: {status} {out}")
-        res["triggers"].append(payload)
-
-    return jsonify(res), 200
+    except Exception as e:
+        app.logger.exception(f"/scan/s2 route error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 200
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
