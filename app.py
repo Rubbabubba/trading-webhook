@@ -39,7 +39,7 @@ HEADERS = {
 # ===== Alpaca Market Data (scanner) =====
 APCA_DATA_BASE_URL = os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets/v2")
 APCA_DATA_FEED     = os.getenv("APCA_DATA_FEED", "iex")   # "iex" (free/paper) or "sip" (paid)
-SELF_BASE_URL      = os.getenv("SELF_BASE_URL", "")       # e.g. https://trading-webhook-xxxx.onrender.com
+SELF_BASE_URL      = os.getenv("SELF_BASE_URL", "")       # not used anymore for self-posts
 
 # ===== Position caps (env-driven) =====
 MAX_OPEN_POSITIONS         = int(os.getenv("MAX_OPEN_POSITIONS", 5))
@@ -458,125 +458,12 @@ def is_market_open_now() -> bool:
 # ---- Fire-once-per-bar cache: {(symbol, timeframe): last_bar_time_iso}
 _LAST_BAR_FIRED: Dict[tuple, str] = {}
 
-def scan_s2_symbols(
-    symbols: List[str],
-    tf: str = os.getenv("S2_TF_DEFAULT", "60"),
-    mode: str = os.getenv("S2_MODE_DEFAULT", "either"),
-    use_rth: bool = os.getenv("S2_USE_RTH_DEFAULT", "true").lower() == "true",
-    use_vol: bool = os.getenv("S2_USE_VOL_DEFAULT", "false").lower() == "true",
-    dry_run: bool = True,
-):
+# ===== Core signal processor (shared by /webhook and /scan/s2) =====
+def process_signal(data: dict):
     """
-    Return a dict with 'triggers' (what fired) and optionally self-POST to /webhook when dry_run=False.
+    Accepts a signal dict and executes the same logic the /webhook route used to.
+    Returns (status_code, response_dict).
     """
-    tf_canon = _canon_timeframe(tf)
-    results = {"ok": True, "timeframe": tf_canon, "mode": mode, "use_rth": use_rth, "use_vol": use_vol, "dry_run": dry_run, "checked": [], "triggers": []}
-
-    for sym in [s.strip().upper() for s in symbols if s.strip()]:
-        try:
-            # --- Daily trend (SMA10)
-            daily = fetch_bars(sym, "1Day", limit=15)
-            d_close = [float(b["c"]) for b in daily]
-            d_sma10 = sma(d_close, 10)
-            if len(d_close) < 11 or len(d_sma10) < 10:
-                results["checked"].append({sym: "insufficient daily bars"})
-                continue
-            daily_up   = d_close[-1] > d_sma10[-1]
-            daily_down = d_close[-1] < d_sma10[-1]
-
-            # --- Intraday MACD on tf_canon
-            bars = fetch_bars(sym, tf_canon, limit=200)
-            if len(bars) < 35:
-                results["checked"].append({sym: "insufficient intraday bars"})
-                continue
-
-            last_bar = bars[-1]
-            last_t = datetime.fromisoformat(str(last_bar["t"]).replace("Z","+00:00"))
-            if use_rth and not in_regular_hours(last_t):
-                results["checked"].append({sym: "outside RTH"})
-                continue
-
-            c = [float(b["c"]) for b in bars]
-            v = [float(b.get("v", 0)) for b in bars]
-
-            m  = macd_line(c, 12, 26)
-            sg = macd_signal(m, 9)
-            long_x  = crossover(m, sg)
-            short_x = crossunder(m, sg)
-
-            # Momentum fallback for "either" mode
-            c_sma10 = sma(c, 10)
-            mom_up  = len(c_sma10) and c[-1] > c_sma10[-1]
-            mom_dn  = len(c_sma10) and c[-1] < c_sma10[-1]
-
-            # Volume filter on TF
-            vol_ok = True
-            if use_vol:
-                v_sma20 = sma(v, 20)
-                vol_ok = len(v_sma20) and (v[-1] > v_sma20[-1])
-
-            # Decide triggers
-            strict_long  = daily_up   and long_x  and vol_ok
-            strict_short = daily_down and short_x and vol_ok
-            loose_long   = (daily_up   and vol_ok) and (long_x  or mom_up)
-            loose_short  = (daily_down and vol_ok) and (short_x or mom_dn)
-
-            go_long  = strict_long  if mode.lower()=="strict" else loose_long
-            go_short = strict_short if mode.lower()=="strict" else loose_short
-
-            results["checked"].append({sym: {"daily_up": daily_up, "long_x": long_x, "short_x": short_x, "vol_ok": bool(vol_ok)}})
-
-            # ---- Per-bar dedupe (skip posts on the same completed bar)
-            bar_key = (sym, tf_canon)
-            bar_ts = str(last_bar["t"])  # ISO stamp from Alpaca
-            if not dry_run and _LAST_BAR_FIRED.get(bar_key) == bar_ts:
-                results["checked"].append({sym: "already_fired_this_bar"})
-                continue
-
-            fired = []
-            if go_long:
-                fired.append({"system":"SMA10D_MACD","side":"LONG","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
-            if go_short:
-                fired.append({"system":"SMA10D_MACD","side":"SHORT","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
-
-            for payload in fired:
-                results["triggers"].append(payload)
-                if not dry_run:
-                    base = SELF_BASE_URL.rstrip("/") if SELF_BASE_URL else f"http://127.0.0.1:{int(os.getenv('PORT','8080'))}"
-                    # Mark as fired for this bar *before* posting to avoid duplicates if Cron overlaps
-                    _LAST_BAR_FIRED[bar_key] = bar_ts
-                    try:
-                        pr = requests.post(f"{base}/webhook", headers={"Content-Type":"application/json"}, data=json.dumps(payload), timeout=10)
-                        if pr.status_code >= 400:
-                            app.logger.error(f"scan_s2 post error {sym}: {pr.status_code} {pr.text}")
-                    except Exception as e:
-                        app.logger.error(f"scan_s2 post exception {sym}: {e}")
-
-        except Exception as e:
-            app.logger.error(f"scan_s2 error {sym}: {e}")
-            results["checked"].append({sym: f"error: {e}"})
-            continue
-
-    return results
-
-# ===== Routes =====
-@app.get("/health")
-def health():
-    return jsonify({"ok": True, "service": "equities-webhook", "time": int(time.time())}), 200
-
-@app.post("/webhook")
-def webhook():
-    """
-    Expected JSON:
-    {
-      "system": "SMA10D_MACD" | "SPY_VWAP_EMA20",
-      "side": "LONG" | "SHORT",
-      "ticker": "COIN" | "SPY" | ...,
-      "price": 123.45,
-      "time": "2025-09-05T13:35:01Z"   # optional
-    }
-    """
-    data = request.get_json(force=True, silent=True) or {}
     system  = data.get("system")
     side    = data.get("side")
     symbol  = data.get("ticker")
@@ -584,19 +471,19 @@ def webhook():
     tv_time = data.get("time", "")
 
     if not all([system, side, symbol, price is not None]):
-        return jsonify({"ok": False, "error": "missing fields: system/side/ticker/price"}), 400
+        return 400, {"ok": False, "error": "missing fields: system/side/ticker/price"}
 
     # Idempotency
     key = _idem_key(system, side, symbol, float(price), tv_time[:19])
     if _idem_check_and_set(key):
         app.logger.info(f"SKIP: Idempotent duplicate {system} {side} {symbol} @{price}")
-        return jsonify({"ok": True, "skipped": "duplicate"}), 200
+        return 200, {"ok": True, "skipped": "duplicate"}
 
     # Caps
     open_pos = get_open_positions_snapshot()
     if not under_position_caps(open_pos, symbol, system):
         app.logger.info("SKIP: Max positions reached")
-        return jsonify({"ok": True, "skipped": "max_positions"}), 200
+        return 200, {"ok": True, "skipped": "max_positions"}
 
     # Choose bracket vs plain
     pos_before = get_symbol_position(symbol)
@@ -616,7 +503,7 @@ def webhook():
             payload = build_plain_entry(symbol, side, float(price), system)
     except Exception as e:
         app.logger.error(f"PAYLOAD_ERROR: {e}")
-        return jsonify({"ok": False, "error": f"payload_error: {e}"}), 400
+        return 400, {"ok": False, "error": f"payload_error: {e}"}
 
     app.logger.info(
         f"PLACE: {symbol} {payload['side']} qty={payload.get('qty')} @{price} "
@@ -648,16 +535,16 @@ def webhook():
                     ctype2 = o2.headers.get("content-type", "")
                     body2 = o2.json() if str(ctype2).startswith("application/json") else o2.text
                     app.logger.error(f"ALPACA_POST_ERROR (retry) status={o2.status_code} body={body2} sent={adj_payload}")
-                    return jsonify({"ok": False, "alpaca_error": body2}), 422
-                return jsonify({"ok": True, "order": o2.json(), "note": "placed on retry using Alpaca base_price"}), 200
+                    return 422, {"ok": False, "alpaca_error": body2}
+                return 200, {"ok": True, "order": o2.json(), "note": "placed on retry using Alpaca base_price"}
 
-            return jsonify({"ok": False, "alpaca_error": body}), 422
+            return 422, {"ok": False, "alpaca_error": body}
 
         if o.status_code >= 400:
             ctype = o.headers.get("content-type", "")
             body = o.json() if str(ctype).startswith("application/json") else o.text
             app.logger.error(f"ALPACA_POST_ERROR status={o.status_code} body={body} sent={payload}")
-            return jsonify({"ok": False, "alpaca_error": body}), 422
+            return 422, {"ok": False, "alpaca_error": body}
 
         order_json = o.json()
 
@@ -688,21 +575,33 @@ def webhook():
                         ctype3 = oco_resp.headers.get("content-type", "")
                         body3 = oco_resp.json() if str(ctype3).startswith("application/json") else oco_resp.text
                         app.logger.error(f"OCO_POST_ERROR status={oco_resp.status_code} body={body3} sent={oco_payload}")
-                        return jsonify({"ok": True, "order": order_json, "oco_error": body3}), 200
+                        return 200, {"ok": True, "order": order_json, "oco_error": body3}
                     else:
-                        return jsonify({"ok": True, "order": order_json, "oco": oco_resp.json()}), 200
+                        return 200, {"ok": True, "order": order_json, "oco": oco_resp.json()}
                 else:
                     app.logger.info("OCO skipped: no position qty detected after plain entry.")
-                    return jsonify({"ok": True, "order": order_json, "note": "no position qty detected for OCO"}), 200
+                    return 200, {"ok": True, "order": order_json, "note": "no position qty detected for OCO"}
             except Exception as e:
                 app.logger.error(f"OCO_BUILD_OR_POST_ERROR: {e}")
-                return jsonify({"ok": True, "order": order_json, "oco_error": str(e)}), 200
+                return 200, {"ok": True, "order": order_json, "oco_error": str(e)}
 
-        return jsonify({"ok": True, "order": order_json}), 200
+        return 200, {"ok": True, "order": order_json}
 
     except Exception as e:
         app.logger.error(f"ORDER ERROR: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return 500, {"ok": False, "error": str(e)}
+
+# ===== Routes =====
+@app.get("/health")
+def health():
+    return jsonify({"ok": True, "service": "equities-webhook", "time": int(time.time())}), 200
+
+@app.post("/webhook")
+def webhook():
+    """Accept external alerts (or tests) and pass to the shared processor."""
+    data = request.get_json(force=True, silent=True) or {}
+    status, out = process_signal(data)
+    return jsonify(out), status
 
 @app.get("/performance")
 def performance():
@@ -1091,7 +990,27 @@ def scan_s2_route():
     vol     = (request.args.get("vol", os.getenv("S2_USE_VOL_DEFAULT", "false")).lower() == "true")
     dry     = request.args.get("dry", "1") == "1"
 
-    res = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=dry)
+    # Run scan
+    res = {"ok": True, "timeframe": _canon_timeframe(tf), "mode": mode, "use_rth": rth, "use_vol": vol, "dry_run": dry, "checked": [], "triggers": []}
+    scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=True)
+
+    # Copy diagnostics
+    res["checked"] = scan["checked"]
+
+    # If dry, just return what would fire
+    if dry:
+        res["triggers"] = scan["triggers"]
+        return jsonify(res), 200
+
+    # Live mode: execute triggers in-process (no HTTP self-call)
+    for payload in scan["triggers"]:
+        # per-bar deduper is already handled inside scan_s2_symbols;
+        # we just feed the payload to the shared processor.
+        status, out = process_signal(payload)
+        if status >= 400:
+            app.logger.error(f"scan_s2 live execute error {payload.get('ticker')}: {status} {out}")
+        res["triggers"].append(payload)
+
     return jsonify(res), 200
 
 if __name__ == "__main__":
