@@ -3,7 +3,6 @@ import os
 import json
 import time
 import uuid
-import math
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -21,14 +20,16 @@ log = logging.getLogger("equities-webhook")
 # ========= Environment / Config =========
 APCA_API_KEY_ID     = os.getenv("APCA_API_KEY_ID", "")
 APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "")
-ALPACA_BASE         = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets/v2")
-DATA_BASE           = os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets/v2")
-DATA_FEED           = os.getenv("APCA_DATA_FEED", "iex")  # iex (paper) or sip (live)
+
+# Alpaca base URLs
+ALPACA_BASE = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets/v2")
+DATA_BASE   = os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets/v2")
+DATA_FEED   = os.getenv("APCA_DATA_FEED", "iex")  # iex (paper) or sip (live)
 
 # Safety caps
-MAX_OPEN_POSITIONS          = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
-MAX_POSITIONS_PER_SYMBOL    = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", "1"))
-MAX_POSITIONS_PER_STRATEGY  = int(os.getenv("MAX_POSITIONS_PER_STRATEGY", "3"))
+MAX_OPEN_POSITIONS         = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
+MAX_POSITIONS_PER_SYMBOL   = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", "1"))
+MAX_POSITIONS_PER_STRATEGY = int(os.getenv("MAX_POSITIONS_PER_STRATEGY", "3"))
 
 # Order behavior
 CANCEL_OPEN_ORDERS_BEFORE_PLAIN = os.getenv("CANCEL_OPEN_ORDERS_BEFORE_PLAIN", "true").lower() == "true"
@@ -37,11 +38,11 @@ OCO_TIF                         = os.getenv("OCO_TIF", "gtc")  # gtc recommended
 OCO_REQUIRE_POSITION            = os.getenv("OCO_REQUIRE_POSITION", "true").lower() == "true"
 
 # Scanner defaults
-S2_WHITELIST      = os.getenv("S2_WHITELIST", "SPY,QQQ,TSLA,NVDA,COIN,GOOGL,META,MSFT,AMZN,AAPL")
-S2_TF_DEFAULT     = os.getenv("S2_TF_DEFAULT", "60")
-S2_MODE_DEFAULT   = os.getenv("S2_MODE_DEFAULT", "either")
-S2_USE_RTH_DEFAULT= os.getenv("S2_USE_RTH_DEFAULT", "true")
-S2_USE_VOL_DEFAULT= os.getenv("S2_USE_VOL_DEFAULT", "false")
+S2_WHITELIST        = os.getenv("S2_WHITELIST", "SPY,QQQ,TSLA,NVDA,COIN,GOOGL,META,MSFT,AMZN,AAPL")
+S2_TF_DEFAULT       = os.getenv("S2_TF_DEFAULT", "60")
+S2_MODE_DEFAULT     = os.getenv("S2_MODE_DEFAULT", "either")
+S2_USE_RTH_DEFAULT  = os.getenv("S2_USE_RTH_DEFAULT", "true")
+S2_USE_VOL_DEFAULT  = os.getenv("S2_USE_VOL_DEFAULT", "false")
 
 HEADERS = {
     "APCA-API-KEY-ID": APCA_API_KEY_ID,
@@ -49,20 +50,25 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
+# ---- HTTP session + budgets (to avoid timeouts) ----
+SESSION = requests.Session()  # connection reuse/keep-alive
+
+# Hard caps (tune via env if needed)
+MAX_DAYS_PERF       = int(os.getenv("MAX_DAYS_PERF", "45"))     # clamp /performance and /performance/daily
+MAX_ACTIVITY_DAYS   = int(os.getenv("MAX_ACTIVITY_DAYS", "60"))  # clamp per-call activities fetch loop
+MAX_ORDER_LOOKUPS   = int(os.getenv("MAX_ORDER_LOOKUPS", "60"))  # cap individual /orders/{id} lookups
+LOOKUP_BUDGET_SEC   = float(os.getenv("LOOKUP_BUDGET_SEC", "5.0"))
+
 # ========= Small Utils =========
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 def _canon_timeframe(tf: str) -> str:
-    return {"30":"30Min", "60":"1Hour", "120":"2Hour", "day":"1Day"}.get(tf, "1Hour")
+    return {"30": "30Min", "60": "1Hour", "120": "2Hour", "day": "1Day"}.get(tf, "1Hour")
 
 def _cid(prefix: str, system: str, symbol: str) -> str:
     return f"{prefix}-{system}-{symbol}-{uuid.uuid4().hex[:8]}"
 
-def _side_is_long(side: str) -> bool:
-    return side.lower() == "buy"
-    
-# ---- helpers (put near top, once) ----
 def _scrub_nans(x):
     import math
     if isinstance(x, float) and (math.isnan(x) or math.isinf(x)):
@@ -76,31 +82,31 @@ def _scrub_nans(x):
 # ========= Market & Account =========
 def is_market_open_now() -> bool:
     try:
-        r = requests.get(f"{ALPACA_BASE}/clock", headers=HEADERS, timeout=6)
+        r = SESSION.get(f"{ALPACA_BASE}/clock", headers=HEADERS, timeout=3)
         r.raise_for_status()
         return bool(r.json().get("is_open"))
-    except Exception as e:
-        log.warning(f"clock check failed: {e}")
+    except Exception:
         return False
 
-def bars(symbol: str, timeframe: str, limit: int = 200, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str,Any]]:
+def bars(symbol: str, timeframe: str, limit: int = 200,
+         start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
     params = {"timeframe": timeframe, "limit": limit, "feed": DATA_FEED}
     if start: params["start"] = start
     if end:   params["end"] = end
-    r = requests.get(f"{DATA_BASE}/stocks/{symbol}/bars", headers=HEADERS, params=params, timeout=8)
+    r = SESSION.get(f"{DATA_BASE}/stocks/{symbol}/bars", headers=HEADERS, params=params, timeout=5)
     r.raise_for_status()
     return r.json().get("bars", [])
 
 def last_close(symbol: str) -> Optional[float]:
     try:
-        b = bars(symbol, timeframe="1Min", limit=1)
+        b = bars(symbol, "1Min", limit=1)
         return float(b[-1]["c"]) if b else None
     except Exception:
         return None
 
-def get_position(symbol: str) -> Optional[Dict[str,Any]]:
+def get_position(symbol: str) -> Optional[Dict[str, Any]]:
     try:
-        r = requests.get(f"{ALPACA_BASE}/positions/{symbol}", headers=HEADERS, timeout=6)
+        r = SESSION.get(f"{ALPACA_BASE}/positions/{symbol}", headers=HEADERS, timeout=3)
         if r.status_code == 404:
             return None
         r.raise_for_status()
@@ -108,22 +114,21 @@ def get_position(symbol: str) -> Optional[Dict[str,Any]]:
     except Exception:
         return None
 
-def list_positions() -> List[Dict[str,Any]]:
+def list_positions() -> List[Dict[str, Any]]:
     try:
-        r = requests.get(f"{ALPACA_BASE}/positions", headers=HEADERS, timeout=8)
+        r = SESSION.get(f"{ALPACA_BASE}/positions", headers=HEADERS, timeout=4)
         r.raise_for_status()
         return r.json()
     except Exception:
         return []
 
-def list_open_orders(symbol: Optional[str] = None) -> List[Dict[str,Any]]:
+def list_open_orders(symbol: Optional[str] = None) -> List[Dict[str, Any]]:
     try:
-        q = "status=open&nested=false&limit=200"
-        r = requests.get(f"{ALPACA_BASE}/orders?{q}", headers=HEADERS, timeout=8)
+        r = SESSION.get(f"{ALPACA_BASE}/orders?status=open&nested=false&limit=200", headers=HEADERS, timeout=4)
         r.raise_for_status()
         orders = r.json()
         if symbol:
-            orders = [o for o in orders if o.get("symbol")==symbol]
+            orders = [o for o in orders if o.get("symbol") == symbol]
         return orders
     except Exception:
         return []
@@ -132,36 +137,39 @@ def cancel_open_orders(symbol: Optional[str] = None):
     orders = list_open_orders(symbol)
     for o in orders:
         oid = o.get("id")
-        if not oid: continue
+        if not oid:
+            continue
         try:
-            requests.delete(f"{ALPACA_BASE}/orders/{oid}", headers=HEADERS, timeout=6)
+            SESSION.delete(f"{ALPACA_BASE}/orders/{oid}", headers=HEADERS, timeout=3)
         except Exception:
             pass
 
-def can_open_new_position(symbol: str, system: str) -> Tuple[bool, str]:
-    positions = list_positions()
-    if len(positions) >= MAX_OPEN_POSITIONS:
-        return False, f"MAX_OPEN_POSITIONS={MAX_OPEN_POSITIONS}"
-    sym_count = sum(1 for p in positions if p.get("symbol")==symbol)
-    if sym_count >= MAX_POSITIONS_PER_SYMBOL:
-        return False, f"MAX_POSITIONS_PER_SYMBOL={MAX_POSITIONS_PER_SYMBOL}"
-    # Strategy cap (best enforced with tags; here we lightly skip)
-    return True, "ok"
-
-# ========= Orders & OCO =========
-def post_order(payload: Dict[str,Any]) -> Dict[str,Any]:
-    r = requests.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(payload), timeout=10)
+def post_order(payload: Dict[str, Any]) -> Dict[str, Any]:
+    r = SESSION.post(f"{ALPACA_BASE}/orders", headers=HEADERS, data=json.dumps(payload), timeout=6)
     if not r.ok:
         log.error(f"POST /orders {r.status_code} {r.text} payload={payload}")
     r.raise_for_status()
     return r.json()
 
-def attach_oco_exit_if_position(symbol: str, qty_hint: Optional[int], take_profit: float, stop_loss: float, tif: str, system: str) -> Optional[Dict[str,Any]]:
+def can_open_new_position(symbol: str, system: str) -> Tuple[bool, str]:
+    positions = list_positions()
+    if len(positions) >= MAX_OPEN_POSITIONS:
+        return False, f"MAX_OPEN_POSITIONS={MAX_OPEN_POSITIONS}"
+    sym_count = sum(1 for p in positions if p.get("symbol") == symbol)
+    if sym_count >= MAX_POSITIONS_PER_SYMBOL:
+        return False, f"MAX_POSITIONS_PER_SYMBOL={MAX_POSITIONS_PER_SYMBOL}"
+    # strategy cap would require server-side tagging; omitted here
+    return True, "ok"
+
+# ========= Orders & OCO =========
+def attach_oco_exit_if_position(symbol: str, qty_hint: Optional[int],
+                                take_profit: float, stop_loss: float,
+                                tif: str, system: str) -> Optional[Dict[str, Any]]:
     pos = get_position(symbol)
     if not pos:
         log.info(f"OCO skip: no position for {symbol}")
         return None
-    qty = qty_hint or int(float(pos.get("qty","0")))
+    qty = qty_hint or int(float(pos.get("qty", "0")))
     if qty <= 0:
         log.info(f"OCO skip: qty<=0 for {symbol}")
         return None
@@ -169,18 +177,21 @@ def attach_oco_exit_if_position(symbol: str, qty_hint: Optional[int], take_profi
     payload = {
         "symbol": symbol,
         "qty": str(qty),
-        "side": "sell",                 # exit a long
+        "side": "sell",  # exit a long
         "type": "limit",
-        "time_in_force": tif if tif in ("day","gtc") else "gtc",
+        "time_in_force": tif if tif in ("day", "gtc") else "gtc",
         "order_class": "oco",
         "take_profit": {"limit_price": f"{take_profit:.2f}"},
-        "stop_loss":  {"stop_price": f"{stop_loss:.2f}"},
+        "stop_loss": {"stop_price": f"{stop_loss:.2f}"},
         "client_order_id": _cid("OCO", system, symbol),
     }
     try:
         return post_order(payload)
     except requests.HTTPError as e:
-        log.error(f"OCO_POST_ERROR status={getattr(e.response,'status_code','?')} body={getattr(e.response,'text','')} sent={payload}")
+        log.error(
+            f"OCO_POST_ERROR status={getattr(e.response,'status_code','?')} "
+            f"body={getattr(e.response,'text','')} sent={payload}"
+        )
         return None
 
 # ========= Strategy Config =========
@@ -197,29 +208,63 @@ def _envf(system: str, key: str, default: Optional[str]) -> str:
 
 def load_strategy_config(system: str) -> StrategyConfig:
     return StrategyConfig(
-        qty = int(_envf(system, "QTY", "1") or "1"),
-        order_type = _envf(system, "ORDER_TYPE", "bracket") or "bracket",
-        tif = _envf(system, "TIF", "day") or "day",
-        tp_pct = float(_envf(system, "TP_PCT", "0.010") or "0.010"),
-        sl_pct = float(_envf(system, "SL_PCT", "0.007") or "0.007"),
+        qty=int(_envf(system, "QTY", "1") or "1"),
+        order_type=_envf(system, "ORDER_TYPE", "bracket") or "bracket",
+        tif=_envf(system, "TIF", "day") or "day",
+        tp_pct=float(_envf(system, "TP_PCT", "0.010") or "0.010"),
+        sl_pct=float(_envf(system, "SL_PCT", "0.007") or "0.007"),
     )
 
+# ========= Indicators =========
+def sma(values: List[float], length: int) -> List[Optional[float]]:
+    out = []
+    q: List[float] = []
+    s = 0.0
+    for v in values:
+        q.append(v); s += v
+        if len(q) > length: s -= q.pop(0)
+        out.append(s / length if len(q) == length else None)
+    return out
+
+def ema(values: List[float], length: int) -> List[float]:
+    k = 2 / (length + 1.0)
+    out = []
+    e = None
+    for v in values:
+        e = v if e is None else v * k + e * (1 - k)
+        out.append(e)
+    return out
+
+def macd(values: List[float], fast=12, slow=26, signal=9) -> Tuple[List[float], List[float], List[float]]:
+    ef = ema(values, fast)
+    es = ema(values, slow)
+    line = [f - s for f, s in zip(ef, es)]
+    sig = ema(line, signal)
+    hist = [m - s for m, s in zip(line, sig)]
+    return line, sig, hist
+
 # ========= Performance (fills → FIFO realized) =========
-def fetch_trade_activities(start_iso: str, end_iso: str) -> List[Dict[str,Any]]:
+def fetch_trade_activities(start_iso: str, end_iso: str) -> List[Dict[str, Any]]:
     """
-    Alpaca Activities supports single-date queries best.
-    We iterate per-UTC-day from start..end and merge FILL activities.
+    Iterate per-UTC-day from start..end and merge FILL activities.
+    Clamped to MAX_ACTIVITY_DAYS to avoid excessive calls.
     """
-    acts: List[Dict[str,Any]] = []
-    start = datetime.fromisoformat(start_iso.replace("Z","+00:00"))
-    end   = datetime.fromisoformat(end_iso.replace("Z","+00:00"))
+    acts: List[Dict[str, Any]] = []
+    start = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+    end = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+
+    # Clamp days
+    days_requested = (end.date() - start.date()).days + 1
+    if days_requested > MAX_ACTIVITY_DAYS:
+        end = start + timedelta(days=MAX_ACTIVITY_DAYS - 1)
+
     day = start
     while day.date() <= end.date():
         date_str = day.strftime("%Y-%m-%d")
         try:
             url = f"{ALPACA_BASE}/account/activities"
-            params = {"activity_types":"FILL", "date": date_str}
-            r = requests.get(url, headers=HEADERS, params=params, timeout=8)
+            params = {"activity_types": "FILL", "date": date_str}
+            r = SESSION.get(url, headers=HEADERS, params=params, timeout=4)
             if r.ok:
                 data = r.json()
                 if isinstance(data, dict) and "activities" in data:
@@ -229,79 +274,92 @@ def fetch_trade_activities(start_iso: str, end_iso: str) -> List[Dict[str,Any]]:
         except Exception as e:
             log.warning(f"activities fetch failed for {date_str}: {e}")
         day += timedelta(days=1)
-    # Filter by timestamp window just in case
+
+    # Filter by window just in case
     out = []
     for a in acts:
         ts = a.get("transaction_time") or a.get("date")
-        if not ts: continue
-        if ts < start_iso or ts > end_iso: 
+        if not ts:
             continue
-        out.append(a)
+        if start_iso <= ts <= _iso(end):
+            out.append(a)
     return out
 
-def fetch_client_order_ids(order_ids: List[str]) -> Dict[str,str]:
-    out: Dict[str,str] = {}
-    for oid in order_ids:
+def fetch_client_order_ids(order_ids: List[str]) -> Dict[str, str]:
+    """
+    Map a subset of order_ids -> client_order_id within a strict time/quantity budget.
+    Remaining orders will fall back to SYMBOL_SYSTEM_MAP attribution.
+    """
+    out: Dict[str, str] = {}
+    t0 = time.time()
+    for i, oid in enumerate(order_ids):
+        if i >= MAX_ORDER_LOOKUPS:
+            break
+        if time.time() - t0 > LOOKUP_BUDGET_SEC:
+            break
         try:
-            r = requests.get(f"{ALPACA_BASE}/orders/{oid}", headers=HEADERS, timeout=6)
+            r = SESSION.get(f"{ALPACA_BASE}/orders/{oid}", headers=HEADERS, timeout=3)
             if r.ok:
                 j = r.json()
                 cid = j.get("client_order_id")
-                if cid: out[oid] = cid
+                if cid:
+                    out[oid] = cid
         except Exception:
-            pass
+            continue
     return out
 
-def _load_symbol_system_map() -> Dict[str,str]:
+def _load_symbol_system_map() -> Dict[str, str]:
     """
     Optional fallback mapping for strategy attribution when client IDs are missing.
-    Supply env SYMBOL_SYSTEM_MAP as JSON: {"SPY":"SPY_VWAP_EMA20", "TSLA":"SMA10D_MACD"}
+    Env: SYMBOL_SYSTEM_MAP='{"SPY":"SPY_VWAP_EMA20","TSLA":"SMA10D_MACD"}'
     """
     try:
         raw = os.getenv("SYMBOL_SYSTEM_MAP", "{}")
         m = json.loads(raw)
-        return {k.upper(): v for k,v in m.items()}
+        return {k.upper(): v for k, v in m.items()}
     except Exception:
         return {}
 
-def infer_system_from_cid(cid: str, sym_map: Dict[str,str], symbol: str) -> str:
-    # Expect pattern like BRK-<SYSTEM>-<SYMBOL>-xxxx OR PLN-...
+def infer_system_from_cid(cid: str, sym_map: Dict[str, str], symbol: str) -> str:
     parts = (cid or "").split("-")
     if len(parts) >= 3:
         return parts[1]
     return sym_map.get(symbol.upper(), "UNKNOWN")
 
-def compute_performance(acts: List[Dict[str,Any]], cid_map: Dict[str,str], sym_map: Dict[str,str]) -> Dict[str,Any]:
+def compute_performance(acts: List[Dict[str, Any]],
+                        cid_map: Dict[str, str],
+                        sym_map: Dict[str, str]) -> Dict[str, Any]:
     """
-    FIFO realized P&L per symbol; aggregate per strategy; build equity series (realized).
+    FIFO realized P&L per symbol; aggregate per strategy; realized equity curve.
     """
     # Normalize fills
     fills = []
     for a in acts:
         try:
             symbol = a.get("symbol") or a.get("symbol_id")
-            side   = (a.get("side") or "").lower()  # "buy" or "sell"
-            qty    = float(a.get("qty") or a.get("quantity") or 0)
-            price  = float(a.get("price") or a.get("price_per_share") or 0)
-            ts     = a.get("transaction_time") or a.get("date")
-            oid    = a.get("order_id")
-            cid    = cid_map.get(oid or "", "")
-            fills.append({"symbol":symbol, "side":side, "qty":qty, "price":price, "time":ts, "order_id":oid, "client_order_id":cid})
+            side = (a.get("side") or "").lower()
+            qty = float(a.get("qty") or a.get("quantity") or 0)
+            price = float(a.get("price") or a.get("price_per_share") or 0)
+            ts = a.get("transaction_time") or a.get("date")
+            oid = a.get("order_id")
+            cid = cid_map.get(oid or "", "")
+            fills.append({"symbol": symbol, "side": side, "qty": qty, "price": price,
+                          "time": ts, "order_id": oid, "client_order_id": cid})
         except Exception:
             continue
 
-    buys:  Dict[str,deque] = defaultdict(deque)
-    sells: Dict[str,List[Dict[str,Any]]] = defaultdict(list)
+    buys: Dict[str, deque] = defaultdict(deque)
+    sells: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
     for f in sorted(fills, key=lambda x: x["time"]):
         if f["side"] == "buy":
-            buys[f["symbol"]].append({"qty":f["qty"], "price":f["price"], "time":f["time"], "cid":f["client_order_id"]})
+            buys[f["symbol"]].append({"qty": f["qty"], "price": f["price"], "time": f["time"], "cid": f["client_order_id"]})
         elif f["side"] == "sell":
             sells[f["symbol"]].append(f)
 
-    trades: List[Dict[str,Any]] = []
+    trades: List[Dict[str, Any]] = []
     total_pnl = 0.0
-    equity_series: List[Dict[str,Any]] = []
+    equity_series: List[Dict[str, Any]] = []
     equity_running = 0.0
 
     for symbol, s_list in sells.items():
@@ -314,12 +372,12 @@ def compute_performance(acts: List[Dict[str,Any]], cid_map: Dict[str,str], sym_m
                 mqty = min(qty_to_match, b["qty"])
                 leg_pnl = (sfill["price"] - b["price"]) * mqty
                 pnl_for_trade += leg_pnl
-                legs.append({"buy_px":b["price"], "sell_px":sfill["price"], "qty":mqty, "pnl":leg_pnl})
+                legs.append({"buy_px": b["price"], "sell_px": sfill["price"], "qty": mqty, "pnl": leg_pnl})
                 b["qty"] -= mqty
                 qty_to_match -= mqty
                 if b["qty"] <= 1e-9:
                     buys[symbol].popleft()
-            system = infer_system_from_cid(sfill.get("client_order_id",""), sym_map, symbol)
+            system = infer_system_from_cid(sfill.get("client_order_id", ""), sym_map, symbol)
             trade = {
                 "symbol": symbol,
                 "system": system,
@@ -338,17 +396,17 @@ def compute_performance(acts: List[Dict[str,Any]], cid_map: Dict[str,str], sym_m
             equity_series.append({"time": sfill["time"], "equity": equity_running})
 
     # Aggregate by strategy with trades/winrate
-    agg: Dict[str, Dict[str,Any]] = defaultdict(lambda: {"realized_pnl":0.0,"trades":0,"wins":0})
+    agg: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"realized_pnl": 0.0, "trades": 0, "wins": 0})
     for t in trades:
         s = t["system"]
         agg[s]["realized_pnl"] += t["pnl"]
         agg[s]["trades"] += 1
-        if t["pnl"] > 0: agg[s]["wins"] += 1
-    # format win_rate
+        if t["pnl"] > 0:
+            agg[s]["wins"] += 1
     by_strategy = {}
-    for k,v in agg.items():
+    for k, v in agg.items():
         n = v["trades"]
-        win_rate = round((v["wins"]/n*100) if n else 0.0, 1)
+        win_rate = round((v["wins"] / n * 100) if n else 0.0, 1)
         by_strategy[k] = {"realized_pnl": v["realized_pnl"], "trades": n, "win_rate": win_rate}
 
     return {
@@ -358,77 +416,48 @@ def compute_performance(acts: List[Dict[str,Any]], cid_map: Dict[str,str], sym_m
         "equity": equity_series
     }
 
-def bucket_daily(trades: List[Dict[str,Any]]) -> List[Dict[str,Any]]:
-    days: Dict[str, Dict[str,Any]] = {}
+def bucket_daily(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    days: Dict[str, Dict[str, Any]] = {}
     for t in trades:
         day = str(t["exit_time"])[:10]
         d = days.setdefault(day, {"date": day, "pnl": 0.0, "by_strategy": defaultdict(float)})
         d["pnl"] += t["pnl"]
         d["by_strategy"][t["system"]] += t["pnl"]
-    # normalize
     out = []
     for day, row in sorted(days.items()):
         out.append({"date": day, "pnl": row["pnl"], "by_strategy": dict(row["by_strategy"])})
     return out
 
-# ========= Indicators =========
-def sma(values: List[float], length: int) -> List[Optional[float]]:
-    out = []
-    q: List[float] = []
-    s = 0.0
-    for v in values:
-        q.append(v); s += v
-        if len(q) > length: s -= q.pop(0)
-        out.append(s/length if len(q)==length else None)
-    return out
-
-def ema(values: List[float], length: int) -> List[float]:
-    k = 2/(length+1.0)
-    out = []
-    e = None
-    for v in values:
-        e = v if e is None else v*k + e*(1-k)
-        out.append(e)
-    return out
-
-def macd(values: List[float], fast=12, slow=26, signal=9) -> Tuple[List[float], List[float], List[float]]:
-    ef = ema(values, fast)
-    es = ema(values, slow)
-    macd_line = [ (f - s) for f,s in zip(ef, es) ]
-    signal_line = ema(macd_line, signal)
-    hist = [m-s for m,s in zip(macd_line, signal_line)]
-    return macd_line, signal_line, hist
-
 # ========= Signal Processing (S1 webhooks + S2 triggers) =========
-def _compute_exits_from_price(entry_px: float, side: str, tp_pct: float, sl_pct: float) -> Tuple[float,float]:
-    if _side_is_long(side):
-        tp = round(entry_px*(1+tp_pct), 2)
-        sl = round(entry_px*(1-sl_pct), 2)
-    else:
-        tp = round(entry_px*(1-tp_pct), 2)
-        sl = round(entry_px*(1+sl_pct), 2)
-    return tp, sl
-
 def _ref_price(symbol: str, given: Optional[float]) -> float:
-    if given and given > 0: return float(given)
+    if given and float(given) > 0:
+        return float(given)
     lc = last_close(symbol)
     return float(lc) if lc else 0.0
 
 def _first_entry_should_be_bracket(has_pos: bool, order_type: str) -> bool:
-    # If no pos, prefer bracket; if configured 'bracket', use bracket; else allow plain + later OCO
-    return (not has_pos) and (order_type.lower()=="bracket")
+    return (not has_pos) and (order_type.lower() == "bracket")
 
-def process_signal(data: Dict[str,Any]) -> Tuple[int, Dict[str,Any]]:
+def _compute_exits_from_price(entry_px: float, side: str, tp_pct: float, sl_pct: float) -> Tuple[float, float]:
+    if side.lower() == "buy":
+        tp = round(entry_px * (1 + tp_pct), 2)
+        sl = round(entry_px * (1 - sl_pct), 2)
+    else:
+        tp = round(entry_px * (1 - tp_pct), 2)
+        sl = round(entry_px * (1 + sl_pct), 2)
+    return tp, sl
+
+def process_signal(data: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     """
-    Accepts: {"system","side","ticker","price","time"} (TradingView or scanner)
+    Accepts: {"system","side","ticker","price","time"}
     Places either BRACKET (entry+exits) or PLAIN (entry) and, if configured, attaches OCO after fill.
     """
     system = (data.get("system") or "UNKNOWN").strip()
     symbol = (data.get("ticker") or "").upper().strip()
-    side   = (data.get("side") or "buy").lower().strip()
-    price  = _ref_price(symbol, data.get("price"))
+    side = (data.get("side") or "buy").lower().strip()
+    price = _ref_price(symbol, data.get("price"))
 
-    if not symbol or side not in ("buy","sell"):
+    if not symbol or side not in ("buy", "sell"):
         return 400, {"ok": False, "error": "invalid payload"}
 
     ok, reason = can_open_new_position(symbol, system)
@@ -439,8 +468,7 @@ def process_signal(data: Dict[str,Any]) -> Tuple[int, Dict[str,Any]]:
     has_pos = get_position(symbol) is not None
     tif = cfg.tif
 
-    # Optional: cancel open symbol orders before a plain add (wash-trade safety)
-    if (cfg.order_type.lower()=="plain") and CANCEL_OPEN_ORDERS_BEFORE_PLAIN:
+    if (cfg.order_type.lower() == "plain") and CANCEL_OPEN_ORDERS_BEFORE_PLAIN:
         cancel_open_orders(symbol)
 
     tp, sl = _compute_exits_from_price(price, side, cfg.tp_pct, cfg.sl_pct)
@@ -452,13 +480,12 @@ def process_signal(data: Dict[str,Any]) -> Tuple[int, Dict[str,Any]]:
                 "type": "market", "time_in_force": tif,
                 "order_class": "bracket",
                 "take_profit": {"limit_price": f"{tp:.2f}"},
-                "stop_loss":   {"stop_price":  f"{sl:.2f}"},
+                "stop_loss": {"stop_price": f"{sl:.2f}"},
                 "client_order_id": _cid("BRK", system, symbol),
             }
             order = post_order(payload)
             out = {"ok": True, "placed": "bracket", "order": order}
         else:
-            # Plain entry (initial or add)
             payload = {
                 "symbol": symbol, "qty": str(cfg.qty), "side": side,
                 "type": "market", "time_in_force": tif,
@@ -467,16 +494,14 @@ def process_signal(data: Dict[str,Any]) -> Tuple[int, Dict[str,Any]]:
             order = post_order(payload)
             out = {"ok": True, "placed": "plain", "order": order}
 
-            # Attach OCO only after position exists (exit-only rule)
             if ATTACH_OCO_ON_PLAIN:
-                # Fast poll (<= 8s)
                 filled = True
                 if OCO_REQUIRE_POSITION:
                     filled = False
                     t0 = time.time()
-                    while time.time()-t0 < 8.0:
+                    while time.time() - t0 < 8.0:
                         pos = get_position(symbol)
-                        if pos and float(pos.get("qty","0")) > 0:
+                        if pos and float(pos.get("qty", "0")) > 0:
                             filled = True
                             break
                         time.sleep(0.4)
@@ -487,11 +512,11 @@ def process_signal(data: Dict[str,Any]) -> Tuple[int, Dict[str,Any]]:
         return 200, out
     except requests.HTTPError as e:
         status = getattr(e.response, "status_code", 500)
-        text   = getattr(e.response, "text", "")
+        text = getattr(e.response, "text", "")
         return 200, {"ok": False, "status": status, "error": text}
 
 # ========= Scanner (S2) =========
-def scan_s2_symbols(symbols: List[str], tf: str, mode: str, use_rth: bool, use_vol: bool, dry_run: bool) -> Dict[str,Any]:
+def scan_s2_symbols(symbols: List[str], tf: str, mode: str, use_rth: bool, use_vol: bool, dry_run: bool) -> Dict[str, Any]:
     tf_c = _canon_timeframe(tf)
     checked = []
     triggers = []
@@ -499,42 +524,37 @@ def scan_s2_symbols(symbols: List[str], tf: str, mode: str, use_rth: bool, use_v
     for sym in symbols:
         s = sym.strip().upper()
         try:
-            # Daily for trend filter
             d_bars = bars(s, "1Day", limit=60)
-            if len(d_bars) < 12: 
+            if len(d_bars) < 12:
                 checked.append({"symbol": s, "skip": "not_enough_daily"})
                 continue
             closes_d = [float(b["c"]) for b in d_bars]
             sma10 = sma(closes_d, 10)[-1]
             trend_ok = (closes_d[-1] > sma10) if sma10 is not None else False
 
-            # Intraday/timeframe bars for MACD
             i_bars = bars(s, tf_c, limit=200)
             if len(i_bars) < 35:
                 checked.append({"symbol": s, "skip": "not_enough_intraday"})
                 continue
             closes = [float(b["c"]) for b in i_bars]
-            vols   = [float(b["v"]) for b in i_bars]
+            vols = [float(b["v"]) for b in i_bars]
 
             m_line, s_line, _ = macd(closes, 12, 26, 9)
-            if len(m_line) < 2: 
-                checked.append({"symbol": s, "skip": "macd_len"})
-                continue
             prev_cross = m_line[-2] - s_line[-2]
             last_cross = m_line[-1] - s_line[-1]
-            macd_up    = (prev_cross <= 0 and last_cross > 0)
+            macd_up = (prev_cross <= 0 and last_cross > 0)
 
             vol_ok = True
             if use_vol and len(vols) >= 20:
                 v_sma20 = sma(vols, 20)[-1]
-                vol_ok = v_sma20 is not None and vols[-1] > v_sma20
+                vol_ok = (v_sma20 is not None) and (vols[-1] > v_sma20)
 
-            should_long = macd_up and (trend_ok if mode=="strict" else True) and vol_ok
+            should_long = macd_up and (trend_ok if mode == "strict" else True) and vol_ok
 
             checked.append({"symbol": s, "trend_ok": trend_ok, "macd_up": macd_up, "vol_ok": vol_ok})
             if should_long:
                 ref = closes[-1]
-                payload = {"system":"SMA10D_MACD","side":"buy","ticker":s,"price":ref,"time":_iso(datetime.now(timezone.utc))}
+                payload = {"system": "SMA10D_MACD", "side": "buy", "ticker": s, "price": ref, "time": _iso(datetime.now(timezone.utc))}
                 if dry_run:
                     triggers.append(payload)
                 else:
@@ -562,40 +582,39 @@ def performance():
     """Realized P&L from Alpaca fills (FIFO)."""
     try:
         days_s = request.args.get("days", "7")
+        fast   = request.args.get("fast", "0") == "1"
         include_trades = request.args.get("include_trades", "0") == "1"
         try:
             days = max(1, int(days_s))
         except Exception:
             days = 7
+        days = min(days, MAX_DAYS_PERF)  # clamp
 
         end_dt = datetime.now(timezone.utc)
         start_dt = end_dt - timedelta(days=days)
         start_iso = _iso(start_dt)
-        end_iso   = _iso(end_dt)
+        end_iso = _iso(end_dt)
 
-        acts = fetch_trade_activities(start_iso, end_iso)  # resilient
+        acts = fetch_trade_activities(start_iso, end_iso)
         order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
-        cid_map = fetch_client_order_ids(order_ids)        # resilient
+        cid_map = {} if fast else fetch_client_order_ids(order_ids)
         sym_map = _load_symbol_system_map()
-        perf = compute_performance(acts, cid_map, sym_map)
 
+        perf = compute_performance(acts, cid_map, sym_map)
         out = {
             "ok": True,
             "days": days,
             "total_realized_pnl": perf["total_pnl"],
             "by_strategy": perf["by_strategy"],
             "equity": perf["equity"],
-            "note": "Realized P&L from Alpaca fills (FIFO). Set SYMBOL_SYSTEM_MAP for fallback attribution.",
+            "note": "Realized P&L from Alpaca fills (FIFO). Use fast=1 to skip order lookups.",
         }
         if include_trades:
             out["trades"] = perf["trades"]
-
-        # guard against NaN/Inf sneaking into JSON (Flask will 500)
         return jsonify(_scrub_nans(out)), 200
 
     except Exception as e:
         app.logger.exception("performance route error")
-        # Keep 200 so the dashboard JS doesn't throw
         return jsonify({"ok": False, "error": str(e)}), 200
 
 @app.get("/performance/daily")
@@ -603,10 +622,12 @@ def performance_daily():
     """Daily buckets of realized P&L (UTC), with per-strategy splits."""
     try:
         days_s = request.args.get("days", "30")
+        fast   = request.args.get("fast", "0") == "1"
         try:
             days = max(1, int(days_s))
         except Exception:
             days = 30
+        days = min(days, MAX_DAYS_PERF)  # clamp
 
         end_dt = datetime.now(timezone.utc)
         start_dt = end_dt - timedelta(days=days)
@@ -614,8 +635,9 @@ def performance_daily():
 
         acts = fetch_trade_activities(start_iso, end_iso)
         order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
-        cid_map = fetch_client_order_ids(order_ids)
+        cid_map = {} if fast else fetch_client_order_ids(order_ids)
         sym_map = _load_symbol_system_map()
+
         perf = compute_performance(acts, cid_map, sym_map)
         daily = bucket_daily(perf["trades"])
 
@@ -629,8 +651,8 @@ def performance_daily():
 def positions():
     """Proxy Alpaca positions (JSON)."""
     try:
-        r = requests.get(f"{ALPACA_BASE}/positions", headers=HEADERS, timeout=6)
-        return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
+        r = SESSION.get(f"{ALPACA_BASE}/positions", headers=HEADERS, timeout=4)
+        return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type", "application/json")})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -638,8 +660,8 @@ def positions():
 def orders_open():
     """Proxy Alpaca open orders (JSON)."""
     try:
-        r = requests.get(f"{ALPACA_BASE}/orders?status=open&limit=200&nested=false", headers=HEADERS, timeout=6)
-        return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
+        r = SESSION.get(f"{ALPACA_BASE}/orders?status=open&limit=200&nested=false", headers=HEADERS, timeout=4)
+        return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type", "application/json")})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -769,10 +791,10 @@ def dashboard():
 
     async function getJSON(url) {
       const r = await fetch(url);
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
+      const t = await r.text();
+      try { return JSON.parse(t); } catch { return { ok:false, error: t || 'parse error' }; }
     }
-    function fmt(n) { return (n>=0?'+':'') + Number(n).toFixed(2); }
+    function fmt(n) { n = Number(n||0); return (n>=0?'+':'') + n.toFixed(2); }
     Chart.defaults.color = '#e2e8f0';
     Chart.defaults.borderColor = '#334155';
 
@@ -794,11 +816,21 @@ def dashboard():
     })();
 
     (async () => {
-      const perfAll = await getJSON(origin + '/performance?days=120&include_trades=1');
-      const daily   = await getJSON(origin + '/performance/daily?days=120');
+      // Use fast=1 and 30d to keep endpoints quick
+      const perfAll = await getJSON(origin + '/performance?days=30&include_trades=1&fast=1');
+      const daily   = await getJSON(origin + '/performance/daily?days=30&fast=1');
+
+      if (perfAll.ok === false) {
+        document.body.insertAdjacentHTML('beforeend', '<pre style="color:#fca5a5;">Dashboard error: ' + (perfAll.error||'unknown') + '</pre>');
+        return;
+      }
+      if (daily.ok === false) {
+        document.body.insertAdjacentHTML('beforeend', '<pre style="color:#fca5a5;">Dashboard error: ' + (daily.error||'unknown') + '</pre>');
+        return;
+      }
 
       const dayPNL = new Map();
-      daily.daily.forEach(d => dayPNL.set(d.date, d.pnl));
+      (daily.daily || []).forEach(d => dayPNL.set(d.date, d.pnl));
       const dayTrades = new Map();
       (perfAll.trades || []).forEach(tr => {
         const day = String(tr.exit_time).slice(0,10);
@@ -858,69 +890,53 @@ def dashboard():
       document.getElementById('todayBtn').onclick = () => { current = new Date(); renderCalendar(current); };
 
       // Summary (7d)
-      const perf7 = await getJSON(origin + '/performance?days=7&include_trades=1');
-      document.getElementById('summary').innerHTML = '<div>Total realized P&amp;L: <b>$' + Number(perf7.total_realized_pnl||0).toFixed(2) + '</b></div>';
+      const perf7 = await getJSON(origin + '/performance?days=7&include_trades=1&fast=1');
+      if (perf7.ok !== false) {
+        document.getElementById('summary').innerHTML =
+          '<div>Total realized P&amp;L: <b>$' + Number(perf7.total_realized_pnl||0).toFixed(2) + '</b></div>';
 
-      // By strategy
-      const tbody = document.querySelector('#byStrategy tbody');
-      tbody.innerHTML = '';
-      Object.entries(perf7.by_strategy || {}).forEach(([k,v]) => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = '<td>'+k+'</td><td>'+(v.trades||0)+'</td><td>'+(v.win_rate||0)+'%</td><td>'+Number(v.realized_pnl||0).toFixed(2)+'</td>';
-        tbody.appendChild(tr);
-      });
+        // By strategy
+        const tbody = document.querySelector('#byStrategy tbody');
+        tbody.innerHTML = '';
+        Object.entries(perf7.by_strategy || {}).forEach(([k,v]) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td>'+k+'</td><td>'+(v.trades||0)+'</td><td>'+(v.win_rate||0)+'%</td><td>'+Number(v.realized_pnl||0).toFixed(2)+'</td>';
+          tbody.appendChild(tr);
+        });
 
-      // Equity chart
-      const eq = perf7.equity || [];
-      const eqLabels = eq.map(x => x.time);
-      const eqData = eq.map(x => x.equity);
-      new Chart(document.getElementById('equityChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: eqLabels, datasets: [{ label: 'Equity ($)', data: eqData }] },
-        options: {
-          responsive: true,
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } },
-            y: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } }
+        // Equity chart
+        const eq = perf7.equity || [];
+        const eqLabels = eq.map(x => x.time);
+        const eqData = eq.map(x => x.equity);
+        new Chart(document.getElementById('equityChart').getContext('2d'), {
+          type: 'line',
+          data: { labels: eqLabels, datasets: [{ label: 'Equity ($)', data: eqData }] },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } },
+              y: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } }
+            }
           }
-        }
-      });
+        });
 
-      // Daily (30d)
-      const d30 = await getJSON(origin + '/performance/daily?days=30');
-      const dLabels = d30.daily.map(x => x.date);
-      const dData = d30.daily.map(x => x.pnl);
-      new Chart(document.getElementById('dailyChart').getContext('2d'), {
-        type: 'bar',
-        data: { labels: dLabels, datasets: [{ label: 'Daily P&L ($)', data: dData }] },
-        options: {
-          responsive: true,
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } },
-            y: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } }
-          }
-        }
-      });
-
-      // Trades table (last 25)
-      const tBody = document.querySelector('#trades tbody');
-      (perf7.trades || []).slice(-25).forEach(t => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${t.exit_time}</td>
-          <td>${t.system}</td>
-          <td>${t.symbol}</td>
-          <td>${t.side}</td>
-          <td>$${Number(t.entry_price).toFixed(2)}</td>
-          <td>$${Number(t.exit_price).toFixed(2)}</td>
-          <td>${fmt(Number(t.pnl))}</td>`;
-        tBody.appendChild(tr);
-      });
-    })().catch(err => {
-      document.body.insertAdjacentHTML('beforeend', '<pre style="color:#fca5a5;">Dashboard error: ' + err.message + '</pre>');
-    });
+        // Trades table (last 25)
+        const tBody = document.querySelector('#trades tbody');
+        (perf7.trades || []).slice(-25).forEach(t => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${t.exit_time}</td>
+            <td>${t.system}</td>
+            <td>${t.symbol}</td>
+            <td>${t.side}</td>
+            <td>$${Number(t.entry_price).toFixed(2)}</td>
+            <td>$${Number(t.exit_price).toFixed(2)}</td>
+            <td>${fmt(Number(t.pnl))}</td>`;
+          tBody.appendChild(tr);
+        });
+      }
+    })();
   </script>
 </body>
 </html>
@@ -938,7 +954,7 @@ def scan_s2_route():
 
     Query params:
       symbols=CSV            (default: env S2_WHITELIST)
-      tf=60|30               (default: env S2_TF_DEFAULT)
+      tf=60|30|120|day       (default: env S2_TF_DEFAULT)
       mode=strict|either     (default: env S2_MODE_DEFAULT)
       rth=true|false         (default: env S2_USE_RTH_DEFAULT)
       vol=true|false         (default: env S2_USE_VOL_DEFAULT)
@@ -976,7 +992,7 @@ def scan_s2_route():
             res["triggers"] = scan.get("triggers", [])
             return jsonify(res), 200
 
-        # Live: execute triggers in-process (already done in scan when dry=False via process_signal)
+        # Live: triggers already sent via process_signal when dry=False
         res["triggers"] = scan.get("triggers", [])
         return jsonify(res), 200
 
