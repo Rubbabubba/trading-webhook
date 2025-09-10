@@ -599,6 +599,106 @@ def process_signal(data: dict):
         app.logger.error(f"ORDER ERROR: {e}")
         return 500, {"ok": False, "error": str(e)}
 
+def scan_s2_symbols(
+    symbols: List[str],
+    tf: str = os.getenv("S2_TF_DEFAULT", "60"),
+    mode: str = os.getenv("S2_MODE_DEFAULT", "either"),
+    use_rth: bool = os.getenv("S2_USE_RTH_DEFAULT", "true").lower() == "true",
+    use_vol: bool = os.getenv("S2_USE_VOL_DEFAULT", "false").lower() == "true",
+    dry_run: bool = True,
+):
+    """
+    Strategy 2 scan:
+      • Daily filter: close vs SMA10 (trend)
+      • Intraday: MACD(12/26/9) cross; fallback momentum vs SMA10 on TF
+      • Optional volume filter on TF
+      • Per-bar dedupe: fires once per completed bar per (symbol, timeframe)
+      • Does NOT place orders — it only returns triggers. (Route calls process_signal)
+    """
+    tf_canon = _canon_timeframe(tf)
+    results = {"ok": True, "timeframe": tf_canon, "mode": mode, "use_rth": use_rth, "use_vol": use_vol,
+               "dry_run": dry_run, "checked": [], "triggers": []}
+
+    for sym in [s.strip().upper() for s in symbols if s.strip()]:
+        try:
+            # ---- Daily trend (SMA10)
+            daily = fetch_bars(sym, "1Day", limit=15)
+            d_close = [float(b["c"]) for b in daily]
+            d_sma10 = sma(d_close, 10)
+            if len(d_close) < 11 or len(d_sma10) < 10:
+                results["checked"].append({sym: "insufficient daily bars"})
+                continue
+            daily_up   = d_close[-1] > d_sma10[-1]
+            daily_down = d_close[-1] < d_sma10[-1]
+
+            # ---- Intraday TF
+            bars = fetch_bars(sym, tf_canon, limit=200)
+            if len(bars) < 35:
+                results["checked"].append({sym: "insufficient intraday bars"})
+                continue
+
+            last_bar = bars[-1]
+            last_t = datetime.fromisoformat(str(last_bar["t"]).replace("Z","+00:00"))
+            if use_rth and not in_regular_hours(last_t):
+                results["checked"].append({sym: "outside RTH"})
+                continue
+
+            c = [float(b["c"]) for b in bars]
+            v = [float(b.get("v", 0)) for b in bars]
+
+            m  = macd_line(c, 12, 26)
+            sg = macd_signal(m, 9)
+            long_x  = crossover(m, sg)
+            short_x = crossunder(m, sg)
+
+            # Momentum fallback for "either"
+            c_sma10 = sma(c, 10)
+            mom_up  = len(c_sma10) and c[-1] > c_sma10[-1]
+            mom_dn  = len(c_sma10) and c[-1] < c_sma10[-1]
+
+            # Volume (optional)
+            vol_ok = True
+            if use_vol:
+                v_sma20 = sma(v, 20)
+                vol_ok = len(v_sma20) and (v[-1] > v_sma20[-1])
+
+            # Decide triggers
+            strict_long  = daily_up   and long_x  and vol_ok
+            strict_short = daily_down and short_x and vol_ok
+            loose_long   = (daily_up   and vol_ok) and (long_x  or mom_up)
+            loose_short  = (daily_down and vol_ok) and (short_x or mom_dn)
+
+            go_long  = strict_long  if mode.lower()=="strict" else loose_long
+            go_short = strict_short if mode.lower()=="strict" else loose_short
+
+            results["checked"].append({sym: {"daily_up": daily_up, "long_x": long_x, "short_x": short_x, "vol_ok": bool(vol_ok)}})
+
+            # ---- Per-bar dedupe
+            bar_key = (sym, tf_canon)
+            bar_ts = str(last_bar["t"])  # ISO from Alpaca
+            if _LAST_BAR_FIRED.get(bar_key) == bar_ts:
+                results["checked"].append({sym: "already_fired_this_bar"})
+                continue
+
+            fired_any = False
+            if go_long:
+                results["triggers"].append({"system":"SMA10D_MACD","side":"LONG","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
+                fired_any = True
+            if go_short:
+                results["triggers"].append({"system":"SMA10D_MACD","side":"SHORT","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
+                fired_any = True
+
+            # Mark bar as fired only in live mode (prevents duplicates across cron runs)
+            if fired_any and not dry_run:
+                _LAST_BAR_FIRED[bar_key] = bar_ts
+
+        except Exception as e:
+            app.logger.error(f"scan_s2 error {sym}: {e}")
+            results["checked"].append({sym: f"error: {e}"})
+            continue
+
+    return results
+
 # ===== Routes =====
 @app.get("/health")
 def health():
@@ -1000,7 +1100,7 @@ def scan_s2_route():
         dry     = request.args.get("dry", "1") == "1"
 
         # Always run scan in dry mode first to collect diagnostics
-        scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=True)
+        scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=dry)
 
         res = {
             "ok": True,
