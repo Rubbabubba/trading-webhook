@@ -1,4 +1,12 @@
-# app.py
+# app.py — Equities Webhook/Scanner
+# Version: 2025-09-10-02
+# Notes:
+# - Keeps original route shapes
+# - OCO is exit-only (prevents 422 "oco orders must be exit orders")
+# - Performance endpoints hardened: session reuse + request/time budgets + fast=1 (skip /orders/{id})
+# - Dashboard HTML uses fast endpoints and gracefully handles errors
+# - Strategy display locked to CURRENT_STRATEGIES (defaults to S1/S2)
+
 import os
 import json
 import time
@@ -12,8 +20,9 @@ from collections import defaultdict, deque
 import requests
 from flask import Flask, request, jsonify, make_response
 
-# ========= App & Logging =========
+# ========= App & Version =========
 app = Flask(__name__)
+APP_VERSION = os.getenv("APP_VERSION", "2025-09-10-02")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("equities-webhook")
 
@@ -37,12 +46,18 @@ ATTACH_OCO_ON_PLAIN             = os.getenv("ATTACH_OCO_ON_PLAIN", "true").lower
 OCO_TIF                         = os.getenv("OCO_TIF", "gtc")  # gtc recommended for exits
 OCO_REQUIRE_POSITION            = os.getenv("OCO_REQUIRE_POSITION", "true").lower() == "true"
 
-# Scanner defaults
-S2_WHITELIST        = os.getenv("S2_WHITELIST", "SPY,QQQ,TSLA,NVDA,COIN,GOOGL,META,MSFT,AMZN,AAPL")
-S2_TF_DEFAULT       = os.getenv("S2_TF_DEFAULT", "60")
-S2_MODE_DEFAULT     = os.getenv("S2_MODE_DEFAULT", "either")
-S2_USE_RTH_DEFAULT  = os.getenv("S2_USE_RTH_DEFAULT", "true")
-S2_USE_VOL_DEFAULT  = os.getenv("S2_USE_VOL_DEFAULT", "false")
+# Scanner/strategy defaults
+S2_WHITELIST       = os.getenv("S2_WHITELIST", "SPY,QQQ,TSLA,NVDA,COIN,GOOGL,META,MSFT,AMZN,AAPL")
+S2_TF_DEFAULT      = os.getenv("S2_TF_DEFAULT", "60")
+S2_MODE_DEFAULT    = os.getenv("S2_MODE_DEFAULT", "either")
+S2_USE_RTH_DEFAULT = os.getenv("S2_USE_RTH_DEFAULT", "true")
+S2_USE_VOL_DEFAULT = os.getenv("S2_USE_VOL_DEFAULT", "false")
+
+# Current strategies to display/aggregate in /performance*
+CURRENT_STRATEGIES = [s.strip() for s in os.getenv(
+    "CURRENT_STRATEGIES",
+    "SPY_VWAP_EMA20,SMA10D_MACD"
+).split(",") if s.strip()]
 
 HEADERS = {
     "APCA-API-KEY-ID": APCA_API_KEY_ID,
@@ -78,6 +93,15 @@ def _scrub_nans(x):
     if isinstance(x, dict):
         return {k: _scrub_nans(v) for k, v in x.items()}
     return x
+
+# Show only configured strategies and ensure missing ones exist with zeros
+def _only_current_strats(by_strategy: Dict[str, Any]) -> Dict[str, Any]:
+    base = {"realized_pnl": 0.0, "trades": 0, "win_rate": 0.0}
+    out: Dict[str, Any] = {}
+    for s in CURRENT_STRATEGIES:
+        v = by_strategy.get(s)
+        out[s] = v if isinstance(v, dict) else dict(base)
+    return out
 
 # ========= Market & Account =========
 def is_market_open_now() -> bool:
@@ -158,7 +182,6 @@ def can_open_new_position(symbol: str, system: str) -> Tuple[bool, str]:
     sym_count = sum(1 for p in positions if p.get("symbol") == symbol)
     if sym_count >= MAX_POSITIONS_PER_SYMBOL:
         return False, f"MAX_POSITIONS_PER_SYMBOL={MAX_POSITIONS_PER_SYMBOL}"
-    # strategy cap would require server-side tagging; omitted here
     return True, "ok"
 
 # ========= Orders & OCO =========
@@ -416,6 +439,7 @@ def compute_performance(acts: List[Dict[str, Any]],
         "equity": equity_series
     }
 
+
 def bucket_daily(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     days: Dict[str, Dict[str, Any]] = {}
     for t in trades:
@@ -524,6 +548,7 @@ def scan_s2_symbols(symbols: List[str], tf: str, mode: str, use_rth: bool, use_v
     for sym in symbols:
         s = sym.strip().upper()
         try:
+            # Daily for trend filter
             d_bars = bars(s, "1Day", limit=60)
             if len(d_bars) < 12:
                 checked.append({"symbol": s, "skip": "not_enough_daily"})
@@ -532,22 +557,23 @@ def scan_s2_symbols(symbols: List[str], tf: str, mode: str, use_rth: bool, use_v
             sma10 = sma(closes_d, 10)[-1]
             trend_ok = (closes_d[-1] > sma10) if sma10 is not None else False
 
+            # Intraday/timeframe bars for MACD
             i_bars = bars(s, tf_c, limit=200)
             if len(i_bars) < 35:
                 checked.append({"symbol": s, "skip": "not_enough_intraday"})
                 continue
             closes = [float(b["c"]) for b in i_bars]
-            vols = [float(b["v"]) for b in i_bars]
+            vols   = [float(b["v"]) for b in i_bars]
 
             m_line, s_line, _ = macd(closes, 12, 26, 9)
             prev_cross = m_line[-2] - s_line[-2]
             last_cross = m_line[-1] - s_line[-1]
-            macd_up = (prev_cross <= 0 and last_cross > 0)
+            macd_up    = (prev_cross <= 0 and last_cross > 0)
 
             vol_ok = True
             if use_vol and len(vols) >= 20:
                 v_sma20 = sma(vols, 20)[-1]
-                vol_ok = (v_sma20 is not None) and (vols[-1] > v_sma20)
+                vol_ok = v_sma20 is not None and vols[-1] > v_sma20
 
             should_long = macd_up and (trend_ok if mode == "strict" else True) and vol_ok
 
@@ -568,7 +594,7 @@ def scan_s2_symbols(symbols: List[str], tf: str, mode: str, use_rth: bool, use_v
 # ===== Routes =====
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "service": "equities-webhook", "time": int(time.time())}), 200
+    return jsonify({"ok": True, "service": "equities-webhook", "version": APP_VERSION, "time": int(time.time())}), 200
 
 @app.post("/webhook")
 def webhook():
@@ -593,7 +619,7 @@ def performance():
         end_dt = datetime.now(timezone.utc)
         start_dt = end_dt - timedelta(days=days)
         start_iso = _iso(start_dt)
-        end_iso = _iso(end_dt)
+        end_iso   = _iso(end_dt)
 
         acts = fetch_trade_activities(start_iso, end_iso)
         order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
@@ -601,11 +627,15 @@ def performance():
         sym_map = _load_symbol_system_map()
 
         perf = compute_performance(acts, cid_map, sym_map)
+        by_strat = _only_current_strats(perf["by_strategy"])
+
         out = {
             "ok": True,
+            "version": APP_VERSION,
+            "current_strategies": CURRENT_STRATEGIES,
             "days": days,
             "total_realized_pnl": perf["total_pnl"],
-            "by_strategy": perf["by_strategy"],
+            "by_strategy": by_strat,
             "equity": perf["equity"],
             "note": "Realized P&L from Alpaca fills (FIFO). Use fast=1 to skip order lookups.",
         }
@@ -641,7 +671,12 @@ def performance_daily():
         perf = compute_performance(acts, cid_map, sym_map)
         daily = bucket_daily(perf["trades"])
 
-        return jsonify(_scrub_nans({"ok": True, "days": days, "daily": daily})), 200
+        # filter by current strategies only
+        for row in daily:
+            bs = row.get("by_strategy", {}) or {}
+            row["by_strategy"] = {k: bs.get(k, 0.0) for k in CURRENT_STRATEGIES}
+
+        return jsonify(_scrub_nans({"ok": True, "version": APP_VERSION, "current_strategies": CURRENT_STRATEGIES, "days": days, "daily": daily})), 200
 
     except Exception as e:
         app.logger.exception("performance/daily route error")
@@ -672,7 +707,9 @@ def config():
         c = load_strategy_config(system)
         return {"qty": c.qty, "order_type": c.order_type, "tif": c.tif, "tp_pct": c.tp_pct, "sl_pct": c.sl_pct}
     out = {
+        "version": APP_VERSION,
         "alpaca_base": ALPACA_BASE,
+        "current_strategies": CURRENT_STRATEGIES,
         "safety": {
             "cancel_open_orders_before_plain": CANCEL_OPEN_ORDERS_BEFORE_PLAIN,
             "attach_oco_on_plain": ATTACH_OCO_ON_PLAIN,
@@ -695,96 +732,96 @@ def config():
 def dashboard():
     """Dark-mode HTML dashboard with Monthly P&L Calendar, Summary, Charts, Trades."""
     try:
-        html = """
+        html = f"""
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8"/>
+  <meta charset=\"utf-8\"/>
   <title>Trading Dashboard — Dark</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>
   <style>
-    :root { --bg:#0b0f14; --panel:#0f172a; --border:#1f2937; --ink:#e2e8f0; --muted:#94a3b8; --grid:#334155; --pos-h:142; --neg-h:0; }
-    html, body { background: var(--bg); color: var(--ink); }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    h1 { margin: 0 0 16px 0; } h2 { margin: 0 0 12px 0; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
-    th { color: var(--muted); font-weight: 600; }
-    .muted { color: var(--muted); font-size: 12px; }
-    .cal-wrap { display: grid; gap: 12px; }
-    .cal-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
-    .cal-title { font-weight: 700; font-size: 18px; }
-    .cal-ctl button { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #0b1220; color: var(--ink); cursor: pointer; }
-    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
-    .dow { text-align:center; font-size:12px; color: var(--muted); margin-bottom: -6px; }
-    .day { min-height: 82px; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; position: relative; background: #0b1220; display:flex; flex-direction:column; justify-content:flex-end; }
-    .day .date { position:absolute; top:6px; right:8px; font-size:12px; color: var(--muted); }
-    .day .pl { font-weight:700; font-size:14px; color: var(--ink); }
-    .day .trades { font-size:12px; color: var(--muted); }
-    .day.today { outline: 2px dashed #8b5cf6; outline-offset: 2px; }
-    .legend { display:flex; gap:10px; align-items:center; font-size:12px; color: var(--muted); }
-    .swatch { width: 48px; height: 10px; border-radius: 6px; background: linear-gradient(90deg, hsl(var(--neg-h),80%,55%), #273041, hsl(var(--pos-h),70%,45%)); border:1px solid var(--border); }
-    @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+    :root {{ --bg:#0b0f14; --panel:#0f172a; --border:#1f2937; --ink:#e2e8f0; --muted:#94a3b8; --grid:#334155; --pos-h:142; --neg-h:0; }}
+    html, body {{ background: var(--bg); color: var(--ink); }}
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    h1 {{ margin: 0 0 6px 0; }} h2 {{ margin: 0 0 12px 0; }}
+    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
+    .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+    th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }}
+    th {{ color: var(--muted); font-weight: 600; }}
+    .muted {{ color: var(--muted); font-size: 12px; }}
+    .cal-wrap {{ display: grid; gap: 12px; }}
+    .cal-head {{ display: flex; align-items: center; gap: 8px; justify-content: space-between; }}
+    .cal-title {{ font-weight: 700; font-size: 18px; }}
+    .cal-ctl button {{ padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #0b1220; color: var(--ink); cursor: pointer; }}
+    .cal-grid {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }}
+    .dow {{ text-align:center; font-size:12px; color: var(--muted); margin-bottom: -6px; }}
+    .day {{ min-height: 82px; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; position: relative; background: #0b1220; display:flex; flex-direction:column; justify-content:flex-end; }}
+    .day .date {{ position:absolute; top:6px; right:8px; font-size:12px; color: var(--muted); }}
+    .day .pl {{ font-weight:700; font-size:14px; color: var(--ink); }}
+    .day .trades {{ font-size:12px; color: var(--muted); }}
+    .day.today {{ outline: 2px dashed #8b5cf6; outline-offset: 2px; }}
+    .legend {{ display:flex; gap:10px; align-items:center; font-size:12px; color: var(--muted); }}
+    .swatch {{ width: 48px; height: 10px; border-radius: 6px; background: linear-gradient(90deg, hsl(var(--neg-h),80%,55%), #273041, hsl(var(--pos-h),70%,45%)); border:1px solid var(--border); }}
+    @media (max-width: 1100px) {{ .grid {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
   <h1>Trading Dashboard</h1>
-  <div class="muted">Origin: <code id="origin"></code></div>
+  <div class=\"muted\">Origin: <code id=\"origin\"></code> • Version: <code>{APP_VERSION}</code></div>
   <br/>
 
-  <div class="card cal-wrap">
-    <div class="cal-head">
-      <div class="cal-title">Monthly P&amp;L Calendar: <span id="calMonth"></span></div>
-      <div class="cal-ctl">
-        <button id="prevBtn" title="Previous month">&#x276E;</button>
-        <button id="todayBtn">Today</button>
-        <button id="nextBtn" title="Next month">&#x276F;</button>
+  <div class=\"card cal-wrap\">
+    <div class=\"cal-head\">
+      <div class=\"cal-title\">Monthly P&amp;L Calendar: <span id=\"calMonth\"></span></div>
+      <div class=\"cal-ctl\">
+        <button id=\"prevBtn\" title=\"Previous month\">&#x276E;</button>
+        <button id=\"todayBtn\">Today</button>
+        <button id=\"nextBtn\" title=\"Next month\">&#x276F;</button>
       </div>
     </div>
-    <div class="legend">
-      <span>Loss</span><span class="swatch"></span><span>Gain</span>
-      <span class="muted">— intensity scales with |P&amp;L|</span>
+    <div class=\"legend\">
+      <span>Loss</span><span class=\"swatch\"></span><span>Gain</span>
+      <span class=\"muted\">— intensity scales with |P&amp;L|</span>
     </div>
-    <div class="cal-grid" id="dowRow"></div>
-    <div class="cal-grid" id="calGrid"></div>
-    <div class="muted" id="calTotals"></div>
+    <div class=\"cal-grid\" id=\"dowRow\"></div>
+    <div class=\"cal-grid\" id=\"calGrid\"></div>
+    <div class=\"muted\" id=\"calTotals\"></div>
   </div>
 
   <br/>
 
-  <div class="grid">
-    <div class="card">
+  <div class=\"grid\">
+    <div class=\"card\">
       <h2>Summary (last 7 days)</h2>
-      <div id="summary"></div>
+      <div id=\"summary\"></div>
       <h3>By Strategy</h3>
-      <table id="byStrategy">
+      <table id=\"byStrategy\">
         <thead><tr><th>Strategy</th><th>Trades</th><th>Win %</th><th>Realized P&amp;L ($)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
 
-    <div class="card">
+    <div class=\"card\">
       <h2>Daily P&amp;L (last 30 days)</h2>
-      <canvas id="dailyChart" height="200"></canvas>
+      <canvas id=\"dailyChart\" height=\"200\"></canvas>
     </div>
 
-    <div class="card">
+    <div class=\"card\">
       <h2>Equity Curve (realized)</h2>
-      <canvas id="equityChart" height="200"></canvas>
+      <canvas id=\"equityChart\" height=\"200\"></canvas>
     </div>
 
-    <div class="card">
+    <div class=\"card\">
       <h2>Recent Realized Trades</h2>
-      <table id="trades">
+      <table id=\"trades\">
         <thead><tr><th>Exit Time (UTC)</th><th>System</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&amp;L</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js\"></script>
   <script>
     const origin = window.location.origin;
     document.getElementById('origin').textContent = origin;
@@ -816,7 +853,6 @@ def dashboard():
     })();
 
     (async () => {
-      // Use fast=1 and 30d to keep endpoints quick
       const perfAll = await getJSON(origin + '/performance?days=30&include_trades=1&fast=1');
       const daily   = await getJSON(origin + '/performance/daily?days=30&fast=1');
 
@@ -828,6 +864,8 @@ def dashboard():
         document.body.insertAdjacentHTML('beforeend', '<pre style="color:#fca5a5;">Dashboard error: ' + (daily.error||'unknown') + '</pre>');
         return;
       }
+
+      const STRATS = perfAll.current_strategies || ["SPY_VWAP_EMA20","SMA10D_MACD"];
 
       const dayPNL = new Map();
       (daily.daily || []).forEach(d => dayPNL.set(d.date, d.pnl));
@@ -892,15 +930,13 @@ def dashboard():
       // Summary (7d)
       const perf7 = await getJSON(origin + '/performance?days=7&include_trades=1&fast=1');
       if (perf7.ok !== false) {
-        document.getElementById('summary').innerHTML =
-          '<div>Total realized P&amp;L: <b>$' + Number(perf7.total_realized_pnl||0).toFixed(2) + '</b></div>';
-
-        // By strategy
         const tbody = document.querySelector('#byStrategy tbody');
+        document.getElementById('summary').innerHTML = '<div>Total realized P&amp;L: <b>$' + Number(perf7.total_realized_pnl||0).toFixed(2) + '</b></div>';
         tbody.innerHTML = '';
-        Object.entries(perf7.by_strategy || {}).forEach(([k,v]) => {
+        (perf7.current_strategies || STRATS).forEach((name) => {
+          const v = (perf7.by_strategy || {})[name] || { trades:0, win_rate:0, realized_pnl:0 };
           const tr = document.createElement('tr');
-          tr.innerHTML = '<td>'+k+'</td><td>'+(v.trades||0)+'</td><td>'+(v.win_rate||0)+'%</td><td>'+Number(v.realized_pnl||0).toFixed(2)+'</td>';
+          tr.innerHTML = '<td>'+name+'</td><td>'+(v.trades||0)+'</td><td>'+(v.win_rate||0)+'%</td><td>'+Number(v.realized_pnl||0).toFixed(2)+'</td>';
           tbody.appendChild(tr);
         });
 
@@ -911,14 +947,16 @@ def dashboard():
         new Chart(document.getElementById('equityChart').getContext('2d'), {
           type: 'line',
           data: { labels: eqLabels, datasets: [{ label: 'Equity ($)', data: eqData }] },
-          options: {
-            responsive: true,
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } },
-              y: { ticks: { color: '#cbd5e1' }, grid: { color: '#334155' } }
-            }
-          }
+          options: { responsive: true, plugins: { legend: { display: false } } }
+        });
+
+        // Daily (30d)
+        const dLabels = (daily.daily||[]).map(x => x.date);
+        const dData = (daily.daily||[]).map(x => x.pnl);
+        new Chart(document.getElementById('dailyChart').getContext('2d'), {
+          type: 'bar',
+          data: { labels: dLabels, datasets: [{ label: 'Daily P&L ($)', data: dData }] },
+          options: { responsive: true, plugins: { legend: { display: false } } }
         });
 
         // Trades table (last 25)
