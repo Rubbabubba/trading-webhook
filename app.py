@@ -61,6 +61,17 @@ def _cid(prefix: str, system: str, symbol: str) -> str:
 
 def _side_is_long(side: str) -> bool:
     return side.lower() == "buy"
+    
+# ---- helpers (put near top, once) ----
+def _scrub_nans(x):
+    import math
+    if isinstance(x, float) and (math.isnan(x) or math.isinf(x)):
+        return 0.0
+    if isinstance(x, list):
+        return [_scrub_nans(v) for v in x]
+    if isinstance(x, dict):
+        return {k: _scrub_nans(v) for k, v in x.items()}
+    return x
 
 # ========= Market & Account =========
 def is_market_open_now() -> bool:
@@ -549,57 +560,70 @@ def webhook():
 @app.get("/performance")
 def performance():
     """Realized P&L from Alpaca fills (FIFO)."""
-    days_s = request.args.get("days", "7")
-    include_trades = request.args.get("include_trades", "0") == "1"
     try:
-        days = max(1, int(days_s))
-    except Exception:
-        days = 7
+        days_s = request.args.get("days", "7")
+        include_trades = request.args.get("include_trades", "0") == "1"
+        try:
+            days = max(1, int(days_s))
+        except Exception:
+            days = 7
 
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=days)
-    start_iso = _iso(start_dt)
-    end_iso   = _iso(end_dt)
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt - timedelta(days=days)
+        start_iso = _iso(start_dt)
+        end_iso   = _iso(end_dt)
 
-    acts = fetch_trade_activities(start_iso, end_iso)
-    order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
-    cid_map = fetch_client_order_ids(order_ids)
-    sym_map = _load_symbol_system_map()
-    perf = compute_performance(acts, cid_map, sym_map)
+        acts = fetch_trade_activities(start_iso, end_iso)  # resilient
+        order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
+        cid_map = fetch_client_order_ids(order_ids)        # resilient
+        sym_map = _load_symbol_system_map()
+        perf = compute_performance(acts, cid_map, sym_map)
 
-    out = {
-        "ok": True,
-        "days": days,
-        "total_realized_pnl": perf["total_pnl"],
-        "by_strategy": perf["by_strategy"],
-        "equity": perf["equity"],
-        "note": "Realized P&L from Alpaca fills (FIFO). Set SYMBOL_SYSTEM_MAP for fallback attribution.",
-    }
-    if include_trades:
-        out["trades"] = perf["trades"]
-    return jsonify(out), 200
+        out = {
+            "ok": True,
+            "days": days,
+            "total_realized_pnl": perf["total_pnl"],
+            "by_strategy": perf["by_strategy"],
+            "equity": perf["equity"],
+            "note": "Realized P&L from Alpaca fills (FIFO). Set SYMBOL_SYSTEM_MAP for fallback attribution.",
+        }
+        if include_trades:
+            out["trades"] = perf["trades"]
+
+        # guard against NaN/Inf sneaking into JSON (Flask will 500)
+        return jsonify(_scrub_nans(out)), 200
+
+    except Exception as e:
+        app.logger.exception("performance route error")
+        # Keep 200 so the dashboard JS doesn't throw
+        return jsonify({"ok": False, "error": str(e)}), 200
 
 @app.get("/performance/daily")
 def performance_daily():
     """Daily buckets of realized P&L (UTC), with per-strategy splits."""
-    days_s = request.args.get("days", "30")
     try:
-        days = max(1, int(days_s))
-    except Exception:
-        days = 30
+        days_s = request.args.get("days", "30")
+        try:
+            days = max(1, int(days_s))
+        except Exception:
+            days = 30
 
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=days)
-    start_iso = _iso(start_dt); end_iso = _iso(end_dt)
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt - timedelta(days=days)
+        start_iso = _iso(start_dt); end_iso = _iso(end_dt)
 
-    acts = fetch_trade_activities(start_iso, end_iso)
-    order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
-    cid_map = fetch_client_order_ids(order_ids)
-    sym_map = _load_symbol_system_map()
-    perf = compute_performance(acts, cid_map, sym_map)
-    daily = bucket_daily(perf["trades"])
+        acts = fetch_trade_activities(start_iso, end_iso)
+        order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
+        cid_map = fetch_client_order_ids(order_ids)
+        sym_map = _load_symbol_system_map()
+        perf = compute_performance(acts, cid_map, sym_map)
+        daily = bucket_daily(perf["trades"])
 
-    return jsonify({"ok": True, "days": days, "daily": daily}), 200
+        return jsonify(_scrub_nans({"ok": True, "days": days, "daily": daily})), 200
+
+    except Exception as e:
+        app.logger.exception("performance/daily route error")
+        return jsonify({"ok": False, "error": str(e)}), 200
 
 @app.get("/positions")
 def positions():
