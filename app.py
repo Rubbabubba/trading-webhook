@@ -5,21 +5,27 @@ import time
 import hashlib
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta, timezone
+
 import requests
 from flask import Flask, request, jsonify, make_response
-from zoneinfo import ZoneInfo
 
-# ==== Order helpers (must exist in order_mapper.py next to this file) ====
+# ZoneInfo (with fallback for older Python)
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    from backports.zoneinfo import ZoneInfo  # pip install backports.zoneinfo
+
+# ===== Order helpers (your local order_mapper.py) =====
 from order_mapper import (
     build_entry_order_payload,  # builds bracket payload for flat entries
     under_position_caps,        # checks MAX_* caps
-    load_strategy_config,       # exposes qty, order_type, tif, tp_pct, sl_pct for a system
+    load_strategy_config,       # strategy config (supports per-symbol overrides)
 )
 
 app = Flask(__name__)
 
 # ===== Alpaca trading API config =====
-# Note the explicit /v2 suffix
+# NOTE: explicit /v2 suffix
 ALPACA_BASE = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets/v2")
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID", "")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY", "")
@@ -32,7 +38,7 @@ HEADERS = {
 
 # ===== Alpaca Market Data (scanner) =====
 APCA_DATA_BASE_URL = os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets/v2")
-APCA_DATA_FEED     = os.getenv("APCA_DATA_FEED", "iex")   # "iex" (paper/free) or "sip" (paid)
+APCA_DATA_FEED     = os.getenv("APCA_DATA_FEED", "iex")   # "iex" (free/paper) or "sip" (paid)
 SELF_BASE_URL      = os.getenv("SELF_BASE_URL", "")       # e.g. https://trading-webhook-xxxx.onrender.com
 
 # ===== Position caps (env-driven) =====
@@ -128,7 +134,7 @@ def cancel_open_orders_for_symbol(symbol: str):
 
 def build_plain_entry(symbol: str, side: str, price: float, system: str) -> dict:
     """Plain (non-bracket) entry when a position already exists. Adds limit_price if needed."""
-    cfg = load_strategy_config(system)
+    cfg = load_strategy_config(system, symbol)  # per-symbol overrides honored for tif/type/qty
     payload = {
         "symbol": symbol,
         "qty": int(cfg.qty),
@@ -183,7 +189,7 @@ def build_oco_close(symbol: str, system: str, position_side: str, qty: int, ref_
         "client_order_id": f"OCO-{system}-{symbol}-{int(time.time()*1000)}",
     }
 
-# ======= Performance helpers =======
+# ===== Performance helpers =====
 KNOWN_SYSTEMS = {"SPY_VWAP_EMA20", "SMA10D_MACD"}
 
 def _iso(dt: datetime) -> str:
@@ -343,7 +349,7 @@ def compute_performance(trade_acts, client_ids_map, sym_map):
         "by_strategy": by_strategy,
         "equity": equity,
         "trades": trades,
-        "total_pnl": round(sum(t["pnl"] for t in trades), 2)
+        "total_pnl": round(sum(t["pnl"] for t in trades), 2),
     }
 
 def bucket_daily(trades):
@@ -364,11 +370,10 @@ def bucket_daily(trades):
         })
     return out
 
-# ====== Scanner helpers (S2 alert-less) ======
+# ===== Scanner helpers (S2 alert-less) =====
 NY = ZoneInfo("America/New_York")
 
 def _data_get(path, params=None, timeout=10):
-    # Same auth headers work for data API
     return requests.get(f"{APCA_DATA_BASE_URL}{path}", headers=HEADERS, params=params or {}, timeout=timeout)
 
 def _canon_timeframe(tf: str) -> str:
@@ -380,11 +385,14 @@ def _canon_timeframe(tf: str) -> str:
     return "1Hour"
 
 def fetch_bars(symbol: str, timeframe: str, limit: int = 300):
-    """Return list of bars [{t,o,h,l,c,v}], newest last. Always send a start window."""
+    """
+    Return list of bars [{t,o,h,l,c,v}], newest last.
+    Added a start window to make daily bars reliable on IEX/paper feeds.
+    """
     tf = _canon_timeframe(timeframe)
     params = {"timeframe": tf, "limit": int(limit), "feed": APCA_DATA_FEED, "adjustment": "raw"}
 
-    # Add a lookback window so Alpaca reliably returns data (paper/free feeds can be picky)
+    # ---- Reliable lookback window
     now = datetime.now(timezone.utc)
     lookback_days = 150 if tf == "1Day" else 30
     start_dt = now - timedelta(days=lookback_days)
@@ -435,6 +443,20 @@ def in_regular_hours(utc_dt: datetime) -> bool:
         return False
     hhmm = local.hour * 100 + local.minute
     return 930 <= hhmm <= 1600
+
+def is_market_open_now() -> bool:
+    """Use Alpaca clock to determine if market is open (handles holidays/half-days)."""
+    try:
+        r = requests.get(f"{ALPACA_BASE}/clock", headers=HEADERS, timeout=5)
+        if r.status_code < 400:
+            js = r.json() or {}
+            return bool(js.get("is_open", False))
+    except Exception as e:
+        app.logger.error(f"clock error: {e}")
+    return False
+
+# ---- Fire-once-per-bar cache: {(symbol, timeframe): last_bar_time_iso}
+_LAST_BAR_FIRED: Dict[tuple, str] = {}
 
 def scan_s2_symbols(
     symbols: List[str],
@@ -502,18 +524,27 @@ def scan_s2_symbols(
             go_long  = strict_long  if mode.lower()=="strict" else loose_long
             go_short = strict_short if mode.lower()=="strict" else loose_short
 
+            results["checked"].append({sym: {"daily_up": daily_up, "long_x": long_x, "short_x": short_x, "vol_ok": bool(vol_ok)}})
+
+            # ---- Per-bar dedupe (skip posts on the same completed bar)
+            bar_key = (sym, tf_canon)
+            bar_ts = str(last_bar["t"])  # ISO stamp from Alpaca
+            if not dry_run and _LAST_BAR_FIRED.get(bar_key) == bar_ts:
+                results["checked"].append({sym: "already_fired_this_bar"})
+                continue
+
             fired = []
             if go_long:
                 fired.append({"system":"SMA10D_MACD","side":"LONG","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
             if go_short:
                 fired.append({"system":"SMA10D_MACD","side":"SHORT","ticker":sym,"price":c[-1],"time":_iso(datetime.now(timezone.utc))})
 
-            results["checked"].append({sym: {"daily_up": daily_up, "long_x": long_x, "short_x": short_x, "vol_ok": bool(vol_ok)}})
-
             for payload in fired:
                 results["triggers"].append(payload)
                 if not dry_run:
                     base = SELF_BASE_URL.rstrip("/") if SELF_BASE_URL else f"http://127.0.0.1:{int(os.getenv('PORT','8080'))}"
+                    # Mark as fired for this bar *before* posting to avoid duplicates if Cron overlaps
+                    _LAST_BAR_FIRED[bar_key] = bar_ts
                     try:
                         pr = requests.post(f"{base}/webhook", headers={"Content-Type":"application/json"}, data=json.dumps(payload), timeout=10)
                         if pr.status_code >= 400:
@@ -527,17 +558,6 @@ def scan_s2_symbols(
             continue
 
     return results
-    
-def is_market_open_now() -> bool:
-    try:
-        r = requests.get(f"{ALPACA_BASE}/clock", headers=HEADERS, timeout=5)
-        if r.status_code < 400:
-            js = r.json() or {}
-            return bool(js.get("is_open", False))
-    except Exception as e:
-        app.logger.error(f"clock error: {e}")
-    return False
-    
 
 # ===== Routes =====
 @app.get("/health")
@@ -619,7 +639,7 @@ def webhook():
 
             retry_reasons = ("take_profit.limit_price must be", "stop_loss.stop_price must be")
             if base_price and any(r in msg for r in retry_reasons):
-                cfg = load_strategy_config(system)
+                cfg = load_strategy_config(system, symbol)  # per-symbol exits
                 adj_payload = adjust_bracket_to_base_price(payload, side, float(base_price), cfg.tp_pct, cfg.sl_pct)
                 app.logger.info(f"RETRY with base_price={base_price}: {adj_payload}")
 
@@ -644,7 +664,7 @@ def webhook():
         # If PLAIN and OCO enabled, attach a single OCO for the FULL current position
         if not use_bracket and ATTACH_OCO_ON_PLAIN:
             try:
-                cfg = load_strategy_config(system, symbol)
+                cfg = load_strategy_config(system, symbol)  # per-symbol exits for OCO
                 # Refresh position AFTER entry so qty/avg_entry are up-to-date
                 pos_after = get_symbol_position(symbol) or pos_before
                 pos_side = (pos_after or {}).get("side") or ((pos_before or {}).get("side"))
@@ -794,34 +814,23 @@ def dashboard():
   <title>Trading Dashboard — Dark</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    :root {
-      --bg:#0b0f14; --panel:#0f172a; --border:#1f2937; --ink:#e2e8f0; --muted:#94a3b8; --grid:#334155;
-      --pos-h:142; --neg-h:0;
-    }
+    :root { --bg:#0b0f14; --panel:#0f172a; --border:#1f2937; --ink:#e2e8f0; --muted:#94a3b8; --grid:#334155; --pos-h:142; --neg-h:0; }
     html, body { background: var(--bg); color: var(--ink); }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    h1 { margin: 0 0 16px 0; }
-    h2 { margin: 0 0 12px 0; }
+    h1 { margin: 0 0 16px 0; } h2 { margin: 0 0 12px 0; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
     .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
     th { color: var(--muted); font-weight: 600; }
     .muted { color: var(--muted); font-size: 12px; }
-
     .cal-wrap { display: grid; gap: 12px; }
     .cal-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     .cal-title { font-weight: 700; font-size: 18px; }
-    .cal-ctl button {
-      padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
-      background: #0b1220; color: var(--ink); cursor: pointer;
-    }
+    .cal-ctl button { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #0b1220; color: var(--ink); cursor: pointer; }
     .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
     .dow { text-align:center; font-size:12px; color: var(--muted); margin-bottom: -6px; }
-    .day {
-      min-height: 82px; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; position: relative;
-      background: #0b1220; display:flex; flex-direction:column; justify-content:flex-end;
-    }
+    .day { min-height: 82px; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; position: relative; background: #0b1220; display:flex; flex-direction:column; justify-content:flex-end; }
     .day .date { position:absolute; top:6px; right:8px; font-size:12px; color: var(--muted); }
     .day .pl { font-weight:700; font-size:14px; color: var(--ink); }
     .day .trades { font-size:12px; color: var(--muted); }
@@ -897,12 +906,9 @@ def dashboard():
       return r.json();
     }
     function fmt(n) { return (n>=0?'+':'') + n.toFixed(2); }
-
-    // Chart.js defaults for dark background
     Chart.defaults.color = '#e2e8f0';
     Chart.defaults.borderColor = '#334155';
 
-    // Calendar helpers
     const DOW = ['Su','Mo','Tu','We','Th','Fr','Sa'];
     function ymd(d) { return d.toISOString().slice(0,10); }
     function endOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0)); }
@@ -917,12 +923,7 @@ def dashboard():
 
     (function() {
       const dowRow = document.getElementById('dowRow');
-      DOW.forEach(d => {
-        const el = document.createElement('div');
-        el.className = 'dow';
-        el.textContent = d;
-        dowRow.appendChild(el);
-      });
+      DOW.forEach(d => { const el = document.createElement('div'); el.className = 'dow'; el.textContent = d; dowRow.appendChild(el); });
     })();
 
     (async () => {
@@ -1067,6 +1068,7 @@ def dashboard():
 def scan_s2_route():
     """
     Server-side scanner for Strategy 2 (MACD x SMA10 with daily trend filter).
+
     Query params:
       symbols=CSV            (default: env S2_WHITELIST)
       tf=60|30               (default: env S2_TF_DEFAULT)
@@ -1074,7 +1076,13 @@ def scan_s2_route():
       rth=true|false         (default: env S2_USE_RTH_DEFAULT)
       vol=true|false         (default: env S2_USE_VOL_DEFAULT)
       dry=1|0                (default: 1 = dry-run only)
+      force=1                (optional) bypass market-open gate
     """
+    # Auto-skip when market closed unless force=1
+    if request.args.get("force", "0") != "1":
+        if not is_market_open_now():
+            return jsonify({"ok": True, "skipped": "market_closed"}), 200
+
     default_syms = os.getenv("S2_WHITELIST", "SPY,QQQ,TSLA,NVDA,COIN,GOOGL,META,MSFT,AMZN,AAPL")
     symbols = request.args.get("symbols", default_syms).split(",")
     tf      = request.args.get("tf", os.getenv("S2_TF_DEFAULT", "60"))
