@@ -402,6 +402,66 @@ def dashboard():
     except Exception as e:
         return f"<pre>dashboard render error: {e}</pre>", 500
 
+@app.get("/scan/s1")
+def scan_s1_route():
+    """
+    Server-side scanner for Strategy 1 (VWAP x EMA20; long entries).
+    Query params:
+      symbols=CSV      (default: env S1_SYMBOLS, usually "SPY")
+      tf=1|5           (default: env S1_TF_DEFAULT, "1")
+      mode=reversion|trend|either  (default: env S1_MODE_DEFAULT, "either")
+      band=float       (default: env S1_BAND_DEFAULT, 0.6)
+      slope=float      (default: env S1_SLOPE_MIN, 0.0)
+      rth=true|false   (default: env S1_USE_RTH_DEFAULT, true)
+      vol=true|false   (default: env S1_USE_VOL_DEFAULT, false)
+      vmult=float      (default: env S1_VOL_MULT_DEFAULT, 1.0)
+      dry=1|0          (default: 1)
+      force=1          (optional) bypass market-open gate
+    """
+    try:
+        from core.config import (
+            S1_SYMBOLS, S1_TF_DEFAULT, S1_MODE_DEFAULT, S1_BAND_DEFAULT, S1_SLOPE_MIN,
+            S1_USE_RTH_DEFAULT, S1_USE_VOL_DEFAULT, S1_VOL_MULT_DEFAULT
+        )
+        from core.alpaca import is_market_open_now
+
+        if request.args.get("force", "0") != "1":
+            if not is_market_open_now():
+                return jsonify({"ok": True, "skipped": "market_closed"}), 200
+
+        symbols = request.args.get("symbols", S1_SYMBOLS).split(",")
+        tf      = request.args.get("tf", S1_TF_DEFAULT)
+        mode    = request.args.get("mode", S1_MODE_DEFAULT)
+        band    = float(request.args.get("band", str(S1_BAND_DEFAULT)))
+        slope   = float(request.args.get("slope", str(S1_SLOPE_MIN)))
+        rth     = request.args.get("rth", str(S1_USE_RTH_DEFAULT)).lower() == "true"
+        vol     = request.args.get("vol", str(S1_USE_VOL_DEFAULT)).lower() == "true"
+        vmult   = float(request.args.get("vmult", str(S1_VOL_MULT_DEFAULT)))
+        dry     = request.args.get("dry", "1") == "1"
+
+        scan = scan_s1_symbols(
+            symbols, tf=tf, mode=mode, band=band, slope_min=slope,
+            use_rth=rth, use_vol=vol, vol_mult=vmult, dry_run=dry
+        )
+
+        res = {
+            "ok": True,
+            "timeframe": scan.get("timeframe"),
+            "mode": mode,
+            "band": band,
+            "slope_min": slope,
+            "use_rth": rth,
+            "use_vol": vol,
+            "vmult": vmult,
+            "dry_run": dry,
+            "checked": scan.get("checked", []),
+            "triggers": scan.get("triggers", []),
+        }
+        return jsonify(res), 200
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 200
+
 @app.get("/scan/s2")
 def scan_s2_route():
     """
