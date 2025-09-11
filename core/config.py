@@ -31,6 +31,17 @@ S2_MODE_DEFAULT    = os.getenv("S2_MODE_DEFAULT", "either")
 S2_USE_RTH_DEFAULT = os.getenv("S2_USE_RTH_DEFAULT", "true")
 S2_USE_VOL_DEFAULT = os.getenv("S2_USE_VOL_DEFAULT", "false")
 
+# --- S1 (VWAP x EMA20) defaults ---
+S1_SYMBOLS        = os.getenv("S1_SYMBOLS", "SPY")
+S1_TF_DEFAULT     = os.getenv("S1_TF_DEFAULT", "1")         # "1" or "5"
+S1_MODE_DEFAULT   = os.getenv("S1_MODE_DEFAULT", "either")  # reversion|trend|either
+S1_BAND_DEFAULT   = float(os.getenv("S1_BAND_DEFAULT", "0.6"))
+S1_SLOPE_MIN      = float(os.getenv("S1_SLOPE_MIN", "0.0"))
+S1_USE_RTH_DEFAULT= os.getenv("S1_USE_RTH_DEFAULT", "true")
+S1_USE_VOL_DEFAULT= os.getenv("S1_USE_VOL_DEFAULT", "false")
+S1_VOL_MULT_DEFAULT = float(os.getenv("S1_VOL_MULT_DEFAULT", "1.0"))
+
+
 # Strategy display
 CURRENT_STRATEGIES = [s.strip() for s in os.getenv(
     "CURRENT_STRATEGIES", "SPY_VWAP_EMA20,SMA10D_MACD"
