@@ -1,10 +1,11 @@
 # app.py — modular Equities Webhook/Scanner
-# Version: 2025-09-12-01 (adds S3/S4)
+# Version: 2025-09-12-02 (S3/S4 + diagnostics + MARKET_GATE toggle)
 
 import os, time, json
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, make_response
 
+# ===== Core config/utilities from your codebase =====
 from core.config import (
     APP_VERSION, CURRENT_STRATEGIES, ALPACA_BASE,
     S2_WHITELIST, S2_TF_DEFAULT, S2_MODE_DEFAULT,
@@ -19,15 +20,15 @@ from core.performance import (
 from core.alpaca import is_market_open_now
 from core.signals import process_signal, load_strategy_config
 
-# Legacy scanners
-from strategies.s1 import scan_s1_symbols  # ensure present for /scan/s1
-from strategies.s2 import scan_s2_symbols  # used by /scan/s2
+# ===== Legacy scanners (kept intact) =====
+from strategies.s1 import scan_s1_symbols
+from strategies.s2 import scan_s2_symbols
 
-# New scanners (S3/S4)
+# ===== New scanners (S3/S4) =====
 from strategies.s3 import S3OpeningRange, __version__ as S3_VERSION
 from strategies.s4 import S4RSIPullback, __version__ as S4_VERSION
 
-# Execution + market abstraction for S3/S4
+# ===== Execution + market abstraction for S3/S4 =====
 try:
     from services.market import Market
     from services.alpaca_exec import execute_orderplan_batch
@@ -36,6 +37,21 @@ except Exception:
     Market = None
     execute_orderplan_batch = None
     _SERVICES_AVAILABLE = False
+
+# Diagnostics import (aliased to avoid name clashes with core.config HEADERS/SESSION)
+try:
+    from services.market import (
+        ALPACA_TRADING_BASE as M_TRADING_BASE,
+        ALPACA_DATA_BASE as M_DATA_BASE,
+        ALPACA_FEED as M_FEED,
+        HEADERS as M_HEADERS,
+        SESSION as M_SESSION,
+    )
+    _DIAG_OK = True
+except Exception:
+    _DIAG_OK = False
+    M_TRADING_BASE = M_DATA_BASE = M_FEED = None
+    M_HEADERS = M_SESSION = None
 
 app = Flask(__name__)
 
@@ -58,9 +74,13 @@ def _respond(payload, status=200, version_header: str | None = None):
         resp.headers["X-Strategy-Version"] = version_header
     return resp
 
+def _market_gate_is_on() -> bool:
+    # Toggle via env: MARKET_GATE=off (or 0/false) to disable the gate globally.
+    return os.getenv("MARKET_GATE", "on").strip().lower() not in ("off", "0", "false")
+
 def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefix: str):
-    # Market-open gate (match S1/S2 behavior; allow override)
-    if request.args.get("force", "0") != "1":
+    # Market-open gate (RTH) with optional env toggle + ?force=1 override
+    if _market_gate_is_on() and request.args.get("force", "0") != "1":
         if not is_market_open_now():
             return _respond({"ok": True, "skipped": "market_closed"})
 
@@ -99,7 +119,7 @@ def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefi
     except Exception as e:
         return _respond({"ok": False, "error": str(e)})
 
-# ===== Routes (from your attached app, unchanged) =====
+# ===== Health =====
 @app.get("/health")
 def health():
     return jsonify({
@@ -107,6 +127,15 @@ def health():
         "version": APP_VERSION, "time": int(time.time())
     }), 200
 
+@app.route("/health/versions", methods=["GET"])
+def health_versions():
+    return jsonify({
+        "app": APP_VERSION,
+        "S3_OPENING_RANGE": S3_VERSION,
+        "S4_RSI_PB": S4_VERSION
+    }), 200
+
+# ===== Webhook =====
 @app.post("/webhook")
 def webhook():
     """Accept external alerts (or tests) and pass to the shared processor."""
@@ -114,6 +143,7 @@ def webhook():
     status, out = process_signal(data)
     return jsonify(out), status
 
+# ===== Performance / Reporting =====
 @app.get("/performance")
 def performance():
     """Realized P&L from Alpaca fills (FIFO)."""
@@ -187,6 +217,7 @@ def performance_daily():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
 
+# ===== Alpaca proxies (from your app) =====
 @app.get("/positions")
 def positions():
     """Proxy Alpaca positions (JSON)."""
@@ -205,6 +236,7 @@ def orders_open():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# ===== Config snapshot =====
 @app.get("/config")
 def config():
     """Effective runtime config snapshot (JSON)."""
@@ -235,6 +267,7 @@ def config():
     }
     return jsonify(out), 200
 
+# ===== Dark-mode dashboard (kept intact from your file) =====
 @app.get("/dashboard")
 def dashboard():
     """Dark-mode HTML dashboard with Monthly P&L Calendar, Summary, Charts, Trades."""
@@ -491,19 +524,11 @@ def dashboard():
     except Exception as e:
         return f"<pre>dashboard render error: {e}</pre>", 500
 
-# app.py
-@app.get("/diag/clock")
-def diag_clock():
-    import requests
-    from core.config import ALPACA_BASE, HEADERS
-    r = requests.get(f"{ALPACA_BASE}/clock", headers=HEADERS, timeout=4)
-    return (r.text, r.status_code, {"Content-Type": "application/json"})
-
-
+# ===== Legacy S1/S2 routes (kept functional) =====
 @app.get("/scan/s1")
 def scan_s1_route():
     """
-    Server-side scanner for Strategy 1 (VWAP x EMA20; long entries).
+    Strategy 1 scanner.
     Query params:
       symbols=CSV      (default: env S1_SYMBOLS, usually "SPY")
       tf=1|5           (default: env S1_TF_DEFAULT, "1")
@@ -522,7 +547,7 @@ def scan_s1_route():
             S1_USE_RTH_DEFAULT, S1_USE_VOL_DEFAULT, S1_VOL_MULT_DEFAULT
         )
 
-        if request.args.get("force", "0") != "1":
+        if _market_gate_is_on() and request.args.get("force", "0") != "1":
             if not is_market_open_now():
                 return jsonify({"ok": True, "skipped": "market_closed"}), 200
 
@@ -562,19 +587,18 @@ def scan_s1_route():
 @app.get("/scan/s2")
 def scan_s2_route():
     """
-    Server-side scanner for Strategy 2 (MACD x SMA10 with daily trend filter).
-
+    Strategy 2 scanner.
     Query params:
       symbols=CSV            (default: env S2_WHITELIST)
       tf=60|30|120|day       (default: env S2_TF_DEFAULT)
       mode=strict|either     (default: env S2_MODE_DEFAULT)
       rth=true|false         (default: env S2_USE_RTH_DEFAULT)
       vol=true|false         (default: env S2_USE_VOL_DEFAULT)
-      dry=1|0                (default: 1 = dry-run only)
+      dry=1|0                (default: 1)
       force=1                (optional) bypass market-open gate
     """
     try:
-        if request.args.get("force", "0") != "1":
+        if _market_gate_is_on() and request.args.get("force", "0") != "1":
             if not is_market_open_now():
                 return jsonify({"ok": True, "skipped": "market_closed"}), 200
 
@@ -604,14 +628,6 @@ def scan_s2_route():
         return jsonify({"ok": False, "error": str(e)}), 200
 
 # ===== New: S3/S4 endpoints =====
-@app.route("/health/versions", methods=["GET"])
-def health_versions():
-    return jsonify({
-        "app": APP_VERSION,
-        "S3_OPENING_RANGE": S3_VERSION,
-        "S4_RSI_PB": S4_VERSION
-    }), 200
-
 @app.route("/scan/s3", methods=["GET", "POST"])
 def scan_s3_route():
     """Opening Range Breakout (S3). Honors ?dry= and market-open gate; symbols from S3_SYMBOLS or EQUITY_SYMBOLS."""
@@ -631,6 +647,38 @@ def scan_s4_route():
         system_version=S4_VERSION,
         env_prefix="S4",
     )
+
+# ===== Diagnostics =====
+@app.get("/diag/alpaca")
+def diag_alpaca():
+    if not _DIAG_OK:
+        return jsonify({"ok": False, "error": "diagnostics unavailable"}), 500
+    return jsonify({
+        "trading_base": M_TRADING_BASE,
+        "data_base": M_DATA_BASE,
+        "feed": M_FEED,
+        "market_gate": "on" if _market_gate_is_on() else "off",
+    }), 200
+
+@app.get("/diag/clock")
+def diag_clock():
+    if not _DIAG_OK:
+        return jsonify({"ok": False, "error": "diagnostics unavailable"}), 500
+    r = M_SESSION.get(f"{M_TRADING_BASE}/v2/clock", headers=M_HEADERS, timeout=6)
+    return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type", "application/json")})
+
+@app.get("/diag/data_latest")
+def diag_data_latest():
+    if not _DIAG_OK:
+        return jsonify({"ok": False, "error": "diagnostics unavailable"}), 500
+    sym = request.args.get("symbol", "SPY")
+    r = M_SESSION.get(
+        f"{M_DATA_BASE}/v2/stocks/{sym}/trades/latest",
+        headers=M_HEADERS,
+        params={"feed": M_FEED},
+        timeout=6,
+    )
+    return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type", "application/json")})
 
 # ===== Entrypoint =====
 if __name__ == "__main__":
