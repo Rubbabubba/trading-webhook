@@ -491,6 +491,15 @@ def dashboard():
     except Exception as e:
         return f"<pre>dashboard render error: {e}</pre>", 500
 
+# app.py
+@app.get("/diag/clock")
+def diag_clock():
+    import requests
+    from core.config import ALPACA_BASE, HEADERS
+    r = requests.get(f"{ALPACA_BASE}/clock", headers=HEADERS, timeout=4)
+    return (r.text, r.status_code, {"Content-Type": "application/json"})
+
+
 @app.get("/scan/s1")
 def scan_s1_route():
     """
