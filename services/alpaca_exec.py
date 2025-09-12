@@ -1,92 +1,80 @@
-import os
-import uuid
-import math
+# services/alpaca_exec.py
+# Version: 2025-09-12-EXEC
+# Places MARKET bracket orders on Alpaca using OrderPlan inputs.
+
+from __future__ import annotations
+import time
 from typing import List, Dict, Any
-import requests
 
-ALPACA_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET = os.getenv("ALPACA_API_SECRET", "")
-ALPACA_TRADING_BASE = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets").rstrip("/")
-TIF = os.getenv("ALPACA_TIME_IN_FORCE", "day")
+from services.market import (
+    Market, ALPACA_TRADING_BASE, HEADERS, SESSION
+)
+from strategies.base import OrderPlan
 
-HEADERS = {
-    "APCA-API-KEY-ID": ALPACA_KEY,
-    "APCA-API-SECRET-KEY": ALPACA_SECRET,
-    "Content-Type": "application/json",
-}
 
-def _round2(x: float) -> float:
-    return float(f"{x:.2f}")
-
-def _latest(symbol: str) -> float:
-    # lightweight latest trade via data API
-    data_base = os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
-    url = f"{data_base}/v2/stocks/{symbol}/trades/latest"
-    r = requests.get(url, headers={k: v for k, v in HEADERS.items() if k != "Content-Type"}, timeout=8)
-    r.raise_for_status()
-    return float(r.json()["trade"]["p"])
-
-def _build_prices(side: str, price: float, tp_pct: float, sl_pct: float) -> Dict[str, float]:
+def _tp_sl_prices(side: str, last: float, tp_pct: float, sl_pct: float):
+    # Round to 2 decimals for stocks
     if side == "buy":
-        tp = price * (1.0 + tp_pct)
-        sl = price * (1.0 - sl_pct)
-    else:  # sell / short
-        tp = price * (1.0 - tp_pct)
-        sl = price * (1.0 + sl_pct)
-    return {"tp": _round2(tp), "sl": _round2(sl)}
+        tp = round(last * (1.0 + float(tp_pct)), 2)
+        sl = round(last * (1.0 - float(sl_pct)), 2)
+    else:  # sell/short
+        tp = round(last * (1.0 - float(tp_pct)), 2)
+        sl = round(last * (1.0 + float(sl_pct)), 2)
+    return tp, sl
 
-def execute_orderplan_batch(plans: List[Any], system: str) -> List[Dict[str, Any]]:
+
+def _client_order_id(system: str, symbol: str) -> str:
+    return f"{system}:{symbol}:{int(time.time())}"
+
+
+def execute_orderplan_batch(plans: List[OrderPlan], system: str) -> List[Dict[str, Any]]:
     """
-    Submit bracket market orders for a batch of OrderPlans.
-    Each plan must have: symbol, side ("buy"|"sell"), qty (int/float), tp_pct, sl_pct.
+    Submit MARKET bracket orders for each plan.
+    Returns list of {symbol, qty, side, status, id|error}.
     """
-    results: List[Dict[str, Any]] = []
-    orders_url = f"{ALPACA_TRADING_BASE}/v2/orders"
+    out: List[Dict[str, Any]] = []
+    if not plans:
+        return out
 
-    for plan in plans:
-        symbol = plan.symbol
-        side = plan.side
-        qty = int(math.floor(float(plan.qty)))
-        if qty < 1:
-            results.append({"symbol": symbol, "ok": False, "error": "qty<1", "skipped": True})
-            continue
-
+    mkt = Market()
+    for p in plans:
         try:
-            px = _latest(symbol)
-            prices = _build_prices(side, px, plan.tp_pct, plan.sl_pct)
+            sym = p.symbol.upper()
+            side = p.side.lower()
+            qty  = int(p.qty)
+            if qty <= 0:
+                out.append({"symbol": sym, "side": side, "qty": qty, "status": "skipped", "reason": "qty<=0"})
+                continue
+
+            last = mkt.last_price(sym)
+            tp_price, sl_price = _tp_sl_prices(side, last, p.tp_pct, p.sl_pct)
 
             payload = {
-                "symbol": symbol,
+                "symbol": sym,
                 "qty": qty,
-                "side": side,
+                "side": side,                 # "buy" or "sell"
                 "type": "market",
-                "time_in_force": TIF,
+                "time_in_force": "day",
                 "order_class": "bracket",
-                "take_profit": {"limit_price": prices["tp"]},
-                "stop_loss": {"stop_price": prices["sl"]},
-                "client_order_id": f"{system}-{symbol}-{uuid.uuid4().hex[:8]}",
+                "take_profit": {"limit_price": tp_price},
+                "stop_loss": {"stop_price": sl_price},
+                "client_order_id": _client_order_id(system, sym),
+                "extended_hours": False,
             }
 
-            r = requests.post(orders_url, headers=HEADERS, json=payload, timeout=12)
-            if r.status_code >= 400:
-                results.append({
-                    "symbol": symbol, "ok": False, "status": r.status_code,
-                    "error": r.text[:300]
+            r = SESSION.post(f"{ALPACA_TRADING_BASE}/v2/orders", headers=HEADERS, json=payload, timeout=10)
+            if r.status_code >= 300:
+                out.append({
+                    "symbol": sym, "side": side, "qty": qty,
+                    "status": "error", "error": f"{r.status_code} {r.text[:300]}"
                 })
                 continue
 
-            j = r.json()
-            results.append({
-                "symbol": symbol,
-                "ok": True,
-                "id": j.get("id"),
-                "status": j.get("status"),
-                "submitted_at": j.get("submitted_at"),
-                "client_order_id": j.get("client_order_id"),
-                "tp": prices["tp"],
-                "sl": prices["sl"],
+            data = r.json()
+            out.append({
+                "symbol": sym, "side": side, "qty": qty,
+                "status": "submitted", "id": data.get("id"), "tp": tp_price, "sl": sl_price
             })
         except Exception as e:
-            results.append({"symbol": symbol, "ok": False, "error": str(e)})
-
-    return results
+            out.append({"symbol": getattr(p, 'symbol', '?'), "status": "error", "error": str(e)})
+    return out
