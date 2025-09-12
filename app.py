@@ -1,5 +1,5 @@
-# app.py — modular Equities Webhook/Scanner
-# Version: 2025-09-12-02 (S3/S4 + diagnostics + MARKET_GATE toggle)
+# app.py — Equities Webhook/Scanner
+# Version: 2025-09-12-EXEC (S1/S2 auto-exec; S3/S4 default live; diagnostics)
 
 import os, time, json
 from datetime import datetime, timedelta, timezone
@@ -20,15 +20,18 @@ from core.performance import (
 from core.alpaca import is_market_open_now
 from core.signals import process_signal, load_strategy_config
 
-# ===== Legacy scanners (kept intact) =====
+# ===== Legacy scanners (kept) =====
 from strategies.s1 import scan_s1_symbols
 from strategies.s2 import scan_s2_symbols
+
+# ===== Strategy base / plan =====
+from strategies.base import OrderPlan
 
 # ===== New scanners (S3/S4) =====
 from strategies.s3 import S3OpeningRange, __version__ as S3_VERSION
 from strategies.s4 import S4RSIPullback, __version__ as S4_VERSION
 
-# ===== Execution + market abstraction for S3/S4 =====
+# ===== Execution + market abstraction =====
 try:
     from services.market import Market
     from services.alpaca_exec import execute_orderplan_batch
@@ -38,7 +41,7 @@ except Exception:
     execute_orderplan_batch = None
     _SERVICES_AVAILABLE = False
 
-# Diagnostics import (aliased to avoid name clashes with core.config HEADERS/SESSION)
+# Diagnostics import (aliased)
 try:
     from services.market import (
         ALPACA_TRADING_BASE as M_TRADING_BASE,
@@ -55,18 +58,13 @@ except Exception:
 
 app = Flask(__name__)
 
-# ===== Helpers for S3/S4 =====
+# ===== Helpers =====
 def _to_bool(val, default=False):
     if val is None:
         return default
     if isinstance(val, bool):
         return val
-    s = str(val).strip().lower()
-    return s in ("1", "true", "yes", "y", "on")
-
-def _symbols_for(prefix: str) -> list[str]:
-    raw = os.getenv(f"{prefix}_SYMBOLS") or os.getenv("EQUITY_SYMBOLS", "SPY")
-    return [s.strip() for s in raw.split(",") if s.strip()]
+    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
 
 def _respond(payload, status=200, version_header: str | None = None):
     resp = make_response(jsonify(payload), status)
@@ -75,25 +73,53 @@ def _respond(payload, status=200, version_header: str | None = None):
     return resp
 
 def _market_gate_is_on() -> bool:
-    # Toggle via env: MARKET_GATE=off (or 0/false) to disable the gate globally.
+    # Toggle via env: MARKET_GATE=off (or 0/false) to disable the RTH gate globally.
     return os.getenv("MARKET_GATE", "on").strip().lower() not in ("off", "0", "false")
 
+def _default(v, alt):  # env helper
+    return os.getenv(v, alt)
+
+# Build OrderPlans from S1/S2 "triggers"
+def _plans_from_triggers(triggers, market, *, system_name: str,
+                         default_side: str, tp_pct: float, sl_pct: float,
+                         risk_per_trade: float) -> list[OrderPlan]:
+    bp = max(float(market.buying_power()), 0.0)
+    risk_dollars = bp * risk_per_trade
+    plans = []
+    for t in (triggers or []):
+        sym = (t.get("symbol") or t.get("sym") or "").strip().upper()
+        if not sym:
+            continue
+        side = (t.get("side") or default_side).lower()  # "buy"/"sell"
+        try:
+            qty = int(t.get("qty") or 0)
+        except Exception:
+            qty = 0
+        if qty <= 0:
+            qty = market.position_sizer(sym, risk_dollars, sl_pct)
+        if qty <= 0:
+            continue
+        plans.append(OrderPlan(
+            symbol=sym, side=side, qty=qty, tp_pct=tp_pct, sl_pct=sl_pct,
+            meta={"system": system_name, "trigger": t}
+        ))
+    return plans
+
+# Unified runner for S3/S4 (now default executes live)
 def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefix: str):
-    # Market-open gate (RTH) with optional env toggle + ?force=1 override
     if _market_gate_is_on() and request.args.get("force", "0") != "1":
         if not is_market_open_now():
             return _respond({"ok": True, "skipped": "market_closed"})
-
-    dry_default = _to_bool(os.getenv(f"{env_prefix}_DRY", "1"), default=True)
-    dry = _to_bool(request.args.get("dry"), default=dry_default)
-    symbols = _symbols_for(env_prefix)
+    # Default: live execution (dry=False) unless ?dry=1 explicitly
+    dry = _to_bool(request.args.get("dry"), default=False)
 
     if not _SERVICES_AVAILABLE:
         # Safe behavior if services are missing: allow dry only
         if dry:
             return _respond({
                 "system": system_name, "version": system_version, "dry": True,
-                "symbols": symbols, "plans": [], "note": "services missing — dry run only"
+                "symbols": os.getenv(f"{env_prefix}_SYMBOLS") or os.getenv("EQUITY_SYMBOLS", "SPY"),
+                "plans": [], "note": "services missing — dry run only"
             }, version_header=f"{env_prefix}/{system_version}")
         return _respond({
             "error": "services_unavailable",
@@ -101,6 +127,8 @@ def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefi
         }, status=503)
 
     try:
+        symbols = (os.getenv(f"{env_prefix}_SYMBOLS") or os.getenv("EQUITY_SYMBOLS", "SPY")).split(",")
+        symbols = [s.strip().upper() for s in symbols if s.strip()]
         mkt = Market()
         strat = strategy_cls(mkt)
         plans = strat.scan(mkt.now(), mkt, symbols)
@@ -135,18 +163,16 @@ def health_versions():
         "S4_RSI_PB": S4_VERSION
     }), 200
 
-# ===== Webhook =====
+# ===== Webhook (unchanged) =====
 @app.post("/webhook")
 def webhook():
-    """Accept external alerts (or tests) and pass to the shared processor."""
     data = request.get_json(force=True, silent=True) or {}
     status, out = process_signal(data)
     return jsonify(out), status
 
-# ===== Performance / Reporting =====
+# ===== Performance / Reporting (unchanged) =====
 @app.get("/performance")
 def performance():
-    """Realized P&L from Alpaca fills (FIFO)."""
     try:
         days_s = request.args.get("days", "7")
         fast   = request.args.get("fast", "0") == "1"
@@ -159,8 +185,7 @@ def performance():
 
         end_dt = datetime.now(timezone.utc)
         start_dt = end_dt - timedelta(days=days)
-        start_iso = _iso(start_dt)
-        end_iso   = _iso(end_dt)
+        start_iso = _iso(start_dt); end_iso = _iso(end_dt)
 
         acts = fetch_trade_activities(start_iso, end_iso)
         order_ids = [a.get("order_id") for a in acts if a.get("order_id")]
@@ -169,11 +194,8 @@ def performance():
         perf = compute_performance(acts, cid_map, sym_map)
 
         out = {
-            "ok": True,
-            "version": APP_VERSION,
-            "current_strategies": CURRENT_STRATEGIES,
-            "days": days,
-            "total_realized_pnl": perf["total_pnl"],
+            "ok": True, "version": APP_VERSION, "current_strategies": CURRENT_STRATEGIES,
+            "days": days, "total_realized_pnl": perf["total_pnl"],
             "by_strategy": only_current_strats(perf["by_strategy"]),
             "equity": perf["equity"],
             "note": "Realized P&L from Alpaca fills (FIFO). Use fast=1 to skip order lookups.",
@@ -186,7 +208,6 @@ def performance():
 
 @app.get("/performance/daily")
 def performance_daily():
-    """Daily buckets of realized P&L (UTC), with per-strategy splits."""
     try:
         days_s = request.args.get("days", "30")
         fast   = request.args.get("fast", "0") == "1"
@@ -217,10 +238,9 @@ def performance_daily():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
 
-# ===== Alpaca proxies (from your app) =====
+# ===== Alpaca proxies (unchanged) =====
 @app.get("/positions")
 def positions():
-    """Proxy Alpaca positions (JSON)."""
     try:
         r = SESSION.get(f"{ALPACA_BASE}/positions", headers=HEADERS, timeout=4)
         return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
@@ -229,17 +249,15 @@ def positions():
 
 @app.get("/orders/open")
 def orders_open():
-    """Proxy Alpaca open orders (JSON)."""
     try:
         r = SESSION.get(f"{ALPACA_BASE}/orders?status=open&limit=200&nested=false", headers=HEADERS, timeout=4)
         return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ===== Config snapshot =====
+# ===== Config snapshot (unchanged) =====
 @app.get("/config")
 def config():
-    """Effective runtime config snapshot (JSON)."""
     def cfg_for(system):
         c = load_strategy_config(system)
         return {
@@ -524,29 +542,14 @@ def dashboard():
     except Exception as e:
         return f"<pre>dashboard render error: {e}</pre>", 500
 
-# ===== Legacy S1/S2 routes (kept functional) =====
+# ===== S1 (now executes by default) =====
 @app.get("/scan/s1")
 def scan_s1_route():
-    """
-    Strategy 1 scanner.
-    Query params:
-      symbols=CSV      (default: env S1_SYMBOLS, usually "SPY")
-      tf=1|5           (default: env S1_TF_DEFAULT, "1")
-      mode=reversion|trend|either  (default: env S1_MODE_DEFAULT, "either")
-      band=float       (default: env S1_BAND_DEFAULT, 0.6)
-      slope=float      (default: env S1_SLOPE_MIN, 0.0)
-      rth=true|false   (default: env S1_USE_RTH_DEFAULT, true)
-      vol=true|false   (default: env S1_USE_VOL_DEFAULT, false)
-      vmult=float      (default: env S1_VOL_MULT_DEFAULT, 1.0)
-      dry=1|0          (default: 1)
-      force=1          (optional) bypass market-open gate
-    """
     try:
         from core.config import (
             S1_SYMBOLS, S1_TF_DEFAULT, S1_MODE_DEFAULT, S1_BAND_DEFAULT, S1_SLOPE_MIN,
             S1_USE_RTH_DEFAULT, S1_USE_VOL_DEFAULT, S1_VOL_MULT_DEFAULT
         )
-
         if _market_gate_is_on() and request.args.get("force", "0") != "1":
             if not is_market_open_now():
                 return jsonify({"ok": True, "skipped": "market_closed"}), 200
@@ -559,44 +562,46 @@ def scan_s1_route():
         rth     = request.args.get("rth", str(S1_USE_RTH_DEFAULT)).lower() == "true"
         vol     = request.args.get("vol", str(S1_USE_VOL_DEFAULT)).lower() == "true"
         vmult   = float(request.args.get("vmult", str(S1_VOL_MULT_DEFAULT)))
-        dry     = request.args.get("dry", "1") == "1"
+        dry     = _to_bool(request.args.get("dry"), default=False)  # default: live
 
         scan = scan_s1_symbols(
             symbols, tf=tf, mode=mode, band=band, slope_min=slope,
-            use_rth=rth, use_vol=vol, vol_mult=vmult, dry_run=dry
+            use_rth=rth, use_vol=vol, vol_mult=vmult, dry_run=True  # scanning step
         )
 
-        res = {
-            "ok": True,
-            "timeframe": scan.get("timeframe"),
-            "mode": mode,
-            "band": band,
-            "slope_min": slope,
-            "use_rth": rth,
-            "use_vol": vol,
-            "vmult": vmult,
-            "dry_run": dry,
-            "checked": scan.get("checked", []),
-            "triggers": scan.get("triggers", []),
-        }
-        return jsonify(res), 200
+        # Build plans and execute (default live)
+        if not _SERVICES_AVAILABLE:
+            return jsonify({"ok": False, "error": "services_unavailable"}), 503
+        mkt = Market()
+        plans = _plans_from_triggers(
+            scan.get("triggers", []), mkt,
+            system_name="S1",
+            default_side=_default("S1_DEFAULT_SIDE", "buy"),
+            tp_pct=float(_default("S1_TP_PCT", "0.006")),
+            sl_pct=float(_default("S1_SL_PCT", "0.003")),
+            risk_per_trade=float(_default("S1_RISK_PER_TRADE", "0.003")),
+        )
+        if dry:
+            return jsonify({
+                "ok": True, "system": "S1", "dry_run": True,
+                "checked": scan.get("checked", []),
+                "triggers": scan.get("triggers", []),
+                "plans": [p.__dict__ for p in plans]
+            }), 200
+
+        results = execute_orderplan_batch(plans, system="S1")
+        return jsonify({
+            "ok": True, "system": "S1", "dry_run": False,
+            "executed": len([r for r in results if r.get("status") == "submitted"]),
+            "results": results
+        }), 200
 
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
 
+# ===== S2 (now executes by default) =====
 @app.get("/scan/s2")
 def scan_s2_route():
-    """
-    Strategy 2 scanner.
-    Query params:
-      symbols=CSV            (default: env S2_WHITELIST)
-      tf=60|30|120|day       (default: env S2_TF_DEFAULT)
-      mode=strict|either     (default: env S2_MODE_DEFAULT)
-      rth=true|false         (default: env S2_USE_RTH_DEFAULT)
-      vol=true|false         (default: env S2_USE_VOL_DEFAULT)
-      dry=1|0                (default: 1)
-      force=1                (optional) bypass market-open gate
-    """
     try:
         if _market_gate_is_on() and request.args.get("force", "0") != "1":
             if not is_market_open_now():
@@ -608,45 +613,47 @@ def scan_s2_route():
         mode    = request.args.get("mode", S2_MODE_DEFAULT)
         rth     = (request.args.get("rth", S2_USE_RTH_DEFAULT).lower() == "true")
         vol     = (request.args.get("vol", S2_USE_VOL_DEFAULT).lower() == "true")
-        dry     = request.args.get("dry", "1") == "1"
+        dry     = _to_bool(request.args.get("dry"), default=False)  # default: live
 
-        scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=dry)
+        scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=True)
 
-        res = {
-            "ok": True,
-            "timeframe": _canon_timeframe(tf),
-            "mode": mode,
-            "use_rth": rth,
-            "use_vol": vol,
-            "dry_run": dry,
-            "checked": scan.get("checked", []),
-            "triggers": scan.get("triggers", []),
-        }
-        return jsonify(res), 200
+        if not _SERVICES_AVAILABLE:
+            return jsonify({"ok": False, "error": "services_unavailable"}), 503
+        mkt = Market()
+        plans = _plans_from_triggers(
+            scan.get("triggers", []), mkt,
+            system_name="S2",
+            default_side=_default("S2_DEFAULT_SIDE", "buy"),
+            tp_pct=float(_default("S2_TP_PCT", "0.006")),
+            sl_pct=float(_default("S2_SL_PCT", "0.003")),
+            risk_per_trade=float(_default("S2_RISK_PER_TRADE", "0.003")),
+        )
+        if dry:
+            return jsonify({
+                "ok": True, "system": "S2", "dry_run": True,
+                "checked": scan.get("checked", []),
+                "triggers": scan.get("triggers", []),
+                "plans": [p.__dict__ for p in plans]
+            }), 200
+
+        results = execute_orderplan_batch(plans, system="S2")
+        return jsonify({
+            "ok": True, "system": "S2", "dry_run": False,
+            "executed": len([r for r in results if r.get("status") == "submitted"]),
+            "results": results
+        }), 200
 
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
 
-# ===== New: S3/S4 endpoints =====
+# ===== S3/S4 (unchanged behavior, but default live) =====
 @app.route("/scan/s3", methods=["GET", "POST"])
 def scan_s3_route():
-    """Opening Range Breakout (S3). Honors ?dry= and market-open gate; symbols from S3_SYMBOLS or EQUITY_SYMBOLS."""
-    return _run_strategy(
-        strategy_cls=S3OpeningRange,
-        system_name="OPENING_RANGE",
-        system_version=S3_VERSION,
-        env_prefix="S3",
-    )
+    return _run_strategy(S3OpeningRange, "OPENING_RANGE", S3_VERSION, "S3")
 
 @app.route("/scan/s4", methods=["GET", "POST"])
 def scan_s4_route():
-    """RSI Pullback (S4). Honors ?dry= and market-open gate; symbols from S4_SYMBOLS or EQUITY_SYMBOLS."""
-    return _run_strategy(
-        strategy_cls=S4RSIPullback,
-        system_name="RSI_PB",
-        system_version=S4_VERSION,
-        env_prefix="S4",
-    )
+    return _run_strategy(S4RSIPullback, "RSI_PB", S4_VERSION, "S4")
 
 # ===== Diagnostics =====
 @app.get("/diag/alpaca")
