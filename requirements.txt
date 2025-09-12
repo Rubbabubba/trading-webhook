@@ -1,3 +1,15 @@
-flask==3.0.3
-requests==2.32.3
-gunicorn==23.0.0
+# Web
+Flask>=3.0,<3.1
+gunicorn>=21.2
+
+# Utilities
+requests>=2.31
+python-dotenv>=1.0
+pytz>=2024.1
+python-dateutil>=2.9
+
+# Trading (your services/alpaca_exec may use this or raw REST; keep if helpful)
+alpaca-py>=0.16
+
+# Tests
+pytest>=8.2
