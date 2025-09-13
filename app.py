@@ -1,18 +1,20 @@
 # app.py — Equities Webhook/Scanner
-# Version: 2025-09-12-EXEC (S1/S2 auto-exec; S3/S4 default live; diagnostics)
+# Version: 2025-09-12-EXEC-GATELOCK
+# - S1–S4 wired with default live execution (no dry flag needed)
+# - Market gate blocks execution when market is closed (no force override)
+# - Diagnostics, performance, and a full dashboard HTML
 
-import os, time, json
+import os, sys, json, time
 from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Any
 from flask import Flask, request, jsonify, make_response
 
-# ===== Core config/utilities from your codebase =====
+# ===== Core config/utilities =====
 from core.config import (
     APP_VERSION, CURRENT_STRATEGIES, ALPACA_BASE,
-    S2_WHITELIST, S2_TF_DEFAULT, S2_MODE_DEFAULT,
-    S2_USE_RTH_DEFAULT, S2_USE_VOL_DEFAULT,
     MAX_DAYS_PERF, HEADERS, SESSION
 )
-from core.utils import _iso, _canon_timeframe, _scrub_nans, only_current_strats
+from core.utils import _iso, _scrub_nans, only_current_strats
 from core.performance import (
     fetch_trade_activities, fetch_client_order_ids,
     compute_performance, bucket_daily, _load_symbol_system_map
@@ -20,9 +22,19 @@ from core.performance import (
 from core.alpaca import is_market_open_now
 from core.signals import process_signal, load_strategy_config
 
-# ===== Legacy scanners (kept) =====
+# ===== Legacy scanners =====
 from strategies.s1 import scan_s1_symbols
 from strategies.s2 import scan_s2_symbols
+
+# Optional versions for S1/S2 (if present in your modules)
+try:
+    from strategies.s1 import __version__ as S1_VERSION
+except Exception:
+    S1_VERSION = "n/a"
+try:
+    from strategies.s2 import __version__ as S2_VERSION
+except Exception:
+    S2_VERSION = "n/a"
 
 # ===== Strategy base / plan =====
 from strategies.base import OrderPlan
@@ -73,24 +85,42 @@ def _respond(payload, status=200, version_header: str | None = None):
     return resp
 
 def _market_gate_is_on() -> bool:
-    # Toggle via env: MARKET_GATE=off (or 0/false) to disable the RTH gate globally.
+    # You can disable the gate via env for testing:
+    # MARKET_GATE=off  (but there is no querystring bypass)
     return os.getenv("MARKET_GATE", "on").strip().lower() not in ("off", "0", "false")
+
+def _gate_or_skip():
+    """Return a Flask response if market is closed and gate is on, else None."""
+    if not _market_gate_is_on():
+        return None
+    if not is_market_open_now():
+        # Explicitly mark skip with a header for log-based debugging
+        resp = jsonify({"ok": True, "skipped": "market_closed"})
+        out = make_response(resp, 200)
+        out.headers["X-Gate"] = "market_closed"
+        return out
+    return None
 
 def _default(v, alt):  # env helper
     return os.getenv(v, alt)
 
+def _log(event, **fields):
+    fields["event"] = event
+    fields["ts"] = int(time.time())
+    print(json.dumps(fields), file=sys.stdout, flush=True)
+
 # Build OrderPlans from S1/S2 "triggers"
 def _plans_from_triggers(triggers, market, *, system_name: str,
                          default_side: str, tp_pct: float, sl_pct: float,
-                         risk_per_trade: float) -> list[OrderPlan]:
+                         risk_per_trade: float) -> List[OrderPlan]:
     bp = max(float(market.buying_power()), 0.0)
     risk_dollars = bp * risk_per_trade
-    plans = []
+    plans: List[OrderPlan] = []
     for t in (triggers or []):
         sym = (t.get("symbol") or t.get("sym") or "").strip().upper()
         if not sym:
             continue
-        side = (t.get("side") or default_side).lower()  # "buy"/"sell"
+        side = (t.get("side") or default_side).lower()
         try:
             qty = int(t.get("qty") or 0)
         except Exception:
@@ -105,16 +135,16 @@ def _plans_from_triggers(triggers, market, *, system_name: str,
         ))
     return plans
 
-# Unified runner for S3/S4 (now default executes live)
+# Unified runner for S3/S4 (default executes live)
 def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefix: str):
-    if _market_gate_is_on() and request.args.get("force", "0") != "1":
-        if not is_market_open_now():
-            return _respond({"ok": True, "skipped": "market_closed"})
-    # Default: live execution (dry=False) unless ?dry=1 explicitly
+    # Gate strictly enforced (no force bypass)
+    gate = _gate_or_skip()
+    if gate is not None:
+        return gate
+
     dry = _to_bool(request.args.get("dry"), default=False)
 
     if not _SERVICES_AVAILABLE:
-        # Safe behavior if services are missing: allow dry only
         if dry:
             return _respond({
                 "system": system_name, "version": system_version, "dry": True,
@@ -132,6 +162,7 @@ def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefi
         mkt = Market()
         strat = strategy_cls(mkt)
         plans = strat.scan(mkt.now(), mkt, symbols)
+        _log("plans_built", system=system_name, plans=len(plans), symbols=symbols)
 
         if dry:
             return _respond({
@@ -140,11 +171,14 @@ def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefi
             }, version_header=f"{env_prefix}/{system_version}")
 
         results = execute_orderplan_batch(plans, system=system_name)
+        _log("orders_submitted", system=system_name,
+             submitted=len([r for r in results if r.get("status") == "submitted"]))
         return _respond({
             "system": system_name, "version": system_version, "dry": False,
             "symbols": symbols, "results": results
         }, version_header=f"{env_prefix}/{system_version}")
     except Exception as e:
+        _log("strategy_error", system=system_name, error=str(e))
         return _respond({"ok": False, "error": str(e)})
 
 # ===== Health =====
@@ -155,22 +189,23 @@ def health():
         "version": APP_VERSION, "time": int(time.time())
     }), 200
 
-@app.route("/health/versions", methods=["GET"])
+@app.get("/health/versions")
 def health_versions():
     return jsonify({
         "app": APP_VERSION,
+        "S1": S1_VERSION, "S2": S2_VERSION,
         "S3_OPENING_RANGE": S3_VERSION,
         "S4_RSI_PB": S4_VERSION
     }), 200
 
-# ===== Webhook (unchanged) =====
+# ===== Webhook =====
 @app.post("/webhook")
 def webhook():
     data = request.get_json(force=True, silent=True) or {}
     status, out = process_signal(data)
     return jsonify(out), status
 
-# ===== Performance / Reporting (unchanged) =====
+# ===== Performance / Reporting =====
 @app.get("/performance")
 def performance():
     try:
@@ -238,11 +273,11 @@ def performance_daily():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
 
-# ===== Alpaca proxies (unchanged) =====
+# ===== Alpaca proxies =====
 @app.get("/positions")
 def positions():
     try:
-        r = SESSION.get(f"{ALPACA_BASE}/positions", headers=HEADERS, timeout=4)
+        r = SESSION.get(f"{ALPACA_BASE}/v2/positions", headers=HEADERS, timeout=6)
         return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -250,12 +285,30 @@ def positions():
 @app.get("/orders/open")
 def orders_open():
     try:
-        r = SESSION.get(f"{ALPACA_BASE}/orders?status=open&limit=200&nested=false", headers=HEADERS, timeout=4)
+        r = SESSION.get(
+            f"{ALPACA_BASE}/v2/orders",
+            headers=HEADERS,
+            params={"status": "open", "limit": 200, "nested": "false"},
+            timeout=6,
+        )
         return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": False, "error": str(e)}), 200
 
-# ===== Config snapshot (unchanged) =====
+@app.get("/orders/recent")
+def orders_recent():
+    try:
+        r = SESSION.get(
+            f"{ALPACA_BASE}/v2/orders",
+            headers=HEADERS,
+            params={"status": "all", "limit": 50, "nested": "false"},
+            timeout=6,
+        )
+        return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type","application/json")})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 200
+
+# ===== Config snapshot =====
 @app.get("/config")
 def config():
     def cfg_for(system):
@@ -268,392 +321,181 @@ def config():
         "version": APP_VERSION,
         "alpaca_base": ALPACA_BASE,
         "current_strategies": CURRENT_STRATEGIES,
-        "safety": {
-            "cancel_open_orders_before_plain": os.getenv("CANCEL_OPEN_ORDERS_BEFORE_PLAIN","true"),
-            "attach_oco_on_plain": os.getenv("ATTACH_OCO_ON_PLAIN","true"),
-            "oco_tif": os.getenv("OCO_TIF","gtc"),
-        },
-        "caps": {
-            "MAX_OPEN_POSITIONS": os.getenv("MAX_OPEN_POSITIONS","5"),
-            "MAX_POSITIONS_PER_SYMBOL": os.getenv("MAX_POSITIONS_PER_SYMBOL","1"),
-            "MAX_POSITIONS_PER_STRATEGY": os.getenv("MAX_POSITIONS_PER_STRATEGY","3"),
-        },
         "systems": {
+            # Examples — adapt to your own systems
             "SPY_VWAP_EMA20": cfg_for("SPY_VWAP_EMA20"),
             "SMA10D_MACD": cfg_for("SMA10D_MACD"),
         }
     }
     return jsonify(out), 200
 
-# ===== Dark-mode dashboard (kept intact from your file) =====
+# ===== Dashboard (full HTML) =====
 @app.get("/dashboard")
 def dashboard():
-    """Dark-mode HTML dashboard with Monthly P&L Calendar, Summary, Charts, Trades."""
     try:
-        html = """
-<!doctype html>
-<html>
+        html = f"""<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <title>Trading Dashboard — Dark</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <style>
-    :root { --bg:#0b0f14; --panel:#0f172a; --border:#1f2937; --ink:#e2e8f0; --muted:#94a3b8; --grid:#334155; --pos-h:142; --neg-h:0; }
-    html, body { background: var(--bg); color: var(--ink); }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    h1 { margin: 0 0 6px 0; } h2 { margin: 0 0 12px 0; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
-    th { color: var(--muted); font-weight: 600; }
-    .muted { color: var(--muted); font-size: 12px; }
-    .cal-wrap { display: grid; gap: 12px; }
-    .cal-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
-    .cal-title { font-weight: 700; font-size: 18px; }
-    .cal-ctl button { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #0b1220; color: var(--ink); cursor: pointer; }
-    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
-    .dow { text-align:center; font-size:12px; color: var(--muted); margin-bottom: -6px; }
-    .day { min-height: 82px; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; position: relative; background: #0b1220; display:flex; flex-direction:column; justify-content:flex-end; }
-    .day .date { position:absolute; top:6px; right:8px; font-size:12px; color: var(--muted); }
-    .day .pl { font-weight:700; font-size:14px; color: var(--ink); }
-    .day .trades { font-size:12px; color: var(--muted); }
-    .day.today { outline: 2px dashed #8b5cf6; outline-offset: 2px; }
-    .legend { display:flex; gap:10px; align-items:center; font-size:12px; color: var(--muted); }
-    .swatch { width: 48px; height: 10px; border-radius: 6px; background: linear-gradient(90deg, hsl(var(--neg-h),80%,55%), #273041, hsl(var(--pos-h),70%,45%)); border:1px solid var(--border); }
-    @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
-  </style>
+<meta charset="utf-8" />
+<title>Equities Webhook Dashboard — {APP_VERSION}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+:root {{
+  --bg:#0f172a; --panel:#111827; --muted:#94a3b8; --fg:#e5e7eb; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --link:#60a5fa;
+  --accent:#3b82f6;
+}}
+* {{ box-sizing:border-box }}
+html,body {{ margin:0; padding:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,Segoe UI,Roboto,Arial }}
+a {{ color:var(--link); text-decoration:none }}
+a:hover {{ text-decoration:underline }}
+.container {{ max-width:1200px; margin:0 auto; padding:20px }}
+h1 {{ font-size:22px; margin:0 0 10px }}
+h2 {{ font-size:16px; color:var(--muted); margin:0 0 12px }}
+.grid {{ display:grid; gap:16px; grid-template-columns: repeat(12, 1fr); }}
+.card {{ background:var(--panel); border:1px solid #1f2937; border-radius:12px; padding:16px; }}
+.col-4 {{ grid-column: span 4; }}
+.col-6 {{ grid-column: span 6; }}
+.col-8 {{ grid-column: span 8; }}
+.col-12 {{ grid-column: span 12; }}
+.kv {{ display:grid; grid-template-columns: 160px 1fr; gap:6px 12px; align-items:center }}
+.kv div:nth-child(odd) {{ color:var(--muted) }}
+code, pre {{ background:#0b1220; border:1px solid #1f2937; border-radius:8px; padding:10px; white-space:pre-wrap; word-break:break-word }}
+button {{
+  background:var(--accent); color:#fff; border:0; padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:600;
+}}
+button.secondary {{ background:#374151 }}
+.btnrow {{ display:flex; gap:8px; flex-wrap:wrap }}
+.badge {{ display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #374151; color:#cbd5e1 }}
+.ok {{ color:var(--ok) }} .warn {{ color:var(--warn) }} .err {{ color:var(--err) }}
+.tbl {{ width:100%; border-collapse:collapse; font-size:13px }}
+.tbl th, .tbl td {{ padding:8px 10px; border-bottom:1px solid #1f2937; text-align:left }}
+.tbl th {{ color:#a5b4fc; font-weight:600; background:#0b1220 }}
+.small {{ font-size:12px; color:var(--muted) }}
+footer {{ margin-top:20px; color:var(--muted) }}
+</style>
 </head>
 <body>
-  <h1>Trading Dashboard</h1>
-  <div class="muted">Origin: <code id="origin"></code> • Version: <code>%%APP_VERSION%%</code></div>
-  <br/>
-
-  <div class="card cal-wrap">
-    <div class="cal-head">
-      <div class="cal-title">Monthly P&amp;L Calendar: <span id="calMonth"></span></div>
-      <div class="cal-ctl">
-        <button id="prevBtn" title="Previous month">&#x276E;</button>
-        <button id="todayBtn">Today</button>
-        <button id="nextBtn" title="Next month">&#x276F;</button>
-      </div>
-    </div>
-    <div class="legend">
-      <span>Loss</span><span class="swatch"></span><span>Gain</span>
-      <span class="muted">— intensity scales with |P&amp;L|</span>
-    </div>
-    <div class="cal-grid" id="dowRow"></div>
-    <div class="cal-grid" id="calGrid"></div>
-    <div class="muted" id="calTotals"></div>
-  </div>
-
-  <br/>
-
+<div class="container">
+  <h1>Equities Webhook Dashboard <span class="badge">{APP_VERSION}</span></h1>
   <div class="grid">
-    <div class="card">
-      <h2>Summary (last 7 days)</h2>
-      <div id="summary"></div>
-      <h3>By Strategy</h3>
-      <table id="byStrategy">
-        <thead><tr><th>Strategy</th><th>Trades</th><th>Win %</th><th>Realized P&amp;L ($)</th></tr></thead>
+    <div class="card col-4">
+      <h2>Health & Versions</h2>
+      <div id="versions" class="kv small">Loading…</div>
+    </div>
+    <div class="card col-4">
+      <h2>Alpaca</h2>
+      <div id="alpaca" class="kv small">Loading…</div>
+    </div>
+    <div class="card col-4">
+      <h2>Market Clock</h2>
+      <div id="clock" class="kv small">Loading…</div>
+    </div>
+
+    <div class="card col-12">
+      <h2>Run Scanners</h2>
+      <div class="btnrow">
+        <button onclick="run('GET','/scan/s1')">Run S1 (GET)</button>
+        <button onclick="run('GET','/scan/s2')">Run S2 (GET)</button>
+        <button onclick="run('POST','/scan/s3')">Run S3 (POST)</button>
+        <button onclick="run('POST','/scan/s4')">Run S4 (POST)</button>
+        <button class="secondary" onclick="refreshPerf()">Refresh Performance</button>
+      </div>
+      <div class="small" style="margin-top:8px">
+        Note: Execution is blocked when market is closed (gate enforced). Use <code>?dry=1</code> to simulate.
+      </div>
+      <pre id="out" style="margin-top:12px; max-height:320px; overflow:auto">Waiting…</pre>
+    </div>
+
+    <div class="card col-6">
+      <h2>Performance (last 30 days)</h2>
+      <table class="tbl" id="perf">
+        <thead><tr><th>Day</th><th>P&L</th><th>By Strategy (current)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
 
-    <div class="card">
-      <h2>Daily P&amp;L (last 30 days)</h2>
-      <canvas id="dailyChart" height="200"></canvas>
-    </div>
-
-    <div class="card">
-      <h2>Equity Curve (realized)</h2>
-      <canvas id="equityChart" height="200"></canvas>
-    </div>
-
-    <div class="card">
-      <h2>Recent Realized Trades</h2>
-      <table id="trades">
-        <thead><tr><th>Exit Time (UTC)</th><th>System</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&amp;L</th></tr></thead>
-        <tbody></tbody>
-      </table>
+    <div class="card col-6">
+      <h2>Open/Recent Orders</h2>
+      <div class="btnrow">
+        <button onclick="loadOpen()">Open Orders</button>
+        <button class="secondary" onclick="loadRecent()">Recent Orders</button>
+        <button class="secondary" onclick="loadPositions()">Positions</button>
+      </div>
+      <pre id="orders" style="margin-top:12px; max-height:320px; overflow:auto">Waiting…</pre>
     </div>
   </div>
+  <footer>
+    <div class="small">© {datetime.now().year} — Service version {APP_VERSION}</div>
+  </footer>
+</div>
+<script>
+const q = (s) => document.querySelector(s);
+const fmt = (v) => (typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v));
+function setKV(el, obj) {{
+  const target = document.getElementById(el);
+  if (!obj) {{ target.textContent = "n/a"; return; }}
+  target.innerHTML = Object.entries(obj).map(([k,v]) => `<div>${{k}}</div><div><code>${{fmt(v)}}</code></div>`).join("");
+}}
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <script>
-    const origin = window.location.origin;
-    document.getElementById('origin').textContent = origin;
+async function fetchJSON(path, options={{}}) {{
+  const r = await fetch(path, options);
+  const txt = await r.text();
+  try {{ return [r.status, JSON.parse(txt)]; }} catch {{ return [r.status, {{ raw: txt }}]; }}
+}}
 
-    async function getJSON(url) {
-      const r = await fetch(url);
-      const t = await r.text();
-      try { return JSON.parse(t); } catch { return { ok:false, error: t || 'parse error' }; }
-    }
-    function fmt(n) { n = Number(n||0); return (n>=0?'+':'') + n.toFixed(2); }
+async function loadVersions() {{
+  const [st, j] = await fetchJSON('/health/versions');
+  setKV('versions', j);
+}}
+async function loadAlpaca() {{
+  const [st, j] = await fetchJSON('/diag/alpaca');
+  setKV('alpaca', j);
+}}
+async function loadClock() {{
+  const [st, j] = await fetchJSON('/diag/clock');
+  setKV('clock', j);
+}}
+async function loadOpen() {{
+  const [st, j] = await fetchJSON('/orders/open');
+  q('#orders').textContent = fmt(j);
+}}
+async function loadRecent() {{
+  const [st, j] = await fetchJSON('/orders/recent');
+  q('#orders').textContent = fmt(j);
+}}
+async function loadPositions() {{
+  const [st, j] = await fetchJSON('/positions');
+  q('#orders').textContent = fmt(j);
+}}
 
-    const DOW = ['Su','Mo','Tu','We','Th','Fr','Sa'];
-    function ymd(d) { return d.toISOString().slice(0,10); }
-    function endOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0)); }
-    function startOfMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); }
-    function colorForPL(v, maxAbs) {
-      if (!v) return null;
-      const a = Math.min(1, Math.abs(v)/Math.max(1, maxAbs));
-      const alpha = 0.15 + a*0.45;
-      const hue = v >= 0 ? 142 : 0;
-      return `hsla(${hue}, 70%, 45%, ${alpha})`;
-    }
+async function refreshPerf() {{
+  const [st1, daily] = await fetchJSON('/performance/daily?days=30&fast=1');
+  const tb = q('#perf tbody'); tb.innerHTML = '';
+  if (!daily || !daily.daily) return;
+  for (const row of daily.daily) {{
+    const tr = document.createElement('tr');
+    const by = Object.entries(row.by_strategy||{{}}).map(([k,v])=>`${{k}}: ${{(v||0).toFixed(2)}}`).join(', ');
+    tr.innerHTML = `<td>${{row.day}}</td><td>${{(row.pnl||0).toFixed(2)}}</td><td>${{by}}</td>`;
+    tb.appendChild(tr);
+  }}
+}}
 
-    (function() {
-      const dowRow = document.getElementById('dowRow');
-      DOW.forEach(d => { const el = document.createElement('div'); el.className = 'dow'; el.textContent = d; dowRow.appendChild(el); });
-    })();
+async function run(method, path) {{
+  q('#out').textContent = "Running " + method + " " + path + " …";
+  const opt = {{ method }};
+  const [st, j] = await fetchJSON(path + (path.includes('?') ? '' : '?dry=0'), opt);
+  q('#out').textContent = "(" + st + ")\\n" + fmt(j);
+  loadOpen();
+}}
 
-    (async () => {
-      const perfAll = await getJSON(origin + '/performance?days=30&include_trades=1&fast=1');
-      const daily   = await getJSON(origin + '/performance/daily?days=30&fast=1');
-
-      if (perfAll.ok === false) {
-        document.body.insertAdjacentHTML('beforeend', '<pre style="color:#fca5a5;">Dashboard error: ' + (perfAll.error||'unknown') + '</pre>');
-        return;
-      }
-      if (daily.ok === false) {
-        document.body.insertAdjacentHTML('beforeend', '<pre style="color:#fca5a5;">Dashboard error: ' + (daily.error||'unknown') + '</pre>');
-        return;
-      }
-
-      const STRATS = perfAll.current_strategies || ["SPY_VWAP_EMA20","SMA10D_MACD"];
-
-      const dayPNL = new Map();
-      (daily.daily || []).forEach(d => dayPNL.set(d.date, d.pnl));
-      const dayTrades = new Map();
-      (perfAll.trades || []).forEach(tr => {
-        const day = String(tr.exit_time).slice(0,10);
-        dayTrades.set(day, (dayTrades.get(day) || 0) + 1);
-      });
-
-      const maxAbs = Math.max(1, ...Array.from(dayPNL.values()).map(v => Math.abs(v)));
-
-      let current = new Date();
-      function setMonthLabel(dt) {
-        const m = dt.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
-        const y = dt.getUTCFullYear();
-        document.getElementById('calMonth').textContent = m + ' ' + y;
-      }
-
-      function renderCalendar(dt) {
-        const grid = document.getElementById('calGrid');
-        grid.innerHTML = '';
-        const start = startOfMonth(dt);
-               const end = endOfMonth(dt);
-        const firstDow = start.getUTCDay();
-        const daysInMonth = end.getUTCDate();
-
-        for (let i=0; i<firstDow; i++) grid.appendChild(document.createElement('div'));
-
-        let totalMonth = 0; let totalTrades = 0;
-
-        for (let d=1; d<=daysInMonth; d++) {
-          const cDate = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), d));
-          const key = ymd(cDate);
-          const pnl = dayPNL.get(key) || 0;
-          const trades = dayTrades.get(key) || 0;
-          const cell = document.createElement('div');
-          cell.className = 'day';
-          const bg = colorForPL(pnl, maxAbs);
-          if (bg) cell.style.background = bg;
-          if (ymd(cDate) === ymd(new Date())) cell.classList.add('today');
-
-          cell.innerHTML = `
-            <div class="date">${d}</div>
-            <div class="pl">$${Number(pnl||0).toFixed(2)}</div>
-            <div class="trades">${trades} trades</div>
-          `;
-          grid.appendChild(cell);
-
-          totalMonth += pnl; totalTrades += trades;
-        }
-
-        const footer = document.getElementById('calTotals');
-        footer.textContent = 'Month total: $' + totalMonth.toFixed(2) + ' across ' + totalTrades + ' trades';
-        setMonthLabel(dt);
-      }
-
-      renderCalendar(current);
-      document.getElementById('prevBtn').onclick = () => { current = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth()-1, 1)); renderCalendar(current); };
-      document.getElementById('nextBtn').onclick = () => { current = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth()+1, 1)); renderCalendar(current); };
-      document.getElementById('todayBtn').onclick = () => { current = new Date(); renderCalendar(current); };
-
-      // Summary (7d)
-      const perf7 = await getJSON(origin + '/performance?days=7&include_trades=1&fast=1');
-      if (perf7.ok !== false) {
-        const tbody = document.querySelector('#byStrategy tbody');
-        document.getElementById('summary').innerHTML = '<div>Total realized P&amp;L: <b>$' + Number(perf7.total_realized_pnl||0).toFixed(2) + '</b></div>';
-        tbody.innerHTML = '';
-        (perf7.current_strategies || STRATS).forEach((name) => {
-          const v = (perf7.by_strategy || {})[name] || { trades:0, win_rate:0, realized_pnl:0 };
-          const tr = document.createElement('tr');
-          tr.innerHTML = '<td>'+name+'</td><td>'+(v.trades||0)+'</td><td>'+(v.win_rate||0)+'%</td><td>'+Number(v.realized_pnl||0).toFixed(2)+'</td>';
-          tbody.appendChild(tr);
-        });
-
-        // Equity chart
-        const eq = perf7.equity || [];
-        const eqLabels = eq.map(x => x.time);
-        const eqData = eq.map(x => x.equity);
-        new Chart(document.getElementById('equityChart').getContext('2d'), {
-          type: 'line',
-          data: { labels: eqLabels, datasets: [{ label: 'Equity ($)', data: eqData }] },
-          options: { responsive: true, plugins: { legend: { display: false } } }
-        });
-
-        // Daily (30d)
-        const dLabels = (daily.daily||[]).map(x => x.date);
-        const dData = (daily.daily||[]).map(x => x.pnl);
-        new Chart(document.getElementById('dailyChart').getContext('2d'), {
-          type: 'bar',
-          data: { labels: dLabels, datasets: [{ label: 'Daily P&L ($)', data: dData }] },
-          options: { responsive: true, plugins: { legend: { display: false } } }
-        });
-
-        // Trades table (last 25)
-        const tBody = document.querySelector('#trades tbody');
-        (perf7.trades || []).slice(-25).forEach(t => {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${t.exit_time}</td>
-            <td>${t.system}</td>
-            <td>${t.symbol}</td>
-            <td>${t.side}</td>
-            <td>$${Number(t.entry_price).toFixed(2)}</td>
-            <td>$${Number(t.exit_price).toFixed(2)}</td>
-            <td>${fmt(Number(t.pnl))}</td>`;
-          tBody.appendChild(tr);
-        });
-      }
-    })();
-  </script>
-</body>
-</html>
-        """
-        html = html.replace("%%APP_VERSION%%", APP_VERSION)
+loadVersions(); loadAlpaca(); loadClock(); refreshPerf();
+</script>
+</body></html>"""
         resp = make_response(html, 200)
         resp.headers["Content-Type"] = "text/html; charset=utf-8"
         return resp
     except Exception as e:
         return f"<pre>dashboard render error: {e}</pre>", 500
-
-# ===== S1 (now executes by default) =====
-@app.get("/scan/s1")
-def scan_s1_route():
-    try:
-        from core.config import (
-            S1_SYMBOLS, S1_TF_DEFAULT, S1_MODE_DEFAULT, S1_BAND_DEFAULT, S1_SLOPE_MIN,
-            S1_USE_RTH_DEFAULT, S1_USE_VOL_DEFAULT, S1_VOL_MULT_DEFAULT
-        )
-        if _market_gate_is_on() and request.args.get("force", "0") != "1":
-            if not is_market_open_now():
-                return jsonify({"ok": True, "skipped": "market_closed"}), 200
-
-        symbols = request.args.get("symbols", S1_SYMBOLS).split(",")
-        tf      = request.args.get("tf", S1_TF_DEFAULT)
-        mode    = request.args.get("mode", S1_MODE_DEFAULT)
-        band    = float(request.args.get("band", str(S1_BAND_DEFAULT)))
-        slope   = float(request.args.get("slope", str(S1_SLOPE_MIN)))
-        rth     = request.args.get("rth", str(S1_USE_RTH_DEFAULT)).lower() == "true"
-        vol     = request.args.get("vol", str(S1_USE_VOL_DEFAULT)).lower() == "true"
-        vmult   = float(request.args.get("vmult", str(S1_VOL_MULT_DEFAULT)))
-        dry     = _to_bool(request.args.get("dry"), default=False)  # default: live
-
-        scan = scan_s1_symbols(
-            symbols, tf=tf, mode=mode, band=band, slope_min=slope,
-            use_rth=rth, use_vol=vol, vol_mult=vmult, dry_run=True  # scanning step
-        )
-
-        # Build plans and execute (default live)
-        if not _SERVICES_AVAILABLE:
-            return jsonify({"ok": False, "error": "services_unavailable"}), 503
-        mkt = Market()
-        plans = _plans_from_triggers(
-            scan.get("triggers", []), mkt,
-            system_name="S1",
-            default_side=_default("S1_DEFAULT_SIDE", "buy"),
-            tp_pct=float(_default("S1_TP_PCT", "0.006")),
-            sl_pct=float(_default("S1_SL_PCT", "0.003")),
-            risk_per_trade=float(_default("S1_RISK_PER_TRADE", "0.003")),
-        )
-        if dry:
-            return jsonify({
-                "ok": True, "system": "S1", "dry_run": True,
-                "checked": scan.get("checked", []),
-                "triggers": scan.get("triggers", []),
-                "plans": [p.__dict__ for p in plans]
-            }), 200
-
-        results = execute_orderplan_batch(plans, system="S1")
-        return jsonify({
-            "ok": True, "system": "S1", "dry_run": False,
-            "executed": len([r for r in results if r.get("status") == "submitted"]),
-            "results": results
-        }), 200
-
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 200
-
-# ===== S2 (now executes by default) =====
-@app.get("/scan/s2")
-def scan_s2_route():
-    try:
-        if _market_gate_is_on() and request.args.get("force", "0") != "1":
-            if not is_market_open_now():
-                return jsonify({"ok": True, "skipped": "market_closed"}), 200
-
-        default_syms = os.getenv("S2_WHITELIST", S2_WHITELIST)
-        symbols = request.args.get("symbols", default_syms).split(",")
-        tf      = request.args.get("tf", S2_TF_DEFAULT)
-        mode    = request.args.get("mode", S2_MODE_DEFAULT)
-        rth     = (request.args.get("rth", S2_USE_RTH_DEFAULT).lower() == "true")
-        vol     = (request.args.get("vol", S2_USE_VOL_DEFAULT).lower() == "true")
-        dry     = _to_bool(request.args.get("dry"), default=False)  # default: live
-
-        scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=True)
-
-        if not _SERVICES_AVAILABLE:
-            return jsonify({"ok": False, "error": "services_unavailable"}), 503
-        mkt = Market()
-        plans = _plans_from_triggers(
-            scan.get("triggers", []), mkt,
-            system_name="S2",
-            default_side=_default("S2_DEFAULT_SIDE", "buy"),
-            tp_pct=float(_default("S2_TP_PCT", "0.006")),
-            sl_pct=float(_default("S2_SL_PCT", "0.003")),
-            risk_per_trade=float(_default("S2_RISK_PER_TRADE", "0.003")),
-        )
-        if dry:
-            return jsonify({
-                "ok": True, "system": "S2", "dry_run": True,
-                "checked": scan.get("checked", []),
-                "triggers": scan.get("triggers", []),
-                "plans": [p.__dict__ for p in plans]
-            }), 200
-
-        results = execute_orderplan_batch(plans, system="S2")
-        return jsonify({
-            "ok": True, "system": "S2", "dry_run": False,
-            "executed": len([r for r in results if r.get("status") == "submitted"]),
-            "results": results
-        }), 200
-
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 200
-
-# ===== S3/S4 (unchanged behavior, but default live) =====
-@app.route("/scan/s3", methods=["GET", "POST"])
-def scan_s3_route():
-    return _run_strategy(S3OpeningRange, "OPENING_RANGE", S3_VERSION, "S3")
-
-@app.route("/scan/s4", methods=["GET", "POST"])
-def scan_s4_route():
-    return _run_strategy(S4RSIPullback, "RSI_PB", S4_VERSION, "S4")
 
 # ===== Diagnostics =====
 @app.get("/diag/alpaca")
@@ -674,18 +516,132 @@ def diag_clock():
     r = M_SESSION.get(f"{M_TRADING_BASE}/v2/clock", headers=M_HEADERS, timeout=6)
     return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type", "application/json")})
 
-@app.get("/diag/data_latest")
-def diag_data_latest():
-    if not _DIAG_OK:
-        return jsonify({"ok": False, "error": "diagnostics unavailable"}), 500
-    sym = request.args.get("symbol", "SPY")
-    r = M_SESSION.get(
-        f"{M_DATA_BASE}/v2/stocks/{sym}/trades/latest",
-        headers=M_HEADERS,
-        params={"feed": M_FEED},
-        timeout=6,
-    )
-    return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type", "application/json")})
+@app.get("/diag/routes")
+def diag_routes():
+    routes = sorted([f"{','.join(sorted(r.methods))} {r.rule}" for r in app.url_map.iter_rules()])
+    return jsonify(routes), 200
+
+# ===== S1 (exec by default; gate enforced) =====
+@app.route("/scan/s1", methods=["GET"])
+def scan_s1_route():
+    try:
+        gate = _gate_or_skip()
+        if gate is not None:
+            return gate
+
+        # Defaults via env; override with query
+        symbols = (_default("S1_SYMBOLS", "SPY")).split(",")
+        tf      = request.args.get("tf", _default("S1_TF_DEFAULT", "1"))
+        mode    = request.args.get("mode", _default("S1_MODE_DEFAULT", "either"))
+        band    = float(request.args.get("band", _default("S1_BAND_DEFAULT", "0.6")))
+        slope   = float(request.args.get("slope", _default("S1_SLOPE_MIN", "0.02")))
+        rth     = _to_bool(request.args.get("rth"), default=_to_bool(_default("S1_USE_RTH_DEFAULT","true"), True))
+        vol     = _to_bool(request.args.get("vol"), default=_to_bool(_default("S1_USE_VOL_DEFAULT","true"), True))
+        vmult   = float(request.args.get("vmult", _default("S1_VOL_MULT_DEFAULT", "1.0")))
+        dry     = _to_bool(request.args.get("dry"), default=False)  # default live
+
+        scan = scan_s1_symbols(
+            symbols, tf=tf, mode=mode, band=band, slope_min=slope,
+            use_rth=rth, use_vol=vol, vol_mult=vmult, dry_run=True
+        )
+        trigs = scan.get("triggers", []) or []
+        _log("scan_done", system="S1", triggers=len(trigs))
+
+        if not _SERVICES_AVAILABLE:
+            return jsonify({"ok": False, "error": "services_unavailable"}), 503
+
+        mkt = Market()
+        plans = _plans_from_triggers(
+            trigs, mkt,
+            system_name="S1",
+            default_side=_default("S1_DEFAULT_SIDE", "buy"),
+            tp_pct=float(_default("S1_TP_PCT", "0.006")),
+            sl_pct=float(_default("S1_SL_PCT", "0.003")),
+            risk_per_trade=float(_default("S1_RISK_PER_TRADE", "0.003")),
+        )
+
+        if dry:
+            return jsonify({
+                "ok": True, "system": "S1", "dry_run": True,
+                "checked": scan.get("checked", []),
+                "triggers": trigs,
+                "plans": [p.__dict__ for p in plans]
+            }), 200
+
+        results = execute_orderplan_batch(plans, system="S1")
+        _log("orders_submitted", system="S1",
+             submitted=len([r for r in results if r.get("status") == "submitted"]))
+        return jsonify({
+            "ok": True, "system": "S1", "dry_run": False,
+            "executed": len([r for r in results if r.get("status") == "submitted"]),
+            "results": results
+        }), 200
+
+    except Exception as e:
+        _log("route_error", system="S1", error=str(e))
+        return jsonify({"ok": False, "error": str(e)}), 200
+
+# ===== S2 (exec by default; gate enforced) =====
+@app.route("/scan/s2", methods=["GET"])
+def scan_s2_route():
+    try:
+        gate = _gate_or_skip()
+        if gate is not None:
+            return gate
+
+        default_syms = _default("S2_WHITELIST", "TSLA,NVDA,COIN,SPY,QQQ")
+        symbols = request.args.get("symbols", default_syms).split(",")
+        tf      = request.args.get("tf", _default("S2_TF_DEFAULT", "30"))
+        mode    = request.args.get("mode", _default("S2_MODE_DEFAULT", "either"))
+        rth     = _to_bool(request.args.get("rth"), default=_to_bool(_default("S2_USE_RTH_DEFAULT","true"), True))
+        vol     = _to_bool(request.args.get("vol"), default=_to_bool(_default("S2_USE_VOL_DEFAULT","true"), True))
+        dry     = _to_bool(request.args.get("dry"), default=False)  # default live
+
+        scan = scan_s2_symbols(symbols, tf=tf, mode=mode, use_rth=rth, use_vol=vol, dry_run=True)
+        trigs = scan.get("triggers", []) or []
+        _log("scan_done", system="S2", triggers=len(trigs))
+
+        if not _SERVICES_AVAILABLE:
+            return jsonify({"ok": False, "error": "services_unavailable"}), 503
+        mkt = Market()
+        plans = _plans_from_triggers(
+            trigs, mkt,
+            system_name="S2",
+            default_side=_default("S2_DEFAULT_SIDE", "buy"),
+            tp_pct=float(_default("S2_TP_PCT", "0.006")),
+            sl_pct=float(_default("S2_SL_PCT", "0.003")),
+            risk_per_trade=float(_default("S2_RISK_PER_TRADE", "0.003")),
+        )
+
+        if dry:
+            return jsonify({
+                "ok": True, "system": "S2", "dry_run": True,
+                "checked": scan.get("checked", []),
+                "triggers": trigs,
+                "plans": [p.__dict__ for p in plans]
+            }), 200
+
+        results = execute_orderplan_batch(plans, system="S2")
+        _log("orders_submitted", system="S2",
+             submitted=len([r for r in results if r.get("status") == "submitted"]))
+        return jsonify({
+            "ok": True, "system": "S2", "dry_run": False,
+            "executed": len([r for r in results if r.get("status") == "submitted"]),
+            "results": results
+        }), 200
+
+    except Exception as e:
+        _log("route_error", system="S2", error=str(e))
+        return jsonify({"ok": False, "error": str(e)}), 200
+
+# ===== S3/S4 (default live; gate enforced) =====
+@app.route("/scan/s3", methods=["GET", "POST"])
+def scan_s3_route():
+    return _run_strategy(S3OpeningRange, "OPENING_RANGE", S3_VERSION, "S3")
+
+@app.route("/scan/s4", methods=["GET", "POST"])
+def scan_s4_route():
+    return _run_strategy(S4RSIPullback, "RSI_PB", S4_VERSION, "S4")
 
 # ===== Entrypoint =====
 if __name__ == "__main__":
