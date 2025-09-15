@@ -1,13 +1,16 @@
 # app.py — Equities Webhook/Scanner
-# Version: 2025-09-12-EXEC-GATELOCK
+# Version: 2025-09-15-GATE-SYNC
 # - S1–S4 wired with default live execution (no dry flag needed)
-# - Market gate blocks execution when market is closed (no force override)
+# - Market gate blocks execution when market is closed (no override)
+# - Gate reads the exact same Alpaca clock as diagnostics
 # - Diagnostics, performance, and a full dashboard HTML
 
 import os, sys, json, time
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 from flask import Flask, request, jsonify, make_response
+
+APP_BUILD_TAG = "2025-09-15-GATE-SYNC"
 
 # ===== Core config/utilities =====
 from core.config import (
@@ -19,7 +22,6 @@ from core.performance import (
     fetch_trade_activities, fetch_client_order_ids,
     compute_performance, bucket_daily, _load_symbol_system_map
 )
-from core.alpaca import is_market_open_now
 from core.signals import process_signal, load_strategy_config
 
 # ===== Legacy scanners =====
@@ -86,20 +88,8 @@ def _respond(payload, status=200, version_header: str | None = None):
 
 def _market_gate_is_on() -> bool:
     # You can disable the gate via env for testing:
-    # MARKET_GATE=off  (but there is no querystring bypass)
+    # MARKET_GATE=off
     return os.getenv("MARKET_GATE", "on").strip().lower() not in ("off", "0", "false")
-
-def _gate_or_skip():
-    """Return a Flask response if market is closed and gate is on, else None."""
-    if not _market_gate_is_on():
-        return None
-    if not is_market_open_now():
-        # Explicitly mark skip with a header for log-based debugging
-        resp = jsonify({"ok": True, "skipped": "market_closed"})
-        out = make_response(resp, 200)
-        out.headers["X-Gate"] = "market_closed"
-        return out
-    return None
 
 def _default(v, alt):  # env helper
     return os.getenv(v, alt)
@@ -108,6 +98,38 @@ def _log(event, **fields):
     fields["event"] = event
     fields["ts"] = int(time.time())
     print(json.dumps(fields), file=sys.stdout, flush=True)
+
+def _alpaca_clock():
+    """
+    Always use the same base/session/headers as /diag endpoints so the gate
+    sees the exact same clock you see in /diag/clock.
+    """
+    base = M_TRADING_BASE if _DIAG_OK else ALPACA_BASE
+    headers = M_HEADERS if _DIAG_OK else HEADERS
+    sess = M_SESSION if _DIAG_OK and M_SESSION is not None else SESSION
+    r = sess.get(f"{base}/v2/clock", headers=headers, timeout=6)
+    r.raise_for_status()
+    return r.json()
+
+def _gate_or_skip():
+    """Return a Flask response if market is closed and gate is on, else None."""
+    if not _market_gate_is_on():
+        return None
+    try:
+        clk = _alpaca_clock()
+        is_open = bool(clk.get("is_open"))
+    except Exception as e:
+        _log("clock_error", error=str(e))
+        # Fail-safe: if we can't read the clock, do NOT execute.
+        is_open = False
+
+    if not is_open:
+        _log("gate_block", reason="market_closed")
+        resp = jsonify({"ok": True, "skipped": "market_closed"})
+        out = make_response(resp, 200)
+        out.headers["X-Gate"] = "market_closed"
+        return out
+    return None
 
 # Build OrderPlans from S1/S2 "triggers"
 def _plans_from_triggers(triggers, market, *, system_name: str,
@@ -137,7 +159,7 @@ def _plans_from_triggers(triggers, market, *, system_name: str,
 
 # Unified runner for S3/S4 (default executes live)
 def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefix: str):
-    # Gate strictly enforced (no force bypass)
+    # Gate strictly enforced (no bypass)
     gate = _gate_or_skip()
     if gate is not None:
         return gate
@@ -186,13 +208,14 @@ def _run_strategy(strategy_cls, system_name: str, system_version: str, env_prefi
 def health():
     return jsonify({
         "ok": True, "service": "equities-webhook",
-        "version": APP_VERSION, "time": int(time.time())
+        "version": APP_VERSION, "build": APP_BUILD_TAG, "time": int(time.time())
     }), 200
 
 @app.get("/health/versions")
 def health_versions():
     return jsonify({
         "app": APP_VERSION,
+        "build": APP_BUILD_TAG,
         "S1": S1_VERSION, "S2": S2_VERSION,
         "S3_OPENING_RANGE": S3_VERSION,
         "S4_RSI_PB": S4_VERSION
@@ -353,6 +376,7 @@ h1 {{ font-size:22px; margin:0 0 10px }}
 h2 {{ font-size:16px; color:var(--muted); margin:0 0 12px }}
 .grid {{ display:grid; gap:16px; grid-template-columns: repeat(12, 1fr); }}
 .card {{ background:var(--panel); border:1px solid #1f2937; border-radius:12px; padding:16px; }}
+.col-3 {{ grid-column: span 3; }}
 .col-4 {{ grid-column: span 4; }}
 .col-6 {{ grid-column: span 6; }}
 .col-8 {{ grid-column: span 8; }}
@@ -378,17 +402,21 @@ footer {{ margin-top:20px; color:var(--muted) }}
 <div class="container">
   <h1>Equities Webhook Dashboard <span class="badge">{APP_VERSION}</span></h1>
   <div class="grid">
-    <div class="card col-4">
+    <div class="card col-3">
       <h2>Health & Versions</h2>
       <div id="versions" class="kv small">Loading…</div>
     </div>
-    <div class="card col-4">
+    <div class="card col-3">
       <h2>Alpaca</h2>
       <div id="alpaca" class="kv small">Loading…</div>
     </div>
-    <div class="card col-4">
+    <div class="card col-3">
       <h2>Market Clock</h2>
       <div id="clock" class="kv small">Loading…</div>
+    </div>
+    <div class="card col-3">
+      <h2>Gate Decision</h2>
+      <div id="gate" class="kv small">Loading…</div>
     </div>
 
     <div class="card col-12">
@@ -401,7 +429,7 @@ footer {{ margin-top:20px; color:var(--muted) }}
         <button class="secondary" onclick="refreshPerf()">Refresh Performance</button>
       </div>
       <div class="small" style="margin-top:8px">
-        Note: Execution is blocked when market is closed (gate enforced). Use <code>?dry=1</code> to simulate.
+        Execution is blocked when market is closed (gate enforced). Use <code>?dry=1</code> to simulate.
       </div>
       <pre id="out" style="margin-top:12px; max-height:320px; overflow:auto">Waiting…</pre>
     </div>
@@ -425,7 +453,7 @@ footer {{ margin-top:20px; color:var(--muted) }}
     </div>
   </div>
   <footer>
-    <div class="small">© {datetime.now().year} — Service version {APP_VERSION}</div>
+    <div class="small">© {datetime.now().year} — Service version {APP_VERSION} — Build {APP_BUILD_TAG}</div>
   </footer>
 </div>
 <script>
@@ -454,6 +482,10 @@ async function loadAlpaca() {{
 async function loadClock() {{
   const [st, j] = await fetchJSON('/diag/clock');
   setKV('clock', j);
+}}
+async function loadGate() {{
+  const [st, j] = await fetchJSON('/diag/gate');
+  setKV('gate', j);
 }}
 async function loadOpen() {{
   const [st, j] = await fetchJSON('/orders/open');
@@ -488,7 +520,7 @@ async function run(method, path) {{
   loadOpen();
 }}
 
-loadVersions(); loadAlpaca(); loadClock(); refreshPerf();
+loadVersions(); loadAlpaca(); loadClock(); loadGate(); refreshPerf();
 </script>
 </body></html>"""
         resp = make_response(html, 200)
@@ -515,6 +547,18 @@ def diag_clock():
         return jsonify({"ok": False, "error": "diagnostics unavailable"}), 500
     r = M_SESSION.get(f"{M_TRADING_BASE}/v2/clock", headers=M_HEADERS, timeout=6)
     return (r.text, r.status_code, {"Content-Type": r.headers.get("content-type", "application/json")})
+
+@app.get("/diag/gate")
+def diag_gate():
+    out = {"gate_on": _market_gate_is_on()}
+    try:
+        clk = _alpaca_clock()
+        out["clock"] = clk
+        out["decision"] = "open" if clk.get("is_open") else "closed"
+    except Exception as e:
+        out["error"] = str(e)
+        out["decision"] = "closed"
+    return jsonify(out), 200
 
 @app.get("/diag/routes")
 def diag_routes():
