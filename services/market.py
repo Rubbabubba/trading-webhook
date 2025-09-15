@@ -1,222 +1,306 @@
 # services/market.py
-# Version: 2025-09-12-CT
-# Minimal market abstraction for S3 (Opening Range) and S4 (RSI Pullback).
-# - Uses Alpaca REST for account/buying power, latest trade, and minute bars.
-# - Exchange timezone (NYSE) handled in America/New_York for session math.
-# - Local "now" is returned in America/Chicago so S3's CT windows work out-of-the-box.
+# Version: 2025-09-15-MARKET-ENV-01
+# - Adds Market.from_env()
+# - Uniform Alpaca trading/data hosts + feed selection
+# - Order submit/get, positions, clock, bars, simple P&L stubs
+# - Plan executor used by S1–S4 routes
 
 from __future__ import annotations
 
 import os
-import math
-import datetime as dt
+import json
 from dataclasses import dataclass
-from typing import List, Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
 
 import requests
-from zoneinfo import ZoneInfo
 
 
-# -----------------------------
-# Configuration / Environment
-# -----------------------------
-ALPACA_KEY = os.getenv("ALPACA_API_KEY") or os.getenv("APCA_API_KEY_ID", "")
-ALPACA_SECRET = os.getenv("ALPACA_API_SECRET") or os.getenv("APCA_API_SECRET_KEY", "")
-
-ALPACA_TRADING_BASE = (os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")).rstrip("/")
-ALPACA_DATA_BASE = (os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets")).rstrip("/")
-
-# Free plan usually requires feed=iex; if you have SIP entitlement, set ALPACA_FEED=sip
-ALPACA_FEED = os.getenv("ALPACA_FEED", "iex")
-
-# Minute timeframe used for bars
-TIMEFRAME = os.getenv("INTRADAY_TIMEFRAME", "1Min")
-
-# Timezones
-EXCHANGE_TZ = ZoneInfo("America/New_York")      # NYSE
-LOCAL_TZ = ZoneInfo(os.getenv("TZ", "America/Chicago"))  # for S3 window checks
-
-# Debug printing to Render logs when set to "1"
-MARKET_DEBUG = os.getenv("MARKET_DEBUG", "0") == "1"
-
-# Shared HTTP session + headers
-SESSION = requests.Session()
-HEADERS = {
-    "APCA-API-KEY-ID": ALPACA_KEY or "",
-    "APCA-API-SECRET-KEY": ALPACA_SECRET or "",
-    # Content-Type added per request when needed
-}
+def _env_bool(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    s = str(val).strip().lower()
+    return s in ("1", "true", "yes", "on")
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def _iso_utc(ts: dt.datetime) -> str:
-    """Return an RFC3339/ISO8601 UTC string for Alpaca (Z suffix)."""
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=dt.timezone.utc)
-    ts = ts.astimezone(dt.timezone.utc)
-    return ts.isoformat().replace("+00:00", "Z")
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def _ema(values: List[float], length: int) -> float:
-    if not values:
-        return 0.0
-    if len(values) < length:
-        # Fallback: simple average over what we have
-        return float(sum(values) / len(values))
-    k = 2.0 / (length + 1.0)
-    ema = float(values[0])
-    for v in values[1:]:
-        ema = float(v) * k + ema * (1.0 - k)
-    return ema
-
-
-def _get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: float = 10.0) -> Dict[str, Any]:
-    """GET JSON with Alpaca auth headers; raises for HTTP errors with useful text."""
-    r = SESSION.get(url, headers=HEADERS, params=params or {}, timeout=timeout)
-    # If auth headers missing or entitlement wrong, Alpaca returns 401/403
-    r.raise_for_status()
-    return r.json()
-
-
-# -----------------------------
-# Data structures
-# -----------------------------
 @dataclass
-class Bar:
-    t: dt.datetime  # timestamp in EXCHANGE_TZ (aware)
-    o: float
-    h: float
-    l: float
-    c: float
-    v: float
+class MarketConfig:
+    api_key: str
+    api_secret: str
+    trading_base: str
+    data_base: str
+    feed: str = "iex"
 
 
-# -----------------------------
-# Market implementation
-# -----------------------------
 class Market:
     """
-    Methods required by S3/S4:
-      - now() -> datetime (aware, LOCAL_TZ)
-      - session_start(now) -> datetime (aware, EXCHANGE_TZ)  # 9:30 ET of 'today'
-      - buying_power() -> float
-      - last_price(symbol) -> float
-      - position_sizer(symbol, risk_dollars, sl_pct) -> int
-      - get_intraday(symbol) -> list[Bar]  # minute bars from session open → now
-      - indicators(symbol) -> object with closes (List[float]), ema20, ema50
+    Thin wrapper around Alpaca REST for:
+      - trading: /v2/orders, /v2/positions, /v2/account, /v2/clock
+      - market data: /v2/stocks/{symbol}/bars
+    Plus a tiny plan executor used by strategies S1–S4.
     """
 
-    # ----- clock -----
-    def now(self) -> dt.datetime:
-        """Local 'now' in America/Chicago for S3's trade window checks."""
-        return dt.datetime.now(tz=LOCAL_TZ)
-
-    def session_start(self, now: dt.datetime) -> dt.datetime:
-        """
-        9:30 AM ET on the calendar day corresponding to 'now' (converted to ET).
-        Returns an aware datetime in EXCHANGE_TZ.
-        """
-        if now.tzinfo is None:
-            # Assume local timezone if naive
-            now = now.replace(tzinfo=LOCAL_TZ)
-        et_now = now.astimezone(EXCHANGE_TZ)
-        open_et = et_now.replace(hour=9, minute=30, second=0, microsecond=0)
-        return open_et
-
-    # ----- account / pricing -----
-    def buying_power(self) -> float:
-        url = f"{ALPACA_TRADING_BASE}/v2/account"
-        data = _get_json(url, timeout=8)
-        bp = float(data.get("buying_power", 0.0))
-        if MARKET_DEBUG:
-            print(f"[market] buying_power=${bp:,.2f}")
-        return bp
-
-    def last_price(self, symbol: str) -> float:
-        # Add feed param to avoid entitlement issues
-        url = f"{ALPACA_DATA_BASE}/v2/stocks/{symbol}/trades/latest"
-        params = {"feed": ALPACA_FEED}
-        data = _get_json(url, params=params, timeout=6)
-        px = float(data["trade"]["p"])
-        if MARKET_DEBUG:
-            print(f"[market] last_price {symbol} -> {px}")
-        return px
-
-    # ----- sizing -----
-    def position_sizer(self, symbol: str, risk_dollars: float, sl_pct: float) -> int:
-        """
-        Simple risk model: shares = floor(risk $ / (price * sl_pct)).
-        Returns an integer share qty >= 0.
-        """
-        px = max(self.last_price(symbol), 1e-6)
-        denom = max(px * max(sl_pct, 1e-6), 1e-6)
-        qty = int(math.floor(risk_dollars / denom))
-        if MARKET_DEBUG:
-            print(f"[market] size {symbol}: risk=${risk_dollars:.2f}, sl={sl_pct:.4f}, px={px:.2f} -> qty={qty}")
-        return max(qty, 0)
-
-    # ----- bars / indicators -----
-    def get_intraday(self, symbol: str) -> List[Bar]:
-        """
-        Minute bars from today's session open (9:30 ET) to now.
-        Returns Bar.t as aware EXCHANGE_TZ datetimes.
-        """
-        now_local = self.now()  # aware LOCAL_TZ
-        start_et = self.session_start(now_local)         # aware EXCHANGE_TZ
-        start_utc = start_et.astimezone(dt.timezone.utc) # aware UTC
-        end_utc = now_local.astimezone(dt.timezone.utc)
-
-        url = f"{ALPACA_DATA_BASE}/v2/stocks/{symbol}/bars"
-        params = {
-            "timeframe": TIMEFRAME,
-            "start": _iso_utc(start_utc),
-            "end": _iso_utc(end_utc),
-            "adjustment": "raw",
-            "limit": 10000,
-            "feed": ALPACA_FEED,
+    def __init__(self, cfg: MarketConfig, session: Optional[requests.Session] = None) -> None:
+        self.cfg = cfg
+        self.session = session or requests.Session()
+        self._headers = {
+            "APCA-API-KEY-ID": cfg.api_key,
+            "APCA-API-SECRET-KEY": cfg.api_secret,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Note: Alpaca ignores "feed" header; we pass feed via querystring for data calls.
         }
-        data = _get_json(url, params=params, timeout=10)
 
-        out: List[Bar] = []
-        for b in data.get("bars", []):
-            # Alpaca times are UTC ISO strings; convert to EXCHANGE_TZ for session math
-            ts_utc = dt.datetime.fromisoformat(b["t"].replace("Z", "+00:00"))
-            ts_et = ts_utc.astimezone(EXCHANGE_TZ)
-            out.append(Bar(
-                t=ts_et,
-                o=float(b["o"]),
-                h=float(b["h"]),
-                l=float(b["l"]),
-                c=float(b["c"]),
-                v=float(b.get("v", 0.0)),
-            ))
+    # -------------------------------------------------------------------------
+    # Factory
 
-        if MARKET_DEBUG:
-            print(f"[market] {symbol} bars since {start_et.isoformat()} ET -> {len(out)} bars")
+    @classmethod
+    def from_env(cls) -> "Market":
+        """
+        Create a Market instance from environment variables.
+
+        Required:
+          - ALPACA_API_KEY
+          - ALPACA_SECRET_KEY
+
+        Optional:
+          - ALPACA_PAPER=1 (default: 1)   -> trading_base: paper-api
+          - ALPACA_LIVE=1                 -> if set, overrides and uses live trading host
+          - ALPACA_TRADING_BASE           -> override full trading base URL
+          - ALPACA_DATA_BASE              -> override full data base URL
+          - ALPACA_FEED=iex|sip           -> default: iex
+        """
+        api_key = os.getenv("ALPACA_API_KEY", "").strip()
+        api_secret = os.getenv("ALPACA_SECRET_KEY", "").strip()
+        if not api_key or not api_secret:
+            raise RuntimeError("Missing ALPACA_API_KEY or ALPACA_SECRET_KEY in environment.")
+
+        # Determine trading base
+        trading_base = os.getenv("ALPACA_TRADING_BASE")
+        if not trading_base:
+            # live vs paper precedence:
+            if _env_bool("ALPACA_LIVE", False):
+                trading_base = "https://api.alpaca.markets"
+            else:
+                # Default to paper unless explicitly live
+                trading_base = "https://paper-api.alpaca.markets"
+
+        # Data base (almost always data.alpaca.markets)
+        data_base = os.getenv("ALPACA_DATA_BASE", "https://data.alpaca.markets").rstrip("/")
+
+        feed = os.getenv("ALPACA_FEED", "iex").strip().lower() or "iex"
+
+        cfg = MarketConfig(
+            api_key=api_key,
+            api_secret=api_secret,
+            trading_base=trading_base.rstrip("/"),
+            data_base=data_base,
+            feed=feed,
+        )
+        return cls(cfg)
+
+    # -------------------------------------------------------------------------
+    # Low-level HTTP
+
+    def _req(self, method: str, url: str, **kw) -> requests.Response:
+        r = self.session.request(method, url, headers=self._headers, timeout=30, **kw)
+        if not r.ok:
+            # Try to surface JSON error if present
+            try:
+                detail = r.json()
+            except Exception:
+                detail = r.text
+            raise requests.HTTPError(f"{r.status_code} {r.reason}: {url} -> {detail}")
+        return r
+
+    # -------------------------------------------------------------------------
+    # Diagnostics & Info
+
+    def get_alpaca_bases(self) -> Dict[str, Any]:
+        return {
+            "trading_base": self.cfg.trading_base,
+            "data_base": self.cfg.data_base,
+            "feed": self.cfg.feed,
+        }
+
+    def get_clock(self) -> Dict[str, Any]:
+        url = f"{self.cfg.trading_base}/v2/clock"
+        r = self._req("GET", url)
+        data = r.json()
+        # Normalize: ensure we always return iso timestamp as 'timestamp'
+        if "timestamp" not in data:
+            data["timestamp"] = _now_iso()
+        return data
+
+    # -------------------------------------------------------------------------
+    # Account / Equity / Simple P&L stubs (for dashboard)
+
+    def get_account(self) -> Dict[str, Any]:
+        url = f"{self.cfg.trading_base}/v2/account"
+        return self._req("GET", url).json()
+
+    def get_equity_fast(self) -> Optional[float]:
+        try:
+            acct = self.get_account()
+            eq = acct.get("equity")
+            return float(eq) if eq is not None else None
+        except Exception:
+            return None
+
+    def get_pnl_fast(self, days: int = 7) -> Optional[float]:
+        # Stub: return None (or compute from activities if you want)
+        return None
+
+    def get_daily_pnl_fast(self, days: int = 7) -> List[Dict[str, Any]]:
+        # Stub daily series; fill with zeros so the chart renders
+        today = datetime.now(timezone.utc).date()
+        out: List[Dict[str, Any]] = []
+        for i in range(days):
+            d = today.fromordinal(today.toordinal() - (days - 1 - i))
+            out.append({"date": d.isoformat(), "pnl": 0.0})
         return out
 
-    def indicators(self, symbol: str):
-        """
-        Returns closes list and EMAs for S4.
-        Uses the same feed/timeframe as intraday; limit extended for better EMA stability.
-        """
-        url = f"{ALPACA_DATA_BASE}/v2/stocks/{symbol}/bars"
-        params = {
-            "timeframe": TIMEFRAME,
-            "limit": 400,         # more history for RSI/EMA
-            "adjustment": "raw",
-            "feed": ALPACA_FEED,
+    # -------------------------------------------------------------------------
+    # Orders & Positions
+
+    def submit_order(
+        self,
+        *,
+        symbol: str,
+        qty: int,
+        side: str = "buy",
+        type: str = "market",
+        time_in_force: str = "day",
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        client_order_id: Optional[str] = None,
+        extended_hours: Optional[bool] = None,
+        **extra,
+    ) -> Dict[str, Any]:
+        url = f"{self.cfg.trading_base}/v2/orders"
+        payload: Dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "qty": qty,
+            "side": side.lower(),
+            "type": type.lower(),
+            "time_in_force": time_in_force.lower(),
         }
-        data = _get_json(url, params=params, timeout=8)
-        closes = [float(b["c"]) for b in data.get("bars", [])]
+        if limit_price is not None:
+            payload["limit_price"] = float(limit_price)
+        if stop_price is not None:
+            payload["stop_price"] = float(stop_price)
+        if client_order_id:
+            payload["client_order_id"] = client_order_id
+        if extended_hours is not None:
+            payload["extended_hours"] = bool(extended_hours)
+        # allow extra passthroughs if strategies include them
+        payload.update({k: v for k, v in extra.items() if v is not None})
 
-        ema20 = _ema(closes[-200:], 20) if closes else 0.0
-        ema50 = _ema(closes[-200:], 50) if closes else 0.0
+        return self._req("POST", url, data=json.dumps(payload)).json()
 
-        if MARKET_DEBUG:
-            print(f"[market] {symbol} indicators: closes={len(closes)}, ema20={ema20:.2f}, ema50={ema50:.2f}")
+    def get_open_orders(self) -> List[Dict[str, Any]]:
+        url = f"{self.cfg.trading_base}/v2/orders?status=open&limit=200&nested=true"
+        return self._req("GET", url).json()
 
-        # Return a lightweight object with attributes closes/ema20/ema50
-        return type("Series", (), {"closes": closes, "ema20": ema20, "ema50": ema50})
+    def get_orders_recent(self, limit: int = 200) -> List[Dict[str, Any]]:
+        url = f"{self.cfg.trading_base}/v2/orders?status=all&limit={int(limit)}&nested=true"
+        return self._req("GET", url).json()
+
+    def get_positions(self) -> List[Dict[str, Any]]:
+        url = f"{self.cfg.trading_base}/v2/positions"
+        return self._req("GET", url).json()
+
+    # -------------------------------------------------------------------------
+    # Market Data (bars)
+
+    def get_bars(
+        self,
+        symbol: str,
+        *,
+        timeframe: str = "1Min",
+        limit: int = 400,
+        adjustment: str = "raw",
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        feed: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Minimal /v2/stocks/{symbol}/bars wrapper.
+        Returns raw JSON from Alpaca (with 'bars' list).
+        """
+        params = {
+            "timeframe": timeframe,
+            "limit": int(limit),
+            "adjustment": adjustment,
+            "feed": (feed or self.cfg.feed),
+        }
+        if start:
+            params["start"] = start
+        if end:
+            params["end"] = end
+
+        url = f"{self.cfg.data_base}/v2/stocks/{symbol.upper()}/bars"
+        return self._req("GET", url, params=params).json()
+
+    # -------------------------------------------------------------------------
+    # Strategy Plan Execution
+
+    def execute_plans(self, plans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Execute a list of generated order 'plans'.
+        A plan is expected to be a dict with (at minimum) keys:
+          - symbol (str)
+          - side ('buy'|'sell')
+          - qty (int)
+
+        Optional keys respected if present:
+          - type ('market'|'limit'|'stop'|'stop_limit'|...)
+          - time_in_force ('day'|'gtc'|...)
+          - limit_price (float)
+          - stop_price (float)
+          - extended_hours (bool)
+          - client_order_id (str)
+        """
+        results: List[Dict[str, Any]] = []
+        for plan in plans or []:
+            try:
+                symbol = plan.get("symbol")
+                side = (plan.get("side") or "buy").lower()
+                qty = int(plan.get("qty") or 0)
+                if not symbol or qty <= 0:
+                    continue
+
+                order_kwargs: Dict[str, Any] = {
+                    "symbol": symbol,
+                    "qty": qty,
+                    "side": side,
+                    "type": (plan.get("type") or "market").lower(),
+                    "time_in_force": (plan.get("time_in_force") or "day").lower(),
+                }
+                if "limit_price" in plan and plan["limit_price"] is not None:
+                    order_kwargs["limit_price"] = float(plan["limit_price"])
+                if "stop_price" in plan and plan["stop_price"] is not None:
+                    order_kwargs["stop_price"] = float(plan["stop_price"])
+                if "extended_hours" in plan and plan["extended_hours"] is not None:
+                    order_kwargs["extended_hours"] = bool(plan["extended_hours"])
+                if "client_order_id" in plan and plan["client_order_id"]:
+                    order_kwargs["client_order_id"] = str(plan["client_order_id"])
+
+                # passthrough any other supported fields
+                passthrough_keys = (
+                    "trail_price", "trail_percent", "order_class", "take_profit", "stop_loss", "notional"
+                )
+                for k in passthrough_keys:
+                    if k in plan and plan[k] is not None:
+                        order_kwargs[k] = plan[k]
+
+                resp = self.submit_order(**order_kwargs)
+                results.append({"ok": True, "plan": plan, "order": resp})
+            except Exception as e:
+                results.append({"ok": False, "plan": plan, "error": str(e)})
+        return results
