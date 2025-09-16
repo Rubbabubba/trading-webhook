@@ -288,65 +288,258 @@ def scan_s4():
         return run_strategy(S4RSIPullback, params=params, symbols=symbols, dry=dry)
     return _safe_call(_run)
 
-# Simple HTML dashboard (minimal; real UI may live elsewhere)
+from flask import Response
+
 @app.get("/dashboard")
 def dashboard():
-    gate = _gate_decision()
-    html = f"""
-<!doctype html>
-<html>
+    return Response(DASHBOARD_HTML, mimetype="text/html")
+
+DASHBOARD_HTML = """<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Equities Webhook Dashboard</title>
-  <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; }}
-    code, pre {{ background:#111; color:#0f0; padding:.5rem; border-radius:6px; display:block; }}
-    .cards {{ display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap:1rem; }}
-    .card {{ border:1px solid #ddd; border-radius:8px; padding:1rem; }}
-    h1 {{ margin-top:0; }}
-    table {{ width:100%; border-collapse:collapse; }}
-    th, td {{ text-align:left; padding:.35rem .5rem; border-bottom:1px solid #eee; }}
-    .okay {{ color:#0a7; }} .warn {{ color:#c60; }} .bad {{ color:#c00; }}
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Equities Trading Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root{
+    --bg:#0f1221; --panel:#141836; --muted:#9aa3b2; --text:#e8ecf2; --good:#0ecb81; --bad:#ff5b5b; --accent:#7aa2ff;
+    --chip:#1b2148; --chip-br:#283063;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:1200px;margin:32px auto;padding:0 16px}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+  h1{font-size:22px;margin:0}
+  .sub{font-size:12px;color:var(--muted)}
+  .grid{display:grid;gap:16px}
+  @media (min-width:900px){ .grid.cols-3{grid-template-columns:2fr 1fr 1fr} .grid.cols-2{grid-template-columns:2fr 1fr} }
+  .card{background:var(--panel);border:1px solid #1f2552;border-radius:14px;padding:16px}
+  .card h2{font-size:14px;margin:0 0 12px 0;color:#c7cff7;letter-spacing:.2px}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .stat{background:var(--chip);border:1px solid var(--chip-br);border-radius:12px;padding:10px 12px;display:inline-flex;flex-direction:column;gap:4px;min-width:120px}
+  .stat .k{font-size:11px;color:var(--muted)}
+  .stat .v{font-weight:700}
+  .btn{background:#1b4bff22;border:1px solid #365cff;border-radius:10px;color:#cdd6ff;padding:8px 12px;font-weight:600;cursor:pointer}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.alt{background:#1a2748;border-color:#2a3b7d}
+  .btn.row{display:inline-flex;align-items:center;gap:8px}
+  .btns{display:flex;flex-wrap:wrap;gap:8px}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px;border-bottom:1px solid #1f2552;font-size:12px}
+  th{text-align:left;color:#b7c0e6;font-weight:600}
+  .pill{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--chip-br);background:var(--chip);color:#cfd6ff;display:inline-block}
+  .ok{color:var(--good)} .bad{color:var(--bad)}
+  .muted{color:var(--muted)}
+  .note{font-size:12px;color:var(--muted);margin-top:6px}
+  .log{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0d1124;border:1px solid #1e2450;border-radius:10px;padding:10px;height:150px;overflow:auto;font-size:12px;white-space:pre-wrap}
+  .tag{background:#1e2655;border:1px solid #2f3a7a;border-radius:8px;padding:4px 8px;color:#b7c0e6;font-size:11px}
+</style>
 </head>
 <body>
-  <h1>Equities Webhook</h1>
-  <div class="cards">
-    <div class="card">
-      <h3>Versions</h3>
-      <table>
-        <tr><th>App</th><td>{APP_VERSION}</td></tr>
-        <tr><th>S3</th><td>{S3_VERSION}</td></tr>
-        <tr><th>S4</th><td>{S4_VERSION}</td></tr>
-      </table>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Equities Trading Dashboard</h1>
+      <div class="sub">Live scans (S1–S4), orders, positions, and performance</div>
     </div>
-    <div class="card">
-      <h3>Alpaca</h3>
-      <table>
-        <tr><th>Trading</th><td>{market.trading_base}</td></tr>
-        <tr><th>Data</th><td>{market.data_base}</td></tr>
-        <tr><th>Feed</th><td>{market.feed}</td></tr>
-      </table>
+    <div class="row">
+      <span id="appVersion" class="tag">app: —</span>
+      <span id="s3v" class="tag">S3: —</span>
+      <span id="s4v" class="tag">S4: —</span>
     </div>
-    <div class="card">
-      <h3>Gate</h3>
-      <pre>{json.dumps(gate, indent=2)}</pre>
-    </div>
+  </header>
+
+  <div class="grid cols-3">
+    <section class="card">
+      <h2>Status</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div class="stat"><span class="k">Market Gate</span><span class="v" id="gateDecision">—</span></div>
+        <div class="stat"><span class="k">Clock</span><span class="v"><span id="isOpen">—</span> <span class="muted">(now)</span></span></div>
+        <div class="stat"><span class="k">Next Open</span><span class="v" id="nextOpen">—</span></div>
+        <div class="stat"><span class="k">Next Close</span><span class="v" id="nextClose">—</span></div>
+      </div>
+      <div class="row">
+        <div class="stat"><span class="k">Feed</span><span class="v" id="feed">—</span></div>
+        <div class="stat"><span class="k">Trading Host</span><span class="v" id="tbase">—</span></div>
+        <div class="stat"><span class="k">Data Host</span><span class="v" id="dbase">—</span></div>
+      </div>
+      <div class="note">Gate must be <strong>open</strong> for executions to submit.</div>
+    </section>
+
+    <section class="card">
+      <h2>Controls</h2>
+      <div class="btns" style="margin-bottom:10px">
+        <button class="btn" onclick="scan('s1','tf=1&mode=trend&slope=0.02&vol=true&vmult=1.0')">Run S1 Trend (1m)</button>
+        <button class="btn" onclick="scan('s1','tf=5&mode=reversion&band=0.8')">Run S1 Reversion (5m)</button>
+        <button class="btn" onclick="scan('s1','tf=1&mode=either&band=0.6&vol=true&vmult=1.0')">Run S1 Either (1m)</button>
+        <button class="btn alt" onclick="scan('s2','')">Run S2</button>
+        <button class="btn alt" onclick="post('/scan/s3?dry=0')">Run S3</button>
+        <button class="btn alt" onclick="post('/scan/s4?dry=0')">Run S4</button>
+      </div>
+      <div class="btns">
+        <button class="btn" onclick="refreshAll()">Refresh All</button>
+      </div>
+      <div class="note">Scans call your live endpoints with <code>dry=0</code>. Execution still respects the gate.</div>
+    </section>
+
+    <section class="card">
+      <h2>Equity (30d)</h2>
+      <canvas id="pnlChart" height="160"></canvas>
+      <div class="note">Pulled from <code>/performance/daily?days=30</code>.</div>
+    </section>
   </div>
 
-  <h3>Quick links</h3>
-  <ul>
-    <li><a href="/health/versions">/health/versions</a></li>
-    <li><a href="/diag/alpaca">/diag/alpaca</a></li>
-    <li><a href="/diag/clock">/diag/clock</a></li>
-    <li><a href="/diag/gate">/diag/gate</a></li>
-    <li><a href="/orders/recent">/orders/recent</a></li>
-    <li><a href="/positions">/positions</a></li>
-  </ul>
+  <div class="grid cols-2" style="margin-top:16px">
+    <section class="card">
+      <h2>Recent Orders</h2>
+      <table id="ordersTbl">
+        <thead><tr>
+          <th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Type</th><th>Status</th><th>Filled</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Positions</h2>
+      <table id="posTbl">
+        <thead><tr>
+          <th>Symbol</th><th>Qty</th><th>Side</th><th>Avg</th><th>Market</th><th>Unrealized</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:16px">
+    <h2>Logs</h2>
+    <div id="log" class="log"></div>
+  </section>
+</div>
+
+<script>
+const $ = (sel)=>document.querySelector(sel);
+const log = (msg)=>{ const el=$("#log"); const ts=new Date().toLocaleTimeString(); el.textContent += "["+ts+"] "+msg+"\\n"; el.scrollTop=el.scrollHeight; };
+
+async function jget(url, opts={}){
+  try{
+    const r = await fetch(url, {headers:{'Accept':'application/json'}, ...opts});
+    if(!r.ok) throw new Error(r.status+" "+r.statusText);
+    return await r.json();
+  }catch(e){ log("GET "+url+" -> "+e.message); throw e; }
+}
+async function post(url){
+  try{
+    const r = await fetch(url, {method:"POST", headers:{'Accept':'application/json'}});
+    const t = await r.text();
+    log("POST "+url+" -> "+t.slice(0,200));
+    return t;
+  }catch(e){ log("POST "+url+" -> "+e.message); throw e; }
+}
+async function scan(system, query){
+  const url = `/scan/${system}?dry=0${query?("&"+query):""}`;
+  await post(url);
+  // lightweight refresh after scan
+  setTimeout(()=>{ loadOrders(); loadPositions(); }, 1200);
+}
+
+function fmtUSD(x){ if(x===null||x===undefined||isNaN(x)) return "—"; return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(+x); }
+function fmtQty(x){ return (x===null||x===undefined)?"—":(+x).toLocaleString(); }
+function td(v, cls=""){ return `<td class="${cls}">${v}</td>`; }
+
+let pnlChart=null;
+function drawLineChart(labels, data){
+  const ctx = document.getElementById('pnlChart').getContext('2d');
+  if(pnlChart){ pnlChart.destroy(); }
+  pnlChart = new Chart(ctx, {
+    type:'line',
+    data:{ labels, datasets:[{ label:'Equity', data, tension:0.25 }] },
+    options:{ plugins:{legend:{display:false}}, scales:{x:{ticks:{maxRotation:0,minRotation:0}}} }
+  });
+}
+
+async function loadVersions(){
+  const v = await jget('/health/versions');
+  $('#appVersion').textContent = 'app: '+(v.app||'—');
+  $('#s3v').textContent = 'S3: '+(v.S3_OPENING_RANGE||'—');
+  $('#s4v').textContent = 'S4: '+(v.S4_RSI_PB||'—');
+}
+async function loadAlpaca(){
+  const d = await jget('/diag/alpaca');
+  $('#feed').textContent = d.feed || '—';
+  $('#tbase').textContent = (d.trading_base||'—').replace('https://','');
+  $('#dbase').textContent = (d.data_base||'—').replace('https://','');
+}
+async function loadGate(){
+  try{
+    const g = await jget('/diag/gate');
+    $('#gateDecision').textContent = (g.decision||'—') + (g.gate_on?' (on)':' (off)');
+    const c = g.clock||{};
+    $('#isOpen').textContent = c.is_open ? 'OPEN' : 'CLOSED';
+    $('#nextOpen').textContent = c.next_open || '—';
+    $('#nextClose').textContent = c.next_close || '—';
+  }catch(e){
+    $('#gateDecision').textContent = 'error';
+  }
+}
+async function loadOrders(){
+  const rows = await jget('/orders/recent');
+  const tb = $('#ordersTbl tbody');
+  tb.innerHTML = rows.slice(0,50).map(o=>{
+    const t = (o.submitted_at||o.created_at||'').replace('Z','').replace('T',' ');
+    const filled = (o.filled_qty||'0') + ' / ' + (o.qty||o.order_class_qty||'');
+    const side = (o.side||'').toUpperCase();
+    const cls = side==='BUY'?'ok':'bad';
+    return `<tr>
+      ${td(t)}${td(o.symbol||'—')}
+      ${td(side, cls)}${td(o.qty||o.order_class_qty||'—')}
+      ${td((o.type||'').toUpperCase())}${td((o.status||'').toUpperCase())}
+      ${td(filled)}
+    </tr>`;
+  }).join('');
+}
+async function loadPositions(){
+  const rows = await jget('/positions');
+  const tb = $('#posTbl tbody');
+  tb.innerHTML = rows.map(p=>{
+    const side = (p.side||'').toUpperCase();
+    const cls = side==='LONG'?'ok':'bad';
+    const unreal = +(p.unrealized_pl||p.unrealized_intraday_pl||0);
+    const ucls = unreal>=0?'ok':'bad';
+    return `<tr>
+      ${td(p.symbol||'—')}
+      ${td(p.qty||'—')}
+      ${td(side, cls)}
+      ${td(fmtUSD(p.avg_entry_price))}
+      ${td(fmtUSD(p.current_price))}
+      ${td(fmtUSD(unreal), ucls)}
+    </tr>`;
+  }).join('');
+}
+async function loadPnl(){
+  const d = await jget('/performance/daily?days=30&fast=1');
+  const labels = (d||[]).map(x=>x.date||x.day||'').slice(-30);
+  const vals = (d||[]).map(x=>+x.equity||0).slice(-30);
+  drawLineChart(labels, vals);
+}
+
+async function refreshAll(){
+  log('Refreshing dashboard…');
+  await Promise.allSettled([loadVersions(), loadAlpaca(), loadGate(), loadOrders(), loadPositions(), loadPnl()]);
+  log('Done.');
+}
+window.addEventListener('load', ()=>{
+  refreshAll();
+  setInterval(()=>{ loadGate(); loadOrders(); loadPositions(); }, 60000);
+});
+</script>
 </body>
-</html>
-""".strip()
+</html>"""
+.strip()
     return Response(html, status=200, mimetype="text/html")
 
 if __name__ == "__main__":
