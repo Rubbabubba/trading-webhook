@@ -1,0 +1,73 @@
+{
+  "fee_rate_pct": 0.26,
+  "edge_multiple_vs_fee": 3.0,
+
+  "atr_floor_pct": {
+    "tier1": 0.6,
+    "tier2": 0.9,
+    "tier3": 1.2
+  },
+
+  "tiers": {
+    "tier1": [
+      "SPY",
+      "QQQ",
+      "AAPL",
+      "MSFT"
+    ],
+    "tier2": [
+      "TSLA",
+      "NVDA",
+      "META",
+      "AMZN",
+      "GOOGL",
+      "COIN",
+      "AMD",
+      "NFLX"
+    ],
+    "tier3": []
+  },
+
+  "symbol_mutex_minutes": 60,
+
+  "risk_caps": {
+    "max_notional_per_symbol": {
+      "default": 60.0,
+
+      "SPY": 80.0,
+      "QQQ": 80.0,
+
+      "TSLA": 60.0,
+      "NVDA": 60.0,
+      "AAPL": 60.0,
+      "MSFT": 60.0,
+      "META": 60.0,
+      "AMZN": 60.0,
+      "GOOGL": 60.0,
+      "COIN": 60.0,
+      "AMD": 60.0,
+      "NFLX": 60.0
+    },
+    "max_units_per_symbol": {
+      "default": null
+    }
+  },
+
+  "profit_lock": {
+    "take_profit_pct": 1.5
+  },
+
+  "loss_zone": {
+    "no_rebuy_below_pct": -3.0,
+    "stop_loss_pct": -3.0
+  },
+
+  "time_multipliers": {
+    "day_night": {
+      "day_start_hour_local": 6,
+      "night_start_hour_local": 19,
+      "day_multiplier": 1.0,
+      "night_multiplier": 1.8
+    }
+  }
+}

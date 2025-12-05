@@ -1,0 +1,26 @@
+{
+  "c1": [
+    "SPY",
+    "QQQ"
+  ],
+  "c2": [
+    "TSLA",
+    "NVDA"
+  ],
+  "c3": [
+    "AAPL",
+    "MSFT"
+  ],
+  "c4": [
+    "META",
+    "AMZN"
+  ],
+  "c5": [
+    "GOOGL",
+    "COIN"
+  ],
+  "c6": [
+    "AMD",
+    "NFLX"
+  ]
+}
