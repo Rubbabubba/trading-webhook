@@ -84,7 +84,7 @@ from strategy_api import PositionSnapshot
 from scheduler_core import SchedulerConfig, SchedulerResult, StrategyBook, ScanRequest, ScanResult,run_scheduler_once
 from risk_engine import RiskEngine
 from fastapi import Body, FastAPI, HTTPException, Query
-
+from telemetry import get_scheduler_state, record_scheduler_state
 
 
 # Routes:
@@ -2095,7 +2095,53 @@ def debug_global_policy():
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    
+        
+@app.get("/debug/last_scan")
+def debug_last_scan():
+    """
+    Returns the last scheduler v2 scan configuration that actually ran
+    in the background loop.
+    """
+    try:
+        state = get_scheduler_state()
+    except Exception as e:
+        return {"ok": False, "error": f"telemetry_error: {e}"}
+
+    scan = state.get("scan")
+    if not scan:
+        return {"ok": False, "error": "no scheduler telemetry recorded yet"}
+
+    return {
+        "ok": True,
+        "tick": state.get("last_tick"),
+        "ts_utc": state.get("last_ts_utc"),
+        "scan": scan,
+    }    
+
+@app.get("/debug/last_actions")
+def debug_last_actions():
+    """
+    Returns the last scheduler v2 actions set.
+
+    Includes any meta + telemetry that were recorded for that tick.
+    """
+    try:
+        state = get_scheduler_state()
+    except Exception as e:
+        return {"ok": False, "error": f"telemetry_error: {e}"}
+
+    actions = state.get("actions")
+    if actions is None:
+        return {"ok": False, "error": "no scheduler telemetry recorded yet"}
+
+    return {
+        "ok": True,
+        "tick": state.get("last_tick"),
+        "ts_utc": state.get("last_ts_utc"),
+        "actions": actions,
+        "meta": state.get("meta") or {},
+        "telemetry": state.get("telemetry") or [],
+    }
 
 @app.get("/debug/positions")
 def debug_positions():
@@ -2541,12 +2587,34 @@ def _scheduler_loop():
                 except Exception as e:
                     log.warning("could not set _SCHED_LAST (loop): %s", e)
 
-                # >>> new brain <<<
-                _ = scheduler_run_v2(payload_v2)
+                                # >>> new brain <<<
+                out = scheduler_run_v2(payload_v2)
 
                 tick += 1
                 _SCHED_TICKS = tick
+
+                # Record telemetry for this tick (non-fatal if it fails)
+                try:
+                    scan_cfg = (out or {}).get("config") or {}
+                    acts = (out or {}).get("actions") or []
+                    telem = (out or {}).get("telemetry") or []
+                    meta = {
+                        "service": "crypto-system-api",
+                        "version": os.getenv("APP_VERSION", "dev"),
+                        "dry": bool(scan_cfg.get("dry", False)),
+                    }
+                    record_scheduler_state(
+                        tick=tick,
+                        scan=scan_cfg,
+                        actions=acts,
+                        meta=meta,
+                        telemetry=telem,
+                    )
+                except Exception as e:
+                    log.warning("could not record scheduler telemetry: %s", e)
+
                 log.info("scheduler v2 tick #%s ok", tick)
+
         except Exception as e:
             log.exception("scheduler loop error: %s", e)
         time.sleep(_SCHED_SLEEP)
