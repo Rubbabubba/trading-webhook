@@ -26,6 +26,7 @@ import logging
 import os
 import threading
 import time
+import datetime as dt
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,63 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import br_router as br
+
+# Core engine modules
+from scheduler_core import SchedulerConfig, SchedulerResult, run_scheduler_once
+from risk_engine import RiskEngine, load_risk_config
+from position_manager import Position as PMPosition
+
+
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+
+def _last_price_safe(symbol: str) -> Optional[float]:
+    """Best-effort last price fetch from the active broker."""
+    try:
+        return float(br.last_price(symbol))
+    except Exception:
+        return None
+
+
+def _load_open_positions_for_equities(default_strat: str = "e1") -> Dict[tuple, PMPosition]:
+    """
+    Scheduler-core expects positions keyed by (symbol, strategy).
+
+    In an equities-only, single-strategy system, broker positions do not carry
+    a strategy id. We therefore attribute all open broker positions to the
+    default strategy (e.g. 'e1').
+    """
+    out: Dict[tuple, PMPosition] = {}
+    try:
+        pos_list = br.positions()  # expected list[dict] from broker
+    except Exception:
+        pos_list = []
+
+    if not isinstance(pos_list, list):
+        return out
+
+    for p in pos_list:
+        if not isinstance(p, dict):
+            continue
+        sym = str(p.get("symbol", "")).upper().strip()
+        if not sym:
+            continue
+        try:
+            qty = float(p.get("qty") or p.get("quantity") or p.get("qty_available") or 0.0)
+        except Exception:
+            qty = 0.0
+        if qty == 0:
+            continue
+        avg = p.get("avg_entry_price") or p.get("avg_price") or p.get("avgEntryPrice")
+        try:
+            avg_f = float(avg) if avg is not None else None
+        except Exception:
+            avg_f = None
+
+        out[(sym, default_strat)] = PMPosition(symbol=sym, strategy=default_strat, qty=qty, avg_price=avg_f)
+
+    return out
 
 APP_VERSION = os.getenv("APP_VERSION", "unknown")
 TZ = os.getenv("TZ", "America/Chicago")
@@ -235,7 +293,9 @@ def scheduler_run_v2(payload: Dict[str, Any] = Body(default=None)):
     # ------------------------------------------------------------------
     # Load positions & risk config
     # ------------------------------------------------------------------
-    positions = _load_open_positions_from_trades(use_strategy_col=True)
+    # Equities-only: infer positions from broker and attribute to the
+    # default strategy. (Broker positions do not include a strategy id.)
+    positions = _load_open_positions_for_equities(default_strat=(strats[0] if strats else "e1"))
     risk_cfg = load_risk_config() or {}
     risk_engine = RiskEngine(risk_cfg)
 
