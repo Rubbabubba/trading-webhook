@@ -32,7 +32,7 @@ import os
 
 def load_universe_from_env(defaults: list[str] | None = None) -> list[str]:
     """
-    Reads SYMBOLS env var like 'BTCUSD,ETHUSD,SOLUSD'.
+    Reads SYMBOLS env var like 'SPY,QQQ,NVDA'.
 
     For equities, if SYMBOLS is empty, also supports:
       EQUITY_SYMBOLS='SPY,QQQ,TSLA'

@@ -3,7 +3,7 @@
 """
 broker.py — Alpaca adapter for equities
 
-Implements the same public API shape used by broker_kraken + br_router:
+Implements the same public API shape used by br_router:
 
 - get_bars(symbol: str, timeframe: str = "5Min", limit: int = 300) -> List[{t,o,h,l,c,v}]
 - last_price(symbol: str) -> float

@@ -1,4 +1,4 @@
-# Dockerfile — Crypto Trading Bots
+# Dockerfile — equities Trading Bots
 # Build: v2.0.0 (2025-10-11)
 
 FROM python:3.11-slim

@@ -3,7 +3,7 @@ strategy_api.py — shared strategy interfaces (v0.1.0)
 
 This module defines the common types and contracts used by all strategies.
 
-Each concrete strategy (c1–c6) should implement:
+Each concrete strategy (strategies (e.g., e1)) should implement:
 - entry_signal()
 - exit_signal()
 - profit_take_rule()
@@ -72,7 +72,7 @@ class OrderIntent:
 
 class BaseStrategy(Protocol):
     """
-    Protocol that concrete strategies (c1–c6) should follow.
+    Protocol that concrete strategies (strategies (e.g., e1)) should follow.
     """
 
     STRAT_ID: str
