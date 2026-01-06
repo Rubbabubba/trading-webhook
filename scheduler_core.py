@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Callable
 
@@ -231,6 +232,18 @@ def run_scheduler_once(
 
             sym = r.symbol
             key = (sym, strat)
+            if os.getenv("TELEMETRY_ALL_SCANS", "0") == "1":
+                telemetry.append({
+                    "symbol": sym,
+                    "strategy": strat,
+                    "stage": "scan",
+                    "action": getattr(r, "action", None),
+                    "score": float(getattr(r, "score", 0.0) or 0.0),
+                    "reason": getattr(r, "reason", None),
+                    "vwap_dev_atr": float(getattr(r, "vwap_dev_atr", 0.0) or 0.0),
+                    "vol_ok": bool(getattr(r, "vol_ok", False)),
+                    "mtf_ok": bool(getattr(r, "mtf_ok", False)),
+                })
             pos = pos_map.get(key) or PositionSnapshot(symbol=sym, strategy=strat)
 
             qty = float(getattr(pos, "qty", 0.0) or 0.0)
