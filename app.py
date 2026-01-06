@@ -38,7 +38,7 @@ import br_router as br
 
 # Core engine modules
 from scheduler_core import SchedulerConfig, SchedulerResult, run_scheduler_once
-from risk_engine import RiskEngine, load_risk_config
+from risk_engine import RiskEngine
 from position_manager import Position as PMPosition
 
 
@@ -296,8 +296,7 @@ def scheduler_run_v2(payload: Dict[str, Any] = Body(default=None)):
     # Equities-only: infer positions from broker and attribute to the
     # default strategy. (Broker positions do not include a strategy id.)
     positions = _load_open_positions_for_equities(default_strat=(strats[0] if strats else "e1"))
-    risk_cfg = load_risk_config() or {}
-    risk_engine = RiskEngine(risk_cfg)
+    risk_engine = RiskEngine()
 
     # ------------------------------------------------------------------
     # Preload bar contexts once (similar to legacy scheduler_run)
