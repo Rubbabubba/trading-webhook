@@ -1,25 +1,15 @@
 {
-  "c1": [
+  "e1": [
     "SPY",
-    "QQQ"
-  ],
-  "c2": [
+    "QQQ",
     "TSLA",
-    "NVDA"
-  ],
-  "c3": [
+    "NVDA",
     "AAPL",
-    "MSFT"
-  ],
-  "c4": [
+    "MSFT",
     "META",
-    "AMZN"
-  ],
-  "c5": [
+    "AMZN",
     "GOOGL",
-    "COIN"
-  ],
-  "c6": [
+    "COIN",
     "AMD",
     "NFLX"
   ]
