@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 # ---------- Helpers ----------
 
 def _norm_symbol(s: str) -> str:
-    """Normalize symbols so BTC/USD, BTC-USD, btcusd -> BTCUSD."""
+    """Normalize symbols (e.g., SPY, spy -> SPY)."""
     return "".join(ch for ch in s.upper() if ch.isalnum())
 
 def _norm_strategy(s: str) -> str:

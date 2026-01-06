@@ -21,7 +21,7 @@ class _Cfg:
     mtimes: Dict[str, float]
 
 _cfg: Optional[_Cfg] = None
-_symbol_locks: Dict[str, Dict[str, Any]] = {}  # {'BTCUSD': {'until': epoch, 'owner': 'c3'}}
+_symbol_locks: Dict[str, Dict[str, Any]] = {}  # {'symbolUSD': {'until': epoch, 'owner': 'c3'}}
 _symbol_cooldowns: Dict[str, float] = {}       # symbol -> epoch until allowed (MR exit cooldown)
 
 def _load_json(p: Path) -> Dict[str, Any]:
@@ -109,7 +109,7 @@ def guard_allows(strategy: str, symbol: str, expected_move_pct: Optional[float],
     """
     Returns (ok, reason). Call before placing an order.
     - strategy: 'c1'..'c6'
-    - symbol: 'BTCUSD', etc.
+    - symbol: 'symbolUSD', etc.
     - expected_move_pct: expected gross edge in percent (%)
     - atr_pct: ATR(14) % of price for this symbol
     """
