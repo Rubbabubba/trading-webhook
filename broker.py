@@ -92,7 +92,11 @@ def _normalize_symbol(symbol: str) -> str:
 
 def get_bars(symbol: str, timeframe: str = "5Min", limit: int = 300) -> List[Dict[str, Any]]:
     """
-    Return a list of bars: [{t,o,h,l,c,v}] newest last, using Alpaca v2 stock bars.
+    Return a list of bars with normalized keys expected by the scheduler.
+
+    Output shape (newest last):
+      [{"ts": int, "open": float, "high": float, "low": float,
+        "close": float, "volume": float}]
 
     Maps directly from /v2/stocks/bars:
       GET {DATA_BASE}/v2/stocks/bars?symbols=SPY&timeframe=5Min&limit=300
@@ -132,15 +136,17 @@ def get_bars(symbol: str, timeframe: str = "5Min", limit: int = 300) -> List[Dic
 
     out: List[Dict[str, Any]] = []
     for b in raw_bars:
-        t = _parse_bar_time(b.get("t"))
-        out.append({
-            "t": t,
-            "o": float(b.get("o", 0.0)),
-            "h": float(b.get("h", 0.0)),
-            "l": float(b.get("l", 0.0)),
-            "c": float(b.get("c", 0.0)),
-            "v": float(b.get("v", 0.0)),
-        })
+        ts = _parse_bar_time(b.get("t"))
+        out.append(
+            {
+                "ts": ts,
+                "open": float(b.get("o", 0.0)),
+                "high": float(b.get("h", 0.0)),
+                "low": float(b.get("l", 0.0)),
+                "close": float(b.get("c", 0.0)),
+                "volume": float(b.get("v", 0.0)),
+            }
+        )
     return out
 
 
