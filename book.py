@@ -106,6 +106,9 @@ class ScanResult:
     score: float
     atr: float
     atr_pct: float
+    vwap_dev_atr: float = 0.0
+    vol_ok: bool = False
+    mtf_ok: bool = False
     qty: float
     notional: float
     selected: bool
@@ -259,25 +262,27 @@ def sig_e1_vwap_bos(
     vol_mult: float = 1.0,
     retest_lookback: int = 4,
     retest_tol_atr: float = 0.15,
-) -> tuple[str, float, str]:
+) -> tuple[str, float, str, dict]:
     """Return (action, score, reason) for E1."""
 
     vwap = _vwap_from_1m(one)
     atr5 = _atr_from_5m(five, 14)
     if not np.isfinite(vwap) or not np.isfinite(atr5) or atr5 <= 0:
-        return "flat", 0.0, "bad_vwap_or_atr"
+        return "flat", 0.0, "bad_vwap_or_atr", metrics
 
     close5 = five["close"]; high5 = five["high"]; low5 = five["low"]; vol5 = five["volume"]
     if len(close5) < max(bos_lookback + 3, 30) or len(vol5) < max(vol_sma_n + 2, 15):
-        return "flat", 0.0, "insufficient_bars"
+        return "flat", 0.0, "insufficient_bars", metrics
 
     i = len(close5) - 1
     last_close = float(close5[i])
 
     dev_atr = (last_close - vwap) / atr5
+    metrics["vwap_dev_atr"] = float(dev_atr)
 
     vol_sma = _sma(vol5, vol_sma_n)
     vol_ok = (np.isfinite(vol_sma) and float(vol5[i]) >= float(vol_mult) * vol_sma)
+    metrics["vol_ok"] = bool(vol_ok)
 
     want_long  = dev_atr <= -abs(min_dev_atr)
     want_short = dev_atr >=  abs(min_dev_atr)
@@ -305,33 +310,33 @@ def sig_e1_vwap_bos(
     tol = float(retest_tol_atr) * atr5
 
     if not vol_ok:
-        return "flat", 0.0, f"e1_filt_vol dev_atr={dev_atr:.2f}"
+        return "flat", 0.0, f"e1_filt_vol dev_atr={dev_atr:.2f}", metrics
 
     # Long setup
     if want_long:
         found, level, _ = find_recent_bos("up")
         if not found or not np.isfinite(level):
-            return "flat", 0.0, f"e1_wait_long bos=0 dev_atr={dev_atr:.2f}"
+            return "flat", 0.0, f"e1_wait_long bos=0 dev_atr={dev_atr:.2f}", metrics
         retest = float(low5[i]) <= (level + tol)
         reject = retest and (last_close > level)
         if not reject:
-            return "flat", 0.0, f"e1_wait_long bos=1 retest={1 if retest else 0} level={level:.4f} dev_atr={dev_atr:.2f}"
+            return "flat", 0.0, f"e1_wait_long bos=1 retest={1 if retest else 0} level={level:.4f} dev_atr={dev_atr:.2f}", metrics
         score = float(min(5.0, abs(dev_atr))) + float(min(2.0, float(vol5[i]) / max(1.0, vol_sma)))
-        return "buy", score, f"e1_long bos=1 retest=1 level={level:.4f} vwap={vwap:.4f} close={last_close:.4f} dev_atr={dev_atr:.2f}"
+        return "buy", score, f"e1_long bos=1 retest=1 level={level:.4f} vwap={vwap:.4f} close={last_close:.4f} dev_atr={dev_atr:.2f}", metrics
 
     # Short setup
     if want_short:
         found, level, _ = find_recent_bos("down")
         if not found or not np.isfinite(level):
-            return "flat", 0.0, f"e1_wait_short bos=0 dev_atr={dev_atr:.2f}"
+            return "flat", 0.0, f"e1_wait_short bos=0 dev_atr={dev_atr:.2f}", metrics
         retest = float(high5[i]) >= (level - tol)
         reject = retest and (last_close < level)
         if not reject:
-            return "flat", 0.0, f"e1_wait_short bos=1 retest={1 if retest else 0} level={level:.4f} dev_atr={dev_atr:.2f}"
+            return "flat", 0.0, f"e1_wait_short bos=1 retest={1 if retest else 0} level={level:.4f} dev_atr={dev_atr:.2f}", metrics
         score = float(min(5.0, abs(dev_atr))) + float(min(2.0, float(vol5[i]) / max(1.0, vol_sma)))
-        return "sell", score, f"e1_short bos=1 retest=1 level={level:.4f} vwap={vwap:.4f} close={last_close:.4f} dev_atr={dev_atr:.2f}"
+        return "sell", score, f"e1_short bos=1 retest=1 level={level:.4f} vwap={vwap:.4f} close={last_close:.4f} dev_atr={dev_atr:.2f}", metrics
 
-    return "flat", 0.0, f"e1_no_ext dev_atr={dev_atr:.2f}"
+    return "flat", 0.0, f"e1_no_ext dev_atr={dev_atr:.2f}", metrics
 
 
 def mtf_confirm(action: str, reg5: Regimes) -> bool:
@@ -355,6 +360,11 @@ def size_from_atr(price: float, atr_pct: float, target_risk_usd: float = 10.0, a
 
     and clamp position notional to `max_notional` to avoid outsized trades.
     """
+    metrics = {
+        "vwap_dev_atr": 0.0,
+        "vol_ok": False,
+        "mtf_ok": False,
+    }
     # Basic sanity checks
     if (not np.isfinite(price)) or price <= 0:
         return 0.0, 0.0
@@ -468,7 +478,7 @@ class StrategyBook:
                 vol_mult    = float(os.getenv("E1_VOL_MULT", "1.0"))
                 retest_lb   = int(os.getenv("E1_RETEST_LOOKBACK", "4"))
                 retest_tol  = float(os.getenv("E1_RETEST_TOL_ATR", "0.15"))
-                action, score, reason = sig_e1_vwap_bos(
+                action, score, reason, metrics = sig_e1_vwap_bos(
                     one, five,
                     min_dev_atr=min_dev_atr,
                     bos_lookback=bos_lb,
@@ -493,6 +503,9 @@ class StrategyBook:
                 score=float(score),
                 atr=float(reg1.atr if np.isfinite(reg1.atr) else 0.0),
                 atr_pct=float(reg1.atr_pct if np.isfinite(reg1.atr_pct) else 0.0),
+                vwap_dev_atr=metrics.get("vwap_dev_atr", 0.0),
+                vol_ok=metrics.get("vol_ok", False),
+                mtf_ok=metrics.get("mtf_ok", False),
                 qty=qty, notional=notional, selected=False
             ))
 
