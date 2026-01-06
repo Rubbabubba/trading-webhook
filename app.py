@@ -371,7 +371,6 @@ def scheduler_run_v2(payload: Dict[str, Any] = Body(default=None)):
         notional=notional,
         positions=positions,
         contexts=contexts,
-        risk_cfg=risk_cfg,
     )
 
     result: SchedulerResult = run_scheduler_once(cfg, last_price_fn=_last_price_safe)
