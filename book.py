@@ -263,14 +263,17 @@ def size_from_atr(price: float, atr_pct: float, target_risk_usd: float = 10.0, a
 
 
 
-def sig_e1_vwap_bos(one: dict, five: dict, min_dev_atr: float = 1.5, bos_lookback: int = 10, vol_sma_n: int = 9, vol_mult: float = 1.0):
+def sig_e1_vwap_bos(one: dict, five: dict, min_dev_atr: float = 1.5, bos_lookback: int = 10,
+                    vol_sma_n: int = 9, vol_mult: float = 1.0,
+                    retest_lookback: int = 4, retest_tol_atr: float = 0.15):
     """
-    e1 signal: fade extension away from VWAP *after* a break-of-structure back toward VWAP.
+    e1 signal (retest version): VWAP mean reversion after a break-of-structure (BOS) back toward VWAP,
+    followed by a retest + rejection of the broken level.
 
     Returns: (action, score, reason)
       - action: "buy" | "sell" | "flat"
       - score:  0..inf (higher = stronger)
-      - reason: includes vwap=<float> close=<float> dev_atr=<float> bos=<0/1> vol_ok=<0/1>
+      - reason: includes vwap=<float> close=<float> dev_atr=<float> bos=<0/1> retest=<0/1> level=<float> vol_ok=<0/1>
     """
     close1 = one.get("close") or []
     high1  = one.get("high") or []
@@ -282,7 +285,10 @@ def sig_e1_vwap_bos(one: dict, five: dict, min_dev_atr: float = 1.5, bos_lookbac
     low5   = five.get("low") or []
     vol5   = five.get("volume") or []
 
-    if len(close1) < 30 or len(close5) < 30:
+    lb = max(3, int(bos_lookback))
+    rlb = max(2, int(retest_lookback))
+    # Need enough bars to compute VWAP + ATR + structure and also look back for BOS.
+    if len(close1) < 30 or len(close5) < max(30, lb + rlb + 5):
         return "flat", 0.0, "insufficient_bars"
 
     # VWAP from 1-minute bars using typical price
@@ -291,24 +297,18 @@ def sig_e1_vwap_bos(one: dict, five: dict, min_dev_atr: float = 1.5, bos_lookbac
     denom = sum(vv)
     if denom <= 0:
         return "flat", 0.0, "no_volume_for_vwap"
-    tp = [ (float(high1[i]) + float(low1[i]) + float(close1[i]))/3.0 for i in range(n) ]
-    vwap = sum(tp[i]*vv[i] for i in range(n)) / denom
+    tp = [(float(high1[i]) + float(low1[i]) + float(close1[i])) / 3.0 for i in range(n)]
+    vwap = sum(tp[i] * vv[i] for i in range(n)) / denom
 
-    last = float(close5[-1])
+    last_close = float(close5[-1])
+    last_high  = float(high5[-1])
+    last_low   = float(low5[-1])
 
     atr = _atr(high5, low5, close5, 14)
     if not atr or atr <= 0:
         return "flat", 0.0, "no_atr"
 
-    dev_atr = (last - vwap) / atr
-
-    lb = max(3, int(bos_lookback))
-    prior_high = max(float(x) for x in high5[-(lb+1):-1])
-    prior_low  = min(float(x) for x in low5[-(lb+1):-1])
-
-    # BOS: price breaks the recent structure in the direction *toward VWAP*
-    bos_short = last < prior_low
-    bos_long  = last > prior_high
+    dev_atr = (last_close - vwap) / atr
 
     # Volume confirmation on 5m bars
     vol_ok = True
@@ -316,28 +316,80 @@ def sig_e1_vwap_bos(one: dict, five: dict, min_dev_atr: float = 1.5, bos_lookbac
         v_sma = sum(float(x) for x in vol5[-int(vol_sma_n):]) / float(vol_sma_n)
         vol_ok = float(vol5[-1]) >= float(vol_mult) * v_sma if v_sma > 0 else True
 
-    action = "flat"
+    # ---- BOS detection (recent) -------------------------------------------
+    # We look back a few completed bars (excluding the current bar) to find the most recent BOS.
+    # For shorts (price above VWAP): BOS is a close below the prior swing low (computed from lb bars).
+    # For longs  (price below VWAP): BOS is a close above the prior swing high (computed from lb bars).
     bos = False
-    if dev_atr >= abs(min_dev_atr):
-        action = "sell"
-        bos = bos_short
-    elif dev_atr <= -abs(min_dev_atr):
-        action = "buy"
-        bos = bos_long
+    bos_level = None  # broken level that we want to retest
+    direction = "flat"
 
+    if dev_atr >= abs(min_dev_atr):
+        direction = "sell"
+        # scan for most recent BOS in the last rlb bars (excluding current)
+        for offset in range(2, rlb + 3):
+            end = -offset
+            start = end - lb
+            if abs(start) > len(low5):
+                continue
+            prior_low = min(float(x) for x in low5[start:end])
+            c = float(close5[end])
+            if c < prior_low:
+                bos = True
+                bos_level = prior_low
+                break
+
+    elif dev_atr <= -abs(min_dev_atr):
+        direction = "buy"
+        for offset in range(2, rlb + 3):
+            end = -offset
+            start = end - lb
+            if abs(start) > len(high5):
+                continue
+            prior_high = max(float(x) for x in high5[start:end])
+            c = float(close5[end])
+            if c > prior_high:
+                bos = True
+                bos_level = prior_high
+                break
+
+    # ---- Retest + rejection ------------------------------------------------
+    retest = False
+    if bos and bos_level is not None:
+        tol = max(0.0, float(retest_tol_atr)) * atr
+        if direction == "sell":
+            # Retest broken low as resistance: price trades back up into/through the level,
+            # but closes back below it.
+            touched = (last_high >= (bos_level - tol))
+            rejected = (last_close < (bos_level - tol * 0.25))
+            retest = bool(touched and rejected)
+        elif direction == "buy":
+            # Retest broken high as support: price trades back down into/through the level,
+            # but closes back above it.
+            touched = (last_low <= (bos_level + tol))
+            rejected = (last_close > (bos_level + tol * 0.25))
+            retest = bool(touched and rejected)
+
+    # ---- Scoring / gating --------------------------------------------------
     score = abs(dev_atr) / max(1e-9, abs(min_dev_atr))  # 1.0 == threshold
     if bos:
         score += 0.75
+    if retest:
+        score += 0.50
     if vol_ok:
         score += 0.25
 
-    reason = f"e1 vwap={vwap:.4f} close={last:.4f} dev_atr={dev_atr:.3f} bos={1 if bos else 0} vol_ok={1 if vol_ok else 0}"
+    level_str = f"{bos_level:.4f}" if bos_level is not None else "na"
+    reason = (
+        f"e1 vwap={vwap:.4f} close={last_close:.4f} dev_atr={dev_atr:.3f} "
+        f"bos={1 if bos else 0} retest={1 if retest else 0} level={level_str} vol_ok={1 if vol_ok else 0}"
+    )
 
-    # Require confirmation (BOS + volume) to avoid blind fading
-    if action != "flat" and (not bos or not vol_ok):
+    # Require confirmation: BOS + retest + volume (to avoid blind fades / early entries)
+    if direction != "flat" and (not bos or not retest or not vol_ok):
         return "flat", 0.0, "no_confirm " + reason
 
-    return action, float(score), reason
+    return direction, float(score), reason
 
 class StrategyBook:
     def __init__(
@@ -429,7 +481,17 @@ class StrategyBook:
                 bos_lb      = int(os.getenv("E1_BOS_LOOKBACK", "10"))
                 vol_sma_n   = int(os.getenv("E1_VOL_SMA_N", "9"))
                 vol_mult    = float(os.getenv("E1_VOL_MULT", "1.0"))
-                action, score, reason = sig_e1_vwap_bos(one, five, min_dev_atr=min_dev_atr, bos_lookback=bos_lb, vol_sma_n=vol_sma_n, vol_mult=vol_mult)
+                retest_lb   = int(os.getenv("E1_RETEST_LOOKBACK", "4"))
+                retest_tol  = float(os.getenv("E1_RETEST_TOL_ATR", "0.15"))
+                action, score, reason = sig_e1_vwap_bos(
+                    one, five,
+                    min_dev_atr=min_dev_atr,
+                    bos_lookback=bos_lb,
+                    vol_sma_n=vol_sma_n,
+                    vol_mult=vol_mult,
+                    retest_lookback=retest_lb,
+                    retest_tol_atr=retest_tol,
+                )
             else:
                 action, score, reason = "flat", 0.0, "unknown_strategy"
 
