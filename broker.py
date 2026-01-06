@@ -117,8 +117,8 @@ def get_bars(symbol: str, timeframe: str = "5Min", limit: int = 300) -> List[Dic
 
     # Only apply for intraday timeframes.
     if "Min" in str(timeframe) or "Hour" in str(timeframe):
-        end_dt = datetime.datetime.now(datetime.timezone.utc)
-        start_dt = end_dt - datetime.timedelta(days=lookback_days)
+        end_dt = dt.datetime.now(dt.timezone.utc)
+        start_dt = end_dt - dt.timedelta(days=lookback_days)
         params["start"] = start_dt.isoformat().replace("+00:00", "Z")
         params["end"] = end_dt.isoformat().replace("+00:00", "Z")
 
