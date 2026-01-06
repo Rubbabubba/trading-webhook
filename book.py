@@ -222,11 +222,23 @@ def sig_c6_rel_to_btc(close, regimes: Regimes, ref_close_btc: Optional[np.ndarra
 
 # ====== E1: VWAP mean reversion with BOS + retest + rejection ======
 def _vwap_from_1m(one: dict) -> float:
-    # Session VWAP approximation from available 1m bars (typical price * volume / volume)
-    tp = (one["high"] + one["low"] + one["close"]) / 3.0
-    v  = one["volume"]
-    pv = (tp * v).sum()
-    vv = v.sum()
+    """Session VWAP approximation from available 1m bars.
+
+    NOTE: Bars may arrive as Python lists, numpy arrays, or pandas Series.
+    We coerce to numpy arrays so arithmetic works reliably.
+    """
+    high = np.asarray(one.get("high", []), dtype=float)
+    low  = np.asarray(one.get("low", []), dtype=float)
+    close= np.asarray(one.get("close", []), dtype=float)
+    vol  = np.asarray(one.get("volume", []), dtype=float)
+    if len(high) == 0 or len(low) == 0 or len(close) == 0 or len(vol) == 0:
+        return float("nan")
+    # align lengths defensively (in case a field is missing a bar)
+    n = min(len(high), len(low), len(close), len(vol))
+    high, low, close, vol = high[:n], low[:n], close[:n], vol[:n]
+    tp = (high + low + close) / 3.0
+    pv = float(np.sum(tp * vol))
+    vv = float(np.sum(vol))
     return float(pv / vv) if vv > 0 else float("nan")
 
 def _sma(arr: np.ndarray, n: int) -> float:
