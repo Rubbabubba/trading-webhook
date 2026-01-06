@@ -107,6 +107,22 @@ def get_bars(symbol: str, timeframe: str = "5Min", limit: int = 300) -> List[Dic
         "feed": DATA_FEED,
     }
 
+    # Alpaca's bars endpoint can legitimately return a very short slice if you don't
+    # specify a time range (sometimes only the most recent window).
+    # To make the strategy logic stable, we request an explicit lookback window.
+    try:
+        lookback_days = float(os.getenv("ALPACA_BARS_LOOKBACK_DAYS", "10"))
+    except Exception:
+        lookback_days = 10.0
+
+    # Only apply for intraday timeframes.
+    if "Min" in str(timeframe) or "Hour" in str(timeframe):
+        end_dt = datetime.datetime.now(datetime.timezone.utc)
+        start_dt = end_dt - datetime.timedelta(days=lookback_days)
+        params["start"] = start_dt.isoformat().replace("+00:00", "Z")
+        params["end"] = end_dt.isoformat().replace("+00:00", "Z")
+
+
     resp = requests.get(url, headers=_headers(), params=params, timeout=DEFAULT_TIMEOUT)
     resp.raise_for_status()
     data = resp.json() or {}
