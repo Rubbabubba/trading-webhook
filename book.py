@@ -261,6 +261,84 @@ def size_from_atr(price: float, atr_pct: float, target_risk_usd: float = 10.0, a
     qty = notional / price
     return float(max(0.0, qty)), float(max(0.0, notional))
 
+
+
+def sig_e1_vwap_bos(one: dict, five: dict, min_dev_atr: float = 1.5, bos_lookback: int = 10, vol_sma_n: int = 9, vol_mult: float = 1.0):
+    """
+    e1 signal: fade extension away from VWAP *after* a break-of-structure back toward VWAP.
+
+    Returns: (action, score, reason)
+      - action: "buy" | "sell" | "flat"
+      - score:  0..inf (higher = stronger)
+      - reason: includes vwap=<float> close=<float> dev_atr=<float> bos=<0/1> vol_ok=<0/1>
+    """
+    close1 = one.get("close") or []
+    high1  = one.get("high") or []
+    low1   = one.get("low") or []
+    vol1   = one.get("volume") or []
+
+    close5 = five.get("close") or []
+    high5  = five.get("high") or []
+    low5   = five.get("low") or []
+    vol5   = five.get("volume") or []
+
+    if len(close1) < 30 or len(close5) < 30:
+        return "flat", 0.0, "insufficient_bars"
+
+    # VWAP from 1-minute bars using typical price
+    n = min(len(close1), len(high1), len(low1), len(vol1))
+    vv = [float(vol1[i]) for i in range(n)]
+    denom = sum(vv)
+    if denom <= 0:
+        return "flat", 0.0, "no_volume_for_vwap"
+    tp = [ (float(high1[i]) + float(low1[i]) + float(close1[i]))/3.0 for i in range(n) ]
+    vwap = sum(tp[i]*vv[i] for i in range(n)) / denom
+
+    last = float(close5[-1])
+
+    atr = _atr(high5, low5, close5, 14)
+    if not atr or atr <= 0:
+        return "flat", 0.0, "no_atr"
+
+    dev_atr = (last - vwap) / atr
+
+    lb = max(3, int(bos_lookback))
+    prior_high = max(float(x) for x in high5[-(lb+1):-1])
+    prior_low  = min(float(x) for x in low5[-(lb+1):-1])
+
+    # BOS: price breaks the recent structure in the direction *toward VWAP*
+    bos_short = last < prior_low
+    bos_long  = last > prior_high
+
+    # Volume confirmation on 5m bars
+    vol_ok = True
+    if len(vol5) >= max(2, int(vol_sma_n)) and vol_sma_n > 0:
+        v_sma = sum(float(x) for x in vol5[-int(vol_sma_n):]) / float(vol_sma_n)
+        vol_ok = float(vol5[-1]) >= float(vol_mult) * v_sma if v_sma > 0 else True
+
+    action = "flat"
+    bos = False
+    if dev_atr >= abs(min_dev_atr):
+        action = "sell"
+        bos = bos_short
+    elif dev_atr <= -abs(min_dev_atr):
+        action = "buy"
+        bos = bos_long
+
+    score = abs(dev_atr) / max(1e-9, abs(min_dev_atr))  # 1.0 == threshold
+    if bos:
+        score += 0.75
+    if vol_ok:
+        score += 0.25
+
+    reason = f"e1 vwap={vwap:.4f} close={last:.4f} dev_atr={dev_atr:.3f} bos={1 if bos else 0} vol_ok={1 if vol_ok else 0}"
+
+    # Require confirmation (BOS + volume) to avoid blind fading
+    if action != "flat" and (not bos or not vol_ok):
+        return "flat", 0.0, "no_confirm " + reason
+
+    return action, float(score), reason
+
 class StrategyBook:
     def __init__(
         self,
@@ -346,6 +424,12 @@ class StrategyBook:
                 action, score, reason = sig_c5_alt_mom(close1, reg1, min_atr_pct=min_atr_5m)
             elif s == "c6":
                 action, score, reason = sig_c6_rel_to_btc(close1, reg1, ref_btc, min_atr_pct=min_atr_5m)
+            elif s == "e1":
+                min_dev_atr = float(os.getenv("E1_MIN_DEV_ATR", "1.5"))
+                bos_lb      = int(os.getenv("E1_BOS_LOOKBACK", "10"))
+                vol_sma_n   = int(os.getenv("E1_VOL_SMA_N", "9"))
+                vol_mult    = float(os.getenv("E1_VOL_MULT", "1.0"))
+                action, score, reason = sig_e1_vwap_bos(one, five, min_dev_atr=min_dev_atr, bos_lookback=bos_lb, vol_sma_n=vol_sma_n, vol_mult=vol_mult)
             else:
                 action, score, reason = "flat", 0.0, "unknown_strategy"
 

@@ -88,6 +88,10 @@ def _strategy_instance_for(strat_id: str):
         import c6 as m
         return m.c6
 
+    if s == "e1":
+        import e1 as m
+        return m.e1
+
     return None
 
 def _risk_context_from_engine(engine: RiskEngine) -> RiskContext:
