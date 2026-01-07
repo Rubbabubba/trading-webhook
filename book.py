@@ -265,6 +265,14 @@ def sig_e1_vwap_bos(
 ) -> tuple[str, float, str, dict]:
     """Return (action, score, reason) for E1."""
 
+    # Metrics are returned for telemetry/debugging.
+    # Initialize early so every exit path can safely return it.
+    metrics: dict = {
+        "vwap_dev_atr": 0.0,
+        "vol_ok": False,
+        "mtf_ok": False,
+    }
+
     vwap = _vwap_from_1m(one)
     atr5 = _atr_from_5m(five, 14)
     if not np.isfinite(vwap) or not np.isfinite(atr5) or atr5 <= 0:
