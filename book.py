@@ -96,7 +96,7 @@ class ScanRequest:
     limit: int
     topk: int
     min_score: float
-    notional: float
+    notional: float = 0.0
 
 @dataclass
 class ScanResult:
@@ -109,9 +109,9 @@ class ScanResult:
     vwap_dev_atr: float = 0.0
     vol_ok: bool = False
     mtf_ok: bool = False
-    qty: float
-    notional: float
-    selected: bool
+    qty: float = 0.0
+    notional: float = 0.0
+    selected: bool = False
 
 # ====== regime computation ======
 @dataclass
