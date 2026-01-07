@@ -439,7 +439,7 @@ class StrategyBook:
 
         for sym, ctx in contexts.items():
             if not ctx:
-                results.append(ScanResult(sym, "flat", "no_bars", 0.0, 0.0, 0.0, 0.0, 0.0, False))
+                results.append(ScanResult(symbol=sym, action="flat", reason="no_bars", score=0.0, atr=0.0, atr_pct=0.0))
                 continue
             one = ctx["one"]; five = ctx["five"]
             close1, high1, low1 = one["close"], one["high"], one["low"]
@@ -511,7 +511,7 @@ class StrategyBook:
                 score=float(score),
                 atr=float(reg1.atr if np.isfinite(reg1.atr) else 0.0),
                 atr_pct=float(reg1.atr_pct if np.isfinite(reg1.atr_pct) else 0.0),
-                vwap_dev_atr=metrics.get("vwap_dev_atr", 0.0),
+                vwap_dev_atr=float(metrics.get("vwap_dev_atr", 0.0) or 0.0),
                 vol_ok=metrics.get("vol_ok", False),
                 mtf_ok=metrics.get("mtf_ok", False),
                 qty=qty, notional=notional, selected=False
