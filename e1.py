@@ -73,9 +73,10 @@ class E1Strategy:
                 symbol=scan.symbol,
                 strategy=STRAT_ID,
                 side="buy",
-                qty=float(scan.qty or 0.0),
+                kind="entry",
                 notional=float(scan.notional or 0.0),
                 reason=scan.reason or "e1_entry_long",
+                meta={"score": float(scan.score or 0.0), "action": str(scan.action)},
             )
 
         if scan.action == "sell" and E1_ALLOW_SHORTS:
@@ -84,9 +85,10 @@ class E1Strategy:
                 symbol=scan.symbol,
                 strategy=STRAT_ID,
                 side="sell",
-                qty=float(scan.qty or 0.0),
+                kind="entry",
                 notional=float(scan.notional or 0.0),
                 reason=scan.reason or "e1_entry_short",
+                meta={"score": float(scan.score or 0.0), "action": str(scan.action)},
             )
 
         return None
@@ -113,9 +115,10 @@ class E1Strategy:
                     symbol=position.symbol,
                     strategy=STRAT_ID,
                     side=side,
-                    qty=abs(float(position.qty)),
+                    kind="exit",
                     notional=None,
                     reason=f"e1_vwap_exit close={close:.4f} vwap={vwap:.4f} tol_atr={E1_VWAP_TOL_ATR}",
+                    meta={"close": float(close), "vwap": float(vwap), "atr": float(atr)},
                 )
 
         # Optional: opposite signal exit
@@ -125,18 +128,20 @@ class E1Strategy:
                     symbol=position.symbol,
                     strategy=STRAT_ID,
                     side="sell",
-                    qty=abs(float(position.qty)),
+                    kind="exit",
                     notional=None,
                     reason="e1_signal_exit_long",
+                    meta={"signal": "opposite", "action": str(scan.action)},
                 )
             if position.qty < 0 and scan.action == "buy":
                 return OrderIntent(
                     symbol=position.symbol,
                     strategy=STRAT_ID,
                     side="buy",
-                    qty=abs(float(position.qty)),
+                    kind="exit",
                     notional=None,
                     reason="e1_signal_exit_short",
+                    meta={"signal": "opposite", "action": str(scan.action)},
                 )
 
         return None
