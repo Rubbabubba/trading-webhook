@@ -217,6 +217,31 @@ def scheduler_run_v2(payload: Dict[str, Any] = Body(default=None)):
     for testing until you're happy to flip over.
     """
     actions: List[Dict[str, Any]] = []
+
+    # --- Guards: market-hours + duplicate prevention -------------------------
+    enforce_hours = os.getenv("ENFORCE_MARKET_HOURS", "true").lower() == "true"
+    throttle_sec = float(os.getenv("ORDER_THROTTLE_SEC", "300"))
+    market_ok, market_reason = True, "dry"
+    existing_pos: set[str] = set()
+
+    if not cfg.dry:
+        try:
+            # positions() returns list of dicts; qty is a string
+            for p in br_router.positions() or []:
+                sym = (p.get("symbol") or "").upper()
+                q = p.get("qty")
+                try:
+                    if sym and q is not None and float(q) != 0.0:
+                        existing_pos.add(sym)
+                except Exception:
+                    continue
+        except Exception:
+            # if we can't fetch positions, don't block
+            existing_pos = set()
+
+        if enforce_hours:
+            market_ok, market_reason = br_router.is_trading_window_open()
+    # ------------------------------------------------------------------------
     telemetry: List[Dict[str, Any]] = []
 
     payload = payload or {}
@@ -612,6 +637,37 @@ def scheduler_run_v2(payload: Dict[str, Any] = Body(default=None)):
         # ------------------------------------------------------------------
         # Send to broker via br_router.market_notional
         # ------------------------------------------------------------------
+
+        # --- pre-trade checks ------------------------------------------------
+        sym = intent.symbol.upper()
+        throttle_key = f"{intent.strategy}:{sym}:{side}:{intent.kind}"
+        now_ts = time.time()
+
+        if (not cfg.dry) and enforce_hours and (not market_ok):
+            action_record["status"] = "skipped"
+            action_record["error"] = f"market_hours_block:{market_reason}"
+            actions.append(action_record)
+            continue
+
+        if (not cfg.dry) and intent.kind == "entry" and sym in existing_pos:
+            action_record["status"] = "skipped"
+            action_record["error"] = "position_exists_block"
+            actions.append(action_record)
+            continue
+
+        if (not cfg.dry) and br.has_open_order_for_symbol(sym, client_order_prefix=f"{intent.strategy}-", side=side):
+            action_record["status"] = "skipped"
+            action_record["error"] = "open_order_exists_block"
+            actions.append(action_record)
+            continue
+
+        last_ts = _ORDER_THROTTLE.get(throttle_key, 0.0)
+        if (now_ts - last_ts) < throttle_sec:
+            action_record["status"] = "skipped"
+            action_record["error"] = f"throttle_block:{int(throttle_sec)}s"
+            actions.append(action_record)
+            continue
+        # --------------------------------------------------------------------
         try:
             resp = br.market_notional(
                 symbol=intent.symbol,
@@ -621,6 +677,7 @@ def scheduler_run_v2(payload: Dict[str, Any] = Body(default=None)):
             )
             action_record["status"] = "sent"
             action_record["response"] = resp
+            _ORDER_THROTTLE[throttle_key] = now_ts
         except Exception as e:
             action_record["status"] = "error"
             action_record["error"] = f"{e.__class__.__name__}: {e}"
@@ -691,3 +748,6 @@ def on_startup():
 @app.get("/scheduler/v2/status")
 def scheduler_status():
     return {"ok": True, **_sched_state}
+# In-memory throttle to prevent duplicate orders per signal within a short window
+_ORDER_THROTTLE: Dict[str, float] = {}
+

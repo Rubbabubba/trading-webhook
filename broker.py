@@ -265,6 +265,84 @@ def market_notional(
 
 
 # --- Orders / positions / trades --------------------------------------------
+# --- Market clock / trading window helpers -----------------------------------
+
+def get_clock() -> dict:
+    """Return Alpaca market clock (v2/clock)."""
+    base = os.getenv("ALPACA_API_BASE_URL", "https://paper-api.alpaca.markets").rstrip("/")
+    url = f"{base}/v2/clock"
+    return _get(url)
+
+def _parse_iso_z(s: str) -> dt.datetime:
+    # Alpaca returns e.g. '2026-01-09T21:41:37.392154553Z'
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    # trim to microseconds if needed
+    # fromisoformat supports up to 6 fractional digits
+    if "." in s:
+        head, tail = s.split(".", 1)
+        frac, rest = tail.split("+", 1) if "+" in tail else (tail, "")
+        frac = frac[:6].ljust(6, "0")
+        s = f"{head}.{frac}+{rest}" if rest else f"{head}.{frac}"
+    return dt.datetime.fromisoformat(s)
+
+def is_trading_window_open(
+    *,
+    tz: str = "America/New_York",
+    start_et: str | None = None,
+    end_et: str | None = None,
+    open_buffer_min: int | None = None,
+    close_buffer_min: int | None = None,
+) -> tuple[bool, str]:
+    """Returns (ok, reason). Uses Alpaca clock + an ET time window guard."""
+    start_et = start_et or os.getenv("TRADING_START_ET", "09:35")
+    end_et = end_et or os.getenv("TRADING_END_ET", "15:55")
+    open_buffer_min = int(os.getenv("MARKET_OPEN_BUFFER_MIN", "0")) if open_buffer_min is None else int(open_buffer_min)
+    close_buffer_min = int(os.getenv("MARKET_CLOSE_BUFFER_MIN", "0")) if close_buffer_min is None else int(close_buffer_min)
+
+    try:
+        clk = get_clock()
+        if not clk.get("is_open", False):
+            return False, "market_closed"
+        ts = _parse_iso_z(clk["timestamp"])
+    except Exception as e:
+        # If clock fails, fall back to conservative block unless explicitly allowed
+        if os.getenv("ALLOW_TRADING_IF_CLOCK_FAILS", "false").lower() == "true":
+            return True, f"clock_fail_allow:{type(e).__name__}"
+        return False, f"clock_fail_block:{type(e).__name__}"
+
+    try:
+        from zoneinfo import ZoneInfo
+        et = ts.astimezone(ZoneInfo(tz))
+        hh, mm = [int(x) for x in start_et.split(":")]
+        start = et.replace(hour=hh, minute=mm, second=0, microsecond=0) + dt.timedelta(minutes=open_buffer_min)
+        hh2, mm2 = [int(x) for x in end_et.split(":")]
+        end = et.replace(hour=hh2, minute=mm2, second=0, microsecond=0) - dt.timedelta(minutes=close_buffer_min)
+        if et < start:
+            return False, "before_window"
+        if et > end:
+            return False, "after_window"
+        return True, "in_window"
+    except Exception as e:
+        return False, f"window_parse_fail:{type(e).__name__}"
+
+def has_open_order_for_symbol(symbol: str, *, client_order_prefix: str | None = None, side: str | None = None) -> bool:
+    """True if Alpaca has an OPEN order for symbol (optionally filtered)."""
+    try:
+        o = orders(status="open", symbols=[symbol]) or []
+        for od in o:
+            if side and od.get("side") != side:
+                continue
+            if client_order_prefix:
+                cid = od.get("client_order_id") or ""
+                if not cid.startswith(client_order_prefix):
+                    continue
+            return True
+        return False
+    except Exception:
+        # If we can't check, be conservative to avoid spam
+        return True
+
 
 def orders(status: str = "open", limit: int = 50) -> List[Dict[str, Any]]:
     """

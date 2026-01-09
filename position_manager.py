@@ -26,6 +26,9 @@ class OrderIntent:
     side: str       # "buy" or "sell"
     notional: float
     intent: str     # "open_long", "close_short", "flip_long_to_short", etc.
+    # Optional quantity-based sizing (some strategy modules may pass this).
+    # The broker adapter primarily uses `notional`, so this is for compatibility/telemetry.
+    qty: float | None = None
 
 
 def load_net_positions(
