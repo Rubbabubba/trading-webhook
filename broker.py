@@ -26,6 +26,7 @@ Env it expects (matching your existing webhook):
 """
 
 from __future__ import annotations
+from decimal import Decimal, ROUND_HALF_UP
 
 import datetime as dt
 import os
@@ -33,6 +34,14 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
+
+def _round_notional(value: float) -> float:
+    """Alpaca requires notional with max 2 decimal places."""
+    try:
+        return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    except Exception:
+        return float(round(float(value), 2))
+
 
 # --- Env / config -----------------------------------------------------------
 
@@ -229,7 +238,7 @@ def market_notional(
         "side": side_l,
         "type": "market",
         "time_in_force": kwargs.get("time_in_force", "day"),
-        "notional": float(notional),
+        "notional": _round_notional(notional),
     }
     if client_order_id:
         payload["client_order_id"] = client_order_id
