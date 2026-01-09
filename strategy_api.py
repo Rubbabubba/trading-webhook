@@ -65,6 +65,9 @@ class OrderIntent:
     symbol: str
     side: Side
     kind: IntentKind
+    # Optional explicit quantity (shares/contracts). Some callers compute a qty
+    # directly instead of (or in addition to) using notional.
+    qty: Optional[float] = None
     notional: Optional[float] = None
     reason: str = ""
     meta: Dict[str, Any] = field(default_factory=dict)

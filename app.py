@@ -40,6 +40,7 @@ import br_router as br
 from scheduler_core import SchedulerConfig, SchedulerResult, run_scheduler_once
 from risk_engine import RiskEngine
 from position_manager import Position as PMPosition
+from strategy_api import PositionSnapshot
 
 
 # ---------------------------------------------------------------------
