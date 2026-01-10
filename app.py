@@ -26,6 +26,7 @@ import logging
 import os
 import threading
 import time
+import hashlib
 import datetime as dt
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -42,6 +43,24 @@ from risk_engine import RiskEngine
 from position_manager import Position as PMPosition
 from strategy_api import PositionSnapshot
 
+
+def _strategy_time_window(strategy: str) -> tuple[str | None, str | None]:
+    """Return per-strategy (start_et, end_et) from env, if set.
+
+    Example:
+      E1_TRADING_START_ET=14:30
+      E1_TRADING_END_ET=15:58
+    """
+    key = (strategy or "").strip().upper()
+    if not key:
+        return (None, None)
+    return (os.getenv(f"{key}_TRADING_START_ET"), os.getenv(f"{key}_TRADING_END_ET"))
+
+def _deterministic_client_order_id(*, strategy: str, symbol: str, side: str, kind: str, signal_ts: int | None) -> str:
+    """Create a stable client_order_id to support idempotency."""
+    base = f"{strategy}|{symbol}|{side}|{kind}|{signal_ts or 0}"
+    h = hashlib.sha1(base.encode("utf-8")).hexdigest()[:18]
+    return f"{strategy}-{symbol}-{h}"
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -669,11 +688,37 @@ def scheduler_run_v2(payload: Dict[str, Any] = Body(default=None)):
             continue
         # --------------------------------------------------------------------
         try:
+            # HARD SAFETY: enforce market-hours at *submission time* (global + per-strategy)
+            if (not cfg.dry) and enforce_hours:
+                g_ok, g_reason = br.is_trading_window_open()
+                if not g_ok:
+                    action_record["status"] = "skipped"
+                    action_record["error"] = f"market_hours_block:global:{g_reason}"
+                    actions.append(action_record)
+                    continue
+                s_start, s_end = _strategy_time_window(intent.strategy)
+                if s_start or s_end:
+                    s_ok, s_reason = br.is_trading_window_open(start_et=s_start, end_et=s_end)
+                    if not s_ok:
+                        action_record["status"] = "skipped"
+                        action_record["error"] = f"market_hours_block:{intent.strategy}:{s_reason}"
+                        actions.append(action_record)
+                        continue
+            
+            # Idempotency: deterministic client_order_id for safe retries
+            client_order_id = _deterministic_client_order_id(
+                strategy=intent.strategy,
+                symbol=intent.symbol,
+                side=side,
+                kind=intent.kind,
+                signal_ts=int(getattr(intent, "signal_ts", 0) or 0),
+            )
             resp = br.market_notional(
                 symbol=intent.symbol,
                 side=side,
                 notional=final_notional,
                 strategy=intent.strategy,
+                client_order_id=client_order_id,
             )
             action_record["status"] = "sent"
             action_record["response"] = resp
@@ -750,4 +795,3 @@ def scheduler_status():
     return {"ok": True, **_sched_state}
 # In-memory throttle to prevent duplicate orders per signal within a short window
 _ORDER_THROTTLE: Dict[str, float] = {}
-

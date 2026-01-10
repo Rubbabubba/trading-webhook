@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 
 # ---- Defaults (kept consistent with your current behavior) ----
 DEFAULT_MIN_ATR_PCT = float(os.getenv('MIN_ATR_PCT', '0.08'))  # default 8% for 5m
@@ -227,18 +229,32 @@ def sig_c6_rel_to_btc(close, regimes: Regimes, ref_close_btc: Optional[np.ndarra
 def _vwap_from_1m(one: dict) -> float:
     """Session VWAP approximation from available 1m bars.
 
-    NOTE: Bars may arrive as Python lists, numpy arrays, or pandas Series.
-    We coerce to numpy arrays so arithmetic works reliably.
+    Anchors VWAP to *today's* regular trading session (09:30 ET) to better match
+    TradingView's "VWAP hlc3 Session".
     """
     high = np.asarray(one.get("high", []), dtype=float)
     low  = np.asarray(one.get("low", []), dtype=float)
     close= np.asarray(one.get("close", []), dtype=float)
     vol  = np.asarray(one.get("volume", []), dtype=float)
-    if len(high) == 0 or len(low) == 0 or len(close) == 0 or len(vol) == 0:
+    ts   = np.asarray(one.get("ts", []), dtype=float)
+
+    if len(high) == 0 or len(low) == 0 or len(close) == 0 or len(vol) == 0 or len(ts) == 0:
         return float("nan")
-    # align lengths defensively (in case a field is missing a bar)
-    n = min(len(high), len(low), len(close), len(vol))
-    high, low, close, vol = high[:n], low[:n], close[:n], vol[:n]
+
+    n = int(min(len(high), len(low), len(close), len(vol), len(ts)))
+    high, low, close, vol, ts = high[:n], low[:n], close[:n], vol[:n], ts[:n]
+
+    try:
+        et = ZoneInfo("America/New_York")
+        latest_dt = datetime.fromtimestamp(float(ts[-1]), tz=et)
+        session_start = datetime.combine(latest_dt.date(), dtime(9, 30), tzinfo=et).timestamp()
+        mask = ts >= session_start
+        if not np.any(mask):
+            mask = np.ones_like(ts, dtype=bool)
+        high, low, close, vol = high[mask], low[mask], close[mask], vol[mask]
+    except Exception:
+        pass
+
     tp = (high + low + close) / 3.0
     pv = float(np.sum(tp * vol))
     vv = float(np.sum(vol))

@@ -26,3 +26,4 @@ market_notional = _broker.market_notional
 orders = _broker.orders
 positions = _broker.positions
 trades_history = _broker.trades_history
+is_trading_window_open = _broker.is_trading_window_open
