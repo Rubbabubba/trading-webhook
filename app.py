@@ -1,15 +1,24 @@
 import os
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
-from alpaca.trading.requests import TakeProfitRequest, StopLossRequest
 
-app = Flask(__name__)
+app = FastAPI()
+
+# CORS (lets Hoppscotch / browsers send OPTIONS preflight cleanly)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # -----------------------------
-# Environment
+# ENV
 # -----------------------------
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
@@ -17,143 +26,97 @@ APCA_KEY = os.getenv("APCA_API_KEY_ID", "").strip()
 APCA_SECRET = os.getenv("APCA_API_SECRET_KEY", "").strip()
 APCA_PAPER = os.getenv("APCA_PAPER", "true").lower() == "true"
 
-# Risk controls (safe defaults for $500)
-RISK_DOLLARS = float(os.getenv("RISK_DOLLARS", "3"))          # dollars risked per trade
-STOP_PCT = float(os.getenv("STOP_PCT", "0.003"))              # 0.30%
-TAKE_PCT = float(os.getenv("TAKE_PCT", "0.006"))              # 0.60%
-MIN_QTY = float(os.getenv("MIN_QTY", "0.01"))                 # fractional shares
-MAX_QTY = float(os.getenv("MAX_QTY", "1.5"))                  # keep small for $500
+# Safety defaults for $500
+RISK_DOLLARS = float(os.getenv("RISK_DOLLARS", "3"))
+STOP_PCT = float(os.getenv("STOP_PCT", "0.003"))   # 0.30%
+TAKE_PCT = float(os.getenv("TAKE_PCT", "0.006"))   # 0.60%
+MIN_QTY = float(os.getenv("MIN_QTY", "0.01"))
+MAX_QTY = float(os.getenv("MAX_QTY", "1.50"))
+
 ALLOW_SHORT = os.getenv("ALLOW_SHORT", "false").lower() == "true"
-DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"     # if true: don't place orders
+DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# Only allow these symbols (safety)
 ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "SPY").split(","))
-
-if not APCA_KEY or not APCA_SECRET:
-    # Render will still boot, but webhook will error until env vars are set
-    pass
 
 trading_client = TradingClient(APCA_KEY, APCA_SECRET, paper=APCA_PAPER)
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def _bad(msg, code=400):
-    return jsonify({"ok": False, "error": msg}), code
 
 def compute_qty(price: float) -> float:
-    """
-    Risk-based position size using percentage stop:
-    risk_per_share = price * STOP_PCT
-    qty = RISK_DOLLARS / risk_per_share
-    """
-    if price <= 0:
-        raise ValueError("Price must be > 0")
-
     risk_per_share = price * STOP_PCT
     if risk_per_share <= 0:
         raise ValueError("STOP_PCT must be > 0")
-
     qty = RISK_DOLLARS / risk_per_share
-
-    # Bound and round to 2 decimals for fractional shares
     qty = max(qty, MIN_QTY)
     qty = min(qty, MAX_QTY)
-    qty = round(qty, 2)
+    return round(qty, 2)
 
-    return qty
 
-def build_bracket_prices(price: float, side: str):
-    """
-    For MARKET entries, we compute bracket prices off the alert's price.
-    Long:
-      stop = price * (1 - STOP_PCT)
-      take = price * (1 + TAKE_PCT)
-    Short:
-      stop = price * (1 + STOP_PCT)
-      take = price * (1 - TAKE_PCT)
-    """
+def bracket_prices(price: float, side: str) -> tuple[float, float]:
+    # returns (stop_price, take_profit_price)
     if side == "buy":
         stop_price = round(price * (1 - STOP_PCT), 2)
         take_price = round(price * (1 + TAKE_PCT), 2)
     else:
         stop_price = round(price * (1 + STOP_PCT), 2)
         take_price = round(price * (1 - TAKE_PCT), 2)
-
-    # Basic sanity
     if stop_price <= 0 or take_price <= 0:
-        raise ValueError("Computed bracket prices invalid")
-
+        raise ValueError("Invalid bracket prices")
     return stop_price, take_price
 
-# -----------------------------
-# Routes
-# -----------------------------
+
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "service": "trading-webhook", "paper": APCA_PAPER})
+    return {"ok": True, "paper": APCA_PAPER, "allowed_symbols": sorted(ALLOWED_SYMBOLS)}
+
 
 @app.post("/webhook")
-def webhook():
-    data = request.get_json(silent=True) or {}
+async def webhook(req: Request):
+    data = await req.json()
 
-    # 1) Validate secret
-    incoming_secret = (data.get("secret") or "").strip()
+    # Secret check
     if WEBHOOK_SECRET:
-        if incoming_secret != WEBHOOK_SECRET:
-            return _bad("Invalid secret", 401)
+        if (data.get("secret") or "").strip() != WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid secret")
 
-    # 2) Validate payload
     symbol = (data.get("symbol") or "").upper().strip()
-    side = (data.get("side") or "").lower().strip()  # "buy" or "sell"
+    side = (data.get("side") or "").lower().strip()  # buy/sell
     signal = (data.get("signal") or "").strip()
-    price_raw = data.get("price")
 
-    if not symbol or symbol not in ALLOWED_SYMBOLS:
-        return _bad(f"Symbol not allowed. Got '{symbol}'. Allowed: {sorted(ALLOWED_SYMBOLS)}")
+    if symbol not in ALLOWED_SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Symbol not allowed: {symbol}")
 
     if side not in ("buy", "sell"):
-        return _bad("side must be 'buy' or 'sell'")
+        raise HTTPException(status_code=400, detail="side must be 'buy' or 'sell'")
 
     if side == "sell" and not ALLOW_SHORT:
-        # For $500 and novice mode: default is long-only
-        return jsonify({"ok": True, "ignored": True, "reason": "Shorts disabled", "signal": signal})
+        return {"ok": True, "ignored": True, "reason": "Shorts disabled", "signal": signal}
 
     try:
-        price = float(price_raw)
+        price = float(data.get("price"))
     except Exception:
-        return _bad("Missing/invalid 'price'. Send TradingView {{close}} in alert JSON.")
+        raise HTTPException(status_code=400, detail="Missing/invalid price. Send TradingView {{close}}.")
 
-    if price <= 0:
-        return _bad("price must be > 0")
+    qty = compute_qty(price)
+    stop_price, take_price = bracket_prices(price, side)
 
-    # 3) Compute qty + brackets
-    try:
-        qty = compute_qty(price)
-        stop_price, take_price = build_bracket_prices(price, side)
-    except Exception as e:
-        return _bad(str(e), 400)
-
-    # 4) Place order (or dry run)
-    order_payload = {
+    payload = {
         "symbol": symbol,
         "side": side,
         "qty": qty,
         "type": "market",
-        "time_in_force": "day",
         "order_class": "bracket",
-        "take_profit": {"limit_price": take_price},
-        "stop_loss": {"stop_price": stop_price},
+        "take_profit": take_price,
+        "stop_loss": stop_price,
         "signal": signal,
         "paper": APCA_PAPER,
         "dry_run": DRY_RUN,
     }
 
     if DRY_RUN:
-        return jsonify({"ok": True, "submitted": False, "dry_run": True, "order": order_payload})
+        return {"ok": True, "submitted": False, "dry_run": True, "order": payload}
 
     try:
-        req = MarketOrderRequest(
+        order_req = MarketOrderRequest(
             symbol=symbol,
             qty=qty,
             side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
@@ -162,9 +125,7 @@ def webhook():
             take_profit=TakeProfitRequest(limit_price=take_price),
             stop_loss=StopLossRequest(stop_price=stop_price),
         )
-        order = trading_client.submit_order(req)
-        return jsonify({"ok": True, "submitted": True, "order_id": order.id, "order": order_payload})
+        order = trading_client.submit_order(order_req)
+        return {"ok": True, "submitted": True, "order_id": str(order.id), "order": payload}
     except Exception as e:
-        return _bad(f"Alpaca submit failed: {e}", 500)
-
-# Render/Gunicorn entrypoint expects `app`
+        raise HTTPException(status_code=500, detail=f"Alpaca submit failed: {e}")
