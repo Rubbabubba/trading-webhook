@@ -1,5 +1,4 @@
 import os
-import math
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -34,12 +33,12 @@ APCA_SECRET = os.getenv("APCA_API_SECRET_KEY", "").strip()
 APCA_PAPER = os.getenv("APCA_PAPER", "true").lower() == "true"
 
 # Symbols
-ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "SPY").split(","))
+ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "SPY").split(",") if s.strip())
 
 # Risk / sizing
 RISK_DOLLARS = float(os.getenv("RISK_DOLLARS", "3"))
-STOP_PCT = float(os.getenv("STOP_PCT", "0.003"))   # 0.30%
-TAKE_PCT = float(os.getenv("TAKE_PCT", "0.006"))   # 0.60%
+STOP_PCT = float(os.getenv("STOP_PCT", "0.003"))  # 0.30%
+TAKE_PCT = float(os.getenv("TAKE_PCT", "0.006"))  # 0.60%
 MIN_QTY = float(os.getenv("MIN_QTY", "0.01"))
 MAX_QTY = float(os.getenv("MAX_QTY", "1.50"))
 
@@ -47,8 +46,8 @@ MAX_QTY = float(os.getenv("MAX_QTY", "1.50"))
 ALLOW_SHORT = os.getenv("ALLOW_SHORT", "false").lower() == "true"
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# For $500: keep simple orders on. (Fractional orders must be simple orders.)
-FORCE_SIMPLE = os.getenv("FORCE_SIMPLE", "true").lower() == "true"
+# If true, allow reversing (close existing position then open opposite direction)
+ALLOW_REVERSAL = os.getenv("ALLOW_REVERSAL", "true").lower() == "true"
 
 # Exit worker auth (optional but recommended)
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -58,10 +57,13 @@ NY_TZ = ZoneInfo("America/New_York")
 EOD_FLATTEN_TIME = os.getenv("EOD_FLATTEN_TIME", "15:55")  # HH:MM in NY time
 EXIT_COOLDOWN_SEC = int(os.getenv("EXIT_COOLDOWN_SEC", "20"))  # prevent spam exits if called often
 
-# Trading hours guard (optional)
+# Trading hours guard
 ONLY_MARKET_HOURS = os.getenv("ONLY_MARKET_HOURS", "true").lower() == "true"
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
+
+# Optional: only accept known signals (comma-separated). Empty = accept all.
+ALLOWED_SIGNALS = set(s.strip() for s in os.getenv("ALLOWED_SIGNALS", "").split(",") if s.strip())
 
 # Alpaca clients
 trading_client = TradingClient(APCA_KEY, APCA_SECRET, paper=APCA_PAPER)
@@ -69,19 +71,18 @@ data_client = StockHistoricalDataClient(APCA_KEY, APCA_SECRET)
 
 # -----------------------------
 # In-memory trade plan state
-# (good enough for now; later we can persist to Redis/DB)
+# (NOTE: Render restarts wipe this. We therefore also have an EOD safety
+# flatten that uses Alpaca positions as the source of truth.)
 # -----------------------------
 TRADE_PLAN = {
-    # symbol -> dict with entry/targets
-    # "SPY": { "active": True, "side": "buy", "qty": 1.23, "entry_price": 500.0,
-    #          "stop_price": 498.5, "take_price": 503.0, "signal": "...",
-    #          "opened_at": "...", "last_exit_attempt_ts": 0 }
+    # symbol -> dict
 }
 
 
 # -----------------------------
 # Helpers
 # -----------------------------
+
 def now_ny() -> datetime:
     return datetime.now(tz=NY_TZ)
 
@@ -97,24 +98,19 @@ def in_market_hours() -> bool:
 
 
 def compute_qty(price: float) -> float:
-    """
-    Risk-based sizing using percent stop approximation.
-    With $500, this will often be fractional shares.
-    """
+    """Risk-based sizing using percent stop approximation."""
     if price <= 0:
         raise ValueError("Price must be > 0")
-
     risk_per_share = price * STOP_PCT
     if risk_per_share <= 0:
         raise ValueError("STOP_PCT must be > 0")
-
     qty = RISK_DOLLARS / risk_per_share
     qty = max(qty, MIN_QTY)
     qty = min(qty, MAX_QTY)
     return round(qty, 2)
 
 
-def get_base_price(symbol: str) -> float:
+def get_latest_price(symbol: str) -> float:
     req = StockLatestTradeRequest(symbol_or_symbols=[symbol])
     latest = data_client.get_stock_latest_trade(req)
     px = float(latest[symbol].price)
@@ -123,43 +119,18 @@ def get_base_price(symbol: str) -> float:
     return px
 
 
-def is_whole_share(qty: float) -> bool:
-    return abs(qty - round(qty)) < 1e-9 and qty >= 1.0
-
-
-def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, signal: str) -> dict:
-    """
-    For now, we only manage LONG exits (buy then sell).
-    If you enable shorts later, we’ll add symmetric logic.
-    """
-    if side != "buy":
-        # short support is parked unless ALLOW_SHORT is enabled and we add exit logic
-        return {
-            "active": True,
-            "side": side,
-            "qty": qty,
-            "entry_price": entry_price,
-            "stop_price": None,
-            "take_price": None,
-            "signal": signal,
-            "opened_at": now_ny().isoformat(),
-            "last_exit_attempt_ts": 0,
-        }
-
-    stop_price = round(entry_price * (1 - STOP_PCT), 2)
-    take_price = round(entry_price * (1 + TAKE_PCT), 2)
-
-    return {
-        "active": True,
-        "side": side,
-        "qty": qty,
-        "entry_price": round(entry_price, 4),
-        "stop_price": stop_price,
-        "take_price": take_price,
-        "signal": signal,
-        "opened_at": now_ny().isoformat(),
-        "last_exit_attempt_ts": 0,
-    }
+def get_position(symbol: str):
+    """Returns (qty_signed, side_str) where side_str is 'long'/'short'. If none, (0,'flat')."""
+    try:
+        pos = trading_client.get_open_position(symbol)
+        q = float(pos.qty)
+        if q > 0:
+            return q, "long"
+        if q < 0:
+            return q, "short"
+        return 0.0, "flat"
+    except Exception:
+        return 0.0, "flat"
 
 
 def submit_market_order(symbol: str, side: str, qty: float):
@@ -172,31 +143,67 @@ def submit_market_order(symbol: str, side: str, qty: float):
     return trading_client.submit_order(order_req)
 
 
-def get_open_position_qty(symbol: str) -> float:
-    """
-    Returns absolute position qty if exists, else 0.
-    """
-    try:
-        pos = trading_client.get_open_position(symbol)
-        q = float(pos.qty)
-        return abs(q)
-    except Exception:
-        return 0.0
+def close_position(symbol: str) -> dict:
+    """Closes any open position in `symbol` using a market order."""
+    qty_signed, side = get_position(symbol)
+    if qty_signed == 0:
+        return {"closed": False, "reason": "No open position"}
 
-
-def flatten_position(symbol: str) -> dict:
-    """
-    Close any open position in this symbol with a market order.
-    """
-    qty = get_open_position_qty(symbol)
-    if qty <= 0:
-        return {"flattened": False, "reason": "No open position"}
+    qty = abs(qty_signed)
+    close_side = "sell" if qty_signed > 0 else "buy"
 
     if DRY_RUN:
-        return {"flattened": False, "dry_run": True, "symbol": symbol, "qty": qty}
+        return {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side}
 
-    order = submit_market_order(symbol, "sell", qty)
-    return {"flattened": True, "symbol": symbol, "qty": qty, "order_id": str(order.id)}
+    order = submit_market_order(symbol, close_side, qty)
+    return {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": str(order.id)}
+
+
+def list_open_positions_allowed() -> list[dict]:
+    """Returns open Alpaca positions restricted to ALLOWED_SYMBOLS."""
+    out = []
+    try:
+        positions = trading_client.get_all_positions()
+    except Exception:
+        return out
+
+    for p in positions:
+        try:
+            sym = str(p.symbol).upper()
+            if sym not in ALLOWED_SYMBOLS:
+                continue
+            qty = float(p.qty)
+            if qty == 0:
+                continue
+            out.append({"symbol": sym, "qty": qty})
+        except Exception:
+            continue
+    return out
+
+
+def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, signal: str) -> dict:
+    """Build symmetric stop/take for long or short."""
+    entry_price = float(entry_price)
+
+    if side == "buy":
+        stop_price = round(entry_price * (1 - STOP_PCT), 2)
+        take_price = round(entry_price * (1 + TAKE_PCT), 2)
+    else:
+        # short: stop ABOVE entry, take BELOW entry
+        stop_price = round(entry_price * (1 + STOP_PCT), 2)
+        take_price = round(entry_price * (1 - TAKE_PCT), 2)
+
+    return {
+        "active": True,
+        "side": side,  # 'buy' for long entries, 'sell' for short entries
+        "qty": float(qty),
+        "entry_price": round(entry_price, 4),
+        "stop_price": stop_price,
+        "take_price": take_price,
+        "signal": signal,
+        "opened_at": now_ny().isoformat(),
+        "last_exit_attempt_ts": 0,
+    }
 
 
 # -----------------------------
@@ -213,7 +220,8 @@ def health():
         "ok": True,
         "paper": APCA_PAPER,
         "allowed_symbols": sorted(ALLOWED_SYMBOLS),
-        "force_simple": FORCE_SIMPLE,
+        "allow_short": ALLOW_SHORT,
+        "allow_reversal": ALLOW_REVERSAL,
         "only_market_hours": ONLY_MARKET_HOURS,
         "eod_flatten_time_ny": EOD_FLATTEN_TIME,
         "active_plans": {k: v.get("active") for k, v in TRADE_PLAN.items()},
@@ -222,7 +230,6 @@ def health():
 
 @app.get("/state")
 def state():
-    # quick debug view
     return {"ok": True, "trade_plan": TRADE_PLAN}
 
 
@@ -236,8 +243,11 @@ async def webhook(req: Request):
             raise HTTPException(status_code=401, detail="Invalid secret")
 
     symbol = (data.get("symbol") or "").upper().strip()
-    side = (data.get("side") or "").lower().strip()
+    side = (data.get("side") or "").lower().strip()  # 'buy' or 'sell'
     signal = (data.get("signal") or "").strip()
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
 
     if symbol not in ALLOWED_SYMBOLS:
         raise HTTPException(status_code=400, detail=f"Symbol not allowed: {symbol}")
@@ -245,38 +255,61 @@ async def webhook(req: Request):
     if side not in ("buy", "sell"):
         raise HTTPException(status_code=400, detail="side must be 'buy' or 'sell'")
 
+    if ALLOWED_SIGNALS and signal not in ALLOWED_SIGNALS:
+        raise HTTPException(status_code=400, detail=f"Signal not allowed: {signal}")
+
     if side == "sell" and not ALLOW_SHORT:
-        return {"ok": True, "ignored": True, "reason": "Shorts disabled", "signal": signal}
+        # If shorts disabled, we treat sell as *close long if present*, otherwise ignore.
+        qty_signed, pos_side = get_position(symbol)
+        if qty_signed > 0:
+            out = close_position(symbol)
+            # deactivate any plan
+            if symbol in TRADE_PLAN:
+                TRADE_PLAN[symbol]["active"] = False
+            return {"ok": True, "closed": True, "reason": "Shorts disabled; closed long", "signal": signal, "symbol": symbol, **out}
+        return {"ok": True, "ignored": True, "reason": "Shorts disabled", "signal": signal, "symbol": symbol}
 
     # Optional market hours guard
     if ONLY_MARKET_HOURS and not in_market_hours():
-        return {"ok": True, "ignored": True, "reason": "Outside market hours", "signal": signal}
+        return {"ok": True, "ignored": True, "reason": "Outside market hours", "signal": signal, "symbol": symbol}
 
-    # One position at a time guard (simple & safe)
-    existing_qty = get_open_position_qty(symbol)
-    if existing_qty > 0:
-        return {
-            "ok": True,
-            "ignored": True,
-            "reason": f"Position already open ({existing_qty}). One-at-a-time guard enabled.",
-            "signal": signal,
-            "symbol": symbol,
-        }
+    # Handle existing position (close or reversal)
+    qty_signed, pos_side = get_position(symbol)
+    if qty_signed != 0:
+        desired_side = "long" if side == "buy" else "short"
 
-    # Use Alpaca latest trade as base
+        if desired_side == pos_side:
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": f"Position already open ({pos_side} {qty_signed}).",
+                "signal": signal,
+                "symbol": symbol,
+            }
+
+        # Opposite direction: close, then optionally open
+        close_out = close_position(symbol)
+        if symbol in TRADE_PLAN:
+            TRADE_PLAN[symbol]["active"] = False
+
+        if not close_out.get("closed"):
+            return {"ok": True, "action": "reverse_close_failed", "signal": signal, "symbol": symbol, **close_out}
+
+        if not ALLOW_REVERSAL:
+            return {"ok": True, "action": "closed_opposite_position", "signal": signal, "symbol": symbol, **close_out}
+
+        # fall through to open the new position
+
+    # Entry sizing uses latest price
     try:
-        base_price = get_base_price(symbol)
+        base_price = get_latest_price(symbol)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get latest price: {e}")
 
-    # Size order
     try:
         qty = compute_qty(base_price)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-    # Fractional must be simple; with FORCE_SIMPLE we always do simple entries
-    order_mode = "simple"
 
     payload = {
         "symbol": symbol,
@@ -286,21 +319,15 @@ async def webhook(req: Request):
         "signal": signal,
         "paper": APCA_PAPER,
         "dry_run": DRY_RUN,
-        "order_mode": order_mode,
     }
 
     if DRY_RUN:
-        # Create trade plan (but don't send order)
         TRADE_PLAN[symbol] = build_trade_plan(symbol, side, qty, base_price, signal)
         return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": TRADE_PLAN[symbol]}
 
     try:
-        # Simple market order (fractional allowed)
         order = submit_market_order(symbol, side, qty)
-
-        # Record plan using the base price (close enough for SPY; later we can pull fill price)
         TRADE_PLAN[symbol] = build_trade_plan(symbol, side, qty, base_price, signal)
-
         return {
             "ok": True,
             "submitted": True,
@@ -308,25 +335,20 @@ async def webhook(req: Request):
             "order": payload,
             "plan": TRADE_PLAN[symbol],
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Alpaca submit failed: {e}")
 
 
 @app.post("/worker/exit")
 async def worker_exit(req: Request):
-    """
-    Called by Render Cron every 30 seconds.
-    Checks for active plan + open position and exits if stop/target/time-stop hit.
-    """
+    """Called by background worker every N seconds."""
+
+    body = await req.json()
+
     # Optional worker auth
     if WORKER_SECRET:
-        body = await req.json()
         if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
-    else:
-        # if no secret, still accept empty JSON
-        _ = await req.json()
 
     if ONLY_MARKET_HOURS and not in_market_hours():
         return {"ok": True, "skipped": True, "reason": "Outside market hours"}
@@ -337,14 +359,27 @@ async def worker_exit(req: Request):
 
     results = []
 
+    # HARD SAFETY: at/after EOD time, flatten any open Alpaca positions in ALLOWED_SYMBOLS
+    # (even if trade plans were lost due to service restart).
+    if now_t >= eod_t:
+        for p in list_open_positions_allowed():
+            sym = p["symbol"]
+            # cooldown not needed at EOD; just try
+            out = close_position(sym)
+            # deactivate any plan
+            if sym in TRADE_PLAN:
+                TRADE_PLAN[sym]["active"] = False
+            results.append({"symbol": sym, "action": "flatten_eod", **out})
+
+        return {"ok": True, "ts_ny": now.isoformat(), "results": results, "mode": "eod_flatten"}
+
+    # Otherwise, manage active plans with stop/take
     for symbol, plan in list(TRADE_PLAN.items()):
         if not plan.get("active"):
             continue
 
-        # Must have a real open position to manage
-        pos_qty = get_open_position_qty(symbol)
-        if pos_qty <= 0:
-            # No position: mark plan inactive (clean up)
+        qty_signed, _pos_side = get_position(symbol)
+        if qty_signed == 0:
             plan["active"] = False
             results.append({"symbol": symbol, "action": "plan_deactivated", "reason": "No open position"})
             continue
@@ -356,46 +391,34 @@ async def worker_exit(req: Request):
             results.append({"symbol": symbol, "action": "cooldown", "seconds_remaining": EXIT_COOLDOWN_SEC - (now_ts - last_ts)})
             continue
 
-        # Time stop: flatten near end of day
-        if now_t >= eod_t:
-            plan["last_exit_attempt_ts"] = now_ts
-            out = flatten_position(symbol)
-            if out.get("flattened"):
-                plan["active"] = False
-                results.append({"symbol": symbol, "action": "flatten_eod", **out})
-            else:
-                results.append({"symbol": symbol, "action": "flatten_eod_failed_or_none", **out})
-            continue
-
-        # Only handling long exits right now
-        if plan.get("side") != "buy":
-            results.append({"symbol": symbol, "action": "skip", "reason": "Short exit logic parked"})
-            continue
-
-        stop_price = plan.get("stop_price")
-        take_price = plan.get("take_price")
-
-        # Get latest price
         try:
-            px = get_base_price(symbol)
+            px = get_latest_price(symbol)
         except Exception as e:
             results.append({"symbol": symbol, "action": "error", "reason": f"latest_price_failed: {e}"})
             continue
 
-        # Stop/target checks
-        hit_stop = stop_price is not None and px <= float(stop_price)
-        hit_take = take_price is not None and px >= float(take_price)
+        stop_price = float(plan.get("stop_price"))
+        take_price = float(plan.get("take_price"))
+        side = plan.get("side")  # 'buy' (long) or 'sell' (short)
+
+        if side == "buy":
+            hit_stop = px <= stop_price
+            hit_take = px >= take_price
+        else:
+            # short
+            hit_stop = px >= stop_price
+            hit_take = px <= take_price
 
         if hit_stop or hit_take:
             plan["last_exit_attempt_ts"] = now_ts
             reason = "stop" if hit_stop else "target"
-            out = flatten_position(symbol)
-            if out.get("flattened"):
+            out = close_position(symbol)
+            if out.get("closed"):
                 plan["active"] = False
                 results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "take": take_price, **out})
             else:
                 results.append({"symbol": symbol, "action": f"exit_{reason}_failed_or_none", "price": px, "stop": stop_price, "take": take_price, **out})
         else:
-            results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price, "qty": pos_qty})
+            results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price, "qty": qty_signed})
 
     return {"ok": True, "ts_ny": now.isoformat(), "results": results}
