@@ -1,4 +1,8 @@
 import os
+import threading
+import hashlib
+import time as _time
+from collections import defaultdict
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -231,6 +235,21 @@ def health():
 @app.get("/state")
 def state():
     return {"ok": True, "trade_plan": TRADE_PLAN}
+@app.post("/kill")
+async def kill_switch_on(request: Request):
+    _require_admin(request)
+    global KILL_SWITCH
+    KILL_SWITCH = True
+    return {"ok": True, "kill_switch": KILL_SWITCH}
+
+@app.post("/unkill")
+async def kill_switch_off(request: Request):
+    _require_admin(request)
+    global KILL_SWITCH
+    KILL_SWITCH = False
+    return {"ok": True, "kill_switch": KILL_SWITCH}
+
+
 
 
 @app.post("/webhook")
