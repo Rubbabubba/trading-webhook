@@ -29,12 +29,21 @@ app.add_middleware(
 
 # -----------------------------
 # ENV
-# -----------------------------
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
-APCA_KEY = os.getenv("APCA_API_KEY_ID", "").strip()
-APCA_SECRET = os.getenv("APCA_API_SECRET_KEY", "").strip()
-APCA_PAPER = os.getenv("APCA_PAPER", "true").lower() == "true"
+def getenv_any(*names: str, default: str = "") -> str:
+    """Return the first non-empty env var value among names (stripped)."""
+    for n in names:
+        v = os.getenv(n)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return default
+
+# -----------------------------
+WEBHOOK_SECRET = getenv_any("WEBHOOK_SECRET", default="")
+
+APCA_KEY = getenv_any("APCA_API_KEY_ID", "ALPACA_KEY_ID", "ALPACA_API_KEY_ID", default="")
+APCA_SECRET = getenv_any("APCA_API_SECRET_KEY", "ALPACA_SECRET_KEY", "ALPACA_API_SECRET_KEY", default="")
+APCA_PAPER = getenv_any("APCA_PAPER", "ALPACA_PAPER", default="true").lower() == "true"
 
 # Symbols
 ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "SPY").split(",") if s.strip())
@@ -70,6 +79,17 @@ MARKET_CLOSE = time(16, 0)
 ALLOWED_SIGNALS = set(s.strip() for s in os.getenv("ALLOWED_SIGNALS", "").split(",") if s.strip())
 
 # Alpaca clients
+
+# Validate credentials early to avoid cryptic runtime errors
+if not APCA_KEY or not APCA_SECRET:
+    # Don't print secrets; only print which vars are missing.
+    missing = []
+    if not APCA_KEY:
+        missing.append("APCA_API_KEY_ID (or ALPACA_KEY_ID/ALPACA_API_KEY_ID)")
+    if not APCA_SECRET:
+        missing.append("APCA_API_SECRET_KEY (or ALPACA_SECRET_KEY/ALPACA_API_SECRET_KEY)")
+    raise RuntimeError("Missing Alpaca credentials: " + ", ".join(missing))
+
 trading_client = TradingClient(APCA_KEY, APCA_SECRET, paper=APCA_PAPER)
 data_client = StockHistoricalDataClient(APCA_KEY, APCA_SECRET)
 
