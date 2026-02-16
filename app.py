@@ -108,10 +108,12 @@ EOD_FLATTEN_TIME = os.getenv("EOD_FLATTEN_TIME", "15:55")  # NY time
 EXIT_COOLDOWN_SEC = int(os.getenv("EXIT_COOLDOWN_SEC", "20"))
 
 # Idempotency
-DEDUP_WINDOW_SEC = int(os.getenv("DEDUP_WINDOW_SEC", "90"))  # absorb retries
+ENABLE_IDEMPOTENCY = getenv_any("ENABLE_IDEMPOTENCY", default="true").strip().lower() in ("1","true","yes","y","on")  # allow disabling dedup if needed
+# Idempotency
+DEDUP_WINDOW_SEC = int(getenv_any("DEDUP_WINDOW_SEC", "IDEMPOTENCY_WINDOW_SECONDS", default="90"))  # absorb retries
 
 # Symbol lock
-SYMBOL_LOCK_SEC = int(os.getenv("SYMBOL_LOCK_SEC", "180"))  # lock during entry/plan
+SYMBOL_LOCK_SEC = int(getenv_any("SYMBOL_LOCK_SEC", "SYMBOL_LOCK_SECONDS", default="180"))  # lock during entry/plan
 
 # Daily stop + kill switch
 DAILY_STOP_DOLLARS = float(os.getenv("DAILY_STOP_DOLLARS", "0"))  # e.g. 50 means stop at -50
@@ -137,6 +139,10 @@ TRADE_PLAN: dict[str, dict] = {}          # symbol -> plan dict
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
+# Decision traces (in-memory ring buffer)
+DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
+DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
+
 
 # =============================
 # Logging helpers
@@ -150,6 +156,53 @@ def log(msg: str, **kv):
         print(f"{stamp} {msg}", flush=True)
 
 
+def record_decision(event: str, source: str, symbol: str = "", side: str = "", signal: str = "",
+                    action: str = "", reason: str = "", **details):
+    """Record a structured decision trace for observability and debugging."""
+    try:
+        item = {
+            "ts_utc": datetime.now(tz=timezone.utc).isoformat(),
+            "ts_ny": now_ny().isoformat(),
+            "event": event,
+            "source": source,
+            "symbol": (symbol or "").upper(),
+            "side": side,
+            "signal": signal,
+            "action": action,
+            "reason": reason,
+        }
+        if details:
+            item["details"] = details
+        DECISIONS.append(item)
+        if len(DECISIONS) > max(DECISION_BUFFER_SIZE, 50):
+            # Trim oldest
+            overflow = len(DECISIONS) - max(DECISION_BUFFER_SIZE, 50)
+            if overflow > 0:
+                del DECISIONS[:overflow]
+    except Exception:
+        # Never let tracing break trading.
+        pass
+
+
+def config_effective_snapshot() -> dict:
+    return {
+        "paper": APCA_PAPER,
+        "allowed_symbols_count": len(ALLOWED_SYMBOLS),
+        "allow_short": ALLOW_SHORT,
+        "allow_reversal": ALLOW_REVERSAL,
+        "only_market_hours": ONLY_MARKET_HOURS,
+        "eod_flatten_time_ny": EOD_FLATTEN_TIME,
+        "enable_idempotency": ENABLE_IDEMPOTENCY,
+        "enable_idempotency": ENABLE_IDEMPOTENCY,
+        "dedup_window_sec": DEDUP_WINDOW_SEC,
+        "symbol_lock_sec": SYMBOL_LOCK_SEC,
+        "decision_buffer_size": DECISION_BUFFER_SIZE,
+        "daily_stop_dollars": DAILY_STOP_DOLLARS,
+        "dry_run": DRY_RUN,
+        "decision_buffer_size": DECISION_BUFFER_SIZE,
+    }
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     # This is the missing piece: you will now see the real traceback in Render logs.
@@ -157,6 +210,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     traceback.print_exc()
     return JSONResponse(status_code=500, content={"ok": False, "error": "Internal Server Error"})
 
+
+
+# Emit effective config once at startup (helps debug Render env mismatches)
+log("CONFIG_EFFECTIVE", **config_effective_snapshot())
 
 # =============================
 # Core helpers
@@ -244,6 +301,79 @@ def list_open_positions_allowed() -> list[dict]:
         except Exception:
             continue
     return out
+
+
+def list_open_positions_details_allowed() -> list[dict]:
+    """Alpaca positions (allowed symbols) including avg entry price."""
+    out: list[dict] = []
+    try:
+        positions = trading_client.get_all_positions()
+    except Exception:
+        return out
+    for p in positions:
+        try:
+            sym = str(p.symbol).upper()
+            if sym not in ALLOWED_SYMBOLS:
+                continue
+            qty = float(p.qty)
+            if qty == 0:
+                continue
+            avg_entry = None
+            try:
+                avg_entry = float(getattr(p, "avg_entry_price", None) or 0) or None
+            except Exception:
+                avg_entry = None
+            out.append({"symbol": sym, "qty": qty, "avg_entry_price": avg_entry})
+        except Exception:
+            continue
+    return out
+
+
+def reconcile_trade_plans_from_alpaca() -> list[dict]:
+    """
+    Ensure internal TRADE_PLAN has an active plan for each open Alpaca position.
+    This protects live positions across restarts/redeploys where TRADE_PLAN is empty.
+    Returns a list of reconcile actions.
+    """
+    actions: list[dict] = []
+    for p in list_open_positions_details_allowed():
+        sym = p["symbol"]
+        qty_signed = float(p["qty"])
+        avg_entry = p.get("avg_entry_price")
+        if qty_signed == 0:
+            continue
+
+        # Determine current position side.
+        side = "buy" if qty_signed > 0 else "sell"
+        qty = abs(qty_signed)
+
+        plan = TRADE_PLAN.get(sym, {})
+        if plan.get("active"):
+            # Already tracking it.
+            continue
+
+        if not avg_entry:
+            # Fallback: best-effort latest price if avg entry missing.
+            try:
+                avg_entry = get_latest_price(sym)
+            except Exception:
+                avg_entry = None
+
+        if not avg_entry:
+            actions.append({"symbol": sym, "action": "reconcile_skipped", "reason": "no_entry_price"})
+            record_decision("RECONCILE", "worker_exit", sym, side=side, signal="",
+                            action="skipped", reason="no_entry_price")
+            continue
+
+        recovered_plan = build_trade_plan(sym, side, qty, float(avg_entry), signal="RECOVERED")
+        recovered_plan["recovered"] = True
+        recovered_plan["recovered_at"] = now_ny().isoformat()
+        TRADE_PLAN[sym] = recovered_plan
+        actions.append({"symbol": sym, "action": "recovered_plan", "qty": qty_signed, "entry": recovered_plan["entry_price"]})
+        record_decision("RECONCILE", "worker_exit", sym, side=side, signal="RECOVERED",
+                        action="recovered_plan", reason="missing_internal_plan",
+                        qty=qty_signed, entry_price=recovered_plan["entry_price"])
+    return actions
 
 
 def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, signal: str) -> dict:
@@ -355,8 +485,10 @@ def health():
         "allow_reversal": ALLOW_REVERSAL,
         "only_market_hours": ONLY_MARKET_HOURS,
         "eod_flatten_time_ny": EOD_FLATTEN_TIME,
+        "enable_idempotency": ENABLE_IDEMPOTENCY,
         "dedup_window_sec": DEDUP_WINDOW_SEC,
         "symbol_lock_sec": SYMBOL_LOCK_SEC,
+        "decision_buffer_size": DECISION_BUFFER_SIZE,
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
         "kill_switch": KILL_SWITCH,
         "active_plans": {k: v.get("active") for k, v in TRADE_PLAN.items()},
@@ -366,6 +498,17 @@ def health():
 @app.get("/state")
 def state():
     return {"ok": True, "trade_plan": TRADE_PLAN, "symbol_locks": SYMBOL_LOCKS}
+
+@app.get("/diagnostics/decisions")
+def diagnostics_decisions(symbol: str = "", limit: int = 200):
+    """Return recent decision traces for debugging (in-memory)."""
+    sym = (symbol or "").upper().strip()
+    lim = max(1, min(int(limit or 200), 2000))
+    items = DECISIONS
+    if sym:
+        items = [d for d in items if d.get("symbol") == sym]
+    return {"ok": True, "count": len(items), "items": items[-lim:]}
+
 
 
 @app.post("/kill")
@@ -407,11 +550,13 @@ async def webhook(req: Request):
     signal = (data.get("signal") or "").strip()
 
     log("WEBHOOK_IN", symbol=symbol, side=side, signal=signal)
+    record_decision("ENTRY", "webhook", symbol, side=side, signal=signal, action="received", reason="")
 
     if not symbol:
         return JSONResponse(status_code=200, content={"ok": False, "rejected": True, "reason": "symbol_required"})
 
     if symbol not in ALLOWED_SYMBOLS:
+        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="rejected",reason="symbol_not_allowed")
         return JSONResponse(status_code=200, content={"ok": False, "rejected": True, "reason": f"symbol_not_allowed:{symbol}"})
 
     if side not in ("buy", "sell"):
@@ -431,6 +576,7 @@ async def webhook(req: Request):
 
     # Market hours guard
     if ONLY_MARKET_HOURS and not in_market_hours():
+        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="ignored",reason="outside_market_hours")
         return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal}
 
     # Shorts disabled behavior
@@ -444,25 +590,30 @@ async def webhook(req: Request):
         return {"ok": True, "ignored": True, "reason": "shorts_disabled", "symbol": symbol, "signal": signal}
 
     # Idempotency: absorb retries
-    dk = dedup_key(data)
-    last = DEDUP_CACHE.get(dk, 0)
-    now = utc_ts()
-    if last and (now - last) < DEDUP_WINDOW_SEC:
-        return {"ok": True, "ignored": True, "reason": "dedup", "symbol": symbol, "signal": signal}
-    DEDUP_CACHE[dk] = now
+    if ENABLE_IDEMPOTENCY:
+        dk = dedup_key(data)
+        last = DEDUP_CACHE.get(dk, 0)
+        now = utc_ts()
+        if last and (now - last) < DEDUP_WINDOW_SEC:
+            record_decision("ENTRY", "webhook", symbol, side=side, signal=signal, action="ignored", reason="dedup")
+            return {"ok": True, "ignored": True, "reason": "dedup", "symbol": symbol, "signal": signal}
+        DEDUP_CACHE[dk] = now
 
     # Symbol lock: prevent multiple overlapping entries
     # Also prevent entries if a plan is active or Alpaca shows an open position.
     if is_symbol_locked(symbol):
+        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="ignored",reason="symbol_locked")
         return {"ok": True, "ignored": True, "reason": "symbol_locked", "symbol": symbol, "signal": signal}
 
     if TRADE_PLAN.get(symbol, {}).get("active"):
+        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="ignored",reason="plan_active")
         return {"ok": True, "ignored": True, "reason": "plan_active", "symbol": symbol, "signal": signal}
 
     qty_signed, pos_side = get_position(symbol)
     if qty_signed != 0:
         desired_side = "long" if side == "buy" else "short"
         if desired_side == pos_side:
+            record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="ignored",reason=f"position_already_open:{pos_side}")
             return {"ok": True, "ignored": True, "reason": f"position_already_open:{pos_side}", "symbol": symbol, "signal": signal}
 
         # Opposite direction: close first, then optionally open
@@ -498,6 +649,7 @@ async def webhook(req: Request):
 
     if DRY_RUN:
         TRADE_PLAN[symbol] = build_trade_plan(symbol, side, qty, base_price, signal)
+        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="dry_run_plan_created",reason="")
         return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": TRADE_PLAN[symbol]}
 
     # Submit order (do NOT throw 500 on broker rejections)
@@ -505,9 +657,11 @@ async def webhook(req: Request):
         order = submit_market_order(symbol, side, qty)
         TRADE_PLAN[symbol] = build_trade_plan(symbol, side, qty, base_price, signal)
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(order.id), signal=signal)
+        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="order_submitted",reason="",order_id=str(order.id),qty=qty)
         return {"ok": True, "submitted": True, "order_id": str(order.id), "order": payload, "plan": TRADE_PLAN[symbol]}
     except Exception as e:
         log("ORDER_REJECTED", symbol=symbol, side=side, qty=qty, err=str(e), signal=signal)
+        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="rejected",reason="alpaca_submit_failed",err=str(e))
         # Release lock faster on rejection
         SYMBOL_LOCKS[symbol] = utc_ts() + 5
         return {"ok": False, "rejected": True, "reason": f"alpaca_submit_failed:{e}", "order": payload}
@@ -540,6 +694,9 @@ async def worker_exit(req: Request):
     if ONLY_MARKET_HOURS and not in_market_hours():
         return {"ok": True, "skipped": True, "reason": "outside_market_hours"}
 
+    # Reconcile internal plans from Alpaca positions (protects positions across restarts)
+    reconcile_actions = reconcile_trade_plans_from_alpaca()
+
     eod_t = parse_hhmm(EOD_FLATTEN_TIME)
     now = now_ny()
     now_t = now.time()
@@ -553,7 +710,7 @@ async def worker_exit(req: Request):
             if sym in TRADE_PLAN:
                 TRADE_PLAN[sym]["active"] = False
             results.append({"symbol": sym, "action": "flatten_eod", **out})
-        return {"ok": True, "ts_ny": now.isoformat(), "results": results, "mode": "eod_flatten"}
+        return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results, "mode": "eod_flatten"}
 
     # Manage active plans with stop/take
     for symbol, plan in list(TRADE_PLAN.items()):
@@ -601,4 +758,4 @@ async def worker_exit(req: Request):
         else:
             results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price})
 
-    return {"ok": True, "ts_ny": now.isoformat(), "results": results}
+    return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
