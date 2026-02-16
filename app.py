@@ -2,7 +2,7 @@ import os
 import hashlib
 import traceback
 import time as _time
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request, HTTPException
@@ -14,7 +14,8 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestTradeRequest
+from alpaca.data.requests import StockLatestTradeRequest, StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
 
 
 # =============================
@@ -115,6 +116,27 @@ DEDUP_WINDOW_SEC = int(getenv_any("DEDUP_WINDOW_SEC", "IDEMPOTENCY_WINDOW_SECOND
 # Symbol lock
 SYMBOL_LOCK_SEC = int(getenv_any("SYMBOL_LOCK_SEC", "SYMBOL_LOCK_SECONDS", default="180"))  # lock during entry/plan
 
+
+
+# =============================
+# Scanner (Phase 1C - shadow mode default)
+# =============================
+SCANNER_ENABLED = env_bool("SCANNER_ENABLED", "false")
+SCANNER_DRY_RUN = env_bool("SCANNER_DRY_RUN", "true")
+SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
+SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
+SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
+SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
+
+# Strategy toggles (approximate parity v1; will refine against Pine)
+SCANNER_ENABLE_MIDBOX = env_bool("SCANNER_ENABLE_MIDBOX", "true")
+SCANNER_ENABLE_PWR = env_bool("SCANNER_ENABLE_PWR", "true")
+SCANNER_PWR_LOOKBACK_BARS = int(getenv_any("SCANNER_PWR_LOOKBACK_BARS", default="30"))
+
+# Optional liquidity filters for 'alpaca' universe provider
+SCANNER_MIN_PRICE = float(getenv_any("SCANNER_MIN_PRICE", default="5"))
+SCANNER_MAX_PRICE = float(getenv_any("SCANNER_MAX_PRICE", default="1000"))
+SCANNER_MIN_AVG_VOLUME = float(getenv_any("SCANNER_MIN_AVG_VOLUME", default="500000"))
 # Daily stop + kill switch
 DAILY_STOP_DOLLARS = float(os.getenv("DAILY_STOP_DOLLARS", "0"))  # e.g. 50 means stop at -50
 KILL_SWITCH = env_bool("KILL_SWITCH", "false")  # can flip by env or /kill
@@ -467,6 +489,179 @@ def flatten_all(reason: str) -> list[dict]:
     return results
 
 
+
+
+# =============================
+# Scanner helpers (server-side signal evaluation)
+# =============================
+def _session_key(dt_ny: datetime) -> str:
+    return dt_ny.strftime("%Y-%m-%d")
+
+
+def universe_symbols() -> list[str]:
+    """Return the symbol universe for scanning."""
+    if SCANNER_UNIVERSE_PROVIDER == "static":
+        return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+
+    if SCANNER_UNIVERSE_PROVIDER == "env":
+        raw = getenv_any("SCANNER_SYMBOLS", default="")
+        if not raw:
+            return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+        syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
+        return syms[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+
+    # NOTE: 'alpaca' provider can be added later (requires assets + liquidity filter).
+    # For safety in Phase 1C, we fall back to ALLOWED_SYMBOLS unless explicitly enabled.
+    return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+
+
+def fetch_1m_bars(symbol: str, lookback_days: int) -> list[dict]:
+    """Fetch recent 1-minute bars for a symbol. Returns list of dicts with UTC ts + OHLCV + vwap."""
+    # Conservative lookback to stay within API limits and keep scan fast.
+    end = datetime.now(tz=timezone.utc)
+    start = end - timedelta(days=max(1, lookback_days))
+    req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Minute, start=start, end=end)
+    bars = data_client.get_stock_bars(req)
+    rows = []
+    try:
+        seq = bars.data.get(symbol, [])
+    except Exception:
+        seq = []
+    for b in seq:
+        try:
+            ts = b.timestamp
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            rows.append({
+                "ts_utc": ts,
+                "ts_ny": ts.astimezone(NY_TZ),
+                "open": float(b.open),
+                "high": float(b.high),
+                "low": float(b.low),
+                "close": float(b.close),
+                "volume": float(getattr(b, "volume", 0) or 0),
+                "vwap": float(getattr(b, "vwap", 0) or 0),
+            })
+        except Exception:
+            continue
+    return rows
+
+
+def ema_series(closes: list[float], length: int) -> list[float]:
+    """Compute EMA series."""
+    if not closes:
+        return []
+    alpha = 2.0 / (length + 1.0)
+    ema = closes[0]
+    out = [ema]
+    for c in closes[1:]:
+        ema = (alpha * c) + ((1 - alpha) * ema)
+        out.append(ema)
+    return out
+
+
+def _bars_for_today_session(bars: list[dict]) -> list[dict]:
+    if not bars:
+        return []
+    today = now_ny().date()
+    out = []
+    for r in bars:
+        ts = r["ts_ny"]
+        if ts.date() != today:
+            continue
+        # Regular session only
+        if ts.time() < MARKET_OPEN or ts.time() > MARKET_CLOSE:
+            continue
+        out.append(r)
+    return out
+
+
+def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
+    """Approx MIDBOX signal eval: break of midbox high/low with VWAP + EMA200 slope filter."""
+    if not bars_today:
+        return None
+
+    # Build EMA200 over today's closes (approx; Pine uses ema200 on chart timeframe).
+    closes = [r["close"] for r in bars_today]
+    ema200 = ema_series(closes, 200)
+    if len(ema200) < 3:
+        return None
+    ema_slope_up = ema200[-1] > ema200[-2]
+    ema_slope_down = ema200[-1] < ema200[-2]
+
+    # Midbox window 10:00–11:30 NY
+    mid_start = time(10, 0)
+    mid_end = time(11, 30)
+    mid = [r for r in bars_today if mid_start <= r["ts_ny"].time() <= mid_end]
+    if len(mid) < 10:
+        return None
+    mid_high = max(r["high"] for r in mid)
+    mid_low = min(r["low"] for r in mid)
+
+    # Breakout window 11:30–15:00
+    bo_start = time(11, 30)
+    bo_end = time(15, 0)
+    bo = [r for r in bars_today if bo_start <= r["ts_ny"].time() <= bo_end]
+    if len(bo) < 2:
+        return None
+    last = bo[-1]
+    prev = bo[-2]
+    vwap = last["vwap"] or 0.0
+
+    # Long
+    if SCANNER_ENABLE_MIDBOX and (last["close"] > mid_high) and (prev["close"] <= mid_high):
+        if (vwap == 0.0 or last["close"] > vwap) and ema_slope_up:
+            return ("MIDBOX_LONG_GREEN", "buy")
+
+    # Short
+    if SCANNER_ENABLE_MIDBOX and ALLOW_SHORT and (last["close"] < mid_low) and (prev["close"] >= mid_low):
+        if (vwap == 0.0 or last["close"] < vwap) and ema_slope_down:
+            return ("MIDBOX_SHORT_RED", "sell")
+
+    return None
+
+
+def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
+    """Approx PWR signal eval: rolling breakout in 15:00–16:00 window."""
+    if not bars_today or not SCANNER_ENABLE_PWR:
+        return None
+
+    ph_start = time(15, 0)
+    ph_end = time(16, 0)
+    ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
+    if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 5):
+        return None
+
+    closes = [r["close"] for r in bars_today]
+    ema200 = ema_series(closes, 200)
+    if len(ema200) < 3:
+        return None
+    ema_slope_up = ema200[-1] > ema200[-2]
+    ema_slope_down = ema200[-1] < ema200[-2]
+
+    last = ph[-1]
+    prev = ph[-2]
+    lookback = ph[-(SCANNER_PWR_LOOKBACK_BARS + 1):-1]  # exclude last
+    if len(lookback) < 3:
+        return None
+    roll_high = max(r["high"] for r in lookback)
+    roll_low = min(r["low"] for r in lookback)
+    vwap = last["vwap"] or 0.0
+
+    if (last["close"] > roll_high) and (prev["close"] <= roll_high) and (vwap == 0.0 or last["close"] > vwap) and ema_slope_up:
+        return ("PWR_LONG_GREEN", "buy")
+
+    if ALLOW_SHORT and (last["close"] < roll_low) and (prev["close"] >= roll_low) and (vwap == 0.0 or last["close"] < vwap) and ema_slope_down:
+        return ("PWR_SHORT_RED", "sell")
+
+    return None
+
+
+def scanner_idempotency_key(symbol: str, signal: str, bar_ts_ny: datetime) -> str:
+    # One-per-symbol-per-signal-per-minute bucket (Phase 1C)
+    bucket = bar_ts_ny.replace(second=0, microsecond=0).isoformat()
+    raw = f"scan-{symbol}-{signal}-{bucket}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 # =============================
 # Routes
 # =============================
@@ -759,3 +954,124 @@ async def worker_exit(req: Request):
             results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price})
 
     return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
+
+
+@app.post("/worker/scan_entries")
+async def worker_scan_entries(req: Request):
+    """Server-side scanner entry evaluation (Phase 1C). Default is shadow-mode (no orders)."""
+    cleanup_caches()
+
+    body = {}
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+
+    # Optional worker auth
+    if WORKER_SECRET:
+        if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid worker secret")
+
+    if not SCANNER_ENABLED:
+        record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
+        return {"ok": True, "skipped": True, "reason": "scanner_disabled"}
+
+    if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
+        record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
+        return {"ok": True, "skipped": True, "reason": "outside_market_hours"}
+
+    # Reconcile first: never place entries against stale internal state.
+    reconcile_actions = reconcile_trade_plans_from_alpaca()
+
+    syms = universe_symbols()
+    results = []
+    signals = []
+
+    for sym in syms:
+        # Do not scan symbols already locked or planned.
+        if is_symbol_locked(sym):
+            record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="symbol_locked")
+            results.append({"symbol": sym, "action": "ignored", "reason": "symbol_locked"})
+            continue
+
+        if TRADE_PLAN.get(sym, {}).get("active"):
+            record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="plan_active")
+            results.append({"symbol": sym, "action": "ignored", "reason": "plan_active"})
+            continue
+
+        # If Alpaca already has a position, skip (scanner is for entries).
+        qty_signed, _ = get_position(sym)
+        if qty_signed != 0:
+            record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="alpaca_position_exists", qty=qty_signed)
+            results.append({"symbol": sym, "action": "ignored", "reason": "alpaca_position_exists", "qty": qty_signed})
+            continue
+
+        try:
+            bars = fetch_1m_bars(sym, SCANNER_LOOKBACK_DAYS)
+            today = _bars_for_today_session(bars)
+        except Exception as e:
+            record_decision("SCAN_EVAL", "worker_scan", sym, action="error", reason="bars_fetch_failed", err=str(e))
+            results.append({"symbol": sym, "action": "error", "reason": f"bars_fetch_failed:{e}"})
+            continue
+
+        sig = eval_midbox_signal(today) or eval_power_hour_signal(today)
+        if not sig:
+            record_decision("SCAN_EVAL", "worker_scan", sym, action="no_signal", reason="no_match")
+            results.append({"symbol": sym, "action": "no_signal"})
+            continue
+
+        signal, side = sig
+        last_bar_ts = today[-1]["ts_ny"] if today else now_ny()
+
+        # Scanner idempotency (minute bucket)
+        if ENABLE_IDEMPOTENCY:
+            k = scanner_idempotency_key(sym, signal, last_bar_ts)
+            last_seen = DEDUP_CACHE.get(k, 0)
+            now_ts = utc_ts()
+            if last_seen and (now_ts - last_seen) < DEDUP_WINDOW_SEC:
+                record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
+                                action="ignored", reason="dedup_hit", dedup_key=k)
+                results.append({"symbol": sym, "action": "ignored", "reason": "dedup_hit"})
+                continue
+            DEDUP_CACHE[k] = now_ts
+
+        # Compute qty based on latest price for sizing preview.
+        try:
+            px = get_latest_price(sym)
+            qty = compute_qty(px)
+        except Exception as e:
+            record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
+                            action="error", reason="sizing_failed", err=str(e))
+            results.append({"symbol": sym, "action": "error", "reason": f"sizing_failed:{e}"})
+            continue
+
+        # Shadow mode: do not place orders in Phase 1C unless explicitly enabled later.
+        would = {
+            "symbol": sym,
+            "signal": signal,
+            "side": side,
+            "price": px,
+            "qty": qty,
+            "bar_ts_ny": last_bar_ts.isoformat(),
+            "dry_run": SCANNER_DRY_RUN or DRY_RUN,
+        }
+        signals.append(would)
+        record_decision("SCAN_SIGNAL", "worker_scan", sym, side=side, signal=signal,
+                        action="would_submit" if (SCANNER_DRY_RUN or DRY_RUN) else "ready",
+                        reason="signal_match", price=px, qty=qty, bar_ts_ny=last_bar_ts.isoformat())
+
+        results.append({"symbol": sym, "action": "signal", **would})
+
+    return {
+        "ok": True,
+        "ts_ny": now_ny().isoformat(),
+        "scanner": {
+            "enabled": SCANNER_ENABLED,
+            "dry_run": SCANNER_DRY_RUN,
+            "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+            "symbols_scanned": len(syms),
+            "signals": len(signals),
+        },
+        "reconcile": reconcile_actions,
+        "results": results,
+    }
