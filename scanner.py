@@ -45,20 +45,20 @@ def main() -> None:
     while True:
         t0 = time.time()
         try:
-result = _post_json(url, {"worker_secret": WORKER_SECRET})
-scanner = result.get("scanner") or {}
-mode = "DRY_RUN" if scanner.get("effective_dry_run") else "LIVE"
-skipped = bool(result.get("skipped"))
-reason = (result.get("reason") or "").strip()
-if skipped:
-    print(f"[scanner] tick ok {mode} skipped=True reason={reason}", flush=True)
-else:
-    scanned = scanner.get("symbols_scanned")
-    would = scanner.get("would_trade", scanner.get("signals"))
-    blocked = scanner.get("blocked")
-    dur_ms = scanner.get("duration_ms")
-    print(f"[scanner] tick ok {mode} scanned={scanned} would={would} blocked={blocked} dur_ms={dur_ms}", flush=True)
-
+            result = _post_json(url, {"worker_secret": WORKER_SECRET})
+            # Keep logs concise but useful.
+            scanned = (result.get("scanner") or {}).get("symbols_scanned") or result.get("scanned") or result.get("symbols_scanned")
+            would = result.get("would_submit") or ((result.get("scanner") or {}).get("would_submit")) or ((result.get("scanner") or {}).get("would_trade"))
+            mode = "DRY_RUN" if result.get("dry_run") else "LIVE" if result.get("live") else ""
+                        skipped = result.get("skipped")
+            reason = result.get("reason")
+            dur = (result.get("scanner") or {}).get("duration_ms")
+            if skipped:
+                print(f"[scanner] tick ok skipped=True reason={reason} dur_ms={dur}", flush=True)
+            else:
+                wt = result.get("would_submit")
+                wt_n = len(wt) if isinstance(wt, list) else ((result.get("scanner") or {}).get("would_trade"))
+                print(f"[scanner] tick ok scanned={scanned} would={wt_n} blocked={(result.get("scanner") or {}).get("blocked")} dur_ms={dur}", flush=True)
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
             print(f"[scanner] HTTPError {e.code}: {body}", flush=True)
