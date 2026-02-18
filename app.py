@@ -123,6 +123,7 @@ SYMBOL_LOCK_SEC = int(getenv_any("SYMBOL_LOCK_SEC", "SYMBOL_LOCK_SECONDS", defau
 # =============================
 SCANNER_ENABLED = env_bool("SCANNER_ENABLED", "false")
 SCANNER_DRY_RUN = env_bool("SCANNER_DRY_RUN", "true")
+SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate; must be true to ever allow scanner orders
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
 SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
@@ -177,6 +178,7 @@ SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 # Decision traces (in-memory ring buffer)
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
 DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
+LAST_SCAN: dict = {}  # last scan summary for /scanner/status
 
 
 # =============================
@@ -234,6 +236,11 @@ def config_effective_snapshot() -> dict:
         "decision_buffer_size": DECISION_BUFFER_SIZE,
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
         "dry_run": DRY_RUN,
+        "scanner_enabled": SCANNER_ENABLED,
+        "scanner_dry_run": SCANNER_DRY_RUN,
+        "scanner_allow_live": SCANNER_ALLOW_LIVE,
+        "scanner_effective_dry_run": (SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE)),
+        "scanner_universe_provider": SCANNER_UNIVERSE_PROVIDER,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
     }
 
@@ -682,22 +689,37 @@ def root():
 
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "paper": APCA_PAPER,
-        "allowed_symbols": sorted(ALLOWED_SYMBOLS),
-        "allow_short": ALLOW_SHORT,
-        "allow_reversal": ALLOW_REVERSAL,
-        "only_market_hours": ONLY_MARKET_HOURS,
-        "eod_flatten_time_ny": EOD_FLATTEN_TIME,
-        "enable_idempotency": ENABLE_IDEMPOTENCY,
-        "dedup_window_sec": DEDUP_WINDOW_SEC,
-        "symbol_lock_sec": SYMBOL_LOCK_SEC,
-        "decision_buffer_size": DECISION_BUFFER_SIZE,
-        "daily_stop_dollars": DAILY_STOP_DOLLARS,
-        "kill_switch": KILL_SWITCH,
-        "active_plans": {k: v.get("active") for k, v in TRADE_PLAN.items()},
-    }
+
+scan_end_utc = utc_ts()
+duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
+
+summary = {
+    "ts_ny": now_ny().isoformat(),
+    "ts_utc": datetime.now(tz=timezone.utc).isoformat(),
+    "enabled": SCANNER_ENABLED,
+    "dry_run": SCANNER_DRY_RUN,
+    "allow_live": SCANNER_ALLOW_LIVE,
+    "effective_dry_run": (SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE)),
+    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+    "symbols_scanned": len(syms),
+    "signals": len(signals),
+    "would_trade": len(signals),
+    "blocked": blocked,
+    "duration_ms": duration_ms,
+}
+LAST_SCAN.clear()
+LAST_SCAN.update(summary)
+
+log("SCAN_DONE", **summary)
+
+return {
+    "ok": True,
+    "skipped": False,
+    "reason": "",
+    "scanner": summary,
+    "reconcile": reconcile_actions,
+    "results": results,
+}
 
 
 @app.get("/state")
@@ -897,7 +919,8 @@ async def worker_exit(req: Request):
         return {"ok": True, "mode": "daily_stop_hit", "ts_ny": now_ny().isoformat(), "results": out}
 
     if ONLY_MARKET_HOURS and not in_market_hours():
-        return {"ok": True, "skipped": True, "reason": "outside_market_hours"}
+        LAST_SCAN.clear(); LAST_SCAN.update({"ts_utc": datetime.now(tz=timezone.utc).isoformat(), "skipped": True, "reason": "outside_market_hours"});
+        return {"ok": True, "skipped": True, "reason": "outside_market_hours", "scanner": {"enabled": True, "dry_run": SCANNER_DRY_RUN}}
 
     # Reconcile internal plans from Alpaca positions (protects positions across restarts)
     reconcile_actions = reconcile_trade_plans_from_alpaca()
@@ -966,6 +989,24 @@ async def worker_exit(req: Request):
     return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
 
 
+
+@app.get("/scanner/status")
+def scanner_status():
+    """Return scanner config and last scan summary (in-memory)."""
+    return {
+        "ok": True,
+        "scanner": {
+            "enabled": SCANNER_ENABLED,
+            "dry_run": SCANNER_DRY_RUN,
+            "allow_live": SCANNER_ALLOW_LIVE,
+            "effective_dry_run": (SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE)),
+            "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+            "max_symbols_per_cycle": SCANNER_MAX_SYMBOLS_PER_CYCLE,
+            "require_market_hours": SCANNER_REQUIRE_MARKET_HOURS,
+        },
+        "last_scan": LAST_SCAN,
+    }
+
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
     """Server-side scanner entry evaluation (Phase 1C). Default is shadow-mode (no orders)."""
@@ -984,11 +1025,15 @@ async def worker_scan_entries(req: Request):
 
     if not SCANNER_ENABLED:
         record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
-        return {"ok": True, "skipped": True, "reason": "scanner_disabled"}
+        LAST_SCAN.clear(); LAST_SCAN.update({"ts_utc": datetime.now(tz=timezone.utc).isoformat(), "skipped": True, "reason": "scanner_disabled"});
+        return {"ok": True, "skipped": True, "reason": "scanner_disabled", "scanner": {"enabled": False}}
 
     if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
         record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
-        return {"ok": True, "skipped": True, "reason": "outside_market_hours"}
+        LAST_SCAN.clear(); LAST_SCAN.update({"ts_utc": datetime.now(tz=timezone.utc).isoformat(), "skipped": True, "reason": "outside_market_hours"});
+        return {"ok": True, "skipped": True, "reason": "outside_market_hours", "scanner": {"enabled": True, "dry_run": SCANNER_DRY_RUN}}
+
+    scan_start_utc = utc_ts()
 
     # Reconcile first: never place entries against stale internal state.
     reconcile_actions = reconcile_trade_plans_from_alpaca()
@@ -996,16 +1041,23 @@ async def worker_scan_entries(req: Request):
     syms = universe_symbols()
     results = []
     signals = []
+    blocked = 0
+
+    log("SCAN_START", enabled=SCANNER_ENABLED, dry_run=SCANNER_DRY_RUN, allow_live=SCANNER_ALLOW_LIVE,
+        effective_dry_run=(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE)), provider=SCANNER_UNIVERSE_PROVIDER,
+        symbols=len(syms))
 
     for sym in syms:
         # Do not scan symbols already locked or planned.
         if is_symbol_locked(sym):
             record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="symbol_locked")
+            blocked += 1
             results.append({"symbol": sym, "action": "ignored", "reason": "symbol_locked"})
             continue
 
         if TRADE_PLAN.get(sym, {}).get("active"):
             record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="plan_active")
+            blocked += 1
             results.append({"symbol": sym, "action": "ignored", "reason": "plan_active"})
             continue
 
@@ -1013,6 +1065,7 @@ async def worker_scan_entries(req: Request):
         qty_signed, _ = get_position(sym)
         if qty_signed != 0:
             record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="alpaca_position_exists", qty=qty_signed)
+            blocked += 1
             results.append({"symbol": sym, "action": "ignored", "reason": "alpaca_position_exists", "qty": qty_signed})
             continue
 
@@ -1041,6 +1094,7 @@ async def worker_scan_entries(req: Request):
             if last_seen and (now_ts - last_seen) < DEDUP_WINDOW_SEC:
                 record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
                                 action="ignored", reason="dedup_hit", dedup_key=k)
+                blocked += 1
                 results.append({"symbol": sym, "action": "ignored", "reason": "dedup_hit"})
                 continue
             DEDUP_CACHE[k] = now_ts
@@ -1063,7 +1117,7 @@ async def worker_scan_entries(req: Request):
             "price": px,
             "qty": qty,
             "bar_ts_ny": last_bar_ts.isoformat(),
-            "dry_run": SCANNER_DRY_RUN or DRY_RUN,
+            "dry_run": (SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE)),
         }
         signals.append(would)
         record_decision("SCAN_SIGNAL", "worker_scan", sym, side=side, signal=signal,
