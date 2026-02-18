@@ -128,6 +128,19 @@ SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", 
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 
+# Session windows (configurable for parity; defaults match your Pine inputs)
+MIDBOX_BUILD_SESSION = getenv_any("MIDBOX_BUILD_SESSION", default="10:00-11:30")
+MIDBOX_TRADE_SESSION = getenv_any("MIDBOX_TRADE_SESSION", default="11:30-15:00")
+PWR_SESSION = getenv_any("PWR_SESSION", default="15:00-16:00")
+
+def _parse_session_hhmm_range(rng: str) -> tuple[time, time]:
+    # Accept "HH:MM-HH:MM" (24h). If invalid, fall back to full market session.
+    try:
+        a, b = rng.strip().split("-")
+        return parse_hhmm(a), parse_hhmm(b)
+    except Exception:
+        return MARKET_OPEN, MARKET_CLOSE
+
 # Strategy toggles (approximate parity v1; will refine against Pine)
 SCANNER_ENABLE_MIDBOX = env_bool("SCANNER_ENABLE_MIDBOX", "true")
 SCANNER_ENABLE_PWR = env_bool("SCANNER_ENABLE_PWR", "true")
@@ -590,8 +603,7 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     ema_slope_down = ema200[-1] < ema200[-2]
 
     # Midbox window 10:00–11:30 NY
-    mid_start = time(10, 0)
-    mid_end = time(11, 30)
+    mid_start, mid_end = _parse_session_hhmm_range(MIDBOX_BUILD_SESSION)
     mid = [r for r in bars_today if mid_start <= r["ts_ny"].time() <= mid_end]
     if len(mid) < 10:
         return None
@@ -599,8 +611,7 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     mid_low = min(r["low"] for r in mid)
 
     # Breakout window 11:30–15:00
-    bo_start = time(11, 30)
-    bo_end = time(15, 0)
+    bo_start, bo_end = _parse_session_hhmm_range(MIDBOX_TRADE_SESSION)
     bo = [r for r in bars_today if bo_start <= r["ts_ny"].time() <= bo_end]
     if len(bo) < 2:
         return None
@@ -626,8 +637,7 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     if not bars_today or not SCANNER_ENABLE_PWR:
         return None
 
-    ph_start = time(15, 0)
-    ph_end = time(16, 0)
+    ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
     ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
     if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 5):
         return None

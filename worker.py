@@ -9,10 +9,17 @@ BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 
 # Interval (seconds)
-INTERVAL_SEC = int(os.getenv("EXIT_INTERVAL_SEC", "30"))
+WORKER_MODE = os.getenv("WORKER_MODE", "exit").strip().lower()
+
+# Interval (seconds)
+INTERVAL_SEC = int(os.getenv("EXIT_INTERVAL_SEC" if WORKER_MODE=="exit" else "SCAN_INTERVAL_SEC", "30" if WORKER_MODE=="exit" else "60"))
 
 # Endpoint path
 EXIT_PATH = os.getenv("EXIT_PATH", "/worker/exit")
+SCAN_PATH = os.getenv("SCAN_PATH", "/worker/scan_entries")
+
+def _target_path() -> str:
+    return EXIT_PATH if WORKER_MODE=="exit" else SCAN_PATH
 
 # Simple stdout logger
 def log(msg: str):
@@ -34,7 +41,7 @@ def main():
     if not BASE_URL:
         raise RuntimeError("BASE_URL env var is required, e.g. https://trading-webhook-q4d5.onrender.com")
 
-    url = f"{BASE_URL}{EXIT_PATH}"
+    url = f"{BASE_URL}{_target_path()}"
 
     payload = {}
     if WORKER_SECRET:
