@@ -16,10 +16,26 @@ def getenv_int(name: str, default: int) -> int:
         return default
 
 
-URL = os.getenv("SCANNER_URL") or os.getenv("URL") or ""
+# Target URL for scan requests (must point to the MAIN web service, not this scanner service).
+# Provide one of: SCAN_ENTRIES_URL (full), SCANNER_URL (full), or MAIN_SERVICE_URL / WORKER_BASE_URL (base).
+URL = (
+    os.getenv("SCAN_ENTRIES_URL")
+    or os.getenv("SCANNER_URL")
+    or os.getenv("MAIN_SERVICE_URL")
+    or os.getenv("WORKER_BASE_URL")
+    or os.getenv("URL")  # legacy
+    or ""
+)
+
 if not URL:
-    # Backward compatible default if user forgot to set
-    URL = "http://localhost:10000/worker/scan_entries"
+    raise SystemExit(
+        "[scanner] ERROR: missing target URL. Set SCAN_ENTRIES_URL (recommended, full URL) "
+        "or MAIN_SERVICE_URL/WORKER_BASE_URL (base URL of the main service)."
+    )
+
+# If a base URL was provided, append the endpoint path.
+if "worker/scan_entries" not in URL:
+    URL = URL.rstrip("/") + "/worker/scan_entries"
 INTERVAL_SEC = getenv_int("SCANNER_INTERVAL_SEC", 60)
 TIMEOUT_SEC = getenv_int("SCANNER_HTTP_TIMEOUT_SEC", getenv_int("SCANNER_TIMEOUT_SEC", 60))
 
