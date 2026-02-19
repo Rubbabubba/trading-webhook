@@ -1022,140 +1022,154 @@ async def worker_scan_entries(req: Request):
             **kwargs
         })
 
-    if not SCANNER_ENABLED:
-        _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
-        record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
-        return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
+    try:
+            if not SCANNER_ENABLED:
+                _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+                record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
+                return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
 
-    if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
-        _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
-        record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
-        return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
+            if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
+                _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+                record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
+                return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
 
-    # Reconcile first: never place entries against stale internal state.
-    reconcile_actions = reconcile_trade_plans_from_alpaca()
+            # Reconcile first: never place entries against stale internal state.
+            reconcile_actions = reconcile_trade_plans_from_alpaca()
 
-    syms = universe_symbols()
-    blocked = 0
-    results = []
-    signals = []
+            syms = universe_symbols()
+            blocked = 0
+            results = []
+            signals = []
 
-    logger.info(
-        "SCAN_START enabled=%s dry_run=%s allow_live=%s effective_dry_run=%s provider=%s symbols=%s",
-        SCANNER_ENABLED, SCANNER_DRY_RUN, SCANNER_ALLOW_LIVE, effective_dry_run, SCANNER_UNIVERSE_PROVIDER, len(syms)
-    )
+            logger.info(
+                "SCAN_START enabled=%s dry_run=%s allow_live=%s effective_dry_run=%s provider=%s symbols=%s",
+                SCANNER_ENABLED, SCANNER_DRY_RUN, SCANNER_ALLOW_LIVE, effective_dry_run, SCANNER_UNIVERSE_PROVIDER, len(syms)
+            )
 
-    for sym in syms:
-        # Do not scan symbols already locked or planned.
-        if is_symbol_locked(sym):
-            blocked += 1
-            record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="symbol_locked")
-            results.append({"symbol": sym, "action": "ignored", "reason": "symbol_locked"})
-            continue
+            for sym in syms:
+                # Do not scan symbols already locked or planned.
+                if is_symbol_locked(sym):
+                    blocked += 1
+                    record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="symbol_locked")
+                    results.append({"symbol": sym, "action": "ignored", "reason": "symbol_locked"})
+                    continue
 
-        if TRADE_PLAN.get(sym, {}).get("active"):
-            blocked += 1
-            record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="plan_active")
-            results.append({"symbol": sym, "action": "ignored", "reason": "plan_active"})
-            continue
+                if TRADE_PLAN.get(sym, {}).get("active"):
+                    blocked += 1
+                    record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="plan_active")
+                    results.append({"symbol": sym, "action": "ignored", "reason": "plan_active"})
+                    continue
 
-        # If Alpaca already has a position, skip (scanner is for entries).
-        qty_signed, _ = get_position(sym)
-        if qty_signed != 0:
-            blocked += 1
-            record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="alpaca_position_exists", qty=qty_signed)
-            results.append({"symbol": sym, "action": "ignored", "reason": "alpaca_position_exists", "qty": qty_signed})
-            continue
+                # If Alpaca already has a position, skip (scanner is for entries).
+                qty_signed, _ = get_position(sym)
+                if qty_signed != 0:
+                    blocked += 1
+                    record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="alpaca_position_exists", qty=qty_signed)
+                    results.append({"symbol": sym, "action": "ignored", "reason": "alpaca_position_exists", "qty": qty_signed})
+                    continue
 
+                try:
+                    bars = fetch_1m_bars(sym, SCANNER_LOOKBACK_DAYS)
+                    today = _bars_for_today_session(bars)
+                except Exception as e:
+                    record_decision("SCAN_EVAL", "worker_scan", sym, action="error", reason="bars_fetch_failed", err=str(e))
+                    results.append({"symbol": sym, "action": "error", "reason": f"bars_fetch_failed:{e}"})
+                    continue
+
+                sig = eval_midbox_signal(today) or eval_power_hour_signal(today)
+                if not sig:
+                    record_decision("SCAN_EVAL", "worker_scan", sym, action="no_signal", reason="no_match")
+                    results.append({"symbol": sym, "action": "no_signal"})
+                    continue
+
+                signal, side = sig
+                last_bar_ts = today[-1]["ts_ny"] if today else now_ny()
+
+                # Scanner idempotency (minute bucket)
+                if ENABLE_IDEMPOTENCY:
+                    k = scanner_idempotency_key(sym, signal, last_bar_ts)
+                    last_seen = DEDUP_CACHE.get(k, 0)
+                    now_ts = utc_ts()
+                    if last_seen and (now_ts - last_seen) < DEDUP_WINDOW_SEC:
+                        blocked += 1
+                        record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
+                                        action="ignored", reason="dedup_hit", dedup_key=k)
+                        results.append({"symbol": sym, "action": "ignored", "reason": "dedup_hit"})
+                        continue
+                    DEDUP_CACHE[k] = now_ts
+
+                # Compute qty based on latest price for sizing preview.
+                try:
+                    px = get_latest_price(sym)
+                    qty = compute_qty(px)
+                except Exception as e:
+                    record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
+                                    action="error", reason="sizing_failed", err=str(e))
+                    results.append({"symbol": sym, "action": "error", "reason": f"sizing_failed:{e}"})
+                    continue
+
+                would = {
+                    "symbol": sym,
+                    "signal": signal,
+                    "side": side,
+                    "price": px,
+                    "qty": qty,
+                    "bar_ts_ny": last_bar_ts.isoformat(),
+                    "effective_dry_run": effective_dry_run,
+                }
+                signals.append(would)
+                record_decision("SCAN_SIGNAL", "worker_scan", sym, side=side, signal=signal,
+                                action="would_submit" if effective_dry_run else "ready",
+                                reason="signal_match", price=px, qty=qty, bar_ts_ny=last_bar_ts.isoformat())
+                logger.info("SCAN_SIGNAL symbol=%s side=%s signal=%s bar_ts_ny=%s price=%.4f qty=%s effective_dry_run=%s",
+                            sym, side, signal, last_bar_ts.isoformat(), float(px), qty, effective_dry_run)
+
+                results.append({"symbol": sym, "action": "signal", **would})
+
+            scan_end_utc = utc_ts()
+            duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
+
+            _set_last_scan(
+                skipped=False,
+                reason=None,
+                scanned=len(syms),
+                signals=len(signals),
+                would_trade=len(signals),
+                blocked=blocked,
+                duration_ms=duration_ms,
+            )
+
+            logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
+                        len(syms), len(signals), len(signals), blocked, duration_ms)
+
+            return {
+                "ok": True,
+                "scanner": {
+                    "enabled": SCANNER_ENABLED,
+                    "dry_run": SCANNER_DRY_RUN,
+                    "allow_live": SCANNER_ALLOW_LIVE,
+                    "effective_dry_run": effective_dry_run,
+                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "symbols_scanned": len(syms),
+                    "signals": len(signals),
+                    "would_trade": len(signals),
+                    "blocked": blocked,
+                    "duration_ms": duration_ms,
+                },
+                "reconcile": reconcile_actions,
+                "would_submit": signals,
+                "results": results,
+            }
+    except Exception as e:
+        scan_end_utc = utc_ts()
+        duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
         try:
-            bars = fetch_1m_bars(sym, SCANNER_LOOKBACK_DAYS)
-            today = _bars_for_today_session(bars)
-        except Exception as e:
-            record_decision("SCAN_EVAL", "worker_scan", sym, action="error", reason="bars_fetch_failed", err=str(e))
-            results.append({"symbol": sym, "action": "error", "reason": f"bars_fetch_failed:{e}"})
-            continue
-
-        sig = eval_midbox_signal(today) or eval_power_hour_signal(today)
-        if not sig:
-            record_decision("SCAN_EVAL", "worker_scan", sym, action="no_signal", reason="no_match")
-            results.append({"symbol": sym, "action": "no_signal"})
-            continue
-
-        signal, side = sig
-        last_bar_ts = today[-1]["ts_ny"] if today else now_ny()
-
-        # Scanner idempotency (minute bucket)
-        if ENABLE_IDEMPOTENCY:
-            k = scanner_idempotency_key(sym, signal, last_bar_ts)
-            last_seen = DEDUP_CACHE.get(k, 0)
-            now_ts = utc_ts()
-            if last_seen and (now_ts - last_seen) < DEDUP_WINDOW_SEC:
-                blocked += 1
-                record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
-                                action="ignored", reason="dedup_hit", dedup_key=k)
-                results.append({"symbol": sym, "action": "ignored", "reason": "dedup_hit"})
-                continue
-            DEDUP_CACHE[k] = now_ts
-
-        # Compute qty based on latest price for sizing preview.
+            _set_last_scan(skipped=False, reason='scan_exception', error=str(e), scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=duration_ms)
+        except Exception:
+            pass
         try:
-            px = get_latest_price(sym)
-            qty = compute_qty(px)
-        except Exception as e:
-            record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
-                            action="error", reason="sizing_failed", err=str(e))
-            results.append({"symbol": sym, "action": "error", "reason": f"sizing_failed:{e}"})
-            continue
-
-        would = {
-            "symbol": sym,
-            "signal": signal,
-            "side": side,
-            "price": px,
-            "qty": qty,
-            "bar_ts_ny": last_bar_ts.isoformat(),
-            "effective_dry_run": effective_dry_run,
-        }
-        signals.append(would)
-        record_decision("SCAN_SIGNAL", "worker_scan", sym, side=side, signal=signal,
-                        action="would_submit" if effective_dry_run else "ready",
-                        reason="signal_match", price=px, qty=qty, bar_ts_ny=last_bar_ts.isoformat())
-        logger.info("SCAN_SIGNAL symbol=%s side=%s signal=%s bar_ts_ny=%s price=%.4f qty=%s effective_dry_run=%s",
-                    sym, side, signal, last_bar_ts.isoformat(), float(px), qty, effective_dry_run)
-
-        results.append({"symbol": sym, "action": "signal", **would})
-
-    scan_end_utc = utc_ts()
-    duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
-
-    _set_last_scan(
-        skipped=False,
-        reason=None,
-        scanned=len(syms),
-        signals=len(signals),
-        would_trade=len(signals),
-        blocked=blocked,
-        duration_ms=duration_ms,
-    )
-
-    logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
-                len(syms), len(signals), len(signals), blocked, duration_ms)
-
-    return {
-        "ok": True,
-        "scanner": {
-            "enabled": SCANNER_ENABLED,
-            "dry_run": SCANNER_DRY_RUN,
-            "allow_live": SCANNER_ALLOW_LIVE,
-            "effective_dry_run": effective_dry_run,
-            "universe_provider": SCANNER_UNIVERSE_PROVIDER,
-            "symbols_scanned": len(syms),
-            "signals": len(signals),
-            "would_trade": len(signals),
-            "blocked": blocked,
-            "duration_ms": duration_ms,
-        },
-        "reconcile": reconcile_actions,
-        "would_submit": signals,
-        "results": results,
-    }
+            record_decision('SCAN', 'worker_scan', action='error', reason='scan_exception', err=str(e))
+        except Exception:
+            pass
+        logger.exception('SCAN_FATAL error=%s', str(e))
+        return {'ok': False, 'error': 'scan_exception', 'detail': str(e), **LAST_SCAN}
