@@ -1,4 +1,5 @@
 import os
+import logging
 import hashlib
 import traceback
 import time as _time
@@ -22,6 +23,17 @@ from alpaca.data.timeframe import TimeFrame
 # App
 # =============================
 app = FastAPI()
+
+# Standard library logger used by the scanner/worker endpoints.
+# (Some observability patches rely on `logger.*`; keep this defined even if you
+# primarily use the `log()` print helper elsewhere.)
+logger = logging.getLogger("trading-webhook")
+if not logging.getLogger().handlers:
+    # Render captures stdout/stderr; basicConfig ensures level + formatting.
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
 
 app.add_middleware(
     CORSMiddleware,
