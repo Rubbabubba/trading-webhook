@@ -140,6 +140,31 @@ LAST_SCAN: dict = {}
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
 SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
+
+
+# Rotation scanning (for large universes)
+SCANNER_ROTATION_ENABLED = os.getenv("SCANNER_ROTATION_ENABLED", "true").lower() == "true"
+# Optional: separate universe list for scanner (comma-separated). If set, scanner uses this instead of ALLOWED_SYMBOLS.
+SCANNER_UNIVERSE_SYMBOLS = os.getenv("SCANNER_UNIVERSE_SYMBOLS", "").strip()
+
+# 5m resampling / strategy tuning
+RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
+
+# Midbox loosening knobs
+MIDBOX_BREAKOUT_BUFFER_PCT = float(os.getenv("MIDBOX_BREAKOUT_BUFFER_PCT", "0.0005"))  # 0.05%
+MIDBOX_BREAKOUT_USE_HIGHLOW = os.getenv("MIDBOX_BREAKOUT_USE_HIGHLOW", "true").lower() == "true"
+
+# Power hour loosening knobs
+PWR_BREAKOUT_BUFFER_PCT = float(os.getenv("PWR_BREAKOUT_BUFFER_PCT", "0.0005"))  # 0.05%
+PWR_BREAKOUT_USE_HIGHLOW = os.getenv("PWR_BREAKOUT_USE_HIGHLOW", "true").lower() == "true"
+
+# Strategy C: VWAP pullback on 5m
+ENABLE_STRATEGY_VWAP_PULLBACK = os.getenv("ENABLE_STRATEGY_VWAP_PULLBACK", "true").lower() == "true"
+VWAP_PB_EMA_FAST = int(os.getenv("VWAP_PB_EMA_FAST", "20"))
+VWAP_PB_EMA_SLOW = int(os.getenv("VWAP_PB_EMA_SLOW", "50"))
+VWAP_PB_BAND_PCT = float(os.getenv("VWAP_PB_BAND_PCT", "0.0015"))  # 0.15% band around VWAP counts as a touch
+VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.006"))  # don't chase if >0.6% away from VWAP
+VWAP_PB_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_MIN_EMA_SLOPE", "0.0"))  # per-bar slope
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 
@@ -192,6 +217,11 @@ SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 # Decision traces (in-memory ring buffer)
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
 DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
+
+
+# Scan rotation state (in-memory). Keeps a moving window through the universe so we can
+# scan hundreds/thousands of symbols without hammering the provider each tick.
+_scan_rotation = {"ny_date": None, "idx": 0}
 
 
 # =============================
@@ -588,6 +618,32 @@ def ema_series(closes: list[float], length: int) -> list[float]:
     return out
 
 
+def resample_to_5m(bars_1m: list[Bar]) -> list[Bar]:
+    """Resample 1m bars into 5m bars (NY time), producing OHLCV + VWAP.
+    Bar.ts_ny is kept as the *end* of each 5m bucket (last minute in the bucket).
+    """
+    if not bars_1m:
+        return []
+    buckets: dict[datetime, list[Bar]] = {}
+    for b in bars_1m:
+        bucket_start = b.ts_ny.replace(second=0, microsecond=0, minute=(b.ts_ny.minute // 5) * 5)
+        buckets.setdefault(bucket_start, []).append(b)
+
+    out: list[Bar] = []
+    for bucket_start in sorted(buckets.keys()):
+        group = buckets[bucket_start]
+        group.sort(key=lambda x: x.ts_ny)
+        o = group[0].open
+        h = max(x.high for x in group)
+        l = min(x.low for x in group)
+        c = group[-1].close
+        v = sum(x.volume for x in group)
+        pv = sum((x.close * x.volume) for x in group)
+        vwap = (pv / v) if v > 0 else c
+        out.append(Bar(ts_utc=group[-1].ts_utc, ts_ny=group[-1].ts_ny, open=o, high=h, low=l, close=c, volume=v, vwap=vwap))
+    return out
+
+
 def _bars_for_today_session(bars: list[dict]) -> list[dict]:
     if not bars:
         return []
@@ -651,6 +707,59 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     """Approx PWR signal eval: rolling breakout in 15:00–16:00 window."""
     if not bars_today or not SCANNER_ENABLE_PWR:
         return None
+
+
+def eval_vwap_pullback_signal(bars_5m: list[Bar]) -> str | None:
+    """Strategy C: VWAP Pullback (5m)
+    Long bias only (unless ALLOW_SHORT=True): requires uptrend (EMA fast above EMA slow),
+    pullback to VWAP (touch within band), then reclaim VWAP.
+    """
+    if not ENABLE_STRATEGY_VWAP_PULLBACK:
+        return None
+    if len(bars_5m) < max(VWAP_PB_EMA_SLOW + 5, RESAMPLE_5M_MIN_BARS):
+        return None
+
+    closes = [b.close for b in bars_5m]
+    vwaps = [b.vwap for b in bars_5m]
+    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
+    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
+
+    last = bars_5m[-1]
+    prev = bars_5m[-2]
+    vwap_last = vwaps[-1]
+    vwap_prev = vwaps[-2]
+
+    # Trend filter (long)
+    if not (ema_fast[-1] > ema_slow[-1]):
+        return None
+    if (ema_fast[-1] - ema_fast[-2]) < VWAP_PB_MIN_EMA_SLOPE:
+        return None
+
+    # Don't chase
+    if abs(last.close - vwap_last) / vwap_last > VWAP_PB_MAX_EXTENSION_PCT:
+        return None
+
+    band = vwap_last * VWAP_PB_BAND_PCT
+    touched = (last.low <= vwap_last + band) and (last.low >= vwap_last - band)
+    reclaimed = (last.close >= vwap_last) and (prev.close <= vwap_prev + band)
+
+    if touched and reclaimed:
+        return "BUY"
+
+    # Optional short symmetry
+    if ALLOW_SHORT:
+        if not (ema_fast[-1] < ema_slow[-1]):
+            return None
+        if (ema_fast[-2] - ema_fast[-1]) < VWAP_PB_MIN_EMA_SLOPE:
+            return None
+        if abs(last.close - vwap_last) / vwap_last > VWAP_PB_MAX_EXTENSION_PCT:
+            return None
+        touched_s = (last.high >= vwap_last - band) and (last.high <= vwap_last + band)
+        reclaimed_s = (last.close <= vwap_last) and (prev.close >= vwap_prev - band)
+        if touched_s and reclaimed_s:
+            return "SELL"
+
+    return None
 
     ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
     ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
