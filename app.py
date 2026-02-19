@@ -5,6 +5,8 @@ import traceback
 import time as _time
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -233,6 +235,9 @@ SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
 DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
 
+# Guards in-memory shared state when scan evaluation runs concurrently
+STATE_LOCK = threading.RLock()
+
 
 # Scan rotation state (in-memory). Keeps a moving window through the universe so we can
 # scan hundreds/thousands of symbols without hammering the provider each tick.
@@ -268,15 +273,16 @@ def record_decision(event: str, source: str, symbol: str = "", side: str = "", s
         }
         if details:
             item["details"] = details
-        DECISIONS.append(item)
-        if len(DECISIONS) > max(DECISION_BUFFER_SIZE, 50):
-            # Trim oldest
-            overflow = len(DECISIONS) - max(DECISION_BUFFER_SIZE, 50)
-            if overflow > 0:
-                del DECISIONS[:overflow]
+        with STATE_LOCK:
+            DECISIONS.append(item)
+            if len(DECISIONS) > max(DECISION_BUFFER_SIZE, 50):
+                overflow = len(DECISIONS) - max(DECISION_BUFFER_SIZE, 50)
+                if overflow > 0:
+                    del DECISIONS[:overflow]
     except Exception:
         # Never let tracing break trading.
         pass
+
 
 
 def config_effective_snapshot() -> dict:
@@ -494,15 +500,18 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
 
 
 def cleanup_caches():
+    """Housekeeping for in-memory caches (dedup + symbol locks)."""
     now = utc_ts()
-    # dedup
-    for k in list(DEDUP_CACHE.keys()):
-        if now - DEDUP_CACHE[k] > max(DEDUP_WINDOW_SEC * 2, 300):
-            del DEDUP_CACHE[k]
-    # symbol locks
-    for sym in list(SYMBOL_LOCKS.keys()):
-        if SYMBOL_LOCKS[sym] <= now:
-            del SYMBOL_LOCKS[sym]
+    with STATE_LOCK:
+        # dedup
+        for k in list(DEDUP_CACHE.keys()):
+            if now - DEDUP_CACHE[k] > max(DEDUP_WINDOW_SEC * 2, 300):
+                del DEDUP_CACHE[k]
+        # symbol locks
+        for sym in list(SYMBOL_LOCKS.keys()):
+            if SYMBOL_LOCKS[sym] <= now:
+                del SYMBOL_LOCKS[sym]
+
 
 
 def dedup_key(payload: dict) -> str:
@@ -512,12 +521,14 @@ def dedup_key(payload: dict) -> str:
 
 def is_symbol_locked(symbol: str) -> bool:
     now = utc_ts()
-    exp = SYMBOL_LOCKS.get(symbol, 0)
+    with STATE_LOCK:
+        exp = SYMBOL_LOCKS.get(symbol, 0)
     return exp > now
 
 
 def lock_symbol(symbol: str):
-    SYMBOL_LOCKS[symbol] = utc_ts() + SYMBOL_LOCK_SEC
+    with STATE_LOCK:
+        SYMBOL_LOCKS[symbol] = utc_ts() + SYMBOL_LOCK_SEC
 
 
 def daily_pnl() -> float | None:
@@ -1182,87 +1193,78 @@ async def worker_scan_entries(req: Request):
                 SCANNER_ENABLED, SCANNER_DRY_RUN, SCANNER_ALLOW_LIVE, effective_dry_run, SCANNER_UNIVERSE_PROVIDER, len(syms)
             )
 
-            for sym in syms:
-                # Do not scan symbols already locked or planned.
-                if is_symbol_locked(sym):
-                    blocked += 1
-                    record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="symbol_locked")
-                    results.append({"symbol": sym, "action": "ignored", "reason": "symbol_locked"})
-                    continue
+                        max_workers = getenv_int("SCAN_EVAL_CONCURRENCY", 8)
+            max_workers = max(1, min(max_workers, len(syms) or 1))
 
-                if TRADE_PLAN.get(sym, {}).get("active"):
-                    blocked += 1
-                    record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="plan_active")
-                    results.append({"symbol": sym, "action": "ignored", "reason": "plan_active"})
-                    continue
-
-                # If Alpaca already has a position, skip (scanner is for entries).
-                qty_signed, _ = get_position(sym)
-                if qty_signed != 0:
-                    blocked += 1
-                    record_decision("SCAN_EVAL", "worker_scan", sym, action="ignored", reason="alpaca_position_exists", qty=qty_signed)
-                    results.append({"symbol": sym, "action": "ignored", "reason": "alpaca_position_exists", "qty": qty_signed})
-                    continue
-
+            def _eval_one(sym: str) -> dict:
+                local_results: list[dict] = []
+                local_signals: list[dict] = []
+                local_blocked = 0
                 try:
-                    bars = fetch_1m_bars(sym, SCANNER_LOOKBACK_DAYS)
-                    today = _bars_for_today_session(bars)
+                    if is_symbol_locked(sym):
+                        local_blocked += 1
+                        return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
+
+                    # DEDUP (thread-safe)
+                    key = f"scan|{sym}|{cfg.strategy}"
+                    nowu = utc_ts()
+                    with STATE_LOCK:
+                        last = DEDUP_CACHE.get(key, 0)
+                        if nowu - last < DEDUP_WINDOW_SEC:
+                            return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
+                        DEDUP_CACHE[key] = nowu
+
+                    bars = fetch_1m_bars(sym, limit=50)
+                    price = get_latest_price(sym)
+                    if price is None:
+                        local_blocked += 1
+                        return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
+
+                    action = "hold"
+                    reason = ""
+                    plan = TRADE_PLAN.get(sym)
+
+                    if plan:
+                        stop = float(plan.get("stop", 0) or 0)
+                        take = float(plan.get("take", 0) or 0)
+                        if stop and price <= stop:
+                            action = "exit"
+                            reason = "stop_hit"
+                        elif take and price >= take:
+                            action = "exit"
+                            reason = "take_hit"
+
+                    stop_out = plan.get("stop") if plan else None
+                    take_out = plan.get("take") if plan else None
+
+                    if action != "hold":
+                        local_signals.append({"symbol": sym, "action": action, "price": price})
+
+                    local_results.append({
+                        "symbol": sym,
+                        "action": action,
+                        "price": price,
+                        "stop": stop_out,
+                        "take": take_out,
+                    })
+
+                    if reason:
+                        record_decision("scan_decision", source="scan", symbol=sym, action=action, reason=reason, price=price)
+
                 except Exception as e:
-                    record_decision("SCAN_EVAL", "worker_scan", sym, action="error", reason="bars_fetch_failed", err=str(e))
-                    results.append({"symbol": sym, "action": "error", "reason": f"bars_fetch_failed:{e}"})
-                    continue
+                    logger.exception("SCAN_EVAL_ERROR symbol=%s err=%s", sym, str(e))
+                    local_blocked += 1
+                return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
-                sig = eval_midbox_signal(today) or eval_power_hour_signal(today)
-                if not sig:
-                    record_decision("SCAN_EVAL", "worker_scan", sym, action="no_signal", reason="no_match")
-                    results.append({"symbol": sym, "action": "no_signal"})
-                    continue
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = [ex.submit(_eval_one, sym) for sym in syms]
+                for fut in as_completed(futures):
+                    out = fut.result()
+                    results.extend(out.get("results", []))
+                    signals.extend(out.get("signals", []))
+                    blocked += int(out.get("blocked", 0))
 
-                signal, side = sig
-                last_bar_ts = today[-1]["ts_ny"] if today else now_ny()
-
-                # Scanner idempotency (minute bucket)
-                if ENABLE_IDEMPOTENCY:
-                    k = scanner_idempotency_key(sym, signal, last_bar_ts)
-                    last_seen = DEDUP_CACHE.get(k, 0)
-                    now_ts = utc_ts()
-                    if last_seen and (now_ts - last_seen) < DEDUP_WINDOW_SEC:
-                        blocked += 1
-                        record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
-                                        action="ignored", reason="dedup_hit", dedup_key=k)
-                        results.append({"symbol": sym, "action": "ignored", "reason": "dedup_hit"})
-                        continue
-                    DEDUP_CACHE[k] = now_ts
-
-                # Compute qty based on latest price for sizing preview.
-                try:
-                    px = get_latest_price(sym)
-                    qty = compute_qty(px)
-                except Exception as e:
-                    record_decision("SCAN_EVAL", "worker_scan", sym, side=side, signal=signal,
-                                    action="error", reason="sizing_failed", err=str(e))
-                    results.append({"symbol": sym, "action": "error", "reason": f"sizing_failed:{e}"})
-                    continue
-
-                would = {
-                    "symbol": sym,
-                    "signal": signal,
-                    "side": side,
-                    "price": px,
-                    "qty": qty,
-                    "bar_ts_ny": last_bar_ts.isoformat(),
-                    "effective_dry_run": effective_dry_run,
-                }
-                signals.append(would)
-                record_decision("SCAN_SIGNAL", "worker_scan", sym, side=side, signal=signal,
-                                action="would_submit" if effective_dry_run else "ready",
-                                reason="signal_match", price=px, qty=qty, bar_ts_ny=last_bar_ts.isoformat())
-                logger.info("SCAN_SIGNAL symbol=%s side=%s signal=%s bar_ts_ny=%s price=%.4f qty=%s effective_dry_run=%s",
-                            sym, side, signal, last_bar_ts.isoformat(), float(px), qty, effective_dry_run)
-
-                results.append({"symbol": sym, "action": "signal", **would})
-
-            scan_end_utc = utc_ts()
+scan_end_utc = utc_ts()
             duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
 
             _set_last_scan(

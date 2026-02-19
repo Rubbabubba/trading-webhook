@@ -29,7 +29,7 @@ def _post_json(url: str, payload: dict) -> dict:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as resp:
         raw = resp.read().decode("utf-8")
         return json.loads(raw) if raw else {}
 
