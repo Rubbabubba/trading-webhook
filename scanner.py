@@ -2,72 +2,66 @@ import os
 import time
 import json
 import urllib.request
-import urllib.error
+from datetime import datetime, timezone
 
-# Scanner worker: periodically triggers the main service's /worker/scan_entries endpoint.
-#
-# Deploy as a separate Render service from the main FastAPI app and the exit worker.
-# Required env:
-#   BASE_URL        - https://<your-main-service>.onrender.com
-#   WORKER_SECRET   - must match main service WORKER_SECRET
-#
-# Optional env:
-#   SCAN_INTERVAL_SEC   - default 60
-#   SCAN_PATH           - default /worker/scan_entries
 
-BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
-WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
+def utc_ts() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-INTERVAL_SEC = int(os.getenv("SCAN_INTERVAL_SEC", "60"))
-SCAN_PATH = os.getenv("SCAN_PATH", "/worker/scan_entries")
 
-def _post_json(url: str, payload: dict) -> dict:
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+def getenv_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)).strip())
+    except Exception:
+        return default
+
+
+URL = os.getenv("SCANNER_URL") or os.getenv("URL") or ""
+if not URL:
+    # Backward compatible default if user forgot to set
+    URL = "http://localhost:10000/worker/scan_entries"
+INTERVAL_SEC = getenv_int("SCANNER_INTERVAL_SEC", 60)
+TIMEOUT_SEC = getenv_int("SCANNER_HTTP_TIMEOUT_SEC", getenv_int("SCANNER_TIMEOUT_SEC", 60))
+
+SECRET = os.getenv("WORKER_SECRET") or os.getenv("SCANNER_SECRET") or ""
+
+
+def post_json(url: str, payload: dict) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if SECRET:
+        headers["X-Worker-Secret"] = SECRET
+
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as resp:
         raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+        if not raw:
+            return {}
+        return json.loads(raw)
+
 
 def main() -> None:
-    if not BASE_URL:
-        raise SystemExit("BASE_URL is not set")
-    if not WORKER_SECRET:
-        raise SystemExit("WORKER_SECRET is not set")
-
-    url = f"{BASE_URL}{SCAN_PATH}"
-    print(f"[scanner] starting loop: url={url} interval={INTERVAL_SEC}s", flush=True)
+    print(f"[scanner] starting loop: url={URL} interval={INTERVAL_SEC}s timeout={TIMEOUT_SEC}s", flush=True)
 
     while True:
         t0 = time.time()
         try:
-            result = _post_json(url, {"worker_secret": WORKER_SECRET})
-            # Keep logs concise but useful.
-            scanned = (result.get("scanner") or {}).get("symbols_scanned") or result.get("scanned") or result.get("symbols_scanned")
-            would = result.get("would_submit") or ((result.get("scanner") or {}).get("would_submit")) or ((result.get("scanner") or {}).get("would_trade"))
-            mode = "DRY_RUN" if result.get("dry_run") else "LIVE" if result.get("live") else ""
-            skipped = result.get("skipped")
-            reason = result.get("reason")
-            dur = (result.get("scanner") or {}).get("duration_ms")
-            if skipped:
-                print(f"[scanner] tick ok skipped=True reason={reason} dur_ms={dur}", flush=True)
-            else:
-                wt = result.get("would_submit")
-                wt_n = len(wt) if isinstance(wt, list) else ((result.get("scanner") or {}).get("would_trade"))
-                print(f"[scanner] tick ok scanned={scanned} would={wt_n} blocked={(result.get("scanner") or {}).get("blocked")} dur_ms={dur}", flush=True)
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")
-            print(f"[scanner] HTTPError {e.code}: {body}", flush=True)
+            data = post_json(URL, {})
+            status = data.get("status") or {}
+            scanned = status.get("scanned") or data.get("scanned") or 0
+            would = status.get("would_trade") or data.get("would_trade") or status.get("would") or data.get("would") or 0
+            blocked = status.get("blocked") or data.get("blocked") or 0
+            dur_ms = status.get("duration_ms") or data.get("duration_ms") or int((time.time() - t0) * 1000)
+
+            print(f"[scanner] tick ok scanned={scanned} would={would} blocked={blocked} dur_ms={dur_ms}", flush=True)
         except Exception as e:
             print(f"[scanner] error: {e}", flush=True)
 
+        # sleep remaining interval
         elapsed = time.time() - t0
-        sleep_for = max(1.0, INTERVAL_SEC - elapsed)
+        sleep_for = max(0.0, INTERVAL_SEC - elapsed)
         time.sleep(sleep_for)
+
 
 if __name__ == "__main__":
     main()

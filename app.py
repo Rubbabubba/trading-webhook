@@ -1193,7 +1193,7 @@ async def worker_scan_entries(req: Request):
                 SCANNER_ENABLED, SCANNER_DRY_RUN, SCANNER_ALLOW_LIVE, effective_dry_run, SCANNER_UNIVERSE_PROVIDER, len(syms)
             )
 
-                        max_workers = getenv_int("SCAN_EVAL_CONCURRENCY", 8)
+            max_workers = getenv_int("SCAN_EVAL_CONCURRENCY", 8)
             max_workers = max(1, min(max_workers, len(syms) or 1))
 
             def _eval_one(sym: str) -> dict:
@@ -1264,7 +1264,7 @@ async def worker_scan_entries(req: Request):
                     signals.extend(out.get("signals", []))
                     blocked += int(out.get("blocked", 0))
 
-scan_end_utc = utc_ts()
+            scan_end_utc = utc_ts()
             duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
 
             _set_last_scan(
