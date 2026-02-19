@@ -18,6 +18,21 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+@dataclass(frozen=True)
+class Bar:
+    ts_utc: datetime
+    ts_ny: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    vwap: Optional[float] = None
+
 
 # =============================
 # App
