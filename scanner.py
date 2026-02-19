@@ -50,7 +50,7 @@ def main() -> None:
             scanned = (result.get("scanner") or {}).get("symbols_scanned") or result.get("scanned") or result.get("symbols_scanned")
             would = result.get("would_submit") or ((result.get("scanner") or {}).get("would_submit")) or ((result.get("scanner") or {}).get("would_trade"))
             mode = "DRY_RUN" if result.get("dry_run") else "LIVE" if result.get("live") else ""
-                        skipped = result.get("skipped")
+            skipped = result.get("skipped")
             reason = result.get("reason")
             dur = (result.get("scanner") or {}).get("duration_ms")
             if skipped:
