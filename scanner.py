@@ -18,11 +18,7 @@ def getenv_int(name: str, default: int) -> int:
 
 # Target URL for scan requests (must point to the MAIN web service, not this scanner service).
 # Provide one of: SCAN_ENTRIES_URL (full), SCANNER_URL (full), or MAIN_SERVICE_URL / WORKER_BASE_URL (base).
-URL = (os.getenv("SCAN_ENTRIES_URL") or os.getenv("SCANNER_URL") or os.getenv("BASE_URL") or os.getenv("MAIN_SERVICE_URL") or os.getenv("WORKER_BASE_URL") or "").strip()
-# If URL is a base (no /worker/scan_entries), append the path
-if URL and "/worker/scan_entries" not in URL:
-    URL = URL.rstrip("/") + "/worker/scan_entries"
-
+URL = (
     os.getenv("SCAN_ENTRIES_URL")
     or os.getenv("SCANNER_URL")
     or os.getenv("MAIN_SERVICE_URL")
@@ -47,9 +43,6 @@ SECRET = os.getenv("WORKER_SECRET") or os.getenv("SCANNER_SECRET") or ""
 
 
 def post_json(url: str, payload: dict) -> dict:
-    if SECRET:
-        payload = dict(payload)
-        payload.setdefault("worker_secret", SECRET)
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if SECRET:

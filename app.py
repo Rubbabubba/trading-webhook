@@ -75,6 +75,17 @@ def getenv_any(*names: str, default: str = "") -> str:
     return default
 
 
+
+
+def getenv_int(name: str, default: int) -> int:
+    """Read an int env var with a safe fallback."""
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        return int(raw)
+    except Exception:
+        return int(default)
 def env_bool(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "y", "on")
 
@@ -1055,12 +1066,7 @@ async def worker_exit(req: Request):
 
     # Optional worker auth
     if WORKER_SECRET:
-        provided = (
-            (body.get("worker_secret") or "")
-            or (req.headers.get("X-Worker-Secret") or req.headers.get("x-worker-secret") or "")
-            or (req.query_params.get("worker_secret") or "")
-        ).strip()
-        if provided != WORKER_SECRET:
+        if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
     # Kill switch / daily stop: flatten immediately
@@ -1156,12 +1162,7 @@ async def worker_scan_entries(req: Request):
 
     # Optional worker auth
     if WORKER_SECRET:
-        provided = (
-            (body.get("worker_secret") or "")
-            or (req.headers.get("X-Worker-Secret") or req.headers.get("x-worker-secret") or "")
-            or (req.query_params.get("worker_secret") or "")
-        ).strip()
-        if provided != WORKER_SECRET:
+        if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
     effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
