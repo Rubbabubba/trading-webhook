@@ -1237,7 +1237,7 @@ async def worker_scan_entries(req: Request):
                             return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
                         DEDUP_CACHE[key] = nowu
 
-                    bars = fetch_1m_bars(sym, limit=50)
+                    # (optional) 1m bars fetch removed; it was unused and caused signature mismatch
                     price = get_latest_price(sym)
                     if price is None:
                         local_blocked += 1
