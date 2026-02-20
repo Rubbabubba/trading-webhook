@@ -1055,7 +1055,12 @@ async def worker_exit(req: Request):
 
     # Optional worker auth
     if WORKER_SECRET:
-        if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
+        provided = (
+            (body.get("worker_secret") or "")
+            or (req.headers.get("X-Worker-Secret") or req.headers.get("x-worker-secret") or "")
+            or (req.query_params.get("worker_secret") or "")
+        ).strip()
+        if provided != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
     # Kill switch / daily stop: flatten immediately
@@ -1151,7 +1156,12 @@ async def worker_scan_entries(req: Request):
 
     # Optional worker auth
     if WORKER_SECRET:
-        if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
+        provided = (
+            (body.get("worker_secret") or "")
+            or (req.headers.get("X-Worker-Secret") or req.headers.get("x-worker-secret") or "")
+            or (req.query_params.get("worker_secret") or "")
+        ).strip()
+        if provided != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
     effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
