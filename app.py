@@ -1223,8 +1223,13 @@ async def worker_scan_entries(req: Request):
                         local_blocked += 1
                         return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
+
                     # DEDUP (thread-safe)
-                    key = f"scan|{sym}|{cfg.strategy}"
+                    # Idempotency / dedup key for scan evaluation.
+                    # This used to include a config object (cfg.strategy) but cfg is not
+                    # in scope here. Since this service currently runs a single scan
+                    # evaluation pipeline, the symbol is sufficient.
+                    key = f"scan|{sym}"
                     nowu = utc_ts()
                     with STATE_LOCK:
                         last = DEDUP_CACHE.get(key, 0)
