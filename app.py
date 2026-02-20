@@ -354,10 +354,20 @@ def compute_qty(price: float) -> float:
     return round(qty, 2)
 
 
-def get_latest_price(symbol: str) -> float:
+def get_latest_price(symbol: str) -> Optional[float]:
     req = StockLatestTradeRequest(symbol_or_symbols=[symbol])
     latest = data_client.get_stock_latest_trade(req)
-    px = float(latest[symbol].price)
+    # Alpaca may omit symbols with no recent trade / unsupported tickers / feed limits.
+    # Return None so callers can treat it as "no data" instead of raising KeyError.
+    trade = None
+    try:
+        trade = latest.get(symbol) if hasattr(latest, "get") else latest[symbol]
+    except KeyError:
+        trade = None
+    if trade is None:
+        logging.warning("LATEST_PRICE_MISSING symbol=%s", symbol)
+        return None
+    px = float(trade.price)
     if px <= 0:
         raise ValueError("Latest trade price invalid")
     return px
