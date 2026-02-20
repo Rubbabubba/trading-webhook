@@ -75,7 +75,14 @@ def getenv_any(*names: str, default: str = "") -> str:
     return default
 
 
-
+def getenv_int(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if val is None or val == "":
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
 
 def getenv_int(name: str, default: int) -> int:
     """Read an int env var with a safe fallback."""
