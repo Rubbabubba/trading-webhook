@@ -20,6 +20,23 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+# --- Data adjustment for Alpaca bars ---
+# Some Alpaca endpoints accept either an enum (alpaca.data.enums.Adjustment)
+# or a string. Default to 'raw' for consistent intraday signals.
+DATA_ADJUSTMENT_RAW = os.getenv("DATA_ADJUSTMENT", "raw").strip().lower() or "raw"
+try:
+    from alpaca.data.enums import Adjustment as _AlpacaAdjustment  # type: ignore
+
+    _ADJ_MAP = {
+        "raw": _AlpacaAdjustment.RAW,
+        "split": _AlpacaAdjustment.SPLIT,
+        "dividend": _AlpacaAdjustment.DIVIDEND,
+        "all": _AlpacaAdjustment.ALL,
+    }
+    ADJUSTMENT = _ADJ_MAP.get(DATA_ADJUSTMENT_RAW, _AlpacaAdjustment.RAW)
+except Exception:
+    ADJUSTMENT = DATA_ADJUSTMENT_RAW
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -1477,23 +1494,23 @@ async def worker_scan_entries(req: Request):
         })
 
     try:
-            if not SCANNER_ENABLED:
-                _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
-                record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
-                return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
+        if not SCANNER_ENABLED:
+            _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
+            return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
 
-            if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
-                _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
-                record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
-                return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
+        if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
+            _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
+            return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
 
-            # Reconcile first: never place entries against stale internal state.
-            reconcile_actions = reconcile_trade_plans_from_alpaca()
+        # Reconcile first: never place entries against stale internal state.
+        reconcile_actions = reconcile_trade_plans_from_alpaca()
 
-            syms = universe_symbols()
-            blocked = 0
-            results = []
-            signals = []
+        syms = universe_symbols()
+        blocked = 0
+        results = []
+        signals = []
 
             logger.info(
                 "SCAN_START enabled=%s dry_run=%s allow_live=%s effective_dry_run=%s provider=%s symbols=%s",
@@ -1503,8 +1520,8 @@ async def worker_scan_entries(req: Request):
             max_workers = getenv_int("SCAN_EVAL_CONCURRENCY", 8)
             max_workers = max(1, min(max_workers, len(syms) or 1))
 
-            # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
-            bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
+        # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
+        bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
 
             def _eval_one(sym: str) -> dict:
                 local_results: list[dict] = []
@@ -1717,4 +1734,7 @@ async def worker_scan_entries(req: Request):
         except Exception:
             pass
         logger.exception('SCAN_FATAL error=%s', str(e))
-        return {'ok': False, 'error': 'scan_exception', 'detail': str(e), **LAST_SCAN}
+        return JSONResponse(
+            status_code=500,
+            content={'ok': False, 'error': 'scan_exception', 'detail': str(e), **LAST_SCAN},
+        )
