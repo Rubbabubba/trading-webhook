@@ -627,7 +627,7 @@ def universe_symbols() -> list[str]:
     return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
 
-def fetch_1m_bars(symbol: str, lookback_days: int) -> list[dict]:
+def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None) -> list[dict]:
     """Fetch recent 1-minute bars for a symbol. Returns list of dicts with UTC ts + OHLCV + vwap."""
     # Conservative lookback to stay within API limits and keep scan fast.
     end = datetime.now(tz=timezone.utc)
