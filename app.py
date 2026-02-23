@@ -677,6 +677,84 @@ def ema_series(closes: list[float], length: int) -> list[float]:
     return out
 
 
+def fetch_1m_bars_multi(
+    symbols: list[str], lookback_days: int = 1, limit_per_symbol: int | None = None
+) -> dict[str, list[dict]]:
+    """Fetch 1-minute bars for multiple symbols in a single Alpaca call.
+
+    Returns mapping symbol -> list[dict] with the same schema as fetch_1m_bars().
+    Symbols with no data will have an empty list.
+    """
+    symbols = [s.strip().upper() for s in (symbols or []) if s and s.strip()]
+    if not symbols:
+        return {}
+
+    end = now_ny()
+    start = end - timedelta(days=max(1, int(lookback_days)))
+    req = StockBarsRequest(
+        symbol_or_symbols=symbols,
+        timeframe=TimeFrame.Minute,
+        start=start,
+        end=end,
+        adjustment=ADJUSTMENT,
+        feed=DATA_FEED,
+    )
+
+    out: dict[str, list[dict]] = {s: [] for s in symbols}
+    try:
+        df = data_client().get_stock_bars(req).df
+    except Exception:
+        return out
+    if df is None or len(df) == 0:
+        return out
+
+    # Expected Alpaca shape: multiindex (symbol, timestamp)
+    try:
+        for (sym, ts), row in df.iterrows():
+            ts_utc = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+            ts_ny = ts_utc.astimezone(NY)
+            out.setdefault(sym, []).append(
+                {
+                    "ts_utc": ts_utc,
+                    "ts_ny": ts_ny,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row.get("volume", 0.0)),
+                    "vwap": float(row.get("vwap", 0.0) or 0.0),
+                }
+            )
+    except Exception:
+        # Fallback if df isn't multiindex
+        for sym in symbols:
+            try:
+                sdf = df.xs(sym, level=0)
+            except Exception:
+                continue
+            for ts, row in sdf.iterrows():
+                ts_utc = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+                ts_ny = ts_utc.astimezone(NY)
+                out.setdefault(sym, []).append(
+                    {
+                        "ts_utc": ts_utc,
+                        "ts_ny": ts_ny,
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                        "volume": float(row.get("volume", 0.0)),
+                        "vwap": float(row.get("vwap", 0.0) or 0.0),
+                    }
+                )
+
+    for sym in list(out.keys()):
+        out[sym] = sorted(out[sym], key=lambda r: r["ts_utc"])
+        if limit_per_symbol and len(out[sym]) > limit_per_symbol:
+            out[sym] = out[sym][-limit_per_symbol:]
+    return out
+
+
 def resample_to_5m(bars_1m: list[Bar]) -> list[Bar]:
     """Resample 1m bars into 5m bars (NY time), producing OHLCV + VWAP.
     Bar.ts_ny is kept as the *end* of each 5m bucket (last minute in the bucket).
@@ -767,6 +845,52 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     if not bars_today or not SCANNER_ENABLE_PWR:
         return None
 
+    # Only evaluate inside the configured NY window
+    ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
+    now_t = now_ny().time()
+    if not (ph_start <= now_t <= ph_end):
+        return None
+
+    ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
+    if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 6):
+        return None
+
+    # Trend filter: EMA200 rising
+    closes = [r["close"] for r in bars_today]
+    ema200 = ema_series(closes, 200)
+    if len(ema200) < 4:
+        return None
+    ema_slope_up = ema200[-1] > ema200[-3]
+
+    # Breakout: last close above rolling high over lookback window
+    lookback = ph[-SCANNER_PWR_LOOKBACK_BARS:]
+    last = lookback[-1]
+    prior = lookback[:-1]
+    if not prior:
+        return None
+    rolling_high = max([r["high"] for r in prior])
+
+    # Confirmation: last close above VWAP and above EMA20 (computed on 5m resample)
+    bars_5m = resample_5m(bars_today)
+    if len(bars_5m) < 25:
+        return None
+    closes_5m = [b.close for b in bars_5m]
+    ema20_5m = ema_series(closes_5m, 20)
+    if not ema20_5m:
+        return None
+    ema20_last = ema20_5m[-1]
+    vwap_last = bars_5m[-1].vwap
+
+    # Volume pop: last 5m volume above 20-bar average
+    vols = [b.volume for b in bars_5m]
+    avg_vol20 = (sum(vols[-20:]) / 20) if len(vols) >= 20 else (sum(vols) / max(1, len(vols)))
+    vol_ok = bars_5m[-1].volume >= 1.2 * avg_vol20
+
+    if ema_slope_up and last["close"] > rolling_high and last["close"] > vwap_last and last["close"] > ema20_last and vol_ok:
+        return ("PWR", "buy")
+
+    return None
+
 
 def eval_vwap_pullback_signal(bars_5m: list[Bar]) -> str | None:
     """Strategy C: VWAP Pullback (5m)
@@ -820,16 +944,119 @@ def eval_vwap_pullback_signal(bars_5m: list[Bar]) -> str | None:
 
     return None
 
-    ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
-    ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
-    if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 5):
-        return None
 
+# --- Scanner diagnostics helpers (explain WHY there was or wasn't a signal) ---
+def _scan_diag_midbox(bars_today: list[dict]) -> dict:
+    mid_start, mid_end = _parse_session_hhmm_range(MIDBOX_RANGE_SESSION)
+    bo_start, bo_end = _parse_session_hhmm_range(MIDBOX_TRADE_SESSION)
+    rng = [r for r in bars_today if mid_start <= r["ts_ny"].time() <= mid_end]
+    bo = [r for r in bars_today if bo_start <= r["ts_ny"].time() <= bo_end]
+    if len(rng) < 2 or len(bo) < 2:
+        return {"eligible": False, "rng_bars": len(rng), "bo_bars": len(bo)}
+    mid_high = max([r["high"] for r in rng])
+    mid_low = min([r["low"] for r in rng])
+    last = bo[-1]
+    prev = bo[-2]
+    vwap = float(last.get("vwap") or 0.0)
     closes = [r["close"] for r in bars_today]
     ema200 = ema_series(closes, 200)
-    if len(ema200) < 3:
-        return None
-    ema_slope_up = ema200[-1] > ema200[-2]
+    ema_slope_up = len(ema200) >= 3 and ema200[-1] > ema200[-3]
+    ema_slope_down = len(ema200) >= 3 and ema200[-1] < ema200[-3]
+    crossed_up = (last["close"] > mid_high) and (prev["close"] <= mid_high)
+    crossed_dn = (last["close"] < mid_low) and (prev["close"] >= mid_low)
+    long_ok = crossed_up and (vwap == 0.0 or last["close"] > vwap) and ema_slope_up
+    short_ok = crossed_dn and (vwap == 0.0 or last["close"] < vwap) and ema_slope_down
+    return {
+        "eligible": True,
+        "mid_high": round(mid_high, 4),
+        "mid_low": round(mid_low, 4),
+        "last_close": round(last["close"], 4),
+        "prev_close": round(prev["close"], 4),
+        "vwap": round(vwap, 4),
+        "ema200_slope_up": bool(ema_slope_up),
+        "ema200_slope_down": bool(ema_slope_down),
+        "crossed_up": bool(crossed_up),
+        "crossed_down": bool(crossed_dn),
+        "long_signal": bool(long_ok),
+        "short_signal": bool(short_ok),
+    }
+
+
+def _scan_diag_pwr(bars_today: list[dict]) -> dict:
+    ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
+    now_t = now_ny().time()
+    in_window = ph_start <= now_t <= ph_end
+    ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
+    if not in_window:
+        return {"eligible": False, "reason": "outside_window", "window": PWR_SESSION}
+    if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 6):
+        return {"eligible": False, "reason": "insufficient_window_bars", "window_bars": len(ph), "window": PWR_SESSION}
+    closes = [r["close"] for r in bars_today]
+    ema200 = ema_series(closes, 200)
+    ema_slope_up = len(ema200) >= 4 and ema200[-1] > ema200[-3]
+    lookback = ph[-SCANNER_PWR_LOOKBACK_BARS:]
+    last = lookback[-1]
+    rolling_high = max([r["high"] for r in lookback[:-1]]) if len(lookback) > 1 else None
+    bars_5m = resample_5m(bars_today)
+    if len(bars_5m) < 25:
+        return {"eligible": False, "reason": "insufficient_5m_bars", "bars_5m": len(bars_5m)}
+    closes_5m = [b.close for b in bars_5m]
+    ema20_5m = ema_series(closes_5m, 20)
+    ema20_last = ema20_5m[-1] if ema20_5m else None
+    vwap_last = bars_5m[-1].vwap
+    vols = [b.volume for b in bars_5m]
+    avg_vol20 = (sum(vols[-20:]) / 20) if len(vols) >= 20 else (sum(vols) / max(1, len(vols)))
+    vol_ok = bars_5m[-1].volume >= 1.2 * avg_vol20
+    breakout = (rolling_high is not None) and (last["close"] > rolling_high)
+    above_vwap = last["close"] > vwap_last
+    above_ema20 = (ema20_last is not None) and (last["close"] > ema20_last)
+    signal = bool(ema_slope_up and breakout and above_vwap and above_ema20 and vol_ok)
+    return {
+        "eligible": True,
+        "window": PWR_SESSION,
+        "ema200_slope_up": bool(ema_slope_up),
+        "rolling_high": None if rolling_high is None else round(rolling_high, 4),
+        "last_close": round(last["close"], 4),
+        "vwap_5m": round(vwap_last, 4),
+        "ema20_5m": None if ema20_last is None else round(ema20_last, 4),
+        "volume_ok": bool(vol_ok),
+        "breakout": bool(breakout),
+        "signal": bool(signal),
+    }
+
+
+def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
+    bars_5m = resample_5m(bars_today)
+    if len(bars_5m) < max(VWAP_PB_EMA_SLOW + 5, RESAMPLE_5M_MIN_BARS):
+        return {"eligible": False, "reason": "insufficient_5m_bars", "bars_5m": len(bars_5m)}
+    closes = [b.close for b in bars_5m]
+    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
+    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
+    last = bars_5m[-1]
+    prev = bars_5m[-2]
+    vwap_last = last.vwap
+    band = vwap_last * VWAP_PB_BAND_PCT
+    uptrend = ema_fast[-1] > ema_slow[-1]
+    slope = ema_fast[-1] - ema_fast[-2]
+    slope_ok = slope >= VWAP_PB_MIN_EMA_SLOPE
+    extension_ok = abs(last.close - vwap_last) / vwap_last <= VWAP_PB_MAX_EXTENSION_PCT
+    touched = (last.low <= vwap_last + band) and (last.low >= vwap_last - band)
+    reclaimed = (last.close >= vwap_last) and (prev.close <= prev.vwap + band)
+    signal = bool(uptrend and slope_ok and extension_ok and touched and reclaimed)
+    return {
+        "eligible": True,
+        "ema_fast": round(ema_fast[-1], 4),
+        "ema_slow": round(ema_slow[-1], 4),
+        "ema_fast_slope": round(slope, 6),
+        "vwap": round(vwap_last, 4),
+        "last_close": round(last.close, 4),
+        "touched": bool(touched),
+        "reclaimed": bool(reclaimed),
+        "uptrend": bool(uptrend),
+        "slope_ok": bool(slope_ok),
+        "extension_ok": bool(extension_ok),
+        "signal": bool(signal),
+    }
     ema_slope_down = ema200[-1] < ema200[-2]
 
     last = ph[-1]
@@ -958,6 +1185,12 @@ def diagnostics_last_scan(symbol: str = ""):
         copy_item["results"] = items
         item = copy_item
     return {"ok": True, "item": item}
+
+
+@app.get("/diagnostics/scans/latest")
+def diagnostics_scans_latest(symbol: str = ""):
+    """Compatibility alias for clients expecting /diagnostics/scans/latest."""
+    return diagnostics_last_scan(symbol=symbol)
 
 
 
@@ -1270,6 +1503,9 @@ async def worker_scan_entries(req: Request):
             max_workers = getenv_int("SCAN_EVAL_CONCURRENCY", 8)
             max_workers = max(1, min(max_workers, len(syms) or 1))
 
+            # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
+            bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
+
             def _eval_one(sym: str) -> dict:
                 local_results: list[dict] = []
                 local_signals: list[dict] = []
@@ -1294,7 +1530,9 @@ async def worker_scan_entries(req: Request):
                         DEDUP_CACHE[key] = nowu
 
                     # (optional) 1m bars fetch removed; it was unused and caused signature mismatch
-                    price = get_latest_price(sym)
+                    bars_all = bars_map.get(sym) or []
+                    bars_today = _bars_for_today_session(bars_all)
+                    price = float(bars_today[-1]["close"]) if bars_today else get_latest_price(sym)
                     if price is None:
                         local_blocked += 1
                         local_results.append({
@@ -1307,8 +1545,23 @@ async def worker_scan_entries(req: Request):
                         })
                         return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
+                    diag = {
+                        "midbox": {"enabled": bool(SCANNER_ENABLE_MIDBOX)},
+                        "pwr": {"enabled": bool(SCANNER_ENABLE_PWR), "session": PWR_SESSION},
+                        "vwap_pullback": {"enabled": bool(SCANNER_ENABLE_VWAP_PB)},
+                    }
+                    if bars_today:
+                        if SCANNER_ENABLE_MIDBOX:
+                            diag["midbox"].update(_scan_diag_midbox(bars_today))
+                        if SCANNER_ENABLE_PWR:
+                            diag["pwr"].update(_scan_diag_pwr(bars_today))
+                        if SCANNER_ENABLE_VWAP_PB:
+                            diag["vwap_pullback"].update(_scan_diag_vwap_pb(bars_today))
+
                     action = "hold"
-                    reason = ""
+                    reason = "no_signal"
+                    signal_name = None
+                    side = None
                     plan = TRADE_PLAN.get(sym)
 
                     if plan:
@@ -1321,10 +1574,37 @@ async def worker_scan_entries(req: Request):
                             action = "exit"
                             reason = "take_hit"
 
+                    # Entry evaluation (only if we are not already managing a plan for this symbol)
+                    if not plan and action == "hold":
+                        mb = eval_midbox_signal(bars_today)
+                        if mb:
+                            signal_name, side = mb
+                        else:
+                            pwr = eval_power_hour_signal(bars_today)
+                            if pwr:
+                                signal_name, side = pwr
+                            else:
+                                bars_5m = resample_5m(bars_today) if bars_today else []
+                                vp = eval_vwap_pullback_signal(bars_5m)
+                                if vp == "BUY":
+                                    signal_name, side = ("VWAP_PULLBACK", "buy")
+                                elif vp == "SELL":
+                                    signal_name, side = ("VWAP_PULLBACK", "sell")
+
+                        if signal_name and side in ("buy", "sell"):
+                            action = side
+                            reason = signal_name
+                            try:
+                                plan = build_trade_plan(sym, price)
+                                TRADE_PLAN[sym] = plan
+                            except Exception as e:
+                                diag["trade_plan_error"] = str(e)
+                            local_signals.append({"symbol": sym, "action": action, "price": price, "signal": signal_name})
+
                     stop_out = plan.get("stop") if plan else None
                     take_out = plan.get("take") if plan else None
 
-                    if action != "hold":
+                    if action == "exit":
                         local_signals.append({"symbol": sym, "action": action, "price": price})
 
                     local_results.append({
@@ -1334,10 +1614,21 @@ async def worker_scan_entries(req: Request):
                         "price": price,
                         "stop": stop_out,
                         "take": take_out,
+                        "diagnostics": diag,
                     })
 
-                    if reason:
-                        record_decision("scan_decision", source="scan", symbol=sym, action=action, reason=reason, price=price)
+                    record_decision(
+                        "scan_decision",
+                        source="scan",
+                        symbol=sym,
+                        action=action,
+                        reason=reason,
+                        signal=signal_name,
+                        price=price,
+                        stop=stop_out,
+                        take=take_out,
+                        meta=diag,
+                    )
 
                 except Exception as e:
                     logger.exception("SCAN_EVAL_ERROR symbol=%s err=%s", sym, str(e))
