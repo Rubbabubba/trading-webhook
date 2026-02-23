@@ -1512,18 +1512,18 @@ async def worker_scan_entries(req: Request):
         results = []
         signals = []
 
-            logger.info(
+        logger.info(
                 "SCAN_START enabled=%s dry_run=%s allow_live=%s effective_dry_run=%s provider=%s symbols=%s",
                 SCANNER_ENABLED, SCANNER_DRY_RUN, SCANNER_ALLOW_LIVE, effective_dry_run, SCANNER_UNIVERSE_PROVIDER, len(syms)
-            )
+        )
 
-            max_workers = getenv_int("SCAN_EVAL_CONCURRENCY", 8)
-            max_workers = max(1, min(max_workers, len(syms) or 1))
+        max_workers = getenv_int("SCAN_EVAL_CONCURRENCY", 8)
+        max_workers = max(1, min(max_workers, len(syms) or 1))
 
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
         bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
 
-            def _eval_one(sym: str) -> dict:
+        def _eval_one(sym: str) -> dict:
                 local_results: list[dict] = []
                 local_signals: list[dict] = []
                 local_blocked = 0
@@ -1661,7 +1661,7 @@ async def worker_scan_entries(req: Request):
                     })
                 return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futures = [ex.submit(_eval_one, sym) for sym in syms]
                 for fut in as_completed(futures):
                     out = fut.result()
@@ -1669,10 +1669,10 @@ async def worker_scan_entries(req: Request):
                     signals.extend(out.get("signals", []))
                     blocked += int(out.get("blocked", 0))
 
-            scan_end_utc = utc_ts()
-            duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
+        scan_end_utc = utc_ts()
+        duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
 
-            _set_last_scan(
+        _set_last_scan(
                 skipped=False,
                 reason=None,
                 scanned=len(syms),
@@ -1680,13 +1680,13 @@ async def worker_scan_entries(req: Request):
                 would_trade=len(signals),
                 blocked=blocked,
                 duration_ms=duration_ms,
-            )
+        )
 
-            logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
+        logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
                         len(syms), len(signals), len(signals), blocked, duration_ms)
 
-            # Store diagnostics for Postman/curl inspection.
-            try:
+        # Store diagnostics for Postman/curl inspection.
+        try:
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
@@ -1701,10 +1701,10 @@ async def worker_scan_entries(req: Request):
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
-            except Exception:
+        except Exception:
                 pass
 
-            return {
+        return {
                 "ok": True,
                 "scanner": {
                     "enabled": SCANNER_ENABLED,
@@ -1721,7 +1721,7 @@ async def worker_scan_entries(req: Request):
                 "reconcile": reconcile_actions,
                 "would_submit": signals,
                 "results": results,
-            }
+        }
     except Exception as e:
         scan_end_utc = utc_ts()
         duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
