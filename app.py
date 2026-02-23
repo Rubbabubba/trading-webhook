@@ -253,6 +253,11 @@ SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
 DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
 
+# In-memory scan history to help debug the equities scanner.
+# This is intentionally small and ephemeral (in-memory only).
+SCAN_HISTORY_SIZE = int(os.getenv("SCAN_HISTORY_SIZE", "50"))
+SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
+
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
 
@@ -914,6 +919,47 @@ def diagnostics_decisions(symbol: str = "", limit: int = 200):
     return {"ok": True, "count": len(items), "items": items[-lim:]}
 
 
+@app.get("/diagnostics/scans")
+def diagnostics_scans(limit: int = 50, symbol: str = ""):
+    """Return recent scan cycles (in-memory) with per-symbol evaluation results.
+
+    This is useful when the scanner is running but generating 0 signals and you want
+    to see *why* each symbol passed/failed.
+
+    Notes:
+    - Not persisted; a restart clears history.
+    - `symbol` (optional) filters each scan down to that symbol.
+    """
+    lim = max(1, min(int(limit or 50), 500))
+    scans = SCAN_HISTORY[-lim:]
+    sym = (symbol or "").upper().strip()
+    if sym:
+        filtered: list[dict] = []
+        for s in scans:
+            items = [it for it in (s.get("results") or []) if it.get("symbol") == sym]
+            if items:
+                copy_s = dict(s)
+                copy_s["results"] = items
+                filtered.append(copy_s)
+        scans = filtered
+    return {"ok": True, "count": len(scans), "items": scans}
+
+
+@app.get("/diagnostics/last_scan")
+def diagnostics_last_scan(symbol: str = ""):
+    """Convenience: return the most recent scan cycle (optionally filtered to a symbol)."""
+    if not SCAN_HISTORY:
+        return {"ok": True, "item": None}
+    item = SCAN_HISTORY[-1]
+    sym = (symbol or "").upper().strip()
+    if sym:
+        items = [it for it in (item.get("results") or []) if it.get("symbol") == sym]
+        copy_item = dict(item)
+        copy_item["results"] = items
+        item = copy_item
+    return {"ok": True, "item": item}
+
+
 
 @app.post("/kill")
 async def kill_on(request: Request):
@@ -1251,6 +1297,14 @@ async def worker_scan_entries(req: Request):
                     price = get_latest_price(sym)
                     if price is None:
                         local_blocked += 1
+                        local_results.append({
+                            "symbol": sym,
+                            "action": "blocked",
+                            "reason": "latest_price_missing",
+                            "price": None,
+                            "stop": None,
+                            "take": None,
+                        })
                         return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
                     action = "hold"
@@ -1276,6 +1330,7 @@ async def worker_scan_entries(req: Request):
                     local_results.append({
                         "symbol": sym,
                         "action": action,
+                        "reason": reason or "",
                         "price": price,
                         "stop": stop_out,
                         "take": take_out,
@@ -1287,6 +1342,15 @@ async def worker_scan_entries(req: Request):
                 except Exception as e:
                     logger.exception("SCAN_EVAL_ERROR symbol=%s err=%s", sym, str(e))
                     local_blocked += 1
+                    local_results.append({
+                        "symbol": sym,
+                        "action": "blocked",
+                        "reason": "exception",
+                        "err": str(e),
+                        "price": None,
+                        "stop": None,
+                        "take": None,
+                    })
                 return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -1312,6 +1376,25 @@ async def worker_scan_entries(req: Request):
 
             logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
                         len(syms), len(signals), len(signals), blocked, duration_ms)
+
+            # Store diagnostics for Postman/curl inspection.
+            try:
+                SCAN_HISTORY.append({
+                    "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "symbols": syms,
+                    "scanned": len(syms),
+                    "signals": len(signals),
+                    "would_trade": len(signals),
+                    "blocked": blocked,
+                    "duration_ms": duration_ms,
+                    "results": results,
+                    "would_submit": signals,
+                })
+                if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
+                    del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
+            except Exception:
+                pass
 
             return {
                 "ok": True,
