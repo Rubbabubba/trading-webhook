@@ -959,6 +959,18 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
 def _strategy_reason_disabled() -> str:
     return "strategy_disabled"
 
+def eval_vwap_pullback_signal(bars_5m: list[dict]) -> str | None:
+    """VWAP Pullback strategy placeholder.
+
+    The scanner referenced VWAP Pullback but the implementation was missing in this repo.
+    Return values:
+      - "BUY" to indicate a long entry signal
+      - None for no signal
+    """
+    # TODO: Implement real VWAP Pullback rules.
+    return None
+
+
 def _no_signal_from_midbox(diag: dict) -> str:
     if not diag.get("enabled"):
         return _strategy_reason_disabled()
@@ -1543,7 +1555,9 @@ async def worker_scan_entries(req: Request):
                                 signal_name, side = pwr
                             else:
                                 bars_5m = resample_5m(bars_today) if bars_today else []
-                                vp = eval_vwap_pullback_signal(bars_5m)
+                                vp = None
+                                if SCANNER_ENABLE_VWAP_PB:
+                                    vp = eval_vwap_pullback_signal(bars_5m)
                                 if vp == "BUY":
                                     signal_name, side = ("VWAP_PULLBACK", "buy")
                                 elif vp == "SELL":
