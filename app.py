@@ -651,7 +651,7 @@ def universe_symbols() -> list[str]:
         return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
     if SCANNER_UNIVERSE_PROVIDER == "env":
-        raw = getenv_any("SCANNER_SYMBOLS", default="")
+        raw = getenv_any("SCANNER_UNIVERSE_SYMBOLS", "SCANNER_SYMBOLS", default="")
         if not raw:
             return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
         syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
@@ -838,273 +838,85 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     if len(ema200) < 3:
         return None
     ema_slope_up = ema200[-1] > ema200[-2]
-    ema_slope_down = ema200[-1] < ema200[-2]
-
-    # Midbox window 10:00–11:30 NY
-    mid_start, mid_end = _parse_session_hhmm_range(MIDBOX_BUILD_SESSION)
-    mid = [r for r in bars_today if mid_start <= r["ts_ny"].time() <= mid_end]
-    if len(mid) < 10:
-        return None
-    mid_high = max(r["high"] for r in mid)
-    mid_low = min(r["low"] for r in mid)
-
-    # Breakout window 11:30–15:00
-    bo_start, bo_end = _parse_session_hhmm_range(MIDBOX_TRADE_SESSION)
-    bo = [r for r in bars_today if bo_start <= r["ts_ny"].time() <= bo_end]
-    if len(bo) < 2:
-        return None
-    last = bo[-1]
-    prev = bo[-2]
-    vwap = last["vwap"] or 0.0
-
-    # Long
-    if SCANNER_ENABLE_MIDBOX and (last["close"] > mid_high) and (prev["close"] <= mid_high):
-        if (vwap == 0.0 or last["close"] > vwap) and ema_slope_up:
-            return ("MIDBOX_LONG_GREEN", "buy")
-
-    # Short
-    if SCANNER_ENABLE_MIDBOX and ALLOW_SHORT and (last["close"] < mid_low) and (prev["close"] >= mid_low):
-        if (vwap == 0.0 or last["close"] < vwap) and ema_slope_down:
-            return ("MIDBOX_SHORT_RED", "sell")
-
-    return None
 
 
-def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
-    """Approx PWR signal eval: rolling breakout in 15:00–16:00 window."""
-    if not bars_today or not SCANNER_ENABLE_PWR:
-        return None
 
-    # Only evaluate inside the configured NY window
-    ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
-    now_t = now_ny().time()
-    if not (ph_start <= now_t <= ph_end):
-        return None
+# --- Scanner explainability helpers ---
+def _strategy_reason_disabled() -> str:
+    return "strategy_disabled"
 
-    ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
-    if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 6):
-        return None
+def _no_signal_from_midbox(diag: dict) -> str:
+    if not diag.get("enabled"):
+        return _strategy_reason_disabled()
+    if diag.get("eligible") is False:
+        return diag.get("reason") or "not_eligible"
+    if not diag.get("ema200_slope_up", True) and not diag.get("ema200_slope_down", True):
+        return "ema200_not_ready_or_flat"
+    if not diag.get("crossed_up") and not diag.get("crossed_down"):
+        return "no_breakout_cross"
+    if diag.get("crossed_up") and not diag.get("ema200_slope_up", True):
+        return "ema200_slope_not_up"
+    if diag.get("crossed_down") and not diag.get("ema200_slope_down", True):
+        return "ema200_slope_not_down"
+    if diag.get("crossed_up") and not diag.get("long_signal", False):
+        return "long_filters_failed"
+    if diag.get("crossed_down") and not diag.get("short_signal", False):
+        return "short_filters_failed"
+    return "no_signal"
 
-    # Trend filter: EMA200 rising
-    closes = [r["close"] for r in bars_today]
-    ema200 = ema_series(closes, 200)
-    if len(ema200) < 4:
-        return None
-    ema_slope_up = ema200[-1] > ema200[-3]
+def _no_signal_from_pwr(diag: dict) -> str:
+    if not diag.get("enabled"):
+        return _strategy_reason_disabled()
+    if diag.get("eligible") is False:
+        return diag.get("reason") or "not_eligible"
+    if not diag.get("ema200_slope_up", True):
+        return "ema200_slope_not_up"
+    if not diag.get("breakout", False):
+        return "no_breakout"
+    if not diag.get("volume_ok", False):
+        return "volume_not_ok"
+    if not (diag.get("last_close", 0) > (diag.get("vwap_5m", float("inf")))):
+        return "below_vwap"
+    if not (diag.get("ema20_5m") is None or (diag.get("last_close", 0) > diag.get("ema20_5m", float("inf")))):
+        return "below_ema20_5m"
+    return "no_signal"
 
-    # Breakout: last close above rolling high over lookback window
-    lookback = ph[-SCANNER_PWR_LOOKBACK_BARS:]
-    last = lookback[-1]
-    prior = lookback[:-1]
-    if not prior:
-        return None
-    rolling_high = max([r["high"] for r in prior])
+def _no_signal_from_vwap_pb(diag: dict) -> str:
+    if not diag.get("enabled"):
+        return _strategy_reason_disabled()
+    if diag.get("eligible") is False:
+        return diag.get("reason") or "not_eligible"
+    if not diag.get("uptrend", False):
+        return "trend_fail"
+    if not diag.get("slope_ok", False):
+        return "ema_slope_fail"
+    if not diag.get("extension_ok", False):
+        return "too_extended_from_vwap"
+    if not diag.get("touched", False):
+        return "did_not_touch_vwap_band"
+    if not diag.get("reclaimed", False):
+        return "did_not_reclaim_vwap"
+    return "no_signal"
 
-    # Confirmation: last close above VWAP and above EMA20 (computed on 5m resample)
-    bars_5m = resample_5m(bars_today)
-    if len(bars_5m) < 25:
-        return None
-    closes_5m = [b.close for b in bars_5m]
-    ema20_5m = ema_series(closes_5m, 20)
-    if not ema20_5m:
-        return None
-    ema20_last = ema20_5m[-1]
-    vwap_last = bars_5m[-1].vwap
+def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
+    """Return (primary_reason, details_by_strategy) for hold/no_signal cases."""
+    details: dict = {}
+    mb = diag.get("midbox") or {}
+    pw = diag.get("pwr") or {}
+    vp = diag.get("vwap_pullback") or {}
 
-    # Volume pop: last 5m volume above 20-bar average
-    vols = [b.volume for b in bars_5m]
-    avg_vol20 = (sum(vols[-20:]) / 20) if len(vols) >= 20 else (sum(vols) / max(1, len(vols)))
-    vol_ok = bars_5m[-1].volume >= 1.2 * avg_vol20
+    mb_reason = _no_signal_from_midbox(mb)
+    pw_reason = _no_signal_from_pwr(pw)
+    vp_reason = _no_signal_from_vwap_pb(vp)
 
-    if ema_slope_up and last["close"] > rolling_high and last["close"] > vwap_last and last["close"] > ema20_last and vol_ok:
-        return ("PWR", "buy")
+    details["midbox"] = {"enabled": bool(mb.get("enabled")), "eligible": mb.get("eligible"), "reason": mb_reason}
+    details["pwr"] = {"enabled": bool(pw.get("enabled")), "eligible": pw.get("eligible"), "reason": pw_reason}
+    details["vwap_pullback"] = {"enabled": bool(vp.get("enabled")), "eligible": vp.get("eligible"), "reason": vp_reason}
 
-    return None
-
-
-def eval_vwap_pullback_signal(bars_5m: list[Bar]) -> str | None:
-    """Strategy C: VWAP Pullback (5m)
-    Long bias only (unless ALLOW_SHORT=True): requires uptrend (EMA fast above EMA slow),
-    pullback to VWAP (touch within band), then reclaim VWAP.
-    """
-    if not ENABLE_STRATEGY_VWAP_PULLBACK:
-        return None
-    if len(bars_5m) < max(VWAP_PB_EMA_SLOW + 5, RESAMPLE_5M_MIN_BARS):
-        return None
-
-    closes = [b.close for b in bars_5m]
-    vwaps = [b.vwap for b in bars_5m]
-    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
-    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
-
-    last = bars_5m[-1]
-    prev = bars_5m[-2]
-    vwap_last = vwaps[-1]
-    vwap_prev = vwaps[-2]
-
-    # Trend filter (long)
-    if not (ema_fast[-1] > ema_slow[-1]):
-        return None
-    if (ema_fast[-1] - ema_fast[-2]) < VWAP_PB_MIN_EMA_SLOPE:
-        return None
-
-    # Don't chase
-    if abs(last.close - vwap_last) / vwap_last > VWAP_PB_MAX_EXTENSION_PCT:
-        return None
-
-    band = vwap_last * VWAP_PB_BAND_PCT
-    touched = (last.low <= vwap_last + band) and (last.low >= vwap_last - band)
-    reclaimed = (last.close >= vwap_last) and (prev.close <= vwap_prev + band)
-
-    if touched and reclaimed:
-        return "BUY"
-
-    # Optional short symmetry
-    if ALLOW_SHORT:
-        if not (ema_fast[-1] < ema_slow[-1]):
-            return None
-        if (ema_fast[-2] - ema_fast[-1]) < VWAP_PB_MIN_EMA_SLOPE:
-            return None
-        if abs(last.close - vwap_last) / vwap_last > VWAP_PB_MAX_EXTENSION_PCT:
-            return None
-        touched_s = (last.high >= vwap_last - band) and (last.high <= vwap_last + band)
-        reclaimed_s = (last.close <= vwap_last) and (prev.close >= vwap_prev - band)
-        if touched_s and reclaimed_s:
-            return "SELL"
-
-    return None
-
-
-# --- Scanner diagnostics helpers (explain WHY there was or wasn't a signal) ---
-def _scan_diag_midbox(bars_today: list[dict]) -> dict:
-    mid_start, mid_end = _parse_session_hhmm_range(MIDBOX_RANGE_SESSION)
-    bo_start, bo_end = _parse_session_hhmm_range(MIDBOX_TRADE_SESSION)
-    rng = [r for r in bars_today if mid_start <= r["ts_ny"].time() <= mid_end]
-    bo = [r for r in bars_today if bo_start <= r["ts_ny"].time() <= bo_end]
-    if len(rng) < 2 or len(bo) < 2:
-        return {"eligible": False, "rng_bars": len(rng), "bo_bars": len(bo)}
-    mid_high = max([r["high"] for r in rng])
-    mid_low = min([r["low"] for r in rng])
-    last = bo[-1]
-    prev = bo[-2]
-    vwap = float(last.get("vwap") or 0.0)
-    closes = [r["close"] for r in bars_today]
-    ema200 = ema_series(closes, 200)
-    ema_slope_up = len(ema200) >= 3 and ema200[-1] > ema200[-3]
-    ema_slope_down = len(ema200) >= 3 and ema200[-1] < ema200[-3]
-    crossed_up = (last["close"] > mid_high) and (prev["close"] <= mid_high)
-    crossed_dn = (last["close"] < mid_low) and (prev["close"] >= mid_low)
-    long_ok = crossed_up and (vwap == 0.0 or last["close"] > vwap) and ema_slope_up
-    short_ok = crossed_dn and (vwap == 0.0 or last["close"] < vwap) and ema_slope_down
-    return {
-        "eligible": True,
-        "mid_high": round(mid_high, 4),
-        "mid_low": round(mid_low, 4),
-        "last_close": round(last["close"], 4),
-        "prev_close": round(prev["close"], 4),
-        "vwap": round(vwap, 4),
-        "ema200_slope_up": bool(ema_slope_up),
-        "ema200_slope_down": bool(ema_slope_down),
-        "crossed_up": bool(crossed_up),
-        "crossed_down": bool(crossed_dn),
-        "long_signal": bool(long_ok),
-        "short_signal": bool(short_ok),
-    }
-
-
-def _scan_diag_pwr(bars_today: list[dict]) -> dict:
-    ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
-    now_t = now_ny().time()
-    in_window = ph_start <= now_t <= ph_end
-    ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
-    if not in_window:
-        return {"eligible": False, "reason": "outside_window", "window": PWR_SESSION}
-    if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 6):
-        return {"eligible": False, "reason": "insufficient_window_bars", "window_bars": len(ph), "window": PWR_SESSION}
-    closes = [r["close"] for r in bars_today]
-    ema200 = ema_series(closes, 200)
-    ema_slope_up = len(ema200) >= 4 and ema200[-1] > ema200[-3]
-    lookback = ph[-SCANNER_PWR_LOOKBACK_BARS:]
-    last = lookback[-1]
-    rolling_high = max([r["high"] for r in lookback[:-1]]) if len(lookback) > 1 else None
-    bars_5m = resample_5m(bars_today)
-    if len(bars_5m) < 25:
-        return {"eligible": False, "reason": "insufficient_5m_bars", "bars_5m": len(bars_5m)}
-    closes_5m = [b.close for b in bars_5m]
-    ema20_5m = ema_series(closes_5m, 20)
-    ema20_last = ema20_5m[-1] if ema20_5m else None
-    vwap_last = bars_5m[-1].vwap
-    vols = [b.volume for b in bars_5m]
-    avg_vol20 = (sum(vols[-20:]) / 20) if len(vols) >= 20 else (sum(vols) / max(1, len(vols)))
-    vol_ok = bars_5m[-1].volume >= 1.2 * avg_vol20
-    breakout = (rolling_high is not None) and (last["close"] > rolling_high)
-    above_vwap = last["close"] > vwap_last
-    above_ema20 = (ema20_last is not None) and (last["close"] > ema20_last)
-    signal = bool(ema_slope_up and breakout and above_vwap and above_ema20 and vol_ok)
-    return {
-        "eligible": True,
-        "window": PWR_SESSION,
-        "ema200_slope_up": bool(ema_slope_up),
-        "rolling_high": None if rolling_high is None else round(rolling_high, 4),
-        "last_close": round(last["close"], 4),
-        "vwap_5m": round(vwap_last, 4),
-        "ema20_5m": None if ema20_last is None else round(ema20_last, 4),
-        "volume_ok": bool(vol_ok),
-        "breakout": bool(breakout),
-        "signal": bool(signal),
-    }
-
-
-def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
-    bars_5m = resample_5m(bars_today)
-    if len(bars_5m) < max(VWAP_PB_EMA_SLOW + 5, RESAMPLE_5M_MIN_BARS):
-        return {"eligible": False, "reason": "insufficient_5m_bars", "bars_5m": len(bars_5m)}
-    closes = [b.close for b in bars_5m]
-    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
-    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
-    last = bars_5m[-1]
-    prev = bars_5m[-2]
-    vwap_last = last.vwap
-    band = vwap_last * VWAP_PB_BAND_PCT
-    uptrend = ema_fast[-1] > ema_slow[-1]
-    slope = ema_fast[-1] - ema_fast[-2]
-    slope_ok = slope >= VWAP_PB_MIN_EMA_SLOPE
-    extension_ok = abs(last.close - vwap_last) / vwap_last <= VWAP_PB_MAX_EXTENSION_PCT
-    touched = (last.low <= vwap_last + band) and (last.low >= vwap_last - band)
-    reclaimed = (last.close >= vwap_last) and (prev.close <= prev.vwap + band)
-    signal = bool(uptrend and slope_ok and extension_ok and touched and reclaimed)
-    return {
-        "eligible": True,
-        "ema_fast": round(ema_fast[-1], 4),
-        "ema_slow": round(ema_slow[-1], 4),
-        "ema_fast_slope": round(slope, 6),
-        "vwap": round(vwap_last, 4),
-        "last_close": round(last.close, 4),
-        "touched": bool(touched),
-        "reclaimed": bool(reclaimed),
-        "uptrend": bool(uptrend),
-        "slope_ok": bool(slope_ok),
-        "extension_ok": bool(extension_ok),
-        "signal": bool(signal),
-    }
-    ema_slope_down = ema200[-1] < ema200[-2]
-
-    last = ph[-1]
-    prev = ph[-2]
-    lookback = ph[-(SCANNER_PWR_LOOKBACK_BARS + 1):-1]  # exclude last
-    if len(lookback) < 3:
-        return None
-    roll_high = max(r["high"] for r in lookback)
-    roll_low = min(r["low"] for r in lookback)
-    vwap = last["vwap"] or 0.0
-
-    if (last["close"] > roll_high) and (prev["close"] <= roll_high) and (vwap == 0.0 or last["close"] > vwap) and ema_slope_up:
-        return ("PWR_LONG_GREEN", "buy")
-
-    if ALLOW_SHORT and (last["close"] < roll_low) and (prev["close"] >= roll_low) and (vwap == 0.0 or last["close"] < vwap) and ema_slope_down:
-        return ("PWR_SHORT_RED", "sell")
-
-    return None
+    for strat in ("midbox", "pwr", "vwap_pullback"):
+        if details[strat]["enabled"]:
+            return details[strat]["reason"], details
+    return "no_strategy_enabled", details
 
 
 def scanner_idempotency_key(symbol: str, signal: str, bar_ts_ny: datetime) -> str:
@@ -1637,6 +1449,11 @@ async def worker_scan_entries(req: Request):
                     if action == "exit":
                         local_signals.append({"symbol": sym, "action": action, "price": price})
 
+                    no_signal_primary = None
+                    no_signal_details = None
+                    if action == "hold" and (reason == "no_signal" or reason == ""):
+                        no_signal_primary, no_signal_details = _derive_no_signal_details(diag)
+                        reason = f"no_signal:{no_signal_primary}"
                     local_results.append({
                         "symbol": sym,
                         "action": action,
@@ -1645,6 +1462,7 @@ async def worker_scan_entries(req: Request):
                         "stop": stop_out,
                         "take": take_out,
                         "diagnostics": diag,
+                        "no_signal": {"primary": no_signal_primary, "details": no_signal_details},
                     })
 
                     record_decision(
