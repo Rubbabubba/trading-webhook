@@ -248,6 +248,7 @@ def _parse_session_hhmm_range(rng: str) -> tuple[time, time]:
 # Strategy toggles (approximate parity v1; will refine against Pine)
 SCANNER_ENABLE_MIDBOX = env_bool("SCANNER_ENABLE_MIDBOX", "true")
 SCANNER_ENABLE_PWR = env_bool("SCANNER_ENABLE_PWR", "true")
+SCANNER_ENABLE_VWAP_PB = env_bool("SCANNER_ENABLE_VWAP_PB", str(ENABLE_STRATEGY_VWAP_PULLBACK).lower())
 SCANNER_PWR_LOOKBACK_BARS = int(getenv_any("SCANNER_PWR_LOOKBACK_BARS", default="30"))
 
 # Optional liquidity filters for 'alpaca' universe provider
