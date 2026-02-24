@@ -1025,7 +1025,13 @@ def _no_signal_from_vwap_pb(diag: dict) -> str:
     return "no_signal"
 
 def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
-    """Return (primary_reason, details_by_strategy) for hold/no_signal cases."""
+    """Return (primary_reason, details_by_strategy) for hold/no_signal cases.
+
+    Primary selection rules:
+    1) If any enabled strategy is blocked by market-hours gating, report `outside_market_hours`.
+    2) Else if all enabled strategies are blocked by session gating, report `session_closed`.
+    3) Else fall back to the first enabled strategy's specific reason.
+    """
     details: dict = {}
     mb = diag.get("midbox") or {}
     pw = diag.get("pwr") or {}
@@ -1039,11 +1045,23 @@ def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
     details["pwr"] = {"enabled": bool(pw.get("enabled")), "eligible": pw.get("eligible"), "reason": pw_reason}
     details["vwap_pullback"] = {"enabled": bool(vp.get("enabled")), "eligible": vp.get("eligible"), "reason": vp_reason}
 
-    for strat in ("midbox", "pwr", "vwap_pullback"):
-        if details[strat]["enabled"]:
-            return details[strat]["reason"], details
-    return "no_strategy_enabled", details
+    enabled = [s for s in ("midbox","pwr","vwap_pullback") if details[s]["enabled"]]
+    if not enabled:
+        return "no_strategy_enabled", details
 
+    # Hard market-hours gating takes precedence
+    for s in enabled:
+        if details[s]["reason"] in ("outside_market_hours", "outside_regular_session"):
+            return "outside_market_hours", details
+
+    # If every enabled strategy is session-gated, expose that clearly
+    if all(details[s]["reason"] in ("session_closed", "outside_market_hours", "outside_regular_session") for s in enabled):
+        if any(details[s]["reason"] == "session_closed" for s in enabled):
+            return "session_closed", details
+        return "outside_market_hours", details
+
+    # Otherwise: first enabled strategy's reason
+    return details[enabled[0]]["reason"], details
 
 def scanner_idempotency_key(symbol: str, signal: str, bar_ts_ny: datetime) -> str:
     # One-per-symbol-per-signal-per-minute bucket (Phase 1C)
@@ -1500,7 +1518,26 @@ async def worker_scan_entries(req: Request):
                     # (optional) 1m bars fetch removed; it was unused and caused signature mismatch
                     bars_all = bars_map.get(sym) or []
                     bars_today = _bars_for_today_session(bars_all)
-                    price = float(bars_today[-1]["close"]) if bars_today else get_latest_price(sym)
+                   
+
+                    # Market-hours context (NY)
+                    _now_ny_dt = now_ny()
+                    _in_mkt = in_market_hours()
+                    diag["market"] = {
+                        "now_ny": _now_ny_dt.isoformat(),
+                        "weekday": int(_now_ny_dt.weekday()),
+                        "only_market_hours": bool(ONLY_MARKET_HOURS),
+                        "in_market_hours": bool(_in_mkt),
+                        "market_open_ny": MARKET_OPEN,
+                        "market_close_ny": MARKET_CLOSE,
+                    }
+                    _hard_market_closed = bool(ONLY_MARKET_HOURS) and (not _in_mkt)
+                    if _hard_market_closed:
+                        # Hard gate: do not allow signals outside market hours.
+                        for _k in ("midbox", "pwr", "vwap_pullback"):
+                            if diag.get(_k, {}).get("enabled"):
+                                diag[_k].update({"eligible": False, "reason": "outside_market_hours"})
+ price = float(bars_today[-1]["close"]) if bars_today else get_latest_price(sym)
                     if price is None:
                         local_blocked += 1
                         local_results.append({
@@ -1519,11 +1556,11 @@ async def worker_scan_entries(req: Request):
                         "vwap_pullback": {"enabled": bool(SCANNER_ENABLE_VWAP_PB)},
                     }
                     if bars_today:
-                        if SCANNER_ENABLE_MIDBOX:
+                        if SCANNER_ENABLE_MIDBOX and (not _hard_market_closed) and diag.get('midbox', {}).get('eligible', True):
                             diag["midbox"].update(_scan_diag_midbox(bars_today))
-                        if SCANNER_ENABLE_PWR:
+                        if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True):
                             diag["pwr"].update(_scan_diag_pwr(bars_today))
-                        if SCANNER_ENABLE_VWAP_PB:
+                        if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
                             diag["vwap_pullback"].update(_scan_diag_vwap_pb(bars_today))
 
                     action = "hold"
@@ -1549,14 +1586,14 @@ async def worker_scan_entries(req: Request):
                             signal_name, side = mb
                         else:
                             pwr = None
-                            if SCANNER_ENABLE_PWR:
+                            if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True):
                                 pwr = eval_power_hour_signal(bars_today)
                             if pwr:
                                 signal_name, side = pwr
                             else:
                                 bars_5m = resample_5m(bars_today) if bars_today else []
                                 vp = None
-                                if SCANNER_ENABLE_VWAP_PB:
+                                if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
                                     vp = eval_vwap_pullback_signal(bars_5m)
                                 if vp == "BUY":
                                     signal_name, side = ("VWAP_PULLBACK", "buy")
