@@ -20,6 +20,18 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+# --- Data feed for Alpaca market data ---
+# Valid values typically include 'iex' (free) and 'sip' (paid). Default to 'iex'
+# to avoid runtime errors on accounts without SIP access.
+_DATA_FEED_RAW = os.getenv("DATA_FEED", "iex").strip().lower() or "iex"
+try:
+    from alpaca.data.enums import DataFeed as _AlpacaDataFeed  # type: ignore
+
+    DATA_FEED = getattr(_AlpacaDataFeed, _DATA_FEED_RAW.upper(), _AlpacaDataFeed.IEX)
+except Exception:
+    # Fallback: alpaca-py version may accept strings directly.
+    DATA_FEED = _DATA_FEED_RAW
+
 # --- Data adjustment for Alpaca bars ---
 # Some Alpaca endpoints accept either an enum (alpaca.data.enums.Adjustment)
 # or a string. Default to 'raw' for consistent intraday signals.
