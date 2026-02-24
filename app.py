@@ -1518,26 +1518,31 @@ async def worker_scan_entries(req: Request):
                     # (optional) 1m bars fetch removed; it was unused and caused signature mismatch
                     bars_all = bars_map.get(sym) or []
                     bars_today = _bars_for_today_session(bars_all)
-                   
+
+                    diag = {
+                        'midbox': {'enabled': bool(SCANNER_ENABLE_MIDBOX)},
+                        'pwr': {'enabled': bool(SCANNER_ENABLE_PWR), 'session': PWR_SESSION},
+                        'vwap_pullback': {'enabled': bool(SCANNER_ENABLE_VWAP_PB)},
+                    }
 
                     # Market-hours context (NY)
                     _now_ny_dt = now_ny()
                     _in_mkt = in_market_hours()
-                    diag["market"] = {
-                        "now_ny": _now_ny_dt.isoformat(),
-                        "weekday": int(_now_ny_dt.weekday()),
-                        "only_market_hours": bool(ONLY_MARKET_HOURS),
-                        "in_market_hours": bool(_in_mkt),
-                        "market_open_ny": MARKET_OPEN,
-                        "market_close_ny": MARKET_CLOSE,
+                    diag['market'] = {
+                        'now_ny': _now_ny_dt.isoformat(),
+                        'weekday': int(_now_ny_dt.weekday()),
+                        'only_market_hours': bool(ONLY_MARKET_HOURS),
+                        'in_market_hours': bool(_in_mkt),
+                        'market_open_ny': MARKET_OPEN,
+                        'market_close_ny': MARKET_CLOSE,
                     }
                     _hard_market_closed = bool(ONLY_MARKET_HOURS) and (not _in_mkt)
                     if _hard_market_closed:
                         # Hard gate: do not allow signals outside market hours.
-                        for _k in ("midbox", "pwr", "vwap_pullback"):
-                            if diag.get(_k, {}).get("enabled"):
-                                diag[_k].update({"eligible": False, "reason": "outside_market_hours"})
- price = float(bars_today[-1]["close"]) if bars_today else get_latest_price(sym)
+                        for _k in ('midbox', 'pwr', 'vwap_pullback'):
+                            if diag.get(_k, {}).get('enabled'):
+                                diag[_k].update({'eligible': False, 'reason': 'outside_market_hours'})
+                    price = float(bars_today[-1]["close"]) if bars_today else get_latest_price(sym)
                     if price is None:
                         local_blocked += 1
                         local_results.append({
@@ -1550,11 +1555,6 @@ async def worker_scan_entries(req: Request):
                         })
                         return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
-                    diag = {
-                        "midbox": {"enabled": bool(SCANNER_ENABLE_MIDBOX)},
-                        "pwr": {"enabled": bool(SCANNER_ENABLE_PWR), "session": PWR_SESSION},
-                        "vwap_pullback": {"enabled": bool(SCANNER_ENABLE_VWAP_PB)},
-                    }
                     if bars_today:
                         if SCANNER_ENABLE_MIDBOX and (not _hard_market_closed) and diag.get('midbox', {}).get('eligible', True):
                             diag["midbox"].update(_scan_diag_midbox(bars_today))
