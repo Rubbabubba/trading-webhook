@@ -7,6 +7,7 @@ from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+from collections import Counter
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -138,6 +139,27 @@ def parse_hhmm(hhmm: str) -> time:
     parts = hhmm.strip().split(":")
     return time(int(parts[0]), int(parts[1]))
 
+
+def parse_session_window(raw: str) -> tuple[time, time] | None:
+    """Parse 'HH:MM-HH:MM' in NY (market) time."""
+    if not raw:
+        return None
+    s = raw.strip()
+    if "-" not in s:
+        return None
+    a, b = [x.strip() for x in s.split("-", 1)]
+    try:
+        return parse_hhmm(a), parse_hhmm(b)
+    except Exception:
+        return None
+
+def in_session(raw: str, t: time | None = None) -> bool:
+    win = parse_session_window(raw)
+    if not win:
+        return True
+    start, end = win
+    tt = t or now_ny().time()
+    return (tt >= start) and (tt <= end)
 
 # =============================
 # ENV
@@ -841,6 +863,98 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
 
 
 
+
+def _scan_diag_midbox(bars_today: list[dict]) -> dict:
+    # Minimal diagnostics to explain why MIDBOX is not firing yet.
+    out: dict = {"eligible": True}
+    nowt = now_ny().time()
+    # Trade window gating
+    if not in_session(MIDBOX_TRADE_SESSION, nowt):
+        out["eligible"] = False
+        out["reason"] = "session_closed"
+        return out
+    # Bars requirements (EMA200 needs ~200 bars)
+    out["bars_1m"] = len(bars_today)
+    if len(bars_today) < 205:
+        out["eligible"] = False
+        out["reason"] = "insufficient_1m_bars"
+        return out
+    # EMA200 slope
+    closes = [r["close"] for r in bars_today]
+    ema200 = ema_series(closes, 200)
+    if len(ema200) < 3:
+        out["eligible"] = False
+        out["reason"] = "ema200_not_ready"
+        return out
+    out["ema200_slope_up"] = ema200[-1] > ema200[-2]
+    out["ema200_slope_down"] = ema200[-1] < ema200[-2]
+    # Breakout detection not implemented in this repo yet
+    out["crossed_up"] = False
+    out["crossed_down"] = False
+    out["long_signal"] = False
+    out["short_signal"] = False
+    out["reason"] = "logic_not_implemented"
+    return out
+
+def _scan_diag_pwr(bars_today: list[dict]) -> dict:
+    out: dict = {"eligible": True}
+    nowt = now_ny().time()
+    if not in_session(PWR_SESSION, nowt):
+        out["eligible"] = False
+        out["reason"] = "session_closed"
+        return out
+    out["bars_1m"] = len(bars_today)
+    lookback = max(5, int(SCANNER_PWR_LOOKBACK_BARS))
+    if len(bars_today) < lookback + 5:
+        out["eligible"] = False
+        out["reason"] = "insufficient_1m_bars"
+        return out
+    # Placeholder logic (not implemented fully)
+    out["ema200_slope_up"] = True
+    out["breakout"] = False
+    out["volume_ok"] = False
+    out["reason"] = "logic_not_implemented"
+    return out
+
+def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
+    out: dict = {"eligible": True}
+    nowt = now_ny().time()
+    # VWAP PB typically regular-session only; gate by market hours if configured
+    if ONLY_MARKET_HOURS and not in_market_hours():
+        out["eligible"] = False
+        out["reason"] = "outside_market_hours"
+        return out
+    bars_5m = resample_5m(bars_today) if bars_today else []
+    out["bars_5m"] = len(bars_5m)
+    min_bars = max(int(RESAMPLE_5M_MIN_BARS), int(VWAP_PB_EMA_SLOW) + 5)
+    out["min_bars_5m"] = int(min_bars)
+    if len(bars_5m) < min_bars:
+        out["eligible"] = False
+        out["reason"] = "insufficient_5m_bars"
+        return out
+    # We can compute some basics to aid explainability
+    closes = [b.close for b in bars_5m]
+    ema_fast = ema_series(closes, int(VWAP_PB_EMA_FAST))
+    ema_slow = ema_series(closes, int(VWAP_PB_EMA_SLOW))
+    out["ema_fast_gt_slow"] = bool(ema_fast and ema_slow and ema_fast[-1] > ema_slow[-1])
+    out["reason"] = "filters_not_met_or_logic_not_implemented"
+    # Remaining fields expected by explainability helpers
+    out.setdefault("uptrend", False)
+    out.setdefault("slope_ok", False)
+    out.setdefault("extension_ok", False)
+    out.setdefault("touched", False)
+    out.setdefault("reclaimed", False)
+    return out
+
+def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
+    """PWR strategy placeholder.
+
+    Important: This repo previously referenced PWR but did not implement it.
+    We return None to avoid accidental live trading while still providing diagnostics.
+    """
+    return None
+
+
 # --- Scanner explainability helpers ---
 def _strategy_reason_disabled() -> str:
     return "strategy_disabled"
@@ -1422,7 +1536,9 @@ async def worker_scan_entries(req: Request):
                         if mb:
                             signal_name, side = mb
                         else:
-                            pwr = eval_power_hour_signal(bars_today)
+                            pwr = None
+                            if SCANNER_ENABLE_PWR:
+                                pwr = eval_power_hour_signal(bars_today)
                             if pwr:
                                 signal_name, side = pwr
                             else:
@@ -1503,6 +1619,53 @@ async def worker_scan_entries(req: Request):
         scan_end_utc = utc_ts()
         duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
 
+        # ---- Scan-level summary (top no-signal reasons, action counts) ----
+        action_counts = Counter()
+        no_signal_counts = Counter()
+        for r in results:
+            try:
+                action_counts[str(r.get("action", "") or "")] += 1
+                reason = str(r.get("reason", "") or "")
+                if reason.startswith("no_signal:"):
+                    primary = (r.get("no_signal") or {}).get("primary") or reason.split(":", 1)[1]
+                    if primary:
+                        no_signal_counts[str(primary)] += 1
+            except Exception:
+                pass
+
+        top_no_signal = [
+            {"reason": k, "count": int(v)}
+            for k, v in no_signal_counts.most_common(10)
+        ]
+        
+        # Strategy-level breakdown from per-row no_signal.details
+        strat_counts: dict[str, Counter] = {
+            "midbox": Counter(),
+            "pwr": Counter(),
+            "vwap_pullback": Counter(),
+        }
+        for r in results:
+            ns = (r.get("no_signal") or {}).get("details") or {}
+            for strat, payload in ns.items():
+                try:
+                    rr = str((payload or {}).get("reason") or "")
+                    if rr:
+                        strat_counts[strat][rr] += 1
+                except Exception:
+                    pass
+
+        strategy_breakdown = {
+            strat: [{"reason": k, "count": int(v)} for k, v in c.most_common(8)]
+            for strat, c in strat_counts.items()
+        }
+
+        scan_summary = {
+            "actions": dict(action_counts),
+            "no_signal_total": int(sum(no_signal_counts.values())),
+            "top_no_signal_reasons": top_no_signal,
+            "strategy_breakdown": strategy_breakdown,
+        }
+
         _set_last_scan(
                 skipped=False,
                 reason=None,
@@ -1511,6 +1674,7 @@ async def worker_scan_entries(req: Request):
                 would_trade=len(signals),
                 blocked=blocked,
                 duration_ms=duration_ms,
+                summary=scan_summary,
         )
 
         logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
@@ -1527,6 +1691,7 @@ async def worker_scan_entries(req: Request):
                     "would_trade": len(signals),
                     "blocked": blocked,
                     "duration_ms": duration_ms,
+                    "summary": scan_summary,
                     "results": results,
                     "would_submit": signals,
                 })
@@ -1548,6 +1713,7 @@ async def worker_scan_entries(req: Request):
                     "would_trade": len(signals),
                     "blocked": blocked,
                     "duration_ms": duration_ms,
+                    "summary": scan_summary,
                 },
                 "reconcile": reconcile_actions,
                 "would_submit": signals,
