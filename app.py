@@ -201,14 +201,6 @@ ONLY_MARKET_HOURS = env_bool("ONLY_MARKET_HOURS", "true")
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
 
-# Extended-hours session support (optional)
-ALLOW_PREMARKET = env_bool("ALLOW_PREMARKET", "false")
-ALLOW_AFTERHOURS = env_bool("ALLOW_AFTERHOURS", "false")
-PREMARKET_OPEN = time(4, 0)
-PREMARKET_CLOSE = time(9, 30)
-AFTERHOURS_OPEN = time(16, 0)
-AFTERHOURS_CLOSE = time(20, 0)
-
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = os.getenv("EOD_FLATTEN_TIME", "15:55")  # NY time
@@ -318,6 +310,44 @@ DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
 SCAN_HISTORY_SIZE = int(os.getenv("SCAN_HISTORY_SIZE", "50"))
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 
+
+# --- Scan history persistence (best-effort) ---
+SCAN_HISTORY_FILE = os.environ.get('SCAN_HISTORY_FILE', '/tmp/latest_scan.json')
+
+def _scan_history_append(item: dict) -> None:
+    """Append a scan item to in-memory history and persist last item to disk.
+    This helps diagnostics survive process restarts and avoids 'null' latest scan after deploys.
+    """
+    try:
+        SCAN_HISTORY.append(item)
+        if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
+            SCAN_HISTORY.pop(0)
+    except Exception:
+        # Never let diagnostics/history bookkeeping crash the scanner.
+        return
+    try:
+        with open(SCAN_HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(item, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _scan_history_load_from_disk() -> None:
+    """Load last scan item from disk into memory if SCAN_HISTORY is empty."""
+    if SCAN_HISTORY:
+        return
+    try:
+        if not os.path.exists(SCAN_HISTORY_FILE):
+            return
+        with open(SCAN_HISTORY_FILE, 'r', encoding='utf-8') as f:
+            item = json.load(f)
+        if isinstance(item, dict):
+            SCAN_HISTORY.append(item)
+    except Exception:
+        return
+
+# Load best-effort history on import/startup
+_scan_history_load_from_disk()
+
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
 
@@ -402,40 +432,52 @@ log("CONFIG_EFFECTIVE", **config_effective_snapshot())
 # =============================
 # Core helpers
 # =============================
-def market_session(ny_dt: datetime) -> str:
-    t = ny_dt.time()
-    if ny_dt.weekday() >= 5:
-        return "weekend"
-    if PREMARKET_OPEN <= t < PREMARKET_CLOSE:
-        return "premarket"
-    if MARKET_OPEN <= t <= MARKET_CLOSE:
-        return "regular"
-    if AFTERHOURS_OPEN < t <= AFTERHOURS_CLOSE:
-        return "afterhours"
-    return "closed"
-
-
-def market_hours_status() -> tuple[bool, str, str]:
-    """Returns (allowed, reason_code, session). reason_code is stable for diagnostics."""
-    ny = now_ny()
-    sess = market_session(ny)
-    if not SCANNER_REQUIRE_MARKET_HOURS:
-        return True, "ok", sess
-    if sess == "weekend":
-        return False, "weekend", sess
-    if sess == "regular":
-        return True, "ok", sess
-    if sess == "premarket":
-        return (ALLOW_PREMARKET, "premarket_disabled" if not ALLOW_PREMARKET else "ok", sess)
-    if sess == "afterhours":
-        return (ALLOW_AFTERHOURS, "afterhours_disabled" if not ALLOW_AFTERHOURS else "ok", sess)
-    return False, "outside_market_hours", sess
-
-
 def in_market_hours() -> bool:
-    allowed, _, _ = market_hours_status()
-    return allowed
+    t = now_ny().time()
+    return (t >= MARKET_OPEN) and (t <= MARKET_CLOSE)
 
+
+
+# --- Scanner session windows (NY time) ---
+SCANNER_SESSION_GATING = env_bool('SCANNER_SESSION_GATING', 'true')
+SCANNER_TRADE_OUTSIDE_SESSIONS = env_bool('SCANNER_TRADE_OUTSIDE_SESSIONS', 'false')
+SCANNER_SESSION_WINDOWS = os.environ.get('SCANNER_SESSION_WINDOWS', '09:35-11:30,13:00-15:45')
+
+_SESSION_RANGES_CACHE: list[tuple[dt_time, dt_time]] | None = None
+
+def _parse_session_windows(spec: str) -> list[tuple[dt_time, dt_time]]:
+    ranges: list[tuple[dt_time, dt_time]] = []
+    if not spec:
+        return ranges
+    for part in spec.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            a, b = [x.strip() for x in part.split('-', 1)]
+            h1, m1 = [int(x) for x in a.split(':', 1)]
+            h2, m2 = [int(x) for x in b.split(':', 1)]
+            ranges.append((dt_time(h1, m1), dt_time(h2, m2)))
+        except Exception:
+            continue
+    return ranges
+
+def in_scanner_session(now_ny: dt_datetime | None = None) -> bool:
+    """True if within configured session windows (NY time)."""
+    global _SESSION_RANGES_CACHE
+    if not SCANNER_SESSION_GATING:
+        return True
+    if now_ny is None:
+        now_ny = now_ny_time()
+    if _SESSION_RANGES_CACHE is None:
+        _SESSION_RANGES_CACHE = _parse_session_windows(SCANNER_SESSION_WINDOWS)
+    if not _SESSION_RANGES_CACHE:
+        return True
+    t = now_ny.time()
+    for a, b in _SESSION_RANGES_CACHE:
+        if a <= t <= b:
+            return True
+    return False
 
 def compute_qty(price: float) -> float:
     if price <= 0:
@@ -1200,6 +1242,8 @@ def diagnostics_scans(limit: int = 50, symbol: str = ""):
 def diagnostics_last_scan(symbol: str = ""):
     """Convenience: return the most recent scan cycle (optionally filtered to a symbol)."""
     if not SCAN_HISTORY:
+        _scan_history_load_from_disk()
+    if not SCAN_HISTORY:
         return {"ok": True, "item": None}
     item = SCAN_HISTORY[-1]
     sym = (symbol or "").upper().strip()
@@ -1468,11 +1512,6 @@ async def worker_exit(req: Request):
     return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
 
 
-@app.get("/worker/scan_entries")
-def worker_scan_entries_get():
-    return {"ok": False, "error": "Use POST /worker/scan_entries"}
-
-
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
     """Server-side scanner entry evaluation (Phase 1C). Default is shadow-mode (no orders)."""
@@ -1519,7 +1558,7 @@ async def worker_scan_entries(req: Request):
                     "top_no_signal_reasons": [("scanner_disabled", 1)],
                     "strategy_breakdown": {},
                 }
-                SCAN_HISTORY.append({
+                _scan_history_append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
                     "symbols": [],
@@ -1531,47 +1570,47 @@ async def worker_scan_entries(req: Request):
                     "summary": scan_summary,
                     "results": [],
                 })
-                if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
-                    del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
 
-        if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS:
-            allowed, reason_code, session = market_hours_status()
-            if not allowed:
-                _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
-                # richer reason codes for diagnostics
-                LAST_SCAN["reason_code"] = reason_code
-                LAST_SCAN["session"] = session
-                record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours", reason_code=reason_code, session=session)
-                # Store skipped scan diagnostics so /diagnostics/scans/latest is never null
-                try:
-                    scan_summary = {
-                        "skipped": True,
-                        "skip_reason": "outside_market_hours",
-                        "actions": {"skipped": 1},
-                        "no_signal_total": 0,
-                        "top_no_signal_reasons": [("outside_market_hours", 1)],
-                        "strategy_breakdown": {},
-                    }
-                    SCAN_HISTORY.append({
-                        "ts_utc": datetime.now(timezone.utc).isoformat(),
-                        "universe_provider": SCANNER_UNIVERSE_PROVIDER,
-                        "symbols": [],
-                        "scanned": 0,
-                        "signals": 0,
-                        "would_trade": 0,
-                        "blocked": 0,
-                        "duration_ms": int((utc_ts()-scan_start_utc)*1000),
-                        "summary": {**scan_summary, "reason_code": reason_code, "session": session},
-                        "results": [],
-                    })
-                    if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
-                        del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
-                except Exception:
-                    pass
-                return {"ok": True, "skipped": True, "reason": "outside_market_hours", "reason_code": reason_code, "session": session, **LAST_SCAN}
+        if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
+            _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
+            # Store skipped scan diagnostics so /diagnostics/scans/latest is never null
+            try:
+                scan_summary = {
+                    "skipped": True,
+                    "skip_reason": "outside_market_hours",
+                    "actions": {"skipped": 1},
+                    "no_signal_total": 0,
+                    "top_no_signal_reasons": [("outside_market_hours", 1)],
+                    "strategy_breakdown": {},
+                }
+                _scan_history_append({
+                    "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "symbols": [],
+                    "scanned": 0,
+                    "signals": 0,
+                    "would_trade": 0,
+                    "blocked": 0,
+                    "duration_ms": int((utc_ts()-scan_start_utc)*1000),
+                    "summary": scan_summary,
+                    "results": [],
+                })
+            except Exception:
+                pass
+            return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
+        # Session gating (NY time). We still scan for diagnostics, but force dry-run outside session windows
+        # unless explicitly allowed.
+        session_ok = in_scanner_session(ts_ny)
+        session_gated = False
+        session_reason = None
+        if ONLY_MARKET_HOURS and in_market_hours(ts_ny) and (not session_ok) and (not SCANNER_TRADE_OUTSIDE_SESSIONS):
+            session_gated = True
+            session_reason = "outside_session"
+            effective_dry_run = True
 
 
         # Reconcile first: never place entries against stale internal state.
@@ -1812,6 +1851,10 @@ async def worker_scan_entries(req: Request):
         }
 
         scan_summary = {
+            "session_gated": bool(session_gated),
+            "session_reason": session_reason,
+            "session_ok": bool(session_ok),
+            "session_windows": SCANNER_SESSION_WINDOWS,
             "actions": dict(action_counts),
             "no_signal_total": int(sum(no_signal_counts.values())),
             "top_no_signal_reasons": top_no_signal,
@@ -1834,7 +1877,7 @@ async def worker_scan_entries(req: Request):
 
         # Store diagnostics for Postman/curl inspection.
         try:
-                SCAN_HISTORY.append({
+                _scan_history_append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
                     "symbols": syms,
@@ -1847,8 +1890,6 @@ async def worker_scan_entries(req: Request):
                     "results": results,
                     "would_submit": signals,
                 })
-                if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
-                    del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
         except Exception:
                 pass
 
