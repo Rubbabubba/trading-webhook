@@ -1466,11 +1466,63 @@ async def worker_scan_entries(req: Request):
         if not SCANNER_ENABLED:
             _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
             record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
+            # Store skipped scan diagnostics so /diagnostics/scans/latest is never null
+            try:
+                scan_summary = {
+                    "skipped": True,
+                    "skip_reason": "scanner_disabled",
+                    "actions": {"skipped": 1},
+                    "no_signal_total": 0,
+                    "top_no_signal_reasons": [("scanner_disabled", 1)],
+                    "strategy_breakdown": {},
+                }
+                SCAN_HISTORY.append({
+                    "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "symbols": [],
+                    "scanned": 0,
+                    "signals": 0,
+                    "would_trade": 0,
+                    "blocked": 0,
+                    "duration_ms": int((utc_ts()-scan_start_utc)*1000),
+                    "summary": scan_summary,
+                    "results": [],
+                })
+                if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
+                    del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
+            except Exception:
+                pass
             return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
 
         if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
             _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
             record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
+            # Store skipped scan diagnostics so /diagnostics/scans/latest is never null
+            try:
+                scan_summary = {
+                    "skipped": True,
+                    "skip_reason": "outside_market_hours",
+                    "actions": {"skipped": 1},
+                    "no_signal_total": 0,
+                    "top_no_signal_reasons": [("outside_market_hours", 1)],
+                    "strategy_breakdown": {},
+                }
+                SCAN_HISTORY.append({
+                    "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "symbols": [],
+                    "scanned": 0,
+                    "signals": 0,
+                    "would_trade": 0,
+                    "blocked": 0,
+                    "duration_ms": int((utc_ts()-scan_start_utc)*1000),
+                    "summary": scan_summary,
+                    "results": [],
+                })
+                if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
+                    del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
+            except Exception:
+                pass
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
 
         # Reconcile first: never place entries against stale internal state.
