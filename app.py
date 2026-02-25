@@ -301,6 +301,11 @@ TRADE_PLAN: dict[str, dict] = {}          # symbol -> plan dict
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
+# Latest prices cache (to reduce Alpaca 429s during scans)
+LATEST_PRICES_CACHE_TTL_SEC = int(os.getenv("LATEST_PRICES_CACHE_TTL_SEC", "3"))
+_LATEST_PRICES_CACHE: dict[str, float] = {}
+_LATEST_PRICES_CACHE_TS: float = 0.0
+
 # Decision traces (in-memory ring buffer)
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
 DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
