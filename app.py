@@ -305,6 +305,7 @@ SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 LATEST_PRICES_CACHE_TTL_SEC = int(os.getenv("LATEST_PRICES_CACHE_TTL_SEC", "3"))
 _LATEST_PRICES_CACHE: dict[str, float] = {}
 _LATEST_PRICES_CACHE_TS: float = 0.0
+ALLOW_SINGLE_LATEST_PRICE_FALLBACK = env_bool("ALLOW_SINGLE_LATEST_PRICE_FALLBACK", "false")
 
 # Decision traces (in-memory ring buffer)
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
@@ -490,6 +491,7 @@ def get_latest_prices(symbols: list[str]) -> dict[str, float]:
 
     _LATEST_PRICES_CACHE = dict(out)
     _LATEST_PRICES_CACHE_TS = now
+    return dict(out)
     return out
 
 
@@ -1659,7 +1661,7 @@ async def worker_scan_entries(req: Request):
                         for _k in ('midbox', 'pwr', 'vwap_pullback'):
                             if diag.get(_k, {}).get('enabled'):
                                 diag[_k].update({'eligible': False, 'reason': 'outside_market_hours'})
-                    price = float(bars_today[-1]["close"]) if bars_today else ((latest_prices.get(sym) if latest_prices else None) or get_latest_price(sym))
+                    price = float(bars_today[-1]["close"]) if bars_today else ((latest_prices.get(sym) if latest_prices is not None else None) or (get_latest_price(sym) if ALLOW_SINGLE_LATEST_PRICE_FALLBACK else None))
                     if price is None:
                         local_blocked += 1
                         local_results.append({
