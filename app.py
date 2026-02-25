@@ -52,7 +52,7 @@ except Exception:
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 
 @dataclass(frozen=True)
 class Bar:
@@ -201,6 +201,49 @@ ONLY_MARKET_HOURS = env_bool("ONLY_MARKET_HOURS", "true")
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
 
+# Optional scanner session gating (NY time).
+# Example: "09:35-11:30,13:30-15:55".
+# If blank, scanner may run any time market is open.
+SCANNER_SESSIONS_NY = os.getenv("SCANNER_SESSIONS_NY", "").strip()
+
+_SCANNER_SESSION_RANGES_CACHE: Optional[List[Tuple[time, time]]] = None
+
+
+def _parse_scanner_sessions(raw: str) -> List[Tuple[time, time]]:
+    """Parse comma-separated session windows 'HH:MM-HH:MM' into NY time ranges."""
+    out: List[Tuple[time, time]] = []
+    if not raw:
+        return out
+    for part in raw.split(","):
+        win = parse_session_window(part)
+        if not win:
+            continue
+        start, end = win
+        # Ignore inverted/zero windows
+        if end <= start:
+            continue
+        out.append((start, end))
+    return out
+
+
+def in_scanner_session(now_ny_dt: Optional[datetime] = None) -> bool:
+    """True if scanner is allowed to run at this NY time based on SCANNER_SESSIONS_NY."""
+    global _SCANNER_SESSION_RANGES_CACHE
+    if not SCANNER_SESSIONS_NY:
+        return True
+    if _SCANNER_SESSION_RANGES_CACHE is None:
+        _SCANNER_SESSION_RANGES_CACHE = _parse_scanner_sessions(SCANNER_SESSIONS_NY)
+    ranges = _SCANNER_SESSION_RANGES_CACHE or []
+    if not ranges:
+        # If env is set but unparsable, fail open to avoid blocking trading.
+        return True
+    dt_ny = now_ny_dt or now_ny()
+    tt = dt_ny.time()
+    for start, end in ranges:
+        if start <= tt <= end:
+            return True
+    return False
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = os.getenv("EOD_FLATTEN_TIME", "15:55")  # NY time
@@ -253,11 +296,6 @@ VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.006"
 VWAP_PB_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_MIN_EMA_SLOPE", "0.0"))  # per-bar slope
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
-
-# Optional intra-day session gating for the scanner.
-# Format: comma-separated ranges in NY time, e.g. "09:35-11:30,13:00-15:55".
-SCANNER_SESSION_NY = os.getenv("SCANNER_SESSION_NY", "09:35-15:55")
-SCANNER_REQUIRE_SESSION = env_bool("SCANNER_REQUIRE_SESSION", "true")
 
 # Session windows (configurable for parity; defaults match your Pine inputs)
 MIDBOX_BUILD_SESSION = getenv_any("MIDBOX_BUILD_SESSION", default="10:00-11:30")
@@ -314,35 +352,6 @@ DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
 # This is intentionally small and ephemeral (in-memory only).
 SCAN_HISTORY_SIZE = int(os.getenv("SCAN_HISTORY_SIZE", "50"))
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
-
-# Persist the most recent scan so diagnostics survive a restart/deploy.
-# Render's filesystem is ephemeral, but /tmp typically persists for the life of a running instance.
-_LAST_SCAN_PATH = os.getenv("LAST_SCAN_PATH", "/tmp/last_scan.json")
-
-def _load_last_scan_from_disk() -> dict | None:
-    try:
-        if os.path.exists(_LAST_SCAN_PATH):
-            with open(_LAST_SCAN_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        return None
-    return None
-
-def _persist_last_scan_to_disk(item: dict) -> None:
-    try:
-        with open(_LAST_SCAN_PATH, "w", encoding="utf-8") as f:
-            json.dump(item, f, ensure_ascii=False)
-    except Exception:
-        # Never let diagnostics persistence break trading.
-        pass
-
-# Preload last scan (if any) so /diagnostics/scans/latest doesn't return null immediately after deploy.
-_bootstrap_last_scan = _load_last_scan_from_disk()
-if _bootstrap_last_scan:
-    try:
-        SCAN_HISTORY.append(_bootstrap_last_scan)
-    except Exception:
-        pass
 
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
@@ -431,44 +440,6 @@ log("CONFIG_EFFECTIVE", **config_effective_snapshot())
 def in_market_hours() -> bool:
     t = now_ny().time()
     return (t >= MARKET_OPEN) and (t <= MARKET_CLOSE)
-
-
-_SCANNER_SESSION_RANGES_CACHE: list[tuple[dt_time, dt_time]] | None = None
-
-def _parse_session_ranges(session_spec: str) -> list[tuple[dt_time, dt_time]]:
-    """Parse "HH:MM-HH:MM,HH:MM-HH:MM" into [(start_time,end_time), ...]."""
-    ranges: list[tuple[dt_time, dt_time]] = []
-    if not session_spec:
-        return ranges
-    for part in session_spec.split(","):
-        part = part.strip()
-        if not part or "-" not in part:
-            continue
-        a, b = [x.strip() for x in part.split("-", 1)]
-        try:
-            sh, sm = [int(x) for x in a.split(":", 1)]
-            eh, em = [int(x) for x in b.split(":", 1)]
-            ranges.append((dt_time(sh, sm), dt_time(eh, em)))
-        except Exception:
-            continue
-    return ranges
-
-def in_scanner_session(now_ny_dt: datetime | None = None) -> bool:
-    """Return True if current NY time is within any configured scanner session range."""
-    global _SCANNER_SESSION_RANGES_CACHE
-    if now_ny_dt is None:
-        now_ny_dt = now_ny()
-    if not SCANNER_SESSION_NY:
-        return True
-    if _SCANNER_SESSION_RANGES_CACHE is None:
-        _SCANNER_SESSION_RANGES_CACHE = _parse_session_ranges(SCANNER_SESSION_NY)
-    if not _SCANNER_SESSION_RANGES_CACHE:
-        return True
-    t = now_ny_dt.time()
-    for start_t, end_t in _SCANNER_SESSION_RANGES_CACHE:
-        if start_t <= t <= end_t:
-            return True
-    return False
 
 
 def compute_qty(price: float) -> float:
@@ -1534,16 +1505,6 @@ async def worker_scan_entries(req: Request):
             **kwargs
         })
 
-        # Keep a small rolling history for diagnostics endpoints.
-        try:
-            item = dict(LAST_SCAN)
-            SCAN_HISTORY.append(item)
-            if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
-                del SCAN_HISTORY[0 : len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
-            _persist_last_scan_to_disk(item)
-        except Exception:
-            pass
-
     try:
         if not SCANNER_ENABLED:
             _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
@@ -1576,8 +1537,6 @@ async def worker_scan_entries(req: Request):
                 pass
             return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
 
-        session_ok = in_scanner_session(now_ny())
-
         if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
             _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
             record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
@@ -1607,11 +1566,17 @@ async def worker_scan_entries(req: Request):
                     del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
             except Exception:
                 pass
-            # Also include session diagnostics in the response.
-            return {"ok": True, "skipped": True, "reason": "outside_market_hours", "session_gated": True, "session_ok": session_ok, "session_windows_ny": SCANNER_SESSION_NY, **LAST_SCAN}
+            return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
 
-        # Optional gate: only run during configured scanner sessions (NY)
-        if SCANNER_REQUIRE_SESSION and not session_ok:
+        # Optional: further narrow scans to specific NY time sessions.
+        # This is FAIL-OPEN: if the env var is blank or unparsable, we do not block scanning.
+        if (
+            SCANNER_REQUIRE_MARKET_HOURS
+            and ONLY_MARKET_HOURS
+            and in_market_hours()
+            and SCANNER_SESSIONS_NY
+            and (not in_scanner_session(now_ny()))
+        ):
             _set_last_scan(skipped=True, reason="outside_scanner_session", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
             record_decision("SCAN", "worker_scan", action="skipped", reason="outside_scanner_session")
             try:
@@ -1623,7 +1588,7 @@ async def worker_scan_entries(req: Request):
                     "top_no_signal_reasons": [("outside_scanner_session", 1)],
                     "strategy_breakdown": {},
                 }
-                item = {
+                SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
                     "symbols": [],
@@ -1634,14 +1599,12 @@ async def worker_scan_entries(req: Request):
                     "duration_ms": int((utc_ts()-scan_start_utc)*1000),
                     "summary": scan_summary,
                     "results": [],
-                }
-                SCAN_HISTORY.append(item)
+                })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
-                _persist_last_scan_to_disk(item)
             except Exception:
                 pass
-            return {"ok": True, "skipped": True, "reason": "outside_scanner_session", "session_gated": True, "session_ok": False, "session_windows_ny": SCANNER_SESSION_NY, **LAST_SCAN}
+            return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
 
         # Reconcile first: never place entries against stale internal state.
         reconcile_actions = reconcile_trade_plans_from_alpaca()
@@ -1919,7 +1882,7 @@ async def worker_scan_entries(req: Request):
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
         except Exception:
-            pass
+                pass
 
         return {
                 "ok": True,
@@ -1929,9 +1892,6 @@ async def worker_scan_entries(req: Request):
                     "allow_live": SCANNER_ALLOW_LIVE,
                     "effective_dry_run": effective_dry_run,
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
-                    "session_gated": SCANNER_REQUIRE_SESSION,
-                    "session_ok": session_ok,
-                    "session_windows_ny": SCANNER_SESSION_NY,
                     "symbols_scanned": len(syms),
                     "signals": len(signals),
                     "would_trade": len(signals),
