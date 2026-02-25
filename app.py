@@ -209,6 +209,18 @@ ALLOWED_SIGNALS = set(
 # =============================
 # Alpaca clients
 # =============================
+
+# --- Alpaca credentials (backward-compatible env names) ---
+def _env_required(keys: list[str]) -> str:
+    v = getenv_any(*keys, default=None)
+    if v is None or str(v).strip() == "":
+        raise RuntimeError(f"Missing required env var. Set one of: {', '.join(keys)}")
+    return str(v).strip()
+
+APCA_PAPER = str(getenv_any("APCA_PAPER", "ALPACA_PAPER", "PAPER", default="false")).lower() in ("1","true","yes","y")
+APCA_KEY = _env_required(["APCA_API_KEY_ID","APCA_KEY","ALPACA_API_KEY","ALPACA_KEY","APCA_API_KEY"])
+APCA_SECRET = _env_required(["APCA_API_SECRET_KEY","APCA_SECRET","ALPACA_API_SECRET","ALPACA_SECRET","APCA_SECRET_KEY"])
+
 trading_client = TradingClient(APCA_KEY, APCA_SECRET, paper=APCA_PAPER)
 data_client = StockHistoricalDataClient(APCA_KEY, APCA_SECRET)
 
