@@ -296,6 +296,8 @@ VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.006"
 VWAP_PB_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_MIN_EMA_SLOPE", "0.0"))  # per-bar slope
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
+SCANNER_USE_LATEST_TRADE_FALLBACK = env_bool("SCANNER_USE_LATEST_TRADE_FALLBACK", "false")
+SCANNER_LATEST_TRADE_MAX_PER_SCAN = int(getenv_any("SCANNER_LATEST_TRADE_MAX_PER_SCAN", default="25"))
 
 # Session windows (configurable for parity; defaults match your Pine inputs)
 MIDBOX_BUILD_SESSION = getenv_any("MIDBOX_BUILD_SESSION", default="10:00-11:30")
@@ -454,23 +456,31 @@ def compute_qty(price: float) -> float:
     return round(qty, 2)
 
 
-def get_latest_price(symbol: str) -> Optional[float]:
-    req = StockLatestTradeRequest(symbol_or_symbols=[symbol])
-    latest = data_client.get_stock_latest_trade(req)
-    # Alpaca may omit symbols with no recent trade / unsupported tickers / feed limits.
-    # Return None so callers can treat it as "no data" instead of raising KeyError.
-    trade = None
+def get_latest_price(sym: str) -> float | None:
+    """Fetch latest trade price for a single symbol.
+
+    NOTE: This endpoint is rate-limited. We treat failures (especially 429s)
+    as 'price unavailable' and let the scanner skip the symbol instead of crashing.
+    """
     try:
-        trade = latest.get(symbol) if hasattr(latest, "get") else latest[symbol]
-    except KeyError:
-        trade = None
-    if trade is None:
-        logging.warning("LATEST_PRICE_MISSING symbol=%s", symbol)
+        req = StockLatestTradeRequest(symbol_or_symbols=sym)
+        latest = data_client.get_stock_latest_trade(req)
+        # alpaca-py returns a dict-like keyed by symbol
+        if isinstance(latest, dict):
+            lt = latest.get(sym)
+        else:
+            lt = getattr(latest, sym, None)
+        if not lt:
+            return None
+        price = getattr(lt, "price", None)
+        if price is None and isinstance(lt, dict):
+            price = lt.get("price")
+        return float(price) if price is not None else None
+    except Exception as e:
+        # Commonly: 429 Too Many Requests
+        log("LATEST_PRICE_ERROR", symbol=sym, err=str(e))
         return None
-    px = float(trade.price)
-    if px <= 0:
-        raise ValueError("Latest trade price invalid")
-    return px
+
 
 
 def get_position(symbol: str):
@@ -1624,6 +1634,7 @@ async def worker_scan_entries(req: Request):
 
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
         bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
+        scan_ctx: dict[str, int] = {}
 
         def _eval_one(sym: str) -> dict:
                 local_results: list[dict] = []
@@ -1675,7 +1686,12 @@ async def worker_scan_entries(req: Request):
                         for _k in ('midbox', 'pwr', 'vwap_pullback'):
                             if diag.get(_k, {}).get('enabled'):
                                 diag[_k].update({'eligible': False, 'reason': 'outside_market_hours'})
-                    price = float(bars_today[-1]["close"]) if bars_today else get_latest_price(sym)
+                    price = float(bars_today[-1]["close"]) if bars_today else None
+                    if price is None and SCANNER_USE_LATEST_TRADE_FALLBACK:
+                        # Protect against rate limits: cap latest-trade fallbacks per scan.
+                        if scan_ctx.get("latest_trade_lookups", 0) < SCANNER_LATEST_TRADE_MAX_PER_SCAN:
+                            scan_ctx["latest_trade_lookups"] = scan_ctx.get("latest_trade_lookups", 0) + 1
+                            price = get_latest_price(sym)
                     if price is None:
                         local_blocked += 1
                         local_results.append({
