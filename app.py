@@ -6,6 +6,7 @@ import time as _time
 from datetime import datetime, time, timezone, timedelta
 # Alias for typing (avoid NameError at import-time in Py 3.13)
 dt_time = time
+dt_datetime = datetime
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
