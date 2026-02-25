@@ -301,12 +301,6 @@ TRADE_PLAN: dict[str, dict] = {}          # symbol -> plan dict
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
-# Latest prices cache (to reduce Alpaca 429s during scans)
-LATEST_PRICES_CACHE_TTL_SEC = int(os.getenv("LATEST_PRICES_CACHE_TTL_SEC", "3"))
-_LATEST_PRICES_CACHE: dict[str, float] = {}
-_LATEST_PRICES_CACHE_TS: float = 0.0
-ALLOW_SINGLE_LATEST_PRICE_FALLBACK = env_bool("ALLOW_SINGLE_LATEST_PRICE_FALLBACK", "false")
-
 # Decision traces (in-memory ring buffer)
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
 DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
@@ -437,65 +431,43 @@ def get_latest_price(symbol: str) -> Optional[float]:
 
 
 
+# -------- Latest price batching + small cache (reduces Alpaca 429) --------
+_LATEST_PRICES_CACHE: dict[str, float] | None = None
+_LATEST_PRICES_CACHE_TS: float = 0.0
+LATEST_PRICES_CACHE_TTL_SEC = getenv_int("LATEST_PRICES_CACHE_TTL_SEC", 5)
+
 def get_latest_prices(symbols: list[str]) -> dict[str, float]:
-    """Fetch latest trade prices in batches to avoid Alpaca 429s.
-    Returns a dict {symbol: price}. Missing symbols are simply omitted.
+    """Batch latest-trade prices for many symbols.
+    Uses a tiny in-process cache to avoid hammering Alpaca across rapid scans.
+    Returns {symbol: price}. Missing symbols are omitted.
     """
-    global _LATEST_PRICES_CACHE_TS, _LATEST_PRICES_CACHE
-    now = _time.time()
-    # Simple TTL cache (works well because scans run every ~60s and symbols repeat)
-    if _LATEST_PRICES_CACHE and (now - _LATEST_PRICES_CACHE_TS) <= LATEST_PRICES_CACHE_TTL_SEC:
-        # Return a copy to avoid accidental mutation
-        return dict(_LATEST_PRICES_CACHE)
+    global _LATEST_PRICES_CACHE, _LATEST_PRICES_CACHE_TS
+    if not symbols:
+        return {}
+    now_ts = _time.time()
+    if _LATEST_PRICES_CACHE and (now_ts - _LATEST_PRICES_CACHE_TS) <= float(LATEST_PRICES_CACHE_TTL_SEC):
+        return {s: _LATEST_PRICES_CACHE[s] for s in symbols if s in _LATEST_PRICES_CACHE}
 
-    out: dict[str, float] = {}
-    syms = [s for s in symbols if s]
-    if not syms:
-        return out
-
-    # Alpaca supports multi-symbol latest trades; chunk to be safe.
-    CHUNK = 200
-    for i in range(0, len(syms), CHUNK):
-        chunk = syms[i:i + CHUNK]
-        req = StockLatestTradeRequest(symbol_or_symbols=chunk)
-        last_err: Exception | None = None
-        for attempt in range(1, 4):
+    try:
+        req = StockLatestTradeRequest(symbol_or_symbols=symbols)
+        latest = data_client.get_stock_latest_trade(req)
+        out: dict[str, float] = {}
+        for sym, trade in (latest or {}).items():
+            px = None
             try:
-                latest = data_client.get_stock_latest_trade(req)
-                # SDK returns a mapping for multi-symbol
-                if hasattr(latest, "items"):
-                    items = latest.items()
-                elif hasattr(latest, "data") and hasattr(latest.data, "items"):
-                    items = latest.data.items()
-                else:
-                    items = []
-                for sym, trade in items:
-                    try:
-                        px = float(trade.price)
-                        if px > 0:
-                            out[sym] = px
-                    except Exception:
-                        continue
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                msg = str(e)
-                # Backoff on 429 / rate limit
-                if ("429" in msg) or ("too many requests" in msg.lower()):
-                    _time.sleep(0.5 * attempt)
-                    continue
-                break
-        if last_err is not None and not out:
-            logging.warning("LATEST_TRADES_BATCH_ERROR err=%s", last_err)
-
-    _LATEST_PRICES_CACHE = dict(out)
-    _LATEST_PRICES_CACHE_TS = now
-    return dict(out)
-    return out
-
-
-
+                px = getattr(trade, "price", None)
+                if px is None and isinstance(trade, dict):
+                    px = trade.get("price")
+            except Exception:
+                px = None
+            if px is not None:
+                out[str(sym)] = float(px)
+        _LATEST_PRICES_CACHE = out
+        _LATEST_PRICES_CACHE_TS = now_ts
+        return out
+    except Exception as e:
+        logger.warning("LATEST_PRICES_BATCH_ERROR err=%s", str(e))
+        return {}
 def get_position(symbol: str):
     """Returns (qty_signed, side_str) where side_str is 'long'/'short'. If none, (0,'flat')."""
     try:
@@ -1609,9 +1581,10 @@ async def worker_scan_entries(req: Request):
 
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
         bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
+        # Batch latest prices once per scan (fallback when bars are missing)
         latest_prices_map = get_latest_prices(syms)
 
-        def _eval_one(sym: str, latest_prices: dict[str, float] | None = None) -> dict:
+        def _eval_one(sym: str) -> dict:
                 local_results: list[dict] = []
                 local_signals: list[dict] = []
                 local_blocked = 0
@@ -1661,7 +1634,7 @@ async def worker_scan_entries(req: Request):
                         for _k in ('midbox', 'pwr', 'vwap_pullback'):
                             if diag.get(_k, {}).get('enabled'):
                                 diag[_k].update({'eligible': False, 'reason': 'outside_market_hours'})
-                    price = float(bars_today[-1]["close"]) if bars_today else ((latest_prices.get(sym) if latest_prices is not None else None) or (get_latest_price(sym) if ALLOW_SINGLE_LATEST_PRICE_FALLBACK else None))
+                    price = float(bars_today[-1]["close"]) if bars_today else (latest_prices_map.get(sym) or get_latest_price(sym))
                     if price is None:
                         local_blocked += 1
                         local_results.append({
@@ -1779,7 +1752,7 @@ async def worker_scan_entries(req: Request):
                 return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = [ex.submit(_eval_one, sym, latest_prices_map) for sym in syms]
+                futures = [ex.submit(_eval_one, sym) for sym in syms]
                 for fut in as_completed(futures):
                     out = fut.result()
                     results.extend(out.get("results", []))
