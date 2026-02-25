@@ -52,7 +52,7 @@ except Exception:
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import Optional
 
 @dataclass(frozen=True)
 class Bar:
@@ -201,49 +201,6 @@ ONLY_MARKET_HOURS = env_bool("ONLY_MARKET_HOURS", "true")
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
 
-# Optional scanner session gating (NY time).
-# Example: "09:35-11:30,13:30-15:55".
-# If blank, scanner may run any time market is open.
-SCANNER_SESSIONS_NY = os.getenv("SCANNER_SESSIONS_NY", "").strip()
-
-_SCANNER_SESSION_RANGES_CACHE: Optional[List[Tuple[time, time]]] = None
-
-
-def _parse_scanner_sessions(raw: str) -> List[Tuple[time, time]]:
-    """Parse comma-separated session windows 'HH:MM-HH:MM' into NY time ranges."""
-    out: List[Tuple[time, time]] = []
-    if not raw:
-        return out
-    for part in raw.split(","):
-        win = parse_session_window(part)
-        if not win:
-            continue
-        start, end = win
-        # Ignore inverted/zero windows
-        if end <= start:
-            continue
-        out.append((start, end))
-    return out
-
-
-def in_scanner_session(now_ny_dt: Optional[datetime] = None) -> bool:
-    """True if scanner is allowed to run at this NY time based on SCANNER_SESSIONS_NY."""
-    global _SCANNER_SESSION_RANGES_CACHE
-    if not SCANNER_SESSIONS_NY:
-        return True
-    if _SCANNER_SESSION_RANGES_CACHE is None:
-        _SCANNER_SESSION_RANGES_CACHE = _parse_scanner_sessions(SCANNER_SESSIONS_NY)
-    ranges = _SCANNER_SESSION_RANGES_CACHE or []
-    if not ranges:
-        # If env is set but unparsable, fail open to avoid blocking trading.
-        return True
-    dt_ny = now_ny_dt or now_ny()
-    tt = dt_ny.time()
-    for start, end in ranges:
-        if start <= tt <= end:
-            return True
-    return False
-
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = os.getenv("EOD_FLATTEN_TIME", "15:55")  # NY time
@@ -296,8 +253,6 @@ VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.006"
 VWAP_PB_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_MIN_EMA_SLOPE", "0.0"))  # per-bar slope
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
-SCANNER_USE_LATEST_TRADE_FALLBACK = env_bool("SCANNER_USE_LATEST_TRADE_FALLBACK", "false")
-SCANNER_LATEST_TRADE_MAX_PER_SCAN = int(getenv_any("SCANNER_LATEST_TRADE_MAX_PER_SCAN", default="25"))
 
 # Session windows (configurable for parity; defaults match your Pine inputs)
 MIDBOX_BUILD_SESSION = getenv_any("MIDBOX_BUILD_SESSION", default="10:00-11:30")
@@ -456,30 +411,81 @@ def compute_qty(price: float) -> float:
     return round(qty, 2)
 
 
-def get_latest_price(sym: str) -> float | None:
-    """Fetch latest trade price for a single symbol.
-
-    NOTE: This endpoint is rate-limited. We treat failures (especially 429s)
-    as 'price unavailable' and let the scanner skip the symbol instead of crashing.
-    """
+def get_latest_price(symbol: str) -> Optional[float]:
+    req = StockLatestTradeRequest(symbol_or_symbols=[symbol])
+    latest = data_client.get_stock_latest_trade(req)
+    # Alpaca may omit symbols with no recent trade / unsupported tickers / feed limits.
+    # Return None so callers can treat it as "no data" instead of raising KeyError.
+    trade = None
     try:
-        req = StockLatestTradeRequest(symbol_or_symbols=sym)
-        latest = data_client.get_stock_latest_trade(req)
-        # alpaca-py returns a dict-like keyed by symbol
-        if isinstance(latest, dict):
-            lt = latest.get(sym)
-        else:
-            lt = getattr(latest, sym, None)
-        if not lt:
-            return None
-        price = getattr(lt, "price", None)
-        if price is None and isinstance(lt, dict):
-            price = lt.get("price")
-        return float(price) if price is not None else None
-    except Exception as e:
-        # Commonly: 429 Too Many Requests
-        log("LATEST_PRICE_ERROR", symbol=sym, err=str(e))
+        trade = latest.get(symbol) if hasattr(latest, "get") else latest[symbol]
+    except KeyError:
+        trade = None
+    if trade is None:
+        logging.warning("LATEST_PRICE_MISSING symbol=%s", symbol)
         return None
+    px = float(trade.price)
+    if px <= 0:
+        raise ValueError("Latest trade price invalid")
+    return px
+
+
+
+def get_latest_prices(symbols: list[str]) -> dict[str, float]:
+    """Fetch latest trade prices in batches to avoid Alpaca 429s.
+    Returns a dict {symbol: price}. Missing symbols are simply omitted.
+    """
+    global _LATEST_PRICES_CACHE_TS, _LATEST_PRICES_CACHE
+    now = _time.time()
+    # Simple TTL cache (works well because scans run every ~60s and symbols repeat)
+    if _LATEST_PRICES_CACHE and (now - _LATEST_PRICES_CACHE_TS) <= LATEST_PRICES_CACHE_TTL_SEC:
+        # Return a copy to avoid accidental mutation
+        return dict(_LATEST_PRICES_CACHE)
+
+    out: dict[str, float] = {}
+    syms = [s for s in symbols if s]
+    if not syms:
+        return out
+
+    # Alpaca supports multi-symbol latest trades; chunk to be safe.
+    CHUNK = 200
+    for i in range(0, len(syms), CHUNK):
+        chunk = syms[i:i + CHUNK]
+        req = StockLatestTradeRequest(symbol_or_symbols=chunk)
+        last_err: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                latest = data_client.get_stock_latest_trade(req)
+                # SDK returns a mapping for multi-symbol
+                if hasattr(latest, "items"):
+                    items = latest.items()
+                elif hasattr(latest, "data") and hasattr(latest.data, "items"):
+                    items = latest.data.items()
+                else:
+                    items = []
+                for sym, trade in items:
+                    try:
+                        px = float(trade.price)
+                        if px > 0:
+                            out[sym] = px
+                    except Exception:
+                        continue
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                msg = str(e)
+                # Backoff on 429 / rate limit
+                if ("429" in msg) or ("too many requests" in msg.lower()):
+                    _time.sleep(0.5 * attempt)
+                    continue
+                break
+        if last_err is not None and not out:
+            logging.warning("LATEST_TRADES_BATCH_ERROR err=%s", last_err)
+
+    _LATEST_PRICES_CACHE = dict(out)
+    _LATEST_PRICES_CACHE_TS = now
+    return out
 
 
 
@@ -1578,44 +1584,6 @@ async def worker_scan_entries(req: Request):
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
 
-        # Optional: further narrow scans to specific NY time sessions.
-        # This is FAIL-OPEN: if the env var is blank or unparsable, we do not block scanning.
-        if (
-            SCANNER_REQUIRE_MARKET_HOURS
-            and ONLY_MARKET_HOURS
-            and in_market_hours()
-            and SCANNER_SESSIONS_NY
-            and (not in_scanner_session(now_ny()))
-        ):
-            _set_last_scan(skipped=True, reason="outside_scanner_session", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
-            record_decision("SCAN", "worker_scan", action="skipped", reason="outside_scanner_session")
-            try:
-                scan_summary = {
-                    "skipped": True,
-                    "skip_reason": "outside_scanner_session",
-                    "actions": {"skipped": 1},
-                    "no_signal_total": 0,
-                    "top_no_signal_reasons": [("outside_scanner_session", 1)],
-                    "strategy_breakdown": {},
-                }
-                SCAN_HISTORY.append({
-                    "ts_utc": datetime.now(timezone.utc).isoformat(),
-                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
-                    "symbols": [],
-                    "scanned": 0,
-                    "signals": 0,
-                    "would_trade": 0,
-                    "blocked": 0,
-                    "duration_ms": int((utc_ts()-scan_start_utc)*1000),
-                    "summary": scan_summary,
-                    "results": [],
-                })
-                if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
-                    del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
-            except Exception:
-                pass
-            return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
-
         # Reconcile first: never place entries against stale internal state.
         reconcile_actions = reconcile_trade_plans_from_alpaca()
 
@@ -1634,9 +1602,9 @@ async def worker_scan_entries(req: Request):
 
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
         bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
-        scan_ctx: dict[str, int] = {}
+        latest_prices_map = get_latest_prices(syms)
 
-        def _eval_one(sym: str) -> dict:
+        def _eval_one(sym: str, latest_prices: dict[str, float] | None = None) -> dict:
                 local_results: list[dict] = []
                 local_signals: list[dict] = []
                 local_blocked = 0
@@ -1686,12 +1654,7 @@ async def worker_scan_entries(req: Request):
                         for _k in ('midbox', 'pwr', 'vwap_pullback'):
                             if diag.get(_k, {}).get('enabled'):
                                 diag[_k].update({'eligible': False, 'reason': 'outside_market_hours'})
-                    price = float(bars_today[-1]["close"]) if bars_today else None
-                    if price is None and SCANNER_USE_LATEST_TRADE_FALLBACK:
-                        # Protect against rate limits: cap latest-trade fallbacks per scan.
-                        if scan_ctx.get("latest_trade_lookups", 0) < SCANNER_LATEST_TRADE_MAX_PER_SCAN:
-                            scan_ctx["latest_trade_lookups"] = scan_ctx.get("latest_trade_lookups", 0) + 1
-                            price = get_latest_price(sym)
+                    price = float(bars_today[-1]["close"]) if bars_today else ((latest_prices.get(sym) if latest_prices else None) or get_latest_price(sym))
                     if price is None:
                         local_blocked += 1
                         local_results.append({
@@ -1809,7 +1772,7 @@ async def worker_scan_entries(req: Request):
                 return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = [ex.submit(_eval_one, sym) for sym in syms]
+                futures = [ex.submit(_eval_one, sym, latest_prices_map) for sym in syms]
                 for fut in as_completed(futures):
                     out = fut.result()
                     results.extend(out.get("results", []))
