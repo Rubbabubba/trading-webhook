@@ -206,21 +206,34 @@ ALLOWED_SIGNALS = set(
     s.strip() for s in os.getenv("ALLOWED_SIGNALS", "").split(",") if s.strip()
 )
 
+# Optional allowed symbols (whitelist). If empty, allow all symbols (NOT recommended).
+# Priority:
+#   1) ALLOWED_SYMBOLS (trading/webhook whitelist)
+#   2) SCANNER_UNIVERSE_SYMBOLS (scanner universe)
+def _parse_symbol_csv(raw: str) -> list[str]:
+    if not raw:
+        return []
+    out = []
+    for s in str(raw).split(","):
+        s2 = s.strip().upper()
+        if not s2:
+            continue
+        out.append(s2)
+    # de-dupe but keep order
+    seen = set()
+    uniq = []
+    for s2 in out:
+        if s2 in seen:
+            continue
+        seen.add(s2)
+        uniq.append(s2)
+    return uniq
+
+_ALLOWED_SYMBOLS_LIST = _parse_symbol_csv(os.getenv("ALLOWED_SYMBOLS", "").strip()) or _parse_symbol_csv(os.getenv("SCANNER_UNIVERSE_SYMBOLS", "").strip())
+ALLOWED_SYMBOLS = set(_ALLOWED_SYMBOLS_LIST)
 # =============================
 # Alpaca clients
 # =============================
-
-# --- Alpaca credentials (backward-compatible env names) ---
-def _env_required(keys: list[str]) -> str:
-    v = getenv_any(*keys, default=None)
-    if v is None or str(v).strip() == "":
-        raise RuntimeError(f"Missing required env var. Set one of: {', '.join(keys)}")
-    return str(v).strip()
-
-APCA_PAPER = str(getenv_any("APCA_PAPER", "ALPACA_PAPER", "PAPER", default="false")).lower() in ("1","true","yes","y")
-APCA_KEY = _env_required(["APCA_API_KEY_ID","APCA_KEY","ALPACA_API_KEY","ALPACA_KEY","APCA_API_KEY"])
-APCA_SECRET = _env_required(["APCA_API_SECRET_KEY","APCA_SECRET","ALPACA_API_SECRET","ALPACA_SECRET","APCA_SECRET_KEY"])
-
 trading_client = TradingClient(APCA_KEY, APCA_SECRET, paper=APCA_PAPER)
 data_client = StockHistoricalDataClient(APCA_KEY, APCA_SECRET)
 
@@ -600,19 +613,21 @@ def _session_key(dt_ny: datetime) -> str:
 
 def universe_symbols() -> list[str]:
     """Return the symbol universe for scanning."""
+    base = _ALLOWED_SYMBOLS_LIST
+
     if SCANNER_UNIVERSE_PROVIDER == "static":
-        return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+        return base[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
     if SCANNER_UNIVERSE_PROVIDER == "env":
         raw = getenv_any("SCANNER_UNIVERSE_SYMBOLS", "SCANNER_SYMBOLS", default="")
-        if not raw:
-            return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
-        syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
-        return syms[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+        if raw:
+            syms = _parse_symbol_csv(raw)
+            return syms[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+        return base[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
     # NOTE: 'alpaca' provider can be added later (requires assets + liquidity filter).
-    # For safety in Phase 1C, we fall back to ALLOWED_SYMBOLS unless explicitly enabled.
-    return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+    # For safety, fall back to the configured allowlist.
+    return base[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
 
 def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None) -> list[dict]:
