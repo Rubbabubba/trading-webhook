@@ -1534,6 +1534,12 @@ async def worker_scan_entries(req: Request):
 
     effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
 
+    # Capture NY/UTC timestamps once for consistent gating + responses.
+    ts_ny_dt = now_ny()
+    ts_ny = ts_ny_dt.isoformat()
+    ts_utc = datetime.now(tz=timezone.utc).isoformat()
+
+
     def _set_last_scan(**kwargs):
         LAST_SCAN.clear()
         LAST_SCAN.update({
@@ -1607,10 +1613,10 @@ async def worker_scan_entries(req: Request):
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
         # Session gating (NY time). We still scan for diagnostics, but force dry-run outside session windows
         # unless explicitly allowed.
-        session_ok = in_scanner_session(ts_ny)
+        session_ok = in_scanner_session(ts_ny_dt)
         session_gated = False
         session_reason = None
-        if ONLY_MARKET_HOURS and in_market_hours(ts_ny) and (not session_ok) and (not SCANNER_TRADE_OUTSIDE_SESSIONS):
+        if ONLY_MARKET_HOURS and in_market_hours() and (not session_ok) and (not SCANNER_TRADE_OUTSIDE_SESSIONS):
             session_gated = True
             session_reason = "outside_session"
             effective_dry_run = True
