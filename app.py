@@ -7,7 +7,6 @@ from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
-from collections import Counter
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -140,43 +139,103 @@ def parse_hhmm(hhmm: str) -> time:
     return time(int(parts[0]), int(parts[1]))
 
 
-def parse_session_window(raw: str) -> tuple[time, time] | None:
-    """Parse 'HH:MM-HH:MM' in NY (market) time."""
-    if not raw:
-        return None
-    s = raw.strip()
-    if "-" not in s:
-        return None
-    a, b = [x.strip() for x in s.split("-", 1)]
-    try:
-        return parse_hhmm(a), parse_hhmm(b)
-    except Exception:
-        return None
+# =============================
+# ENV
+# =============================
+WEBHOOK_SECRET = getenv_any("WEBHOOK_SECRET", default="")
 
-def in_session(raw: str, t: time | None = None) -> bool:
-    """Return True if `t` (NY time) is inside the configured session window(s).
+# Alpaca (support APCA_* + ALPACA_*)
+APCA_KEY = getenv_any("APCA_API_KEY_ID", "ALPACA_KEY_ID", "ALPACA_API_KEY_ID", default="")
+APCA_SECRET = getenv_any("APCA_API_SECRET_KEY", "ALPACA_SECRET_KEY", "ALPACA_API_SECRET_KEY", default="")
+APCA_PAPER = getenv_any("APCA_PAPER", "ALPACA_PAPER", default="true").lower() == "true"
 
-    Supports:
-      - "HH:MM-HH:MM"
-      - "HH:MM-HH:MM,HH:MM-HH:MM" (comma-separated multiple windows)
-    """
-    if not raw:
-        return True
-    tt = t or now_ny().time()
-    s = str(raw).strip()
-    parts = [p.strip() for p in s.split(",") if p.strip()]
-    if not parts:
-        return True
-    for p in parts:
-        win = parse_session_window(p)
-        if not win:
-            continue
-        start, end = win
-        if start <= end and (tt >= start and tt <= end):
-            return True
-        if start > end and (tt >= start or tt <= end):
-            return True
-    return False
+if not APCA_KEY or not APCA_SECRET:
+    missing = []
+    if not APCA_KEY:
+        missing.append("APCA_API_KEY_ID (or ALPACA_KEY_ID/ALPACA_API_KEY_ID)")
+    if not APCA_SECRET:
+        missing.append("APCA_API_SECRET_KEY (or ALPACA_SECRET_KEY/ALPACA_API_SECRET_KEY)")
+    raise RuntimeError("Missing Alpaca credentials: " + ", ".join(missing))
+
+# Symbols
+ALLOWED_SYMBOLS = set(
+    s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "SPY").split(",") if s.strip()
+)
+
+# Risk / sizing
+RISK_DOLLARS = float(os.getenv("RISK_DOLLARS", "3"))
+STOP_PCT = float(os.getenv("STOP_PCT", "0.003"))  # 0.30%
+TAKE_PCT = float(os.getenv("TAKE_PCT", "0.006"))  # 0.60%
+MIN_QTY = float(os.getenv("MIN_QTY", "0.01"))
+MAX_QTY = float(os.getenv("MAX_QTY", "1.50"))
+
+# Safety / behavior
+ALLOW_SHORT = env_bool("ALLOW_SHORT", "false")
+ALLOW_REVERSAL = env_bool("ALLOW_REVERSAL", "true")
+DRY_RUN = env_bool("DRY_RUN", "false")
+
+# Market hours
+ONLY_MARKET_HOURS = env_bool("ONLY_MARKET_HOURS", "true")
+MARKET_OPEN = time(9, 30)
+MARKET_CLOSE = time(16, 0)
+
+# Exit worker
+WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
+EOD_FLATTEN_TIME = os.getenv("EOD_FLATTEN_TIME", "15:55")  # NY time
+EXIT_COOLDOWN_SEC = int(os.getenv("EXIT_COOLDOWN_SEC", "20"))
+
+# Idempotency
+ENABLE_IDEMPOTENCY = getenv_any("ENABLE_IDEMPOTENCY", default="true").strip().lower() in ("1","true","yes","y","on")  # allow disabling dedup if needed
+# Idempotency
+DEDUP_WINDOW_SEC = int(getenv_any("DEDUP_WINDOW_SEC", "IDEMPOTENCY_WINDOW_SECONDS", default="90"))  # absorb retries
+
+# Symbol lock
+SYMBOL_LOCK_SEC = int(getenv_any("SYMBOL_LOCK_SEC", "SYMBOL_LOCK_SECONDS", default="180"))  # lock during entry/plan
+
+
+
+# =============================
+# Scanner (Phase 1C - shadow mode default)
+# =============================
+SCANNER_ENABLED = env_bool("SCANNER_ENABLED", "false")
+SCANNER_DRY_RUN = env_bool("SCANNER_DRY_RUN", "true")
+SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
+LAST_SCAN: dict = {}
+
+SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
+SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
+
+
+# Rotation scanning (for large universes)
+SCANNER_ROTATION_ENABLED = os.getenv("SCANNER_ROTATION_ENABLED", "true").lower() == "true"
+# Optional: separate universe list for scanner (comma-separated). If set, scanner uses this instead of ALLOWED_SYMBOLS.
+SCANNER_UNIVERSE_SYMBOLS = os.getenv("SCANNER_UNIVERSE_SYMBOLS", "").strip()
+
+# 5m resampling / strategy tuning
+RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
+
+# Midbox loosening knobs
+MIDBOX_BREAKOUT_BUFFER_PCT = float(os.getenv("MIDBOX_BREAKOUT_BUFFER_PCT", "0.0005"))  # 0.05%
+MIDBOX_BREAKOUT_USE_HIGHLOW = os.getenv("MIDBOX_BREAKOUT_USE_HIGHLOW", "true").lower() == "true"
+
+# Power hour loosening knobs
+PWR_BREAKOUT_BUFFER_PCT = float(os.getenv("PWR_BREAKOUT_BUFFER_PCT", "0.0005"))  # 0.05%
+PWR_BREAKOUT_USE_HIGHLOW = os.getenv("PWR_BREAKOUT_USE_HIGHLOW", "true").lower() == "true"
+
+# Strategy C: VWAP pullback on 5m
+ENABLE_STRATEGY_VWAP_PULLBACK = os.getenv("ENABLE_STRATEGY_VWAP_PULLBACK", "true").lower() == "true"
+VWAP_PB_EMA_FAST = int(os.getenv("VWAP_PB_EMA_FAST", "20"))
+VWAP_PB_EMA_SLOW = int(os.getenv("VWAP_PB_EMA_SLOW", "50"))
+VWAP_PB_BAND_PCT = float(os.getenv("VWAP_PB_BAND_PCT", "0.0015"))  # 0.15% band around VWAP counts as a touch
+VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.006"))  # don't chase if >0.6% away from VWAP
+VWAP_PB_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_MIN_EMA_SLOPE", "0.0"))  # per-bar slope
+SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
+SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
+
+# Session windows (configurable for parity; defaults match your Pine inputs)
+MIDBOX_BUILD_SESSION = getenv_any("MIDBOX_BUILD_SESSION", default="10:00-11:30")
+MIDBOX_TRADE_SESSION = getenv_any("MIDBOX_TRADE_SESSION", default="11:30-15:00")
+PWR_SESSION = getenv_any("PWR_SESSION", default="15:00-16:00")
 
 def _parse_session_hhmm_range(rng: str) -> tuple[time, time]:
     # Accept "HH:MM-HH:MM" (24h). If invalid, fall back to full market session.
@@ -189,7 +248,7 @@ def _parse_session_hhmm_range(rng: str) -> tuple[time, time]:
 # Strategy toggles (approximate parity v1; will refine against Pine)
 SCANNER_ENABLE_MIDBOX = env_bool("SCANNER_ENABLE_MIDBOX", "true")
 SCANNER_ENABLE_PWR = env_bool("SCANNER_ENABLE_PWR", "true")
-SCANNER_ENABLE_VWAP_PB = env_bool("SCANNER_ENABLE_VWAP_PB", "true")
+SCANNER_ENABLE_VWAP_PB = env_bool("SCANNER_ENABLE_VWAP_PB", str(ENABLE_STRATEGY_VWAP_PULLBACK).lower())
 SCANNER_PWR_LOOKBACK_BARS = int(getenv_any("SCANNER_PWR_LOOKBACK_BARS", default="30"))
 
 # Optional liquidity filters for 'alpaca' universe provider
@@ -206,31 +265,6 @@ ALLOWED_SIGNALS = set(
     s.strip() for s in os.getenv("ALLOWED_SIGNALS", "").split(",") if s.strip()
 )
 
-# Optional allowed symbols (whitelist). If empty, allow all symbols (NOT recommended).
-# Priority:
-#   1) ALLOWED_SYMBOLS (trading/webhook whitelist)
-#   2) SCANNER_UNIVERSE_SYMBOLS (scanner universe)
-def _parse_symbol_csv(raw: str) -> list[str]:
-    if not raw:
-        return []
-    out = []
-    for s in str(raw).split(","):
-        s2 = s.strip().upper()
-        if not s2:
-            continue
-        out.append(s2)
-    # de-dupe but keep order
-    seen = set()
-    uniq = []
-    for s2 in out:
-        if s2 in seen:
-            continue
-        seen.add(s2)
-        uniq.append(s2)
-    return uniq
-
-_ALLOWED_SYMBOLS_LIST = _parse_symbol_csv(os.getenv("ALLOWED_SYMBOLS", "").strip()) or _parse_symbol_csv(os.getenv("SCANNER_UNIVERSE_SYMBOLS", "").strip())
-ALLOWED_SYMBOLS = set(_ALLOWED_SYMBOLS_LIST)
 # =============================
 # Alpaca clients
 # =============================
@@ -613,21 +647,19 @@ def _session_key(dt_ny: datetime) -> str:
 
 def universe_symbols() -> list[str]:
     """Return the symbol universe for scanning."""
-    base = _ALLOWED_SYMBOLS_LIST
-
     if SCANNER_UNIVERSE_PROVIDER == "static":
-        return base[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+        return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
     if SCANNER_UNIVERSE_PROVIDER == "env":
-        raw = getenv_any("SCANNER_UNIVERSE_SYMBOLS", "SCANNER_SYMBOLS", default="")
-        if raw:
-            syms = _parse_symbol_csv(raw)
-            return syms[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
-        return base[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+        raw = getenv_any("SCANNER_SYMBOLS", default="")
+        if not raw:
+            return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+        syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
+        return syms[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
     # NOTE: 'alpaca' provider can be added later (requires assets + liquidity filter).
-    # For safety, fall back to the configured allowlist.
-    return base[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+    # For safety in Phase 1C, we fall back to ALLOWED_SYMBOLS unless explicitly enabled.
+    return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
 
 def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None) -> list[dict]:
@@ -795,362 +827,284 @@ def _bars_for_today_session(bars: list[dict]) -> list[dict]:
     return out
 
 
-def _get_series(bars: list[dict], key: str) -> list[float]:
-    out: list[float] = []
-    for b in bars:
-        try:
-            out.append(float(b.get(key)))
-        except Exception:
-            continue
-    return out
-
-def _ema(values: list[float], length: int) -> list[float]:
-    if length <= 1:
-        return values[:]
-    if not values:
-        return []
-    k = 2.0 / (length + 1.0)
-    ema: list[float] = [values[0]]
-    for v in values[1:]:
-        ema.append((v * k) + (ema[-1] * (1.0 - k)))
-    return ema
-
-def _atr(bars: list[dict], length: int = 14) -> float | None:
-    if len(bars) < 2:
-        return None
-    trs: list[float] = []
-    prev_close = None
-    for b in bars:
-        try:
-            h = float(b.get("high"))
-            l = float(b.get("low"))
-            c = float(b.get("close"))
-        except Exception:
-            continue
-        if prev_close is None:
-            tr = h - l
-        else:
-            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
-        trs.append(tr)
-        prev_close = c
-    if not trs:
-        return None
-    if len(trs) < length:
-        return sum(trs) / len(trs)
-    return sum(trs[-length:]) / float(length)
-
-def _vwap_from_bars(bars: list[dict]) -> float | None:
-    """Compute VWAP from bars with close/high/low and volume."""
-    num = 0.0
-    den = 0.0
-    for b in bars:
-        try:
-            h = float(b.get("high"))
-            l = float(b.get("low"))
-            c = float(b.get("close"))
-            v = float(b.get("volume") or 0.0)
-        except Exception:
-            continue
-        tp = (h + l + c) / 3.0
-        num += tp * v
-        den += v
-    if den <= 0:
-        return None
-    return num / den
-
 def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
-    """MIDBOX — 1m rolling-range breakout with EMA200 trend + ATR gate."""
+    """Approx MIDBOX signal eval: break of midbox high/low with VWAP + EMA200 slope filter."""
     if not bars_today:
         return None
 
-    session = os.getenv("MIDBOX_SESSION", "09:45-15:30")
-    if not in_session(session):
-        return None
-
-    lookback = int(os.getenv("MIDBOX_BOX_LOOKBACK_BARS", "30"))
-    ema_len = int(os.getenv("MIDBOX_EMA_TREND_LEN", "200"))
-    buf_pct = float(os.getenv("MIDBOX_BREAKOUT_BUFFER_PCT", "0.0005"))
-    min_atr_pct = float(os.getenv("MIDBOX_MIN_ATR_PCT", "0.002"))
-
-    closes = _get_series(bars_today, "close")
-    highs = _get_series(bars_today, "high")
-    lows = _get_series(bars_today, "low")
-    if len(closes) < max(lookback + 2, ema_len + 5) or len(highs) < lookback + 2 or len(lows) < lookback + 2:
-        return None
-
-    ema = _ema(closes, ema_len)
-    slope = ema[-1] - ema[-6] if len(ema) >= 6 else 0.0
-
-    atr = _atr(bars_today, 14)
-    price = closes[-1]
-    if atr is None or price <= 0:
-        return None
-    if (atr / price) < min_atr_pct:
-        return None
-
-    box_high = max(highs[-(lookback + 1):-1])
-    box_low = min(lows[-(lookback + 1):-1])
-    prev_close = closes[-2]
-    curr_close = closes[-1]
-
-    up_level = box_high * (1.0 + buf_pct)
-    dn_level = box_low * (1.0 - buf_pct)
-
-    if slope > 0 and prev_close <= up_level and curr_close > up_level:
-        return ("MIDBOX", "buy")
-    if slope < 0 and prev_close >= dn_level and curr_close < dn_level:
-        return ("MIDBOX", "sell")
-    return None
-
-def _scan_diag_midbox(bars_today: list[dict]) -> dict:
-    # Minimal diagnostics to explain why MIDBOX is not firing yet.
-    out: dict = {"eligible": True}
-    nowt = now_ny().time()
-    # Trade window gating
-    if not in_session(MIDBOX_TRADE_SESSION, nowt):
-        out["eligible"] = False
-        out["reason"] = "session_closed"
-        return out
-    # Bars requirements (EMA200 needs ~200 bars)
-    out["bars_1m"] = len(bars_today)
-    if len(bars_today) < 205:
-        out["eligible"] = False
-        out["reason"] = "insufficient_1m_bars"
-        return out
-    # EMA200 slope
+    # Build EMA200 over today's closes (approx; Pine uses ema200 on chart timeframe).
     closes = [r["close"] for r in bars_today]
     ema200 = ema_series(closes, 200)
     if len(ema200) < 3:
-        out["eligible"] = False
-        out["reason"] = "ema200_not_ready"
-        return out
-    out["ema200_slope_up"] = ema200[-1] > ema200[-2]
-    out["ema200_slope_down"] = ema200[-1] < ema200[-2]
-    # Breakout detection not implemented in this repo yet
-    out["crossed_up"] = False
-    out["crossed_down"] = False
-    out["long_signal"] = False
-    out["short_signal"] = False
-    out["reason"] = "logic_not_implemented"
-    return out
+        return None
+    ema_slope_up = ema200[-1] > ema200[-2]
+    ema_slope_down = ema200[-1] < ema200[-2]
 
-def _scan_diag_pwr(bars_today: list[dict]) -> dict:
-    out: dict = {"eligible": True}
-    nowt = now_ny().time()
-    if not in_session(PWR_SESSION, nowt):
-        out["eligible"] = False
-        out["reason"] = "session_closed"
-        return out
-    out["bars_1m"] = len(bars_today)
-    lookback = max(5, int(SCANNER_PWR_LOOKBACK_BARS))
-    if len(bars_today) < lookback + 5:
-        out["eligible"] = False
-        out["reason"] = "insufficient_1m_bars"
-        return out
-    # Placeholder logic (not implemented fully)
-    out["ema200_slope_up"] = True
-    out["breakout"] = False
-    out["volume_ok"] = False
-    out["reason"] = "logic_not_implemented"
-    return out
+    # Midbox window 10:00–11:30 NY
+    mid_start, mid_end = _parse_session_hhmm_range(MIDBOX_BUILD_SESSION)
+    mid = [r for r in bars_today if mid_start <= r["ts_ny"].time() <= mid_end]
+    if len(mid) < 10:
+        return None
+    mid_high = max(r["high"] for r in mid)
+    mid_low = min(r["low"] for r in mid)
 
-def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
-    out: dict = {"eligible": True}
-    nowt = now_ny().time()
-    # VWAP PB typically regular-session only; gate by market hours if configured
-    if ONLY_MARKET_HOURS and not in_market_hours():
-        out["eligible"] = False
-        out["reason"] = "outside_market_hours"
-        return out
-    bars_5m = resample_5m(bars_today) if bars_today else []
-    out["bars_5m"] = len(bars_5m)
-    min_bars = max(int(RESAMPLE_5M_MIN_BARS), int(VWAP_PB_EMA_SLOW) + 5)
-    out["min_bars_5m"] = int(min_bars)
-    if len(bars_5m) < min_bars:
-        out["eligible"] = False
-        out["reason"] = "insufficient_5m_bars"
-        return out
-    # We can compute some basics to aid explainability
-    closes = [b.close for b in bars_5m]
-    ema_fast = ema_series(closes, int(VWAP_PB_EMA_FAST))
-    ema_slow = ema_series(closes, int(VWAP_PB_EMA_SLOW))
-    out["ema_fast_gt_slow"] = bool(ema_fast and ema_slow and ema_fast[-1] > ema_slow[-1])
-    out["reason"] = "filters_not_met_or_logic_not_implemented"
-    # Remaining fields expected by explainability helpers
-    out.setdefault("uptrend", False)
-    out.setdefault("slope_ok", False)
-    out.setdefault("extension_ok", False)
-    out.setdefault("touched", False)
-    out.setdefault("reclaimed", False)
-    return out
+    # Breakout window 11:30–15:00
+    bo_start, bo_end = _parse_session_hhmm_range(MIDBOX_TRADE_SESSION)
+    bo = [r for r in bars_today if bo_start <= r["ts_ny"].time() <= bo_end]
+    if len(bo) < 2:
+        return None
+    last = bo[-1]
+    prev = bo[-2]
+    vwap = last["vwap"] or 0.0
+
+    # Long
+    if SCANNER_ENABLE_MIDBOX and (last["close"] > mid_high) and (prev["close"] <= mid_high):
+        if (vwap == 0.0 or last["close"] > vwap) and ema_slope_up:
+            return ("MIDBOX_LONG_GREEN", "buy")
+
+    # Short
+    if SCANNER_ENABLE_MIDBOX and ALLOW_SHORT and (last["close"] < mid_low) and (prev["close"] >= mid_low):
+        if (vwap == 0.0 or last["close"] < vwap) and ema_slope_down:
+            return ("MIDBOX_SHORT_RED", "sell")
+
+    return None
+
 
 def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
-    """PWR — 1m range breakout with EMA trend and optional volume confirmation."""
-    if not bars_today:
+    """Approx PWR signal eval: rolling breakout in 15:00–16:00 window."""
+    if not bars_today or not SCANNER_ENABLE_PWR:
         return None
 
-    session = os.getenv("PWR_SESSION", "09:45-11:30,13:00-16:00")
-    if not in_session(session):
+    # Only evaluate inside the configured NY window
+    ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
+    now_t = now_ny().time()
+    if not (ph_start <= now_t <= ph_end):
         return None
 
-    lookback = int(os.getenv("PWR_RANGE_LOOKBACK_BARS", "20"))
-    ema_fast = int(os.getenv("PWR_EMA_FAST", "20"))
-    ema_slow = int(os.getenv("PWR_EMA_SLOW", "50"))
-    buf_pct = float(os.getenv("PWR_BREAKOUT_BUFFER_PCT", "0.0004"))
-    vol_mult = float(os.getenv("PWR_VOL_MULT", "1.2"))
-
-    closes = _get_series(bars_today, "close")
-    highs = _get_series(bars_today, "high")
-    lows = _get_series(bars_today, "low")
-    vols = _get_series(bars_today, "volume")
-    if len(closes) < max(lookback + 2, ema_slow + 5) or len(highs) < lookback + 2 or len(lows) < lookback + 2:
+    ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
+    if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 6):
         return None
 
-    ef = _ema(closes, ema_fast)
-    es = _ema(closes, ema_slow)
-    trend_up = ef[-1] > es[-1]
-    trend_dn = ef[-1] < es[-1]
+    # Trend filter: EMA200 rising
+    closes = [r["close"] for r in bars_today]
+    ema200 = ema_series(closes, 200)
+    if len(ema200) < 4:
+        return None
+    ema_slope_up = ema200[-1] > ema200[-3]
 
-    r_hi = max(highs[-(lookback + 1):-1])
-    r_lo = min(lows[-(lookback + 1):-1])
-    prev_close = closes[-2]
-    curr_close = closes[-1]
+    # Breakout: last close above rolling high over lookback window
+    lookback = ph[-SCANNER_PWR_LOOKBACK_BARS:]
+    last = lookback[-1]
+    prior = lookback[:-1]
+    if not prior:
+        return None
+    rolling_high = max([r["high"] for r in prior])
 
-    up_level = r_hi * (1.0 + buf_pct)
-    dn_level = r_lo * (1.0 - buf_pct)
+    # Confirmation: last close above VWAP and above EMA20 (computed on 5m resample)
+    bars_5m = resample_5m(bars_today)
+    if len(bars_5m) < 25:
+        return None
+    closes_5m = [b.close for b in bars_5m]
+    ema20_5m = ema_series(closes_5m, 20)
+    if not ema20_5m:
+        return None
+    ema20_last = ema20_5m[-1]
+    vwap_last = bars_5m[-1].vwap
 
-    vol_ok = True
-    if len(vols) >= lookback + 2:
-        recent = vols[-(lookback + 1):-1]
-        avg = sum(recent) / float(len(recent)) if recent else 0.0
-        vol_ok = (avg <= 0.0) or (vols[-1] >= avg * vol_mult)
+    # Volume pop: last 5m volume above 20-bar average
+    vols = [b.volume for b in bars_5m]
+    avg_vol20 = (sum(vols[-20:]) / 20) if len(vols) >= 20 else (sum(vols) / max(1, len(vols)))
+    vol_ok = bars_5m[-1].volume >= 1.2 * avg_vol20
 
-    if trend_up and vol_ok and prev_close <= up_level and curr_close > up_level:
+    if ema_slope_up and last["close"] > rolling_high and last["close"] > vwap_last and last["close"] > ema20_last and vol_ok:
         return ("PWR", "buy")
-    if trend_dn and vol_ok and prev_close >= dn_level and curr_close < dn_level:
-        return ("PWR", "sell")
+
     return None
 
-def _strategy_reason_disabled() -> str:
-    return "strategy_disabled"
 
-def eval_vwap_pullback_signal(bars_5m: list[dict]) -> str | None:
-    """VWAP Pullback — 5m trend + pullback to VWAP + reclaim."""
-    if not bars_5m:
+def eval_vwap_pullback_signal(bars_5m: list[Bar]) -> str | None:
+    """Strategy C: VWAP Pullback (5m)
+    Long bias only (unless ALLOW_SHORT=True): requires uptrend (EMA fast above EMA slow),
+    pullback to VWAP (touch within band), then reclaim VWAP.
+    """
+    if not ENABLE_STRATEGY_VWAP_PULLBACK:
+        return None
+    if len(bars_5m) < max(VWAP_PB_EMA_SLOW + 5, RESAMPLE_5M_MIN_BARS):
         return None
 
-    session = os.getenv("VWAP_PB_SESSION", "09:45-15:30")
-    if not in_session(session):
+    closes = [b.close for b in bars_5m]
+    vwaps = [b.vwap for b in bars_5m]
+    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
+    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
+
+    last = bars_5m[-1]
+    prev = bars_5m[-2]
+    vwap_last = vwaps[-1]
+    vwap_prev = vwaps[-2]
+
+    # Trend filter (long)
+    if not (ema_fast[-1] > ema_slow[-1]):
+        return None
+    if (ema_fast[-1] - ema_fast[-2]) < VWAP_PB_MIN_EMA_SLOPE:
         return None
 
-    ema_fast = int(os.getenv("VWAP_PB_EMA_FAST", "9"))
-    ema_slow = int(os.getenv("VWAP_PB_EMA_SLOW", "21"))
-    touch_pct = float(os.getenv("VWAP_PB_TOUCH_PCT", "0.0015"))
-    reclaim_pct = float(os.getenv("VWAP_PB_RECLAIM_PCT", "0.0008"))
-    min_ext_pct = float(os.getenv("VWAP_PB_MIN_EXTENSION_PCT", "0.003"))
-
-    closes = _get_series(bars_5m, "close")
-    highs = _get_series(bars_5m, "high")
-    lows = _get_series(bars_5m, "low")
-    if len(closes) < max(ema_slow + 5, 30) or len(highs) < 30 or len(lows) < 30:
+    # Don't chase
+    if abs(last.close - vwap_last) / vwap_last > VWAP_PB_MAX_EXTENSION_PCT:
         return None
 
-    ef = _ema(closes, ema_fast)
-    es = _ema(closes, ema_slow)
-    vwap = _vwap_from_bars(bars_5m)
-    if vwap is None or vwap <= 0:
-        return None
+    band = vwap_last * VWAP_PB_BAND_PCT
+    touched = (last.low <= vwap_last + band) and (last.low >= vwap_last - band)
+    reclaimed = (last.close >= vwap_last) and (prev.close <= vwap_prev + band)
 
-    trend_up = ef[-1] > es[-1]
-    trend_dn = ef[-1] < es[-1]
-
-    recent_high = max(highs[-10:])
-    recent_low = min(lows[-10:])
-    was_ext_up = (recent_high - vwap) / vwap >= min_ext_pct
-    was_ext_dn = (vwap - recent_low) / vwap >= min_ext_pct
-
-    low_touch = lows[-1] <= vwap * (1.0 + touch_pct)
-    high_touch = highs[-1] >= vwap * (1.0 - touch_pct)
-
-    price = closes[-1]
-    if trend_up and was_ext_up and low_touch and price >= vwap * (1.0 + reclaim_pct):
+    if touched and reclaimed:
         return "BUY"
-    if trend_dn and was_ext_dn and high_touch and price <= vwap * (1.0 - reclaim_pct):
-        return "SELL"
+
+    # Optional short symmetry
+    if ALLOW_SHORT:
+        if not (ema_fast[-1] < ema_slow[-1]):
+            return None
+        if (ema_fast[-2] - ema_fast[-1]) < VWAP_PB_MIN_EMA_SLOPE:
+            return None
+        if abs(last.close - vwap_last) / vwap_last > VWAP_PB_MAX_EXTENSION_PCT:
+            return None
+        touched_s = (last.high >= vwap_last - band) and (last.high <= vwap_last + band)
+        reclaimed_s = (last.close <= vwap_last) and (prev.close >= vwap_prev - band)
+        if touched_s and reclaimed_s:
+            return "SELL"
+
     return None
 
-def _no_signal_from_midbox(diag: dict) -> str:
-    if not diag.get("enabled"):
-        return _strategy_reason_disabled()
-    if diag.get("eligible") is False:
-        return diag.get("reason") or "not_eligible"
-    if not diag.get("ema200_slope_up", True) and not diag.get("ema200_slope_down", True):
-        return "ema200_not_ready_or_flat"
-    if not diag.get("crossed_up") and not diag.get("crossed_down"):
-        return "no_breakout_cross"
-    if diag.get("crossed_up") and not diag.get("ema200_slope_up", True):
-        return "ema200_slope_not_up"
-    if diag.get("crossed_down") and not diag.get("ema200_slope_down", True):
-        return "ema200_slope_not_down"
-    if diag.get("crossed_up") and not diag.get("long_signal", False):
-        return "long_filters_failed"
-    if diag.get("crossed_down") and not diag.get("short_signal", False):
-        return "short_filters_failed"
-    return "no_signal"
 
-def _no_signal_from_pwr(diag: dict) -> str:
-    if not diag.get("enabled"):
-        return _strategy_reason_disabled()
-    if diag.get("eligible") is False:
-        return diag.get("reason") or "not_eligible"
-    if not diag.get("ema200_slope_up", True):
-        return "ema200_slope_not_up"
-    if not diag.get("breakout", False):
-        return "no_breakout"
-    if not diag.get("volume_ok", False):
-        return "volume_not_ok"
-    if not (diag.get("last_close", 0) > (diag.get("vwap_5m", float("inf")))):
-        return "below_vwap"
-    if not (diag.get("ema20_5m") is None or (diag.get("last_close", 0) > diag.get("ema20_5m", float("inf")))):
-        return "below_ema20_5m"
-    return "no_signal"
+# --- Scanner diagnostics helpers (explain WHY there was or wasn't a signal) ---
+def _scan_diag_midbox(bars_today: list[dict]) -> dict:
+    mid_start, mid_end = _parse_session_hhmm_range(MIDBOX_RANGE_SESSION)
+    bo_start, bo_end = _parse_session_hhmm_range(MIDBOX_TRADE_SESSION)
+    rng = [r for r in bars_today if mid_start <= r["ts_ny"].time() <= mid_end]
+    bo = [r for r in bars_today if bo_start <= r["ts_ny"].time() <= bo_end]
+    if len(rng) < 2 or len(bo) < 2:
+        return {"eligible": False, "rng_bars": len(rng), "bo_bars": len(bo)}
+    mid_high = max([r["high"] for r in rng])
+    mid_low = min([r["low"] for r in rng])
+    last = bo[-1]
+    prev = bo[-2]
+    vwap = float(last.get("vwap") or 0.0)
+    closes = [r["close"] for r in bars_today]
+    ema200 = ema_series(closes, 200)
+    ema_slope_up = len(ema200) >= 3 and ema200[-1] > ema200[-3]
+    ema_slope_down = len(ema200) >= 3 and ema200[-1] < ema200[-3]
+    crossed_up = (last["close"] > mid_high) and (prev["close"] <= mid_high)
+    crossed_dn = (last["close"] < mid_low) and (prev["close"] >= mid_low)
+    long_ok = crossed_up and (vwap == 0.0 or last["close"] > vwap) and ema_slope_up
+    short_ok = crossed_dn and (vwap == 0.0 or last["close"] < vwap) and ema_slope_down
+    return {
+        "eligible": True,
+        "mid_high": round(mid_high, 4),
+        "mid_low": round(mid_low, 4),
+        "last_close": round(last["close"], 4),
+        "prev_close": round(prev["close"], 4),
+        "vwap": round(vwap, 4),
+        "ema200_slope_up": bool(ema_slope_up),
+        "ema200_slope_down": bool(ema_slope_down),
+        "crossed_up": bool(crossed_up),
+        "crossed_down": bool(crossed_dn),
+        "long_signal": bool(long_ok),
+        "short_signal": bool(short_ok),
+    }
 
-def _no_signal_from_vwap_pb(diag: dict) -> str:
-    if not diag.get("enabled"):
-        return _strategy_reason_disabled()
-    if diag.get("eligible") is False:
-        return diag.get("reason") or "not_eligible"
-    if not diag.get("uptrend", False):
-        return "trend_fail"
-    if not diag.get("slope_ok", False):
-        return "ema_slope_fail"
-    if not diag.get("extension_ok", False):
-        return "too_extended_from_vwap"
-    if not diag.get("touched", False):
-        return "did_not_touch_vwap_band"
-    if not diag.get("reclaimed", False):
-        return "did_not_reclaim_vwap"
-    return "no_signal"
 
-def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
-    """Return (primary_reason, details_by_strategy) for hold/no_signal cases."""
-    details: dict = {}
-    mb = diag.get("midbox") or {}
-    pw = diag.get("pwr") or {}
-    vp = diag.get("vwap_pullback") or {}
+def _scan_diag_pwr(bars_today: list[dict]) -> dict:
+    ph_start, ph_end = _parse_session_hhmm_range(PWR_SESSION)
+    now_t = now_ny().time()
+    in_window = ph_start <= now_t <= ph_end
+    ph = [r for r in bars_today if ph_start <= r["ts_ny"].time() <= ph_end]
+    if not in_window:
+        return {"eligible": False, "reason": "outside_window", "window": PWR_SESSION}
+    if len(ph) < max(SCANNER_PWR_LOOKBACK_BARS + 2, 6):
+        return {"eligible": False, "reason": "insufficient_window_bars", "window_bars": len(ph), "window": PWR_SESSION}
+    closes = [r["close"] for r in bars_today]
+    ema200 = ema_series(closes, 200)
+    ema_slope_up = len(ema200) >= 4 and ema200[-1] > ema200[-3]
+    lookback = ph[-SCANNER_PWR_LOOKBACK_BARS:]
+    last = lookback[-1]
+    rolling_high = max([r["high"] for r in lookback[:-1]]) if len(lookback) > 1 else None
+    bars_5m = resample_5m(bars_today)
+    if len(bars_5m) < 25:
+        return {"eligible": False, "reason": "insufficient_5m_bars", "bars_5m": len(bars_5m)}
+    closes_5m = [b.close for b in bars_5m]
+    ema20_5m = ema_series(closes_5m, 20)
+    ema20_last = ema20_5m[-1] if ema20_5m else None
+    vwap_last = bars_5m[-1].vwap
+    vols = [b.volume for b in bars_5m]
+    avg_vol20 = (sum(vols[-20:]) / 20) if len(vols) >= 20 else (sum(vols) / max(1, len(vols)))
+    vol_ok = bars_5m[-1].volume >= 1.2 * avg_vol20
+    breakout = (rolling_high is not None) and (last["close"] > rolling_high)
+    above_vwap = last["close"] > vwap_last
+    above_ema20 = (ema20_last is not None) and (last["close"] > ema20_last)
+    signal = bool(ema_slope_up and breakout and above_vwap and above_ema20 and vol_ok)
+    return {
+        "eligible": True,
+        "window": PWR_SESSION,
+        "ema200_slope_up": bool(ema_slope_up),
+        "rolling_high": None if rolling_high is None else round(rolling_high, 4),
+        "last_close": round(last["close"], 4),
+        "vwap_5m": round(vwap_last, 4),
+        "ema20_5m": None if ema20_last is None else round(ema20_last, 4),
+        "volume_ok": bool(vol_ok),
+        "breakout": bool(breakout),
+        "signal": bool(signal),
+    }
 
-    mb_reason = _no_signal_from_midbox(mb)
-    pw_reason = _no_signal_from_pwr(pw)
-    vp_reason = _no_signal_from_vwap_pb(vp)
 
-    details["midbox"] = {"enabled": bool(mb.get("enabled")), "eligible": mb.get("eligible"), "reason": mb_reason}
-    details["pwr"] = {"enabled": bool(pw.get("enabled")), "eligible": pw.get("eligible"), "reason": pw_reason}
-    details["vwap_pullback"] = {"enabled": bool(vp.get("enabled")), "eligible": vp.get("eligible"), "reason": vp_reason}
+def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
+    bars_5m = resample_5m(bars_today)
+    if len(bars_5m) < max(VWAP_PB_EMA_SLOW + 5, RESAMPLE_5M_MIN_BARS):
+        return {"eligible": False, "reason": "insufficient_5m_bars", "bars_5m": len(bars_5m)}
+    closes = [b.close for b in bars_5m]
+    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
+    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
+    last = bars_5m[-1]
+    prev = bars_5m[-2]
+    vwap_last = last.vwap
+    band = vwap_last * VWAP_PB_BAND_PCT
+    uptrend = ema_fast[-1] > ema_slow[-1]
+    slope = ema_fast[-1] - ema_fast[-2]
+    slope_ok = slope >= VWAP_PB_MIN_EMA_SLOPE
+    extension_ok = abs(last.close - vwap_last) / vwap_last <= VWAP_PB_MAX_EXTENSION_PCT
+    touched = (last.low <= vwap_last + band) and (last.low >= vwap_last - band)
+    reclaimed = (last.close >= vwap_last) and (prev.close <= prev.vwap + band)
+    signal = bool(uptrend and slope_ok and extension_ok and touched and reclaimed)
+    return {
+        "eligible": True,
+        "ema_fast": round(ema_fast[-1], 4),
+        "ema_slow": round(ema_slow[-1], 4),
+        "ema_fast_slope": round(slope, 6),
+        "vwap": round(vwap_last, 4),
+        "last_close": round(last.close, 4),
+        "touched": bool(touched),
+        "reclaimed": bool(reclaimed),
+        "uptrend": bool(uptrend),
+        "slope_ok": bool(slope_ok),
+        "extension_ok": bool(extension_ok),
+        "signal": bool(signal),
+    }
+    ema_slope_down = ema200[-1] < ema200[-2]
 
-    for strat in ("midbox", "pwr", "vwap_pullback"):
-        if details[strat]["enabled"]:
-            return details[strat]["reason"], details
-    return "no_strategy_enabled", details
+    last = ph[-1]
+    prev = ph[-2]
+    lookback = ph[-(SCANNER_PWR_LOOKBACK_BARS + 1):-1]  # exclude last
+    if len(lookback) < 3:
+        return None
+    roll_high = max(r["high"] for r in lookback)
+    roll_low = min(r["low"] for r in lookback)
+    vwap = last["vwap"] or 0.0
+
+    if (last["close"] > roll_high) and (prev["close"] <= roll_high) and (vwap == 0.0 or last["close"] > vwap) and ema_slope_up:
+        return ("PWR_LONG_GREEN", "buy")
+
+    if ALLOW_SHORT and (last["close"] < roll_low) and (prev["close"] >= roll_low) and (vwap == 0.0 or last["close"] < vwap) and ema_slope_down:
+        return ("PWR_SHORT_RED", "sell")
+
+    return None
 
 
 def scanner_idempotency_key(symbol: str, signal: str, bar_ts_ny: datetime) -> str:
@@ -1539,27 +1493,86 @@ async def worker_scan_entries(req: Request):
 
     effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
 
-    def _set_last_scan(**kwargs):
-        LAST_SCAN.clear()
-        LAST_SCAN.update({
-            "ts_ny": now_ny().isoformat(),
-            "ts_utc": datetime.now(tz=timezone.utc).isoformat(),
-            "enabled": SCANNER_ENABLED,
-            "dry_run": SCANNER_DRY_RUN,
-            "allow_live": SCANNER_ALLOW_LIVE,
-            "effective_dry_run": effective_dry_run,
-            "universe_provider": SCANNER_UNIVERSE_PROVIDER,
-            **kwargs
-        })
+def _compute_scan_summary(*, skipped: bool, skip_reason: str | None, results: list[dict]) -> dict:
+    actions = Counter()
+    no_signal_reasons = Counter()
+    strategy_breakdown: dict[str, dict] = {}
+
+    if skipped:
+        actions["skipped"] = 1
+        top_no_signal = [(skip_reason, 1)] if skip_reason else []
+        return {
+            "skipped": True,
+            "skip_reason": skip_reason,
+            "actions": dict(actions),
+            "no_signal_total": 0,
+            "top_no_signal_reasons": top_no_signal,
+            "strategy_breakdown": {},
+        }
+
+    for r in results:
+        actions[r.get("action", "unknown")] += 1
+        rsn = r.get("reason")
+        if r.get("action") == "hold" and rsn:
+            no_signal_reasons[rsn] += 1
+
+        strat = r.get("strategy") or "unknown"
+        sb = strategy_breakdown.setdefault(strat, {"total": 0})
+        sb["total"] += 1
+        act = r.get("action", "unknown")
+        sb[act] = sb.get(act, 0) + 1
+
+    return {
+        "skipped": False,
+        "skip_reason": None,
+        "actions": dict(actions),
+        "no_signal_total": int(sum(no_signal_reasons.values())),
+        "top_no_signal_reasons": list(no_signal_reasons.most_common(10)),
+        "strategy_breakdown": strategy_breakdown,
+    }
+
+def _set_last_scan(
+    *,
+    ts_utc: str,
+    universe_provider: str,
+    symbols: list[str],
+    scanned: int,
+    signals: int,
+    would_trade: int,
+    blocked: int,
+    duration_ms: int,
+    results: list[dict],
+    skipped: bool = False,
+    skip_reason: str | None = None,
+    error: str | None = None,
+):
+    summary = _compute_scan_summary(skipped=skipped, skip_reason=skip_reason, results=results)
+    LAST_SCAN.clear()
+    LAST_SCAN.update(
+        {
+            "ts_utc": ts_utc,
+            "universe_provider": universe_provider,
+            "symbols": symbols,
+            "scanned": scanned,
+            "signals": signals,
+            "would_trade": would_trade,
+            "blocked": blocked,
+            "duration_ms": duration_ms,
+            "summary": summary,
+            "results": results,
+            **({"error": error} if error else {}),
+        }
+    )
+
 
     try:
         if not SCANNER_ENABLED:
-            _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            _set_last_scan(ts_utc=now_utc, universe_provider=UNIVERSE_PROVIDER, symbols=[], results=[], skipped=True, skip_reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
             record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
             return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
 
         if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
-            _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            _set_last_scan(ts_utc=now_utc, universe_provider=UNIVERSE_PROVIDER, symbols=[], results=[], skipped=True, skip_reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
             record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
 
@@ -1656,16 +1669,12 @@ async def worker_scan_entries(req: Request):
                         if mb:
                             signal_name, side = mb
                         else:
-                            pwr = None
-                            if SCANNER_ENABLE_PWR:
-                                pwr = eval_power_hour_signal(bars_today)
+                            pwr = eval_power_hour_signal(bars_today)
                             if pwr:
                                 signal_name, side = pwr
                             else:
                                 bars_5m = resample_5m(bars_today) if bars_today else []
-                                vp = None
-                                if SCANNER_ENABLE_VWAP_PB:
-                                    vp = eval_vwap_pullback_signal(bars_5m)
+                                vp = eval_vwap_pullback_signal(bars_5m)
                                 if vp == "BUY":
                                     signal_name, side = ("VWAP_PULLBACK", "buy")
                                 elif vp == "SELL":
@@ -1687,11 +1696,6 @@ async def worker_scan_entries(req: Request):
                     if action == "exit":
                         local_signals.append({"symbol": sym, "action": action, "price": price})
 
-                    no_signal_primary = None
-                    no_signal_details = None
-                    if action == "hold" and (reason == "no_signal" or reason == ""):
-                        no_signal_primary, no_signal_details = _derive_no_signal_details(diag)
-                        reason = f"no_signal:{no_signal_primary}"
                     local_results.append({
                         "symbol": sym,
                         "action": action,
@@ -1700,7 +1704,6 @@ async def worker_scan_entries(req: Request):
                         "stop": stop_out,
                         "take": take_out,
                         "diagnostics": diag,
-                        "no_signal": {"primary": no_signal_primary, "details": no_signal_details},
                     })
 
                     record_decision(
@@ -1741,62 +1744,16 @@ async def worker_scan_entries(req: Request):
         scan_end_utc = utc_ts()
         duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
 
-        # ---- Scan-level summary (top no-signal reasons, action counts) ----
-        action_counts = Counter()
-        no_signal_counts = Counter()
-        for r in results:
-            try:
-                action_counts[str(r.get("action", "") or "")] += 1
-                reason = str(r.get("reason", "") or "")
-                if reason.startswith("no_signal:"):
-                    primary = (r.get("no_signal") or {}).get("primary") or reason.split(":", 1)[1]
-                    if primary:
-                        no_signal_counts[str(primary)] += 1
-            except Exception:
-                pass
-
-        top_no_signal = [
-            {"reason": k, "count": int(v)}
-            for k, v in no_signal_counts.most_common(10)
-        ]
-        
-        # Strategy-level breakdown from per-row no_signal.details
-        strat_counts: dict[str, Counter] = {
-            "midbox": Counter(),
-            "pwr": Counter(),
-            "vwap_pullback": Counter(),
-        }
-        for r in results:
-            ns = (r.get("no_signal") or {}).get("details") or {}
-            for strat, payload in ns.items():
-                try:
-                    rr = str((payload or {}).get("reason") or "")
-                    if rr:
-                        strat_counts[strat][rr] += 1
-                except Exception:
-                    pass
-
-        strategy_breakdown = {
-            strat: [{"reason": k, "count": int(v)} for k, v in c.most_common(8)]
-            for strat, c in strat_counts.items()
-        }
-
-        scan_summary = {
-            "actions": dict(action_counts),
-            "no_signal_total": int(sum(no_signal_counts.values())),
-            "top_no_signal_reasons": top_no_signal,
-            "strategy_breakdown": strategy_breakdown,
-        }
-
         _set_last_scan(
-                skipped=False,
-                reason=None,
-                scanned=len(syms),
-                signals=len(signals),
-                would_trade=len(signals),
-                blocked=blocked,
-                duration_ms=duration_ms,
-                summary=scan_summary,
+            ts_utc=now_utc,
+            universe_provider=UNIVERSE_PROVIDER,
+            symbols=syms,
+            results=results,
+            scanned=len(syms),
+            signals=len(signals),
+            would_trade=len(signals),
+            blocked=blocked,
+            duration_ms=duration_ms,
         )
 
         logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
@@ -1813,7 +1770,6 @@ async def worker_scan_entries(req: Request):
                     "would_trade": len(signals),
                     "blocked": blocked,
                     "duration_ms": duration_ms,
-                    "summary": scan_summary,
                     "results": results,
                     "would_submit": signals,
                 })
@@ -1835,7 +1791,6 @@ async def worker_scan_entries(req: Request):
                     "would_trade": len(signals),
                     "blocked": blocked,
                     "duration_ms": duration_ms,
-                    "summary": scan_summary,
                 },
                 "reconcile": reconcile_actions,
                 "would_submit": signals,
@@ -1845,7 +1800,7 @@ async def worker_scan_entries(req: Request):
         scan_end_utc = utc_ts()
         duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
         try:
-            _set_last_scan(skipped=False, reason='scan_exception', error=str(e), scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=duration_ms)
+            _set_last_scan(ts_utc=now_utc, universe_provider=UNIVERSE_PROVIDER, symbols=symbols, results=[], skipped=False, skip_reason=None, error=str(e), scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=duration_ms)
         except Exception:
             pass
         try:
