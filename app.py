@@ -161,6 +161,41 @@ def in_session(raw: str, t: time | None = None) -> bool:
     tt = t or now_ny().time()
     return (tt >= start) and (tt <= end)
 
+def parse_session_ranges(raw: str) -> list[tuple[time, time]]:
+    """Parse comma/semicolon separated session windows like '09:35-11:30,13:00-15:50'."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in re.split(r"[;,]", raw) if p.strip()]
+    ranges: list[tuple[time, time]] = []
+    for p in parts:
+        try:
+            start_t, end_t = parse_session_window(p)
+            ranges.append((start_t, end_t))
+        except Exception:
+            # Ignore malformed fragments; keep scanner running rather than crashing.
+            log("SCANNER_SESSION_PARSE_ERROR", raw=raw, fragment=p)
+    return ranges
+
+_SCANNER_SESSION_RANGES_CACHE = None  # parsed (start,end) times
+
+def in_scanner_session(now_ny: datetime | None = None) -> bool:
+    """True if within configured scanner session windows. If no windows configured, True."""
+    global _SCANNER_SESSION_RANGES_CACHE
+    if not SCANNER_SESSIONS_NY:
+        return True
+    if now_ny is None:
+        now_ny = ny_now()
+    t = now_ny.time()
+    if _SCANNER_SESSION_RANGES_CACHE is None:
+        _SCANNER_SESSION_RANGES_CACHE = parse_session_ranges(SCANNER_SESSIONS_NY)
+    if not _SCANNER_SESSION_RANGES_CACHE:
+        return True
+    for start_t, end_t in _SCANNER_SESSION_RANGES_CACHE:
+        if start_t <= t <= end_t:
+            return True
+    return False
+
 # =============================
 # ENV
 # =============================
@@ -226,6 +261,16 @@ LAST_SCAN: dict = {}
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
 SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
+# Scanner session gating: optional intraday windows in NY time (comma/semicolon separated).
+# Example: "09:35-11:30,13:00-15:50". If empty, scanner runs any time market-hours gating allows.
+SCANNER_SESSIONS_NY = os.getenv("SCANNER_SESSIONS_NY", "").strip()
+
+# Latest prices caching (seconds). Helps reduce Alpaca rate-limit pressure.
+try:
+    LATEST_PRICES_CACHE_TTL_SEC = max(0, int(os.getenv("LATEST_PRICES_CACHE_TTL_SEC", "2")))
+except Exception:
+    LATEST_PRICES_CACHE_TTL_SEC = 2
+
 
 
 # Rotation scanning (for large universes)
@@ -436,6 +481,10 @@ _LATEST_PRICES_CACHE: dict[str, float] | None = None
 _LATEST_PRICES_CACHE_TS: float = 0.0
 LATEST_PRICES_CACHE_TTL_SEC = getenv_int("LATEST_PRICES_CACHE_TTL_SEC", 5)
 
+# In-process cache for latest prices (reduces rate-limit pressure).
+_LATEST_PRICES_CACHE: dict[str, float] = {}
+_LATEST_PRICES_CACHE_TS: float = 0.0
+
 def get_latest_prices(symbols: list[str]) -> dict[str, float]:
     """Batch latest-trade prices for many symbols.
     Uses a tiny in-process cache to avoid hammering Alpaca across rapid scans.
@@ -445,29 +494,48 @@ def get_latest_prices(symbols: list[str]) -> dict[str, float]:
     if not symbols:
         return {}
     now_ts = _time.time()
-    if _LATEST_PRICES_CACHE and (now_ts - _LATEST_PRICES_CACHE_TS) <= float(LATEST_PRICES_CACHE_TTL_SEC):
+    ttl = float(LATEST_PRICES_CACHE_TTL_SEC)
+    if ttl > 0 and _LATEST_PRICES_CACHE and (now_ts - _LATEST_PRICES_CACHE_TS) <= ttl:
         return {s: _LATEST_PRICES_CACHE[s] for s in symbols if s in _LATEST_PRICES_CACHE}
 
-    try:
-        req = StockLatestTradeRequest(symbol_or_symbols=symbols)
-        latest = data_client.get_stock_latest_trade(req)
-        out: dict[str, float] = {}
-        for sym, trade in (latest or {}).items():
-            px = None
-            try:
-                px = getattr(trade, "price", None)
-                if px is None and isinstance(trade, dict):
-                    px = trade.get("price")
-            except Exception:
+    # Alpaca can rate-limit (429). Do a small bounded retry with backoff to avoid nuking the whole scan.
+    backoffs = [0.15, 0.35, 0.75]  # total <= ~1.25s
+    last_err: str | None = None
+
+    for attempt, sleep_s in enumerate([0.0] + backoffs):
+        if sleep_s:
+            _time.sleep(sleep_s)
+        try:
+            req = StockLatestTradeRequest(symbol_or_symbols=symbols)
+            latest = data_client.get_stock_latest_trade(req)
+            out: dict[str, float] = {}
+            for sym, trade in (latest or {}).items():
                 px = None
-            if px is not None:
-                out[str(sym)] = float(px)
-        _LATEST_PRICES_CACHE = out
-        _LATEST_PRICES_CACHE_TS = now_ts
-        return out
-    except Exception as e:
-        logger.warning("LATEST_PRICES_BATCH_ERROR err=%s", str(e))
-        return {}
+                try:
+                    px = getattr(trade, "price", None)
+                    if px is None and isinstance(trade, dict):
+                        px = trade.get("price")
+                except Exception:
+                    px = None
+                if px is not None:
+                    out[str(sym)] = float(px)
+
+            # Update cache even if partial; it still reduces load next pass.
+            _LATEST_PRICES_CACHE = out
+            _LATEST_PRICES_CACHE_TS = _time.time()
+            return out
+        except Exception as e:
+            s = str(e)
+            last_err = s
+            # Detect rate limit in a few common forms.
+            if ("too many requests" in s.lower()) or ("429" in s):
+                logger.warning("LATEST_PRICES_BATCH_RATE_LIMIT attempt=%s err=%s", attempt, s)
+                continue
+            logger.warning("LATEST_PRICES_BATCH_ERROR attempt=%s err=%s", attempt, s)
+            break
+
+    logger.warning("LATEST_PRICES_BATCH_GIVEUP err=%s", last_err)
+    return {}
 def get_position(symbol: str):
     """Returns (qty_signed, side_str) where side_str is 'long'/'short'. If none, (0,'flat')."""
     try:
@@ -1563,7 +1631,38 @@ async def worker_scan_entries(req: Request):
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
 
-        # Reconcile first: never place entries against stale internal state.
+                # Optional intraday scanner session gating (NY time).
+        if SCANNER_SESSIONS_NY and not in_scanner_session():
+            _set_last_scan(skipped=True, reason="outside_scanner_session", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            record_decision("SCAN", "worker_scan", action="skipped", reason="outside_scanner_session")
+            try:
+                scan_summary = {
+                    "skipped": True,
+                    "skip_reason": "outside_scanner_session",
+                    "actions": {"skipped": 1},
+                    "no_signal_total": 0,
+                    "top_no_signal_reasons": [("outside_scanner_session", 1)],
+                    "strategy_breakdown": {},
+                }
+                SCAN_HISTORY.append({
+                    "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "symbols": [],
+                    "scanned": 0,
+                    "signals": 0,
+                    "would_trade": 0,
+                    "blocked": 0,
+                    "duration_ms": int((utc_ts()-scan_start_utc)*1000),
+                    "summary": scan_summary,
+                    "results": [],
+                })
+                if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
+                    del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
+            except Exception:
+                pass
+            return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
+
+# Reconcile first: never place entries against stale internal state.
         reconcile_actions = reconcile_trade_plans_from_alpaca()
 
         syms = universe_symbols()
