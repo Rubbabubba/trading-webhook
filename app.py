@@ -294,6 +294,7 @@ ENABLE_STRATEGY_VWAP_PULLBACK = os.getenv("ENABLE_STRATEGY_VWAP_PULLBACK", "true
 VWAP_PB_EMA_FAST = int(os.getenv("VWAP_PB_EMA_FAST", "20"))
 VWAP_PB_EMA_SLOW = int(os.getenv("VWAP_PB_EMA_SLOW", "50"))
 VWAP_PB_BAND_PCT = float(os.getenv("VWAP_PB_BAND_PCT", "0.0015"))  # 0.15% band around VWAP counts as a touch
+VWAP_PB_PULLBACK_LOOKBACK_BARS = int(os.getenv("VWAP_PB_PULLBACK_LOOKBACK_BARS", "12"))  # bars to look back for VWAP touch
 VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.006"))  # don't chase if >0.6% away from VWAP
 VWAP_PB_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_MIN_EMA_SLOPE", "0.0"))  # per-bar slope
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
@@ -956,19 +957,43 @@ def _bars_for_today_session(bars: list[dict]) -> list[dict]:
 
 
 def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
-    """Approx MIDBOX signal eval: break of midbox high/low with VWAP + EMA200 slope filter."""
     if not bars_today:
         return None
-
-    # Build EMA200 over today's closes (approx; Pine uses ema200 on chart timeframe).
-    closes = [r["close"] for r in bars_today]
-    ema200 = ema_series(closes, 200)
-    if len(ema200) < 3:
+    ts_ny = bars_today[-1].get("ts_ny")
+    if ts_ny is None:
         return None
-    ema_slope_up = ema200[-1] > ema200[-2]
 
+    # Must be inside trade session
+    if not _bars_for_today_session(bars_today, ts_ny, MIDBOX_TRADE_SESSION):
+        return None
 
+    build_bars = _bars_for_today_session(bars_today, ts_ny, MIDBOX_BUILD_SESSION)
+    if len(build_bars) < 10:
+        return None
 
+    use_hl = bool(MIDBOX_BREAKOUT_USE_HIGHLOW)
+    highs = [float(b.get("high", b.get("close"))) for b in build_bars]
+    lows = [float(b.get("low", b.get("close"))) for b in build_bars]
+    closes = [float(b.get("close")) for b in build_bars]
+    box_high = max(highs) if use_hl else max(closes)
+    box_low = min(lows) if use_hl else min(closes)
+
+    price = float(bars_today[-1].get("close"))
+    buf = float(MIDBOX_BREAKOUT_BUFFER_PCT)
+
+    # Light trend filter (keeps frequency reasonable, avoids chop)
+    ema_fast = ema_series(closes + [price], 20)
+    ema_slow = ema_series(closes + [price], 50)
+    if ema_fast is None or ema_slow is None:
+        return None
+    if price < ema_fast or ema_fast < ema_slow:
+        return None
+
+    if price >= box_high * (1.0 + buf):
+        return ("midbox_breakout_up", "BUY")
+
+    # Shorts are disabled in this system; return None for breakdowns.
+    return None
 
 def _scan_diag_midbox(bars_today: list[dict]) -> dict:
     # Minimal diagnostics to explain why MIDBOX is not firing yet.
@@ -1053,29 +1078,103 @@ def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
     return out
 
 def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
-    """PWR strategy placeholder.
+    if not bars_today:
+        return None
+    ts_ny = bars_today[-1].get("ts_ny")
+    if ts_ny is None:
+        return None
 
-    Important: This repo previously referenced PWR but did not implement it.
-    We return None to avoid accidental live trading while still providing diagnostics.
-    """
+    pwr_bars = _bars_for_today_session(bars_today, ts_ny, PWR_SESSION)
+    if not pwr_bars:
+        return None
+
+    first_pwr_ts = pwr_bars[0]["ts_ny"]
+    pre_bars = [b for b in bars_today if b.get("ts_ny") and b["ts_ny"] < first_pwr_ts]
+    if len(pre_bars) < 20:
+        return None
+
+    use_hl = bool(PWR_BREAKOUT_USE_HIGHLOW)
+    pre_high = max(float(b.get("high", b.get("close"))) for b in pre_bars) if use_hl else max(float(b.get("close")) for b in pre_bars)
+    pre_low = min(float(b.get("low", b.get("close"))) for b in pre_bars) if use_hl else min(float(b.get("close")) for b in pre_bars)
+
+    price = float(bars_today[-1].get("close"))
+    buf = float(PWR_BREAKOUT_BUFFER_PCT)
+
+    closes = [float(b.get("close")) for b in pre_bars[-200:]] + [price]
+    ema_fast = ema_series(closes, 20)
+    ema_slow = ema_series(closes, 50)
+    if ema_fast is None or ema_slow is None:
+        return None
+    if price < ema_fast or ema_fast < ema_slow:
+        return None
+
+    if price >= pre_high * (1.0 + buf):
+        return ("power_hour_breakout_up", "BUY")
+
     return None
 
-
-# --- Scanner explainability helpers ---
 def _strategy_reason_disabled() -> str:
     return "strategy_disabled"
 
-def eval_vwap_pullback_signal(bars_5m: list[dict]) -> str | None:
-    """VWAP Pullback strategy placeholder.
+def eval_vwap_pullback_signal(bars_today: list[dict]) -> str | None:
+    if not bars_today:
+        return None
+    ts_ny = bars_today[-1].get("ts_ny")
+    if ts_ny is None:
+        return None
 
-    The scanner referenced VWAP Pullback but the implementation was missing in this repo.
-    Return values:
-      - "BUY" to indicate a long entry signal
-      - None for no signal
-    """
-    # TODO: Implement real VWAP Pullback rules.
+    # Only attempt within the scanner session window (keeps it controlled)
+    if not in_scanner_session(ts_ny):
+        return None
+
+    closes = [float(b.get("close")) for b in bars_today]
+    highs = [float(b.get("high", c)) for b, c in zip(bars_today, closes)]
+    lows = [float(b.get("low", c)) for b, c in zip(bars_today, closes)]
+    vols = [float(b.get("volume", 0) or 0) for b in bars_today]
+
+    price = closes[-1]
+    prev = closes[-2] if len(closes) >= 2 else price
+
+    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
+    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
+    if ema_fast is None or ema_slow is None:
+        return None
+    if price < ema_fast or ema_fast < ema_slow:
+        return None
+
+    # VWAP
+    v_num = 0.0
+    v_den = 0.0
+    for i in range(len(closes)):
+        v = vols[i]
+        tp = (highs[i] + lows[i] + closes[i]) / 3.0
+        if v > 0:
+            v_num += tp * v
+            v_den += v
+    vwap = (v_num / v_den) if v_den > 0 else sum(closes) / len(closes)
+
+    # Don't chase: must be near VWAP
+    if abs(price - vwap) / vwap > float(VWAP_PB_MAX_EXTENSION_PCT):
+        return None
+
+    lookback = int(VWAP_PB_PULLBACK_LOOKBACK_BARS)
+    lookback = max(3, min(lookback, len(closes)))
+    band = float(VWAP_PB_BAND_PCT)
+
+    touched = any(l <= vwap * (1.0 + band) for l in lows[-lookback:])
+    if not touched:
+        return None
+
+    # Trigger: reclaim VWAP (cross up)
+    if prev <= vwap and price > vwap:
+        return "BUY"
+
+    # Alternate trigger: reclaim EMA fast after a dip
+    dip = any(c < ema_fast for c in closes[-lookback:])
+    if dip and prev <= ema_fast and price > ema_fast:
+        return "BUY"
+
     return None
-
 
 def _no_signal_from_midbox(diag: dict) -> str:
     if not diag.get("enabled"):
