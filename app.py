@@ -185,7 +185,7 @@ def in_scanner_session(now_ny: datetime | None = None) -> bool:
     if not SCANNER_SESSIONS_NY:
         return True
     if now_ny is None:
-        now_ny = ny_now()
+        now_ny = now_ny()
     t = now_ny.time()
     if _SCANNER_SESSION_RANGES_CACHE is None:
         _SCANNER_SESSION_RANGES_CACHE = parse_session_ranges(SCANNER_SESSIONS_NY)
@@ -839,10 +839,14 @@ def ema_series(closes: list[float], length: int) -> list[float]:
 def fetch_1m_bars_multi(
     symbols: list[str], lookback_days: int = 1, limit_per_symbol: int | None = None
 ) -> dict[str, list[dict]]:
-    """Fetch 1-minute bars for multiple symbols in a single Alpaca call.
+    """Fetch 1-minute bars for multiple symbols.
 
+    Alpaca's bars endpoint can fail when requesting very large universes in one call.
+    This implementation:
+      - uppercases/cleans symbols
+      - chunks requests
+      - logs errors instead of silently returning empty data
     Returns mapping symbol -> list[dict] with the same schema as fetch_1m_bars().
-    Symbols with no data will have an empty list.
     """
     symbols = [s.strip().upper() for s in (symbols or []) if s and s.strip()]
     if not symbols:
@@ -850,51 +854,38 @@ def fetch_1m_bars_multi(
 
     end = now_ny()
     start = end - timedelta(days=max(1, int(lookback_days)))
-    req = StockBarsRequest(
-        symbol_or_symbols=symbols,
-        timeframe=TimeFrame.Minute,
-        start=start,
-        end=end,
-        adjustment=ADJUSTMENT,
-        feed=DATA_FEED,
-    )
 
     out: dict[str, list[dict]] = {s: [] for s in symbols}
-    try:
-        df = data_client().get_stock_bars(req).df
-    except Exception:
-        return out
-    if df is None or len(df) == 0:
-        return out
 
-    # Expected Alpaca shape: multiindex (symbol, timestamp)
-    try:
-        for (sym, ts), row in df.iterrows():
-            ts_utc = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-            ts_ny = ts_utc.astimezone(NY)
-            out.setdefault(sym, []).append(
-                {
-                    "ts_utc": ts_utc,
-                    "ts_ny": ts_ny,
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": float(row.get("volume", 0.0)),
-                    "vwap": float(row.get("vwap", 0.0) or 0.0),
-                }
+    # Chunk to avoid request-size / provider limits
+    chunk_size = max(10, int(os.getenv("BARS_MULTI_CHUNK_SIZE", "50")))
+    chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+
+    for ch in chunks:
+        try:
+            req = StockBarsRequest(
+                symbol_or_symbols=ch,
+                timeframe=TimeFrame.Minute,
+                start=start,
+                end=end,
+                adjustment=ADJUSTMENT,
+                feed=DATA_FEED,
+                limit=limit_per_symbol,
             )
-    except Exception:
-        # Fallback if df isn't multiindex
-        for sym in symbols:
-            try:
-                sdf = df.xs(sym, level=0)
-            except Exception:
-                continue
-            for ts, row in sdf.iterrows():
+            df = data_client.get_stock_bars(req).df
+        except Exception as e:
+            logger.warning("BARS_MULTI_ERROR symbols=%s err=%s", len(ch), str(e))
+            continue
+
+        if df is None or len(df) == 0:
+            continue
+
+        # Expected Alpaca shape: multiindex (symbol, timestamp)
+        try:
+            for (sym, ts), row in df.iterrows():
                 ts_utc = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
                 ts_ny = ts_utc.astimezone(NY)
-                out.setdefault(sym, []).append(
+                out.setdefault(str(sym), []).append(
                     {
                         "ts_utc": ts_utc,
                         "ts_ny": ts_ny,
@@ -902,17 +893,97 @@ def fetch_1m_bars_multi(
                         "high": float(row["high"]),
                         "low": float(row["low"]),
                         "close": float(row["close"]),
-                        "volume": float(row.get("volume", 0.0)),
+                        "volume": float(row.get("volume", 0.0) or 0.0),
                         "vwap": float(row.get("vwap", 0.0) or 0.0),
                     }
                 )
+        except Exception:
+            # Fallback if df isn't multiindex
+            for sym in ch:
+                try:
+                    sdf = df.xs(sym, level=0)
+                except Exception:
+                    continue
+                for ts, row in sdf.iterrows():
+                    ts_utc = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+                    ts_ny = ts_utc.astimezone(NY)
+                    out.setdefault(sym, []).append(
+                        {
+                            "ts_utc": ts_utc,
+                            "ts_ny": ts_ny,
+                            "open": float(row["open"]),
+                            "high": float(row["high"]),
+                            "low": float(row["low"]),
+                            "close": float(row["close"]),
+                            "volume": float(row.get("volume", 0.0) or 0.0),
+                            "vwap": float(row.get("vwap", 0.0) or 0.0),
+                        }
+                    )
 
-    for sym in list(out.keys()):
-        out[sym] = sorted(out[sym], key=lambda r: r["ts_utc"])
-        if limit_per_symbol and len(out[sym]) > limit_per_symbol:
-            out[sym] = out[sym][-limit_per_symbol:]
+    # Ensure chronological order per symbol
+    for sym, rows in out.items():
+        try:
+            rows.sort(key=lambda r: r.get("ts_ny"))
+        except Exception:
+            pass
     return out
 
+def resample_5m(bars_1m: list[dict]) -> list[dict]:
+    """Resample 1m dict bars into 5m dict bars (NY time), producing OHLCV + VWAP.
+
+    Output schema matches the 1m dict schema used throughout the scanner:
+      ts_utc, ts_ny, open, high, low, close, volume, vwap
+    """
+    if not bars_1m:
+        return []
+    # bucket by 5-minute windows in NY time
+    buckets: dict[datetime, list[dict]] = {}
+    for r in bars_1m:
+        ts = r.get("ts_ny")
+        if ts is None:
+            continue
+        bucket_start = ts.replace(second=0, microsecond=0, minute=(ts.minute // 5) * 5)
+        buckets.setdefault(bucket_start, []).append(r)
+
+    out: list[dict] = []
+    for bucket_start in sorted(buckets.keys()):
+        group = buckets[bucket_start]
+        group.sort(key=lambda x: x.get("ts_ny"))
+        o = float(group[0].get("open"))
+        h = max(float(x.get("high", x.get("close"))) for x in group)
+        l = min(float(x.get("low", x.get("close"))) for x in group)
+        c = float(group[-1].get("close"))
+        v = sum(float(x.get("volume", 0.0) or 0.0) for x in group)
+
+        # vwap
+        v_num = 0.0
+        v_den = 0.0
+        for x in group:
+            vv = float(x.get("volume", 0.0) or 0.0)
+            if vv <= 0:
+                continue
+            hh = float(x.get("high", x.get("close")))
+            ll = float(x.get("low", x.get("close")))
+            cc = float(x.get("close"))
+            tp = (hh + ll + cc) / 3.0
+            v_num += tp * vv
+            v_den += vv
+        vwap = (v_num / v_den) if v_den > 0 else c
+
+        # Use last ts as bucket end
+        ts_end_ny = group[-1].get("ts_ny")
+        ts_end_utc = group[-1].get("ts_utc")
+        out.append({
+            "ts_utc": ts_end_utc,
+            "ts_ny": ts_end_ny,
+            "open": o,
+            "high": h,
+            "low": l,
+            "close": c,
+            "volume": v,
+            "vwap": vwap,
+        })
+    return out
 
 def resample_to_5m(bars_1m: list[Bar]) -> list[Bar]:
     """Resample 1m bars into 5m bars (NY time), producing OHLCV + VWAP.
@@ -940,17 +1011,26 @@ def resample_to_5m(bars_1m: list[Bar]) -> list[Bar]:
     return out
 
 
-def _bars_for_today_session(bars: list[dict]) -> list[dict]:
+def _bars_for_today_session(bars: list[dict], session_hhmm: str | None = None) -> list[dict]:
+    """Filter bars to today (NY), regular market session, and optionally to a session window.
+
+    session_hhmm format: "HH:MM-HH:MM" (NY time). When None, returns all regular-session
+    bars for today.
+    """
     if not bars:
         return []
     today = now_ny().date()
-    out = []
+    out: list[dict] = []
     for r in bars:
-        ts = r["ts_ny"]
+        ts = r.get("ts_ny")
+        if ts is None:
+            continue
         if ts.date() != today:
             continue
         # Regular session only
         if ts.time() < MARKET_OPEN or ts.time() > MARKET_CLOSE:
+            continue
+        if session_hhmm and (not in_session(session_hhmm, ts.time())):
             continue
         out.append(r)
     return out
@@ -964,10 +1044,11 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
         return None
 
     # Must be inside trade session
-    if not _bars_for_today_session(bars_today, ts_ny, MIDBOX_TRADE_SESSION):
+    trade_bars = _bars_for_today_session(bars_today, MIDBOX_TRADE_SESSION)
+    if not trade_bars:
         return None
 
-    build_bars = _bars_for_today_session(bars_today, ts_ny, MIDBOX_BUILD_SESSION)
+    build_bars = _bars_for_today_session(bars_today, MIDBOX_BUILD_SESSION)
     if len(build_bars) < 10:
         return None
 
@@ -990,10 +1071,11 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
         return None
 
     if price >= box_high * (1.0 + buf):
-        return ("midbox_breakout_up", "BUY")
+        return ("midbox_breakout_up", "buy")
 
     # Shorts are disabled in this system; return None for breakdowns.
     return None
+
 
 def _scan_diag_midbox(bars_today: list[dict]) -> dict:
     # Minimal diagnostics to explain why MIDBOX is not firing yet.
@@ -1064,7 +1146,7 @@ def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
         out["reason"] = "insufficient_5m_bars"
         return out
     # We can compute some basics to aid explainability
-    closes = [b.close for b in bars_5m]
+    closes = [float(b.get('close')) for b in bars_5m]
     ema_fast = ema_series(closes, int(VWAP_PB_EMA_FAST))
     ema_slow = ema_series(closes, int(VWAP_PB_EMA_SLOW))
     out["ema_fast_gt_slow"] = bool(ema_fast and ema_slow and ema_fast[-1] > ema_slow[-1])
@@ -1084,7 +1166,7 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     if ts_ny is None:
         return None
 
-    pwr_bars = _bars_for_today_session(bars_today, ts_ny, PWR_SESSION)
+    pwr_bars = _bars_for_today_session(bars_today, PWR_SESSION)
     if not pwr_bars:
         return None
 
@@ -1095,7 +1177,6 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
 
     use_hl = bool(PWR_BREAKOUT_USE_HIGHLOW)
     pre_high = max(float(b.get("high", b.get("close"))) for b in pre_bars) if use_hl else max(float(b.get("close")) for b in pre_bars)
-    pre_low = min(float(b.get("low", b.get("close"))) for b in pre_bars) if use_hl else min(float(b.get("close")) for b in pre_bars)
 
     price = float(bars_today[-1].get("close"))
     buf = float(PWR_BREAKOUT_BUFFER_PCT)
@@ -1109,9 +1190,10 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
         return None
 
     if price >= pre_high * (1.0 + buf):
-        return ("power_hour_breakout_up", "BUY")
+        return ("power_hour_breakout_up", "buy")
 
     return None
+
 
 def _strategy_reason_disabled() -> str:
     return "strategy_disabled"
@@ -1167,12 +1249,12 @@ def eval_vwap_pullback_signal(bars_today: list[dict]) -> str | None:
 
     # Trigger: reclaim VWAP (cross up)
     if prev <= vwap and price > vwap:
-        return "BUY"
+        return "buy"
 
     # Alternate trigger: reclaim EMA fast after a dip
     dip = any(c < ema_fast for c in closes[-lookback:])
     if dip and prev <= ema_fast and price > ema_fast:
-        return "BUY"
+        return "buy"
 
     return None
 
@@ -1871,7 +1953,9 @@ async def worker_scan_entries(req: Request):
 
                     # Entry evaluation (only if we are not already managing a plan for this symbol)
                     if not plan and action == "hold":
-                        mb = eval_midbox_signal(bars_today)
+                        mb = None
+                        if SCANNER_ENABLE_MIDBOX and (not _hard_market_closed) and diag.get('midbox', {}).get('eligible', True):
+                            mb = eval_midbox_signal(bars_today)
                         if mb:
                             signal_name, side = mb
                         else:
@@ -1885,9 +1969,9 @@ async def worker_scan_entries(req: Request):
                                 vp = None
                                 if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
                                     vp = eval_vwap_pullback_signal(bars_5m)
-                                if vp == "BUY":
+                                if vp == "buy":
                                     signal_name, side = ("VWAP_PULLBACK", "buy")
-                                elif vp == "SELL":
+                                elif vp == "sell":
                                     signal_name, side = ("VWAP_PULLBACK", "sell")
 
                         if signal_name and side in ("buy", "sell"):
