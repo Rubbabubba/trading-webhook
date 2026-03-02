@@ -53,6 +53,7 @@ except Exception:
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+import re
 
 @dataclass(frozen=True)
 class Bar:
@@ -91,6 +92,7 @@ app.add_middleware(
 )
 
 NY_TZ = ZoneInfo("America/New_York")
+NY = NY_TZ  # backward-compat alias
 
 
 # =============================
@@ -185,7 +187,7 @@ def in_scanner_session(now_ny: datetime | None = None) -> bool:
     if not SCANNER_SESSIONS_NY:
         return True
     if now_ny is None:
-        now_ny = ny_now()
+        now_ny = now_ny()
     t = now_ny.time()
     if _SCANNER_SESSION_RANGES_CACHE is None:
         _SCANNER_SESSION_RANGES_CACHE = parse_session_ranges(SCANNER_SESSIONS_NY)
@@ -982,13 +984,11 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     buf = float(MIDBOX_BREAKOUT_BUFFER_PCT)
 
     # Light trend filter (keeps frequency reasonable, avoids chop)
-    ema_fast_series = ema_series(closes + [price], 20)
-    ema_slow_series = ema_series(closes + [price], 50)
-    if not ema_fast_series or not ema_slow_series:
+    ema_fast = ema_series(closes + [price], 20)
+    ema_slow = ema_series(closes + [price], 50)
+    if ema_fast is None or ema_slow is None:
         return None
-    ema_fast = ema_fast_series[-1]
-    ema_slow = ema_slow_series[-1]
-    if price < ema_fast or ema_fast < ema_slow:
+    if price < ema_fast[-1] or ema_fast[-1] < ema_slow[-1]:
         return None
 
     if price >= box_high * (1.0 + buf):
@@ -1103,13 +1103,11 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     buf = float(PWR_BREAKOUT_BUFFER_PCT)
 
     closes = [float(b.get("close")) for b in pre_bars[-200:]] + [price]
-    ema_fast_series = ema_series(closes, 20)
-    ema_slow_series = ema_series(closes, 50)
-    if not ema_fast_series or not ema_slow_series:
+    ema_fast = ema_series(closes, 20)
+    ema_slow = ema_series(closes, 50)
+    if ema_fast is None or ema_slow is None:
         return None
-    ema_fast = ema_fast_series[-1]
-    ema_slow = ema_slow_series[-1]
-    if price < ema_fast or ema_fast < ema_slow:
+    if price < ema_fast[-1] or ema_fast[-1] < ema_slow[-1]:
         return None
 
     if price >= pre_high * (1.0 + buf):
@@ -1139,13 +1137,11 @@ def eval_vwap_pullback_signal(bars_today: list[dict]) -> str | None:
     price = closes[-1]
     prev = closes[-2] if len(closes) >= 2 else price
 
-    ema_fast_series = ema_series(closes, VWAP_PB_EMA_FAST)
-    ema_slow_series = ema_series(closes, VWAP_PB_EMA_SLOW)
-    if not ema_fast_series or not ema_slow_series:
+    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
+    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
+    if ema_fast is None or ema_slow is None:
         return None
-    ema_fast = ema_fast_series[-1]
-    ema_slow = ema_slow_series[-1]
-    if price < ema_fast or ema_fast < ema_slow:
+    if price < ema_fast[-1] or ema_fast[-1] < ema_slow[-1]:
         return None
 
     # VWAP
