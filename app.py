@@ -92,7 +92,7 @@ app.add_middleware(
 )
 
 NY_TZ = ZoneInfo("America/New_York")
-
+NY = NY_TZ  # backward-compat alias
 
 # =============================
 # Env helpers
