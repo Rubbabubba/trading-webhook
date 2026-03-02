@@ -179,14 +179,14 @@ def parse_session_ranges(raw: str) -> list[tuple[time, time]]:
 
 _SCANNER_SESSION_RANGES_CACHE = None  # parsed (start,end) times
 
-def in_scanner_session(now_ny: datetime | None = None) -> bool:
+def in_scanner_session(now_dt_ny: datetime | None = None) -> bool:
     """True if within configured scanner session windows. If no windows configured, True."""
     global _SCANNER_SESSION_RANGES_CACHE
     if not SCANNER_SESSIONS_NY:
         return True
-    if now_ny is None:
-        now_ny = now_ny()
-    t = now_ny.time()
+    if now_dt_ny is None:
+        now_dt_ny = now_ny()
+    t = now_dt_ny.time()
     if _SCANNER_SESSION_RANGES_CACHE is None:
         _SCANNER_SESSION_RANGES_CACHE = parse_session_ranges(SCANNER_SESSIONS_NY)
     if not _SCANNER_SESSION_RANGES_CACHE:
