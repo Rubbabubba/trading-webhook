@@ -355,6 +355,7 @@ DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
 # This is intentionally small and ephemeral (in-memory only).
 SCAN_HISTORY_SIZE = int(os.getenv("SCAN_HISTORY_SIZE", "50"))
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
+SCAN_COUNTER: dict[str, int] = {"count": 0}  # used for scan-level diagnostics logging cadence
 
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
