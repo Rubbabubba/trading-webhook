@@ -1394,6 +1394,7 @@ def scanner_status():
             "effective_dry_run": effective_dry_run,
             "require_market_hours": SCANNER_REQUIRE_MARKET_HOURS,
             "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "vol_rank": vol_rank_info,
             "lookback_days": SCANNER_LOOKBACK_DAYS,
             "max_symbols_per_cycle": SCANNER_MAX_SYMBOLS_PER_CYCLE,
         },
@@ -1743,6 +1744,7 @@ async def worker_scan_entries(req: Request):
             "allow_live": SCANNER_ALLOW_LIVE,
             "effective_dry_run": effective_dry_run,
             "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "vol_rank": vol_rank_info,
             **kwargs
         })
 
@@ -1763,6 +1765,7 @@ async def worker_scan_entries(req: Request):
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "vol_rank": vol_rank_info,
                     "symbols": [],
                     "scanned": 0,
                     "signals": 0,
@@ -1794,6 +1797,7 @@ async def worker_scan_entries(req: Request):
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "vol_rank": vol_rank_info,
                     "symbols": [],
                     "scanned": 0,
                     "signals": 0,
@@ -1825,6 +1829,7 @@ async def worker_scan_entries(req: Request):
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "vol_rank": vol_rank_info,
                     "symbols": [],
                     "scanned": 0,
                     "signals": 0,
@@ -1947,11 +1952,11 @@ async def worker_scan_entries(req: Request):
                         return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
                     if bars_today:
-                        if SCANNER_ENABLE_MIDBOX and (not _hard_market_closed) and diag.get('midbox', {}).get('eligible', True):
+                        if SCANNER_ENABLE_MIDBOX and (not _hard_market_closed) and diag.get('midbox', {}).get('eligible', True) is not False:
                             diag["midbox"].update(_scan_diag_midbox(bars_today))
-                        if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True):
+                        if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True) is not False:
                             diag["pwr"].update(_scan_diag_pwr(bars_today))
-                        if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
+                        if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True) is not False:
                             diag["vwap_pullback"].update(_scan_diag_vwap_pb(bars_today))
 
                     action = "hold"
@@ -1977,14 +1982,14 @@ async def worker_scan_entries(req: Request):
                             signal_name, side = mb
                         else:
                             pwr = None
-                            if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True):
+                            if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True) is not False:
                                 pwr = eval_power_hour_signal(bars_today)
                             if pwr:
                                 signal_name, side = pwr
                             else:
                                 bars_5m = resample_5m(bars_today) if bars_today else []
                                 vp = None
-                                if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
+                                if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True) is not False:
                                     vp = eval_vwap_pullback_signal(bars_5m)
                                 if vp == "BUY":
                                     signal_name, side = ("VWAP_PULLBACK", "buy")
@@ -2127,6 +2132,7 @@ async def worker_scan_entries(req: Request):
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "vol_rank": vol_rank_info,
                     "symbols": syms,
                     "scanned": len(syms),
                     "signals": len(signals),
@@ -2150,6 +2156,7 @@ async def worker_scan_entries(req: Request):
                     "allow_live": SCANNER_ALLOW_LIVE,
                     "effective_dry_run": effective_dry_run,
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "vol_rank": vol_rank_info,
                     "symbols_scanned": len(syms),
                     "signals": len(signals),
                     "would_trade": len(signals),
