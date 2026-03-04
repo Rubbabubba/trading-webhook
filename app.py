@@ -264,13 +264,13 @@ LAST_SCAN: dict = {}
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
 SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
 # Volatility ranking (Option A)
-SCANNER_VOL_RANK_ENABLE = getenv_bool("SCANNER_VOL_RANK_ENABLE", False)
-SCANNER_VOL_RANK_N = int(getenv_any("SCANNER_VOL_RANK_N", 50))
-SCANNER_VOL_RANK_BARS = int(getenv_any("SCANNER_VOL_RANK_BARS", 390))  # ~1 session of 1m bars
+SCANNER_VOL_RANK_ENABLE = env_bool("SCANNER_VOL_RANK_ENABLE", False)
+SCANNER_VOL_RANK_N = int(getenv_any("SCANNER_VOL_RANK_N", default="50"))
+SCANNER_VOL_RANK_BARS = int(getenv_any("SCANNER_VOL_RANK_BARS", default="390"))  # ~1 session of 1m bars
 SCANNER_VOL_RANK_METRIC = getenv_any("SCANNER_VOL_RANK_METRIC", "range_pct")  # range_pct | stdev_ret
 
 # Near-miss diagnostics
-SCANNER_NEAR_MISS_PCT = float(getenv_any("SCANNER_NEAR_MISS_PCT", 0.005))  # 0.5%
+SCANNER_NEAR_MISS_PCT = float(getenv_any("SCANNER_NEAR_MISS_PCT", default="0.005"))  # 0.5%
 # Scanner session gating: optional intraday windows in NY time (comma/semicolon separated).
 # Example: "09:35-11:30,13:00-15:50". If empty, scanner runs any time market-hours gating allows.
 SCANNER_SESSIONS_NY = os.getenv("SCANNER_SESSIONS_NY", "").strip()
