@@ -263,6 +263,14 @@ LAST_SCAN: dict = {}
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
 SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
+# Volatility ranking (Option A)
+SCANNER_VOL_RANK_ENABLE = getenv_bool("SCANNER_VOL_RANK_ENABLE", False)
+SCANNER_VOL_RANK_N = int(getenv_any("SCANNER_VOL_RANK_N", 50))
+SCANNER_VOL_RANK_BARS = int(getenv_any("SCANNER_VOL_RANK_BARS", 390))  # ~1 session of 1m bars
+SCANNER_VOL_RANK_METRIC = getenv_any("SCANNER_VOL_RANK_METRIC", "range_pct")  # range_pct | stdev_ret
+
+# Near-miss diagnostics
+SCANNER_NEAR_MISS_PCT = float(getenv_any("SCANNER_NEAR_MISS_PCT", 0.005))  # 0.5%
 # Scanner session gating: optional intraday windows in NY time (comma/semicolon separated).
 # Example: "09:35-11:30,13:00-15:50". If empty, scanner runs any time market-hours gating allows.
 SCANNER_SESSIONS_NY = os.getenv("SCANNER_SESSIONS_NY", "").strip()
@@ -285,6 +293,7 @@ RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3
 
 # Midbox loosening knobs
 MIDBOX_BREAKOUT_BUFFER_PCT = float(os.getenv("MIDBOX_BREAKOUT_BUFFER_PCT", "0.0005"))  # 0.05%
+MIDBOX_TOUCH_EPS_PCT = float(os.getenv("MIDBOX_TOUCH_EPS_PCT", "0.002"))  # 0.2%
 MIDBOX_BREAKOUT_USE_HIGHLOW = os.getenv("MIDBOX_BREAKOUT_USE_HIGHLOW", "true").lower() == "true"
 
 # Power hour loosening knobs
@@ -916,6 +925,31 @@ def fetch_1m_bars_multi(
     return out
 
 
+def _volatility_score(bars_1m: list[dict], bars_n: int, metric: str) -> float:
+    """Compute a simple volatility score for ranking symbols."""
+    if not bars_1m:
+        return 0.0
+    closes = [float(b.get("close") or 0.0) for b in bars_1m[-max(10, bars_n):] if b.get("close") is not None]
+    closes = [c for c in closes if c > 0]
+    if len(closes) < 10:
+        return 0.0
+
+    metric = (metric or "range_pct").strip()
+    if metric == "stdev_ret":
+        rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
+        if len(rets) < 5:
+            return 0.0
+        mu = sum(rets) / len(rets)
+        var = sum((r - mu) ** 2 for r in rets) / max(1, (len(rets) - 1))
+        return float(math.sqrt(var))
+
+    cmin = min(closes)
+    cmax = max(closes)
+    cmean = sum(closes) / len(closes)
+    return float((cmax - cmin) / cmean) if cmean > 0 else 0.0
+
+
+
 def resample_to_5m(bars_1m: list[Bar]) -> list[Bar]:
     """Resample 1m bars into 5m bars (NY time), producing OHLCV + VWAP.
     Bar.ts_ny is kept as the *end* of each 5m bucket (last minute in the bucket).
@@ -997,37 +1031,79 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     # Shorts are disabled in this system; return None for breakdowns.
     return None
 
-def _scan_diag_midbox(bars_today: list[dict]) -> dict:
-    # Minimal diagnostics to explain why MIDBOX is not firing yet.
-    out: dict = {"eligible": True}
-    nowt = now_ny().time()
-    # Trade window gating
-    if not in_session(MIDBOX_TRADE_SESSION, nowt):
-        out["eligible"] = False
-        out["reason"] = "session_closed"
+def _scan_diag_midbox(bars_1m: list[dict]) -> dict:
+    """Scanner diagnostic + signal evaluation for the Midbox strategy."""
+    out = {"enabled": True}
+
+    if not bars_1m or len(bars_1m) < max(10, MIDBOX_LOOKBACK_BARS + 2):
+        out.update({"eligible": False, "reason": "insufficient_bars"})
         return out
-    # Bars requirements (EMA200 needs ~200 bars)
-    out["bars_1m"] = len(bars_today)
-    if len(bars_today) < 205:
-        out["eligible"] = False
-        out["reason"] = "insufficient_1m_bars"
-        return out
-    # EMA200 slope
-    closes = [r["close"] for r in bars_today]
-    ema200 = ema_series(closes, 200)
-    if len(ema200) < 3:
-        out["eligible"] = False
-        out["reason"] = "ema200_not_ready"
-        return out
-    out["ema200_slope_up"] = ema200[-1] > ema200[-2]
-    out["ema200_slope_down"] = ema200[-1] < ema200[-2]
-    # Breakout detection not implemented in this repo yet
-    out["crossed_up"] = False
-    out["crossed_down"] = False
-    out["long_signal"] = False
-    out["short_signal"] = False
-    out["reason"] = "logic_not_implemented"
+
+    decision = bars_1m[-1]
+    prev = bars_1m[-2]
+
+    box_window = bars_1m[-(MIDBOX_LOOKBACK_BARS + 1):-1]  # exclude decision bar
+    box_high = max(b.get("high", b.get("close", 0.0)) for b in box_window)
+    box_low = min(b.get("low", b.get("close", 0.0)) for b in box_window)
+
+    price = float(decision.get("close") or 0.0)
+    prev_close = float(prev.get("close") or price)
+    high = float(decision.get("high") or price)
+
+    level = float(box_high) * (1.0 + float(MIDBOX_BREAKOUT_BUFFER_PCT))
+    touch_eps = float(MIDBOX_TOUCH_EPS_PCT)
+
+    closes = [float(b.get("close") or 0.0) for b in bars_1m]
+    ema_fast = ema_series(closes, MIDBOX_TREND_EMA)
+    ema_slow = ema_series(closes, max(2, int(MIDBOX_TREND_EMA * 1.5)))
+    ema_fast_last = float(ema_fast[-1]) if ema_fast else price
+    ema_slow_last = float(ema_slow[-1]) if ema_slow else ema_fast_last
+
+    trend_ok = (price >= ema_fast_last * (1.0 - float(MIDBOX_TREND_EPS))) and (
+        ema_fast_last >= ema_slow_last * (1.0 - float(MIDBOX_TREND_EPS))
+    )
+
+    crossed_up = (prev_close < level) and (price >= level)
+    touched = (high >= level) and (price >= level * (1.0 - touch_eps)) and (prev_close < level)
+    breakout_cross = crossed_up or touched
+
+    dist_to_level_pct = abs(level - price) / level if level > 0 else None
+    near_pct = float(SCANNER_NEAR_MISS_PCT)
+    near = (dist_to_level_pct is not None) and (dist_to_level_pct <= near_pct)
+
+    signal = bool(trend_ok and breakout_cross)
+
+    out.update(
+        {
+            "eligible": signal,
+            "reason": "ok" if signal else ("trend_fail" if not trend_ok else "no_breakout_cross"),
+            "signal": signal,
+            "side": "buy" if signal else "",
+            "diag": {
+                "box_high": box_high,
+                "box_low": box_low,
+                "level": level,
+                "breakout_buffer_pct": float(MIDBOX_BREAKOUT_BUFFER_PCT),
+                "touch_eps_pct": touch_eps,
+                "price": price,
+                "prev_close": prev_close,
+                "high": high,
+                "ema_fast": ema_fast_last,
+                "ema_slow": ema_slow_last,
+                "trend_ok": bool(trend_ok),
+                "crossed_up": bool(crossed_up),
+                "touched": bool(touched),
+                "breakout_cross": bool(breakout_cross),
+                "near_miss": {
+                    "near": bool(near),
+                    "near_pct": near_pct,
+                    "dist_to_level_pct": dist_to_level_pct,
+                },
+            },
+        }
+    )
     return out
+
 
 def _scan_diag_pwr(bars_today: list[dict]) -> dict:
     out: dict = {"eligible": True}
@@ -1782,6 +1858,28 @@ async def worker_scan_entries(req: Request):
 
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
         bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
+
+        vol_rank_info = None
+        if SCANNER_VOL_RANK_ENABLE and syms:
+            metric = str(SCANNER_VOL_RANK_METRIC or "range_pct").strip()
+            bars_n = max(10, int(SCANNER_VOL_RANK_BARS))
+            scores = [(s, _volatility_score(bars_map.get(s, []), bars_n=bars_n, metric=metric)) for s in syms]
+            scores.sort(key=lambda t: t[1], reverse=True)
+
+            n = max(1, int(SCANNER_VOL_RANK_N))
+            ranked = [s for s, _ in scores[:n]]
+            ranked = [s for s in ranked if bars_map.get(s)]
+            if ranked:
+                syms = ranked
+
+            vol_rank_info = {
+                "enabled": True,
+                "metric": metric,
+                "bars": bars_n,
+                "selected_n": len(syms),
+                "universe_n": len(scores),
+                "top": [{"symbol": s, "score": sc} for s, sc in scores[: min(10, len(scores))]],
+            }
         # Batch latest prices once per scan (fallback when bars are missing)
         latest_prices_map = get_latest_prices(syms)
 
