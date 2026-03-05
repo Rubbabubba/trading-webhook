@@ -1011,6 +1011,87 @@ def ema_series(closes: list[float], length: int) -> list[float]:
         out.append(ema)
     return out
 
+def resample_5m(bars_1m: list[dict], minutes: int = 5) -> list[dict]:
+    """Resample 1-minute bars (dicts) into N-minute bars with simple indicators.
+
+    Input bar keys expected: ts_utc (epoch sec), ts_ny (ISO), open, high, low, close, volume, vwap (optional).
+    Output bars include: ts_utc, ts_ny, open, high, low, close, volume, vwap (session cumulative),
+    ema_fast, ema_slow.
+    """
+    if not bars_1m:
+        return []
+
+    def _parse_ts_ny(x) -> datetime:
+        # bars_1m["ts_ny"] is usually a timezone-aware datetime; sometimes an ISO string.
+        if isinstance(x, datetime):
+            return x
+        return datetime.fromisoformat(str(x))
+
+    buckets: dict[datetime, list[dict]] = {}
+
+    for b in bars_1m:
+        tsn = b.get("ts_ny")
+        if not tsn:
+            continue
+        dt = _parse_ts_ny(tsn)
+        mm = (dt.minute // minutes) * minutes
+        key = dt.replace(minute=mm, second=0, microsecond=0)
+        buckets.setdefault(key, []).append(b)
+
+    out: list[dict] = []
+    for key in sorted(buckets.keys()):
+        grp = buckets[key]
+        if not grp:
+            continue
+        grp_sorted = sorted(grp, key=lambda x: int(x.get("ts_utc", 0) or 0))
+        o = float(grp_sorted[0].get("open", grp_sorted[0].get("close", 0.0)) or 0.0)
+        h = max(float(x.get("high", x.get("close", 0.0)) or 0.0) for x in grp_sorted)
+        l = min(float(x.get("low", x.get("close", 0.0)) or 0.0) for x in grp_sorted)
+        c = float(grp_sorted[-1].get("close", 0.0) or 0.0)
+        v = sum(float(x.get("volume", 0.0) or 0.0) for x in grp_sorted)
+
+        pv = 0.0
+        for x in grp_sorted:
+            vol = float(x.get("volume", 0.0) or 0.0)
+            px = x.get("vwap", None)
+            if px is None:
+                px = x.get("close", 0.0)
+            pv += float(px or 0.0) * vol
+        bar_vwap = (pv / v) if v > 0 else c
+
+        ts_utc = int(grp_sorted[-1].get("ts_utc", 0) or 0)
+        out.append({
+            "ts_utc": ts_utc,
+            "ts_ny": key.isoformat(),
+            "open": o,
+            "high": h,
+            "low": l,
+            "close": c,
+            "volume": v,
+            "vwap_bar": bar_vwap,
+        })
+
+    if not out:
+        return []
+
+    cum_pv = 0.0
+    cum_v = 0.0
+    for b in out:
+        vol = float(b.get("volume", 0.0) or 0.0)
+        px = float(b.get("vwap_bar", b.get("close", 0.0)) or 0.0)
+        cum_pv += px * vol
+        cum_v += vol
+        b["vwap"] = (cum_pv / cum_v) if cum_v > 0 else float(b.get("close", 0.0) or 0.0)
+
+    closes = [float(b.get("close", 0.0) or 0.0) for b in out]
+    ema_fast = ema_series(closes, HF5_EMA_FAST)
+    ema_slow = ema_series(closes, HF5_EMA_SLOW)
+    for i, b in enumerate(out):
+        b["ema_fast"] = ema_fast[i]
+        b["ema_slow"] = ema_slow[i]
+
+    return out
+
 
 def fetch_1m_bars_multi(
     symbols: list[str], lookback_days: int = 1, limit_per_symbol: int | None = None
