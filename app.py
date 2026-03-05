@@ -272,13 +272,16 @@ if _tmp_top_n is not None and _tmp_top_n.strip() != "":
     SCANNER_VOL_RANK_TOP_N = int(_tmp_top_n)
 else:
     SCANNER_VOL_RANK_TOP_N = int(getenv_any("SCANNER_VOL_RANK_N", default="50"))
-    SCANNER_ENABLE_HF = env_bool("SCANNER_ENABLE_HF", "true")  # 5m ORB + VWAP reclaim + EMA pullback
-    SCANNER_HF_ORB_BARS = int(getenv_any("SCANNER_HF_ORB_BARS", default="1"))
-    SCANNER_HF_REQUIRE_TREND = env_bool("SCANNER_HF_REQUIRE_TREND", "true")
-    SCANNER_HF_EMA_FAST = int(getenv_any("SCANNER_HF_EMA_FAST", default="20"))
-    SCANNER_HF_EMA_SLOW = int(getenv_any("SCANNER_HF_EMA_SLOW", default="50"))
-    SCANNER_HF_EMA_TOUCH_EPS_PCT = float(getenv_any("SCANNER_HF_EMA_TOUCH_EPS_PCT", default="0.0020"))  # 0.20%
-    SCANNER_MAX_ENTRIES_PER_SCAN = int(getenv_any("SCANNER_MAX_ENTRIES_PER_SCAN", default="1"))
+
+# --- Higher-frequency scanner controls (always defined) ---
+# Default ON so the system can trade out of the box; can be disabled via env.
+SCANNER_ENABLE_HF = env_bool("SCANNER_ENABLE_HF", "true")
+SCANNER_HF_ORB_BARS = int(getenv_any("SCANNER_HF_ORB_BARS", default="5"))  # 5-min ORB window
+SCANNER_HF_EMA_FAST = int(getenv_any("SCANNER_HF_EMA_FAST", default="9"))
+SCANNER_HF_EMA_SLOW = int(getenv_any("SCANNER_HF_EMA_SLOW", default="20"))
+SCANNER_HF_NEAR_PCT = float(getenv_any("SCANNER_HF_NEAR_PCT", default="0.0015"))  # 0.15%
+SCANNER_HF_DEBUG = env_bool("SCANNER_HF_DEBUG", "false")
+SCANNER_MAX_ENTRIES_PER_SCAN = int(getenv_any("SCANNER_MAX_ENTRIES_PER_SCAN", default="1"))
 
 SCANNER_VOL_RANK_BARS = int(getenv_any("SCANNER_VOL_RANK_BARS", default="390"))  # ~1 session of 1m bars
 SCANNER_VOL_RANK_METRIC = getenv_any("SCANNER_VOL_RANK_METRIC", "range_pct")  # range_pct | stdev_ret
