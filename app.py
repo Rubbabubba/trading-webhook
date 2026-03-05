@@ -259,6 +259,14 @@ SYMBOL_LOCK_SEC = int(getenv_any("SYMBOL_LOCK_SEC", "SYMBOL_LOCK_SECONDS", defau
 SCANNER_ENABLED = env_bool("SCANNER_ENABLED", "false")
 SCANNER_DRY_RUN = env_bool("SCANNER_DRY_RUN", "true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
+
+# Trades-Today emergency mode (guarantee at least one tiny live order for smoke-testing)
+TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", "false")
+TRADES_TODAY_SYMBOL = os.getenv("TRADES_TODAY_SYMBOL", "SPY").strip().upper()
+TRADES_TODAY_SIDE = os.getenv("TRADES_TODAY_SIDE", "buy").strip().lower()  # buy|sell
+TRADES_TODAY_NOTIONAL_USD = float(os.getenv("TRADES_TODAY_NOTIONAL_USD", "25"))  # tiny by default
+TRADES_TODAY_MAX_PER_DAY = int(os.getenv("TRADES_TODAY_MAX_PER_DAY", "1"))
+TRADES_TODAY_ONLY_IF_NO_SIGNALS = env_bool("TRADES_TODAY_ONLY_IF_NO_SIGNALS", "true")
 LAST_SCAN: dict = {}
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
@@ -432,6 +440,22 @@ def record_decision(event: str, source: str, symbol: str = "", side: str = "", s
         # Never let tracing break trading.
         pass
 
+
+
+def _count_forced_trades_today_ny() -> int:
+    """Count FORCE_TRADE decisions for today's NY date."""
+    try:
+        today = now_ny().date()
+    except Exception:
+        return 0
+    n = 0
+    for d in list(DECISIONS)[-500:]:
+        try:
+            if d.get("event") == "FORCE_TRADE" and d.get("ts_ny", "").startswith(str(today)):
+                n += 1
+        except Exception:
+            continue
+    return n
 
 
 def config_effective_snapshot() -> dict:
@@ -2613,7 +2637,60 @@ async def worker_scan_entries(req: Request):
         except Exception:
                 pass
 
-        return {
+        
+    # ---- Trades-Today emergency smoke test ----
+    try:
+        if TRADES_TODAY_ENABLE and (not TRADES_TODAY_ONLY_IF_NO_SIGNALS or len(would_submit) == 0):
+            if SCANNER_DRY_RUN or (not SCANNER_ALLOW_LIVE):
+                # respect hard gates
+                pass
+            else:
+                forced_today = _count_forced_trades_today_ny()
+                if forced_today < TRADES_TODAY_MAX_PER_DAY:
+                    sym = TRADES_TODAY_SYMBOL
+                    px = get_latest_price(sym)
+                    if px and px > 0 and TRADES_TODAY_NOTIONAL_USD > 0:
+                        # fractional shares ok; keep it tiny
+                        qty = max(0.0001, float(TRADES_TODAY_NOTIONAL_USD) / float(px))
+                        if TRADES_TODAY_SIDE not in ("buy", "sell"):
+                            side = "buy"
+                        else:
+                            side = TRADES_TODAY_SIDE
+
+                        submit_market_order(sym, side, qty)
+                        record_decision(
+                            event="FORCE_TRADE",
+                            source="trades_today",
+                            symbol=sym,
+                            side=side,
+                            signal="forced",
+                            action="submit",
+                            reason="trades_today_enabled",
+                        )
+                        # expose in response
+                        would_submit.append(
+                            {
+                                "symbol": sym,
+                                "action": "submit",
+                                "reason": "trades_today_enabled",
+                                "side": side,
+                                "qty": qty,
+                                "price": px,
+                            }
+                        )
+    except Exception as _e:
+        # never fail the scan because of this
+        record_decision(
+            event="FORCE_TRADE",
+            source="trades_today",
+            symbol=TRADES_TODAY_SYMBOL if 'TRADES_TODAY_SYMBOL' in globals() else "",
+            side="",
+            signal="forced",
+            action="error",
+            reason=f"trades_today_error:{type(_e).__name__}",
+        )
+    # ------------------------------------------
+return {
                 "ok": True,
                 "scanner": {
                     "enabled": SCANNER_ENABLED,
