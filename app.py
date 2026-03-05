@@ -2179,6 +2179,9 @@ async def worker_exit(req: Request):
     # If enabled, and we are in market hours, and we've produced no actionable trades, we'll force up to
     # TRADES_TODAY_TARGET_TRADES market entries per NY day so you can validate end-to-end execution.
     try:
+        # effective_dry_run is used by TRADES_TODAY guard; compute it here to mirror scanner behavior
+        effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
+
         if TRADES_TODAY_ENABLE and (not effective_dry_run) and SCANNER_ALLOW_LIVE and in_market_hours():
             forced_today = _count_forced_trades_today_ny()
             # Only force when the scan did not already produce any submits
@@ -2210,7 +2213,7 @@ async def worker_exit(req: Request):
                     # Record decision for diagnostics
                     trace_decision(event="SCAN", source="worker_scan", symbol=pick, side=side, signal=signal, action="submit", reason="forced_trade")
     except Exception as e:
-        log.exception("TRADES_TODAY_ERROR err=%s", e)
+        logger.exception("TRADES_TODAY_ERROR err=%s", e)
     return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
 
 
