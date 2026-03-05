@@ -272,6 +272,14 @@ if _tmp_top_n is not None and _tmp_top_n.strip() != "":
     SCANNER_VOL_RANK_TOP_N = int(_tmp_top_n)
 else:
     SCANNER_VOL_RANK_TOP_N = int(getenv_any("SCANNER_VOL_RANK_N", default="50"))
+    SCANNER_ENABLE_HF = env_bool("SCANNER_ENABLE_HF", "true")  # 5m ORB + VWAP reclaim + EMA pullback
+    SCANNER_HF_ORB_BARS = int(getenv_any("SCANNER_HF_ORB_BARS", default="1"))
+    SCANNER_HF_REQUIRE_TREND = env_bool("SCANNER_HF_REQUIRE_TREND", "true")
+    SCANNER_HF_EMA_FAST = int(getenv_any("SCANNER_HF_EMA_FAST", default="20"))
+    SCANNER_HF_EMA_SLOW = int(getenv_any("SCANNER_HF_EMA_SLOW", default="50"))
+    SCANNER_HF_EMA_TOUCH_EPS_PCT = float(getenv_any("SCANNER_HF_EMA_TOUCH_EPS_PCT", default="0.0020"))  # 0.20%
+    SCANNER_MAX_ENTRIES_PER_SCAN = int(getenv_any("SCANNER_MAX_ENTRIES_PER_SCAN", default="1"))
+
 SCANNER_VOL_RANK_BARS = int(getenv_any("SCANNER_VOL_RANK_BARS", default="390"))  # ~1 session of 1m bars
 SCANNER_VOL_RANK_METRIC = getenv_any("SCANNER_VOL_RANK_METRIC", "range_pct")  # range_pct | stdev_ret
 
@@ -684,6 +692,59 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
                         action="recovered_plan", reason="missing_internal_plan",
                         qty=qty_signed, entry_price=recovered_plan["entry_price"])
     return actions
+
+
+
+def eval_hf_signal(bars_today: list[dict], bars_5m: list[Bar]) -> tuple[str, str] | None:
+    """Higher-frequency long-only signal.
+    Composite trigger (requires trend unless disabled):
+      - ORB breakout over opening 5m range high
+      - VWAP reclaim (prev close < vwap and close > vwap)
+      - EMA pullback reclaim / touch (close within eps% of EMA fast, or reclaim above EMA fast)
+    """
+    if not SCANNER_ENABLE_HF:
+        return None
+    if not bars_5m or len(bars_5m) < 6:
+        return None
+
+    last_ts = bars_5m[-1].ts_ny
+    open_dt = datetime.combine(last_ts.date(), MARKET_OPEN).replace(tzinfo=NY_TZ)
+    after_open = [b for b in bars_5m if b.ts_ny >= open_dt]
+    if len(after_open) < max(1, SCANNER_HF_ORB_BARS):
+        return None
+
+    orb_window = after_open[: max(1, SCANNER_HF_ORB_BARS)]
+    orb_high = max(b.high for b in orb_window)
+
+    close_prev = bars_5m[-2].close
+    close_now = bars_5m[-1].close
+
+    closes = [b.close for b in bars_5m]
+    ema_fast_series = ema_series(closes, int(SCANNER_HF_EMA_FAST))
+    ema_slow_series = ema_series(closes, int(SCANNER_HF_EMA_SLOW))
+    ema_fast_now = ema_fast_series[-1] if ema_fast_series else None
+    ema_slow_now = ema_slow_series[-1] if ema_slow_series else None
+
+    if SCANNER_HF_REQUIRE_TREND:
+        if ema_fast_now is None or ema_slow_now is None or ema_fast_now < ema_slow_now:
+            return None
+
+    vwap_now = bars_5m[-1].vwap
+
+    orb_breakout = (close_prev <= orb_high and close_now > orb_high)
+    vwap_reclaim = (close_prev < vwap_now and close_now > vwap_now)
+
+    eps = float(SCANNER_HF_EMA_TOUCH_EPS_PCT)
+    ema_touch = False
+    ema_reclaim = False
+    if ema_fast_now:
+        ema_touch = (abs(close_now - ema_fast_now) / ema_fast_now) <= eps
+        ema_reclaim = (close_prev <= ema_fast_now and close_now > ema_fast_now)
+
+    if orb_breakout or vwap_reclaim or ema_reclaim or ema_touch:
+        return ("hf5", "buy")
+    return None
+
 
 
 def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, signal: str) -> dict:
@@ -1450,15 +1511,18 @@ def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
     details: dict = {}
     mb = diag.get("midbox") or {}
     pw = diag.get("pwr") or {}
+    hf = diag.get("hf5") or {}
     vp = diag.get("vwap_pullback") or {}
 
     mb_reason = _no_signal_from_midbox(mb)
     pw_reason = _no_signal_from_pwr(pw)
     vp_reason = _no_signal_from_vwap_pb(vp)
+    hf_reason = "no_signal"
 
     details["midbox"] = {"enabled": bool(mb.get("enabled")), "eligible": mb.get("eligible"), "reason": mb_reason}
     details["pwr"] = {"enabled": bool(pw.get("enabled")), "eligible": pw.get("eligible"), "reason": pw_reason}
     details["vwap_pullback"] = {"enabled": bool(vp.get("enabled")), "eligible": vp.get("eligible"), "reason": vp_reason}
+    details["hf5"] = {"enabled": bool(hf.get("enabled")), "eligible": hf.get("eligible"), "reason": hf_reason}
 
     enabled = [s for s in ("midbox","pwr","vwap_pullback") if details[s]["enabled"]]
     if not enabled:
@@ -1611,6 +1675,49 @@ async def kill_off(request: Request):
     KILL_SWITCH = False
     log("KILL_SWITCH_OFF")
     return {"ok": True, "kill_switch": KILL_SWITCH}
+
+
+
+def submit_scan_trade(symbol: str, side: str, signal: str) -> dict:
+    """Submit a market order originating from the scanner (no TradingView webhook auth)."""
+    if KILL_SWITCH:
+        return {"ok": False, "error": "kill_switch_enabled"}
+    if ONLY_MARKET_HOURS and not in_market_hours():
+        return {"ok": True, "action": "skipped", "reason": "outside_market_hours"}
+    if ALLOWED_SYMBOLS and symbol not in ALLOWED_SYMBOLS:
+        return {"ok": True, "action": "skipped", "reason": "symbol_not_allowed"}
+
+    if not take_symbol_lock(symbol, SYMBOL_LOCK_SEC):
+        return {"ok": True, "action": "skipped", "reason": "symbol_locked"}
+
+    try:
+        positions = get_positions()
+        in_pos = any(p.get("symbol") == symbol for p in positions)
+
+        if side == "buy" and in_pos:
+            return {"ok": True, "action": "skipped", "reason": "already_in_position"}
+        if side == "sell" and (not in_pos):
+            return {"ok": True, "action": "skipped", "reason": "no_position"}
+
+        price = get_last_price(symbol)
+        qty = compute_qty(price, NOTIONAL_USD)
+        if qty <= 0:
+            return {"ok": False, "error": "qty_zero"}
+
+        if EFFECTIVE_DRY_RUN:
+            record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="dry_run", reason="ok")
+            return {"ok": True, "action": "dry_run", "qty": qty, "price": price}
+
+        order = submit_market_order(symbol, qty, side)
+        record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="submitted", reason="ok")
+        return {"ok": True, "action": "submitted", "order": order}
+    except Exception as e:
+        logger.exception("scan_submit_error symbol=%s", symbol)
+        try:
+            record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="error", reason=str(e))
+        except Exception:
+            pass
+        return {"ok": False, "error": "submit_error", "detail": str(e)}
 
 
 @app.post("/webhook")
@@ -2042,6 +2149,7 @@ async def worker_scan_entries(req: Request):
                     bars_today = _bars_for_today_session(bars_all)
 
                     diag = {
+                        'hf5': {'enabled': bool(SCANNER_ENABLE_HF)},
                         'midbox': {'enabled': bool(SCANNER_ENABLE_MIDBOX)},
                         'pwr': {'enabled': bool(SCANNER_ENABLE_PWR), 'session': PWR_SESSION},
                         'vwap_pullback': {'enabled': bool(SCANNER_ENABLE_VWAP_PB)},
@@ -2103,24 +2211,32 @@ async def worker_scan_entries(req: Request):
 
                     # Entry evaluation (only if we are not already managing a plan for this symbol)
                     if not plan and action == "hold":
-                        mb = eval_midbox_signal(bars_today)
-                        if mb:
-                            signal_name, side = mb
+                        bars_5m = resample_5m(bars_today) if bars_today else []
+
+                        # Higher-frequency composite (5m ORB + VWAP reclaim + EMA pullback)
+                        hf = None
+                        if (not _hard_market_closed) and diag.get('hf5', {}).get('eligible', True):
+                            hf = eval_hf_signal(bars_today, bars_5m)
+                        if hf:
+                            signal_name, side = hf
                         else:
-                            pwr = None
-                            if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True):
-                                pwr = eval_power_hour_signal(bars_today)
-                            if pwr:
-                                signal_name, side = pwr
+                            mb = eval_midbox_signal(bars_today)
+                            if mb:
+                                signal_name, side = mb
                             else:
-                                bars_5m = resample_5m(bars_today) if bars_today else []
-                                vp = None
-                                if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
-                                    vp = eval_vwap_pullback_signal(bars_5m)
-                                if vp == "BUY":
-                                    signal_name, side = ("VWAP_PULLBACK", "buy")
-                                elif vp == "SELL":
-                                    signal_name, side = ("VWAP_PULLBACK", "sell")
+                                pwr = None
+                                if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True):
+                                    pwr = eval_power_hour_signal(bars_today)
+                                if pwr:
+                                    signal_name, side = pwr
+                                else:
+                                    vp = None
+                                    if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
+                                        vp = eval_vwap_pullback_signal(bars_5m)
+                                    if vp == "BUY":
+                                        signal_name, side = ("VWAP_PULLBACK", "buy")
+                                    elif vp == "SELL":
+                                        signal_name, side = ("VWAP_PULLBACK", "sell")
 
                         if signal_name and side in ("buy", "sell"):
                             action = side
@@ -2266,6 +2382,19 @@ async def worker_scan_entries(req: Request):
         logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
                         len(syms), len(signals), len(signals), blocked, duration_ms)
 
+        # Execute (optional): submit up to N live orders per scan.
+        would_submit = []
+        if signals:
+            for plan in signals[: max(1, SCANNER_MAX_ENTRIES_PER_SCAN)]:
+                sym = plan.get("symbol")
+                side = plan.get("side") or "buy"
+                sig = plan.get("signal") or "scan"
+                if SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run):
+                    resp = submit_scan_trade(sym, side, sig)
+                    would_submit.append({"symbol": sym, "side": side, "signal": sig, **resp})
+                else:
+                    would_submit.append({"symbol": sym, "side": side, "signal": sig, "ok": True, "action": "dry_run", "reason": "scanner_not_live_or_dry_run"})
+
         # Store diagnostics for Postman/curl inspection.
         try:
                 SCAN_HISTORY.append({
@@ -2279,7 +2408,7 @@ async def worker_scan_entries(req: Request):
                     "duration_ms": duration_ms,
                     "summary": scan_summary,
                     "results": results,
-                    "would_submit": signals,
+                    "would_submit": would_submit,
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
@@ -2302,7 +2431,7 @@ async def worker_scan_entries(req: Request):
                     "summary": scan_summary,
                 },
                 "reconcile": reconcile_actions,
-                "would_submit": signals,
+                "would_submit": would_submit,
                 "results": results,
         }
     except Exception as e:
