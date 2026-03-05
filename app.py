@@ -698,103 +698,153 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
 
 
 
-def eval_hf_signal(bars_today: list[dict], bars_5m: list[dict]) -> tuple[str, str] | None:
-    """
-    Higher-frequency entry logic (5m):
-      - 5m ORB breakout (or breakout occurred recently)
-      - VWAP reclaim (or reclaim occurred recently)
-      - EMA pullback/touch (or reclaim occurred recently)
 
-    Key improvement vs alert-style systems:
-    We allow a *recent* cross (within N bars) so the scanner can still enter
-    even if the exact cross happened between scans.
+def eval_hf_signal_with_debug(bars_today: list[dict], bars_5m: list[dict]) -> tuple[tuple[str, str] | None, dict]:
     """
+    Higher-frequency entry logic (5m): 5m ORB + VWAP reclaim + EMA pullback.
+
+    Returns: (signal_or_None, debug_dict)
+    """
+    debug: dict = {
+        "enabled": True,
+        "reason": None,
+        "components": {},
+        "near_miss": {},
+    }
+
     if not bars_today or not bars_5m:
-        return None
+        debug["reason"] = "no_bars"
+        return None, debug
 
-    # Tunables (env optional; safe defaults)
-    recent_bars = env_int("SCANNER_HF_RECENT_BARS", 12)  # 12 x 5m = last 60 minutes
-    orb_minutes = env_int("SCANNER_HF_ORB_MINUTES", 5)
-    vwap_eps = env_float("SCANNER_HF_VWAP_EPS", 0.0005)  # 5 bps
-    ema_touch_eps = env_float("SCANNER_HF_EMA_TOUCH_EPS", 0.0025)  # 25 bps
+    # Require market hours gating is handled elsewhere; this is pure signal logic.
 
-    # Latest bar data
-    last = bars_5m[-1]
-    close_now = float(last.get("close"))
-    high_now = float(last.get("high"))
-    low_now = float(last.get("low"))
+    # --- Config (all optional envs; safe defaults) ---
+    ORB_LOOKBACK_BARS = int(os.getenv("HF5_ORB_LOOKBACK_BARS", "6"))  # ~30 minutes
+    RECLAIM_LOOKBACK_BARS = int(os.getenv("HF5_RECLAIM_LOOKBACK_BARS", "6"))
+    ORB_TOUCH_EPS = float(os.getenv("HF5_ORB_TOUCH_EPS", "0.0015"))   # 0.15%
+    VWAP_RECLAIM_EPS = float(os.getenv("HF5_VWAP_RECLAIM_EPS", "0.0005"))  # 0.05%
+    EMA_RECLAIM_EPS = float(os.getenv("HF5_EMA_RECLAIM_EPS", "0.0005"))    # 0.05%
 
-    vwap_now = last.get("vwap")
-    ema_fast_now = last.get("ema_fast")
-    ema_slow_now = last.get("ema_slow")
+    # If you want *more* trades, set these to 0 (False)
+    REQUIRE_EMA_CONFIRM = env_bool("HF5_REQUIRE_EMA_CONFIRM", False)
+    REQUIRE_VWAP_CONFIRM = env_bool("HF5_REQUIRE_VWAP_CONFIRM", True)
 
-    # If indicators are missing, bail safely
-    if vwap_now is None or ema_fast_now is None or ema_slow_now is None:
-        return None
-
-    vwap_now = float(vwap_now)
-    ema_fast_now = float(ema_fast_now)
-    ema_slow_now = float(ema_slow_now)
-
-    # Basic trend gate (keeps us from buying into weak structure)
-    if ema_fast_now < ema_slow_now:
-        return None
-
-    # --- ORB (Opening Range Breakout) ---
-    # Define ORB range using first `orb_minutes` minutes after market open in NY.
-    # bars_5m already aligned to market session for the day in our fetch.
-    orb_bars = bars_5m[:max(1, ((orb_minutes + 4) // 5))]
-    orb_high = max(float(b.get("high")) for b in orb_bars)
-    orb_low = min(float(b.get("low")) for b in orb_bars)
-
-    def _recent_cross_above(level: float) -> bool:
-        # look for a close cross above level within last `recent_bars`
-        start_i = max(1, len(bars_5m) - recent_bars)
-        for i in range(start_i, len(bars_5m)):
-            prev_close = float(bars_5m[i - 1].get("close"))
-            cur_close = float(bars_5m[i].get("close"))
-            if prev_close <= level and cur_close > level:
-                return True
-        return False
-
-    def _recent_reclaim(level: float, eps: float) -> bool:
-        # reclaim can be either a close cross, or a wick-under + close-above in same bar
-        start_i = max(1, len(bars_5m) - recent_bars)
+    # --- Helpers ---
+    def _recent_cross_above(level: float, n: int) -> bool:
+        if level is None:
+            return False
+        start_i = max(1, len(bars_5m) - n)
         for i in range(start_i, len(bars_5m)):
             prev = bars_5m[i - 1]
             cur = bars_5m[i]
-            prev_close = float(prev.get("close"))
-            cur_close = float(cur.get("close"))
-            cur_low = float(cur.get("low"))
-            if prev_close < level and cur_close >= level * (1 + eps):
-                return True
-            if cur_low <= level and cur_close >= level * (1 + eps):
+            prev_close = float(prev.get("c") or 0.0)
+            cur_close = float(cur.get("c") or 0.0)
+            if prev_close < level and cur_close >= level:
                 return True
         return False
 
-    orb_recent = _recent_cross_above(orb_high)
-    orb_is_above = close_now > orb_high
-    orb_breakout_like = orb_recent or orb_is_above
+    def _recent_reclaim_field(field: str, n: int, eps: float) -> bool:
+        start_i = max(1, len(bars_5m) - n)
+        for i in range(start_i, len(bars_5m)):
+            prev = bars_5m[i - 1]
+            cur = bars_5m[i]
+            prev_close = float(prev.get("c") or 0.0)
+            cur_close = float(cur.get("c") or 0.0)
+            cur_low = float(cur.get("l") or cur_close)
 
-    # --- VWAP reclaim ---
-    vwap_reclaim = _recent_reclaim(vwap_now, vwap_eps)
-    vwap_above = close_now >= vwap_now * (1 + vwap_eps)
+            prev_level = prev.get(field)
+            cur_level = cur.get(field)
+            if prev_level is None or cur_level is None:
+                continue
 
-    # --- EMA pullback/touch ---
-    # Accept touch by wick into EMA zone, as long as we are still above VWAP.
-    ema_touch = (low_now <= ema_fast_now * (1 + ema_touch_eps)) and (close_now >= ema_fast_now * (1 - ema_touch_eps))
-    ema_reclaim = _recent_reclaim(ema_fast_now, 0.0)
+            prev_level = float(prev_level)
+            cur_level = float(cur_level)
 
-    # Entry logic (aggressive but still structured):
-    # 1) ORB breakout-like + above VWAP
-    # 2) VWAP reclaim + EMA touch/reclaim
-    if orb_breakout_like and vwap_above:
-        return ("hf5", "buy")
-    if vwap_reclaim and (ema_touch or ema_reclaim):
-        return ("hf5", "buy")
+            # Reclaim: was below, then closes above (or wicks through and closes above)
+            if prev_close < prev_level and (cur_low <= cur_level) and cur_close >= cur_level * (1.0 + eps):
+                return True
+        return False
 
-    return None
+    # --- ORB levels (first 5m bar of the day) ---
+    orb = bars_5m[0]
+    orb_high = float(orb.get("h") or 0.0)
+    orb_low = float(orb.get("l") or 0.0)
 
+    last5 = bars_5m[-1]
+    price = float(last5.get("c") or 0.0)
+
+    # Use the most recent indicators (per-bar values exist in bars_5m)
+    vwap_now = last5.get("vwap")
+    ema_now = last5.get("ema_fast") or last5.get("ema")
+
+    vwap_now_f = float(vwap_now) if vwap_now is not None else None
+    ema_now_f = float(ema_now) if ema_now is not None else None
+
+    # --- Core conditions ---
+    orb_is_above = (price > orb_high) if orb_high else False
+    orb_recent = _recent_cross_above(orb_high, ORB_LOOKBACK_BARS) if orb_high else False
+    orb_touch = (price >= orb_high * (1.0 - ORB_TOUCH_EPS)) if orb_high else False
+    orb_breakout_like = bool(orb_is_above or orb_recent or orb_touch)
+
+    vwap_above = (vwap_now_f is not None and price >= vwap_now_f)
+    vwap_reclaim = _recent_reclaim_field("vwap", RECLAIM_LOOKBACK_BARS, VWAP_RECLAIM_EPS) if vwap_now_f is not None else False
+
+    ema_touch = (ema_now_f is not None and abs(price - ema_now_f) / max(ema_now_f, 1e-9) <= 0.0025)  # 0.25% proximity
+    ema_reclaim = _recent_reclaim_field("ema_fast", RECLAIM_LOOKBACK_BARS, EMA_RECLAIM_EPS) if ema_now_f is not None else False
+
+    debug["components"] = {
+        "price": price,
+        "orb_high": orb_high,
+        "orb_low": orb_low,
+        "orb_is_above": orb_is_above,
+        "orb_recent": orb_recent,
+        "orb_touch": orb_touch,
+        "vwap_now": vwap_now_f,
+        "vwap_above": vwap_above,
+        "vwap_reclaim": vwap_reclaim,
+        "ema_now": ema_now_f,
+        "ema_touch": ema_touch,
+        "ema_reclaim": ema_reclaim,
+        "require_vwap_confirm": REQUIRE_VWAP_CONFIRM,
+        "require_ema_confirm": REQUIRE_EMA_CONFIRM,
+    }
+
+    # Near-miss metrics (so we can see what's close)
+    if orb_high:
+        debug["near_miss"]["orb_dist_pct"] = max(0.0, (orb_high - price) / max(orb_high, 1e-9))
+        debug["near_miss"]["orb_touch_eps"] = ORB_TOUCH_EPS
+    if vwap_now_f:
+        debug["near_miss"]["vwap_dist_pct"] = max(0.0, (vwap_now_f - price) / max(vwap_now_f, 1e-9))
+        debug["near_miss"]["vwap_reclaim_eps"] = VWAP_RECLAIM_EPS
+    if ema_now_f:
+        debug["near_miss"]["ema_dist_pct"] = abs(price - ema_now_f) / max(ema_now_f, 1e-9)
+        debug["near_miss"]["ema_reclaim_eps"] = EMA_RECLAIM_EPS
+
+    # --- Decision logic ---
+    if not orb_breakout_like:
+        debug["reason"] = "no_orb_breakout"
+        return None, debug
+
+    if REQUIRE_VWAP_CONFIRM and not (vwap_above or vwap_reclaim):
+        debug["reason"] = "no_vwap_confirm"
+        return None, debug
+
+    if REQUIRE_EMA_CONFIRM and not (ema_touch or ema_reclaim):
+        debug["reason"] = "no_ema_confirm"
+        return None, debug
+
+    # If VWAP confirm isn't required, at least ensure we aren't breaking down
+    if not REQUIRE_VWAP_CONFIRM and vwap_now_f is not None and price < vwap_now_f * 0.995:
+        debug["reason"] = "below_vwap_hard"
+        return None, debug
+
+    debug["reason"] = None
+    return ("hf5", "buy"), debug
+
+
+def eval_hf_signal(bars_today: list[dict], bars_5m: list[dict]) -> tuple[str, str] | None:
+    sig, _dbg = eval_hf_signal_with_debug(bars_today, bars_5m)
+    return sig
 def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, signal: str) -> dict:
     entry_price = float(entry_price)
     if side == "buy":
@@ -1548,6 +1598,17 @@ def _no_signal_from_vwap_pb(diag: dict) -> str:
         return "did_not_reclaim_vwap"
     return "no_signal"
 
+
+def _no_signal_from_hf5(diag: dict) -> str:
+    # Higher-frequency ORB/VWAP/EMA strategy
+    if not diag.get("enabled"):
+        return "disabled"
+    if diag.get("eligible") is False:
+        return diag.get("reason") or "ineligible"
+    # When there's no signal, we expect a structured reason
+    return diag.get("reason") or "no_signal"
+
+
 def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
     """Return (primary_reason, details_by_strategy) for hold/no_signal cases.
 
@@ -2262,11 +2323,19 @@ async def worker_scan_entries(req: Request):
                         bars_5m = resample_5m(bars_today) if bars_today else []
 
                         # Higher-frequency composite (5m ORB + VWAP reclaim + EMA pullback)
-                        hf = None
+                        hf_sig = None
+                        hf_dbg = None
                         if (not _hard_market_closed) and diag.get('hf5', {}).get('eligible', True):
-                            hf = eval_hf_signal(bars_today, bars_5m)
-                        if hf:
-                            signal_name, side = hf
+                            hf_sig, hf_dbg = eval_hf_signal_with_debug(bars_today, bars_5m)
+                            if hf_dbg:
+                                # Keep diagnostics small and JSON-safe
+                                diag.setdefault("hf5", {}).update({
+                                    "reason": hf_dbg.get("reason"),
+                                    "components": hf_dbg.get("components", {}),
+                                    "near_miss": hf_dbg.get("near_miss", {}),
+                                })
+                        if hf_sig:
+                            signal_name, side = hf_sig
                         else:
                             mb = eval_midbox_signal(bars_today)
                             if mb:
