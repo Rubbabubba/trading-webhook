@@ -260,13 +260,11 @@ SCANNER_ENABLED = env_bool("SCANNER_ENABLED", "false")
 SCANNER_DRY_RUN = env_bool("SCANNER_DRY_RUN", "true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
 
-# Trades-Today emergency mode (guarantee at least one tiny live order for smoke-testing)
-TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", "false")
-TRADES_TODAY_SYMBOL = os.getenv("TRADES_TODAY_SYMBOL", "SPY").strip().upper()
-TRADES_TODAY_SIDE = os.getenv("TRADES_TODAY_SIDE", "buy").strip().lower()  # buy|sell
-TRADES_TODAY_NOTIONAL_USD = float(os.getenv("TRADES_TODAY_NOTIONAL_USD", "25"))  # tiny by default
-TRADES_TODAY_MAX_PER_DAY = int(os.getenv("TRADES_TODAY_MAX_PER_DAY", "1"))
-TRADES_TODAY_ONLY_IF_NO_SIGNALS = env_bool("TRADES_TODAY_ONLY_IF_NO_SIGNALS", "true")
+# --- Trades-Today forcing (emergency mode) ---
+TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
+TRADES_TODAY_TARGET_TRADES = int(getenv_any("TRADES_TODAY_TARGET_TRADES", default="1"))
+TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_force")
+TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
 LAST_SCAN: dict = {}
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
@@ -387,6 +385,35 @@ SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
 DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
 
+def _count_forced_trades_today_ny() -> int:
+    """Count today's forced trades (NY date) for the Trades-Today mode."""
+    try:
+        today = now_ny().date()
+    except Exception:
+        return 0
+    n = 0
+    for d in DECISIONS:
+        try:
+            if d.get("event") != "SCAN":
+                continue
+            if d.get("source") != "worker_scan":
+                continue
+            if d.get("action") != "submit":
+                continue
+            if d.get("signal") != TRADES_TODAY_SIGNAL:
+                continue
+            ts_ny = d.get("ts_ny")
+            if not ts_ny:
+                continue
+            # ts_ny is an ISO string with offset
+            dt = datetime.fromisoformat(ts_ny)
+            if dt.date() == today:
+                n += 1
+        except Exception:
+            continue
+    return n
+
+
 # In-memory scan history to help debug the equities scanner.
 # This is intentionally small and ephemeral (in-memory only).
 SCAN_HISTORY_SIZE = int(os.getenv("SCAN_HISTORY_SIZE", "50"))
@@ -440,22 +467,6 @@ def record_decision(event: str, source: str, symbol: str = "", side: str = "", s
         # Never let tracing break trading.
         pass
 
-
-
-def _count_forced_trades_today_ny() -> int:
-    """Count FORCE_TRADE decisions for today's NY date."""
-    try:
-        today = now_ny().date()
-    except Exception:
-        return 0
-    n = 0
-    for d in list(DECISIONS)[-500:]:
-        try:
-            if d.get("event") == "FORCE_TRADE" and d.get("ts_ny", "").startswith(str(today)):
-                n += 1
-        except Exception:
-            continue
-    return n
 
 
 def config_effective_snapshot() -> dict:
@@ -2163,6 +2174,43 @@ async def worker_exit(req: Request):
         else:
             results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price})
 
+
+    # --- Trades-Today forcing (optional, emergency) ---
+    # If enabled, and we are in market hours, and we've produced no actionable trades, we'll force up to
+    # TRADES_TODAY_TARGET_TRADES market entries per NY day so you can validate end-to-end execution.
+    try:
+        if TRADES_TODAY_ENABLE and (not effective_dry_run) and SCANNER_ALLOW_LIVE and in_market_hours():
+            forced_today = _count_forced_trades_today_ny()
+            # Only force when the scan did not already produce any submits
+            already_submitting = any(r.get("action") == "submit" for r in results)
+            if (not already_submitting) and forced_today < max(TRADES_TODAY_TARGET_TRADES, 0):
+                pick = None
+                # Prefer liquid ETFs if they're in the universe
+                for s in TRADES_TODAY_PREFERRED_SYMBOLS:
+                    if s in syms:
+                        pick = s
+                        break
+                if pick is None and syms:
+                    pick = syms[0]
+                if pick:
+                    side = "buy"
+                    signal = TRADES_TODAY_SIGNAL
+                    # Submit as a simple market entry using existing plumbing
+                    submit = submit_scan_trade(pick, side=side, signal=signal, meta={"forced": True, "mode": "trades_today"})
+                    would_submit.append(submit)
+                    results.insert(0, {
+                        "symbol": pick,
+                        "action": "submit",
+                        "reason": f"forced:{signal}",
+                        "price": submit.get("price"),
+                        "stop": submit.get("stop"),
+                        "take": submit.get("take"),
+                        "diagnostics": {"forced": True},
+                    })
+                    # Record decision for diagnostics
+                    trace_decision(event="SCAN", source="worker_scan", symbol=pick, side=side, signal=signal, action="submit", reason="forced_trade")
+    except Exception as e:
+        log.exception("TRADES_TODAY_ERROR err=%s", e)
     return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
 
 
@@ -2637,60 +2685,7 @@ async def worker_scan_entries(req: Request):
         except Exception:
                 pass
 
-        
-    # ---- Trades-Today emergency smoke test ----
-    try:
-        if TRADES_TODAY_ENABLE and (not TRADES_TODAY_ONLY_IF_NO_SIGNALS or len(would_submit) == 0):
-            if SCANNER_DRY_RUN or (not SCANNER_ALLOW_LIVE):
-                # respect hard gates
-                pass
-            else:
-                forced_today = _count_forced_trades_today_ny()
-                if forced_today < TRADES_TODAY_MAX_PER_DAY:
-                    sym = TRADES_TODAY_SYMBOL
-                    px = get_latest_price(sym)
-                    if px and px > 0 and TRADES_TODAY_NOTIONAL_USD > 0:
-                        # fractional shares ok; keep it tiny
-                        qty = max(0.0001, float(TRADES_TODAY_NOTIONAL_USD) / float(px))
-                        if TRADES_TODAY_SIDE not in ("buy", "sell"):
-                            side = "buy"
-                        else:
-                            side = TRADES_TODAY_SIDE
-
-                        submit_market_order(sym, side, qty)
-                        record_decision(
-                            event="FORCE_TRADE",
-                            source="trades_today",
-                            symbol=sym,
-                            side=side,
-                            signal="forced",
-                            action="submit",
-                            reason="trades_today_enabled",
-                        )
-                        # expose in response
-                        would_submit.append(
-                            {
-                                "symbol": sym,
-                                "action": "submit",
-                                "reason": "trades_today_enabled",
-                                "side": side,
-                                "qty": qty,
-                                "price": px,
-                            }
-                        )
-    except Exception as _e:
-        # never fail the scan because of this
-        record_decision(
-            event="FORCE_TRADE",
-            source="trades_today",
-            symbol=TRADES_TODAY_SYMBOL if 'TRADES_TODAY_SYMBOL' in globals() else "",
-            side="",
-            signal="forced",
-            action="error",
-            reason=f"trades_today_error:{type(_e).__name__}",
-        )
-    # ------------------------------------------
-return {
+        return {
                 "ok": True,
                 "scanner": {
                     "enabled": SCANNER_ENABLED,
