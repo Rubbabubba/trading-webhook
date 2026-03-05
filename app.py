@@ -698,57 +698,102 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
 
 
 
-def eval_hf_signal(bars_today: list[dict], bars_5m: list[Bar]) -> tuple[str, str] | None:
-    """Higher-frequency long-only signal.
-    Composite trigger (requires trend unless disabled):
-      - ORB breakout over opening 5m range high
-      - VWAP reclaim (prev close < vwap and close > vwap)
-      - EMA pullback reclaim / touch (close within eps% of EMA fast, or reclaim above EMA fast)
+def eval_hf_signal(bars_today: list[dict], bars_5m: list[dict]) -> tuple[str, str] | None:
     """
-    if not SCANNER_ENABLE_HF:
+    Higher-frequency entry logic (5m):
+      - 5m ORB breakout (or breakout occurred recently)
+      - VWAP reclaim (or reclaim occurred recently)
+      - EMA pullback/touch (or reclaim occurred recently)
+
+    Key improvement vs alert-style systems:
+    We allow a *recent* cross (within N bars) so the scanner can still enter
+    even if the exact cross happened between scans.
+    """
+    if not bars_today or not bars_5m:
         return None
-    if not bars_5m or len(bars_5m) < 6:
+
+    # Tunables (env optional; safe defaults)
+    recent_bars = env_int("SCANNER_HF_RECENT_BARS", 12)  # 12 x 5m = last 60 minutes
+    orb_minutes = env_int("SCANNER_HF_ORB_MINUTES", 5)
+    vwap_eps = env_float("SCANNER_HF_VWAP_EPS", 0.0005)  # 5 bps
+    ema_touch_eps = env_float("SCANNER_HF_EMA_TOUCH_EPS", 0.0025)  # 25 bps
+
+    # Latest bar data
+    last = bars_5m[-1]
+    close_now = float(last.get("close"))
+    high_now = float(last.get("high"))
+    low_now = float(last.get("low"))
+
+    vwap_now = last.get("vwap")
+    ema_fast_now = last.get("ema_fast")
+    ema_slow_now = last.get("ema_slow")
+
+    # If indicators are missing, bail safely
+    if vwap_now is None or ema_fast_now is None or ema_slow_now is None:
         return None
 
-    last_ts = bars_5m[-1].ts_ny
-    open_dt = datetime.combine(last_ts.date(), MARKET_OPEN).replace(tzinfo=NY_TZ)
-    after_open = [b for b in bars_5m if b.ts_ny >= open_dt]
-    if len(after_open) < max(1, SCANNER_HF_ORB_BARS):
+    vwap_now = float(vwap_now)
+    ema_fast_now = float(ema_fast_now)
+    ema_slow_now = float(ema_slow_now)
+
+    # Basic trend gate (keeps us from buying into weak structure)
+    if ema_fast_now < ema_slow_now:
         return None
 
-    orb_window = after_open[: max(1, SCANNER_HF_ORB_BARS)]
-    orb_high = max(b.high for b in orb_window)
+    # --- ORB (Opening Range Breakout) ---
+    # Define ORB range using first `orb_minutes` minutes after market open in NY.
+    # bars_5m already aligned to market session for the day in our fetch.
+    orb_bars = bars_5m[:max(1, ((orb_minutes + 4) // 5))]
+    orb_high = max(float(b.get("high")) for b in orb_bars)
+    orb_low = min(float(b.get("low")) for b in orb_bars)
 
-    close_prev = bars_5m[-2].close
-    close_now = bars_5m[-1].close
+    def _recent_cross_above(level: float) -> bool:
+        # look for a close cross above level within last `recent_bars`
+        start_i = max(1, len(bars_5m) - recent_bars)
+        for i in range(start_i, len(bars_5m)):
+            prev_close = float(bars_5m[i - 1].get("close"))
+            cur_close = float(bars_5m[i].get("close"))
+            if prev_close <= level and cur_close > level:
+                return True
+        return False
 
-    closes = [b.close for b in bars_5m]
-    ema_fast_series = ema_series(closes, int(SCANNER_HF_EMA_FAST))
-    ema_slow_series = ema_series(closes, int(SCANNER_HF_EMA_SLOW))
-    ema_fast_now = ema_fast_series[-1] if ema_fast_series else None
-    ema_slow_now = ema_slow_series[-1] if ema_slow_series else None
+    def _recent_reclaim(level: float, eps: float) -> bool:
+        # reclaim can be either a close cross, or a wick-under + close-above in same bar
+        start_i = max(1, len(bars_5m) - recent_bars)
+        for i in range(start_i, len(bars_5m)):
+            prev = bars_5m[i - 1]
+            cur = bars_5m[i]
+            prev_close = float(prev.get("close"))
+            cur_close = float(cur.get("close"))
+            cur_low = float(cur.get("low"))
+            if prev_close < level and cur_close >= level * (1 + eps):
+                return True
+            if cur_low <= level and cur_close >= level * (1 + eps):
+                return True
+        return False
 
-    if SCANNER_HF_REQUIRE_TREND:
-        if ema_fast_now is None or ema_slow_now is None or ema_fast_now < ema_slow_now:
-            return None
+    orb_recent = _recent_cross_above(orb_high)
+    orb_is_above = close_now > orb_high
+    orb_breakout_like = orb_recent or orb_is_above
 
-    vwap_now = bars_5m[-1].vwap
+    # --- VWAP reclaim ---
+    vwap_reclaim = _recent_reclaim(vwap_now, vwap_eps)
+    vwap_above = close_now >= vwap_now * (1 + vwap_eps)
 
-    orb_breakout = (close_prev <= orb_high and close_now > orb_high)
-    vwap_reclaim = (close_prev < vwap_now and close_now > vwap_now)
+    # --- EMA pullback/touch ---
+    # Accept touch by wick into EMA zone, as long as we are still above VWAP.
+    ema_touch = (low_now <= ema_fast_now * (1 + ema_touch_eps)) and (close_now >= ema_fast_now * (1 - ema_touch_eps))
+    ema_reclaim = _recent_reclaim(ema_fast_now, 0.0)
 
-    eps = float(SCANNER_HF_EMA_TOUCH_EPS_PCT)
-    ema_touch = False
-    ema_reclaim = False
-    if ema_fast_now:
-        ema_touch = (abs(close_now - ema_fast_now) / ema_fast_now) <= eps
-        ema_reclaim = (close_prev <= ema_fast_now and close_now > ema_fast_now)
-
-    if orb_breakout or vwap_reclaim or ema_reclaim or ema_touch:
+    # Entry logic (aggressive but still structured):
+    # 1) ORB breakout-like + above VWAP
+    # 2) VWAP reclaim + EMA touch/reclaim
+    if orb_breakout_like and vwap_above:
         return ("hf5", "buy")
+    if vwap_reclaim and (ema_touch or ema_reclaim):
+        return ("hf5", "buy")
+
     return None
-
-
 
 def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, signal: str) -> dict:
     entry_price = float(entry_price)
