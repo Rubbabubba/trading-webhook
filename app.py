@@ -1038,165 +1038,152 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     return None
 
 def _scan_diag_midbox(bars_1m: list[dict]) -> dict:
-    """Scanner diagnostic + signal evaluation for the Midbox strategy."""
-    out = {"enabled": True}
+    out: dict = {"enabled": True, "eligible": True}
+    try:
+        # calc_midbox expects 1m bars
+        box = calc_midbox(bars_1m)
+        box_high = float(box["box_high"])
+        buf = float(MIDBOX_BREAKOUT_BUFFER_PCT)
 
-    if not bars_1m or len(bars_1m) < max(10, MIDBOX_LOOKBACK_BARS + 2):
-        out.update({"eligible": False, "reason": "insufficient_bars"})
-        return out
+        # Buffered confirm level vs raw box high (for touch/near)
+        level = box_high * (1.0 + buf)
+        raw_level = box_high
 
-    decision = bars_1m[-1]
-    prev = bars_1m[-2]
+        price = float(bars_1m[-1].get("close") or 0.0)
+        prev_close = float(bars_1m[-2].get("close") or 0.0)
+        high = float(bars_1m[-1].get("high", price))
 
-    box_window = bars_1m[-(MIDBOX_LOOKBACK_BARS + 1):-1]  # exclude decision bar
-    box_high = max(b.get("high", b.get("close", 0.0)) for b in box_window)
-    box_low = min(b.get("low", b.get("close", 0.0)) for b in box_window)
+        crossed_up = (price >= level) and (prev_close < level)
+        crossed_down = (price <= level) and (prev_close > level)
 
-    price = float(decision.get("close") or 0.0)
-    prev_close = float(prev.get("close") or price)
-    high = float(decision.get("high") or price)
+        touch_eps = float(MIDBOX_TOUCH_EPS_PCT)
+        # Touch uses RAW level (not buffered)
+        touched = bool(high >= raw_level and price >= raw_level * (1.0 - touch_eps) and prev_close < raw_level)
 
-    level = float(box_high) * (1.0 + float(MIDBOX_BREAKOUT_BUFFER_PCT))
-    touch_eps = float(MIDBOX_TOUCH_EPS_PCT)
+        out.update({
+            "box_high": box_high,
+            "level": level,
+            "raw_level": raw_level,
+            "prev_close": prev_close,
+            "close": price,
+            "high": high,
+            "buf": buf,
+            "crossed_up": bool(crossed_up),
+            "crossed_down": bool(crossed_down),
+            "touched": bool(touched),
+        })
 
-    closes = [float(b.get("close") or 0.0) for b in bars_1m]
-    ema_fast = ema_series(closes, MIDBOX_TREND_EMA)
-    ema_slow = ema_series(closes, max(2, int(MIDBOX_TREND_EMA * 1.5)))
-    ema_fast_last = float(ema_fast[-1]) if ema_fast else price
-    ema_slow_last = float(ema_slow[-1]) if ema_slow else ema_fast_last
+        # Trend filter
+        trend_ok = True
+        if MIDBOX_TREND_FILTER_ENABLE:
+            ema_fast = ema_series(bars_1m, MIDBOX_TREND_FAST_LEN)
+            ema_slow = ema_series(bars_1m, MIDBOX_TREND_SLOW_LEN)
+            if ema_fast and ema_slow:
+                trend_ok = (price >= ema_fast[-1]) and (ema_fast[-1] >= ema_slow[-1])
+        out["trend_ok"] = bool(trend_ok)
 
-    trend_ok = (price >= ema_fast_last * (1.0 - float(MIDBOX_TREND_EPS))) and (
-        ema_fast_last >= ema_slow_last * (1.0 - float(MIDBOX_TREND_EPS))
-    )
+        if not trend_ok:
+            out["reason"] = "trend_fail"
+            return out
 
-    crossed_up = (prev_close < level) and (price >= level)
-    touched = (high >= level) and (price >= level * (1.0 - touch_eps)) and (prev_close < level)
-    breakout_cross = crossed_up or touched
+        if crossed_up or crossed_down or touched:
+            out["reason"] = "breakout_cross"
+            return out
 
-    dist_to_level_pct = abs(level - price) / level if level > 0 else None
-    near_pct = float(SCANNER_NEAR_MISS_PCT)
-    near = (dist_to_level_pct is not None) and (dist_to_level_pct <= near_pct)
-
-    signal = bool(trend_ok and breakout_cross)
-
-    out.update(
-        {
-            "eligible": signal,
-            "reason": "ok" if signal else ("trend_fail" if not trend_ok else "no_breakout_cross"),
-            "signal": signal,
-            "side": "buy" if signal else "",
-            "diag": {
-                "box_high": box_high,
-                "box_low": box_low,
-                "level": level,
-                "breakout_buffer_pct": float(MIDBOX_BREAKOUT_BUFFER_PCT),
-                "touch_eps_pct": touch_eps,
-                "price": price,
-                "prev_close": prev_close,
-                "high": high,
-                "ema_fast": ema_fast_last,
-                "ema_slow": ema_slow_last,
-                "trend_ok": bool(trend_ok),
-                "crossed_up": bool(crossed_up),
-                "touched": bool(touched),
-                "breakout_cross": bool(breakout_cross),
-                "near_miss": {
-                    "near": bool(near),
-                    "near_pct": near_pct,
-                    "dist_to_level_pct": dist_to_level_pct,
-                },
-            },
+        out["reason"] = "no_breakout_cross"
+        near_pct = float(MIDBOX_NEAR_PCT)
+        out["near_miss"] = {
+            "near": bool(price >= raw_level * (1.0 - near_pct) and prev_close < raw_level),
+            "near_pct": near_pct,
+            "dist_to_level_pct": (raw_level - price) / raw_level if raw_level else None,
+            "raw_level": raw_level,
+            "touch_eps": touch_eps,
         }
-    )
-    return out
-
+        return out
+    except Exception as e:
+        out["eligible"] = None
+        out["reason"] = f"error:{type(e).__name__}"
+        return out
 
 def _scan_diag_pwr(bars_today: list[dict]) -> dict:
-    """Power Hour diagnostics used by scanner-driven entries.
-
-    Produces the same fields expected by _no_signal_from_pwr().
-    """
-    out: dict = {"eligible": True, "enabled": bool(PWR_ENABLE), "session": PWR_SESSION}
-    if not PWR_ENABLE:
-        out["eligible"] = False
-        out["reason"] = "disabled"
-        return out
-
-    nowt = now_ny().time()
-    if not in_session(PWR_SESSION, nowt):
-        out["eligible"] = False
-        out["reason"] = "session_closed"
-        return out
-
-    out["bars_1m"] = len(bars_today)
-    lookback = max(30, int(SCANNER_PWR_LOOKBACK_BARS))
-    if len(bars_today) < lookback + 5:
-        out["eligible"] = False
-        out["reason"] = "insufficient_1m_bars"
-        return out
-
-    tail = bars_today[-lookback:]
-    highs = [float(b.get("high")) for b in tail if b.get("high") is not None]
-    if not highs:
-        out["eligible"] = False
-        out["reason"] = "insufficient_1m_bars"
-        return out
-
-    pre_high = max(highs)
-    level = pre_high * (1.0 + float(PWR_BREAKOUT_BUFFER_PCT))
-    price = float(bars_today[-1].get("close") or 0.0)
-    prev_close = float(bars_today[-2].get("close") or 0.0)
-    breakout = (price >= level) and (prev_close < level)
-
-    # VWAP approximation from last 30 1m bars so below_vwap check is meaningful
-    vwap_approx = None
+    out: dict = {"enabled": True, "eligible": True}
     try:
-        pv = 0.0
-        vv = 0.0
-        for b in bars_today[-30:]:
-            c = b.get("close")
-            v = float(b.get("volume") or 0.0)
-            if c is None:
-                continue
-            pv += float(c) * v
-            vv += v
-        vwap_approx = (pv / vv) if vv > 0 else float(bars_today[-1].get("close") or 0.0)
-    except Exception:
-        vwap_approx = None
+        session_ok, pre_bars, _ = split_power_hour(bars_today)
+        if not session_ok:
+            out["eligible"] = False
+            out["reason"] = "not_in_session"
+            return out
 
-    # Loose volume confirmation: last 1m vol >= 0.8 * median(20)
-    volume_ok = True
-    try:
-        last_vol = float(bars_today[-1].get("volume") or 0.0)
-        vols20 = sorted([float(b.get("volume") or 0.0) for b in bars_today[-20:]])
-        med = vols20[len(vols20) // 2] if vols20 else 0.0
-        if med > 0:
-            volume_ok = last_vol >= (0.8 * med)
-    except Exception:
+        use_hl = any(("high" in b) for b in pre_bars)
+        pre_high = (
+            max(float(b.get("high", b.get("close"))) for b in pre_bars)
+            if use_hl
+            else max(float(b.get("close")) for b in pre_bars)
+        )
+
+        buf = float(PWR_BREAKOUT_BUFFER_PCT)
+        level = pre_high * (1.0 + buf)
+        raw_level = pre_high
+
+        price = float(bars_today[-1].get("close") or 0.0)
+        prev_close = float(bars_today[-2].get("close") or 0.0)
+        high = float(bars_today[-1].get("high", price))
+
+        breakout = (price >= level) and (prev_close < level)
+
+        touch_eps = float(PWR_TOUCH_EPS_PCT)
+        touched = bool(high >= raw_level and price >= raw_level * (1.0 - touch_eps) and prev_close < raw_level)
+
+        out.update({
+            "pre_high": pre_high,
+            "level": level,
+            "raw_level": raw_level,
+            "prev_close": prev_close,
+            "close": price,
+            "high": high,
+            "buf": buf,
+            "breakout": bool(breakout),
+            "touched": bool(touched),
+        })
+
+        # Volume confirmation (loose)
         volume_ok = True
+        try:
+            last_vol = float(bars_today[-1].get("volume") or 0.0)
+            vols20 = sorted([float(b.get("volume") or 0.0) for b in bars_today[-20:]])
+            med = vols20[len(vols20) // 2] if vols20 else 0.0
+            if med > 0:
+                volume_ok = last_vol >= (0.8 * med)
+        except Exception:
+            volume_ok = True
+        out["volume_ok"] = bool(volume_ok)
 
-    out["ema200_slope_up"] = True  # placeholder but not used to block today
-    out["breakout"] = bool(breakout)
-    out["volume_ok"] = bool(volume_ok)
-    out["vwap_5m"] = vwap_approx
-    out["ema20_5m"] = None
+        out["vwap_5m"] = None
+        out["ema20_5m"] = None
+        out["ema200_slope_up"] = True
 
-    if breakout and not volume_ok:
-        out["reason"] = "volume_fail"
+        if (breakout or touched) and not volume_ok:
+            out["reason"] = "volume_fail"
+            return out
+
+        if not breakout and not touched:
+            out["reason"] = "no_breakout"
+            near_pct = float(PWR_NEAR_PCT)
+            out["near_miss"] = {
+                "near": bool(price >= raw_level * (1.0 - near_pct) and prev_close < raw_level),
+                "near_pct": near_pct,
+                "dist_to_level_pct": (raw_level - price) / raw_level if raw_level else None,
+                "raw_level": raw_level,
+                "touch_eps": touch_eps,
+            }
+            return out
+
+        out["reason"] = "ok"
         return out
-    if not breakout:
-        out["reason"] = "no_breakout"
-        # Near-miss telemetry
-        near_pct = float(PWR_NEAR_PCT)
-        out["near_miss"] = {
-            "near": bool(price >= level * (1.0 - near_pct) and prev_close < level),
-            "near_pct": near_pct,
-            "dist_to_level_pct": (level - price) / level if level else None,
-        }
+    except Exception as e:
+        out["eligible"] = None
+        out["reason"] = f"error:{type(e).__name__}"
         return out
-
-    out["reason"] = "ok"
-    return out
 
 def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
     out: dict = {"eligible": True, "enabled": bool(VWAP_PB_ENABLE)}
