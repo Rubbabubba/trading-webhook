@@ -2176,46 +2176,83 @@ async def worker_exit(req: Request):
 
 
     # --- Trades-Today forcing (optional, emergency) ---
-    # If enabled, and we are in market hours, and we've produced no actionable trades, we'll force up to
-    # TRADES_TODAY_TARGET_TRADES market entries per NY day so you can validate end-to-end execution.
+    # Keep this path conservative and self-contained so it cannot crash the exit worker.
     try:
-        # effective_dry_run is used by TRADES_TODAY guard; compute it here to mirror scanner behavior
         effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
-
-        if TRADES_TODAY_ENABLE and (not effective_dry_run) and SCANNER_ALLOW_LIVE and in_market_hours():
+        if TRADES_TODAY_ENABLE and SCANNER_ALLOW_LIVE and (not effective_dry_run) and in_market_hours():
             forced_today = _count_forced_trades_today_ny()
-            # Only force when the scan did not already produce any submits
-            already_submitting = any(r.get("action") == "submit" for r in results)
-            if (not already_submitting) and forced_today < max(TRADES_TODAY_TARGET_TRADES, 0):
-                pick = None
-                # Prefer liquid ETFs if they're in the universe
-                for s in TRADES_TODAY_PREFERRED_SYMBOLS:
-                    if s in syms:
-                        pick = s
-                        break
-                if pick is None and syms:
-                    pick = syms[0]
-                if pick:
-                    side = "buy"
-                    signal = TRADES_TODAY_SIGNAL
-                    # Submit as a simple market entry using existing plumbing
-                    submit = submit_scan_trade(pick, side=side, signal=signal, meta={"forced": True, "mode": "trades_today"})
-                    would_submit.append(submit)
-                    results.insert(0, {
-                        "symbol": pick,
-                        "action": "submit",
-                        "reason": f"forced:{signal}",
-                        "price": submit.get("price"),
-                        "stop": submit.get("stop"),
-                        "take": submit.get("take"),
-                        "diagnostics": {"forced": True},
-                    })
-                    # Record decision for diagnostics
-                    trace_decision(event="SCAN", source="worker_scan", symbol=pick, side=side, signal=signal, action="submit", reason="forced_trade")
+            already_actionable = any(str(r.get("action", "")).startswith("exit_") for r in results)
+            allowed_pool = [s for s in TRADES_TODAY_PREFERRED_SYMBOLS if (not ALLOWED_SYMBOLS or s in ALLOWED_SYMBOLS)]
+            pick = allowed_pool[0] if allowed_pool else (sorted(ALLOWED_SYMBOLS)[0] if ALLOWED_SYMBOLS else None)
+            if (not already_actionable) and pick and forced_today < max(TRADES_TODAY_TARGET_TRADES, 0):
+                side = "buy"
+                signal = TRADES_TODAY_SIGNAL
+                submit = submit_scan_trade(pick, side=side, signal=signal, meta={"forced": True, "mode": "trades_today"})
+                results.insert(0, {
+                    "symbol": pick,
+                    "action": submit.get("action", "submit"),
+                    "reason": f"forced:{signal}",
+                    "price": submit.get("price"),
+                    "stop": submit.get("stop"),
+                    "take": submit.get("take"),
+                    "order_id": submit.get("order_id"),
+                    "diagnostics": {"forced": True},
+                })
+                record_decision("SCAN", "worker_exit", symbol=pick, side=side, signal=signal,
+                                action=submit.get("action", "submit"), reason="forced_trade",
+                                price=submit.get("price"), stop=submit.get("stop"), take=submit.get("take"),
+                                meta={"forced": True})
     except Exception as e:
         logger.exception("TRADES_TODAY_ERROR err=%s", e)
     return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
 
+
+
+
+@app.get("/diagnostics/runtime")
+def diagnostics_runtime():
+    """Lightweight runtime sanity checks for live-readiness."""
+    checks = {}
+    try:
+        checks["alpaca_clock"] = {"ok": bool(trading_client.get_clock())}
+    except Exception as e:
+        checks["alpaca_clock"] = {"ok": False, "error": str(e)}
+
+    sample_symbol = None
+    try:
+        universe = universe_symbols()
+        sample_symbol = universe[0] if universe else (sorted(ALLOWED_SYMBOLS)[0] if ALLOWED_SYMBOLS else None)
+    except Exception:
+        sample_symbol = None
+
+    if sample_symbol:
+        try:
+            px = get_latest_price(sample_symbol)
+            qty = compute_qty(float(px)) if px else 0
+            plan = build_trade_plan(sample_symbol, "buy", qty, float(px), "runtime_probe") if px else None
+            checks["sample_symbol"] = {
+                "ok": bool(px and qty and plan),
+                "symbol": sample_symbol,
+                "price": px,
+                "qty": qty,
+                "stop": plan.get("stop_price") if plan else None,
+                "take": plan.get("take_price") if plan else None,
+            }
+        except Exception as e:
+            checks["sample_symbol"] = {"ok": False, "symbol": sample_symbol, "error": str(e)}
+    else:
+        checks["sample_symbol"] = {"ok": False, "error": "no_symbols_available"}
+
+    live_ready = all(v.get("ok") for v in checks.values()) and (not DRY_RUN) and SCANNER_ALLOW_LIVE
+    return {
+        "ok": True,
+        "live_ready": live_ready,
+        "paper": APCA_PAPER,
+        "dry_run": DRY_RUN,
+        "scanner_dry_run": SCANNER_DRY_RUN,
+        "scanner_allow_live": SCANNER_ALLOW_LIVE,
+        "checks": checks,
+    }
 
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
@@ -2515,14 +2552,15 @@ async def worker_scan_entries(req: Request):
                             action = side
                             reason = signal_name
                             try:
-                                plan = build_trade_plan(sym, price)
+                                qty_for_plan = compute_qty(float(price))
+                                plan = build_trade_plan(sym, side, qty_for_plan, float(price), signal_name)
                                 TRADE_PLAN[sym] = plan
                             except Exception as e:
                                 diag["trade_plan_error"] = str(e)
-                            local_signals.append({"symbol": sym, "action": action, "price": price, "signal": signal_name})
+                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "plan": plan if "plan" in locals() else None})
 
-                    stop_out = plan.get("stop") if plan else None
-                    take_out = plan.get("take") if plan else None
+                    stop_out = plan.get("stop_price") if plan else None
+                    take_out = plan.get("take_price") if plan else None
 
                     if action == "exit":
                         local_signals.append({"symbol": sym, "action": action, "price": price})
