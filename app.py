@@ -54,6 +54,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 import re
+import json
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.parse import urlencode
 
 @dataclass(frozen=True)
 class Bar:
@@ -65,6 +68,108 @@ class Bar:
     close: float
     volume: float
     vwap: Optional[float] = None
+
+
+def _iso_utc(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_bar_ts(ts_raw):
+    if not ts_raw:
+        return None
+    try:
+        if isinstance(ts_raw, datetime):
+            ts = ts_raw
+        else:
+            s = str(ts_raw)
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            ts = datetime.fromisoformat(s)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _normalize_bar_row(ts_utc: datetime, row) -> Optional[dict]:
+    try:
+        return {
+            "ts_utc": ts_utc,
+            "ts_ny": ts_utc.astimezone(NY_TZ),
+            "open": float((row.get("open") if isinstance(row, dict) else getattr(row, "open", 0)) or 0),
+            "high": float((row.get("high") if isinstance(row, dict) else getattr(row, "high", 0)) or 0),
+            "low": float((row.get("low") if isinstance(row, dict) else getattr(row, "low", 0)) or 0),
+            "close": float((row.get("close") if isinstance(row, dict) else getattr(row, "close", 0)) or 0),
+            "volume": float((row.get("volume") if isinstance(row, dict) else getattr(row, "volume", 0)) or 0),
+            "vwap": float(((row.get("vwap") if isinstance(row, dict) else getattr(row, "vwap", 0)) or 0)),
+        }
+    except Exception:
+        return None
+
+
+def _alpaca_data_base_url() -> str:
+    return (os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets").strip() or "https://data.alpaca.markets").rstrip("/")
+
+
+def _fetch_bars_via_rest(symbols: list[str], start: datetime, end: datetime, feed_override=None, limit: int = 10000) -> tuple[dict[str, list[dict]], dict]:
+    symbols = [s.strip().upper() for s in (symbols or []) if s and s.strip()]
+    out: dict[str, list[dict]] = {s: [] for s in symbols}
+    debug = {
+        "method": "rest",
+        "feed": str(feed_override or DATA_FEED),
+        "start": _iso_utc(start),
+        "end": _iso_utc(end),
+        "count": 0,
+        "url": None,
+    }
+    if not symbols:
+        return out, debug
+    params = {
+        "symbols": ",".join(symbols),
+        "timeframe": "1Min",
+        "start": _iso_utc(start),
+        "end": _iso_utc(end),
+        "limit": str(int(limit)),
+        "adjustment": str(DATA_ADJUSTMENT_RAW),
+        "feed": str(feed_override or _DATA_FEED_RAW),
+        "sort": "asc",
+    }
+    url = f"{_alpaca_data_base_url()}/v2/stocks/bars?{urlencode(params)}"
+    debug["url"] = url
+    req = UrlRequest(url, headers={
+        "APCA-API-KEY-ID": APCA_KEY,
+        "APCA-API-SECRET-KEY": APCA_SECRET,
+        "accept": "application/json",
+        "user-agent": "trading-webhook/patch-006",
+    })
+    try:
+        with urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        bars_payload = payload.get("bars", {}) if isinstance(payload, dict) else {}
+        for sym, seq in (bars_payload or {}).items():
+            rows = []
+            for b in seq or []:
+                ts_utc = _parse_bar_ts((b or {}).get("t"))
+                if not ts_utc:
+                    continue
+                row = _normalize_bar_row(ts_utc, {
+                    "open": (b or {}).get("o"),
+                    "high": (b or {}).get("h"),
+                    "low": (b or {}).get("l"),
+                    "close": (b or {}).get("c"),
+                    "volume": (b or {}).get("v"),
+                    "vwap": (b or {}).get("vw"),
+                })
+                if row:
+                    rows.append(row)
+            out[str(sym)] = rows
+        debug["count"] = sum(len(v) for v in out.values())
+    except Exception as e:
+        debug["error"] = str(e)
+    return out, debug
 
 
 # =============================
@@ -2397,13 +2502,25 @@ async def worker_exit(req: Request):
 
 
 def _bar_path_probe(symbol: str, lookback_days: int = 1) -> dict:
-    rows = fetch_1m_bars_multi([symbol], lookback_days=lookback_days, limit_per_symbol=500).get(symbol, [])
+    sym = (symbol or "AAPL").strip().upper()
+    now_local = now_ny()
+    start_local = (now_local - timedelta(days=max(1, int(lookback_days)))).replace(hour=9, minute=30, second=0, microsecond=0)
+    end_local = now_local
+    start_utc = start_local.astimezone(timezone.utc)
+    end_utc = end_local.astimezone(timezone.utc)
+
+    rows = fetch_1m_bars_multi([sym], lookback_days=lookback_days, limit_per_symbol=500).get(sym, [])
     today_rows = _bars_for_today_regular_session(rows)
     bars_5m = resample_5m(today_rows) if today_rows else []
+    rest_rows, rest_debug = _fetch_bars_via_rest([sym], start_utc, end_utc, feed_override=_DATA_FEED_RAW, limit=500)
+    rest_today = _bars_for_today_regular_session(rest_rows.get(sym, []))
+    rest_5m = resample_5m(rest_today) if rest_today else []
     return {
-        "symbol": symbol,
+        "symbol": sym,
         "feed": str(DATA_FEED),
         "adjustment": str(ADJUSTMENT),
+        "request_start_utc": _iso_utc(start_utc),
+        "request_end_utc": _iso_utc(end_utc),
         "bars_1m": len(rows),
         "bars_1m_today": len(today_rows),
         "bars_5m_today": len(bars_5m),
@@ -2411,7 +2528,17 @@ def _bar_path_probe(symbol: str, lookback_days: int = 1) -> dict:
         "latest_5m_ts": bars_5m[-1].get("ts_ny") if bars_5m else None,
         "first_1m_ts": today_rows[0].get("ts_ny").isoformat() if today_rows else None,
         "first_5m_ts": bars_5m[0].get("ts_ny") if bars_5m else None,
-        "ok": len(bars_5m) > 0,
+        "rest_probe": {
+            "bars_1m": len(rest_rows.get(sym, [])),
+            "bars_1m_today": len(rest_today),
+            "bars_5m_today": len(rest_5m),
+            "latest_1m_ts": rest_today[-1].get("ts_ny").isoformat() if rest_today else None,
+            "latest_5m_ts": rest_5m[-1].get("ts_ny") if rest_5m else None,
+            "first_1m_ts": rest_today[0].get("ts_ny").isoformat() if rest_today else None,
+            "first_5m_ts": rest_5m[0].get("ts_ny") if rest_5m else None,
+            "debug": rest_debug,
+        },
+        "ok": len(bars_5m) > 0 or len(rest_5m) > 0,
     }
 
 
@@ -2423,6 +2550,38 @@ def diagnostics_bars_5m(symbol: str = "AAPL", lookback_days: int = 1):
         return {"ok": True, "probe": probe}
     except Exception as e:
         return {"ok": False, "symbol": sym, "error": str(e)}
+
+
+@app.get("/diagnostics/bars_debug")
+def diagnostics_bars_debug(symbol: str = "AAPL", lookback_days: int = 1):
+    sym = (symbol or "AAPL").strip().upper()
+    days = max(1, int(lookback_days))
+    now_local = now_ny()
+    start_local = (now_local - timedelta(days=days)).replace(hour=9, minute=30, second=0, microsecond=0)
+    end_local = now_local
+    start_utc = start_local.astimezone(timezone.utc)
+    end_utc = end_local.astimezone(timezone.utc)
+    rows, debug = _fetch_bars_via_rest([sym], start_utc, end_utc, feed_override=_DATA_FEED_RAW, limit=500)
+    seq = rows.get(sym, [])
+    return {
+        "ok": True,
+        "symbol": sym,
+        "request_start_utc": _iso_utc(start_utc),
+        "request_end_utc": _iso_utc(end_utc),
+        "feed": str(DATA_FEED),
+        "raw_count": len(seq),
+        "first_ts": seq[0].get("ts_ny").isoformat() if seq else None,
+        "last_ts": seq[-1].get("ts_ny").isoformat() if seq else None,
+        "sample": [{
+            "ts_ny": r.get("ts_ny").isoformat(),
+            "open": r.get("open"),
+            "high": r.get("high"),
+            "low": r.get("low"),
+            "close": r.get("close"),
+            "volume": r.get("volume"),
+        } for r in seq[:5]],
+        "debug": debug,
+    }
 
 
 @app.get("/diagnostics/runtime")
