@@ -945,6 +945,18 @@ def lock_symbol(symbol: str):
         SYMBOL_LOCKS[symbol] = utc_ts() + SYMBOL_LOCK_SEC
 
 
+def take_symbol_lock(symbol: str, lock_sec: int | None = None) -> bool:
+    """Atomically take/update a symbol lock if it is not currently locked."""
+    now = utc_ts()
+    ttl = int(lock_sec if lock_sec is not None else SYMBOL_LOCK_SEC)
+    with STATE_LOCK:
+        exp = SYMBOL_LOCKS.get(symbol, 0)
+        if exp > now:
+            return False
+        SYMBOL_LOCKS[symbol] = now + max(ttl, 1)
+        return True
+
+
 def daily_pnl() -> float | None:
     """
     Best-effort daily P&L using Alpaca account equity change from last_equity.
@@ -2000,8 +2012,12 @@ def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = N
         if price is None or price <= 0:
             return {"ok": False, "error": "latest_price_missing"}
 
+        stop_price = None
+        take_price = None
         if side == "buy":
             qty = compute_qty(float(price))
+            stop_price = round(float(price) * (1.0 - STOP_PCT), 2)
+            take_price = round(float(price) * (1.0 + TAKE_PCT), 2)
         else:
             qty = round(abs(qty_signed), 2)
 
@@ -2010,11 +2026,11 @@ def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = N
 
         if effective_dry_run:
             record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="dry_run", reason="ok", meta=meta)
-            return {"ok": True, "action": "dry_run", "qty": qty, "price": price}
+            return {"ok": True, "action": "dry_run", "qty": qty, "price": price, "stop": stop_price, "take": take_price}
 
         order = submit_market_order(symbol, side, qty)
         record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="submitted", reason="ok", meta=meta)
-        return {"ok": True, "action": "submitted", "qty": qty, "price": price, "order_id": str(getattr(order, "id", ""))}
+        return {"ok": True, "action": "submitted", "qty": qty, "price": price, "stop": stop_price, "take": take_price, "order_id": str(getattr(order, "id", ""))}
     except Exception as e:
         logger.exception("scan_submit_error symbol=%s", symbol)
         try:
@@ -2339,6 +2355,9 @@ async def worker_scan_entries(req: Request):
     cleanup_caches()
     scan_started = _time.perf_counter()
 
+    def _elapsed_ms() -> int:
+        return int(max(0.0, (_time.perf_counter() - scan_started) * 1000.0))
+
     body = {}
     try:
         body = await req.json()
@@ -2367,7 +2386,7 @@ async def worker_scan_entries(req: Request):
 
     try:
         if not SCANNER_ENABLED:
-            _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            _set_last_scan(skipped=True, reason="scanner_disabled", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=_elapsed_ms())
             record_decision("SCAN", "worker_scan", action="skipped", reason="scanner_disabled")
             # Store skipped scan diagnostics so /diagnostics/scans/latest is never null
             try:
@@ -2387,7 +2406,7 @@ async def worker_scan_entries(req: Request):
                     "signals": 0,
                     "would_trade": 0,
                     "blocked": 0,
-                    "duration_ms": int((utc_ts()-scan_start_utc)*1000),
+                    "duration_ms": _elapsed_ms(),
                     "summary": scan_summary,
                     "results": [],
                 })
@@ -2398,7 +2417,7 @@ async def worker_scan_entries(req: Request):
             return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
 
         if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
-            _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            _set_last_scan(skipped=True, reason="outside_market_hours", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=_elapsed_ms())
             record_decision("SCAN", "worker_scan", action="skipped", reason="outside_market_hours")
             # Store skipped scan diagnostics so /diagnostics/scans/latest is never null
             try:
@@ -2418,7 +2437,7 @@ async def worker_scan_entries(req: Request):
                     "signals": 0,
                     "would_trade": 0,
                     "blocked": 0,
-                    "duration_ms": int((utc_ts()-scan_start_utc)*1000),
+                    "duration_ms": _elapsed_ms(),
                     "summary": scan_summary,
                     "results": [],
                 })
@@ -2430,7 +2449,7 @@ async def worker_scan_entries(req: Request):
 
                 # Optional intraday scanner session gating (NY time).
         if SCANNER_SESSIONS_NY and not in_scanner_session():
-            _set_last_scan(skipped=True, reason="outside_scanner_session", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=int((utc_ts()-scan_start_utc)*1000))
+            _set_last_scan(skipped=True, reason="outside_scanner_session", scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=_elapsed_ms())
             record_decision("SCAN", "worker_scan", action="skipped", reason="outside_scanner_session")
             try:
                 scan_summary = {
@@ -2449,7 +2468,7 @@ async def worker_scan_entries(req: Request):
                     "signals": 0,
                     "would_trade": 0,
                     "blocked": 0,
-                    "duration_ms": int((utc_ts()-scan_start_utc)*1000),
+                    "duration_ms": _elapsed_ms(),
                     "summary": scan_summary,
                     "results": [],
                 })
