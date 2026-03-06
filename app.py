@@ -325,14 +325,24 @@ PWR_BREAKOUT_USE_HIGHLOW = os.getenv("PWR_BREAKOUT_USE_HIGHLOW", "true").lower()
 
 # Strategy C: VWAP pullback on 5m
 ENABLE_STRATEGY_VWAP_PULLBACK = os.getenv("ENABLE_STRATEGY_VWAP_PULLBACK", "true").lower() == "true"
-VWAP_PB_EMA_FAST = int(os.getenv("VWAP_PB_EMA_FAST", "20"))
-VWAP_PB_EMA_SLOW = int(os.getenv("VWAP_PB_EMA_SLOW", "50"))
-VWAP_PB_BAND_PCT = float(os.getenv("VWAP_PB_BAND_PCT", "0.0015"))  # 0.15% band around VWAP counts as a touch
-VWAP_PB_PULLBACK_LOOKBACK_BARS = int(os.getenv("VWAP_PB_PULLBACK_LOOKBACK_BARS", "12"))  # bars to look back for VWAP touch
-VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.006"))  # don't chase if >0.6% away from VWAP
-VWAP_PB_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_MIN_EMA_SLOPE", "0.0"))  # per-bar slope
+VWAP_PB_EMA_FAST = int(os.getenv("VWAP_PB_EMA_FAST", "9"))
+VWAP_PB_EMA_SLOW = int(os.getenv("VWAP_PB_EMA_SLOW", "20"))
+VWAP_PB_BAND_PCT = float(os.getenv("VWAP_PB_BAND_PCT", "0.0035"))  # 0.35% band around VWAP counts as a touch
+VWAP_PB_PULLBACK_LOOKBACK_BARS = int(os.getenv("VWAP_PB_PULLBACK_LOOKBACK_BARS", "6"))
+VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.008"))  # don't chase if >0.8% away from VWAP
+VWAP_PB_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_MIN_EMA_SLOPE", "0.0"))
+VWAP_PB_TOUCH_BAND_PCT = float(os.getenv("VWAP_PB_TOUCH_BAND_PCT", os.getenv("VWAP_PB_BAND_PCT", "0.0035")))
+VWAP_PB_TOUCH_LOOKBACK_BARS = int(os.getenv("VWAP_PB_TOUCH_LOOKBACK_BARS", os.getenv("VWAP_PB_PULLBACK_LOOKBACK_BARS", "6")))
+VWAP_PB_VWAP_WINDOW_BARS = int(os.getenv("VWAP_PB_VWAP_WINDOW_BARS", "12"))
+VWAP_PB_SLOPE_LOOKBACK_BARS = int(os.getenv("VWAP_PB_SLOPE_LOOKBACK_BARS", "3"))
+VWAP_PB_SLOPE_EPS_PCT = float(os.getenv("VWAP_PB_SLOPE_EPS_PCT", "0.0"))
+VWAP_PB_MIN_RELVOL = float(os.getenv("VWAP_PB_MIN_RELVOL", "0.90"))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
+SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default="vwap_pullback").strip().lower()
+SCANNER_CANDIDATE_LIMIT = int(getenv_any("SCANNER_CANDIDATE_LIMIT", default="25"))
+SCANNER_ACTIVITY_LOOKBACK_BARS = int(getenv_any("SCANNER_ACTIVITY_LOOKBACK_BARS", default="30"))
+SCANNER_ACTIVITY_RECENT_BARS = int(getenv_any("SCANNER_ACTIVITY_RECENT_BARS", default="6"))
 
 # Session windows (configurable for parity; defaults match your Pine inputs)
 MIDBOX_BUILD_SESSION = getenv_any("MIDBOX_BUILD_SESSION", default="10:00-11:30")
@@ -351,6 +361,7 @@ def _parse_session_hhmm_range(rng: str) -> tuple[time, time]:
 SCANNER_ENABLE_MIDBOX = env_bool("SCANNER_ENABLE_MIDBOX", "true")
 SCANNER_ENABLE_PWR = env_bool("SCANNER_ENABLE_PWR", "true")
 SCANNER_ENABLE_VWAP_PB = env_bool("SCANNER_ENABLE_VWAP_PB", str(ENABLE_STRATEGY_VWAP_PULLBACK).lower())
+VWAP_PB_ENABLE = SCANNER_ENABLE_VWAP_PB
 SCANNER_PWR_LOOKBACK_BARS = int(getenv_any("SCANNER_PWR_LOOKBACK_BARS", default="30"))
 
 # Optional liquidity filters for 'alpaca' universe provider
@@ -1002,6 +1013,91 @@ def universe_symbols() -> list[str]:
     return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
 
+def _bars_for_today_regular_session(bars: list[dict]) -> list[dict]:
+    if not bars:
+        return []
+    today = now_ny().date()
+    out: list[dict] = []
+    for b in bars:
+        try:
+            ts = b.get("ts_ny")
+            if not ts or ts.date() != today:
+                continue
+            if MARKET_OPEN <= ts.time() <= MARKET_CLOSE:
+                out.append(b)
+        except Exception:
+            continue
+    return out
+
+
+def _mean(nums: list[float]) -> float:
+    return (sum(nums) / len(nums)) if nums else 0.0
+
+
+def _activity_profile(symbol: str, bars: list[dict]) -> dict:
+    today = _bars_for_today_regular_session(bars)
+    if len(today) < 10:
+        return {"symbol": symbol, "eligible": False, "reason": "insufficient_intraday_bars", "score": 0.0}
+
+    price = float(today[-1].get("close") or 0.0)
+    if price <= 0:
+        return {"symbol": symbol, "eligible": False, "reason": "bad_price", "score": 0.0}
+    if price < SCANNER_MIN_PRICE or price > SCANNER_MAX_PRICE:
+        return {"symbol": symbol, "eligible": False, "reason": "price_filter", "score": 0.0, "price": price}
+
+    lookback = max(10, min(len(today), int(SCANNER_ACTIVITY_LOOKBACK_BARS)))
+    recent_n = max(3, min(lookback // 2, int(SCANNER_ACTIVITY_RECENT_BARS)))
+    win = today[-lookback:]
+    recent = win[-recent_n:]
+    earlier = win[:-recent_n] or win
+
+    closes = [float(b.get("close") or 0.0) for b in win]
+    highs = [float(b.get("high", b.get("close") or 0.0) or 0.0) for b in win]
+    lows = [float(b.get("low", b.get("close") or 0.0) or 0.0) for b in win]
+    vols = [float(b.get("volume") or 0.0) for b in win]
+    recent_vol = sum(float(b.get("volume") or 0.0) for b in recent)
+    earlier_vol_avg = _mean([float(b.get("volume") or 0.0) for b in earlier]) or 0.0
+    relvol = recent_vol / max(earlier_vol_avg * len(recent), 1.0) if earlier_vol_avg > 0 else 0.0
+
+    open_price = float(win[0].get("open", closes[0]) or closes[0] or 0.0)
+    intraday_change = (price / open_price - 1.0) if open_price > 0 else 0.0
+    recent_change = (price / max(float(recent[0].get("open", price) or price), 1e-9) - 1.0) if recent else 0.0
+    range_pct = ((max(highs) - min(lows)) / price) if price > 0 else 0.0
+    dollar_vol = price * sum(vols)
+
+    score = 0.0
+    score += abs(intraday_change) * 800.0
+    score += abs(recent_change) * 600.0
+    score += range_pct * 400.0
+    score += max(0.0, min(relvol, 3.0)) * 20.0
+    if intraday_change > 0:
+        score += 8.0
+    if recent_change > 0:
+        score += 4.0
+    if dollar_vol >= 1_000_000:
+        score += min(20.0, dollar_vol / 50_000_000.0)
+
+    return {
+        "symbol": symbol,
+        "eligible": True,
+        "score": round(score, 4),
+        "price": round(price, 4),
+        "intraday_change_pct": round(intraday_change * 100.0, 3),
+        "recent_change_pct": round(recent_change * 100.0, 3),
+        "range_pct": round(range_pct * 100.0, 3),
+        "relvol": round(relvol, 3),
+        "dollar_vol": round(dollar_vol, 2),
+        "bars": len(today),
+    }
+
+
+def rank_scan_candidates(symbols: list[str], bars_map: dict[str, list[dict]]) -> list[dict]:
+    profiles = [_activity_profile(sym, bars_map.get(sym, [])) for sym in symbols]
+    profiles = [p for p in profiles if p.get("eligible")]
+    profiles.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    return profiles
+
+
 def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None) -> list[dict]:
     """Fetch recent 1-minute bars for a symbol. Returns list of dicts with UTC ts + OHLCV + vwap."""
     # Conservative lookback to stay within API limits and keep scan fast.
@@ -1460,106 +1556,138 @@ def _scan_diag_pwr(bars_today: list[dict]) -> dict:
         out["reason"] = f"error:{type(e).__name__}"
         return out
 
-def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
-    out: dict = {"eligible": True, "enabled": bool(VWAP_PB_ENABLE)}
+def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
+    out: dict = {"enabled": bool(VWAP_PB_ENABLE), "eligible": True, "strategy": "vwap_pullback_5m"}
     if not VWAP_PB_ENABLE:
         out["eligible"] = False
         out["reason"] = "disabled"
         return out
 
-    # VWAP PB typically regular-session only; gate by market hours if configured
-    if ONLY_MARKET_HOURS and not in_market_hours():
-        out["eligible"] = False
-        out["reason"] = "outside_market_hours"
-        return out
-
+    bars_today = _bars_for_today_regular_session(bars_today)
     bars_5m = resample_5m(bars_today) if bars_today else []
     out["bars_5m"] = len(bars_5m)
-    min_bars = max(int(RESAMPLE_5M_MIN_BARS), int(VWAP_PB_EMA_SLOW) + 5)
-    out["min_bars_5m"] = int(min_bars)
+    min_bars = max(12, int(VWAP_PB_EMA_SLOW) + 2)
+    out["min_bars_5m"] = min_bars
     if len(bars_5m) < min_bars:
         out["eligible"] = False
         out["reason"] = "insufficient_5m_bars"
         return out
 
-    closes = [float(b.close) for b in bars_5m]
-    highs = [float(b.high) for b in bars_5m]
-    lows = [float(b.low) for b in bars_5m]
-    volumes = [float(b.volume) for b in bars_5m]
-
+    closes = [float(b.get("close") or 0.0) for b in bars_5m]
+    highs = [float(b.get("high", b.get("close") or 0.0) or 0.0) for b in bars_5m]
+    lows = [float(b.get("low", b.get("close") or 0.0) or 0.0) for b in bars_5m]
+    opens = [float(b.get("open", b.get("close") or 0.0) or 0.0) for b in bars_5m]
+    volumes = [float(b.get("volume") or 0.0) for b in bars_5m]
     price = closes[-1]
+    prev_close = closes[-2]
+
     ema_fast = ema_series(closes, int(VWAP_PB_EMA_FAST))
     ema_slow = ema_series(closes, int(VWAP_PB_EMA_SLOW))
-    out["ema_fast_gt_slow"] = bool(ema_fast and ema_slow and ema_fast[-1] > ema_slow[-1])
+    if not ema_fast or not ema_slow:
+        out["eligible"] = False
+        out["reason"] = "ema_not_ready"
+        return out
 
-    # VWAP over N 5m bars
-    vwap_n = max(6, int(VWAP_PB_VWAP_WINDOW_BARS))
+    # session VWAP on 5m bars
+    vwaps: list[float] = []
     pv = 0.0
     vv = 0.0
-    for c, v in zip(closes[-vwap_n:], volumes[-vwap_n:]):
-        pv += float(c) * float(v)
-        vv += float(v)
-    vwap = (pv / vv) if vv > 0 else price
-    out["vwap"] = vwap
+    for h, l, c, v in zip(highs, lows, closes, volumes):
+        tp = (h + l + c) / 3.0
+        pv += tp * v
+        vv += v
+        vwaps.append((pv / vv) if vv > 0 else c)
+    vwap = vwaps[-1]
 
-    uptrend = bool(ema_fast and ema_slow and (ema_fast[-1] > ema_slow[-1]) and (price > ema_fast[-1]))
-    out["uptrend"] = uptrend
+    lookback = max(3, min(int(VWAP_PB_TOUCH_LOOKBACK_BARS), len(closes)))
+    touch_band = float(VWAP_PB_TOUCH_BAND_PCT)
+    touch_level = vwap * (1.0 + touch_band)
+    touched = min(lows[-lookback:]) <= touch_level
 
-    # Slope check on fast EMA
-    slope_ok = True
-    try:
-        back = int(VWAP_PB_SLOPE_LOOKBACK_BARS)
-        eps = float(VWAP_PB_SLOPE_EPS_PCT)
-        if ema_fast and len(ema_fast) > back:
-            slope_ok = ema_fast[-1] >= ema_fast[-1 - back] * (1.0 + eps)
-    except Exception:
-        slope_ok = True
-    out["slope_ok"] = bool(slope_ok)
+    extension_pct = ((price - vwap) / vwap) if vwap else 0.0
+    extension_ok = extension_pct <= float(VWAP_PB_MAX_EXTENSION_PCT)
 
-    # Extension gate
-    extension = abs(price - vwap) / vwap if vwap else 0.0
-    extension_ok = extension <= float(VWAP_PB_MAX_EXTENSION_PCT)
-    out["extension_ok"] = bool(extension_ok)
+    slope_back = max(1, min(int(VWAP_PB_SLOPE_LOOKBACK_BARS), len(ema_fast) - 1, len(vwaps) - 1))
+    ema_slope = (ema_fast[-1] / max(ema_fast[-1 - slope_back], 1e-9) - 1.0) if len(ema_fast) > slope_back else 0.0
+    vwap_slope = (vwaps[-1] / max(vwaps[-1 - slope_back], 1e-9) - 1.0) if len(vwaps) > slope_back else 0.0
+    slope_ok = ema_slope >= float(VWAP_PB_SLOPE_EPS_PCT) and vwap_slope >= -0.0005
 
-    # Touch + reclaim
-    band = float(VWAP_PB_TOUCH_BAND_PCT)
-    touch_lb = max(3, int(VWAP_PB_TOUCH_LOOKBACK_BARS))
-    touched = min(lows[-touch_lb:]) <= vwap * (1.0 + band)
-    out["touched"] = bool(touched)
+    trend_ok = (ema_fast[-1] > ema_slow[-1]) and (price >= ema_slow[-1])
+    regained_vwap = price >= vwap * 0.9995
+    momentum_ok = price >= prev_close and price >= opens[-1]
 
-    reclaimed = False
-    try:
-        prev = closes[-2]
-        reclaimed = (prev <= vwap) and (price > vwap)
-    except Exception:
-        reclaimed = False
-    out["reclaimed"] = bool(reclaimed)
+    recent_vol = sum(volumes[-3:])
+    baseline_vol = _mean(volumes[-9:-3]) * 3 if len(volumes) >= 9 else _mean(volumes[:-3]) * 3
+    relvol = recent_vol / max(baseline_vol, 1.0) if baseline_vol > 0 else 1.0
+    relvol_ok = relvol >= float(VWAP_PB_MIN_RELVOL)
 
-    # Near-miss: touched but not reclaimed yet
-    out["near_miss"] = {
-        "near": bool(touched and not reclaimed),
-        "near_pct": float(VWAP_PB_TOUCH_BAND_PCT),
-        "dist_to_level_pct": (vwap - price) / vwap if vwap else None,
-    }
+    dist_to_vwap_pct = ((price - vwap) / vwap) if vwap else 0.0
+    score = 0.0
+    if trend_ok:
+        score += 35.0
+    if touched:
+        score += 20.0
+    if regained_vwap:
+        score += 20.0
+    if momentum_ok:
+        score += 10.0
+    score += max(0.0, min(relvol, 2.5)) * 6.0
+    score += max(0.0, min(ema_slope * 10000.0, 8.0))
+    score += max(0.0, 5.0 - abs(dist_to_vwap_pct) * 1000.0)
 
-    if not uptrend:
+    out.update({
+        "price": round(price, 4),
+        "prev_close": round(prev_close, 4),
+        "vwap": round(vwap, 4),
+        "ema_fast": round(ema_fast[-1], 4),
+        "ema_slow": round(ema_slow[-1], 4),
+        "ema_slope": round(ema_slope, 6),
+        "vwap_slope": round(vwap_slope, 6),
+        "trend_ok": bool(trend_ok),
+        "touched": bool(touched),
+        "regained_vwap": bool(regained_vwap),
+        "momentum_ok": bool(momentum_ok),
+        "extension_ok": bool(extension_ok),
+        "relvol": round(relvol, 3),
+        "relvol_ok": bool(relvol_ok),
+        "dist_to_vwap_pct": round(dist_to_vwap_pct * 100.0, 3),
+        "score": round(score, 3),
+        "near_miss": {
+            "near": bool(trend_ok and touched and (not regained_vwap)),
+            "near_pct": round(touch_band * 100.0, 3),
+            "dist_to_level_pct": round(((vwap - price) / vwap) * 100.0, 3) if vwap else None,
+        },
+    })
+
+    if not trend_ok:
         out["reason"] = "trend_fail"
-        return out
-    if not slope_ok:
+    elif not slope_ok:
         out["reason"] = "slope_fail"
-        return out
-    if not extension_ok:
-        out["reason"] = "extension_fail"
-        return out
-    if not touched:
+    elif not touched:
         out["reason"] = "touch_fail"
-        return out
-    if not reclaimed:
-        out["reason"] = "reclaim_fail"
-        return out
+    elif not regained_vwap:
+        out["reason"] = "not_back_above_vwap"
+    elif not extension_ok:
+        out["reason"] = "too_extended_from_vwap"
+    elif not relvol_ok:
+        out["reason"] = "relvol_fail"
+    elif not momentum_ok:
+        out["reason"] = "bounce_not_confirmed"
+    else:
+        out["reason"] = "ok"
+        out["triggered"] = True
 
-    out["reason"] = "ok"
     return out
+
+
+def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
+    return _vwap_pullback_setup(bars_today)
+
+
+def eval_vwap_pullback_signal(bars_5m_or_today: list[dict]) -> str | None:
+    diag = _vwap_pullback_setup(bars_5m_or_today)
+    return "BUY" if diag.get("triggered") else None
+
 
 def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     if not bars_today:
@@ -1600,66 +1728,6 @@ def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
 def _strategy_reason_disabled() -> str:
     return "strategy_disabled"
 
-def eval_vwap_pullback_signal(bars_today: list[dict]) -> str | None:
-    if not bars_today:
-        return None
-    ts_ny = bars_today[-1].get("ts_ny")
-    if ts_ny is None:
-        return None
-
-    # Only attempt within the scanner session window (keeps it controlled)
-    if not in_scanner_session(ts_ny):
-        return None
-
-    closes = [float(b.get("close")) for b in bars_today]
-    highs = [float(b.get("high", c)) for b, c in zip(bars_today, closes)]
-    lows = [float(b.get("low", c)) for b, c in zip(bars_today, closes)]
-    vols = [float(b.get("volume", 0) or 0) for b in bars_today]
-
-    price = closes[-1]
-    prev = closes[-2] if len(closes) >= 2 else price
-
-    ema_fast = ema_series(closes, VWAP_PB_EMA_FAST)
-    ema_slow = ema_series(closes, VWAP_PB_EMA_SLOW)
-    if ema_fast is None or ema_slow is None:
-        return None
-    if price < ema_fast[-1] or ema_fast[-1] < ema_slow[-1]:
-        return None
-
-    # VWAP
-    v_num = 0.0
-    v_den = 0.0
-    for i in range(len(closes)):
-        v = vols[i]
-        tp = (highs[i] + lows[i] + closes[i]) / 3.0
-        if v > 0:
-            v_num += tp * v
-            v_den += v
-    vwap = (v_num / v_den) if v_den > 0 else sum(closes) / len(closes)
-
-    # Don't chase: must be near VWAP
-    if abs(price - vwap) / vwap > float(VWAP_PB_MAX_EXTENSION_PCT):
-        return None
-
-    lookback = int(VWAP_PB_PULLBACK_LOOKBACK_BARS)
-    lookback = max(3, min(lookback, len(closes)))
-    band = float(VWAP_PB_BAND_PCT)
-
-    touched = any(l <= vwap * (1.0 + band) for l in lows[-lookback:])
-    if not touched:
-        return None
-
-    # Trigger: reclaim VWAP (cross up)
-    if prev <= vwap and price > vwap:
-        return "BUY"
-
-    # Alternate trigger: reclaim EMA fast after a dip
-    ema_fast_last = float(ema_fast[-1])
-    dip = any(c < ema_fast_last for c in closes[-lookback:])
-    if dip and prev <= ema_fast_last and price > ema_fast_last:
-        return "BUY"
-
-    return None
 
 def _no_signal_from_midbox(diag: dict) -> str:
     if not diag.get("enabled"):
@@ -1903,43 +1971,54 @@ async def kill_off(request: Request):
 
 
 
-def submit_scan_trade(symbol: str, side: str, signal: str) -> dict:
+def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None) -> dict:
     """Submit a market order originating from the scanner (no TradingView webhook auth)."""
+    meta = meta or {}
     if KILL_SWITCH:
         return {"ok": False, "error": "kill_switch_enabled"}
     if ONLY_MARKET_HOURS and not in_market_hours():
         return {"ok": True, "action": "skipped", "reason": "outside_market_hours"}
     if ALLOWED_SYMBOLS and symbol not in ALLOWED_SYMBOLS:
         return {"ok": True, "action": "skipped", "reason": "symbol_not_allowed"}
+    if side not in ("buy", "sell"):
+        return {"ok": False, "error": "invalid_side"}
 
     if not take_symbol_lock(symbol, SYMBOL_LOCK_SEC):
         return {"ok": True, "action": "skipped", "reason": "symbol_locked"}
 
+    effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
+
     try:
-        positions = get_positions()
-        in_pos = any(p.get("symbol") == symbol for p in positions)
+        qty_signed, pos_side = get_position(symbol)
+        in_pos = qty_signed != 0
+        if side == "buy" and pos_side == "long":
+            return {"ok": True, "action": "skipped", "reason": "already_long"}
+        if side == "sell" and pos_side == "flat":
+            return {"ok": True, "action": "skipped", "reason": "no_position_to_sell"}
 
-        if side == "buy" and in_pos:
-            return {"ok": True, "action": "skipped", "reason": "already_in_position"}
-        if side == "sell" and (not in_pos):
-            return {"ok": True, "action": "skipped", "reason": "no_position"}
+        price = get_latest_price(symbol)
+        if price is None or price <= 0:
+            return {"ok": False, "error": "latest_price_missing"}
 
-        price = get_last_price(symbol)
-        qty = compute_qty(price, NOTIONAL_USD)
+        if side == "buy":
+            qty = compute_qty(float(price))
+        else:
+            qty = round(abs(qty_signed), 2)
+
         if qty <= 0:
             return {"ok": False, "error": "qty_zero"}
 
-        if EFFECTIVE_DRY_RUN:
-            record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="dry_run", reason="ok")
+        if effective_dry_run:
+            record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="dry_run", reason="ok", meta=meta)
             return {"ok": True, "action": "dry_run", "qty": qty, "price": price}
 
-        order = submit_market_order(symbol, qty, side)
-        record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="submitted", reason="ok")
-        return {"ok": True, "action": "submitted", "order": order}
+        order = submit_market_order(symbol, side, qty)
+        record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="submitted", reason="ok", meta=meta)
+        return {"ok": True, "action": "submitted", "qty": qty, "price": price, "order_id": str(getattr(order, "id", ""))}
     except Exception as e:
         logger.exception("scan_submit_error symbol=%s", symbol)
         try:
-            record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="error", reason=str(e))
+            record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="error", reason=str(e), meta=meta)
         except Exception:
             pass
         return {"ok": False, "error": "submit_error", "detail": str(e)}
@@ -2258,7 +2337,7 @@ def diagnostics_runtime():
 async def worker_scan_entries(req: Request):
     """Server-side scanner entry evaluation (Phase 1C). Default is shadow-mode (no orders)."""
     cleanup_caches()
-    scan_start_utc = utc_ts()
+    scan_started = _time.perf_counter()
 
     body = {}
     try:
@@ -2399,7 +2478,21 @@ async def worker_scan_entries(req: Request):
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
         bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
 
-        vol_rank_info = None
+        candidate_info = rank_scan_candidates(syms, bars_map)
+        if candidate_info:
+            selected_n = max(1, int(SCANNER_CANDIDATE_LIMIT))
+            syms = [row["symbol"] for row in candidate_info[:selected_n]]
+
+        vol_rank_info = {
+            "enabled": True,
+            "mode": "activity_rank",
+            "primary_strategy": SCANNER_PRIMARY_STRATEGY,
+            "selected_n": len(syms),
+            "universe_n": len(candidate_info),
+            "top": candidate_info[: min(10, len(candidate_info))],
+        }
+
+        # Optional legacy volatility ranking can further refine the already-active universe.
         if SCANNER_VOL_RANK_ENABLE and syms:
             metric = str(SCANNER_VOL_RANK_METRIC or "range_pct").strip()
             bars_n = max(10, int(SCANNER_VOL_RANK_BARS))
@@ -2412,12 +2505,10 @@ async def worker_scan_entries(req: Request):
             if ranked:
                 syms = ranked
 
-            vol_rank_info = {
-                "enabled": True,
+            vol_rank_info["volatility_refine"] = {
                 "metric": metric,
                 "bars": bars_n,
                 "selected_n": len(syms),
-                "universe_n": len(scores),
                 "top": [{"symbol": s, "score": sc} for s, sc in scores[: min(10, len(scores))]],
             }
         # Batch latest prices once per scan (fallback when bars are missing)
@@ -2450,10 +2541,11 @@ async def worker_scan_entries(req: Request):
                     bars_all = bars_map.get(sym) or []
                     bars_today = _bars_for_today_session(bars_all)
 
+                    use_vwap_only = SCANNER_PRIMARY_STRATEGY in ("vwap", "vwap_pullback", "vwap_pullback_only")
                     diag = {
-                        'hf5': {'enabled': bool(SCANNER_ENABLE_HF)},
-                        'midbox': {'enabled': bool(SCANNER_ENABLE_MIDBOX)},
-                        'pwr': {'enabled': bool(SCANNER_ENABLE_PWR), 'session': PWR_SESSION},
+                        'hf5': {'enabled': bool(SCANNER_ENABLE_HF and (not use_vwap_only))},
+                        'midbox': {'enabled': bool(SCANNER_ENABLE_MIDBOX and (not use_vwap_only))},
+                        'pwr': {'enabled': bool(SCANNER_ENABLE_PWR and (not use_vwap_only)), 'session': PWR_SESSION},
                         'vwap_pullback': {'enabled': bool(SCANNER_ENABLE_VWAP_PB)},
                     }
 
@@ -2515,38 +2607,45 @@ async def worker_scan_entries(req: Request):
                     if not plan and action == "hold":
                         bars_5m = resample_5m(bars_today) if bars_today else []
 
-                        # Higher-frequency composite (5m ORB + VWAP reclaim + EMA pullback)
-                        hf_sig = None
-                        hf_dbg = None
-                        if (not _hard_market_closed) and diag.get('hf5', {}).get('eligible', True):
-                            hf_sig, hf_dbg = eval_hf_signal_with_debug(bars_today, bars_5m)
-                            if hf_dbg:
-                                # Keep diagnostics small and JSON-safe
-                                diag.setdefault("hf5", {}).update({
-                                    "reason": hf_dbg.get("reason"),
-                                    "components": hf_dbg.get("components", {}),
-                                    "near_miss": hf_dbg.get("near_miss", {}),
-                                })
-                        if hf_sig:
-                            signal_name, side = hf_sig
+                        # Primary production path: 5m VWAP pullback. Legacy strategies remain available only
+                        # when SCANNER_PRIMARY_STRATEGY is changed away from vwap_pullback.
+                        if use_vwap_only:
+                            vp = None
+                            if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
+                                vp = eval_vwap_pullback_signal(bars_today)
+                            if vp == "BUY":
+                                signal_name, side = ("VWAP_PULLBACK", "buy")
                         else:
-                            mb = eval_midbox_signal(bars_today)
-                            if mb:
-                                signal_name, side = mb
+                            hf_sig = None
+                            hf_dbg = None
+                            if (not _hard_market_closed) and diag.get('hf5', {}).get('eligible', True):
+                                hf_sig, hf_dbg = eval_hf_signal_with_debug(bars_today, bars_5m)
+                                if hf_dbg:
+                                    diag.setdefault("hf5", {}).update({
+                                        "reason": hf_dbg.get("reason"),
+                                        "components": hf_dbg.get("components", {}),
+                                        "near_miss": hf_dbg.get("near_miss", {}),
+                                    })
+                            if hf_sig:
+                                signal_name, side = hf_sig
                             else:
-                                pwr = None
-                                if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True):
-                                    pwr = eval_power_hour_signal(bars_today)
-                                if pwr:
-                                    signal_name, side = pwr
+                                mb = eval_midbox_signal(bars_today)
+                                if mb:
+                                    signal_name, side = mb
                                 else:
-                                    vp = None
-                                    if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
-                                        vp = eval_vwap_pullback_signal(bars_5m)
-                                    if vp == "BUY":
-                                        signal_name, side = ("VWAP_PULLBACK", "buy")
-                                    elif vp == "SELL":
-                                        signal_name, side = ("VWAP_PULLBACK", "sell")
+                                    pwr = None
+                                    if SCANNER_ENABLE_PWR and (not _hard_market_closed) and diag.get('pwr', {}).get('eligible', True):
+                                        pwr = eval_power_hour_signal(bars_today)
+                                    if pwr:
+                                        signal_name, side = pwr
+                                    else:
+                                        vp = None
+                                        if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
+                                            vp = eval_vwap_pullback_signal(bars_today)
+                                        if vp == "BUY":
+                                            signal_name, side = ("VWAP_PULLBACK", "buy")
+                                        elif vp == "SELL":
+                                            signal_name, side = ("VWAP_PULLBACK", "sell")
 
                         if signal_name and side in ("buy", "sell"):
                             action = side
@@ -2557,7 +2656,7 @@ async def worker_scan_entries(req: Request):
                                 TRADE_PLAN[sym] = plan
                             except Exception as e:
                                 diag["trade_plan_error"] = str(e)
-                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "plan": plan if "plan" in locals() else None})
+                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "score": float(diag.get("vwap_pullback", {}).get("score", 0.0)), "plan": plan if "plan" in locals() else None})
 
                     stop_out = plan.get("stop_price") if plan else None
                     take_out = plan.get("take_price") if plan else None
@@ -2616,8 +2715,7 @@ async def worker_scan_entries(req: Request):
                     signals.extend(out.get("signals", []))
                     blocked += int(out.get("blocked", 0))
 
-        scan_end_utc = utc_ts()
-        duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
+        duration_ms = int((_time.perf_counter() - scan_started) * 1000)
 
         # ---- Scan-level summary (top no-signal reasons, action counts) ----
         action_counts = Counter()
@@ -2670,6 +2768,8 @@ async def worker_scan_entries(req: Request):
             for strat, c in strat_counts.items()
         }
 
+        signals.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
+
         scan_summary = {
             "actions": dict(action_counts),
             "no_signal_total": int(sum(no_signal_counts.values())),
@@ -2677,6 +2777,11 @@ async def worker_scan_entries(req: Request):
             "near_miss_total": int(sum(near_miss_counts.values())),
             "near_miss_by_strategy": {k: int(v) for k, v in near_miss_counts.items()},
             "strategy_breakdown": strategy_breakdown,
+            "top_candidates": vol_rank_info.get("top", []) if isinstance(vol_rank_info, dict) else [],
+            "top_signals": [
+                {"symbol": s.get("symbol"), "signal": s.get("signal"), "score": s.get("score"), "price": s.get("price")}
+                for s in signals[: min(5, len(signals))]
+            ],
         }
 
         _set_last_scan(
@@ -2746,8 +2851,7 @@ async def worker_scan_entries(req: Request):
                 "results": results,
         }
     except Exception as e:
-        scan_end_utc = utc_ts()
-        duration_ms = int((scan_end_utc - scan_start_utc) * 1000)
+        duration_ms = int((_time.perf_counter() - scan_started) * 1000)
         try:
             _set_last_scan(skipped=False, reason='scan_exception', error=str(e), scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=duration_ms)
         except Exception:
