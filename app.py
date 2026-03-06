@@ -1193,7 +1193,7 @@ def resample_5m(bars_1m: list[dict], minutes: int = 5) -> list[dict]:
         grp = buckets[key]
         if not grp:
             continue
-        grp_sorted = sorted(grp, key=lambda x: int(x.get("ts_utc", 0) or 0))
+        grp_sorted = sorted(grp, key=lambda x: x.get("ts_utc") or datetime.min.replace(tzinfo=timezone.utc))
         o = float(grp_sorted[0].get("open", grp_sorted[0].get("close", 0.0)) or 0.0)
         h = max(float(x.get("high", x.get("close", 0.0)) or 0.0) for x in grp_sorted)
         l = min(float(x.get("low", x.get("close", 0.0)) or 0.0) for x in grp_sorted)
@@ -2396,6 +2396,35 @@ async def worker_exit(req: Request):
 
 
 
+def _bar_path_probe(symbol: str, lookback_days: int = 1) -> dict:
+    rows = fetch_1m_bars_multi([symbol], lookback_days=lookback_days, limit_per_symbol=500).get(symbol, [])
+    today_rows = _bars_for_today_regular_session(rows)
+    bars_5m = resample_5m(today_rows) if today_rows else []
+    return {
+        "symbol": symbol,
+        "feed": str(DATA_FEED),
+        "adjustment": str(ADJUSTMENT),
+        "bars_1m": len(rows),
+        "bars_1m_today": len(today_rows),
+        "bars_5m_today": len(bars_5m),
+        "latest_1m_ts": today_rows[-1].get("ts_ny").isoformat() if today_rows else None,
+        "latest_5m_ts": bars_5m[-1].get("ts_ny") if bars_5m else None,
+        "first_1m_ts": today_rows[0].get("ts_ny").isoformat() if today_rows else None,
+        "first_5m_ts": bars_5m[0].get("ts_ny") if bars_5m else None,
+        "ok": len(bars_5m) > 0,
+    }
+
+
+@app.get("/diagnostics/bars_5m")
+def diagnostics_bars_5m(symbol: str = "AAPL", lookback_days: int = 1):
+    sym = (symbol or "AAPL").strip().upper()
+    try:
+        probe = _bar_path_probe(sym, lookback_days=max(1, int(lookback_days)))
+        return {"ok": True, "probe": probe}
+    except Exception as e:
+        return {"ok": False, "symbol": sym, "error": str(e)}
+
+
 @app.get("/diagnostics/runtime")
 def diagnostics_runtime():
     """Lightweight runtime sanity checks for live-readiness."""
@@ -2427,8 +2456,13 @@ def diagnostics_runtime():
             }
         except Exception as e:
             checks["sample_symbol"] = {"ok": False, "symbol": sample_symbol, "error": str(e)}
+        try:
+            checks["sample_symbol_5m_bars"] = _bar_path_probe(sample_symbol, lookback_days=1)
+        except Exception as e:
+            checks["sample_symbol_5m_bars"] = {"ok": False, "symbol": sample_symbol, "error": str(e)}
     else:
         checks["sample_symbol"] = {"ok": False, "error": "no_symbols_available"}
+        checks["sample_symbol_5m_bars"] = {"ok": False, "error": "no_symbols_available"}
 
     live_ready = all(v.get("ok") for v in checks.values()) and (not DRY_RUN) and SCANNER_ALLOW_LIVE
     return {
