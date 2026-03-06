@@ -337,6 +337,13 @@ VWAP_PB_VWAP_WINDOW_BARS = int(os.getenv("VWAP_PB_VWAP_WINDOW_BARS", "12"))
 VWAP_PB_SLOPE_LOOKBACK_BARS = int(os.getenv("VWAP_PB_SLOPE_LOOKBACK_BARS", "3"))
 VWAP_PB_SLOPE_EPS_PCT = float(os.getenv("VWAP_PB_SLOPE_EPS_PCT", "0.0"))
 VWAP_PB_MIN_RELVOL = float(os.getenv("VWAP_PB_MIN_RELVOL", "0.90"))
+VWAP_PB_ALLOW_BELOW_VWAP_PCT = float(os.getenv("VWAP_PB_ALLOW_BELOW_VWAP_PCT", "0.0015"))
+VWAP_PB_EMA_STACK_SLACK_PCT = float(os.getenv("VWAP_PB_EMA_STACK_SLACK_PCT", "0.0015"))
+VWAP_PB_ALLOW_PRICE_BELOW_EMA_FAST_PCT = float(os.getenv("VWAP_PB_ALLOW_PRICE_BELOW_EMA_FAST_PCT", "0.0020"))
+VWAP_PB_ALLOW_NEG_VWAP_SLOPE_PCT = float(os.getenv("VWAP_PB_ALLOW_NEG_VWAP_SLOPE_PCT", "-0.0008"))
+VWAP_PB_NEAR_MISS_SCORE_MIN = float(os.getenv("VWAP_PB_NEAR_MISS_SCORE_MIN", "48"))
+VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN = float(os.getenv("VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN", "58"))
+VWAP_PB_ALLOW_NEAR_MISS_FALLBACK = os.getenv("VWAP_PB_ALLOW_NEAR_MISS_FALLBACK", "true").lower() == "true"
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default="vwap_pullback").strip().lower()
@@ -1600,7 +1607,6 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         out["reason"] = "ema_not_ready"
         return out
 
-    # session VWAP on 5m bars
     vwaps: list[float] = []
     pv = 0.0
     vv = 0.0
@@ -1622,11 +1628,20 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
     slope_back = max(1, min(int(VWAP_PB_SLOPE_LOOKBACK_BARS), len(ema_fast) - 1, len(vwaps) - 1))
     ema_slope = (ema_fast[-1] / max(ema_fast[-1 - slope_back], 1e-9) - 1.0) if len(ema_fast) > slope_back else 0.0
     vwap_slope = (vwaps[-1] / max(vwaps[-1 - slope_back], 1e-9) - 1.0) if len(vwaps) > slope_back else 0.0
-    slope_ok = ema_slope >= float(VWAP_PB_SLOPE_EPS_PCT) and vwap_slope >= -0.0005
 
-    trend_ok = (ema_fast[-1] > ema_slow[-1]) and (price >= ema_slow[-1])
-    regained_vwap = price >= vwap * 0.9995
-    momentum_ok = price >= prev_close and price >= opens[-1]
+    allow_below_vwap_pct = float(VWAP_PB_ALLOW_BELOW_VWAP_PCT)
+    ema_stack_slack_pct = float(VWAP_PB_EMA_STACK_SLACK_PCT)
+    allow_below_fast_pct = float(VWAP_PB_ALLOW_PRICE_BELOW_EMA_FAST_PCT)
+
+    price_above_vwap = price >= vwap * (1.0 - allow_below_vwap_pct)
+    ema_stack_ok = ema_fast[-1] >= ema_slow[-1] * (1.0 - ema_stack_slack_pct)
+    price_above_fast = price >= ema_fast[-1] * (1.0 - allow_below_fast_pct)
+    strict_trend_ok = (ema_fast[-1] > ema_slow[-1]) and (price >= ema_slow[-1]) and (price >= vwap)
+    permissive_trend_ok = price_above_vwap and ema_stack_ok and price_above_fast
+
+    slope_ok = ema_slope >= float(VWAP_PB_MIN_EMA_SLOPE) and vwap_slope >= float(VWAP_PB_ALLOW_NEG_VWAP_SLOPE_PCT)
+    regained_vwap = price >= vwap * 0.9985
+    momentum_ok = price >= prev_close * 0.999 and price >= opens[-1] * 0.998
 
     recent_vol = sum(volumes[-3:])
     baseline_vol = _mean(volumes[-9:-3]) * 3 if len(volumes) >= 9 else _mean(volumes[:-3]) * 3
@@ -1634,18 +1649,67 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
     relvol_ok = relvol >= float(VWAP_PB_MIN_RELVOL)
 
     dist_to_vwap_pct = ((price - vwap) / vwap) if vwap else 0.0
+    trend_strength = 0.0
+    if price_above_vwap:
+        trend_strength += 12.0
+    if ema_stack_ok:
+        trend_strength += 12.0
+    if price_above_fast:
+        trend_strength += 8.0
+    if strict_trend_ok:
+        trend_strength += 8.0
+
     score = 0.0
-    if trend_ok:
-        score += 35.0
+    score += trend_strength
+    if permissive_trend_ok:
+        score += 12.0
     if touched:
-        score += 20.0
+        score += 16.0
     if regained_vwap:
-        score += 20.0
+        score += 14.0
     if momentum_ok:
-        score += 10.0
+        score += 8.0
+    if extension_ok:
+        score += 8.0
+    if slope_ok:
+        score += 6.0
     score += max(0.0, min(relvol, 2.5)) * 6.0
     score += max(0.0, min(ema_slope * 10000.0, 8.0))
-    score += max(0.0, 5.0 - abs(dist_to_vwap_pct) * 1000.0)
+    score += max(0.0, 6.0 - abs(dist_to_vwap_pct) * 1000.0)
+
+    component_reasons = []
+    if not price_above_vwap:
+        component_reasons.append("price_below_vwap")
+    if not ema_stack_ok:
+        component_reasons.append("ema_stack_fail")
+    if not price_above_fast:
+        component_reasons.append("price_below_ema_fast")
+    if not slope_ok:
+        component_reasons.append("slope_fail")
+    if not touched:
+        component_reasons.append("touch_fail")
+    if not regained_vwap:
+        component_reasons.append("not_back_above_vwap")
+    if not extension_ok:
+        component_reasons.append("too_extended_from_vwap")
+    if not relvol_ok:
+        component_reasons.append("relvol_fail")
+    if not momentum_ok:
+        component_reasons.append("bounce_not_confirmed")
+
+    near = bool(
+        (permissive_trend_ok and touched and (not regained_vwap))
+        or (touched and regained_vwap and score >= float(VWAP_PB_NEAR_MISS_SCORE_MIN))
+        or (price_above_vwap and ema_stack_ok and abs(dist_to_vwap_pct) <= touch_band * 1.35)
+    )
+    fallback_ready = bool(
+        VWAP_PB_ALLOW_NEAR_MISS_FALLBACK
+        and permissive_trend_ok
+        and touched
+        and regained_vwap
+        and extension_ok
+        and score >= float(VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN)
+    )
 
     out.update({
         "price": round(price, 4),
@@ -1655,7 +1719,11 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         "ema_slow": round(ema_slow[-1], 4),
         "ema_slope": round(ema_slope, 6),
         "vwap_slope": round(vwap_slope, 6),
-        "trend_ok": bool(trend_ok),
+        "strict_trend_ok": bool(strict_trend_ok),
+        "trend_ok": bool(permissive_trend_ok),
+        "price_above_vwap": bool(price_above_vwap),
+        "ema_stack_ok": bool(ema_stack_ok),
+        "price_above_fast": bool(price_above_fast),
         "touched": bool(touched),
         "regained_vwap": bool(regained_vwap),
         "momentum_ok": bool(momentum_ok),
@@ -1664,33 +1732,52 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         "relvol_ok": bool(relvol_ok),
         "dist_to_vwap_pct": round(dist_to_vwap_pct * 100.0, 3),
         "score": round(score, 3),
+        "component_reasons": component_reasons,
+        "trend_components": {
+            "price_above_vwap": bool(price_above_vwap),
+            "ema_stack_ok": bool(ema_stack_ok),
+            "price_above_fast": bool(price_above_fast),
+            "strict_trend_ok": bool(strict_trend_ok),
+            "allow_below_vwap_pct": round(allow_below_vwap_pct * 100.0, 3),
+            "ema_stack_slack_pct": round(ema_stack_slack_pct * 100.0, 3),
+            "allow_price_below_ema_fast_pct": round(allow_below_fast_pct * 100.0, 3),
+            "fallback_ready": bool(fallback_ready),
+        },
         "near_miss": {
-            "near": bool(trend_ok and touched and (not regained_vwap)),
+            "near": near,
             "near_pct": round(touch_band * 100.0, 3),
             "dist_to_level_pct": round(((vwap - price) / vwap) * 100.0, 3) if vwap else None,
+            "fallback_ready": bool(fallback_ready),
+            "score": round(score, 3),
         },
     })
 
-    if not trend_ok:
-        out["reason"] = "trend_fail"
-    elif not slope_ok:
-        out["reason"] = "slope_fail"
-    elif not touched:
-        out["reason"] = "touch_fail"
-    elif not regained_vwap:
-        out["reason"] = "not_back_above_vwap"
-    elif not extension_ok:
-        out["reason"] = "too_extended_from_vwap"
-    elif not relvol_ok:
-        out["reason"] = "relvol_fail"
-    elif not momentum_ok:
-        out["reason"] = "bounce_not_confirmed"
-    else:
+    if strict_trend_ok and slope_ok and touched and regained_vwap and extension_ok and relvol_ok and momentum_ok:
         out["reason"] = "ok"
         out["triggered"] = True
+    elif fallback_ready and slope_ok:
+        out["reason"] = "fallback_ready"
+        out["triggered"] = True
+        out["fallback_trigger"] = True
+    else:
+        if not permissive_trend_ok:
+            out["reason"] = component_reasons[0] if component_reasons else "trend_fail"
+        elif not slope_ok:
+            out["reason"] = "slope_fail"
+        elif not touched:
+            out["reason"] = "touch_fail"
+        elif not regained_vwap:
+            out["reason"] = "not_back_above_vwap"
+        elif not extension_ok:
+            out["reason"] = "too_extended_from_vwap"
+        elif not relvol_ok:
+            out["reason"] = "relvol_fail"
+        elif not momentum_ok:
+            out["reason"] = "bounce_not_confirmed"
+        else:
+            out["reason"] = component_reasons[0] if component_reasons else "trend_fail"
 
     return out
-
 
 def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
     return _vwap_pullback_setup(bars_today)
@@ -1699,6 +1786,11 @@ def _scan_diag_vwap_pb(bars_today: list[dict]) -> dict:
 def eval_vwap_pullback_signal(bars_5m_or_today: list[dict]) -> str | None:
     diag = _vwap_pullback_setup(bars_5m_or_today)
     return "BUY" if diag.get("triggered") else None
+
+
+def eval_vwap_pullback_signal_with_diag(bars_5m_or_today: list[dict]) -> tuple[str | None, dict]:
+    diag = _vwap_pullback_setup(bars_5m_or_today)
+    return ("BUY" if diag.get("triggered") else None, diag)
 
 
 def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
@@ -2630,10 +2722,15 @@ async def worker_scan_entries(req: Request):
                         # when SCANNER_PRIMARY_STRATEGY is changed away from vwap_pullback.
                         if use_vwap_only:
                             vp = None
+                            vp_diag = None
                             if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
-                                vp = eval_vwap_pullback_signal(bars_today)
+                                vp, vp_diag = eval_vwap_pullback_signal_with_diag(bars_today)
+                                if isinstance(vp_diag, dict):
+                                    diag["vwap_pullback"].update(vp_diag)
                             if vp == "BUY":
                                 signal_name, side = ("VWAP_PULLBACK", "buy")
+                                if isinstance(vp_diag, dict) and vp_diag.get("fallback_trigger"):
+                                    signal_name = "VWAP_PULLBACK_FALLBACK"
                         else:
                             hf_sig = None
                             hf_dbg = None
