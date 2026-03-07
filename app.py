@@ -1538,7 +1538,7 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     highs = [float(b.get("high", b.get("close"))) for b in build_bars]
     lows = [float(b.get("low", b.get("close"))) for b in build_bars]
     closes = [float(b.get("close")) for b in build_bars]
-        box_high = max(highs) if use_hl else max(closes)
+    box_high = max(highs) if use_hl else max(closes)
     box_low = min(lows) if use_hl else min(closes)
 
     price = float(bars_today[-1].get("close"))
@@ -1758,7 +1758,7 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
 
     slope_back = max(1, min(int(VWAP_PB_SLOPE_LOOKBACK_BARS), len(ema_fast) - 1, len(vwaps) - 1))
     ema_slope = (ema_fast[-1] / max(ema_fast[-1 - slope_back], 1e-9) - 1.0) if len(ema_fast) > slope_back else 0.0
-        vwap_slope = (vwaps[-1] / max(vwaps[-1 - slope_back], 1e-9) - 1.0) if len(vwaps) > slope_back else 0.0
+    vwap_slope = (vwaps[-1] / max(vwaps[-1 - slope_back], 1e-9) - 1.0) if len(vwaps) > slope_back else 0.0
 
     allow_below_vwap_pct = float(VWAP_PB_ALLOW_BELOW_VWAP_PCT)
     ema_stack_slack_pct = float(VWAP_PB_EMA_STACK_SLACK_PCT)
@@ -1978,7 +1978,7 @@ def _no_signal_from_midbox(diag: dict) -> str:
     if diag.get("crossed_down") and not diag.get("ema200_slope_down", True):
         return "ema200_slope_not_down"
     if diag.get("crossed_up") and not diag.get("long_signal", False):
-                return "long_filters_failed"
+        return "long_filters_failed"
     if diag.get("crossed_down") and not diag.get("short_signal", False):
         return "short_filters_failed"
     return "no_signal"
@@ -2198,7 +2198,7 @@ async def kill_on(request: Request):
     require_admin(request)
     KILL_SWITCH = True
     log("KILL_SWITCH_ON")
-        return {"ok": True, "kill_switch": KILL_SWITCH}
+    return {"ok": True, "kill_switch": KILL_SWITCH}
 
 
 @app.post("/unkill")
@@ -2418,7 +2418,7 @@ async def worker_exit(req: Request):
 
     # Optional worker auth
     if WORKER_SECRET:
-                if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
+        if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
     # Kill switch / daily stop: flatten immediately
@@ -2638,7 +2638,7 @@ def diagnostics_runtime(request: Request):
         try:
             px = get_latest_price(sample_symbol)
             qty = compute_qty(float(px)) if px else 0
-                        plan = build_trade_plan(sample_symbol, "buy", qty, float(px), "runtime_probe") if px else None
+            plan = build_trade_plan(sample_symbol, "buy", qty, float(px), "runtime_probe") if px else None
             checks["sample_symbol"] = {
                 "ok": bool(px and qty and plan),
                 "symbol": sample_symbol,
@@ -2858,7 +2858,7 @@ async def worker_scan_entries(req: Request):
                 local_blocked = 0
                 try:
                     if is_symbol_locked(sym):
-                                                local_blocked += 1
+                        local_blocked += 1
                         return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
 
@@ -3079,7 +3079,7 @@ async def worker_scan_entries(req: Request):
                 for strat, payload in ns_details.items():
                     try:
                         nm = (payload or {}).get("near_miss") or {}
-                                                if isinstance(nm, dict) and bool(nm.get("near")):
+                        if isinstance(nm, dict) and bool(nm.get("near")):
                             near_miss_counts[str(strat)] += 1
                     except Exception:
                         pass
