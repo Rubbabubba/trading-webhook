@@ -878,7 +878,7 @@ def eval_hf_signal_with_debug(bars_today: list[dict], bars_5m: list[dict]) -> tu
     EMA_RECLAIM_EPS = float(os.getenv("HF5_EMA_RECLAIM_EPS", "0.0005"))    # 0.05%
 
     # If you want *more* trades, set these to 0 (False)
-        REQUIRE_EMA_CONFIRM = env_bool("HF5_REQUIRE_EMA_CONFIRM", False)
+    REQUIRE_EMA_CONFIRM = env_bool("HF5_REQUIRE_EMA_CONFIRM", False)
     REQUIRE_VWAP_CONFIRM = env_bool("HF5_REQUIRE_VWAP_CONFIRM", True)
 
     # --- Helpers ---
