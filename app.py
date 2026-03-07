@@ -213,25 +213,19 @@ def getenv_any(*names: str, default: str = "") -> str:
 
 
 def getenv_int(name: str, default: int) -> int:
-    val = os.getenv(name)
-    if val is None or val == "":
-        return default
-    try:
-        return int(val)
-    except ValueError:
-        return default
-
-def getenv_int(name: str, default: int) -> int:
     """Read an int env var with a safe fallback."""
     raw = os.getenv(name)
     if raw is None or raw == "":
         return int(default)
     try:
-        return int(raw)
+                return int(raw)
     except Exception:
         return int(default)
-def env_bool(name: str, default: str = "false") -> bool:
-    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "y", "on")
+def env_bool(name: str, default: str | bool = "false") -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        raw = str(default)
+    return str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def now_ny() -> datetime:
@@ -884,10 +878,16 @@ def eval_hf_signal_with_debug(bars_today: list[dict], bars_5m: list[dict]) -> tu
     EMA_RECLAIM_EPS = float(os.getenv("HF5_EMA_RECLAIM_EPS", "0.0005"))    # 0.05%
 
     # If you want *more* trades, set these to 0 (False)
-    REQUIRE_EMA_CONFIRM = env_bool("HF5_REQUIRE_EMA_CONFIRM", False)
+        REQUIRE_EMA_CONFIRM = env_bool("HF5_REQUIRE_EMA_CONFIRM", False)
     REQUIRE_VWAP_CONFIRM = env_bool("HF5_REQUIRE_VWAP_CONFIRM", True)
 
     # --- Helpers ---
+    def _bar_num(b: dict, primary: str, fallback: str, default: float = 0.0) -> float:
+        v = b.get(primary)
+        if v is None:
+            v = b.get(fallback)
+        return float(v or default)
+
     def _recent_cross_above(level: float, n: int) -> bool:
         if level is None:
             return False
@@ -895,8 +895,8 @@ def eval_hf_signal_with_debug(bars_today: list[dict], bars_5m: list[dict]) -> tu
         for i in range(start_i, len(bars_5m)):
             prev = bars_5m[i - 1]
             cur = bars_5m[i]
-            prev_close = float(prev.get("c") or 0.0)
-            cur_close = float(cur.get("c") or 0.0)
+            prev_close = _bar_num(prev, "close", "c")
+            cur_close = _bar_num(cur, "close", "c")
             if prev_close < level and cur_close >= level:
                 return True
         return False
@@ -906,9 +906,9 @@ def eval_hf_signal_with_debug(bars_today: list[dict], bars_5m: list[dict]) -> tu
         for i in range(start_i, len(bars_5m)):
             prev = bars_5m[i - 1]
             cur = bars_5m[i]
-            prev_close = float(prev.get("c") or 0.0)
-            cur_close = float(cur.get("c") or 0.0)
-            cur_low = float(cur.get("l") or cur_close)
+            prev_close = _bar_num(prev, "close", "c")
+            cur_close = _bar_num(cur, "close", "c")
+            cur_low = _bar_num(cur, "low", "l", cur_close)
 
             prev_level = prev.get(field)
             cur_level = cur.get(field)
@@ -925,11 +925,11 @@ def eval_hf_signal_with_debug(bars_today: list[dict], bars_5m: list[dict]) -> tu
 
     # --- ORB levels (first 5m bar of the day) ---
     orb = bars_5m[0]
-    orb_high = float(orb.get("h") or 0.0)
-    orb_low = float(orb.get("l") or 0.0)
+    orb_high = _bar_num(orb, "high", "h")
+    orb_low = _bar_num(orb, "low", "l")
 
     last5 = bars_5m[-1]
-    price = float(last5.get("c") or 0.0)
+    price = _bar_num(last5, "close", "c")
 
     # Use the most recent indicators (per-bar values exist in bars_5m)
     vwap_now = last5.get("vwap")
@@ -1098,6 +1098,11 @@ def require_admin(request: Request):
     got = request.headers.get("x-admin-secret", "").strip()
     if got != ADMIN_SECRET:
         raise HTTPException(status_code=401, detail="Invalid admin secret")
+      
+
+def require_admin_if_configured(request: Request):
+    if ADMIN_SECRET:
+        require_admin(request)
 
 
 def flatten_all(reason: str) -> list[dict]:
@@ -1313,8 +1318,8 @@ def resample_5m(bars_1m: list[dict], minutes: int = 5) -> list[dict]:
                 px = x.get("close", 0.0)
             pv += float(px or 0.0) * vol
         bar_vwap = (pv / v) if v > 0 else c
-
-        ts_utc = int(grp_sorted[-1].get("ts_utc", 0) or 0)
+        
+        ts_utc = grp_sorted[-1].get("ts_utc")
         out.append({
             "ts_utc": ts_utc,
             "ts_ny": key.isoformat(),
@@ -1339,8 +1344,8 @@ def resample_5m(bars_1m: list[dict], minutes: int = 5) -> list[dict]:
         b["vwap"] = (cum_pv / cum_v) if cum_v > 0 else float(b.get("close", 0.0) or 0.0)
 
     closes = [float(b.get("close", 0.0) or 0.0) for b in out]
-    ema_fast = ema_series(closes, HF5_EMA_FAST)
-    ema_slow = ema_series(closes, HF5_EMA_SLOW)
+    ema_fast = ema_series(closes, SCANNER_HF_EMA_FAST)
+    ema_slow = ema_series(closes, SCANNER_HF_EMA_SLOW)
     for i, b in enumerate(out):
         b["ema_fast"] = ema_fast[i]
         b["ema_slow"] = ema_slow[i]
@@ -1372,12 +1377,31 @@ def fetch_1m_bars_multi(
     )
 
     out: dict[str, list[dict]] = {s: [] for s in symbols}
+
+    def _fallback_from_rest(reason: str) -> dict[str, list[dict]]:
+        rest_rows, rest_debug = _fetch_bars_via_rest(
+            symbols,
+            start=start.astimezone(timezone.utc),
+            end=end.astimezone(timezone.utc),
+            feed_override=_DATA_FEED_RAW,
+            limit=(limit_per_symbol or 10000),
+        )
+        logger.warning(
+            "BARS_MULTI_FALLBACK reason=%s symbols=%s feed=%s count=%s debug=%s",
+            reason,
+            ",".join(symbols[:10]),
+            str(DATA_FEED),
+            sum(len(v) for v in rest_rows.values()),
+            rest_debug,
+        )
+        return rest_rows
+
     try:
-        df = data_client().get_stock_bars(req).df
-    except Exception:
-        return out
+        df = data_client.get_stock_bars(req).df
+    except Exception as e:
+        return _fallback_from_rest(f"sdk_exception:{e}")
     if df is None or len(df) == 0:
-        return out
+        return _fallback_from_rest("sdk_empty")
 
     # Expected Alpaca shape: multiindex (symbol, timestamp)
     try:
@@ -1423,6 +1447,8 @@ def fetch_1m_bars_multi(
         out[sym] = sorted(out[sym], key=lambda r: r["ts_utc"])
         if limit_per_symbol and len(out[sym]) > limit_per_symbol:
             out[sym] = out[sym][-limit_per_symbol:]
+    if not any(out.values()):
+        return _fallback_from_rest("sdk_parsed_empty")
     return out
 
 
@@ -1512,7 +1538,7 @@ def eval_midbox_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     highs = [float(b.get("high", b.get("close"))) for b in build_bars]
     lows = [float(b.get("low", b.get("close"))) for b in build_bars]
     closes = [float(b.get("close")) for b in build_bars]
-    box_high = max(highs) if use_hl else max(closes)
+        box_high = max(highs) if use_hl else max(closes)
     box_low = min(lows) if use_hl else min(closes)
 
     price = float(bars_today[-1].get("close"))
@@ -1732,7 +1758,7 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
 
     slope_back = max(1, min(int(VWAP_PB_SLOPE_LOOKBACK_BARS), len(ema_fast) - 1, len(vwaps) - 1))
     ema_slope = (ema_fast[-1] / max(ema_fast[-1 - slope_back], 1e-9) - 1.0) if len(ema_fast) > slope_back else 0.0
-    vwap_slope = (vwaps[-1] / max(vwaps[-1 - slope_back], 1e-9) - 1.0) if len(vwaps) > slope_back else 0.0
+        vwap_slope = (vwaps[-1] / max(vwaps[-1 - slope_back], 1e-9) - 1.0) if len(vwaps) > slope_back else 0.0
 
     allow_below_vwap_pct = float(VWAP_PB_ALLOW_BELOW_VWAP_PCT)
     ema_stack_slack_pct = float(VWAP_PB_EMA_STACK_SLACK_PCT)
@@ -1952,7 +1978,7 @@ def _no_signal_from_midbox(diag: dict) -> str:
     if diag.get("crossed_down") and not diag.get("ema200_slope_down", True):
         return "ema200_slope_not_down"
     if diag.get("crossed_up") and not diag.get("long_signal", False):
-        return "long_filters_failed"
+                return "long_filters_failed"
     if diag.get("crossed_down") and not diag.get("short_signal", False):
         return "short_filters_failed"
     return "no_signal"
@@ -2099,11 +2125,13 @@ def scanner_status():
 
 
 @app.get("/state")
-def state():
+def state(request: Request):
+    require_admin_if_configured(request)
     return {"ok": True, "trade_plan": TRADE_PLAN, "symbol_locks": SYMBOL_LOCKS}
 
 @app.get("/diagnostics/decisions")
-def diagnostics_decisions(symbol: str = "", limit: int = 200):
+def diagnostics_decisions(request: Request, symbol: str = "", limit: int = 200):
+    require_admin_if_configured(request)
     """Return recent decision traces for debugging (in-memory)."""
     sym = (symbol or "").upper().strip()
     lim = max(1, min(int(limit or 200), 2000))
@@ -2114,7 +2142,8 @@ def diagnostics_decisions(symbol: str = "", limit: int = 200):
 
 
 @app.get("/diagnostics/scans")
-def diagnostics_scans(limit: int = 50, symbol: str = ""):
+def diagnostics_scans(request: Request, limit: int = 50, symbol: str = ""):
+    require_admin_if_configured(request)
     """Return recent scan cycles (in-memory) with per-symbol evaluation results.
 
     This is useful when the scanner is running but generating 0 signals and you want
@@ -2140,7 +2169,8 @@ def diagnostics_scans(limit: int = 50, symbol: str = ""):
 
 
 @app.get("/diagnostics/last_scan")
-def diagnostics_last_scan(symbol: str = ""):
+def diagnostics_last_scan(request: Request, symbol: str = ""):
+    require_admin_if_configured(request)
     """Convenience: return the most recent scan cycle (optionally filtered to a symbol)."""
     if not SCAN_HISTORY:
         return {"ok": True, "item": None}
@@ -2155,9 +2185,10 @@ def diagnostics_last_scan(symbol: str = ""):
 
 
 @app.get("/diagnostics/scans/latest")
-def diagnostics_scans_latest(symbol: str = ""):
+def diagnostics_scans_latest(request: Request, symbol: str = ""):
     """Compatibility alias for clients expecting /diagnostics/scans/latest."""
-    return diagnostics_last_scan(symbol=symbol)
+    require_admin_if_configured(request)
+    return diagnostics_last_scan(request=request, symbol=symbol)
 
 
 
@@ -2167,7 +2198,7 @@ async def kill_on(request: Request):
     require_admin(request)
     KILL_SWITCH = True
     log("KILL_SWITCH_ON")
-    return {"ok": True, "kill_switch": KILL_SWITCH}
+        return {"ok": True, "kill_switch": KILL_SWITCH}
 
 
 @app.post("/unkill")
@@ -2387,7 +2418,7 @@ async def worker_exit(req: Request):
 
     # Optional worker auth
     if WORKER_SECRET:
-        if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
+                if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
     # Kill switch / daily stop: flatten immediately
@@ -2543,7 +2574,8 @@ def _bar_path_probe(symbol: str, lookback_days: int = 1) -> dict:
 
 
 @app.get("/diagnostics/bars_5m")
-def diagnostics_bars_5m(symbol: str = "AAPL", lookback_days: int = 1):
+def diagnostics_bars_5m(request: Request, symbol: str = "AAPL", lookback_days: int = 1):
+    require_admin_if_configured(request)
     sym = (symbol or "AAPL").strip().upper()
     try:
         probe = _bar_path_probe(sym, lookback_days=max(1, int(lookback_days)))
@@ -2553,7 +2585,8 @@ def diagnostics_bars_5m(symbol: str = "AAPL", lookback_days: int = 1):
 
 
 @app.get("/diagnostics/bars_debug")
-def diagnostics_bars_debug(symbol: str = "AAPL", lookback_days: int = 1):
+def diagnostics_bars_debug(request: Request, symbol: str = "AAPL", lookback_days: int = 1):
+    require_admin_if_configured(request)
     sym = (symbol or "AAPL").strip().upper()
     days = max(1, int(lookback_days))
     now_local = now_ny()
@@ -2585,8 +2618,9 @@ def diagnostics_bars_debug(symbol: str = "AAPL", lookback_days: int = 1):
 
 
 @app.get("/diagnostics/runtime")
-def diagnostics_runtime():
+def diagnostics_runtime(request: Request):
     """Lightweight runtime sanity checks for live-readiness."""
+    require_admin_if_configured(request)
     checks = {}
     try:
         checks["alpaca_clock"] = {"ok": bool(trading_client.get_clock())}
@@ -2604,7 +2638,7 @@ def diagnostics_runtime():
         try:
             px = get_latest_price(sample_symbol)
             qty = compute_qty(float(px)) if px else 0
-            plan = build_trade_plan(sample_symbol, "buy", qty, float(px), "runtime_probe") if px else None
+                        plan = build_trade_plan(sample_symbol, "buy", qty, float(px), "runtime_probe") if px else None
             checks["sample_symbol"] = {
                 "ok": bool(px and qty and plan),
                 "symbol": sample_symbol,
@@ -2824,7 +2858,7 @@ async def worker_scan_entries(req: Request):
                 local_blocked = 0
                 try:
                     if is_symbol_locked(sym):
-                        local_blocked += 1
+                                                local_blocked += 1
                         return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
 
@@ -2924,10 +2958,11 @@ async def worker_scan_entries(req: Request):
                                 signal_name, side = ("VWAP_PULLBACK", "buy")
                                 if isinstance(vp_diag, dict) and vp_diag.get("fallback_trigger"):
                                     signal_name = "VWAP_PULLBACK_FALLBACK"
+                            elif vp == "SELL":
+                                signal_name, side = ("VWAP_PULLBACK", "sell")
                         else:
                             hf_sig = None
-                            hf_dbg = None
-                            if (not _hard_market_closed) and diag.get('hf5', {}).get('eligible', True):
+                            if SCANNER_ENABLE_HF:
                                 hf_sig, hf_dbg = eval_hf_signal_with_debug(bars_today, bars_5m)
                                 if hf_dbg:
                                     diag.setdefault("hf5", {}).update({
@@ -3044,7 +3079,7 @@ async def worker_scan_entries(req: Request):
                 for strat, payload in ns_details.items():
                     try:
                         nm = (payload or {}).get("near_miss") or {}
-                        if isinstance(nm, dict) and bool(nm.get("near")):
+                                                if isinstance(nm, dict) and bool(nm.get("near")):
                             near_miss_counts[str(strat)] += 1
                     except Exception:
                         pass
