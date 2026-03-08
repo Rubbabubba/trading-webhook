@@ -349,6 +349,7 @@ DEDUP_WINDOW_SEC = int(getenv_any("DEDUP_WINDOW_SEC", "IDEMPOTENCY_WINDOW_SECOND
 
 # Symbol lock
 SYMBOL_LOCK_SEC = int(getenv_any("SYMBOL_LOCK_SEC", "SYMBOL_LOCK_SECONDS", default="180"))  # lock during entry/plan
+MAX_OPEN_POSITIONS = int(getenv_any("MAX_OPEN_POSITIONS", default="2"))
 
 
 
@@ -598,6 +599,7 @@ def config_effective_snapshot() -> dict:
         "enable_idempotency": ENABLE_IDEMPOTENCY,
         "dedup_window_sec": DEDUP_WINDOW_SEC,
         "symbol_lock_sec": SYMBOL_LOCK_SEC,
+        "max_open_positions": MAX_OPEN_POSITIONS,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
         "dry_run": DRY_RUN,
@@ -1067,6 +1069,26 @@ def take_symbol_lock(symbol: str, lock_sec: int | None = None) -> bool:
             return False
         SYMBOL_LOCKS[symbol] = now + max(ttl, 1)
         return True
+
+
+def release_symbol_lock(symbol: str):
+    with STATE_LOCK:
+        SYMBOL_LOCKS.pop(symbol, None)
+
+
+def soften_symbol_lock(symbol: str, lock_sec: int = 5):
+    with STATE_LOCK:
+        SYMBOL_LOCKS[symbol] = utc_ts() + max(int(lock_sec), 1)
+
+
+def count_open_positions_allowed() -> int:
+    return len(list_open_positions_allowed())
+
+
+def max_open_positions_reached(extra_buffer: int = 0) -> bool:
+    if MAX_OPEN_POSITIONS <= 0:
+        return False
+    return count_open_positions_allowed() + max(int(extra_buffer), 0) >= MAX_OPEN_POSITIONS
 
 
 def daily_pnl() -> float | None:
@@ -2096,6 +2118,7 @@ def health():
         "enable_idempotency": ENABLE_IDEMPOTENCY,
         "dedup_window_sec": DEDUP_WINDOW_SEC,
         "symbol_lock_sec": SYMBOL_LOCK_SEC,
+        "max_open_positions": MAX_OPEN_POSITIONS,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
         "kill_switch": KILL_SWITCH,
@@ -2128,6 +2151,28 @@ def scanner_status():
 def state(request: Request):
     require_admin_if_configured(request)
     return {"ok": True, "trade_plan": TRADE_PLAN, "symbol_locks": SYMBOL_LOCKS}
+
+@app.get("/diagnostics/positions")
+def diagnostics_positions(request: Request):
+    require_admin_if_configured(request)
+    positions = list_open_positions_details_allowed()
+    active_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")}
+    return {
+        "ok": True,
+        "max_open_positions": MAX_OPEN_POSITIONS,
+        "open_positions_count": len(positions),
+        "positions": positions,
+        "active_plans": active_plans,
+    }
+
+
+@app.get("/diagnostics/orders")
+def diagnostics_orders(request: Request, limit: int = 50):
+    require_admin_if_configured(request)
+    rows = [d for d in DECISIONS if d.get("event") == "ENTRY"]
+    rows = rows[-max(1, min(limit, 500)):]
+    return {"ok": True, "count": len(rows), "orders": rows}
+
 
 @app.get("/diagnostics/decisions")
 def diagnostics_decisions(request: Request, symbol: str = "", limit: int = 200):
@@ -2211,62 +2256,123 @@ async def kill_off(request: Request):
 
 
 
-def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None) -> dict:
-    """Submit a market order originating from the scanner (no TradingView webhook auth)."""
+def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta: dict | None = None, auth_payload: dict | None = None) -> dict:
+    """Shared entry execution path for scanner + webhook."""
     meta = meta or {}
-    if KILL_SWITCH:
-        return {"ok": False, "error": "kill_switch_enabled"}
-    if ONLY_MARKET_HOURS and not in_market_hours():
-        return {"ok": True, "action": "skipped", "reason": "outside_market_hours"}
-    if ALLOWED_SYMBOLS and symbol not in ALLOWED_SYMBOLS:
-        return {"ok": True, "action": "skipped", "reason": "symbol_not_allowed"}
+    auth_payload = auth_payload or {}
+    symbol = (symbol or "").upper().strip()
+    side = (side or "").lower().strip()
+    signal = (signal or "").strip()
+
+    if not symbol:
+        return {"ok": False, "rejected": True, "reason": "symbol_required"}
     if side not in ("buy", "sell"):
-        return {"ok": False, "error": "invalid_side"}
+        return {"ok": False, "rejected": True, "reason": "invalid_side"}
+    if ALLOWED_SYMBOLS and symbol not in ALLOWED_SYMBOLS:
+        return {"ok": True, "ignored": True, "reason": "symbol_not_allowed", "symbol": symbol, "signal": signal}
+
+    if KILL_SWITCH:
+        return {"ok": False, "rejected": True, "reason": "kill_switch_enabled"}
+    if daily_stop_hit():
+        return {"ok": False, "rejected": True, "reason": "daily_stop_hit"}
+    if ONLY_MARKET_HOURS and not in_market_hours():
+        return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal}
+
+    if side == "sell" and not ALLOW_SHORT:
+        qty_signed, _pos_side = get_position(symbol)
+        if qty_signed > 0:
+            out = close_position(symbol)
+            if symbol in TRADE_PLAN:
+                TRADE_PLAN[symbol]["active"] = False
+            return {"ok": True, "closed": True, "reason": "shorts_disabled_closed_long", "symbol": symbol, "signal": signal, **out}
+        return {"ok": True, "ignored": True, "reason": "shorts_disabled", "symbol": symbol, "signal": signal}
+
+    if source == "webhook" and ENABLE_IDEMPOTENCY:
+        dk = dedup_key(auth_payload)
+        last = DEDUP_CACHE.get(dk, 0)
+        now = utc_ts()
+        if last and (now - last) < DEDUP_WINDOW_SEC:
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="dedup", meta=meta)
+            return {"ok": True, "ignored": True, "reason": "dedup", "symbol": symbol, "signal": signal}
+        DEDUP_CACHE[dk] = now
+
+    if TRADE_PLAN.get(symbol, {}).get("active"):
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="plan_active", meta=meta)
+        return {"ok": True, "ignored": True, "reason": "plan_active", "symbol": symbol, "signal": signal}
+
+    qty_signed, pos_side = get_position(symbol)
+    if qty_signed != 0:
+        desired_side = "long" if side == "buy" else "short"
+        if desired_side == pos_side:
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason=f"position_already_open:{pos_side}", meta=meta)
+            return {"ok": True, "ignored": True, "reason": f"position_already_open:{pos_side}", "symbol": symbol, "signal": signal}
+
+        close_out = close_position(symbol)
+        if symbol in TRADE_PLAN:
+            TRADE_PLAN[symbol]["active"] = False
+
+        if not close_out.get("closed"):
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="reverse_close_failed", meta=meta)
+            return {"ok": False, "rejected": True, "reason": "reverse_close_failed", "symbol": symbol, "signal": signal, **close_out}
+
+        if not ALLOW_REVERSAL:
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="closed_opposite_position", reason="allow_reversal_false", meta=meta)
+            return {"ok": True, "action": "closed_opposite_position", "symbol": symbol, "signal": signal, **close_out}
+
+    if max_open_positions_reached():
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="max_open_positions_reached", meta=meta)
+        return {"ok": True, "ignored": True, "reason": "max_open_positions_reached", "symbol": symbol, "signal": signal, "max_open_positions": MAX_OPEN_POSITIONS}
 
     if not take_symbol_lock(symbol, SYMBOL_LOCK_SEC):
-        return {"ok": True, "action": "skipped", "reason": "symbol_locked"}
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="symbol_locked", meta=meta)
+        return {"ok": True, "ignored": True, "reason": "symbol_locked", "symbol": symbol, "signal": signal}
 
-    effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
+    effective_dry_run = bool((SCANNER_DRY_RUN if source == "worker_scan" else False) or DRY_RUN or (source == "worker_scan" and (not SCANNER_ALLOW_LIVE)))
 
     try:
-        qty_signed, pos_side = get_position(symbol)
-        in_pos = qty_signed != 0
-        if side == "buy" and pos_side == "long":
-            return {"ok": True, "action": "skipped", "reason": "already_long"}
-        if side == "sell" and pos_side == "flat":
-            return {"ok": True, "action": "skipped", "reason": "no_position_to_sell"}
-
-        price = get_latest_price(symbol)
-        if price is None or price <= 0:
-            return {"ok": False, "error": "latest_price_missing"}
-
-        stop_price = None
-        take_price = None
-        if side == "buy":
-            qty = compute_qty(float(price))
-            stop_price = round(float(price) * (1.0 - STOP_PCT), 2)
-            take_price = round(float(price) * (1.0 + TAKE_PCT), 2)
-        else:
-            qty = round(abs(qty_signed), 2)
-
+        base_price = get_latest_price(symbol)
+        if base_price is None or base_price <= 0:
+            raise ValueError("latest_price_missing")
+        qty = compute_qty(float(base_price)) if side == "buy" else round(abs(qty_signed), 2)
         if qty <= 0:
-            return {"ok": False, "error": "qty_zero"}
+            raise ValueError("qty_zero")
+
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "base_price": round(float(base_price), 2),
+            "signal": signal,
+            "paper": APCA_PAPER,
+            "dry_run": effective_dry_run,
+            "source": source,
+        }
 
         if effective_dry_run:
-            record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="dry_run", reason="ok", meta=meta)
-            return {"ok": True, "action": "dry_run", "qty": qty, "price": price, "stop": stop_price, "take": take_price}
+            plan = build_trade_plan(symbol, side, qty, float(base_price), signal)
+            plan["source"] = source
+            TRADE_PLAN[symbol] = plan
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="dry_run_plan_created", reason="", qty=qty, meta=meta)
+            return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": plan}
 
         order = submit_market_order(symbol, side, qty)
-        record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="submitted", reason="ok", meta=meta)
-        return {"ok": True, "action": "submitted", "qty": qty, "price": price, "stop": stop_price, "take": take_price, "order_id": str(getattr(order, "id", ""))}
+        plan = build_trade_plan(symbol, side, qty, float(base_price), signal)
+        plan["source"] = source
+        plan["order_id"] = str(getattr(order, "id", ""))
+        TRADE_PLAN[symbol] = plan
+        log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(getattr(order, "id", "")), signal=signal, source=source)
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(getattr(order, "id", "")), qty=qty, meta=meta)
+        return {"ok": True, "submitted": True, "order_id": str(getattr(order, "id", "")), "order": payload, "plan": plan}
     except Exception as e:
-        logger.exception("scan_submit_error symbol=%s", symbol)
-        try:
-            record_decision("ENTRY", "worker_scan", symbol=symbol, side=side, signal=signal, action="error", reason=str(e), meta=meta)
-        except Exception:
-            pass
-        return {"ok": False, "error": "submit_error", "detail": str(e)}
+        log("ORDER_REJECTED", symbol=symbol, side=side, err=str(e), signal=signal, source=source)
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="alpaca_submit_failed", err=str(e), meta=meta)
+        soften_symbol_lock(symbol, 5)
+        return {"ok": False, "rejected": True, "reason": f"alpaca_submit_failed:{e}", "symbol": symbol, "signal": signal}
 
+
+def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None) -> dict:
+    """Submit a market order originating from the scanner (shared execution path)."""
+    return execute_entry_signal(symbol=symbol, side=side, signal=signal, source="worker_scan", meta=meta)
 
 @app.post("/webhook")
 async def webhook(req: Request):
@@ -2304,106 +2410,8 @@ async def webhook(req: Request):
     if ALLOWED_SIGNALS and signal not in ALLOWED_SIGNALS:
         return JSONResponse(status_code=200, content={"ok": False, "rejected": True, "reason": f"signal_not_allowed:{signal}"})
 
-    # Kill switch / daily stop gates
-    if KILL_SWITCH:
-        out = flatten_all("kill_switch")
-        return {"ok": False, "rejected": True, "reason": "kill_switch", "flatten": out}
-
-    if daily_stop_hit():
-        out = flatten_all("daily_stop_hit")
-        return {"ok": False, "rejected": True, "reason": "daily_stop_hit", "flatten": out}
-
-    # Market hours guard
-    if ONLY_MARKET_HOURS and not in_market_hours():
-        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="ignored",reason="outside_market_hours")
-        return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal}
-
-    # Shorts disabled behavior
-    if side == "sell" and not ALLOW_SHORT:
-        qty_signed, _pos_side = get_position(symbol)
-        if qty_signed > 0:
-            out = close_position(symbol)
-            if symbol in TRADE_PLAN:
-                TRADE_PLAN[symbol]["active"] = False
-            return {"ok": True, "closed": True, "reason": "shorts_disabled_closed_long", "symbol": symbol, "signal": signal, **out}
-        return {"ok": True, "ignored": True, "reason": "shorts_disabled", "symbol": symbol, "signal": signal}
-
-    # Idempotency: absorb retries
-    if ENABLE_IDEMPOTENCY:
-        dk = dedup_key(data)
-        last = DEDUP_CACHE.get(dk, 0)
-        now = utc_ts()
-        if last and (now - last) < DEDUP_WINDOW_SEC:
-            record_decision("ENTRY", "webhook", symbol, side=side, signal=signal, action="ignored", reason="dedup")
-            return {"ok": True, "ignored": True, "reason": "dedup", "symbol": symbol, "signal": signal}
-        DEDUP_CACHE[dk] = now
-
-    # Symbol lock: prevent multiple overlapping entries
-    # Also prevent entries if a plan is active or Alpaca shows an open position.
-    if is_symbol_locked(symbol):
-        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="ignored",reason="symbol_locked")
-        return {"ok": True, "ignored": True, "reason": "symbol_locked", "symbol": symbol, "signal": signal}
-
-    if TRADE_PLAN.get(symbol, {}).get("active"):
-        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="ignored",reason="plan_active")
-        return {"ok": True, "ignored": True, "reason": "plan_active", "symbol": symbol, "signal": signal}
-
-    qty_signed, pos_side = get_position(symbol)
-    if qty_signed != 0:
-        desired_side = "long" if side == "buy" else "short"
-        if desired_side == pos_side:
-            record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="ignored",reason=f"position_already_open:{pos_side}")
-            return {"ok": True, "ignored": True, "reason": f"position_already_open:{pos_side}", "symbol": symbol, "signal": signal}
-
-        # Opposite direction: close first, then optionally open
-        close_out = close_position(symbol)
-        if symbol in TRADE_PLAN:
-            TRADE_PLAN[symbol]["active"] = False
-
-        if not close_out.get("closed"):
-            return {"ok": False, "rejected": True, "reason": "reverse_close_failed", "symbol": symbol, "signal": signal, **close_out}
-
-        if not ALLOW_REVERSAL:
-            return {"ok": True, "action": "closed_opposite_position", "symbol": symbol, "signal": signal, **close_out}
-
-    # Lock symbol while we place the entry
-    lock_symbol(symbol)
-
-    # Price + sizing
-    try:
-        base_price = get_latest_price(symbol)
-        qty = compute_qty(base_price)
-    except Exception as e:
-        return {"ok": False, "rejected": True, "reason": f"price_or_sizing_failed:{e}", "symbol": symbol, "signal": signal}
-
-    payload = {
-        "symbol": symbol,
-        "side": side,
-        "qty": qty,
-        "base_price": round(base_price, 2),
-        "signal": signal,
-        "paper": APCA_PAPER,
-        "dry_run": DRY_RUN,
-    }
-
-    if DRY_RUN:
-        TRADE_PLAN[symbol] = build_trade_plan(symbol, side, qty, base_price, signal)
-        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="dry_run_plan_created",reason="")
-        return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": TRADE_PLAN[symbol]}
-
-    # Submit order (do NOT throw 500 on broker rejections)
-    try:
-        order = submit_market_order(symbol, side, qty)
-        TRADE_PLAN[symbol] = build_trade_plan(symbol, side, qty, base_price, signal)
-        log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(order.id), signal=signal)
-        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="order_submitted",reason="",order_id=str(order.id),qty=qty)
-        return {"ok": True, "submitted": True, "order_id": str(order.id), "order": payload, "plan": TRADE_PLAN[symbol]}
-    except Exception as e:
-        log("ORDER_REJECTED", symbol=symbol, side=side, qty=qty, err=str(e), signal=signal)
-        record_decision("ENTRY","webhook",symbol,side=side,signal=signal,action="rejected",reason="alpaca_submit_failed",err=str(e))
-        # Release lock faster on rejection
-        SYMBOL_LOCKS[symbol] = utc_ts() + 5
-        return {"ok": False, "rejected": True, "reason": f"alpaca_submit_failed:{e}", "order": payload}
+    out = execute_entry_signal(symbol=symbol, side=side, signal=signal, source="webhook", auth_payload=data)
+    return out
 
 
 @app.post("/worker/exit")
@@ -2994,13 +3002,15 @@ async def worker_scan_entries(req: Request):
                         if signal_name and side in ("buy", "sell"):
                             action = side
                             reason = signal_name
+                            preview_plan = None
                             try:
                                 qty_for_plan = compute_qty(float(price))
-                                plan = build_trade_plan(sym, side, qty_for_plan, float(price), signal_name)
-                                TRADE_PLAN[sym] = plan
+                                preview_plan = build_trade_plan(sym, side, qty_for_plan, float(price), signal_name)
+                                preview_plan["active"] = False
+                                preview_plan["preview_only"] = True
                             except Exception as e:
                                 diag["trade_plan_error"] = str(e)
-                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "score": float(diag.get("vwap_pullback", {}).get("score", 0.0)), "plan": plan if "plan" in locals() else None})
+                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "score": float(diag.get("vwap_pullback", {}).get("score", 0.0)), "plan_preview": preview_plan})
 
                     stop_out = plan.get("stop_price") if plan else None
                     take_out = plan.get("take_price") if plan else None
