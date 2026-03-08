@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from collections import Counter
+from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -351,6 +352,13 @@ DEDUP_WINDOW_SEC = int(getenv_any("DEDUP_WINDOW_SEC", "IDEMPOTENCY_WINDOW_SECOND
 SYMBOL_LOCK_SEC = int(getenv_any("SYMBOL_LOCK_SEC", "SYMBOL_LOCK_SECONDS", default="180"))  # lock during entry/plan
 MAX_OPEN_POSITIONS = int(getenv_any("MAX_OPEN_POSITIONS", default="2"))
 
+# Durable execution journal / restart diagnostics
+JOURNAL_ENABLED = env_bool("JOURNAL_ENABLED", "true")
+JOURNAL_PERSIST_SCANS = env_bool("JOURNAL_PERSIST_SCANS", "false")
+JOURNAL_PATH = getenv_any("JOURNAL_PATH", default="/var/data/execution_journal.jsonl")
+POSITION_SNAPSHOT_PATH = getenv_any("POSITION_SNAPSHOT_PATH", default="/var/data/positions_snapshot.json")
+JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
+ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
 
 
 # =============================
@@ -546,6 +554,113 @@ STATE_LOCK = threading.RLock()
 _scan_rotation = {"ny_date": None, "idx": 0}
 
 
+
+# =============================
+# Durable journal helpers
+# =============================
+def _ensure_parent_dir(path_str: str):
+    try:
+        Path(path_str).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _journal_should_persist(event: str, action: str = "") -> bool:
+    if not JOURNAL_ENABLED:
+        return False
+    event_u = str(event or "").upper()
+    action_s = str(action or "").lower()
+    if event_u in {"ENTRY", "EXIT", "RECONCILE", "SYSTEM"}:
+        return True
+    if JOURNAL_PERSIST_SCANS and event_u == "SCAN":
+        return True
+    return action_s in {"error", "rejected"}
+
+
+def _journal_append(record: dict):
+    if not JOURNAL_ENABLED:
+        return
+    try:
+        _ensure_parent_dir(JOURNAL_PATH)
+        with open(JOURNAL_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, separators=(",", ":"), default=str) + "\n")
+    except Exception as e:
+        logger.warning("JOURNAL_APPEND_FAILED err=%s", e)
+
+
+def _read_journal(limit: int = 100, event: str = "", symbol: str = "") -> list[dict]:
+    path = Path(JOURNAL_PATH)
+    if (not JOURNAL_ENABLED) or (not path.exists()):
+        return []
+    lim = max(1, min(int(limit or 100), 5000))
+    event = str(event or "").upper().strip()
+    symbol = str(symbol or "").upper().strip()
+    rows: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if event and str(row.get("event", "")).upper() != event:
+                    continue
+                if symbol and str(row.get("symbol", "")).upper() != symbol:
+                    continue
+                rows.append(row)
+        return rows[-lim:]
+    except Exception as e:
+        logger.warning("JOURNAL_READ_FAILED err=%s", e)
+        return []
+
+
+def persist_positions_snapshot(reason: str = "", extra: dict | None = None) -> dict:
+    snapshot = {
+        "ts_utc": datetime.now(tz=timezone.utc).isoformat(),
+        "ts_ny": now_ny().isoformat(),
+        "reason": reason,
+        "positions": list_open_positions_details_allowed(),
+        "active_plans": {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")},
+    }
+    if extra:
+        snapshot["extra"] = extra
+    if JOURNAL_ENABLED:
+        try:
+            _ensure_parent_dir(POSITION_SNAPSHOT_PATH)
+            Path(POSITION_SNAPSHOT_PATH).write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
+        except Exception as e:
+            logger.warning("POSITION_SNAPSHOT_WRITE_FAILED err=%s", e)
+    return snapshot
+
+
+def read_positions_snapshot() -> dict:
+    path = Path(POSITION_SNAPSHOT_PATH)
+    if (not JOURNAL_ENABLED) or (not path.exists()):
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _bootstrap_journal_decisions():
+    if not JOURNAL_ENABLED:
+        return
+    rows = _read_journal(limit=JOURNAL_BOOTSTRAP_LIMIT)
+    if not rows:
+        return
+    try:
+        with STATE_LOCK:
+            DECISIONS.clear()
+            DECISIONS.extend(rows[-max(DECISION_BUFFER_SIZE, 50):])
+        logger.info("JOURNAL_BOOTSTRAP_LOADED count=%s", len(rows[-max(DECISION_BUFFER_SIZE, 50):]))
+    except Exception as e:
+        logger.warning("JOURNAL_BOOTSTRAP_FAILED err=%s", e)
+
+
 # =============================
 # Logging helpers
 # =============================
@@ -581,10 +696,14 @@ def record_decision(event: str, source: str, symbol: str = "", side: str = "", s
                 overflow = len(DECISIONS) - max(DECISION_BUFFER_SIZE, 50)
                 if overflow > 0:
                     del DECISIONS[:overflow]
+        if _journal_should_persist(event, action):
+            _journal_append(item)
     except Exception:
         # Never let tracing break trading.
         pass
 
+
+_bootstrap_journal_decisions()
 
 
 def config_effective_snapshot() -> dict:
@@ -600,6 +719,9 @@ def config_effective_snapshot() -> dict:
         "dedup_window_sec": DEDUP_WINDOW_SEC,
         "symbol_lock_sec": SYMBOL_LOCK_SEC,
         "max_open_positions": MAX_OPEN_POSITIONS,
+        "journal_enabled": JOURNAL_ENABLED,
+        "journal_path": JOURNAL_PATH,
+        "position_snapshot_path": POSITION_SNAPSHOT_PATH,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
         "dry_run": DRY_RUN,
@@ -743,19 +865,45 @@ def submit_market_order(symbol: str, side: str, qty: float):
     return trading_client.submit_order(order_req)
 
 
-def close_position(symbol: str) -> dict:
+def get_order_status(order_id: str) -> dict:
+    oid = str(order_id or "").strip()
+    if not oid:
+        return {}
+    try:
+        order = trading_client.get_order_by_id(oid)
+        return {
+            "id": str(getattr(order, "id", oid)),
+            "symbol": str(getattr(order, "symbol", "") or "").upper(),
+            "side": str(getattr(getattr(order, "side", None), "value", getattr(order, "side", ""))),
+            "status": str(getattr(getattr(order, "status", None), "value", getattr(order, "status", ""))),
+            "type": str(getattr(getattr(order, "type", None), "value", getattr(order, "type", ""))),
+            "filled_qty": str(getattr(order, "filled_qty", "") or ""),
+            "filled_avg_price": str(getattr(order, "filled_avg_price", "") or ""),
+            "submitted_at": str(getattr(order, "submitted_at", "") or ""),
+        }
+    except Exception as e:
+        return {"id": oid, "status_error": str(e)}
+
+
+def close_position(symbol: str, reason: str = "", source: str = "system") -> dict:
     qty_signed, _side = get_position(symbol)
     if qty_signed == 0:
+        record_decision("EXIT", source, symbol, action="ignored", reason="no_open_position", exit_reason=reason)
         return {"closed": False, "reason": "No open position"}
 
     qty = abs(qty_signed)
     close_side = "sell" if qty_signed > 0 else "buy"
 
     if DRY_RUN:
-        return {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side}
+        payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side}
+        record_decision("EXIT", source, symbol, side=close_side, action="dry_run", reason=reason or "dry_run", qty=qty)
+        return payload
 
     order = submit_market_order(symbol, close_side, qty)
-    return {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": str(order.id)}
+    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": str(order.id)}
+    record_decision("EXIT", source, symbol, side=close_side, action="order_submitted", reason=reason or "exit", qty=qty, order_id=str(order.id))
+    persist_positions_snapshot(reason="close_position_submitted", extra={"symbol": symbol, "order_id": str(order.id), "exit_reason": reason, "source": source})
+    return out
 
 
 def list_open_positions_allowed() -> list[dict]:
@@ -848,6 +996,8 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
         record_decision("RECONCILE", "worker_exit", sym, side=side, signal="RECOVERED",
                         action="recovered_plan", reason="missing_internal_plan",
                         qty=qty_signed, entry_price=recovered_plan["entry_price"])
+    if actions:
+        persist_positions_snapshot(reason="reconcile_trade_plans", extra={"actions": actions})
     return actions
 
 
@@ -1131,7 +1281,7 @@ def flatten_all(reason: str) -> list[dict]:
     results = []
     for p in list_open_positions_allowed():
         sym = p["symbol"]
-        out = close_position(sym)
+        out = close_position(sym, reason="daily_stop", source="risk_guard")
         if sym in TRADE_PLAN:
             TRADE_PLAN[sym]["active"] = False
         results.append({"symbol": sym, "action": "flatten", "reason": reason, **out})
@@ -2167,12 +2317,52 @@ def diagnostics_positions(request: Request):
 
 
 @app.get("/diagnostics/orders")
-def diagnostics_orders(request: Request, limit: int = 50):
+def diagnostics_orders(request: Request, limit: int = 50, include_broker_status: bool = True):
     require_admin_if_configured(request)
-    rows = [d for d in DECISIONS if d.get("event") == "ENTRY"]
-    rows = rows[-max(1, min(limit, 500)):]
+    lim = max(1, min(limit, 500))
+    rows = [d for d in DECISIONS if d.get("event") in {"ENTRY", "EXIT", "RECONCILE"}]
+    rows = rows[-lim:]
+    if include_broker_status:
+        tail = rows[-min(len(rows), ORDER_DIAGNOSTIC_LOOKBACK):]
+        for row in tail:
+            details = row.get("details") or {}
+            oid = details.get("order_id") if isinstance(details, dict) else None
+            if oid:
+                row["broker_order"] = get_order_status(str(oid))
     return {"ok": True, "count": len(rows), "orders": rows}
 
+
+
+
+@app.get("/diagnostics/journal")
+def diagnostics_journal(request: Request, limit: int = 100, event: str = "", symbol: str = ""):
+    require_admin_if_configured(request)
+    rows = _read_journal(limit=limit, event=event, symbol=symbol)
+    return {"ok": True, "count": len(rows), "items": rows}
+
+
+@app.get("/diagnostics/execution")
+def diagnostics_execution(request: Request, limit: int = 100):
+    require_admin_if_configured(request)
+    rows = _read_journal(limit=limit)
+    entry_submits = [r for r in rows if r.get("event") == "ENTRY" and r.get("action") == "order_submitted"]
+    exit_submits = [r for r in rows if r.get("event") == "EXIT" and r.get("action") == "order_submitted"]
+    rejects = [r for r in rows if r.get("action") in {"rejected", "error"}]
+    latest_snapshot = read_positions_snapshot()
+    return {
+        "ok": True,
+        "journal_enabled": JOURNAL_ENABLED,
+        "journal_path": JOURNAL_PATH,
+        "position_snapshot_path": POSITION_SNAPSHOT_PATH,
+        "recent_count": len(rows),
+        "entry_submits": len(entry_submits),
+        "exit_submits": len(exit_submits),
+        "rejects_or_errors": len(rejects),
+        "last_entry": entry_submits[-1] if entry_submits else None,
+        "last_exit": exit_submits[-1] if exit_submits else None,
+        "last_error": rejects[-1] if rejects else None,
+        "latest_snapshot": latest_snapshot,
+    }
 
 @app.get("/diagnostics/decisions")
 def diagnostics_decisions(request: Request, symbol: str = "", limit: int = 200):
@@ -2307,7 +2497,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason=f"position_already_open:{pos_side}", meta=meta)
             return {"ok": True, "ignored": True, "reason": f"position_already_open:{pos_side}", "symbol": symbol, "signal": signal}
 
-        close_out = close_position(symbol)
+        close_out = close_position(symbol, reason="reverse_not_allowed", source=source)
         if symbol in TRADE_PLAN:
             TRADE_PLAN[symbol]["active"] = False
 
@@ -2352,6 +2542,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             plan = build_trade_plan(symbol, side, qty, float(base_price), signal)
             plan["source"] = source
             TRADE_PLAN[symbol] = plan
+            persist_positions_snapshot(reason="entry_dry_run_plan", extra={"symbol": symbol, "source": source, "signal": signal})
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="dry_run_plan_created", reason="", qty=qty, meta=meta)
             return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": plan}
 
@@ -2359,7 +2550,9 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan = build_trade_plan(symbol, side, qty, float(base_price), signal)
         plan["source"] = source
         plan["order_id"] = str(getattr(order, "id", ""))
+        plan["submitted_at"] = now_ny().isoformat()
         TRADE_PLAN[symbol] = plan
+        persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(getattr(order, "id", "")), "source": source, "signal": signal})
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(getattr(order, "id", "")), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(getattr(order, "id", "")), qty=qty, meta=meta)
         return {"ok": True, "submitted": True, "order_id": str(getattr(order, "id", "")), "order": payload, "plan": plan}
@@ -2453,7 +2646,7 @@ async def worker_exit(req: Request):
     if now_t >= eod_t:
         for p in list_open_positions_allowed():
             sym = p["symbol"]
-            out = close_position(sym)
+            out = close_position(sym, reason="eod_flatten", source="worker_exit")
             if sym in TRADE_PLAN:
                 TRADE_PLAN[sym]["active"] = False
             results.append({"symbol": sym, "action": "flatten_eod", **out})
@@ -2496,7 +2689,7 @@ async def worker_exit(req: Request):
         if hit_stop or hit_take:
             plan["last_exit_attempt_ts"] = now_ts
             reason = "stop" if hit_stop else "target"
-            out = close_position(symbol)
+            out = close_position(symbol, reason="reverse_close_before_entry", source=source)
             if out.get("closed"):
                 plan["active"] = False
                 results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "take": take_price, **out})
@@ -2535,6 +2728,8 @@ async def worker_exit(req: Request):
                                 meta={"forced": True})
     except Exception as e:
         logger.exception("TRADES_TODAY_ERROR err=%s", e)
+    if results or reconcile_actions:
+        persist_positions_snapshot(reason="worker_exit_cycle", extra={"results_count": len(results), "reconcile_count": len(reconcile_actions)})
     return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
 
 

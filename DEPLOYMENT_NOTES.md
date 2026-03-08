@@ -1,3 +1,11 @@
+# Patch 002 Deployment Notes
+
+- Patch 002 adds a durable execution journal and position snapshot files on disk.
+- New diagnostics endpoints: `/diagnostics/journal` and `/diagnostics/execution`.
+- `/diagnostics/orders` now includes ENTRY, EXIT, and RECONCILE rows and can enrich recent rows with broker order status.
+- Restart behavior improves because recent journal rows bootstrap the in-memory decision buffer.
+- Keep `JOURNAL_ENABLED=true` on Render and make sure `/var/data` is writable.
+
 # Render deployment: 3-service layout
 
 This repo supports a 3-service deployment on Render:
