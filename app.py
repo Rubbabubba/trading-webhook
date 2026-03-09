@@ -58,6 +58,7 @@ import re
 import json
 from urllib.request import Request as UrlRequest, urlopen
 from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 
 @dataclass(frozen=True)
 class Bar:
@@ -473,6 +474,19 @@ READINESS_SCANNER_MAX_AGE_SEC = int(getenv_any("READINESS_SCANNER_MAX_AGE_SEC", 
 READINESS_EXIT_MAX_AGE_SEC = int(getenv_any("READINESS_EXIT_MAX_AGE_SEC", default="90"))
 RISK_RECHECK_TOLERANCE_PCT = float(getenv_any("RISK_RECHECK_TOLERANCE_PCT", default="0.10"))
 
+# Patch 007: monitoring + alerts
+ALERTS_ENABLED = env_bool("ALERTS_ENABLED", False)
+ALERT_WEBHOOK_URL = getenv_any("ALERT_WEBHOOK_URL", default="").strip()
+ALERT_WEBHOOK_TIMEOUT_SEC = float(getenv_any("ALERT_WEBHOOK_TIMEOUT_SEC", default="8"))
+ALERT_DEDUP_SEC = int(getenv_any("ALERT_DEDUP_SEC", default="300"))
+ALERT_HISTORY_LIMIT = int(getenv_any("ALERT_HISTORY_LIMIT", default="200"))
+ALERT_ON_ENTRY = env_bool("ALERT_ON_ENTRY", True)
+ALERT_ON_EXIT = env_bool("ALERT_ON_EXIT", True)
+ALERT_ON_REJECTION = env_bool("ALERT_ON_REJECTION", False)
+ALERT_ON_DAILY_HALT = env_bool("ALERT_ON_DAILY_HALT", True)
+ALERT_ON_READINESS_FAIL = env_bool("ALERT_ON_READINESS_FAIL", True)
+ALERT_INCLUDE_DETAILS = env_bool("ALERT_INCLUDE_DETAILS", True)
+
 
 # =============================
 # Scanner (Phase 1C - shadow mode default)
@@ -632,6 +646,13 @@ SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 # Decision traces (in-memory ring buffer)
 DECISION_BUFFER_SIZE = int(getenv_any("DECISION_BUFFER_SIZE", default="1000"))
 DECISIONS: list[dict] = []  # append-only, trimmed to DECISION_BUFFER_SIZE
+ALERT_HISTORY: list[dict] = []
+ALERT_DEDUP: dict[str, float] = {}
+REJECTION_HISTORY: list[dict] = []
+DAILY_HALT_STATE: dict = {"session": None, "active": False, "triggered_at": None, "reason": ""}
+LAST_EXIT_HEARTBEAT: dict = {}
+LAST_ALERT_HEARTBEAT: dict = {}
+
 
 def _count_forced_trades_today_ny() -> int:
     """Count today's forced trades (NY date) for the Trades-Today mode."""
@@ -834,6 +855,7 @@ def record_decision(event: str, source: str, symbol: str = "", side: str = "", s
                 "reason_bucket": _normalize_reject_reason(reason),
                 "details": details or {},
             })
+        maybe_emit_alert_for_decision(item)
     except Exception:
         # Never let tracing break trading.
         pass
@@ -876,6 +898,205 @@ def _append_rejection_history(item: dict):
                     del REJECTION_HISTORY[:overflow]
     except Exception:
         pass
+
+
+def _append_alert_history(item: dict):
+    try:
+        with STATE_LOCK:
+            ALERT_HISTORY.append(item)
+            if len(ALERT_HISTORY) > max(ALERT_HISTORY_LIMIT, 50):
+                overflow = len(ALERT_HISTORY) - max(ALERT_HISTORY_LIMIT, 50)
+                if overflow > 0:
+                    del ALERT_HISTORY[:overflow]
+    except Exception:
+        pass
+
+
+def _update_alert_history_status(alert_id: str, **updates):
+    try:
+        with STATE_LOCK:
+            for row in reversed(ALERT_HISTORY):
+                if str(row.get("id")) == str(alert_id):
+                    row.update(updates)
+                    row["updated_at_utc"] = datetime.now(tz=timezone.utc).isoformat()
+                    break
+    except Exception:
+        pass
+
+
+def _alert_payload_for_destination(item: dict) -> tuple[bytes, dict]:
+    title = str(item.get("title") or "Trading Bot Alert")
+    text = str(item.get("text") or title)
+    level = str(item.get("level") or "info")
+    url = ALERT_WEBHOOK_URL
+    if "discord.com/api/webhooks" in url or "discordapp.com/api/webhooks" in url:
+        body = {"content": text}
+    elif "hooks.slack.com/" in url:
+        body = {"text": text}
+    else:
+        body = {
+            "title": title,
+            "text": text,
+            "level": level,
+            "event": item.get("event"),
+            "symbol": item.get("symbol"),
+            "action": item.get("action"),
+            "reason": item.get("reason"),
+            "details": item.get("details") or {},
+            "ts_utc": item.get("ts_utc"),
+        }
+    return json.dumps(body, default=str).encode("utf-8"), {
+        "content-type": "application/json",
+        "user-agent": "trading-webhook/patch-007",
+    }
+
+
+def _dispatch_alert_http(item: dict):
+    alert_id = str(item.get("id") or "")
+    if (not ALERTS_ENABLED) or (not ALERT_WEBHOOK_URL):
+        _update_alert_history_status(alert_id, status="disabled")
+        return
+    try:
+        payload, headers = _alert_payload_for_destination(item)
+        req = UrlRequest(ALERT_WEBHOOK_URL, data=payload, headers=headers, method="POST")
+        with urlopen(req, timeout=max(ALERT_WEBHOOK_TIMEOUT_SEC, 1.0)) as resp:
+            code = int(getattr(resp, "status", 200) or 200)
+            response_text = ""
+            try:
+                response_text = (resp.read() or b"").decode("utf-8", errors="ignore")[:500]
+            except Exception:
+                response_text = ""
+        _update_alert_history_status(alert_id, status="sent", http_status=code, response=response_text)
+    except HTTPError as e:
+        _update_alert_history_status(alert_id, status="error", http_status=int(getattr(e, "code", 0) or 0), error=str(e))
+    except URLError as e:
+        _update_alert_history_status(alert_id, status="error", error=str(e))
+    except Exception as e:
+        _update_alert_history_status(alert_id, status="error", error=str(e))
+
+
+def send_alert(kind: str, title: str, text: str, level: str = "info", dedup_key: str = "", **payload):
+    now_ts = _time.time()
+    dedup = str(dedup_key or f"{kind}|{title}|{payload.get('symbol') or ''}|{payload.get('action') or ''}|{payload.get('reason') or ''}")
+    if ALERT_DEDUP_SEC > 0:
+        with STATE_LOCK:
+            last = float(ALERT_DEDUP.get(dedup, 0) or 0)
+            if (now_ts - last) < ALERT_DEDUP_SEC:
+                return {"ok": True, "queued": False, "suppressed": True, "dedup_key": dedup}
+            ALERT_DEDUP[dedup] = now_ts
+    alert_id = hashlib.sha1(f"{now_ts}|{dedup}|{title}".encode("utf-8")).hexdigest()[:16]
+    item = {
+        "id": alert_id,
+        "ts_utc": datetime.now(tz=timezone.utc).isoformat(),
+        "ts_ny": now_ny().isoformat(),
+        "kind": kind,
+        "title": title,
+        "text": text,
+        "level": level,
+        "status": "queued",
+        "dedup_key": dedup,
+        **payload,
+    }
+    _append_alert_history(item)
+    LAST_ALERT_HEARTBEAT.clear()
+    LAST_ALERT_HEARTBEAT.update({
+        "ts_utc": item["ts_utc"],
+        "ts_ny": item["ts_ny"],
+        "kind": kind,
+        "title": title,
+        "status": "queued",
+    })
+    t = threading.Thread(target=_dispatch_alert_http, args=(item,), daemon=True)
+    t.start()
+    return {"ok": True, "queued": True, "id": alert_id}
+
+
+def _decision_alert_text(item: dict) -> str:
+    event = str(item.get("event") or "")
+    action = str(item.get("action") or "")
+    symbol = str(item.get("symbol") or "")
+    reason = str(item.get("reason") or "")
+    details = item.get("details") or {}
+    side = str(item.get("side") or "")
+    qty = None
+    order_id = None
+    try:
+        qty = ((details or {}).get("qty") if isinstance(details, dict) else None)
+        order_id = ((details or {}).get("order_id") if isinstance(details, dict) else None)
+    except Exception:
+        qty = None
+        order_id = None
+    parts = [f"{event} {action}".strip(), symbol, side]
+    if qty:
+        parts.append(f"qty={qty}")
+    if reason:
+        parts.append(f"reason={reason}")
+    if order_id:
+        parts.append(f"order_id={order_id}")
+    return " | ".join([p for p in parts if p])
+
+
+def maybe_emit_alert_for_decision(item: dict):
+    if not ALERTS_ENABLED or not ALERT_WEBHOOK_URL:
+        return
+    event = str(item.get("event") or "").upper()
+    action = str(item.get("action") or "").lower()
+    symbol = str(item.get("symbol") or "").upper()
+    reason = str(item.get("reason") or "")
+    details = item.get("details") or {}
+    if event == "ENTRY" and action == "order_submitted" and ALERT_ON_ENTRY:
+        send_alert(
+            kind="entry",
+            title=f"ENTRY {symbol}",
+            text=_decision_alert_text(item),
+            level="info",
+            dedup_key=f"entry:{symbol}:{details.get('order_id') or action}",
+            event=event,
+            symbol=symbol,
+            action=action,
+            reason=reason,
+            details=(details if ALERT_INCLUDE_DETAILS else {}),
+        )
+    elif event == "EXIT" and action == "order_submitted" and ALERT_ON_EXIT:
+        send_alert(
+            kind="exit",
+            title=f"EXIT {symbol}",
+            text=_decision_alert_text(item),
+            level="warning",
+            dedup_key=f"exit:{symbol}:{details.get('order_id') or action}",
+            event=event,
+            symbol=symbol,
+            action=action,
+            reason=reason,
+            details=(details if ALERT_INCLUDE_DETAILS else {}),
+        )
+    elif event == "RISK" and action == "halted" and ALERT_ON_DAILY_HALT:
+        send_alert(
+            kind="daily_halt",
+            title="DAILY HALT ACTIVATED",
+            text=_decision_alert_text(item),
+            level="critical",
+            dedup_key=f"daily_halt:{_current_session_key()}:{reason}",
+            event=event,
+            symbol=symbol,
+            action=action,
+            reason=reason,
+            details=(details if ALERT_INCLUDE_DETAILS else {}),
+        )
+    elif action in {"rejected", "ignored"} and ALERT_ON_REJECTION:
+        bucket = _normalize_reject_reason(reason)
+        send_alert(
+            kind="rejection",
+            title=f"REJECT {symbol or event}",
+            text=f"{_decision_alert_text(item)} | bucket={bucket}",
+            level="warning",
+            dedup_key=f"reject:{bucket}:{symbol}:{action}",
+            event=event,
+            symbol=symbol,
+            action=action,
+            reason=reason,
+            details=(details if ALERT_INCLUDE_DETAILS else {}),
+        )
 
 
 def _current_session_key() -> str:
@@ -940,6 +1161,10 @@ def config_effective_snapshot() -> dict:
         "readiness_require_workers": READINESS_REQUIRE_WORKERS,
         "rejection_history_limit": REJECTION_HISTORY_LIMIT,
         "auto_flatten_on_daily_stop": AUTO_FLATTEN_ON_DAILY_STOP,
+        "alerts_enabled": ALERTS_ENABLED,
+        "alert_webhook_configured": bool(ALERT_WEBHOOK_URL),
+        "alert_dedup_sec": ALERT_DEDUP_SEC,
+        "alert_history_limit": ALERT_HISTORY_LIMIT,
         "entry_require_quote": ENTRY_REQUIRE_QUOTE,
         "entry_require_fresh_quote": ENTRY_REQUIRE_FRESH_QUOTE,
         "entry_price_max_age_sec": ENTRY_PRICE_MAX_AGE_SEC,
@@ -2851,6 +3076,38 @@ def diagnostics_readiness(request: Request):
     overall = broker_connected and data_feed_ok and journal_ok and risk_ok
     if READINESS_REQUIRE_WORKERS:
         overall = overall and scanner_running and exit_worker_running
+    if (not overall) and ALERT_ON_READINESS_FAIL:
+        problems = []
+        if not broker_connected:
+            problems.append("broker_disconnected")
+        if not data_feed_ok:
+            problems.append("data_feed")
+        if not journal_ok:
+            problems.append("journal")
+        if not risk_ok:
+            problems.append("risk")
+        if READINESS_REQUIRE_WORKERS and not scanner_running:
+            problems.append("scanner_worker")
+        if READINESS_REQUIRE_WORKERS and not exit_worker_running:
+            problems.append("exit_worker")
+        send_alert(
+            kind="readiness_fail",
+            title="READINESS CHECK FAILED",
+            text=f"readiness=false | problems={','.join(problems) or 'unknown'} | symbol={READINESS_SYMBOL}",
+            level="critical",
+            dedup_key=f"readiness:{','.join(problems)}",
+            event="SYSTEM",
+            action="readiness_failed",
+            reason=",".join(problems),
+            details={
+                "scanner_running": scanner_running,
+                "exit_worker_running": exit_worker_running,
+                "broker_connected": broker_connected,
+                "data_feed_ok": data_feed_ok,
+                "journal_ok": journal_ok,
+                "risk_limits_ok": risk_ok,
+            },
+        )
     return {
         "ok": overall,
         "ready": overall,
@@ -2871,6 +3128,9 @@ def diagnostics_readiness(request: Request):
         "journal_error": journal_error,
         "require_workers": READINESS_REQUIRE_WORKERS,
         "readiness_symbol": READINESS_SYMBOL,
+        "alerts_enabled": ALERTS_ENABLED,
+        "alert_webhook_configured": bool(ALERT_WEBHOOK_URL),
+        "last_alert_heartbeat": LAST_ALERT_HEARTBEAT,
     }
 
 @app.get("/diagnostics/decisions")
@@ -3379,6 +3639,32 @@ def diagnostics_bars_debug(request: Request, symbol: str = "AAPL", lookback_days
         } for r in seq[:5]],
         "debug": debug,
     }
+
+
+@app.get("/diagnostics/alerts")
+def diagnostics_alerts(request: Request, limit: int = 100, kind: str = ""):
+    require_admin_if_configured(request)
+    lim = max(1, min(int(limit or 100), 1000))
+    rows = ALERT_HISTORY[-lim:]
+    if kind:
+        k = str(kind or "").strip().lower()
+        rows = [r for r in rows if str(r.get("kind") or "").lower() == k]
+    return {
+        "ok": True,
+        "count": len(rows),
+        "alerts_enabled": ALERTS_ENABLED,
+        "webhook_configured": bool(ALERT_WEBHOOK_URL),
+        "last_alert": ALERT_HISTORY[-1] if ALERT_HISTORY else None,
+        "heartbeat": LAST_ALERT_HEARTBEAT,
+        "items": rows,
+    }
+
+
+@app.post("/test/alert")
+def test_alert(request: Request, title: str = "Manual test alert", text: str = "Patch 007 test alert", level: str = "info"):
+    require_admin_if_configured(request)
+    result = send_alert(kind="manual_test", title=title, text=text, level=level, dedup_key=f"manual:{title}:{text}")
+    return {"ok": True, **result}
 
 
 @app.get("/diagnostics/runtime")

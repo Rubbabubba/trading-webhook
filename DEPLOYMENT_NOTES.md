@@ -59,3 +59,10 @@ This repo supports a 3-service deployment on Render:
 - ATR / R-multiple target sizing
 - Notional cap per trade
 - New endpoint: /diagnostics/risk_model
+
+
+## Patch 007
+- Adds outbound webhook alerts for entries, exits, rejections, daily halts, and readiness failures.
+- Adds /diagnostics/alerts and /test/alert.
+- Supports Slack incoming webhooks, Discord webhooks, and generic JSON webhooks.
+- Alerts are deduplicated to reduce spam.
