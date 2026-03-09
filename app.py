@@ -463,6 +463,15 @@ PLAN_STALE_SUBMITTED_SEC = int(getenv_any("PLAN_STALE_SUBMITTED_SEC", default="1
 PLAN_STALE_NO_POSITION_SEC = int(getenv_any("PLAN_STALE_NO_POSITION_SEC", default="90"))
 PLAN_RECONCILE_ORDER_STATUS = env_bool("PLAN_RECONCILE_ORDER_STATUS", True)
 PLAN_SYNC_ON_WORKER_EXIT = env_bool("PLAN_SYNC_ON_WORKER_EXIT", True)
+ENABLE_RISK_RECHECK_AFTER_FILL = env_bool("ENABLE_RISK_RECHECK_AFTER_FILL", True)
+ENABLE_PARTIAL_FILL_TRACKING = env_bool("ENABLE_PARTIAL_FILL_TRACKING", True)
+READINESS_REQUIRE_WORKERS = env_bool("READINESS_REQUIRE_WORKERS", True)
+REJECTION_HISTORY_LIMIT = int(getenv_any("REJECTION_HISTORY_LIMIT", default="200"))
+AUTO_FLATTEN_ON_DAILY_STOP = env_bool("AUTO_FLATTEN_ON_DAILY_STOP", True)
+READINESS_SYMBOL = getenv_any("READINESS_SYMBOL", default="SPY").strip().upper() or "SPY"
+READINESS_SCANNER_MAX_AGE_SEC = int(getenv_any("READINESS_SCANNER_MAX_AGE_SEC", default="240"))
+READINESS_EXIT_MAX_AGE_SEC = int(getenv_any("READINESS_EXIT_MAX_AGE_SEC", default="90"))
+RISK_RECHECK_TOLERANCE_PCT = float(getenv_any("RISK_RECHECK_TOLERANCE_PCT", default="0.10"))
 
 
 # =============================
@@ -802,10 +811,99 @@ def record_decision(event: str, source: str, symbol: str = "", side: str = "", s
                     del DECISIONS[:overflow]
         if _journal_should_persist(event, action):
             _journal_append(item)
+        if str(action).lower() in {"rejected", "ignored"}:
+            _append_rejection_history({
+                "ts_utc": item.get("ts_utc"),
+                "ts_ny": item.get("ts_ny"),
+                "event": event,
+                "source": source,
+                "symbol": (symbol or "").upper(),
+                "side": side,
+                "signal": signal,
+                "action": action,
+                "reason": reason,
+                "reason_bucket": _normalize_reject_reason(reason),
+                "details": details or {},
+            })
     except Exception:
         # Never let tracing break trading.
         pass
 
+
+
+def _normalize_reject_reason(reason: str) -> str:
+    r = str(reason or "").strip().lower()
+    if not r:
+        return "UNKNOWN"
+    mapping = [
+        ("daily_stop", "DAILY_LOSS_LIMIT"),
+        ("daily_halt", "DAILY_LOSS_LIMIT"),
+        ("max_open_positions", "MAX_POSITIONS"),
+        ("spread_too_wide", "SPREAD_TOO_WIDE"),
+        ("price_stale", "STALE_PRICE"),
+        ("symbol_locked", "SYMBOL_LOCK"),
+        ("position_already_open", "POSITION_ALREADY_EXISTS"),
+        ("position_open_after_lock", "POSITION_ALREADY_EXISTS"),
+        ("quote_missing", "QUOTE_UNAVAILABLE"),
+        ("alpaca_submit_failed", "ORDER_REJECTED"),
+        ("risk_exceeded", "RISK_EXCEEDED"),
+        ("kill_switch", "KILL_SWITCH"),
+        ("plan_active", "PLAN_ACTIVE"),
+        ("outside_market_hours", "OUTSIDE_MARKET_HOURS"),
+    ]
+    for needle, label in mapping:
+        if needle in r:
+            return label
+    return re.sub(r"[^A-Z0-9]+", "_", r.upper()).strip("_") or "UNKNOWN"
+
+
+def _append_rejection_history(item: dict):
+    try:
+        with STATE_LOCK:
+            REJECTION_HISTORY.append(item)
+            if len(REJECTION_HISTORY) > max(REJECTION_HISTORY_LIMIT, 50):
+                overflow = len(REJECTION_HISTORY) - max(REJECTION_HISTORY_LIMIT, 50)
+                if overflow > 0:
+                    del REJECTION_HISTORY[:overflow]
+    except Exception:
+        pass
+
+
+def _current_session_key() -> str:
+    return now_ny().strftime("%Y-%m-%d")
+
+
+def _ensure_daily_halt_rollover():
+    session = _current_session_key()
+    if DAILY_HALT_STATE.get("session") != session:
+        DAILY_HALT_STATE.clear()
+        DAILY_HALT_STATE.update({"session": session, "active": False, "triggered_at": None, "reason": ""})
+
+
+def activate_daily_halt(reason: str = "daily_stop_hit"):
+    _ensure_daily_halt_rollover()
+    DAILY_HALT_STATE.update({
+        "session": _current_session_key(),
+        "active": True,
+        "triggered_at": now_ny().isoformat(),
+        "reason": reason,
+    })
+    record_decision("RISK", "risk_guard", action="halted", reason=reason)
+
+
+def daily_halt_active() -> bool:
+    _ensure_daily_halt_rollover()
+    return bool(DAILY_HALT_STATE.get("active"))
+
+
+def update_exit_heartbeat(status: str = "ok", **extra):
+    LAST_EXIT_HEARTBEAT.clear()
+    LAST_EXIT_HEARTBEAT.update({
+        "ts_ny": now_ny().isoformat(),
+        "ts_utc": datetime.now(tz=timezone.utc).isoformat(),
+        "status": status,
+        **extra,
+    })
 
 _bootstrap_journal_decisions()
 
@@ -828,6 +926,11 @@ def config_effective_snapshot() -> dict:
         "position_snapshot_path": POSITION_SNAPSHOT_PATH,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
+        "enable_risk_recheck_after_fill": ENABLE_RISK_RECHECK_AFTER_FILL,
+        "enable_partial_fill_tracking": ENABLE_PARTIAL_FILL_TRACKING,
+        "readiness_require_workers": READINESS_REQUIRE_WORKERS,
+        "rejection_history_limit": REJECTION_HISTORY_LIMIT,
+        "auto_flatten_on_daily_stop": AUTO_FLATTEN_ON_DAILY_STOP,
         "entry_require_quote": ENTRY_REQUIRE_QUOTE,
         "entry_require_fresh_quote": ENTRY_REQUIRE_FRESH_QUOTE,
         "entry_price_max_age_sec": ENTRY_PRICE_MAX_AGE_SEC,
@@ -1106,9 +1209,13 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
 
     try:
         live_qty = round(abs(float(qty_signed)), 2)
-        if round(float(plan.get("qty") or 0), 2) != live_qty:
+        current_qty = round(float(plan.get("qty") or 0), 2)
+        if current_qty != live_qty:
             plan["qty"] = live_qty
             out["changes"].append("qty_updated_from_position")
+        if ENABLE_PARTIAL_FILL_TRACKING:
+            plan["filled_qty"] = live_qty
+            plan["requested_qty"] = float(plan.get("requested_qty") or current_qty or live_qty)
     except Exception:
         live_qty = abs(float(qty_signed))
 
@@ -1117,6 +1224,14 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
         fill_avg = float(order_status.get("filled_avg_price") or 0) or None
     except Exception:
         fill_avg = None
+    filled_qty = None
+    try:
+        filled_qty = float(order_status.get("filled_qty") or 0) or None
+    except Exception:
+        filled_qty = None
+    if ENABLE_PARTIAL_FILL_TRACKING and filled_qty:
+        plan["filled_qty"] = round(float(filled_qty), 4)
+        plan["requested_qty"] = float(plan.get("requested_qty") or plan.get("qty") or live_qty)
 
     if fill_avg and fill_avg > 0:
         old_entry = float(plan.get("entry_price") or 0)
@@ -1128,7 +1243,20 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
             plan["submitted_at"] = plan.get("submitted_at") or now.isoformat()
             plan["fill_reconciled"] = True
             plan["filled_avg_price"] = float(fill_avg)
+            plan["avg_fill_price"] = float(fill_avg)
+            plan["filled_qty"] = round(float(plan.get("filled_qty") or live_qty), 4)
+            plan["requested_qty"] = float(plan.get("requested_qty") or plan.get("qty") or live_qty)
+            actual_risk = round(abs(float(plan.get("entry_price") or fill_avg) - float(plan.get("stop_price") or 0)) * abs(float(plan.get("filled_qty") or live_qty)), 4)
+            plan["actual_risk_dollars"] = actual_risk
             out["changes"].append("entry_price_reconciled_to_fill")
+            if ENABLE_RISK_RECHECK_AFTER_FILL and RISK_DOLLARS > 0 and actual_risk > (float(RISK_DOLLARS) * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT), 0.0))):
+                close_out = close_position(symbol, reason="risk_exceeded_after_fill", source="risk_guard")
+                out["changes"].append("risk_recheck_after_fill")
+                out["risk_close"] = close_out
+                record_decision("RECONCILE", "worker_exit", symbol, action="risk_recheck", reason="risk_exceeded_after_fill", meta={"actual_risk_dollars": actual_risk, "risk_dollars": RISK_DOLLARS})
+                if close_out.get("closed"):
+                    plan["active"] = False
+                return out
     elif age_sec is not None and age_sec >= PLAN_STALE_SUBMITTED_SEC and str(order_status.get("status") or "").lower() not in {"filled", "partially_filled"}:
         plan["active"] = False
         out["changes"].append("deactivated_stale_submitted_plan")
@@ -1351,16 +1479,23 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         stop_price = round(entry_price * (1 + STOP_PCT), 2)
         take_price = round(entry_price * (1 - TAKE_PCT), 2)
 
+    requested_qty = float(qty)
+    risk_per_share = abs(float(entry_price) - float(stop_price))
+    actual_risk_dollars = round(abs(requested_qty) * risk_per_share, 4)
     return {
         "active": True,
         "side": side,
-        "qty": float(qty),
+        "qty": requested_qty,
+        "requested_qty": requested_qty,
+        "filled_qty": requested_qty,
+        "avg_fill_price": round(entry_price, 4),
         "entry_price": round(entry_price, 4),
         "stop_price": stop_price,
         "take_price": take_price,
         "signal": signal,
         "opened_at": now_ny().isoformat(),
         "last_exit_attempt_ts": 0,
+        "actual_risk_dollars": actual_risk_dollars,
     }
 
 
@@ -1451,6 +1586,10 @@ def daily_stop_hit() -> bool:
     return pnl <= -abs(DAILY_STOP_DOLLARS)
 
 
+def risk_limits_ok() -> bool:
+    return (not KILL_SWITCH) and (not daily_halt_active()) and (not daily_stop_hit())
+
+
 def require_admin(request: Request):
     if not ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="ADMIN_SECRET not set")
@@ -1468,7 +1607,7 @@ def flatten_all(reason: str) -> list[dict]:
     results = []
     for p in list_open_positions_allowed():
         sym = p["symbol"]
-        out = close_position(sym, reason="daily_stop", source="risk_guard")
+        out = close_position(sym, reason=reason, source="risk_guard")
         if sym in TRADE_PLAN:
             TRADE_PLAN[sym]["active"] = False
         results.append({"symbol": sym, "action": "flatten", "reason": reason, **out})
@@ -2551,6 +2690,86 @@ def diagnostics_execution(request: Request, limit: int = 100):
         "latest_snapshot": latest_snapshot,
     }
 
+
+@app.get("/diagnostics/rejections")
+def diagnostics_rejections(request: Request, limit: int = 100):
+    require_admin_if_configured(request)
+    lim = max(1, min(int(limit or 100), 1000))
+    items = REJECTION_HISTORY[-lim:]
+    buckets = Counter([str(x.get("reason_bucket") or "UNKNOWN") for x in items])
+    return {"ok": True, "count": len(items), "buckets": dict(buckets), "items": items}
+
+
+@app.get("/diagnostics/readiness")
+def diagnostics_readiness(request: Request):
+    require_admin_if_configured(request)
+    now_utc = datetime.now(tz=timezone.utc)
+    data_snapshot = get_latest_quote_snapshot(READINESS_SYMBOL)
+    data_feed_ok = bool(data_snapshot.get("price")) and ((not ENTRY_REQUIRE_QUOTE) or bool(data_snapshot.get("quote_ok")))
+    broker_connected = True
+    broker_error = ""
+    try:
+        trading_client.get_account()
+    except Exception as e:
+        broker_connected = False
+        broker_error = str(e)
+    scanner_running = False
+    scanner_age_sec = None
+    if LAST_SCAN.get("ts_utc"):
+        try:
+            scanner_ts = datetime.fromisoformat(str(LAST_SCAN.get("ts_utc")))
+            if scanner_ts.tzinfo is None:
+                scanner_ts = scanner_ts.replace(tzinfo=timezone.utc)
+            scanner_age_sec = max(0.0, (now_utc - scanner_ts.astimezone(timezone.utc)).total_seconds())
+            scanner_running = scanner_age_sec <= max(READINESS_SCANNER_MAX_AGE_SEC, 30)
+        except Exception:
+            scanner_running = False
+    exit_worker_running = False
+    exit_age_sec = None
+    if LAST_EXIT_HEARTBEAT.get("ts_utc"):
+        try:
+            exit_ts = datetime.fromisoformat(str(LAST_EXIT_HEARTBEAT.get("ts_utc")))
+            if exit_ts.tzinfo is None:
+                exit_ts = exit_ts.replace(tzinfo=timezone.utc)
+            exit_age_sec = max(0.0, (now_utc - exit_ts.astimezone(timezone.utc)).total_seconds())
+            exit_worker_running = exit_age_sec <= max(READINESS_EXIT_MAX_AGE_SEC, 15)
+        except Exception:
+            exit_worker_running = False
+    journal_ok = True
+    journal_error = ""
+    if JOURNAL_ENABLED:
+        try:
+            _ensure_parent_dir(JOURNAL_PATH)
+            Path(JOURNAL_PATH).parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            journal_ok = False
+            journal_error = str(e)
+    risk_ok = risk_limits_ok()
+    overall = broker_connected and data_feed_ok and journal_ok and risk_ok
+    if READINESS_REQUIRE_WORKERS:
+        overall = overall and scanner_running and exit_worker_running
+    return {
+        "ok": overall,
+        "ready": overall,
+        "scanner_running": scanner_running,
+        "scanner_age_sec": scanner_age_sec,
+        "exit_worker_running": exit_worker_running,
+        "exit_worker_age_sec": exit_age_sec,
+        "market_open": in_market_hours(),
+        "data_feed_ok": data_feed_ok,
+        "data_snapshot": data_snapshot,
+        "broker_connected": broker_connected,
+        "broker_error": broker_error,
+        "risk_limits_ok": risk_ok,
+        "kill_switch": KILL_SWITCH,
+        "daily_halt_active": daily_halt_active(),
+        "daily_halt_state": DAILY_HALT_STATE,
+        "journal_ok": journal_ok,
+        "journal_error": journal_error,
+        "require_workers": READINESS_REQUIRE_WORKERS,
+        "readiness_symbol": READINESS_SYMBOL,
+    }
+
 @app.get("/diagnostics/decisions")
 def diagnostics_decisions(request: Request, symbol: str = "", limit: int = 200):
     require_admin_if_configured(request)
@@ -2649,8 +2868,14 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         return {"ok": True, "ignored": True, "reason": "symbol_not_allowed", "symbol": symbol, "signal": signal}
 
     if KILL_SWITCH:
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="kill_switch_enabled", meta=meta)
         return {"ok": False, "rejected": True, "reason": "kill_switch_enabled"}
+    if daily_halt_active():
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="daily_halt_active", meta=meta)
+        return {"ok": False, "rejected": True, "reason": "daily_halt_active"}
     if daily_stop_hit():
+        activate_daily_halt("daily_stop_hit")
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="daily_stop_hit", meta=meta)
         return {"ok": False, "rejected": True, "reason": "daily_stop_hit"}
     if ONLY_MARKET_HOURS and not in_market_hours():
         return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal}
@@ -2754,6 +2979,9 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         if effective_dry_run:
             plan = build_trade_plan(symbol, side, qty, float(base_price), signal)
             plan["source"] = source
+            plan["requested_qty"] = float(qty)
+            plan["filled_qty"] = float(qty)
+            plan["avg_fill_price"] = float(base_price)
             TRADE_PLAN[symbol] = plan
             persist_positions_snapshot(reason="entry_dry_run_plan", extra={"symbol": symbol, "source": source, "signal": signal})
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="dry_run_plan_created", reason="", qty=qty, meta={"snapshot": snapshot, **(meta or {})})
@@ -2764,6 +2992,10 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan["source"] = source
         plan["order_id"] = str(getattr(order, "id", ""))
         plan["submitted_at"] = now_ny().isoformat()
+        plan["requested_qty"] = float(qty)
+        plan["filled_qty"] = 0.0
+        plan["avg_fill_price"] = float(base_price)
+        plan["order_status"] = "submitted"
         TRADE_PLAN[symbol] = plan
         persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(getattr(order, "id", "")), "source": source, "signal": signal})
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(getattr(order, "id", "")), signal=signal, source=source)
@@ -2823,6 +3055,7 @@ async def webhook(req: Request):
 @app.post("/worker/exit")
 async def worker_exit(req: Request):
     cleanup_caches()
+    update_exit_heartbeat(status="started")
 
     body = {}
     try:
@@ -2838,11 +3071,14 @@ async def worker_exit(req: Request):
     # Kill switch / daily stop: flatten immediately
     if KILL_SWITCH:
         out = flatten_all("kill_switch")
+        update_exit_heartbeat(status="kill_switch", results=len(out))
         return {"ok": True, "mode": "kill_switch", "ts_ny": now_ny().isoformat(), "results": out}
 
     if daily_stop_hit():
-        out = flatten_all("daily_stop_hit")
-        return {"ok": True, "mode": "daily_stop_hit", "ts_ny": now_ny().isoformat(), "results": out}
+        activate_daily_halt("daily_stop_hit")
+        out = flatten_all("daily_stop_hit") if AUTO_FLATTEN_ON_DAILY_STOP else []
+        update_exit_heartbeat(status="daily_stop_hit", results=len(out))
+        return {"ok": True, "mode": "daily_stop_hit", "daily_halt": DAILY_HALT_STATE, "ts_ny": now_ny().isoformat(), "results": out}
 
     if ONLY_MARKET_HOURS and not in_market_hours():
         return {"ok": True, "skipped": True, "reason": "outside_market_hours"}
@@ -2910,7 +3146,7 @@ async def worker_exit(req: Request):
         if hit_stop or hit_take:
             plan["last_exit_attempt_ts"] = now_ts
             reason = "stop" if hit_stop else "target"
-            out = close_position(symbol, reason="reverse_close_before_entry", source=source)
+            out = close_position(symbol, reason=reason, source="worker_exit")
             if out.get("closed"):
                 plan["active"] = False
                 results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "take": take_price, **out})
@@ -2951,6 +3187,7 @@ async def worker_exit(req: Request):
         logger.exception("TRADES_TODAY_ERROR err=%s", e)
     if results or reconcile_actions:
         persist_positions_snapshot(reason="worker_exit_cycle", extra={"results_count": len(results), "reconcile_count": len(reconcile_actions)})
+    update_exit_heartbeat(status="ok", results=len(results), reconcile=len(reconcile_actions))
     return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
 
 
