@@ -562,6 +562,7 @@ PWR_BREAKOUT_USE_HIGHLOW = os.getenv("PWR_BREAKOUT_USE_HIGHLOW", "true").lower()
 ENABLE_STRATEGY_VWAP_PULLBACK = os.getenv("ENABLE_STRATEGY_VWAP_PULLBACK", "true").lower() == "true"
 VWAP_PB_EMA_FAST = int(os.getenv("VWAP_PB_EMA_FAST", "9"))
 VWAP_PB_EMA_SLOW = int(os.getenv("VWAP_PB_EMA_SLOW", "20"))
+VWAP_PB_MIN_BARS_5M = int(os.getenv("VWAP_PB_MIN_BARS_5M", "15"))
 VWAP_PB_BAND_PCT = float(os.getenv("VWAP_PB_BAND_PCT", "0.0035"))  # 0.35% band around VWAP counts as a touch
 VWAP_PB_PULLBACK_LOOKBACK_BARS = int(os.getenv("VWAP_PB_PULLBACK_LOOKBACK_BARS", "6"))
 VWAP_PB_MAX_EXTENSION_PCT = float(os.getenv("VWAP_PB_MAX_EXTENSION_PCT", "0.008"))  # don't chase if >0.8% away from VWAP
@@ -2448,8 +2449,9 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
     bars_today = _bars_for_today_regular_session(bars_today)
     bars_5m = resample_5m(bars_today) if bars_today else []
     out["bars_5m"] = len(bars_5m)
-    min_bars = max(12, int(VWAP_PB_EMA_SLOW) + 2)
+    min_bars = max(12, int(VWAP_PB_MIN_BARS_5M))
     out["min_bars_5m"] = min_bars
+    out["min_bars_5m_source"] = "env" if os.getenv("VWAP_PB_MIN_BARS_5M") is not None else "default"
     if len(bars_5m) < min_bars:
         out["eligible"] = False
         out["reason"] = "insufficient_5m_bars"
@@ -3665,6 +3667,128 @@ def test_alert(request: Request, title: str = "Manual test alert", text: str = "
     require_admin_if_configured(request)
     result = send_alert(kind="manual_test", title=title, text=text, level=level, dedup_key=f"manual:{title}:{text}")
     return {"ok": True, **result}
+
+
+@app.get("/diagnostics/strategy")
+def diagnostics_strategy(request: Request, symbol: str = ""):
+    sym = str(symbol or "").upper().strip()
+    if not sym:
+        return {
+            "ok": True,
+            "primary_strategy": SCANNER_PRIMARY_STRATEGY,
+            "vwap_pullback": {
+                "enabled": bool(VWAP_PB_ENABLE),
+                "score_min": float(VWAP_PB_SCORE_MIN),
+                "min_bars_5m": int(VWAP_PB_MIN_BARS_5M),
+                "min_bars_5m_source": ("env" if os.getenv("VWAP_PB_MIN_BARS_5M") is not None else "default"),
+                "ema_fast": int(VWAP_PB_EMA_FAST),
+                "ema_slow": int(VWAP_PB_EMA_SLOW),
+                "min_5m_atr_pct": float(VWAP_PB_MIN_5M_ATR_PCT),
+                "max_5m_atr_pct": float(VWAP_PB_MAX_5M_ATR_PCT),
+                "min_day_range_pct": float(VWAP_PB_MIN_DAY_RANGE_PCT),
+                "min_recent_1m_vol_ratio": float(VWAP_PB_MIN_RECENT_1M_VOL_RATIO),
+                "require_green_last_1m": bool(VWAP_PB_REQUIRE_GREEN_LAST_1M),
+                "require_higher_low": bool(VWAP_PB_REQUIRE_HIGHER_LOW),
+                "entry_confirm_above_prior_1m_high": bool(VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH),
+                "entry_confirm_buffer_pct": float(VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT),
+            },
+        }
+
+    bars = fetch_intraday_bars(sym, SCANNER_LOOKBACK_DAYS) or []
+    diag = _vwap_pullback_setup(bars)
+    return {
+        "ok": True,
+        "symbol": sym,
+        "primary_strategy": SCANNER_PRIMARY_STRATEGY,
+        "vwap_pullback": diag,
+    }
+
+
+@app.get("/diagnostics/gatekeeper")
+def diagnostics_gatekeeper(request: Request, symbol: str = "SPY"):
+    sym = str(symbol or "SPY").upper().strip() or "SPY"
+    quote = get_latest_quote_snapshot(sym)
+    bars = fetch_intraday_bars(sym, SCANNER_LOOKBACK_DAYS) or []
+    vwap_diag = _vwap_pullback_setup(bars)
+
+    allowed = _is_symbol_allowed(sym)
+    market_hours_ok = is_market_hours_now() if ONLY_MARKET_HOURS else True
+    has_position = False
+    try:
+        pos = get_position_safe(sym)
+        has_position = bool(pos and float(pos.get("qty") or 0) > 0)
+    except Exception:
+        has_position = False
+    active_plan = bool((TRADE_PLAN.get(sym) or {}).get("active"))
+    lock_until = float(SYMBOL_LOCKS.get(sym, 0) or 0)
+    now_ts = time.time()
+    symbol_locked = lock_until > now_ts
+    spread_ok = True
+    if ENTRY_REQUIRE_QUOTE:
+        spread_ok = bool(quote.get("quote_ok"))
+        spct = quote.get("spread_pct")
+        if spct is not None:
+            spread_ok = spread_ok and float(spct) <= float(ENTRY_MAX_SPREAD_PCT)
+    quote_required_ok = (not ENTRY_REQUIRE_QUOTE) or bool(quote.get("quote_ok"))
+    freshness_ok = (not ENTRY_REQUIRE_FRESH_QUOTE) or bool(quote.get("fresh"))
+
+    checks = {
+        "symbol_allowed": bool(allowed),
+        "market_hours_ok": bool(market_hours_ok),
+        "quote_required_ok": bool(quote_required_ok),
+        "freshness_ok": bool(freshness_ok),
+        "spread_ok": bool(spread_ok),
+        "has_position": bool(has_position),
+        "active_plan": bool(active_plan),
+        "symbol_locked": bool(symbol_locked),
+        "strategy_eligible": bool(vwap_diag.get("eligible")),
+        "strategy_triggered": bool(vwap_diag.get("triggered")),
+    }
+    would_pass = all([
+        checks["symbol_allowed"],
+        checks["market_hours_ok"],
+        checks["quote_required_ok"],
+        checks["freshness_ok"],
+        checks["spread_ok"],
+        (not checks["has_position"]),
+        (not checks["active_plan"]),
+        (not checks["symbol_locked"]),
+        checks["strategy_eligible"],
+        checks["strategy_triggered"],
+    ])
+
+    reasons = []
+    if not checks["symbol_allowed"]:
+        reasons.append("symbol_not_allowed")
+    if not checks["market_hours_ok"]:
+        reasons.append("outside_market_hours")
+    if not checks["quote_required_ok"]:
+        reasons.append("quote_unavailable")
+    if not checks["freshness_ok"]:
+        reasons.append("stale_quote")
+    if not checks["spread_ok"]:
+        reasons.append("spread_too_wide")
+    if checks["has_position"]:
+        reasons.append("position_exists")
+    if checks["active_plan"]:
+        reasons.append("active_plan_exists")
+    if checks["symbol_locked"]:
+        reasons.append("symbol_locked")
+    if not checks["strategy_eligible"] or not checks["strategy_triggered"]:
+        reasons.append(f"strategy:{vwap_diag.get('reason') or 'no_signal'}")
+
+    return {
+        "ok": True,
+        "symbol": sym,
+        "would_pass": bool(would_pass),
+        "checks": checks,
+        "reasons": reasons,
+        "quote": quote,
+        "strategy": {"name": "vwap_pullback", **vwap_diag},
+        "lock_expires_in_sec": max(0.0, lock_until - now_ts) if symbol_locked else 0.0,
+        "max_open_positions": int(MAX_OPEN_POSITIONS),
+        "open_positions_count": len([1 for _s,_p in (TRADE_PLAN or {}).items() if (_p or {}).get("active")]),
+    }
 
 
 @app.get("/diagnostics/runtime")

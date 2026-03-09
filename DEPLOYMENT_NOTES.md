@@ -1,3 +1,16 @@
+# Patch 008
+
+- Adds `VWAP_PB_MIN_BARS_5M` as a real env-controlled setting with default `15`.
+- Restores `/diagnostics/gatekeeper?symbol=SPY`.
+- Adds `/diagnostics/strategy` and `/diagnostics/strategy?symbol=SPY`.
+- Shows whether VWAP min-bars came from env or code default.
+
+Render env add/change:
+
+```
+VWAP_PB_MIN_BARS_5M=15
+```
+
 # Patch 002 Deployment Notes
 
 - Patch 002 adds a durable execution journal and position snapshot files on disk.
