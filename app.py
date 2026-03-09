@@ -173,6 +173,100 @@ def _fetch_bars_via_rest(symbols: list[str], start: datetime, end: datetime, fee
     return out, debug
 
 
+def _fetch_latest_quotes_via_rest(symbols: list[str]) -> tuple[dict[str, dict], dict]:
+    symbols = [s.strip().upper() for s in (symbols or []) if s and s.strip()]
+    out: dict[str, dict] = {s: {} for s in symbols}
+    debug = {"method": "rest_quote", "feed": str(_DATA_FEED_RAW), "count": 0, "url": None}
+    if not symbols:
+        return out, debug
+    params = {"symbols": ",".join(symbols), "feed": str(_DATA_FEED_RAW)}
+    url = f"{_alpaca_data_base_url()}/v2/stocks/quotes/latest?{urlencode(params)}"
+    debug["url"] = url
+    req = UrlRequest(url, headers={
+        "APCA-API-KEY-ID": APCA_KEY,
+        "APCA-API-SECRET-KEY": APCA_SECRET,
+        "accept": "application/json",
+        "user-agent": "trading-webhook/patch-003",
+    })
+    try:
+        with urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        quotes_payload = payload.get("quotes", {}) if isinstance(payload, dict) else {}
+        for sym, q in (quotes_payload or {}).items():
+            q = q or {}
+            out[str(sym)] = {
+                "bid": float(q.get("bp") or 0) or None,
+                "ask": float(q.get("ap") or 0) or None,
+                "bid_size": float(q.get("bs") or 0) or None,
+                "ask_size": float(q.get("as") or 0) or None,
+                "ts_utc": _parse_bar_ts(q.get("t")),
+            }
+        debug["count"] = sum(1 for v in out.values() if v)
+    except Exception as e:
+        debug["error"] = str(e)
+    return out, debug
+
+
+def get_latest_quote_snapshot(symbol: str) -> dict:
+    symbol = str(symbol or "").upper()
+    trade_px = None
+    trade_ts = None
+    try:
+        req = StockLatestTradeRequest(symbol_or_symbols=[symbol])
+        latest = data_client.get_stock_latest_trade(req)
+        trade = None
+        try:
+            trade = latest.get(symbol) if hasattr(latest, "get") else latest[symbol]
+        except Exception:
+            trade = None
+        if trade is not None:
+            px = getattr(trade, "price", None)
+            if px is not None:
+                trade_px = float(px)
+            ts_val = getattr(trade, "timestamp", None)
+            if ts_val is not None:
+                trade_ts = _parse_bar_ts(ts_val)
+    except Exception:
+        trade_px = None
+        trade_ts = None
+
+    quotes, quote_debug = _fetch_latest_quotes_via_rest([symbol])
+    quote = quotes.get(symbol) or {}
+    bid = quote.get("bid")
+    ask = quote.get("ask")
+    quote_ts = quote.get("ts_utc")
+    mid = None
+    spread = None
+    spread_pct = None
+    if bid and ask and bid > 0 and ask > 0 and ask >= bid:
+        mid = round((float(bid) + float(ask)) / 2.0, 6)
+        spread = round(float(ask) - float(bid), 6)
+        if mid > 0:
+            spread_pct = float(spread) / float(mid)
+
+    ref_ts = quote_ts or trade_ts
+    age_sec = None
+    if ref_ts is not None:
+        age_sec = max(0.0, (datetime.now(timezone.utc) - ref_ts).total_seconds())
+
+    return {
+        "symbol": symbol,
+        "price": trade_px or mid,
+        "trade_price": trade_px,
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+        "spread": spread,
+        "spread_pct": spread_pct,
+        "quote_ts_utc": quote_ts.isoformat() if quote_ts else None,
+        "trade_ts_utc": trade_ts.isoformat() if trade_ts else None,
+        "price_age_sec": age_sec,
+        "quote_ok": bool(bid and ask and ask >= bid),
+        "fresh": bool(age_sec is not None and age_sec <= ENTRY_PRICE_MAX_AGE_SEC),
+        "quote_debug": quote_debug,
+    }
+
+
 # =============================
 # App
 # =============================
@@ -359,6 +453,16 @@ JOURNAL_PATH = getenv_any("JOURNAL_PATH", default="/var/data/execution_journal.j
 POSITION_SNAPSHOT_PATH = getenv_any("POSITION_SNAPSHOT_PATH", default="/var/data/positions_snapshot.json")
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
+
+# Patch 003: quote / staleness / broker-sync gates
+ENTRY_REQUIRE_QUOTE = env_bool("ENTRY_REQUIRE_QUOTE", True)
+ENTRY_REQUIRE_FRESH_QUOTE = env_bool("ENTRY_REQUIRE_FRESH_QUOTE", True)
+ENTRY_PRICE_MAX_AGE_SEC = float(getenv_any("ENTRY_PRICE_MAX_AGE_SEC", default="20"))
+ENTRY_MAX_SPREAD_PCT = float(getenv_any("ENTRY_MAX_SPREAD_PCT", default="0.0025"))
+PLAN_STALE_SUBMITTED_SEC = int(getenv_any("PLAN_STALE_SUBMITTED_SEC", default="180"))
+PLAN_STALE_NO_POSITION_SEC = int(getenv_any("PLAN_STALE_NO_POSITION_SEC", default="90"))
+PLAN_RECONCILE_ORDER_STATUS = env_bool("PLAN_RECONCILE_ORDER_STATUS", True)
+PLAN_SYNC_ON_WORKER_EXIT = env_bool("PLAN_SYNC_ON_WORKER_EXIT", True)
 
 
 # =============================
@@ -724,6 +828,10 @@ def config_effective_snapshot() -> dict:
         "position_snapshot_path": POSITION_SNAPSHOT_PATH,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
+        "entry_require_quote": ENTRY_REQUIRE_QUOTE,
+        "entry_require_fresh_quote": ENTRY_REQUIRE_FRESH_QUOTE,
+        "entry_price_max_age_sec": ENTRY_PRICE_MAX_AGE_SEC,
+        "entry_max_spread_pct": ENTRY_MAX_SPREAD_PCT,
         "dry_run": DRY_RUN,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
     }
@@ -950,6 +1058,85 @@ def list_open_positions_details_allowed() -> list[dict]:
         except Exception:
             continue
     return out
+
+
+def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
+    """Best-effort sync between internal plan, broker order state, and live position."""
+    out = {"symbol": symbol, "active": bool((plan or {}).get("active")), "changes": []}
+    if not plan or not plan.get("active"):
+        return out
+
+    now = now_ny()
+    submitted_raw = plan.get("submitted_at") or plan.get("created_at")
+    submitted_at = None
+    if submitted_raw:
+        try:
+            submitted_at = datetime.fromisoformat(str(submitted_raw))
+        except Exception:
+            submitted_at = None
+    age_sec = max(0.0, (now - submitted_at).total_seconds()) if submitted_at else None
+
+    qty_signed, pos_side = get_position(symbol)
+    order_status = {}
+    order_id = str(plan.get("order_id") or "").strip()
+    if PLAN_RECONCILE_ORDER_STATUS and order_id:
+        order_status = get_order_status(order_id)
+        if order_status:
+            plan["order_status"] = order_status.get("status")
+            out["order_status"] = order_status
+
+    if qty_signed == 0:
+        terminal = {"canceled", "cancelled", "rejected", "expired"}
+        if str(order_status.get("status") or "").lower() in terminal:
+            plan["active"] = False
+            out["changes"].append("deactivated_terminal_order_without_position")
+            record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="terminal_order_without_position", meta={"order_status": order_status})
+            return out
+        if age_sec is not None and age_sec >= PLAN_STALE_NO_POSITION_SEC:
+            plan["active"] = False
+            out["changes"].append("deactivated_stale_without_position")
+            record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="stale_without_position", meta={"age_sec": age_sec, "order_status": order_status})
+            return out
+        return out
+
+    desired_side = "buy" if qty_signed > 0 else "sell"
+    if plan.get("side") != desired_side:
+        plan["side"] = desired_side
+        out["changes"].append("side_updated_from_position")
+
+    try:
+        live_qty = round(abs(float(qty_signed)), 2)
+        if round(float(plan.get("qty") or 0), 2) != live_qty:
+            plan["qty"] = live_qty
+            out["changes"].append("qty_updated_from_position")
+    except Exception:
+        live_qty = abs(float(qty_signed))
+
+    fill_avg = None
+    try:
+        fill_avg = float(order_status.get("filled_avg_price") or 0) or None
+    except Exception:
+        fill_avg = None
+
+    if fill_avg and fill_avg > 0:
+        old_entry = float(plan.get("entry_price") or 0)
+        if old_entry <= 0 or abs(fill_avg - old_entry) >= 0.01 or (not plan.get("fill_reconciled")):
+            rebuilt = build_trade_plan(symbol, plan.get("side") or desired_side, float(plan.get("qty") or live_qty), float(fill_avg), plan.get("signal") or "FILLED")
+            for k, v in rebuilt.items():
+                plan[k] = v
+            plan["order_id"] = order_id
+            plan["submitted_at"] = plan.get("submitted_at") or now.isoformat()
+            plan["fill_reconciled"] = True
+            plan["filled_avg_price"] = float(fill_avg)
+            out["changes"].append("entry_price_reconciled_to_fill")
+    elif age_sec is not None and age_sec >= PLAN_STALE_SUBMITTED_SEC and str(order_status.get("status") or "").lower() not in {"filled", "partially_filled"}:
+        plan["active"] = False
+        out["changes"].append("deactivated_stale_submitted_plan")
+        record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="stale_submitted_plan", meta={"age_sec": age_sec, "order_status": order_status})
+        return out
+
+    return out
+
 
 
 def reconcile_trade_plans_from_alpaca() -> list[dict]:
@@ -2520,9 +2707,34 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
     effective_dry_run = bool((SCANNER_DRY_RUN if source == "worker_scan" else False) or DRY_RUN or (source == "worker_scan" and (not SCANNER_ALLOW_LIVE)))
 
     try:
-        base_price = get_latest_price(symbol)
-        if base_price is None or base_price <= 0:
+        snapshot = get_latest_quote_snapshot(symbol)
+        base_price = snapshot.get("price")
+        if base_price is None or float(base_price) <= 0:
             raise ValueError("latest_price_missing")
+        if ENTRY_REQUIRE_QUOTE and not snapshot.get("quote_ok"):
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="quote_missing", meta={"snapshot": snapshot, **(meta or {})})
+            soften_symbol_lock(symbol, 5)
+            return {"ok": False, "rejected": True, "reason": "quote_missing", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+        if ENTRY_REQUIRE_FRESH_QUOTE and not snapshot.get("fresh"):
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, **(meta or {})})
+            soften_symbol_lock(symbol, 5)
+            return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+        spread_pct = snapshot.get("spread_pct")
+        if spread_pct is not None and float(spread_pct) > float(ENTRY_MAX_SPREAD_PCT):
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="spread_too_wide", meta={"snapshot": snapshot, **(meta or {})})
+            soften_symbol_lock(symbol, 5)
+            return {"ok": False, "rejected": True, "reason": "spread_too_wide", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+
+        qty_signed_post_lock, pos_side_post_lock = get_position(symbol)
+        if qty_signed_post_lock != 0:
+            desired_side = "long" if side == "buy" else "short"
+            reason = f"position_open_after_lock:{pos_side_post_lock}"
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason=reason, meta={"snapshot": snapshot, **(meta or {})})
+            return {"ok": True, "ignored": True, "reason": reason, "symbol": symbol, "signal": signal, "snapshot": snapshot}
+        if TRADE_PLAN.get(symbol, {}).get("active"):
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="plan_active_after_lock", meta={"snapshot": snapshot, **(meta or {})})
+            return {"ok": True, "ignored": True, "reason": "plan_active_after_lock", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+
         qty = compute_qty(float(base_price)) if side == "buy" else round(abs(qty_signed), 2)
         if qty <= 0:
             raise ValueError("qty_zero")
@@ -2536,6 +2748,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             "paper": APCA_PAPER,
             "dry_run": effective_dry_run,
             "source": source,
+            "snapshot": snapshot,
         }
 
         if effective_dry_run:
@@ -2543,7 +2756,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             plan["source"] = source
             TRADE_PLAN[symbol] = plan
             persist_positions_snapshot(reason="entry_dry_run_plan", extra={"symbol": symbol, "source": source, "signal": signal})
-            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="dry_run_plan_created", reason="", qty=qty, meta=meta)
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="dry_run_plan_created", reason="", qty=qty, meta={"snapshot": snapshot, **(meta or {})})
             return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": plan}
 
         order = submit_market_order(symbol, side, qty)
@@ -2554,7 +2767,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         TRADE_PLAN[symbol] = plan
         persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(getattr(order, "id", "")), "source": source, "signal": signal})
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(getattr(order, "id", "")), signal=signal, source=source)
-        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(getattr(order, "id", "")), qty=qty, meta=meta)
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(getattr(order, "id", "")), qty=qty, meta={"snapshot": snapshot, **(meta or {})})
         return {"ok": True, "submitted": True, "order_id": str(getattr(order, "id", "")), "order": payload, "plan": plan}
     except Exception as e:
         log("ORDER_REJECTED", symbol=symbol, side=side, err=str(e), signal=signal, source=source)
@@ -2656,6 +2869,14 @@ async def worker_exit(req: Request):
     for symbol, plan in list(TRADE_PLAN.items()):
         if not plan.get("active"):
             continue
+
+        if PLAN_SYNC_ON_WORKER_EXIT:
+            sync_info = sync_trade_plan_with_broker(symbol, plan)
+            if sync_info.get("changes"):
+                results.append({"symbol": symbol, "action": "plan_sync", "changes": sync_info.get("changes"), "order_status": sync_info.get("order_status")})
+            if not plan.get("active"):
+                results.append({"symbol": symbol, "action": "plan_deactivated", "reason": "sync_rule"})
+                continue
 
         qty_signed, _pos_side = get_position(symbol)
         if qty_signed == 0:

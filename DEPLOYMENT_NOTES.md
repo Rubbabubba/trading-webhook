@@ -37,3 +37,12 @@ This repo supports a 3-service deployment on Render:
 - Scanner is OFF by default unless SCANNER_ENABLED=true on the main service.
 - Scanner will not place orders unless SCANNER_DRY_RUN=false AND any additional live-gates you enable in the main service.
 
+
+
+## Patch 003
+- Adds pre-trade quote freshness and spread gates.
+- Rechecks broker position after symbol lock before entry submission.
+- Syncs active plans against broker order status during exit cycles.
+- Reconciles entry price to broker filled average price when available.
+- Deactivates stale submitted plans and stale no-position plans.
+- Adds /diagnostics/gatekeeper?symbol=SPY.
