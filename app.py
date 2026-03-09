@@ -546,6 +546,21 @@ SCANNER_ROTATION_ENABLED = os.getenv("SCANNER_ROTATION_ENABLED", "true").lower()
 # Optional: separate universe list for scanner (comma-separated). If set, scanner uses this instead of ALLOWED_SYMBOLS.
 SCANNER_UNIVERSE_SYMBOLS = os.getenv("SCANNER_UNIVERSE_SYMBOLS", "").strip()
 
+# Patch 009: dynamic liquid universe selection
+SCANNER_DYNAMIC_TOP_N = int(getenv_any("SCANNER_DYNAMIC_TOP_N", default=str(SCANNER_MAX_SYMBOLS_PER_CYCLE or 20)))
+SCANNER_DYNAMIC_MIN_PRICE = float(getenv_any("SCANNER_DYNAMIC_MIN_PRICE", default="10"))
+SCANNER_DYNAMIC_MIN_DOLLAR_VOL = float(getenv_any("SCANNER_DYNAMIC_MIN_DOLLAR_VOL", default="5000000"))
+SCANNER_DYNAMIC_MIN_RELVOL = float(getenv_any("SCANNER_DYNAMIC_MIN_RELVOL", default="0.75"))
+SCANNER_DYNAMIC_MIN_RANGE_PCT = float(getenv_any("SCANNER_DYNAMIC_MIN_RANGE_PCT", default="0.0035"))
+SCANNER_DYNAMIC_KEEP_ANCHORS = env_bool("SCANNER_DYNAMIC_KEEP_ANCHORS", True)
+SCANNER_ANCHOR_SYMBOLS = [s.strip().upper() for s in getenv_any("SCANNER_ANCHOR_SYMBOLS", default="SPY,QQQ,IWM,AAPL,MSFT,NVDA,AMD,AMZN,META").split(",") if s.strip()]
+SCANNER_POOL_SYMBOLS = os.getenv("SCANNER_POOL_SYMBOLS", "").strip()
+DEFAULT_DYNAMIC_POOL = [
+    "SPY","QQQ","IWM","DIA","AAPL","MSFT","NVDA","AMD","AMZN","META","GOOGL","TSLA","AVGO",
+    "NFLX","CRM","ORCL","ADBE","INTC","MU","QCOM","TSM","SHOP","PLTR","UBER","COIN",
+    "BAC","JPM","GS","XLF","SMH","XLK","XLE","XLI","JNJ","UNH","PFE","WMT","COST","HD","LOW"
+]
+
 # 5m resampling / strategy tuning
 RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
 
@@ -1858,6 +1873,31 @@ def _session_key(dt_ny: datetime) -> str:
     return dt_ny.strftime("%Y-%m-%d")
 
 
+
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in items or []:
+        sym = str(s or "").strip().upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        out.append(sym)
+    return out
+
+
+def _base_scanner_pool() -> list[str]:
+    if SCANNER_POOL_SYMBOLS:
+        return _dedupe_keep_order([s for s in SCANNER_POOL_SYMBOLS.split(",") if s.strip()])
+    if SCANNER_UNIVERSE_SYMBOLS:
+        return _dedupe_keep_order([s for s in SCANNER_UNIVERSE_SYMBOLS.split(",") if s.strip()])
+    if ALLOWED_SYMBOLS:
+        allowed = sorted(ALLOWED_SYMBOLS)
+        if len(allowed) >= 15:
+            return _dedupe_keep_order(allowed)
+    return _dedupe_keep_order(DEFAULT_DYNAMIC_POOL)
+
+
 def universe_symbols() -> list[str]:
     """Return the symbol universe for scanning."""
     if SCANNER_UNIVERSE_PROVIDER == "static":
@@ -1870,10 +1910,13 @@ def universe_symbols() -> list[str]:
         syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
         return syms[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
-    # NOTE: 'alpaca' provider can be added later (requires assets + liquidity filter).
-    # For safety in Phase 1C, we fall back to ALLOWED_SYMBOLS unless explicitly enabled.
-    return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+    if SCANNER_UNIVERSE_PROVIDER == "dynamic":
+        base = _base_scanner_pool()
+        top_n = max(1, int(SCANNER_DYNAMIC_TOP_N or SCANNER_MAX_SYMBOLS_PER_CYCLE or 20))
+        fetch_n = min(len(base), max(top_n * 2, top_n))
+        return base[:fetch_n]
 
+    return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
 def _bars_for_today_regular_session(bars: list[dict]) -> list[dict]:
     if not bars:
@@ -3676,6 +3719,19 @@ def diagnostics_strategy(request: Request, symbol: str = ""):
         return {
             "ok": True,
             "primary_strategy": SCANNER_PRIMARY_STRATEGY,
+            "scanner_universe": {
+                "provider": SCANNER_UNIVERSE_PROVIDER,
+                "max_symbols_per_cycle": SCANNER_MAX_SYMBOLS_PER_CYCLE,
+                "candidate_limit": SCANNER_CANDIDATE_LIMIT,
+                "dynamic_top_n": SCANNER_DYNAMIC_TOP_N,
+                "dynamic_min_price": SCANNER_DYNAMIC_MIN_PRICE,
+                "dynamic_min_dollar_vol": SCANNER_DYNAMIC_MIN_DOLLAR_VOL,
+                "dynamic_min_relvol": SCANNER_DYNAMIC_MIN_RELVOL,
+                "dynamic_min_range_pct": SCANNER_DYNAMIC_MIN_RANGE_PCT,
+                "dynamic_keep_anchors": SCANNER_DYNAMIC_KEEP_ANCHORS,
+                "anchor_symbols": SCANNER_ANCHOR_SYMBOLS[:10],
+                "pool_size": len(_base_scanner_pool()) if SCANNER_UNIVERSE_PROVIDER == "dynamic" else None,
+            },
             "vwap_pullback": {
                 "enabled": bool(VWAP_PB_ENABLE),
                 "score_min": float(VWAP_PB_SCORE_MIN),
@@ -3992,8 +4048,24 @@ async def worker_scan_entries(req: Request):
 
         candidate_info = rank_scan_candidates(syms, bars_map)
         if candidate_info:
+            filtered_candidate_info = list(candidate_info)
+            if SCANNER_UNIVERSE_PROVIDER == "dynamic":
+                filtered_candidate_info = [
+                    row for row in candidate_info
+                    if float(row.get("price", 0.0) or 0.0) >= float(SCANNER_DYNAMIC_MIN_PRICE)
+                    and float(row.get("dollar_vol", 0.0) or 0.0) >= float(SCANNER_DYNAMIC_MIN_DOLLAR_VOL)
+                    and float(row.get("relvol", 0.0) or 0.0) >= float(SCANNER_DYNAMIC_MIN_RELVOL)
+                    and (float(row.get("range_pct", 0.0) or 0.0) / 100.0) >= float(SCANNER_DYNAMIC_MIN_RANGE_PCT)
+                ]
+                if not filtered_candidate_info:
+                    filtered_candidate_info = list(candidate_info)
+
             selected_n = max(1, int(SCANNER_CANDIDATE_LIMIT))
-            syms = [row["symbol"] for row in candidate_info[:selected_n]]
+            syms = [row["symbol"] for row in filtered_candidate_info[:selected_n]]
+
+            if SCANNER_UNIVERSE_PROVIDER == "dynamic" and SCANNER_DYNAMIC_KEEP_ANCHORS:
+                anchors = [s for s in SCANNER_ANCHOR_SYMBOLS if s in bars_map]
+                syms = _dedupe_keep_order(syms + anchors)[: max(selected_n, len(syms))]
 
         vol_rank_info = {
             "enabled": True,
@@ -4002,6 +4074,15 @@ async def worker_scan_entries(req: Request):
             "selected_n": len(syms),
             "universe_n": len(candidate_info),
             "top": candidate_info[: min(10, len(candidate_info))],
+            "provider": SCANNER_UNIVERSE_PROVIDER,
+            "dynamic_filters": {
+                "top_n": int(SCANNER_DYNAMIC_TOP_N),
+                "min_price": float(SCANNER_DYNAMIC_MIN_PRICE),
+                "min_dollar_vol": float(SCANNER_DYNAMIC_MIN_DOLLAR_VOL),
+                "min_relvol": float(SCANNER_DYNAMIC_MIN_RELVOL),
+                "min_range_pct": float(SCANNER_DYNAMIC_MIN_RANGE_PCT),
+                "keep_anchors": bool(SCANNER_DYNAMIC_KEEP_ANCHORS),
+            } if SCANNER_UNIVERSE_PROVIDER == "dynamic" else {},
         }
 
         # Optional legacy volatility ranking can further refine the already-active universe.
@@ -4290,6 +4371,28 @@ async def worker_scan_entries(req: Request):
 
         signals.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
 
+        component_counts = Counter()
+        fallback_ready_count = 0
+        near_miss_symbols = []
+        for r in results:
+            try:
+                vp = (((r.get("diagnostics") or {}).get("vwap_pullback")) or {})
+                for reason in (vp.get("component_reasons") or []):
+                    component_counts[str(reason)] += 1
+                nm = vp.get("near_miss") or {}
+                if bool(nm.get("near")):
+                    near_miss_symbols.append({
+                        "symbol": r.get("symbol"),
+                        "score": vp.get("score"),
+                        "dist_to_vwap_pct": vp.get("dist_to_vwap_pct"),
+                        "reason": vp.get("reason"),
+                    })
+                tc = vp.get("trend_components") or {}
+                if bool(tc.get("fallback_ready")):
+                    fallback_ready_count += 1
+            except Exception:
+                pass
+
         scan_summary = {
             "actions": dict(action_counts),
             "no_signal_total": int(sum(no_signal_counts.values())),
@@ -4297,6 +4400,9 @@ async def worker_scan_entries(req: Request):
             "near_miss_total": int(sum(near_miss_counts.values())),
             "near_miss_by_strategy": {k: int(v) for k, v in near_miss_counts.items()},
             "strategy_breakdown": strategy_breakdown,
+            "top_component_blockers": [{"reason": k, "count": int(v)} for k, v in component_counts.most_common(10)],
+            "fallback_ready_total": int(fallback_ready_count),
+            "near_miss_symbols": near_miss_symbols[: min(10, len(near_miss_symbols))],
             "top_candidates": vol_rank_info.get("top", []) if isinstance(vol_rank_info, dict) else [],
             "top_signals": [
                 {"symbol": s.get("symbol"), "signal": s.get("signal"), "score": s.get("score"), "price": s.get("price")}
