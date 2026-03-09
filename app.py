@@ -565,6 +565,15 @@ VWAP_PB_ALLOW_NEG_VWAP_SLOPE_PCT = float(os.getenv("VWAP_PB_ALLOW_NEG_VWAP_SLOPE
 VWAP_PB_NEAR_MISS_SCORE_MIN = float(os.getenv("VWAP_PB_NEAR_MISS_SCORE_MIN", "48"))
 VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN = float(os.getenv("VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN", "58"))
 VWAP_PB_ALLOW_NEAR_MISS_FALLBACK = os.getenv("VWAP_PB_ALLOW_NEAR_MISS_FALLBACK", "true").lower() == "true"
+VWAP_PB_SCORE_MIN = float(os.getenv("VWAP_PB_SCORE_MIN", "72"))
+VWAP_PB_MIN_5M_ATR_PCT = float(os.getenv("VWAP_PB_MIN_5M_ATR_PCT", "0.0025"))
+VWAP_PB_MAX_5M_ATR_PCT = float(os.getenv("VWAP_PB_MAX_5M_ATR_PCT", "0.0300"))
+VWAP_PB_MIN_DAY_RANGE_PCT = float(os.getenv("VWAP_PB_MIN_DAY_RANGE_PCT", "0.0060"))
+VWAP_PB_MIN_RECENT_1M_VOL_RATIO = float(os.getenv("VWAP_PB_MIN_RECENT_1M_VOL_RATIO", "1.05"))
+VWAP_PB_REQUIRE_GREEN_LAST_1M = env_bool("VWAP_PB_REQUIRE_GREEN_LAST_1M", "true")
+VWAP_PB_REQUIRE_HIGHER_LOW = env_bool("VWAP_PB_REQUIRE_HIGHER_LOW", "true")
+VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH = env_bool("VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH", "true")
+VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT = float(os.getenv("VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT", "0.0002"))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default="vwap_pullback").strip().lower()
@@ -2277,6 +2286,45 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
     relvol = recent_vol / max(baseline_vol, 1.0) if baseline_vol > 0 else 1.0
     relvol_ok = relvol >= float(VWAP_PB_MIN_RELVOL)
 
+    trs: list[float] = []
+    for i, (h, l, c) in enumerate(zip(highs, lows, closes)):
+        prev_c_i = closes[i - 1] if i > 0 else c
+        tr = max(h - l, abs(h - prev_c_i), abs(l - prev_c_i))
+        trs.append(float(tr))
+    atr_window = min(5, len(trs))
+    atr_5m = _mean(trs[-atr_window:]) if atr_window else 0.0
+    atr_pct = (atr_5m / max(price, 1e-9)) if price else 0.0
+    atr_ok = float(VWAP_PB_MIN_5M_ATR_PCT) <= atr_pct <= float(VWAP_PB_MAX_5M_ATR_PCT)
+
+    day_high = max(highs) if highs else price
+    day_low = min(lows) if lows else price
+    day_range_pct = ((day_high - day_low) / max(price, 1e-9)) if price else 0.0
+    day_range_ok = day_range_pct >= float(VWAP_PB_MIN_DAY_RANGE_PCT)
+
+    bars_1m = bars_today[-20:] if len(bars_today) >= 20 else list(bars_today)
+    last_1m = bars_1m[-1] if bars_1m else None
+    prev_1m = bars_1m[-2] if len(bars_1m) >= 2 else None
+    last_1m_green = True
+    higher_low_ok = True
+    entry_confirm_ok = True
+    if last_1m:
+        last_1m_green = float(last_1m.get("close") or 0.0) >= float(last_1m.get("open") or 0.0)
+    if prev_1m and last_1m:
+        higher_low_ok = float(last_1m.get("low") or 0.0) >= float(prev_1m.get("low") or 0.0)
+        confirm_level = float(prev_1m.get("high") or 0.0) * (1.0 + float(VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT))
+        entry_confirm_ok = float(last_1m.get("close") or 0.0) >= confirm_level
+    if not VWAP_PB_REQUIRE_GREEN_LAST_1M:
+        last_1m_green = True
+    if not VWAP_PB_REQUIRE_HIGHER_LOW:
+        higher_low_ok = True
+    if not VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH:
+        entry_confirm_ok = True
+
+    recent_1m_vol = _mean([float(b.get("volume") or 0.0) for b in bars_1m[-3:]]) if len(bars_1m) >= 3 else 0.0
+    baseline_1m_vol = _mean([float(b.get("volume") or 0.0) for b in bars_1m[-13:-3]]) if len(bars_1m) >= 13 else _mean([float(b.get("volume") or 0.0) for b in bars_1m[:-3]])
+    recent_1m_vol_ratio = recent_1m_vol / max(baseline_1m_vol, 1.0) if baseline_1m_vol > 0 else 1.0
+    micro_vol_ok = recent_1m_vol_ratio >= float(VWAP_PB_MIN_RECENT_1M_VOL_RATIO)
+
     dist_to_vwap_pct = ((price - vwap) / vwap) if vwap else 0.0
     trend_strength = 0.0
     if price_above_vwap:
@@ -2302,7 +2350,20 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         score += 8.0
     if slope_ok:
         score += 6.0
+    if atr_ok:
+        score += 8.0
+    if day_range_ok:
+        score += 6.0
+    if micro_vol_ok:
+        score += 6.0
+    if last_1m_green:
+        score += 4.0
+    if higher_low_ok:
+        score += 4.0
+    if entry_confirm_ok:
+        score += 6.0
     score += max(0.0, min(relvol, 2.5)) * 6.0
+    score += max(0.0, min(recent_1m_vol_ratio, 2.0)) * 4.0
     score += max(0.0, min(ema_slope * 10000.0, 8.0))
     score += max(0.0, 6.0 - abs(dist_to_vwap_pct) * 1000.0)
 
@@ -2323,6 +2384,18 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         component_reasons.append("too_extended_from_vwap")
     if not relvol_ok:
         component_reasons.append("relvol_fail")
+    if not atr_ok:
+        component_reasons.append("atr_regime_fail")
+    if not day_range_ok:
+        component_reasons.append("day_range_too_small")
+    if not micro_vol_ok:
+        component_reasons.append("recent_1m_volume_fail")
+    if not last_1m_green:
+        component_reasons.append("last_1m_not_green")
+    if not higher_low_ok:
+        component_reasons.append("micro_higher_low_fail")
+    if not entry_confirm_ok:
+        component_reasons.append("entry_confirm_fail")
     if not momentum_ok:
         component_reasons.append("bounce_not_confirmed")
 
@@ -2359,6 +2432,17 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         "extension_ok": bool(extension_ok),
         "relvol": round(relvol, 3),
         "relvol_ok": bool(relvol_ok),
+        "atr_5m": round(atr_5m, 4),
+        "atr_pct": round(atr_pct * 100.0, 3),
+        "atr_ok": bool(atr_ok),
+        "day_range_pct": round(day_range_pct * 100.0, 3),
+        "day_range_ok": bool(day_range_ok),
+        "recent_1m_vol_ratio": round(recent_1m_vol_ratio, 3),
+        "micro_vol_ok": bool(micro_vol_ok),
+        "last_1m_green": bool(last_1m_green),
+        "higher_low_ok": bool(higher_low_ok),
+        "entry_confirm_ok": bool(entry_confirm_ok),
+        "score_min": float(VWAP_PB_SCORE_MIN),
         "dist_to_vwap_pct": round(dist_to_vwap_pct * 100.0, 3),
         "score": round(score, 3),
         "component_reasons": component_reasons,
@@ -2371,6 +2455,11 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
             "ema_stack_slack_pct": round(ema_stack_slack_pct * 100.0, 3),
             "allow_price_below_ema_fast_pct": round(allow_below_fast_pct * 100.0, 3),
             "fallback_ready": bool(fallback_ready),
+            "score_min": float(VWAP_PB_SCORE_MIN),
+            "min_5m_atr_pct": round(float(VWAP_PB_MIN_5M_ATR_PCT) * 100.0, 3),
+            "max_5m_atr_pct": round(float(VWAP_PB_MAX_5M_ATR_PCT) * 100.0, 3),
+            "min_day_range_pct": round(float(VWAP_PB_MIN_DAY_RANGE_PCT) * 100.0, 3),
+            "min_recent_1m_vol_ratio": float(VWAP_PB_MIN_RECENT_1M_VOL_RATIO),
         },
         "near_miss": {
             "near": near,
@@ -2381,15 +2470,17 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         },
     })
 
-    if strict_trend_ok and slope_ok and touched and regained_vwap and extension_ok and relvol_ok and momentum_ok:
+    if strict_trend_ok and slope_ok and touched and regained_vwap and extension_ok and relvol_ok and momentum_ok and atr_ok and day_range_ok and micro_vol_ok and last_1m_green and higher_low_ok and entry_confirm_ok and score >= float(VWAP_PB_SCORE_MIN):
         out["reason"] = "ok"
         out["triggered"] = True
-    elif fallback_ready and slope_ok:
+    elif fallback_ready and slope_ok and atr_ok and day_range_ok and micro_vol_ok and score >= float(VWAP_PB_SCORE_MIN):
         out["reason"] = "fallback_ready"
         out["triggered"] = True
         out["fallback_trigger"] = True
     else:
-        if not permissive_trend_ok:
+        if score < float(VWAP_PB_SCORE_MIN):
+            out["reason"] = "score_too_low"
+        elif not permissive_trend_ok:
             out["reason"] = component_reasons[0] if component_reasons else "trend_fail"
         elif not slope_ok:
             out["reason"] = "slope_fail"
@@ -2401,6 +2492,18 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
             out["reason"] = "too_extended_from_vwap"
         elif not relvol_ok:
             out["reason"] = "relvol_fail"
+        elif not atr_ok:
+            out["reason"] = "atr_regime_fail"
+        elif not day_range_ok:
+            out["reason"] = "day_range_too_small"
+        elif not micro_vol_ok:
+            out["reason"] = "recent_1m_volume_fail"
+        elif not last_1m_green:
+            out["reason"] = "last_1m_not_green"
+        elif not higher_low_ok:
+            out["reason"] = "micro_higher_low_fail"
+        elif not entry_confirm_ok:
+            out["reason"] = "entry_confirm_fail"
         elif not momentum_ok:
             out["reason"] = "bounce_not_confirmed"
         else:
