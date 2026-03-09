@@ -51,3 +51,11 @@ This repo supports a 3-service deployment on Render:
 ## Patch 005
 - Tightens VWAP pullback signal quality with ATR/day-range regime filters, 1m micro-volume confirmation, and entry timing confirmation.
 - Adds /diagnostics/strategy for strategy config and per-symbol live diag.
+
+
+## Patch 006
+- Adaptive risk sizing based on signal score
+- 5m ATR-driven stop sizing
+- ATR / R-multiple target sizing
+- Notional cap per trade
+- New endpoint: /diagnostics/risk_model
