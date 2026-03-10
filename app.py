@@ -732,6 +732,21 @@ SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
 
+STARTUP_STATE: dict[str, object] = {
+    "ran": False,
+    "ts_utc": None,
+    "ts_ny": None,
+    "snapshot_found": False,
+    "snapshot_path": None,
+    "journal_path": None,
+    "recovered_from_snapshot_count": 0,
+    "recovered_from_broker_only_count": 0,
+    "stale_snapshot_count": 0,
+    "stale_snapshot_symbols": [],
+    "reconcile_actions": [],
+    "error": "",
+}
+
 
 # Scan rotation state (in-memory). Keeps a moving window through the universe so we can
 # scan hundreds/thousands of symbols without hammering the provider each tick.
@@ -1226,6 +1241,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 # Emit effective config once at startup (helps debug Render env mismatches)
 log("CONFIG_EFFECTIVE", **config_effective_snapshot())
+startup_restore_state()
 
 # =============================
 # Core helpers
@@ -1627,6 +1643,73 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
     if actions:
         persist_positions_snapshot(reason="reconcile_trade_plans", extra={"actions": actions})
     return actions
+
+
+def startup_restore_state() -> dict:
+    """
+    Restore active trade plans from persistent snapshot and broker positions.
+    Runs at startup so redeploys do not silently lose internal exit plans.
+    """
+    global STARTUP_STATE
+    state = {
+        "ran": True,
+        "ts_utc": datetime.now(tz=timezone.utc).isoformat(),
+        "ts_ny": now_ny().isoformat(),
+        "snapshot_found": False,
+        "snapshot_path": POSITION_SNAPSHOT_PATH,
+        "journal_path": JOURNAL_PATH,
+        "recovered_from_snapshot_count": 0,
+        "recovered_from_broker_only_count": 0,
+        "stale_snapshot_count": 0,
+        "stale_snapshot_symbols": [],
+        "reconcile_actions": [],
+        "error": "",
+    }
+    try:
+        broker_positions = list_open_positions_details_allowed()
+        broker_syms = {str(p.get("symbol") or "").upper() for p in broker_positions if str(p.get("symbol") or "").upper()}
+
+        snapshot = read_positions_snapshot()
+        active_snapshot_plans = (snapshot or {}).get("active_plans") or {}
+        if active_snapshot_plans:
+            state["snapshot_found"] = True
+
+        with STATE_LOCK:
+            for sym, plan in active_snapshot_plans.items():
+                sym = str(sym or "").upper()
+                if not sym:
+                    continue
+                if sym not in broker_syms:
+                    state["stale_snapshot_count"] += 1
+                    state["stale_snapshot_symbols"].append(sym)
+                    continue
+                if TRADE_PLAN.get(sym, {}).get("active"):
+                    continue
+                restored = json.loads(json.dumps(plan))
+                restored["active"] = True
+                restored["recovered"] = True
+                restored["recovered_at"] = now_ny().isoformat()
+                restored["startup_restored"] = True
+                TRADE_PLAN[sym] = restored
+                state["recovered_from_snapshot_count"] += 1
+
+        rec_actions = reconcile_trade_plans_from_alpaca()
+        state["reconcile_actions"] = rec_actions
+        state["recovered_from_broker_only_count"] = len([a for a in rec_actions if str(a.get("action")) == "recovered_plan"])
+
+        if (state["recovered_from_snapshot_count"] or state["recovered_from_broker_only_count"] or state["stale_snapshot_count"]):
+            persist_positions_snapshot(reason="startup_state_restore", extra=state)
+            logger.warning(
+                "STARTUP_STATE_RESTORE snapshot=%s recovered_from_snapshot=%s recovered_from_broker_only=%s stale_snapshot=%s",
+                state["snapshot_found"], state["recovered_from_snapshot_count"], state["recovered_from_broker_only_count"], state["stale_snapshot_count"]
+            )
+        else:
+            logger.info("STARTUP_STATE_RESTORE snapshot=%s recovered_from_snapshot=0 recovered_from_broker_only=0 stale_snapshot=0", state["snapshot_found"])
+    except Exception as e:
+        state["error"] = str(e)
+        logger.warning("STARTUP_STATE_RESTORE_FAILED err=%s", e)
+    STARTUP_STATE = state
+    return state
 
 
 
@@ -3251,6 +3334,31 @@ def diagnostics_execution(request: Request, limit: int = 100):
         "last_entry": entry_submits[-1] if entry_submits else None,
         "last_exit": exit_submits[-1] if exit_submits else None,
         "last_error": rejects[-1] if rejects else None,
+        "latest_snapshot": latest_snapshot,
+    }
+
+
+@app.get("/diagnostics/state")
+def diagnostics_state(request: Request):
+    require_admin_if_configured(request)
+    latest_snapshot = read_positions_snapshot()
+    broker_positions = list_open_positions_details_allowed()
+    broker_syms = sorted([str(p.get("symbol") or "").upper() for p in broker_positions if str(p.get("symbol") or "").upper()])
+    active_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")}
+    missing_from_plans = sorted([sym for sym in broker_syms if sym not in active_plans])
+    stale_active_plans = sorted([sym for sym in active_plans if sym not in broker_syms])
+    return {
+        "ok": True,
+        "journal_enabled": JOURNAL_ENABLED,
+        "journal_path": JOURNAL_PATH,
+        "position_snapshot_path": POSITION_SNAPSHOT_PATH,
+        "startup_state": STARTUP_STATE,
+        "broker_positions_count": len(broker_positions),
+        "broker_symbols": broker_syms,
+        "active_plan_count": len(active_plans),
+        "active_plan_symbols": sorted(list(active_plans.keys())),
+        "missing_from_plans": missing_from_plans,
+        "stale_active_plans": stale_active_plans,
         "latest_snapshot": latest_snapshot,
     }
 
