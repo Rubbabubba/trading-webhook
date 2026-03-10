@@ -422,6 +422,8 @@ STOP_PCT = float(os.getenv("STOP_PCT", "0.003"))  # 0.30%
 TAKE_PCT = float(os.getenv("TAKE_PCT", "0.006"))  # 0.60%
 MIN_QTY = float(os.getenv("MIN_QTY", "0.01"))
 MAX_QTY = float(os.getenv("MAX_QTY", "1.50"))
+ORDER_BP_HAIRCUT_PCT = float(os.getenv("ORDER_BP_HAIRCUT_PCT", "0.95"))
+MIN_AFFORDABLE_QTY = float(os.getenv("MIN_AFFORDABLE_QTY", str(MIN_QTY)))
 
 # Safety / behavior
 ALLOW_SHORT = env_bool("ALLOW_SHORT", "false")
@@ -1243,6 +1245,44 @@ def compute_qty(price: float) -> float:
     qty = max(qty, MIN_QTY)
     qty = min(qty, MAX_QTY)
     return round(qty, 2)
+
+
+def get_buying_power_snapshot() -> dict:
+    try:
+        acct = trading_client.get_account()
+        bp = float(getattr(acct, "buying_power", 0) or 0)
+        equity = float(getattr(acct, "equity", 0) or 0)
+        cash = float(getattr(acct, "cash", 0) or 0)
+        return {"ok": True, "buying_power": bp, "equity": equity, "cash": cash}
+    except Exception as e:
+        return {"ok": False, "buying_power": 0.0, "equity": None, "cash": None, "error": str(e)}
+
+
+def clip_qty_for_affordability(price: float, requested_qty: float) -> dict:
+    price = float(price or 0)
+    requested_qty = float(requested_qty or 0)
+    bp = get_buying_power_snapshot()
+    if price <= 0 or requested_qty <= 0:
+        return {"requested_qty": requested_qty, "affordable_qty": 0.0, "submitted_qty": 0.0, "affordability_clipped": False, "buying_power_snapshot": bp, "reason": "invalid_price_or_qty"}
+    effective_bp = max(0.0, float(bp.get("buying_power") or 0.0) * max(0.0, min(1.0, ORDER_BP_HAIRCUT_PCT)))
+    affordable_qty = 0.0 if effective_bp <= 0 else round(effective_bp / price, 2)
+    submitted_qty = min(requested_qty, affordable_qty)
+    submitted_qty = round(max(0.0, submitted_qty), 2)
+    clipped = submitted_qty < round(requested_qty, 2)
+    reason = ""
+    if submitted_qty <= 0:
+        reason = "insufficient_buying_power_internal"
+    elif submitted_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
+        reason = "qty_below_min_after_affordability_clip"
+    return {
+        "requested_qty": round(requested_qty, 2),
+        "affordable_qty": round(affordable_qty, 2),
+        "submitted_qty": round(submitted_qty, 2),
+        "affordability_clipped": clipped,
+        "buying_power_snapshot": bp,
+        "effective_buying_power": round(effective_bp, 2),
+        "reason": reason,
+    }
 
 
 def get_latest_price(symbol: str) -> Optional[float]:
@@ -3496,11 +3536,11 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         if base_price is None or float(base_price) <= 0:
             raise ValueError("latest_price_missing")
         if ENTRY_REQUIRE_QUOTE and not snapshot.get("quote_ok"):
-            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="quote_missing", meta={"snapshot": snapshot, **(meta or {})})
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="quote_missing", meta={"snapshot": snapshot, "payload": payload, **(meta or {})})
             soften_symbol_lock(symbol, 5)
             return {"ok": False, "rejected": True, "reason": "quote_missing", "symbol": symbol, "signal": signal, "snapshot": snapshot}
         if ENTRY_REQUIRE_FRESH_QUOTE and not snapshot.get("fresh"):
-            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, **(meta or {})})
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, "payload": payload, **(meta or {})})
             soften_symbol_lock(symbol, 5)
             return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
         spread_pct = snapshot.get("spread_pct")
@@ -3519,7 +3559,17 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="plan_active_after_lock", meta={"snapshot": snapshot, **(meta or {})})
             return {"ok": True, "ignored": True, "reason": "plan_active_after_lock", "symbol": symbol, "signal": signal, "snapshot": snapshot}
 
-        qty = compute_qty(float(base_price)) if side == "buy" else round(abs(qty_signed), 2)
+        risk_qty = compute_qty(float(base_price)) if side == "buy" else round(abs(qty_signed), 2)
+        qty = risk_qty
+        affordability = None
+        if side == "buy":
+            affordability = clip_qty_for_affordability(float(base_price), float(risk_qty))
+            qty = float(affordability.get("submitted_qty") or 0.0)
+            if affordability.get("reason"):
+                reason = str(affordability.get("reason"))
+                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason=reason, qty=risk_qty, meta={"snapshot": snapshot, "affordability": affordability, **(meta or {})})
+                soften_symbol_lock(symbol, 5)
+                return {"ok": False, "rejected": True, "reason": reason, "symbol": symbol, "signal": signal, "snapshot": snapshot, "affordability": affordability}
         if qty <= 0:
             raise ValueError("qty_zero")
 
@@ -3527,6 +3577,8 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             "symbol": symbol,
             "side": side,
             "qty": qty,
+            "risk_qty": risk_qty,
+            "affordability": affordability,
             "base_price": round(float(base_price), 2),
             "signal": signal,
             "paper": APCA_PAPER,
@@ -3538,9 +3590,11 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         if effective_dry_run:
             plan = build_trade_plan(symbol, side, qty, float(base_price), signal)
             plan["source"] = source
-            plan["requested_qty"] = float(qty)
+            plan["requested_qty"] = float(risk_qty)
+            plan["submitted_qty"] = float(qty)
             plan["filled_qty"] = float(qty)
             plan["avg_fill_price"] = float(base_price)
+            plan["affordability"] = affordability or {}
             TRADE_PLAN[symbol] = plan
             persist_positions_snapshot(reason="entry_dry_run_plan", extra={"symbol": symbol, "source": source, "signal": signal})
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="dry_run_plan_created", reason="", qty=qty, meta={"snapshot": snapshot, **(meta or {})})
@@ -3551,10 +3605,12 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan["source"] = source
         plan["order_id"] = str(getattr(order, "id", ""))
         plan["submitted_at"] = now_ny().isoformat()
-        plan["requested_qty"] = float(qty)
+        plan["requested_qty"] = float(risk_qty)
+        plan["submitted_qty"] = float(qty)
         plan["filled_qty"] = 0.0
         plan["avg_fill_price"] = float(base_price)
         plan["order_status"] = "submitted"
+        plan["affordability"] = affordability or {}
         TRADE_PLAN[symbol] = plan
         persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(getattr(order, "id", "")), "source": source, "signal": signal})
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(getattr(order, "id", "")), signal=signal, source=source)
@@ -3564,7 +3620,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         log("ORDER_REJECTED", symbol=symbol, side=side, err=str(e), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="alpaca_submit_failed", err=str(e), meta=meta)
         soften_symbol_lock(symbol, 5)
-        return {"ok": False, "rejected": True, "reason": f"alpaca_submit_failed:{e}", "symbol": symbol, "signal": signal}
+        return {"ok": False, "rejected": True, "reason": f"alpaca_submit_failed:{e}", "symbol": symbol, "signal": signal, "affordability": affordability if "affordability" in locals() else None}
 
 
 def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None) -> dict:
