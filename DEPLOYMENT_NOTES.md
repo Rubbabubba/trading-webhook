@@ -90,3 +90,7 @@ This repo supports a 3-service deployment on Render:
 - Added micro confirmation flexibility with soft confirmation modes.
 - Added macro/micro blocker split in strategy diagnostics.
 - Added pre-ranked near-miss candidates to scan summaries and diagnostics/ranking fallback view.
+
+
+## Patch 012
+Adds fallback slope governance and fallback diagnostics summaries.

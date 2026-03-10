@@ -610,6 +610,12 @@ VWAP_PB_ALLOW_NEG_VWAP_SLOPE_PCT = float(os.getenv("VWAP_PB_ALLOW_NEG_VWAP_SLOPE
 VWAP_PB_NEAR_MISS_SCORE_MIN = float(os.getenv("VWAP_PB_NEAR_MISS_SCORE_MIN", "48"))
 VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN = float(os.getenv("VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN", "58"))
 VWAP_PB_ALLOW_NEAR_MISS_FALLBACK = os.getenv("VWAP_PB_ALLOW_NEAR_MISS_FALLBACK", "true").lower() == "true"
+VWAP_PB_FALLBACK_MIN_EMA_SLOPE = float(os.getenv("VWAP_PB_FALLBACK_MIN_EMA_SLOPE", "-0.0003"))
+VWAP_PB_FALLBACK_MIN_VWAP_SLOPE = float(os.getenv("VWAP_PB_FALLBACK_MIN_VWAP_SLOPE", "-0.0008"))
+VWAP_PB_FALLBACK_ALLOW_BOUNCE_SLACK = env_bool("VWAP_PB_FALLBACK_ALLOW_BOUNCE_SLACK", "true")
+VWAP_PB_FALLBACK_BOUNCE_SLACK_PCT = float(os.getenv("VWAP_PB_FALLBACK_BOUNCE_SLACK_PCT", "0.0015"))
+VWAP_PB_FALLBACK_MAX_DIST_VWAP_PCT = float(os.getenv("VWAP_PB_FALLBACK_MAX_DIST_VWAP_PCT", "0.0090"))
+VWAP_PB_FALLBACK_ALLOW_TOUCHLESS = env_bool("VWAP_PB_FALLBACK_ALLOW_TOUCHLESS", "false")
 VWAP_PB_SCORE_MIN = float(os.getenv("VWAP_PB_SCORE_MIN", "72"))
 VWAP_PB_MIN_5M_ATR_PCT = float(os.getenv("VWAP_PB_MIN_5M_ATR_PCT", "0.0025"))
 VWAP_PB_MAX_5M_ATR_PCT = float(os.getenv("VWAP_PB_MAX_5M_ATR_PCT", "0.0300"))
@@ -2761,14 +2767,38 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         or (touched and regained_vwap and score >= float(VWAP_PB_NEAR_MISS_SCORE_MIN))
         or (price_above_vwap and ema_stack_ok and abs(dist_to_vwap_pct) <= touch_band * 1.35)
     )
+    fallback_touch_ok = bool(touched or (bool(VWAP_PB_FALLBACK_ALLOW_TOUCHLESS) and abs(dist_to_vwap_pct) <= touch_band * 1.10))
+    fallback_slope_ok = bool(
+        ema_slope >= float(VWAP_PB_FALLBACK_MIN_EMA_SLOPE)
+        and vwap_slope >= float(VWAP_PB_FALLBACK_MIN_VWAP_SLOPE)
+    )
+    fallback_bounce_ok = bool(
+        regained_vwap and (
+            momentum_ok
+            or (
+                bool(VWAP_PB_FALLBACK_ALLOW_BOUNCE_SLACK)
+                and dist_to_vwap_pct >= -float(VWAP_PB_FALLBACK_BOUNCE_SLACK_PCT)
+            )
+        )
+    )
+    fallback_distance_ok = bool(abs(dist_to_vwap_pct) <= float(VWAP_PB_FALLBACK_MAX_DIST_VWAP_PCT))
     fallback_ready = bool(
         VWAP_PB_ALLOW_NEAR_MISS_FALLBACK
         and permissive_trend_ok
-        and touched
-        and regained_vwap
+        and fallback_touch_ok
         and extension_ok
+        and near
         and score >= float(VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN)
     )
+    fallback_blockers = []
+    if not fallback_touch_ok:
+        fallback_blockers.append("fallback_touch_fail")
+    if not fallback_slope_ok:
+        fallback_blockers.append("fallback_slope_fail")
+    if not fallback_bounce_ok:
+        fallback_blockers.append("fallback_bounce_fail")
+    if not fallback_distance_ok:
+        fallback_blockers.append("fallback_distance_fail")
 
     out.update({
         "price": round(price, 4),
@@ -2810,7 +2840,14 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         "dist_to_vwap_pct": round(dist_to_vwap_pct * 100.0, 3),
         "score": round(score, 3),
         "component_reasons": component_reasons,
-        "blocker_split": {"macro": macro_blockers, "micro": micro_blockers},
+        "blocker_split": {"macro": macro_blockers, "micro": micro_blockers, "fallback": fallback_blockers},
+        "fallback_checks": {
+            "touch_ok": bool(fallback_touch_ok),
+            "slope_ok": bool(fallback_slope_ok),
+            "bounce_ok": bool(fallback_bounce_ok),
+            "distance_ok": bool(fallback_distance_ok),
+            "blockers": fallback_blockers,
+        },
         "trend_components": {
             "price_above_vwap": bool(price_above_vwap),
             "ema_stack_ok": bool(ema_stack_ok),
@@ -2820,6 +2857,14 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
             "ema_stack_slack_pct": round(ema_stack_slack_pct * 100.0, 3),
             "allow_price_below_ema_fast_pct": round(allow_below_fast_pct * 100.0, 3),
             "fallback_ready": bool(fallback_ready),
+            "fallback_touch_ok": bool(fallback_touch_ok),
+            "fallback_slope_ok": bool(fallback_slope_ok),
+            "fallback_bounce_ok": bool(fallback_bounce_ok),
+            "fallback_distance_ok": bool(fallback_distance_ok),
+            "fallback_min_ema_slope": float(VWAP_PB_FALLBACK_MIN_EMA_SLOPE),
+            "fallback_min_vwap_slope": float(VWAP_PB_FALLBACK_MIN_VWAP_SLOPE),
+            "fallback_bounce_slack_pct": round(float(VWAP_PB_FALLBACK_BOUNCE_SLACK_PCT) * 100.0, 3),
+            "fallback_max_dist_vwap_pct": round(float(VWAP_PB_FALLBACK_MAX_DIST_VWAP_PCT) * 100.0, 3),
             "micro_confirm_mode": micro_mode,
             "micro_confirm_ok": bool(micro_confirm_ok),
             "score_min": float(VWAP_PB_SCORE_MIN),
@@ -2840,7 +2885,7 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
     if strict_trend_ok and slope_ok and touched and regained_vwap and extension_ok and relvol_ok and momentum_ok and atr_ok and day_range_ok and micro_vol_ok and micro_confirm_ok and score >= float(VWAP_PB_SCORE_MIN):
         out["reason"] = "ok"
         out["triggered"] = True
-    elif fallback_ready and slope_ok and atr_ok and day_range_ok and micro_vol_ok and micro_confirm_ok and score >= float(VWAP_PB_SCORE_MIN):
+    elif fallback_ready and fallback_slope_ok and fallback_bounce_ok and fallback_distance_ok and atr_ok and day_range_ok and micro_vol_ok and micro_confirm_ok and score >= float(VWAP_PB_SCORE_MIN):
         out["reason"] = "fallback_ready"
         out["triggered"] = True
         out["fallback_trigger"] = True
@@ -2849,6 +2894,12 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
             out["reason"] = "score_too_low"
         elif not permissive_trend_ok:
             out["reason"] = component_reasons[0] if component_reasons else "trend_fail"
+        elif fallback_ready and not fallback_slope_ok:
+            out["reason"] = "fallback_slope_fail"
+        elif fallback_ready and not fallback_bounce_ok:
+            out["reason"] = "fallback_bounce_fail"
+        elif fallback_ready and not fallback_distance_ok:
+            out["reason"] = "fallback_distance_fail"
         elif not slope_ok:
             out["reason"] = "slope_fail"
         elif not touched:
@@ -3849,6 +3900,13 @@ def diagnostics_strategy(request: Request, symbol: str = ""):
                 "entry_confirm_buffer_pct": float(VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT),
                 "micro_confirm_mode": str(VWAP_PB_MICRO_CONFIRM_MODE),
                 "soft_confirm_min_passes": int(VWAP_PB_SOFT_CONFIRM_MIN_PASSES),
+                "fallback_signal_score_min": float(VWAP_PB_FALLBACK_SIGNAL_SCORE_MIN),
+                "fallback_min_ema_slope": float(VWAP_PB_FALLBACK_MIN_EMA_SLOPE),
+                "fallback_min_vwap_slope": float(VWAP_PB_FALLBACK_MIN_VWAP_SLOPE),
+                "fallback_allow_bounce_slack": bool(VWAP_PB_FALLBACK_ALLOW_BOUNCE_SLACK),
+                "fallback_bounce_slack_pct": float(VWAP_PB_FALLBACK_BOUNCE_SLACK_PCT),
+                "fallback_max_dist_vwap_pct": float(VWAP_PB_FALLBACK_MAX_DIST_VWAP_PCT),
+                "fallback_allow_touchless": bool(VWAP_PB_FALLBACK_ALLOW_TOUCHLESS),
             },
         }
 
@@ -4006,7 +4064,7 @@ def diagnostics_ranking(limit: int = 25):
     rows = rows[-max(1, min(int(limit or 25), 200)):]
     if (not rows) and LAST_SCAN.get("summary"):
         rows = list((LAST_SCAN.get("summary") or {}).get("top_pre_ranked_candidates") or [])[: max(1, min(int(limit or 25), 200))]
-    return {"ok": True, "count": len(rows), "items": rows, "settings": {"enabled": bool(SIGNAL_RANKING_ENABLED), "scanner_rank_min_score": float(SCANNER_RANK_MIN_SCORE), "scanner_fallback_min_rank_score": float(SCANNER_FALLBACK_MIN_RANK_SCORE), "scanner_fallback_min_raw_score": float(SCANNER_FALLBACK_MIN_RAW_SCORE), "micro_confirm_mode": str(VWAP_PB_MICRO_CONFIRM_MODE), "soft_confirm_min_passes": int(VWAP_PB_SOFT_CONFIRM_MIN_PASSES)}}
+    return {"ok": True, "count": len(rows), "items": rows, "settings": {"enabled": bool(SIGNAL_RANKING_ENABLED), "scanner_rank_min_score": float(SCANNER_RANK_MIN_SCORE), "scanner_fallback_min_rank_score": float(SCANNER_FALLBACK_MIN_RANK_SCORE), "scanner_fallback_min_raw_score": float(SCANNER_FALLBACK_MIN_RAW_SCORE), "micro_confirm_mode": str(VWAP_PB_MICRO_CONFIRM_MODE), "soft_confirm_min_passes": int(VWAP_PB_SOFT_CONFIRM_MIN_PASSES), "fallback_min_ema_slope": float(VWAP_PB_FALLBACK_MIN_EMA_SLOPE), "fallback_min_vwap_slope": float(VWAP_PB_FALLBACK_MIN_VWAP_SLOPE), "fallback_bounce_slack_pct": float(VWAP_PB_FALLBACK_BOUNCE_SLACK_PCT), "fallback_max_dist_vwap_pct": float(VWAP_PB_FALLBACK_MAX_DIST_VWAP_PCT)}}
 
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
@@ -4486,7 +4544,10 @@ async def worker_scan_entries(req: Request):
         component_counts = Counter()
         macro_counts = Counter()
         micro_counts = Counter()
+        fallback_counts = Counter()
         fallback_ready_count = 0
+        fallback_tradable_count = 0
+        fallback_only_fail_count = 0
         near_miss_symbols = []
         pre_ranked_candidates = []
         for r in results:
@@ -4499,6 +4560,8 @@ async def worker_scan_entries(req: Request):
                     macro_counts[str(reason)] += 1
                 for reason in (split.get("micro") or []):
                     micro_counts[str(reason)] += 1
+                for reason in (split.get("fallback") or []):
+                    fallback_counts[str(reason)] += 1
                 rank_score, rank_meta = compute_signal_rank("VWAP_PULLBACK_FALLBACK" if bool((vp.get("trend_components") or {}).get("fallback_ready")) else "VWAP_PULLBACK", vp)
                 pre_ranked_candidates.append({
                     "symbol": r.get("symbol"),
@@ -4520,6 +4583,10 @@ async def worker_scan_entries(req: Request):
                 tc = vp.get("trend_components") or {}
                 if bool(tc.get("fallback_ready")):
                     fallback_ready_count += 1
+                    if bool(tc.get("fallback_slope_ok")) and bool(tc.get("fallback_bounce_ok")) and bool(tc.get("fallback_distance_ok")):
+                        fallback_tradable_count += 1
+                    elif (vp.get("reason") or "").startswith("fallback_"):
+                        fallback_only_fail_count += 1
             except Exception:
                 pass
         pre_ranked_candidates.sort(key=lambda x: float(x.get("rank_score", 0.0) or 0.0), reverse=True)
@@ -4535,6 +4602,9 @@ async def worker_scan_entries(req: Request):
             "top_macro_blockers": [{"reason": k, "count": int(v)} for k, v in macro_counts.most_common(10)],
             "top_micro_blockers": [{"reason": k, "count": int(v)} for k, v in micro_counts.most_common(10)],
             "fallback_ready_total": int(fallback_ready_count),
+            "fallback_tradable_total": int(fallback_tradable_count),
+            "fallback_only_fail_total": int(fallback_only_fail_count),
+            "top_fallback_blockers": [{"reason": k, "count": int(v)} for k, v in fallback_counts.most_common(10)],
             "near_miss_symbols": near_miss_symbols[: min(10, len(near_miss_symbols))],
             "top_pre_ranked_candidates": pre_ranked_candidates[: min(10, len(pre_ranked_candidates))],
             "top_candidates": vol_rank_info.get("top", []) if isinstance(vol_rank_info, dict) else [],
