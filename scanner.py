@@ -1,3 +1,11 @@
+
+# --- Patch 013 micro-structure relaxation ---
+ALLOW_EITHER_MICRO_STRUCTURE = os.getenv("VWAP_PB_ALLOW_EITHER_MICRO_STRUCTURE","false").lower()=="true"
+MICRO_CONFIRM_MIN_PASSES = int(os.getenv("VWAP_PB_MICRO_CONFIRM_MIN_PASSES","1"))
+FALLBACK_SKIP_HIGHER_LOW = os.getenv("VWAP_PB_FALLBACK_SKIP_HIGHER_LOW","false").lower()=="true"
+SOFT_CONFIRM_MIN_PASSES = int(os.getenv("VWAP_PB_SOFT_CONFIRM_MIN_PASSES","1"))
+# --------------------------------------------
+
 import json
 import os
 import time
