@@ -84,3 +84,9 @@ This repo supports a 3-service deployment on Render:
 ## Patch 010
 - Adds rank-aware slot allocation so the scanner prefers the best candidates when position slots are limited.
 - Adds fallback minimum thresholds and /diagnostics/ranking.
+
+
+## Patch 011
+- Added micro confirmation flexibility with soft confirmation modes.
+- Added macro/micro blocker split in strategy diagnostics.
+- Added pre-ranked near-miss candidates to scan summaries and diagnostics/ranking fallback view.

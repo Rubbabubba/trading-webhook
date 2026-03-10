@@ -619,6 +619,8 @@ VWAP_PB_REQUIRE_GREEN_LAST_1M = env_bool("VWAP_PB_REQUIRE_GREEN_LAST_1M", "true"
 VWAP_PB_REQUIRE_HIGHER_LOW = env_bool("VWAP_PB_REQUIRE_HIGHER_LOW", "true")
 VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH = env_bool("VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH", "true")
 VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT = float(os.getenv("VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT", "0.0002"))
+VWAP_PB_MICRO_CONFIRM_MODE = str(os.getenv("VWAP_PB_MICRO_CONFIRM_MODE", "soft2") or "soft2").strip().lower()
+VWAP_PB_SOFT_CONFIRM_MIN_PASSES = int(os.getenv("VWAP_PB_SOFT_CONFIRM_MIN_PASSES", "2"))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default="vwap_pullback").strip().lower()
@@ -2635,21 +2637,40 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
     bars_1m = bars_today[-20:] if len(bars_today) >= 20 else list(bars_today)
     last_1m = bars_1m[-1] if bars_1m else None
     prev_1m = bars_1m[-2] if len(bars_1m) >= 2 else None
-    last_1m_green = True
-    higher_low_ok = True
-    entry_confirm_ok = True
+    raw_last_1m_green = True
+    raw_higher_low_ok = True
+    raw_entry_confirm_ok = True
     if last_1m:
-        last_1m_green = float(last_1m.get("close") or 0.0) >= float(last_1m.get("open") or 0.0)
+        raw_last_1m_green = float(last_1m.get("close") or 0.0) >= float(last_1m.get("open") or 0.0)
     if prev_1m and last_1m:
-        higher_low_ok = float(last_1m.get("low") or 0.0) >= float(prev_1m.get("low") or 0.0)
+        raw_higher_low_ok = float(last_1m.get("low") or 0.0) >= float(prev_1m.get("low") or 0.0)
         confirm_level = float(prev_1m.get("high") or 0.0) * (1.0 + float(VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT))
-        entry_confirm_ok = float(last_1m.get("close") or 0.0) >= confirm_level
-    if not VWAP_PB_REQUIRE_GREEN_LAST_1M:
-        last_1m_green = True
-    if not VWAP_PB_REQUIRE_HIGHER_LOW:
-        higher_low_ok = True
-    if not VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH:
-        entry_confirm_ok = True
+        raw_entry_confirm_ok = float(last_1m.get("close") or 0.0) >= confirm_level
+
+    micro_checks = []
+    if VWAP_PB_REQUIRE_GREEN_LAST_1M:
+        micro_checks.append(("green", bool(raw_last_1m_green)))
+    if VWAP_PB_REQUIRE_HIGHER_LOW:
+        micro_checks.append(("higher_low", bool(raw_higher_low_ok)))
+    if VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH:
+        micro_checks.append(("entry_confirm", bool(raw_entry_confirm_ok)))
+
+    last_1m_green = bool(raw_last_1m_green) if VWAP_PB_REQUIRE_GREEN_LAST_1M else True
+    higher_low_ok = bool(raw_higher_low_ok) if VWAP_PB_REQUIRE_HIGHER_LOW else True
+    entry_confirm_ok = bool(raw_entry_confirm_ok) if VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH else True
+
+    micro_pass_count = sum(1 for _, ok in micro_checks if ok)
+    micro_enabled_checks = len(micro_checks)
+    micro_mode = str(VWAP_PB_MICRO_CONFIRM_MODE or "soft2").strip().lower()
+    if micro_enabled_checks == 0 or micro_mode == "off":
+        micro_confirm_ok = True
+    elif micro_mode in {"strict", "all"}:
+        micro_confirm_ok = all(ok for _, ok in micro_checks)
+    elif micro_mode in {"soft1", "one"}:
+        micro_confirm_ok = micro_pass_count >= 1
+    else:
+        required_passes = max(1, min(int(VWAP_PB_SOFT_CONFIRM_MIN_PASSES), micro_enabled_checks))
+        micro_confirm_ok = micro_pass_count >= required_passes
 
     recent_1m_vol = _mean([float(b.get("volume") or 0.0) for b in bars_1m[-3:]]) if len(bars_1m) >= 3 else 0.0
     baseline_1m_vol = _mean([float(b.get("volume") or 0.0) for b in bars_1m[-13:-3]]) if len(bars_1m) >= 13 else _mean([float(b.get("volume") or 0.0) for b in bars_1m[:-3]])
@@ -2729,6 +2750,11 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         component_reasons.append("entry_confirm_fail")
     if not momentum_ok:
         component_reasons.append("bounce_not_confirmed")
+    if not micro_confirm_ok:
+        component_reasons.append("micro_confirm_fail")
+
+    macro_blockers = [r for r in component_reasons if r in {"price_below_vwap", "ema_stack_fail", "price_below_ema_fast", "slope_fail", "touch_fail", "not_back_above_vwap", "too_extended_from_vwap", "relvol_fail", "atr_regime_fail", "day_range_too_small", "bounce_not_confirmed"}]
+    micro_blockers = [r for r in component_reasons if r in {"recent_1m_volume_fail", "last_1m_not_green", "micro_higher_low_fail", "entry_confirm_fail", "micro_confirm_fail"}]
 
     near = bool(
         (permissive_trend_ok and touched and (not regained_vwap))
@@ -2773,10 +2799,18 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         "last_1m_green": bool(last_1m_green),
         "higher_low_ok": bool(higher_low_ok),
         "entry_confirm_ok": bool(entry_confirm_ok),
+        "raw_last_1m_green": bool(raw_last_1m_green),
+        "raw_higher_low_ok": bool(raw_higher_low_ok),
+        "raw_entry_confirm_ok": bool(raw_entry_confirm_ok),
+        "micro_confirm_mode": micro_mode,
+        "micro_confirm_passes": int(micro_pass_count),
+        "micro_confirm_enabled_checks": int(micro_enabled_checks),
+        "micro_confirm_ok": bool(micro_confirm_ok),
         "score_min": float(VWAP_PB_SCORE_MIN),
         "dist_to_vwap_pct": round(dist_to_vwap_pct * 100.0, 3),
         "score": round(score, 3),
         "component_reasons": component_reasons,
+        "blocker_split": {"macro": macro_blockers, "micro": micro_blockers},
         "trend_components": {
             "price_above_vwap": bool(price_above_vwap),
             "ema_stack_ok": bool(ema_stack_ok),
@@ -2786,6 +2820,8 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
             "ema_stack_slack_pct": round(ema_stack_slack_pct * 100.0, 3),
             "allow_price_below_ema_fast_pct": round(allow_below_fast_pct * 100.0, 3),
             "fallback_ready": bool(fallback_ready),
+            "micro_confirm_mode": micro_mode,
+            "micro_confirm_ok": bool(micro_confirm_ok),
             "score_min": float(VWAP_PB_SCORE_MIN),
             "min_5m_atr_pct": round(float(VWAP_PB_MIN_5M_ATR_PCT) * 100.0, 3),
             "max_5m_atr_pct": round(float(VWAP_PB_MAX_5M_ATR_PCT) * 100.0, 3),
@@ -2801,10 +2837,10 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
         },
     })
 
-    if strict_trend_ok and slope_ok and touched and regained_vwap and extension_ok and relvol_ok and momentum_ok and atr_ok and day_range_ok and micro_vol_ok and last_1m_green and higher_low_ok and entry_confirm_ok and score >= float(VWAP_PB_SCORE_MIN):
+    if strict_trend_ok and slope_ok and touched and regained_vwap and extension_ok and relvol_ok and momentum_ok and atr_ok and day_range_ok and micro_vol_ok and micro_confirm_ok and score >= float(VWAP_PB_SCORE_MIN):
         out["reason"] = "ok"
         out["triggered"] = True
-    elif fallback_ready and slope_ok and atr_ok and day_range_ok and micro_vol_ok and score >= float(VWAP_PB_SCORE_MIN):
+    elif fallback_ready and slope_ok and atr_ok and day_range_ok and micro_vol_ok and micro_confirm_ok and score >= float(VWAP_PB_SCORE_MIN):
         out["reason"] = "fallback_ready"
         out["triggered"] = True
         out["fallback_trigger"] = True
@@ -2829,12 +2865,15 @@ def _vwap_pullback_setup(bars_today: list[dict]) -> dict:
             out["reason"] = "day_range_too_small"
         elif not micro_vol_ok:
             out["reason"] = "recent_1m_volume_fail"
-        elif not last_1m_green:
-            out["reason"] = "last_1m_not_green"
-        elif not higher_low_ok:
-            out["reason"] = "micro_higher_low_fail"
-        elif not entry_confirm_ok:
-            out["reason"] = "entry_confirm_fail"
+        elif not micro_confirm_ok:
+            if VWAP_PB_REQUIRE_GREEN_LAST_1M and not raw_last_1m_green:
+                out["reason"] = "last_1m_not_green"
+            elif VWAP_PB_REQUIRE_HIGHER_LOW and not raw_higher_low_ok:
+                out["reason"] = "micro_higher_low_fail"
+            elif VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH and not raw_entry_confirm_ok:
+                out["reason"] = "entry_confirm_fail"
+            else:
+                out["reason"] = "micro_confirm_fail"
         elif not momentum_ok:
             out["reason"] = "bounce_not_confirmed"
         else:
@@ -3808,6 +3847,8 @@ def diagnostics_strategy(request: Request, symbol: str = ""):
                 "require_higher_low": bool(VWAP_PB_REQUIRE_HIGHER_LOW),
                 "entry_confirm_above_prior_1m_high": bool(VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH),
                 "entry_confirm_buffer_pct": float(VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT),
+                "micro_confirm_mode": str(VWAP_PB_MICRO_CONFIRM_MODE),
+                "soft_confirm_min_passes": int(VWAP_PB_SOFT_CONFIRM_MIN_PASSES),
             },
         }
 
@@ -3963,7 +4004,9 @@ def diagnostics_runtime(request: Request):
 def diagnostics_ranking(limit: int = 25):
     rows = [d for d in DECISIONS if d.get("event") == "SCAN" and d.get("action") == "ignored" and d.get("reason") in {"rank_below_threshold", "fallback_raw_score_too_low", "lower_rank_than_top_slots"}]
     rows = rows[-max(1, min(int(limit or 25), 200)):]
-    return {"ok": True, "count": len(rows), "items": rows, "settings": {"enabled": bool(SIGNAL_RANKING_ENABLED), "scanner_rank_min_score": float(SCANNER_RANK_MIN_SCORE), "scanner_fallback_min_rank_score": float(SCANNER_FALLBACK_MIN_RANK_SCORE), "scanner_fallback_min_raw_score": float(SCANNER_FALLBACK_MIN_RAW_SCORE)}}
+    if (not rows) and LAST_SCAN.get("summary"):
+        rows = list((LAST_SCAN.get("summary") or {}).get("top_pre_ranked_candidates") or [])[: max(1, min(int(limit or 25), 200))]
+    return {"ok": True, "count": len(rows), "items": rows, "settings": {"enabled": bool(SIGNAL_RANKING_ENABLED), "scanner_rank_min_score": float(SCANNER_RANK_MIN_SCORE), "scanner_fallback_min_rank_score": float(SCANNER_FALLBACK_MIN_RANK_SCORE), "scanner_fallback_min_raw_score": float(SCANNER_FALLBACK_MIN_RAW_SCORE), "micro_confirm_mode": str(VWAP_PB_MICRO_CONFIRM_MODE), "soft_confirm_min_passes": int(VWAP_PB_SOFT_CONFIRM_MIN_PASSES)}}
 
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
@@ -4441,13 +4484,31 @@ async def worker_scan_entries(req: Request):
         signals.sort(key=lambda r: float(r.get("rank_score", r.get("score", 0.0))), reverse=True)
 
         component_counts = Counter()
+        macro_counts = Counter()
+        micro_counts = Counter()
         fallback_ready_count = 0
         near_miss_symbols = []
+        pre_ranked_candidates = []
         for r in results:
             try:
                 vp = (((r.get("diagnostics") or {}).get("vwap_pullback")) or {})
                 for reason in (vp.get("component_reasons") or []):
                     component_counts[str(reason)] += 1
+                split = vp.get("blocker_split") or {}
+                for reason in (split.get("macro") or []):
+                    macro_counts[str(reason)] += 1
+                for reason in (split.get("micro") or []):
+                    micro_counts[str(reason)] += 1
+                rank_score, rank_meta = compute_signal_rank("VWAP_PULLBACK_FALLBACK" if bool((vp.get("trend_components") or {}).get("fallback_ready")) else "VWAP_PULLBACK", vp)
+                pre_ranked_candidates.append({
+                    "symbol": r.get("symbol"),
+                    "reason": vp.get("reason"),
+                    "signal_family": rank_meta.get("family"),
+                    "raw_score": rank_meta.get("raw_score"),
+                    "rank_score": rank_meta.get("rank_score"),
+                    "dist_to_vwap_pct": vp.get("dist_to_vwap_pct"),
+                    "fallback_ready": bool((vp.get("trend_components") or {}).get("fallback_ready")),
+                })
                 nm = vp.get("near_miss") or {}
                 if bool(nm.get("near")):
                     near_miss_symbols.append({
@@ -4461,6 +4522,7 @@ async def worker_scan_entries(req: Request):
                     fallback_ready_count += 1
             except Exception:
                 pass
+        pre_ranked_candidates.sort(key=lambda x: float(x.get("rank_score", 0.0) or 0.0), reverse=True)
 
         scan_summary = {
             "actions": dict(action_counts),
@@ -4470,8 +4532,11 @@ async def worker_scan_entries(req: Request):
             "near_miss_by_strategy": {k: int(v) for k, v in near_miss_counts.items()},
             "strategy_breakdown": strategy_breakdown,
             "top_component_blockers": [{"reason": k, "count": int(v)} for k, v in component_counts.most_common(10)],
+            "top_macro_blockers": [{"reason": k, "count": int(v)} for k, v in macro_counts.most_common(10)],
+            "top_micro_blockers": [{"reason": k, "count": int(v)} for k, v in micro_counts.most_common(10)],
             "fallback_ready_total": int(fallback_ready_count),
             "near_miss_symbols": near_miss_symbols[: min(10, len(near_miss_symbols))],
+            "top_pre_ranked_candidates": pre_ranked_candidates[: min(10, len(pre_ranked_candidates))],
             "top_candidates": vol_rank_info.get("top", []) if isinstance(vol_rank_info, dict) else [],
             "top_signals": [
                 {"symbol": s.get("symbol"), "signal": s.get("signal"), "score": s.get("score"), "price": s.get("price")}
