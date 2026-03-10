@@ -79,3 +79,8 @@ This repo supports a 3-service deployment on Render:
 - Adds /diagnostics/alerts and /test/alert.
 - Supports Slack incoming webhooks, Discord webhooks, and generic JSON webhooks.
 - Alerts are deduplicated to reduce spam.
+
+
+## Patch 010
+- Adds rank-aware slot allocation so the scanner prefers the best candidates when position slots are limited.
+- Adds fallback minimum thresholds and /diagnostics/ranking.

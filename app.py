@@ -523,6 +523,21 @@ SCANNER_HF_EMA_SLOW = int(getenv_any("SCANNER_HF_EMA_SLOW", default="20"))
 SCANNER_HF_NEAR_PCT = float(getenv_any("SCANNER_HF_NEAR_PCT", default="0.0015"))  # 0.15%
 SCANNER_HF_DEBUG = env_bool("SCANNER_HF_DEBUG", "false")
 SCANNER_MAX_ENTRIES_PER_SCAN = int(getenv_any("SCANNER_MAX_ENTRIES_PER_SCAN", default="1"))
+SIGNAL_RANKING_ENABLED = env_bool("SIGNAL_RANKING_ENABLED", True)
+SCANNER_RANK_MIN_SCORE = float(getenv_any("SCANNER_RANK_MIN_SCORE", default="115"))
+SCANNER_FALLBACK_MIN_RANK_SCORE = float(getenv_any("SCANNER_FALLBACK_MIN_RANK_SCORE", default="125"))
+SCANNER_FALLBACK_MIN_RAW_SCORE = float(getenv_any("SCANNER_FALLBACK_MIN_RAW_SCORE", default="120"))
+SIGNAL_RANK_PRIMARY_BONUS = float(getenv_any("SIGNAL_RANK_PRIMARY_BONUS", default="8"))
+SIGNAL_RANK_FALLBACK_PENALTY = float(getenv_any("SIGNAL_RANK_FALLBACK_PENALTY", default="12"))
+SIGNAL_RANK_TOUCH_BONUS = float(getenv_any("SIGNAL_RANK_TOUCH_BONUS", default="4"))
+SIGNAL_RANK_RELVOL_BONUS = float(getenv_any("SIGNAL_RANK_RELVOL_BONUS", default="3"))
+SIGNAL_RANK_ATR_BONUS = float(getenv_any("SIGNAL_RANK_ATR_BONUS", default="3"))
+SIGNAL_RANK_MICRO_BONUS = float(getenv_any("SIGNAL_RANK_MICRO_BONUS", default="2"))
+SIGNAL_RANK_CONFIRM_BONUS = float(getenv_any("SIGNAL_RANK_CONFIRM_BONUS", default="2"))
+SIGNAL_RANK_GREEN_BONUS = float(getenv_any("SIGNAL_RANK_GREEN_BONUS", default="2"))
+SIGNAL_RANK_HIGHER_LOW_BONUS = float(getenv_any("SIGNAL_RANK_HIGHER_LOW_BONUS", default="2"))
+SIGNAL_RANK_MAX_DIST_VWAP_PCT = float(getenv_any("SIGNAL_RANK_MAX_DIST_VWAP_PCT", default="0.90"))
+SIGNAL_RANK_DISTANCE_PENALTY = float(getenv_any("SIGNAL_RANK_DISTANCE_PENALTY", default="10"))
 
 SCANNER_VOL_RANK_BARS = int(getenv_any("SCANNER_VOL_RANK_BARS", default="390"))  # ~1 session of 1m bars
 SCANNER_VOL_RANK_METRIC = getenv_any("SCANNER_VOL_RANK_METRIC", "range_pct")  # range_pct | stdev_ret
@@ -1802,6 +1817,52 @@ def soften_symbol_lock(symbol: str, lock_sec: int = 5):
     with STATE_LOCK:
         SYMBOL_LOCKS[symbol] = utc_ts() + max(int(lock_sec), 1)
 
+
+def compute_signal_rank(signal_name: str, vp_diag: dict | None = None) -> tuple[float, dict]:
+    vp_diag = vp_diag or {}
+    raw_score = float(vp_diag.get("score", 0.0) or 0.0)
+    rank = raw_score
+    family = "fallback" if "FALLBACK" in str(signal_name or "").upper() else "primary"
+    components: dict[str, float] = {"raw_score": raw_score}
+    if family == "primary":
+        rank += SIGNAL_RANK_PRIMARY_BONUS
+        components["primary_bonus"] = SIGNAL_RANK_PRIMARY_BONUS
+    else:
+        rank -= SIGNAL_RANK_FALLBACK_PENALTY
+        components["fallback_penalty"] = -SIGNAL_RANK_FALLBACK_PENALTY
+    if vp_diag.get("touched"):
+        rank += SIGNAL_RANK_TOUCH_BONUS
+        components["touch_bonus"] = SIGNAL_RANK_TOUCH_BONUS
+    if vp_diag.get("relvol_ok"):
+        rank += SIGNAL_RANK_RELVOL_BONUS
+        components["relvol_bonus"] = SIGNAL_RANK_RELVOL_BONUS
+    if vp_diag.get("atr_ok"):
+        rank += SIGNAL_RANK_ATR_BONUS
+        components["atr_bonus"] = SIGNAL_RANK_ATR_BONUS
+    if vp_diag.get("micro_vol_ok"):
+        rank += SIGNAL_RANK_MICRO_BONUS
+        components["micro_bonus"] = SIGNAL_RANK_MICRO_BONUS
+    if vp_diag.get("entry_confirm_ok"):
+        rank += SIGNAL_RANK_CONFIRM_BONUS
+        components["confirm_bonus"] = SIGNAL_RANK_CONFIRM_BONUS
+    if vp_diag.get("last_1m_green"):
+        rank += SIGNAL_RANK_GREEN_BONUS
+        components["green_bonus"] = SIGNAL_RANK_GREEN_BONUS
+    if vp_diag.get("higher_low_ok"):
+        rank += SIGNAL_RANK_HIGHER_LOW_BONUS
+        components["higher_low_bonus"] = SIGNAL_RANK_HIGHER_LOW_BONUS
+    dist = abs(float(vp_diag.get("dist_to_vwap_pct", 0.0) or 0.0))
+    if dist > SIGNAL_RANK_MAX_DIST_VWAP_PCT:
+        rank -= SIGNAL_RANK_DISTANCE_PENALTY
+        components["distance_penalty"] = -SIGNAL_RANK_DISTANCE_PENALTY
+    return float(rank), {"family": family, "raw_score": raw_score, "rank_score": float(rank), "components": components}
+
+def candidate_slots_available(extra_buffer: int = 0) -> int:
+    try:
+        remaining = int(MAX_OPEN_POSITIONS) - count_open_positions_allowed() - max(int(extra_buffer), 0)
+        return max(0, remaining)
+    except Exception:
+        return max(0, int(MAX_OPEN_POSITIONS))
 
 def count_open_positions_allowed() -> int:
     return len(list_open_positions_allowed())
@@ -3898,6 +3959,12 @@ def diagnostics_runtime(request: Request):
         "checks": checks,
     }
 
+@app.get("/diagnostics/ranking")
+def diagnostics_ranking(limit: int = 25):
+    rows = [d for d in DECISIONS if d.get("event") == "SCAN" and d.get("action") == "ignored" and d.get("reason") in {"rank_below_threshold", "fallback_raw_score_too_low", "lower_rank_than_top_slots"}]
+    rows = rows[-max(1, min(int(limit or 25), 200)):]
+    return {"ok": True, "count": len(rows), "items": rows, "settings": {"enabled": bool(SIGNAL_RANKING_ENABLED), "scanner_rank_min_score": float(SCANNER_RANK_MIN_SCORE), "scanner_fallback_min_rank_score": float(SCANNER_FALLBACK_MIN_RANK_SCORE), "scanner_fallback_min_raw_score": float(SCANNER_FALLBACK_MIN_RAW_SCORE)}}
+
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
     """Server-side scanner entry evaluation (Phase 1C). Default is shadow-mode (no orders)."""
@@ -4257,7 +4324,9 @@ async def worker_scan_entries(req: Request):
                                 preview_plan["preview_only"] = True
                             except Exception as e:
                                 diag["trade_plan_error"] = str(e)
-                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "score": float(diag.get("vwap_pullback", {}).get("score", 0.0)), "plan_preview": preview_plan})
+                            vp_diag_for_rank = diag.get("vwap_pullback", {}) if isinstance(diag.get("vwap_pullback"), dict) else {}
+                            rank_score, rank_meta = compute_signal_rank(signal_name, vp_diag_for_rank)
+                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "score": float(vp_diag_for_rank.get("score", 0.0)), "rank_score": rank_score, "signal_family": rank_meta.get("family"), "rank_meta": rank_meta, "plan_preview": preview_plan})
 
                     stop_out = plan.get("stop_price") if plan else None
                     take_out = plan.get("take_price") if plan else None
@@ -4369,7 +4438,7 @@ async def worker_scan_entries(req: Request):
             for strat, c in strat_counts.items()
         }
 
-        signals.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
+        signals.sort(key=lambda r: float(r.get("rank_score", r.get("score", 0.0))), reverse=True)
 
         component_counts = Counter()
         fallback_ready_count = 0
@@ -4424,18 +4493,42 @@ async def worker_scan_entries(req: Request):
         logger.info("SCAN_DONE scanned=%s signals=%s would_trade=%s blocked=%s duration_ms=%s",
                         len(syms), len(signals), len(signals), blocked, duration_ms)
 
-        # Execute (optional): submit up to N live orders per scan.
+        # Execute (optional): submit up to N live orders per scan using rank-aware slot allocation.
         would_submit = []
+        ignored_ranked_out = []
+        candidate_slots = candidate_slots_available()
+        ranked_candidates = []
         if signals:
-            for plan in signals[: max(1, SCANNER_MAX_ENTRIES_PER_SCAN)]:
+            for plan in signals:
+                rank_score = float(plan.get("rank_score", plan.get("score", 0.0)) or 0.0)
+                raw_score = float(plan.get("score", 0.0) or 0.0)
+                family = str(plan.get("signal_family") or "primary")
+                min_rank = SCANNER_FALLBACK_MIN_RANK_SCORE if family == "fallback" else SCANNER_RANK_MIN_SCORE
+                if SIGNAL_RANKING_ENABLED and rank_score < float(min_rank):
+                    record_decision("SCAN", "worker_scan", symbol=plan.get("symbol", ""), side=plan.get("side", ""), signal=plan.get("signal", ""), action="ignored", reason="rank_below_threshold", meta={"rank_score": rank_score, "min_rank": float(min_rank), "signal_family": family})
+                    ignored_ranked_out.append({"symbol": plan.get("symbol"), "signal": plan.get("signal"), "rank_score": rank_score, "reason": "rank_below_threshold"})
+                    continue
+                if SIGNAL_RANKING_ENABLED and family == "fallback" and raw_score < float(SCANNER_FALLBACK_MIN_RAW_SCORE):
+                    record_decision("SCAN", "worker_scan", symbol=plan.get("symbol", ""), side=plan.get("side", ""), signal=plan.get("signal", ""), action="ignored", reason="fallback_raw_score_too_low", meta={"raw_score": raw_score, "min_raw_score": float(SCANNER_FALLBACK_MIN_RAW_SCORE)})
+                    ignored_ranked_out.append({"symbol": plan.get("symbol"), "signal": plan.get("signal"), "rank_score": rank_score, "reason": "fallback_raw_score_too_low"})
+                    continue
+                ranked_candidates.append(plan)
+
+            allowed_submits = ranked_candidates[: max(0, min(candidate_slots, int(max(1, SCANNER_MAX_ENTRIES_PER_SCAN))))]
+            for skipped in ranked_candidates[len(allowed_submits):]:
+                record_decision("SCAN", "worker_scan", symbol=skipped.get("symbol", ""), side=skipped.get("side", ""), signal=skipped.get("signal", ""), action="ignored", reason="lower_rank_than_top_slots", meta={"rank_score": float(skipped.get("rank_score", skipped.get("score", 0.0)) or 0.0), "candidate_slots": candidate_slots})
+                ignored_ranked_out.append({"symbol": skipped.get("symbol"), "signal": skipped.get("signal"), "rank_score": float(skipped.get("rank_score", skipped.get("score", 0.0)) or 0.0), "reason": "lower_rank_than_top_slots"})
+
+            for plan in allowed_submits:
                 sym = plan.get("symbol")
                 side = plan.get("side") or "buy"
                 sig = plan.get("signal") or "scan"
+                payload = {"symbol": sym, "side": side, "signal": sig, "rank_score": float(plan.get("rank_score", plan.get("score", 0.0)) or 0.0), "signal_family": plan.get("signal_family", "primary")}
                 if SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run):
-                    resp = submit_scan_trade(sym, side, sig)
-                    would_submit.append({"symbol": sym, "side": side, "signal": sig, **resp})
+                    resp = submit_scan_trade(sym, side, sig, meta={"rank_score": payload["rank_score"], "signal_family": payload["signal_family"]})
+                    would_submit.append({**payload, **resp})
                 else:
-                    would_submit.append({"symbol": sym, "side": side, "signal": sig, "ok": True, "action": "dry_run", "reason": "scanner_not_live_or_dry_run"})
+                    would_submit.append({**payload, "ok": True, "action": "dry_run", "reason": "scanner_not_live_or_dry_run"})
 
         # Store diagnostics for Postman/curl inspection.
         try:
@@ -4450,6 +4543,8 @@ async def worker_scan_entries(req: Request):
                     "duration_ms": duration_ms,
                     "summary": scan_summary,
                     "results": results,
+                    "candidate_slots": candidate_slots,
+                    "ignored_ranked_out": ignored_ranked_out,
                     "would_submit": would_submit,
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
