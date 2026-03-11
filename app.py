@@ -475,6 +475,8 @@ JOURNAL_ENABLED = env_bool("JOURNAL_ENABLED", "true")
 JOURNAL_PERSIST_SCANS = env_bool("JOURNAL_PERSIST_SCANS", "false")
 JOURNAL_PATH = getenv_any("JOURNAL_PATH", default="/var/data/execution_journal.jsonl")
 POSITION_SNAPSHOT_PATH = getenv_any("POSITION_SNAPSHOT_PATH", default="/var/data/positions_snapshot.json")
+SCAN_STATE_PATH = getenv_any("SCAN_STATE_PATH", default="/var/data/scan_state.json")
+REGIME_STATE_PATH = getenv_any("REGIME_STATE_PATH", default="/var/data/regime_state.json")
 SYSTEM_NAME = getenv_any("SYSTEM_NAME", default="trading-webhook")
 ENV_NAME = getenv_any("ENV_NAME", default="prod")
 STRATEGY_MODE = getenv_any("STRATEGY_MODE", default="intraday").strip().lower() or "intraday"
@@ -484,6 +486,9 @@ SWING_ALLOW_SAME_DAY_EXIT = env_bool_any("SWING_ALLOW_SAME_DAY_EXIT", default="f
 SWING_MAX_HOLD_DAYS = getenv_int_any("SWING_MAX_HOLD_DAYS", default=5)
 SWING_MAX_PORTFOLIO_EXPOSURE_PCT = getenv_float_any("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", default=0.90)
 SWING_MAX_SYMBOL_EXPOSURE_PCT = getenv_float_any("SWING_MAX_SYMBOL_EXPOSURE_PCT", default=0.35)
+SWING_PORTFOLIO_CAP_BLOCK_MODE = str(getenv_any("SWING_PORTFOLIO_CAP_BLOCK_MODE", default="total") or "total").strip().lower()
+if SWING_PORTFOLIO_CAP_BLOCK_MODE not in {"total", "strategy", "both", "off"}:
+    SWING_PORTFOLIO_CAP_BLOCK_MODE = "total"
 SWING_STOP_ATR_DAILY_MULT = getenv_float_any("SWING_STOP_ATR_DAILY_MULT", default=1.20)
 SWING_TARGET_ATR_DAILY_MULT = getenv_float_any("SWING_TARGET_ATR_DAILY_MULT", default=2.00)
 SWING_STRATEGY_NAME = getenv_any("SWING_STRATEGY_NAME", default="daily_breakout").strip().lower()
@@ -570,6 +575,8 @@ TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_
 LAST_SCAN: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
 LAST_REGIME_SNAPSHOT: dict = {}
+SCAN_STATE_RESTORE: dict = {}
+REGIME_STATE_RESTORE: dict = {}
 REGIME_HISTORY: list[dict] = []
 CANDIDATE_HISTORY_SIZE = int(os.getenv("CANDIDATE_HISTORY_SIZE", "100"))
 CANDIDATE_HISTORY: list[dict] = []
@@ -798,8 +805,6 @@ def _count_forced_trades_today_ny() -> int:
 # This is intentionally small and ephemeral (in-memory only).
 SCAN_HISTORY_SIZE = int(os.getenv("SCAN_HISTORY_SIZE", "50"))
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
-SCAN_STATE_PATH = getenv_any("SCAN_STATE_PATH", default="/var/data/scan_state.json")
-REGIME_STATE_PATH = getenv_any("REGIME_STATE_PATH", default="/var/data/regime_state.json")
 
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
@@ -817,8 +822,6 @@ STARTUP_STATE: dict[str, object] = {
     "stale_snapshot_symbols": [],
     "reconcile_actions": [],
     "error": "",
-    "scan_state_restore": {},
-    "regime_state_restore": {},
 }
 
 
@@ -861,6 +864,36 @@ def _journal_append(record: dict):
         logger.warning("JOURNAL_APPEND_FAILED err=%s", e)
 
 
+def _read_journal(limit: int = 100, event: str = "", symbol: str = "") -> list[dict]:
+    path = Path(JOURNAL_PATH)
+    if (not JOURNAL_ENABLED) or (not path.exists()):
+        return []
+    lim = max(1, min(int(limit or 100), 5000))
+    event = str(event or "").upper().strip()
+    symbol = str(symbol or "").upper().strip()
+    rows: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if event and str(row.get("event", "")).upper() != event:
+                    continue
+                if symbol and str(row.get("symbol", "")).upper() != symbol:
+                    continue
+                rows.append(row)
+        return rows[-lim:]
+    except Exception as e:
+        logger.warning("JOURNAL_READ_FAILED err=%s", e)
+        return []
+
+
+
 def _safe_json_write(path_str: str, payload: dict):
     try:
         _ensure_parent_dir(path_str)
@@ -889,11 +922,11 @@ def _safe_json_read(path_str: str) -> dict:
 def persist_scan_runtime_state(reason: str = ""):
     payload = {
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
-        "reason": reason or "",
+        "reason": reason,
         "last_scan": dict(LAST_SCAN or {}),
         "scan_history": list(SCAN_HISTORY or []),
     }
-    _safe_json_write(SCAN_STATE_PATH, payload)
+    return _safe_json_write(SCAN_STATE_PATH, payload)
 
 
 def restore_scan_runtime_state() -> dict:
@@ -912,20 +945,21 @@ def restore_scan_runtime_state() -> dict:
             SCAN_HISTORY.clear()
             SCAN_HISTORY.extend(scan_history[-SCAN_HISTORY_SIZE:])
             restored["scan_history_restored"] = len(SCAN_HISTORY)
-        restored["loaded"] = bool(restored["last_scan_restored"] or restored["scan_history_restored"])
+        restored["loaded"] = restored["last_scan_restored"] or bool(restored["scan_history_restored"])
     except Exception as e:
         restored["error"] = str(e)
+    globals()["SCAN_STATE_RESTORE"] = restored
     return restored
 
 
 def persist_regime_runtime_state(reason: str = ""):
     payload = {
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
-        "reason": reason or "",
+        "reason": reason,
         "current": dict(LAST_REGIME_SNAPSHOT or {}),
         "history": list(REGIME_HISTORY or []),
     }
-    _safe_json_write(REGIME_STATE_PATH, payload)
+    return _safe_json_write(REGIME_STATE_PATH, payload)
 
 
 def restore_regime_runtime_state() -> dict:
@@ -944,39 +978,24 @@ def restore_regime_runtime_state() -> dict:
             REGIME_HISTORY.clear()
             REGIME_HISTORY.extend(history[-SWING_REGIME_HISTORY_SIZE:])
             restored["history_restored"] = len(REGIME_HISTORY)
-        restored["loaded"] = bool(restored["current_restored"] or restored["history_restored"])
+        restored["loaded"] = restored["current_restored"] or bool(restored["history_restored"])
     except Exception as e:
         restored["error"] = str(e)
+    globals()["REGIME_STATE_RESTORE"] = restored
     return restored
 
 
-def _read_journal(limit: int = 100, event: str = "", symbol: str = "") -> list[dict]:
-    path = Path(JOURNAL_PATH)
-    if (not JOURNAL_ENABLED) or (not path.exists()):
-        return []
-    lim = max(1, min(int(limit or 100), 5000))
-    event = str(event or "").upper().strip()
-    symbol = str(symbol or "").upper().strip()
-    rows: list[dict] = []
+def _ensure_runtime_state_loaded():
     try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except Exception:
-                    continue
-                if event and str(row.get("event", "")).upper() != event:
-                    continue
-                if symbol and str(row.get("symbol", "")).upper() != symbol:
-                    continue
-                rows.append(row)
-        return rows[-lim:]
-    except Exception as e:
-        logger.warning("JOURNAL_READ_FAILED err=%s", e)
-        return []
+        if (not LAST_SCAN) and (not SCAN_HISTORY):
+            restore_scan_runtime_state()
+    except Exception:
+        pass
+    try:
+        if (not LAST_REGIME_SNAPSHOT) and (not REGIME_HISTORY):
+            restore_regime_runtime_state()
+    except Exception:
+        pass
 
 
 def persist_positions_snapshot(reason: str = "", extra: dict | None = None) -> dict:
@@ -2478,9 +2497,22 @@ def _current_equity_estimate() -> float:
     snap = get_buying_power_snapshot()
     return _safe_float(snap.get('equity') or 0.0)
 
-def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
+def _plan_is_recovered(plan: dict | None) -> bool:
+    p = plan or {}
+    signal = str(p.get("signal") or "").upper()
+    return bool(p.get("recovered")) or signal == "RECOVERED"
+
+
+def _current_portfolio_exposure_breakdown() -> dict:
     total = 0.0
+    strategy_managed = 0.0
+    recovered = 0.0
+    unmanaged = 0.0
     by_symbol: dict[str, float] = {}
+    by_symbol_class: dict[str, str] = {}
+    recovered_symbols: list[str] = []
+    strategy_symbols: list[str] = []
+    unmanaged_symbols: list[str] = []
     for p in list_open_positions_details_allowed():
         sym = str(p.get('symbol') or '').upper()
         qty = abs(_safe_float(p.get('qty') or 0.0))
@@ -2489,7 +2521,38 @@ def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
         total += notion
         if sym:
             by_symbol[sym] = notion
-    return total, by_symbol
+        plan = (TRADE_PLAN or {}).get(sym) or {}
+        if _plan_is_recovered(plan):
+            recovered += notion
+            if sym:
+                by_symbol_class[sym] = 'recovered'
+                recovered_symbols.append(sym)
+        elif bool(plan.get('active')):
+            strategy_managed += notion
+            if sym:
+                by_symbol_class[sym] = 'strategy_managed'
+                strategy_symbols.append(sym)
+        else:
+            unmanaged += notion
+            if sym:
+                by_symbol_class[sym] = 'unmanaged'
+                unmanaged_symbols.append(sym)
+    return {
+        'total': total,
+        'strategy_managed': strategy_managed,
+        'recovered': recovered,
+        'unmanaged': unmanaged,
+        'by_symbol': by_symbol,
+        'by_symbol_class': by_symbol_class,
+        'recovered_symbols': recovered_symbols,
+        'strategy_symbols': strategy_symbols,
+        'unmanaged_symbols': unmanaged_symbols,
+    }
+
+
+def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
+    b = _current_portfolio_exposure_breakdown()
+    return float(b.get('total') or 0.0), dict(b.get('by_symbol') or {})
 
 def _same_day_entry_stats() -> dict:
     today = now_ny().date()
@@ -2786,10 +2849,27 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     REGIME_HISTORY.append(dict(regime))
     if len(REGIME_HISTORY) > SWING_REGIME_HISTORY_SIZE:
         del REGIME_HISTORY[: len(REGIME_HISTORY) - SWING_REGIME_HISTORY_SIZE]
-    open_total, open_by_symbol = _current_portfolio_exposure()
+    persist_regime_runtime_state(reason="run_swing_daily_scan")
+    exposure = _current_portfolio_exposure_breakdown()
+    open_total = float(exposure.get('total') or 0.0)
+    open_strategy = float(exposure.get('strategy_managed') or 0.0)
+    open_recovered = float(exposure.get('recovered') or 0.0)
+    open_unmanaged = float(exposure.get('unmanaged') or 0.0)
+    open_by_symbol = dict(exposure.get('by_symbol') or {})
     equity = max(0.0, _current_equity_estimate())
     portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
     symbol_cap = equity * SWING_MAX_SYMBOL_EXPOSURE_PCT if equity > 0 else 0.0
+    block_total_cap = bool(portfolio_cap > 0 and open_total >= portfolio_cap)
+    block_strategy_cap = bool(portfolio_cap > 0 and open_strategy >= portfolio_cap)
+    portfolio_cap_blocked = False
+    if SWING_PORTFOLIO_CAP_BLOCK_MODE == 'total':
+        portfolio_cap_blocked = block_total_cap
+    elif SWING_PORTFOLIO_CAP_BLOCK_MODE == 'strategy':
+        portfolio_cap_blocked = block_strategy_cap
+    elif SWING_PORTFOLIO_CAP_BLOCK_MODE == 'both':
+        portfolio_cap_blocked = block_total_cap or block_strategy_cap
+    else:
+        portfolio_cap_blocked = False
     new_entries_globally_blocked = False
     global_block_reasons = []
     if daily_halt_active() or daily_stop_hit():
@@ -2798,9 +2878,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     if regime.get('favorable') is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE:
         new_entries_globally_blocked = True
         global_block_reasons.append('weak_tape')
-    if portfolio_cap > 0 and open_total >= portfolio_cap:
+    if portfolio_cap_blocked:
         new_entries_globally_blocked = True
-        global_block_reasons.append('portfolio_already_over_cap')
+        if block_total_cap:
+            global_block_reasons.append('portfolio_already_over_cap_total')
+        if block_strategy_cap:
+            global_block_reasons.append('portfolio_already_over_cap_strategy')
     candidates = []
     rejection_counts = Counter()
     for sym in syms:
@@ -2884,11 +2967,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'reason': k, 'count': int(v)
         } for k, v in rejection_counts.most_common(10)],
         'portfolio_exposure': round(open_total, 2),
+        'strategy_portfolio_exposure': round(open_strategy, 2),
+        'recovered_portfolio_exposure': round(open_recovered, 2),
+        'unmanaged_portfolio_exposure': round(open_unmanaged, 2),
         'portfolio_exposure_cap': round(portfolio_cap, 2),
         'symbol_exposure_cap': round(symbol_cap, 2),
+        'portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         'remaining_new_entries_today': int(remaining_today),
         'new_entries_globally_blocked': bool(new_entries_globally_blocked),
-        'global_block_reasons': list(global_block_reasons),
+        'global_block_reasons': list(dict.fromkeys(global_block_reasons)),
+        'recovered_symbols': list(exposure.get('recovered_symbols') or []),
+        'strategy_symbols': list(exposure.get('strategy_symbols') or []),
+        'unmanaged_symbols': list(exposure.get('unmanaged_symbols') or []),
     }
     duration_ms = elapsed_ms_fn()
     set_last_scan_fn(skipped=False, reason='scan_completed', scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
@@ -2912,8 +3002,6 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
     except Exception:
         pass
-    persist_regime_runtime_state(reason="run_swing_daily_scan")
-    persist_scan_runtime_state(reason="run_swing_daily_scan")
     return {
         'ok': True,
         'scanner': {
@@ -5140,10 +5228,23 @@ def _diagnostics_swing_blockers() -> dict:
     daily_halt_blocked = bool(daily_halt_active() or daily_stop_hit())
     effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("diagnostics_swing")))
     corr_groups = _correlation_groups_list()
-    open_total, _open_by_symbol = _current_portfolio_exposure()
+    exposure = _current_portfolio_exposure_breakdown()
+    open_total = float(exposure.get('total') or 0.0)
+    open_strategy = float(exposure.get('strategy_managed') or 0.0)
+    open_recovered = float(exposure.get('recovered') or 0.0)
+    open_unmanaged = float(exposure.get('unmanaged') or 0.0)
     equity = max(0.0, _current_equity_estimate())
     portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
-    over_portfolio_cap = bool(portfolio_cap > 0 and open_total >= portfolio_cap)
+    blocked_total_cap = bool(portfolio_cap > 0 and open_total >= portfolio_cap)
+    blocked_strategy_cap = bool(portfolio_cap > 0 and open_strategy >= portfolio_cap)
+    if SWING_PORTFOLIO_CAP_BLOCK_MODE == 'total':
+        over_portfolio_cap = blocked_total_cap
+    elif SWING_PORTFOLIO_CAP_BLOCK_MODE == 'strategy':
+        over_portfolio_cap = blocked_strategy_cap
+    elif SWING_PORTFOLIO_CAP_BLOCK_MODE == 'both':
+        over_portfolio_cap = blocked_total_cap or blocked_strategy_cap
+    else:
+        over_portfolio_cap = False
     return {
         'scanner_enabled': scanner_enabled,
         'market_hours_required': bool(ONLY_MARKET_HOURS),
@@ -5167,14 +5268,24 @@ def _diagnostics_swing_blockers() -> dict:
         'same_day_entry_count': int(same_day_stats.get('counted') or 0),
         'same_day_entry_details': same_day_stats,
         'portfolio_exposure': round(open_total, 2),
+        'strategy_portfolio_exposure': round(open_strategy, 2),
+        'recovered_portfolio_exposure': round(open_recovered, 2),
+        'unmanaged_portfolio_exposure': round(open_unmanaged, 2),
         'portfolio_exposure_cap': round(portfolio_cap, 2),
+        'portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         'blocked_by_portfolio_cap': over_portfolio_cap,
+        'blocked_by_total_portfolio_cap': blocked_total_cap,
+        'blocked_by_strategy_portfolio_cap': blocked_strategy_cap,
+        'recovered_symbols': list(exposure.get('recovered_symbols') or []),
+        'strategy_symbols': list(exposure.get('strategy_symbols') or []),
+        'unmanaged_symbols': list(exposure.get('unmanaged_symbols') or []),
         'now_ny': now.isoformat(),
     }
 
 
 @app.get("/diagnostics/swing")
 def diagnostics_swing():
+    _ensure_runtime_state_loaded()
     return {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -5192,8 +5303,21 @@ def diagnostics_swing():
             'swing_max_portfolio_exposure_pct': SWING_MAX_PORTFOLIO_EXPOSURE_PCT,
             'swing_max_symbol_exposure_pct': SWING_MAX_SYMBOL_EXPOSURE_PCT,
             'swing_allow_same_day_exit': SWING_ALLOW_SAME_DAY_EXIT,
+            'swing_portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         },
         'regime': dict(LAST_REGIME_SNAPSHOT),
+        'recovery': {
+            'startup_state_restore': dict(globals().get('STARTUP_STATE') or {}),
+            'recovered_active_symbols': [str(sym or '').upper() for sym, plan in (TRADE_PLAN or {}).items() if isinstance(plan, dict) and bool(plan.get('active')) and _plan_is_recovered(plan)],
+        },
+        'persistence': {
+            'scan_state_path': SCAN_STATE_PATH,
+            'regime_state_path': REGIME_STATE_PATH,
+            'scan_state_restore': dict(globals().get('SCAN_STATE_RESTORE') or {}),
+            'regime_state_restore': dict(globals().get('REGIME_STATE_RESTORE') or {}),
+            'last_scan_state_source': 'memory' if LAST_SCAN else ('restored' if (globals().get('SCAN_STATE_RESTORE') or {}).get('last_scan_restored') else 'empty'),
+            'last_regime_state_source': 'memory' if LAST_REGIME_SNAPSHOT else ('restored' if (globals().get('REGIME_STATE_RESTORE') or {}).get('current_restored') else 'empty'),
+        },
         'blockers': _diagnostics_swing_blockers(),
         'scan_history_size': len(SCAN_HISTORY),
         'last_scan': {
@@ -5210,6 +5334,7 @@ def diagnostics_swing():
 
 @app.get("/diagnostics/regime")
 def diagnostics_regime(limit: int = 20):
+    _ensure_runtime_state_loaded()
     lim = max(1, min(int(limit or 20), 200))
     parsed_groups = _correlation_groups_list()
     return {
@@ -5223,6 +5348,7 @@ def diagnostics_regime(limit: int = 20):
             'swing_allow_new_entries_in_weak_tape': SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE,
             'swing_weak_tape_max_new_entries': SWING_WEAK_TAPE_MAX_NEW_ENTRIES,
             'swing_max_group_positions': SWING_MAX_GROUP_POSITIONS,
+            'swing_portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
             'swing_correlation_groups': SWING_CORRELATION_GROUPS,
             'swing_correlation_groups_normalized': _normalize_correlation_groups_raw(SWING_CORRELATION_GROUPS),
             'swing_correlation_groups_parsed': parsed_groups,
@@ -5235,6 +5361,7 @@ def diagnostics_regime(limit: int = 20):
 
 @app.get("/diagnostics/candidates")
 def diagnostics_candidates(limit: int = 25):
+    _ensure_runtime_state_loaded()
     lim = max(1, min(int(limit or 25), 200))
     latest = LAST_SWING_CANDIDATES[-lim:] if LAST_SWING_CANDIDATES else []
     hist = CANDIDATE_HISTORY[-5:]
@@ -5324,7 +5451,6 @@ async def worker_scan_entries(req: Request):
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
-                persist_scan_runtime_state(reason="scanner_disabled")
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
@@ -5356,7 +5482,6 @@ async def worker_scan_entries(req: Request):
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
-                persist_scan_runtime_state(reason="outside_market_hours")
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
@@ -5388,7 +5513,6 @@ async def worker_scan_entries(req: Request):
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
-                persist_scan_runtime_state(reason="outside_scanner_session")
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
@@ -5912,7 +6036,6 @@ async def worker_scan_entries(req: Request):
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
         try:
             _set_last_scan(skipped=False, reason='scan_exception', error=str(e), scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=duration_ms)
-            persist_scan_runtime_state(reason='scan_exception')
         except Exception:
             pass
         try:
