@@ -2399,11 +2399,61 @@ def _same_day_entry_count() -> int:
     today = now_ny().date()
     n = 0
     for plan in (TRADE_PLAN or {}).values():
-        dt = _parse_plan_opened_dt(plan or {})
+        plan = plan or {}
+        if not plan.get("active"):
+            continue
+        if bool(plan.get("recovered")):
+            continue
+        sig = str(plan.get("signal") or "").strip().upper()
+        if sig == "RECOVERED":
+            continue
+        dt = _parse_plan_opened_dt(plan)
         if dt and dt.date() == today:
             n += 1
     return n
 
+def _same_day_entry_count_details() -> dict:
+    today = now_ny().date()
+    total_active = 0
+    counted = 0
+    skipped_recovered = 0
+    skipped_inactive = 0
+    skipped_not_today = 0
+    items = []
+    for sym, raw_plan in (TRADE_PLAN or {}).items():
+        plan = raw_plan or {}
+        if not plan.get("active"):
+            skipped_inactive += 1
+            continue
+        total_active += 1
+        sig = str(plan.get("signal") or "").strip().upper()
+        recovered = bool(plan.get("recovered")) or sig == "RECOVERED"
+        dt = _parse_plan_opened_dt(plan)
+        opened_today = bool(dt and dt.date() == today)
+        if recovered:
+            skipped_recovered += 1
+        elif not opened_today:
+            skipped_not_today += 1
+        else:
+            counted += 1
+        items.append({
+            "symbol": sym,
+            "active": bool(plan.get("active")),
+            "recovered": recovered,
+            "signal": sig,
+            "opened_at": plan.get("opened_at"),
+            "opened_today": opened_today,
+            "counted": bool((not recovered) and opened_today),
+        })
+    return {
+        "today_ny": str(today),
+        "counted": counted,
+        "total_active": total_active,
+        "skipped_recovered": skipped_recovered,
+        "skipped_inactive": skipped_inactive,
+        "skipped_not_today": skipped_not_today,
+        "items": items[:50],
+    }
 
 def _normalize_correlation_groups_raw(raw: str) -> str:
     raw_s = str(raw or '').replace("\r", "\n")
@@ -4995,6 +5045,8 @@ def _diagnostics_swing_blockers() -> dict:
         'last_scan_ts': LAST_SCAN.get('ts_utc'),
         'last_scan_reason': LAST_SCAN.get('reason'),
         'last_scan_summary': dict((LAST_SCAN.get('summary') or {})),
+        'same_day_entry_count': _same_day_entry_count(),
+        'same_day_entry_details': _same_day_entry_count_details(),
         'now_ny': now.isoformat(),
     }
 
@@ -5012,7 +5064,7 @@ def diagnostics_swing():
             'live_trading_enabled': LIVE_TRADING_ENABLED,
         },
         'risk': {
-            'swing_max_open_positions': SWING_MAX_OPEN_POSITIONS,
+            'swing_max_open_positions': MAX_OPEN_POSITIONS,
             'swing_risk_per_trade_dollars': SWING_RISK_PER_TRADE_DOLLARS,
             'swing_max_hold_days': SWING_MAX_HOLD_DAYS,
             'swing_max_portfolio_exposure_pct': SWING_MAX_PORTFOLIO_EXPOSURE_PCT,
@@ -5021,6 +5073,7 @@ def diagnostics_swing():
         },
         'regime': dict(LAST_REGIME_SNAPSHOT),
         'blockers': _diagnostics_swing_blockers(),
+        'entry_budget': _same_day_entry_count_details(),
         'last_scan': {
             'ts_utc': LAST_SCAN.get('ts_utc'),
             'reason': LAST_SCAN.get('reason'),
