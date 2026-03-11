@@ -2404,13 +2404,33 @@ def _same_day_entry_count() -> int:
     return n
 
 
+def _normalize_correlation_groups_raw(raw: str) -> str:
+    raw_s = str(raw or '').replace("\r", "\n")
+    raw_s = raw_s.replace("\n", "|").replace(";", "|")
+    raw_s = re.sub(r"\s*\|\s*", "|", raw_s)
+    raw_s = re.sub(r"\s*,\s*", ",", raw_s)
+    raw_s = re.sub(r"\|{2,}", "|", raw_s)
+    return raw_s.strip(" |,\t")
+
+
 def _parse_correlation_groups(raw: str) -> dict[str, int]:
     mapping: dict[str, int] = {}
-    groups = [g.strip() for g in str(raw or '').split('|') if g.strip()]
+    normalized = _normalize_correlation_groups_raw(raw)
+    groups = [g.strip() for g in normalized.split('|') if g.strip()]
     for idx, group in enumerate(groups, start=1):
         for sym in [s.strip().upper() for s in group.split(',') if s.strip()]:
             mapping[sym] = idx
     return mapping
+
+
+def _correlation_groups_list(raw: str | None = None) -> list[list[str]]:
+    normalized = _normalize_correlation_groups_raw(raw if raw is not None else SWING_CORRELATION_GROUPS)
+    out: list[list[str]] = []
+    for group in [g.strip() for g in normalized.split('|') if g.strip()]:
+        syms = [s.strip().upper() for s in group.split(',') if s.strip()]
+        if syms:
+            out.append(syms)
+    return out
 
 
 def _symbol_group_id(symbol: str) -> int | None:
@@ -4945,9 +4965,77 @@ def diagnostics_exits(limit: int = 25):
     }
 
 
+def _diagnostics_swing_blockers() -> dict:
+    now = now_ny()
+    market_blocked = bool(ONLY_MARKET_HOURS and not is_market_hours_now())
+    scanner_enabled = bool(SCANNER_ENABLED)
+    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - _same_day_entry_count())
+    regime_favorable = LAST_REGIME_SNAPSHOT.get('favorable') if isinstance(LAST_REGIME_SNAPSHOT, dict) else None
+    regime_blocked = bool(regime_favorable is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE)
+    daily_halt_blocked = bool(daily_halt_active() or daily_stop_hit())
+    effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("diagnostics_swing")))
+    corr_groups = _correlation_groups_list()
+    return {
+        'scanner_enabled': scanner_enabled,
+        'market_hours_required': bool(ONLY_MARKET_HOURS),
+        'market_open_now': bool(is_market_hours_now()),
+        'blocked_by_market_hours': market_blocked,
+        'effective_dry_run': effective_dry_run,
+        'daily_halt_active': daily_halt_blocked,
+        'regime_known': bool(LAST_REGIME_SNAPSHOT),
+        'regime_favorable': regime_favorable,
+        'blocked_by_weak_regime': regime_blocked,
+        'remaining_new_entries_today': int(remaining_today),
+        'blocked_by_entry_cap': bool(remaining_today <= 0),
+        'max_new_entries_per_day': int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+        'correlation_groups_count': len(corr_groups),
+        'correlation_groups': corr_groups,
+        'raw_correlation_groups': SWING_CORRELATION_GROUPS,
+        'last_scan_ts': LAST_SCAN.get('ts_utc'),
+        'last_scan_reason': LAST_SCAN.get('reason'),
+        'last_scan_summary': dict((LAST_SCAN.get('summary') or {})),
+        'now_ny': now.isoformat(),
+    }
+
+
+@app.get("/diagnostics/swing")
+def diagnostics_swing():
+    return {
+        'ok': True,
+        'strategy_mode': STRATEGY_MODE,
+        'strategy_name': SWING_STRATEGY_NAME,
+        'scanner': {
+            'enabled': SCANNER_ENABLED,
+            'dry_run': SCANNER_DRY_RUN,
+            'allow_live': SCANNER_ALLOW_LIVE,
+            'live_trading_enabled': LIVE_TRADING_ENABLED,
+        },
+        'risk': {
+            'swing_max_open_positions': SWING_MAX_OPEN_POSITIONS,
+            'swing_risk_per_trade_dollars': SWING_RISK_PER_TRADE_DOLLARS,
+            'swing_max_hold_days': SWING_MAX_HOLD_DAYS,
+            'swing_max_portfolio_exposure_pct': SWING_MAX_PORTFOLIO_EXPOSURE_PCT,
+            'swing_max_symbol_exposure_pct': SWING_MAX_SYMBOL_EXPOSURE_PCT,
+            'swing_allow_same_day_exit': SWING_ALLOW_SAME_DAY_EXIT,
+        },
+        'regime': dict(LAST_REGIME_SNAPSHOT),
+        'blockers': _diagnostics_swing_blockers(),
+        'last_scan': {
+            'ts_utc': LAST_SCAN.get('ts_utc'),
+            'reason': LAST_SCAN.get('reason'),
+            'scanned': LAST_SCAN.get('scanned'),
+            'signals': LAST_SCAN.get('signals'),
+            'would_trade': LAST_SCAN.get('would_trade'),
+            'blocked': LAST_SCAN.get('blocked'),
+            'summary': dict((LAST_SCAN.get('summary') or {})),
+        },
+    }
+
+
 @app.get("/diagnostics/regime")
 def diagnostics_regime(limit: int = 20):
     lim = max(1, min(int(limit or 20), 200))
+    parsed_groups = _correlation_groups_list()
     return {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -4960,9 +5048,12 @@ def diagnostics_regime(limit: int = 20):
             'swing_weak_tape_max_new_entries': SWING_WEAK_TAPE_MAX_NEW_ENTRIES,
             'swing_max_group_positions': SWING_MAX_GROUP_POSITIONS,
             'swing_correlation_groups': SWING_CORRELATION_GROUPS,
+            'swing_correlation_groups_normalized': _normalize_correlation_groups_raw(SWING_CORRELATION_GROUPS),
+            'swing_correlation_groups_parsed': parsed_groups,
         },
         'current': dict(LAST_REGIME_SNAPSHOT),
         'history': REGIME_HISTORY[-lim:],
+        'blockers': _diagnostics_swing_blockers(),
     }
 
 
@@ -4976,6 +5067,7 @@ def diagnostics_candidates(limit: int = 25):
         'strategy_mode': STRATEGY_MODE,
         'strategy_name': SWING_STRATEGY_NAME,
         'regime': dict(LAST_REGIME_SNAPSHOT),
+        'blockers': _diagnostics_swing_blockers(),
         'count': len(latest),
         'items': latest,
         'history': hist,
