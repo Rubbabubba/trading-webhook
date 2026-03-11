@@ -486,6 +486,17 @@ SYSTEM_NAME = getenv_any("SYSTEM_NAME", default="trading-webhook")
 ENV_NAME = getenv_any("ENV_NAME", default="prod")
 STRATEGY_MODE = getenv_any("STRATEGY_MODE", default="intraday").strip().lower() or "intraday"
 LIVE_TRADING_ENABLED = env_bool_any("LIVE_TRADING_ENABLED", default="false")
+SYSTEM_RELEASE_STAGE = str(getenv_any("SYSTEM_RELEASE_STAGE", default="paper") or "paper").strip().lower()
+RELEASE_GATE_ENFORCED = env_bool("RELEASE_GATE_ENFORCED", True)
+RELEASE_ALLOWED_LIVE_STAGES = {s.strip().lower() for s in str(getenv_any("RELEASE_ALLOWED_LIVE_STAGES", default="live_guarded") or "live_guarded").split(",") if s.strip()}
+RELEASE_REQUIRE_REGIME_COMPLETE = env_bool("RELEASE_REQUIRE_REGIME_COMPLETE", True)
+RELEASE_REQUIRE_REGIME_FAVORABLE = env_bool("RELEASE_REQUIRE_REGIME_FAVORABLE", True)
+RELEASE_REQUIRE_RECENT_MARKET_SCAN = env_bool("RELEASE_REQUIRE_RECENT_MARKET_SCAN", True)
+RELEASE_MAX_SCAN_AGE_SEC = int(getenv_any("RELEASE_MAX_SCAN_AGE_SEC", default="14400"))
+RELEASE_MIN_COMPLETED_SCANS = int(getenv_any("RELEASE_MIN_COMPLETED_SCANS", default="1"))
+RELEASE_MIN_SELECTED_CANDIDATES = int(getenv_any("RELEASE_MIN_SELECTED_CANDIDATES", default="0"))
+RELEASE_MIN_ENTRY_EVENTS = int(getenv_any("RELEASE_MIN_ENTRY_EVENTS", default="0"))
+RELEASE_MIN_EXIT_EVENTS = int(getenv_any("RELEASE_MIN_EXIT_EVENTS", default="0"))
 PERSISTENCE_REQUIRED = env_bool_any("PERSISTENCE_REQUIRED", default="true")
 SWING_ALLOW_SAME_DAY_EXIT = env_bool_any("SWING_ALLOW_SAME_DAY_EXIT", default="false")
 SWING_MAX_HOLD_DAYS = getenv_int_any("SWING_MAX_HOLD_DAYS", default=5)
@@ -2364,10 +2375,153 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
     }
     return plan
 
+def _paper_lifecycle_counts() -> dict:
+    events = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not events or events[-1] != LAST_PAPER_LIFECYCLE):
+        events.append(dict(LAST_PAPER_LIFECYCLE))
+    counts = {
+        "scan_completed": 0,
+        "candidate_selected": 0,
+        "entry_events": 0,
+        "exit_events": 0,
+    }
+    for ev in events:
+        stage = str((ev or {}).get("stage") or "").strip().lower()
+        status = str((ev or {}).get("status") or "").strip().lower()
+        if stage == "scan" and status == "completed":
+            counts["scan_completed"] += 1
+        if stage == "candidate" and status == "selected":
+            counts["candidate_selected"] += 1
+        if stage == "entry" and status in {"planned", "submitted", "filled", "opened"}:
+            counts["entry_events"] += 1
+        if stage == "exit" and status in {"submitted", "closed", "filled", "completed", "dry_run"}:
+            counts["exit_events"] += 1
+    counts["history_count"] = len(events)
+    return counts
+
+
+def _worker_status_snapshot() -> dict:
+    now_utc = datetime.now(tz=timezone.utc)
+    scanner_running = False
+    scanner_age_sec = None
+    if LAST_SCAN.get("ts_utc"):
+        try:
+            scanner_ts = datetime.fromisoformat(str(LAST_SCAN.get("ts_utc")))
+            if scanner_ts.tzinfo is None:
+                scanner_ts = scanner_ts.replace(tzinfo=timezone.utc)
+            scanner_age_sec = max(0.0, (now_utc - scanner_ts.astimezone(timezone.utc)).total_seconds())
+            scanner_running = scanner_age_sec <= max(READINESS_SCANNER_MAX_AGE_SEC, 30)
+        except Exception:
+            scanner_running = False
+    exit_worker_running = False
+    exit_age_sec = None
+    if LAST_EXIT_HEARTBEAT.get("ts_utc"):
+        try:
+            exit_ts = datetime.fromisoformat(str(LAST_EXIT_HEARTBEAT.get("ts_utc")))
+            if exit_ts.tzinfo is None:
+                exit_ts = exit_ts.replace(tzinfo=timezone.utc)
+            exit_age_sec = max(0.0, (now_utc - exit_ts.astimezone(timezone.utc)).total_seconds())
+            exit_worker_running = exit_age_sec <= max(READINESS_EXIT_MAX_AGE_SEC, 15)
+        except Exception:
+            exit_worker_running = False
+    return {
+        "scanner_running": scanner_running,
+        "scanner_age_sec": scanner_age_sec,
+        "exit_worker_running": exit_worker_running,
+        "exit_worker_age_sec": exit_age_sec,
+    }
+
+
+def release_gate_status() -> dict:
+    stage = SYSTEM_RELEASE_STAGE
+    lifecycle = _paper_lifecycle_counts()
+    worker_status = _worker_status_snapshot()
+    reconcile = _reconcile_snapshot()
+    regime = dict(LAST_REGIME_SNAPSHOT or {})
+    now_utc = datetime.now(tz=timezone.utc)
+    last_scan_age_sec = None
+    recent_market_scan_ok = False
+    if LAST_SCAN.get("ts_utc"):
+        try:
+            scan_ts = datetime.fromisoformat(str(LAST_SCAN.get("ts_utc")))
+            if scan_ts.tzinfo is None:
+                scan_ts = scan_ts.replace(tzinfo=timezone.utc)
+            last_scan_age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
+            recent_market_scan_ok = (
+                str(LAST_SCAN.get("reason") or "") == "scan_completed"
+                and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
+            )
+        except Exception:
+            recent_market_scan_ok = False
+    unmet = []
+    if stage not in RELEASE_ALLOWED_LIVE_STAGES:
+        unmet.append("release_stage_not_allowed")
+    if KILL_SWITCH:
+        unmet.append("kill_switch_on")
+    if daily_halt_active():
+        unmet.append("daily_halt_active")
+    if READINESS_REQUIRE_WORKERS and not worker_status["scanner_running"]:
+        unmet.append("scanner_worker_not_ready")
+    if READINESS_REQUIRE_WORKERS and not worker_status["exit_worker_running"]:
+        unmet.append("exit_worker_not_ready")
+    if RELEASE_REQUIRE_REGIME_COMPLETE and not bool(regime.get("data_complete")):
+        unmet.append("regime_incomplete")
+    if RELEASE_REQUIRE_REGIME_FAVORABLE and not bool(regime.get("favorable")):
+        unmet.append("regime_not_favorable")
+    if RELEASE_REQUIRE_RECENT_MARKET_SCAN and not recent_market_scan_ok:
+        unmet.append("recent_market_scan_missing")
+    if lifecycle["scan_completed"] < RELEASE_MIN_COMPLETED_SCANS:
+        unmet.append("insufficient_completed_scans")
+    if lifecycle["candidate_selected"] < RELEASE_MIN_SELECTED_CANDIDATES:
+        unmet.append("insufficient_selected_candidates")
+    if lifecycle["entry_events"] < RELEASE_MIN_ENTRY_EVENTS:
+        unmet.append("insufficient_entry_events")
+    if lifecycle["exit_events"] < RELEASE_MIN_EXIT_EVENTS:
+        unmet.append("insufficient_exit_events")
+    if reconcile.get("orphan_open_order_symbols"):
+        unmet.append("orphan_open_orders_present")
+    if reconcile.get("plans_missing_open_order"):
+        unmet.append("plans_missing_open_order")
+    if reconcile.get("stale_active_plans"):
+        unmet.append("stale_active_plans_present")
+    if reconcile.get("partial_fill_plan_symbols"):
+        unmet.append("partial_fill_aging_present")
+    go_live_eligible = len(unmet) == 0
+    return {
+        "system_release_stage": stage,
+        "release_gate_enforced": RELEASE_GATE_ENFORCED,
+        "release_allowed_live_stages": sorted(RELEASE_ALLOWED_LIVE_STAGES),
+        "go_live_eligible": go_live_eligible,
+        "live_orders_permitted": bool(go_live_eligible and LIVE_TRADING_ENABLED and (not DRY_RUN)),
+        "unmet_conditions": unmet,
+        "last_scan_age_sec": last_scan_age_sec,
+        "recent_market_scan_ok": recent_market_scan_ok,
+        "regime": {
+            "known": bool(regime),
+            "data_complete": bool(regime.get("data_complete")),
+            "favorable": regime.get("favorable"),
+            "reasons": list(regime.get("reasons") or []),
+        },
+        "lifecycle_counts": lifecycle,
+        "worker_status": worker_status,
+        "reconcile_snapshot": {
+            "orphan_open_order_symbols": list(reconcile.get("orphan_open_order_symbols") or []),
+            "plans_missing_open_order": list(reconcile.get("plans_missing_open_order") or []),
+            "stale_active_plans": list(reconcile.get("stale_active_plans") or []),
+            "partial_fill_plan_symbols": list(reconcile.get("partial_fill_plan_symbols") or []),
+            "open_order_count": int(reconcile.get("open_order_count") or 0),
+            "active_plan_count": int(reconcile.get("active_plan_count") or 0),
+            "broker_positions_count": int(reconcile.get("broker_positions_count") or 0),
+        },
+    }
+
+
 def is_live_trading_permitted(source: str = "") -> bool:
     if DRY_RUN or (not LIVE_TRADING_ENABLED):
         return False
     if source == "worker_scan" and (not SCANNER_ALLOW_LIVE):
+        return False
+    if RELEASE_GATE_ENFORCED and (not release_gate_status().get("live_orders_permitted")):
         return False
     return True
 
@@ -5631,6 +5785,7 @@ def diagnostics_swing():
             'last_regime_state_source': 'memory' if LAST_REGIME_SNAPSHOT else ('restored' if (globals().get('REGIME_STATE_RESTORE') or {}).get('current_restored') else 'empty'),
             'last_paper_lifecycle_source': 'memory' if LAST_PAPER_LIFECYCLE else ('restored' if (globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}).get('last_event_restored') else 'empty'),
         },
+        'release': release_gate_status(),
         'blockers': _diagnostics_swing_blockers(),
         'scan_history_size': len(SCAN_HISTORY),
         'last_scan': {
@@ -5672,6 +5827,31 @@ def diagnostics_regime(limit: int = 20):
     }
 
 
+
+
+@app.get("/diagnostics/release")
+def diagnostics_release(request: Request):
+    require_admin_if_configured(request)
+    status = release_gate_status()
+    status.update({
+        "ok": True,
+        "dry_run": DRY_RUN,
+        "live_trading_enabled": LIVE_TRADING_ENABLED,
+        "scanner_allow_live": SCANNER_ALLOW_LIVE,
+        "kill_switch": KILL_SWITCH,
+        "daily_halt_active": daily_halt_active(),
+        "requirements": {
+            "release_require_regime_complete": RELEASE_REQUIRE_REGIME_COMPLETE,
+            "release_require_regime_favorable": RELEASE_REQUIRE_REGIME_FAVORABLE,
+            "release_require_recent_market_scan": RELEASE_REQUIRE_RECENT_MARKET_SCAN,
+            "release_max_scan_age_sec": RELEASE_MAX_SCAN_AGE_SEC,
+            "release_min_completed_scans": RELEASE_MIN_COMPLETED_SCANS,
+            "release_min_selected_candidates": RELEASE_MIN_SELECTED_CANDIDATES,
+            "release_min_entry_events": RELEASE_MIN_ENTRY_EVENTS,
+            "release_min_exit_events": RELEASE_MIN_EXIT_EVENTS,
+        },
+    })
+    return status
 
 
 @app.get("/diagnostics/paper_lifecycle")
