@@ -502,6 +502,13 @@ SWING_ENTRY_MODE = getenv_any("SWING_ENTRY_MODE", default="next_session_market")
 SWING_STOP_MODE = getenv_any("SWING_STOP_MODE", default="breakout_buffer").strip().lower()
 SWING_BREAKOUT_BUFFER_PCT = getenv_float_any("SWING_BREAKOUT_BUFFER_PCT", default=0.015)
 SWING_TARGET_R_MULT = getenv_float_any("SWING_TARGET_R_MULT", default=2.0)
+SWING_ENABLE_BREAK_EVEN_STOP = getenv_bool_any("SWING_ENABLE_BREAK_EVEN_STOP", default=True)
+SWING_BREAK_EVEN_R = getenv_float_any("SWING_BREAK_EVEN_R", default=1.0)
+SWING_ENABLE_TRAILING_STOP = getenv_bool_any("SWING_ENABLE_TRAILING_STOP", default=True)
+SWING_TRAIL_AFTER_R = getenv_float_any("SWING_TRAIL_AFTER_R", default=1.25)
+SWING_TRAIL_LOOKBACK_DAYS = getenv_int_any("SWING_TRAIL_LOOKBACK_DAYS", default=3)
+SWING_STALL_EXIT_DAYS = getenv_int_any("SWING_STALL_EXIT_DAYS", default=3)
+SWING_STALL_MIN_R = getenv_float_any("SWING_STALL_MIN_R", default=0.25)
 SWING_CANDIDATE_TTL_HOURS = getenv_int_any("SWING_CANDIDATE_TTL_HOURS", default=24)
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
@@ -1926,19 +1933,28 @@ def eval_hf_signal_with_debug(bars_today: list[dict], bars_5m: list[dict]) -> tu
 def eval_hf_signal(bars_today: list[dict], bars_5m: list[dict]) -> tuple[str, str] | None:
     sig, _dbg = eval_hf_signal_with_debug(bars_today, bars_5m)
     return sig
-def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, signal: str) -> dict:
+def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, signal: str, meta: dict | None = None) -> dict:
     entry_price = float(entry_price)
-    if side == "buy":
+    meta = meta or {}
+    stop_override = meta.get("stop_price")
+    take_override = meta.get("take_price")
+    if stop_override is not None:
+        stop_price = round(float(stop_override), 4)
+    elif side == "buy":
         stop_price = round(entry_price * (1 - STOP_PCT), 2)
-        take_price = round(entry_price * (1 + TAKE_PCT), 2)
     else:
         stop_price = round(entry_price * (1 + STOP_PCT), 2)
+    if take_override is not None:
+        take_price = round(float(take_override), 4)
+    elif side == "buy":
+        take_price = round(entry_price * (1 + TAKE_PCT), 2)
+    else:
         take_price = round(entry_price * (1 - TAKE_PCT), 2)
 
     requested_qty = float(qty)
     risk_per_share = abs(float(entry_price) - float(stop_price))
     actual_risk_dollars = round(abs(requested_qty) * risk_per_share, 4)
-    return {
+    plan = {
         "active": True,
         "side": side,
         "qty": requested_qty,
@@ -1948,13 +1964,26 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "entry_price": round(entry_price, 4),
         "stop_price": stop_price,
         "take_price": take_price,
+        "initial_stop_price": stop_price,
+        "initial_take_price": take_price,
         "signal": signal,
         "opened_at": now_ny().isoformat(),
         "last_exit_attempt_ts": 0,
         "actual_risk_dollars": actual_risk_dollars,
+        "risk_per_share": round(risk_per_share, 4),
+        "max_hold_days": int(meta.get("max_hold_days") or SWING_MAX_HOLD_DAYS),
+        "strategy_name": str(meta.get("strategy_name") or meta.get("strategy") or signal or "").strip(),
     }
-
-
+    plan["thesis"] = {
+        "candidate_rank_score": meta.get("rank_score"),
+        "breakout_level": meta.get("breakout_level"),
+        "breakout_ref": meta.get("breakout_ref"),
+        "breakout_lookback_days": meta.get("breakout_lookback_days") or SWING_BREAKOUT_LOOKBACK_DAYS,
+        "stop_basis": meta.get("stop_basis") or SWING_STOP_MODE,
+        "target_r_mult": meta.get("target_r_mult") or SWING_TARGET_R_MULT,
+        "candidate_ts": meta.get("scan_ts") or now_ny().isoformat(),
+    }
+    return plan
 
 def is_live_trading_permitted(source: str = "") -> bool:
     if DRY_RUN or (not LIVE_TRADING_ENABLED):
@@ -3968,6 +3997,70 @@ async def kill_off(request: Request):
 
 
 
+def _plan_risk_per_share(plan: dict) -> float:
+    try:
+        r = float(plan.get("risk_per_share") or 0.0)
+        if r > 0:
+            return r
+    except Exception:
+        pass
+    try:
+        return abs(float(plan.get("entry_price") or 0.0) - float(plan.get("initial_stop_price") or plan.get("stop_price") or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _swing_unrealized_r(plan: dict, px: float) -> float:
+    entry = _safe_float((plan or {}).get("entry_price") or 0.0)
+    risk = _plan_risk_per_share(plan or {})
+    if entry <= 0 or risk <= 0:
+        return 0.0
+    side = str((plan or {}).get("side") or "buy").lower()
+    if side == "buy":
+        return (float(px) - entry) / risk
+    return (entry - float(px)) / risk
+
+
+def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
+    out = {"updates": {}, "flags": [], "stall_exit": False, "stall_r": 0.0}
+    if STRATEGY_MODE != "swing":
+        return out
+    side = str((plan or {}).get("side") or "buy").lower()
+    if side != "buy":
+        return out
+    entry = _safe_float((plan or {}).get("entry_price") or 0.0)
+    current_stop = _safe_float((plan or {}).get("stop_price") or 0.0)
+    risk = _plan_risk_per_share(plan or {})
+    if entry <= 0 or risk <= 0:
+        return out
+    unrealized_r = _swing_unrealized_r(plan or {}, float(px))
+    out["stall_r"] = round(unrealized_r, 4)
+
+    new_stop = current_stop
+    if SWING_ENABLE_BREAK_EVEN_STOP and unrealized_r >= float(SWING_BREAK_EVEN_R):
+        new_stop = max(new_stop, entry)
+        out["flags"].append("break_even_armed")
+
+    if SWING_ENABLE_TRAILING_STOP and unrealized_r >= float(SWING_TRAIL_AFTER_R):
+        lookback = max(2, int(SWING_TRAIL_LOOKBACK_DAYS))
+        bars = fetch_daily_bars_multi([symbol], lookback_days=max(lookback + 10, 20)).get(symbol, [])
+        if len(bars) >= lookback:
+            lows = [_safe_float(b.get("low") or 0.0) for b in bars[-lookback:]]
+            trail_stop = max(lows) if lows else 0.0
+            if trail_stop > 0:
+                new_stop = max(new_stop, trail_stop)
+                out["flags"].append("trailing_stop_armed")
+
+    if new_stop > current_stop + 1e-9:
+        out["updates"]["stop_price"] = round(new_stop, 4)
+
+    hold_days = plan_days_held(plan or {})
+    if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R):
+        out["stall_exit"] = True
+        out["flags"].append("stall_exit_ready")
+    return out
+
+
 def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta: dict | None = None, auth_payload: dict | None = None) -> dict:
     """Shared entry execution path for scanner + webhook."""
     meta = meta or {}
@@ -4105,7 +4198,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         }
 
         if effective_dry_run:
-            plan = build_trade_plan(symbol, side, qty, float(base_price), signal)
+            plan = build_trade_plan(symbol, side, qty, float(base_price), signal, meta=meta)
             plan["source"] = source
             plan["requested_qty"] = float(risk_qty)
             plan["submitted_qty"] = float(qty)
@@ -4118,7 +4211,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": plan}
 
         order = submit_market_order(symbol, side, qty)
-        plan = build_trade_plan(symbol, side, qty, float(base_price), signal)
+        plan = build_trade_plan(symbol, side, qty, float(base_price), signal, meta=meta)
         plan["source"] = source
         plan["order_id"] = str(getattr(order, "id", ""))
         plan["submitted_at"] = now_ny().isoformat()
@@ -4269,6 +4362,14 @@ async def worker_exit(req: Request):
         take_price = float(plan.get("take_price"))
         entry_side = plan.get("side")  # 'buy' (long) or 'sell' (short)
 
+        dynamic_exit = {"updates": {}, "flags": [], "stall_exit": False, "stall_r": 0.0}
+        if STRATEGY_MODE == "swing":
+            dynamic_exit = _calc_swing_dynamic_levels(symbol, plan, float(px))
+            if dynamic_exit.get("updates"):
+                plan.update(dynamic_exit.get("updates") or {})
+                stop_price = float(plan.get("stop_price"))
+                take_price = float(plan.get("take_price"))
+
         if entry_side == "buy":
             hit_stop = px <= stop_price
             hit_take = px >= take_price
@@ -4278,7 +4379,8 @@ async def worker_exit(req: Request):
 
         hold_days = plan_days_held(plan)
         plan["days_held"] = hold_days
-        if STRATEGY_MODE == "swing" and SWING_MAX_HOLD_DAYS > 0 and hold_days >= SWING_MAX_HOLD_DAYS:
+        max_hold_days = int(plan.get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0)
+        if STRATEGY_MODE == "swing" and max_hold_days > 0 and hold_days >= max_hold_days:
             if same_day_exit_blocked(plan, reason="time_exit"):
                 results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": "time_exit", "days_held": hold_days})
             else:
@@ -4286,8 +4388,22 @@ async def worker_exit(req: Request):
                 out = close_position(symbol, reason="time_exit", source="worker_exit")
                 if out.get("closed"):
                     plan["active"] = False
-                results.append({"symbol": symbol, "action": "time_exit", "days_held": hold_days, **out})
+                results.append({"symbol": symbol, "action": "time_exit", "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
                 continue
+
+        if dynamic_exit.get("stall_exit"):
+            plan["last_exit_attempt_ts"] = now_ts
+            reason = "stall_exit"
+            if same_day_exit_blocked(plan, reason=reason):
+                results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": reason, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r")})
+                continue
+            out = close_position(symbol, reason=reason, source="worker_exit")
+            if out.get("closed"):
+                plan["active"] = False
+                results.append({"symbol": symbol, "action": reason, "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
+            else:
+                results.append({"symbol": symbol, "action": f"{reason}_failed", "price": px, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
+            continue
 
         if hit_stop or hit_take:
             plan["last_exit_attempt_ts"] = now_ts
@@ -4298,11 +4414,11 @@ async def worker_exit(req: Request):
             out = close_position(symbol, reason=reason, source="worker_exit")
             if out.get("closed"):
                 plan["active"] = False
-                results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "take": take_price, **out})
+                results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
             else:
-                results.append({"symbol": symbol, "action": f"exit_{reason}_failed", "price": px, **out})
+                results.append({"symbol": symbol, "action": f"exit_{reason}_failed", "price": px, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
         else:
-            results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price})
+            results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r")})
 
 
     # --- Trades-Today forcing (optional, emergency) ---
@@ -4655,6 +4771,48 @@ def diagnostics_ranking(limit: int = 25):
     if (not rows) and LAST_SCAN.get("summary"):
         rows = list((LAST_SCAN.get("summary") or {}).get("top_pre_ranked_candidates") or [])[: max(1, min(int(limit or 25), 200))]
     return {"ok": True, "count": len(rows), "items": rows, "settings": {"enabled": bool(SIGNAL_RANKING_ENABLED), "scanner_rank_min_score": float(SCANNER_RANK_MIN_SCORE), "scanner_fallback_min_rank_score": float(SCANNER_FALLBACK_MIN_RANK_SCORE), "scanner_fallback_min_raw_score": float(SCANNER_FALLBACK_MIN_RAW_SCORE), "micro_confirm_mode": str(VWAP_PB_MICRO_CONFIRM_MODE), "soft_confirm_min_passes": int(VWAP_PB_SOFT_CONFIRM_MIN_PASSES), "fallback_min_ema_slope": float(VWAP_PB_FALLBACK_MIN_EMA_SLOPE), "fallback_min_vwap_slope": float(VWAP_PB_FALLBACK_MIN_VWAP_SLOPE), "fallback_bounce_slack_pct": float(VWAP_PB_FALLBACK_BOUNCE_SLACK_PCT), "fallback_max_dist_vwap_pct": float(VWAP_PB_FALLBACK_MAX_DIST_VWAP_PCT)}}
+
+@app.get("/diagnostics/exits")
+def diagnostics_exits(limit: int = 25):
+    rows = []
+    for symbol, plan in list((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not plan.get("active"):
+            continue
+        try:
+            px = get_latest_price(symbol)
+        except Exception:
+            px = None
+        rows.append({
+            "symbol": symbol,
+            "strategy": plan.get("strategy_name") or plan.get("signal"),
+            "days_held": plan_days_held(plan),
+            "entry_price": plan.get("entry_price"),
+            "stop_price": plan.get("stop_price"),
+            "take_price": plan.get("take_price"),
+            "initial_stop_price": plan.get("initial_stop_price"),
+            "risk_per_share": plan.get("risk_per_share"),
+            "unrealized_r": round(_swing_unrealized_r(plan, float(px)), 4) if px is not None else None,
+            "latest_price": px,
+            "max_hold_days": plan.get("max_hold_days"),
+            "thesis": plan.get("thesis") or {},
+        })
+    rows.sort(key=lambda x: (int(x.get("days_held") or 0), float(x.get("unrealized_r") or -999)), reverse=True)
+    return {
+        "ok": True,
+        "strategy_mode": STRATEGY_MODE,
+        "exit_rules": {
+            "swing_enable_break_even_stop": SWING_ENABLE_BREAK_EVEN_STOP,
+            "swing_break_even_r": SWING_BREAK_EVEN_R,
+            "swing_enable_trailing_stop": SWING_ENABLE_TRAILING_STOP,
+            "swing_trail_after_r": SWING_TRAIL_AFTER_R,
+            "swing_trail_lookback_days": SWING_TRAIL_LOOKBACK_DAYS,
+            "swing_stall_exit_days": SWING_STALL_EXIT_DAYS,
+            "swing_stall_min_r": SWING_STALL_MIN_R,
+        },
+        "positions": rows[: max(1, min(int(limit or 25), 200))],
+        "count": len(rows),
+    }
+
 
 @app.get("/diagnostics/candidates")
 def diagnostics_candidates(limit: int = 25):
