@@ -94,3 +94,7 @@ This repo supports a 3-service deployment on Render:
 
 ## Patch 012
 Adds fallback slope governance and fallback diagnostics summaries.
+
+
+## Swing foundation patch
+Use the env template files in this bundle for the new swing-oriented deployment posture.

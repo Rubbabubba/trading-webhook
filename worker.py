@@ -5,14 +5,14 @@ import urllib.request
 import urllib.error
 
 # Endpoint to ping (set this in Render env as BASE_URL)
-BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
+BASE_URL = (os.getenv("BASE_URL") or os.getenv("MAIN_SERVICE_URL") or "").rstrip("/")
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 
 # Interval (seconds)
 WORKER_MODE = os.getenv("WORKER_MODE", "exit").strip().lower()
 
 # Interval (seconds)
-INTERVAL_SEC = int(os.getenv("EXIT_INTERVAL_SEC" if WORKER_MODE=="exit" else "SCAN_INTERVAL_SEC", "30" if WORKER_MODE=="exit" else "60"))
+INTERVAL_SEC = int(os.getenv("EXIT_INTERVAL_SEC" if WORKER_MODE=="exit" else "SCAN_INTERVAL_SEC", "30" if WORKER_MODE=="exit" else "3600"))
 
 # Endpoint path
 EXIT_PATH = os.getenv("EXIT_PATH", "/worker/exit")
@@ -47,7 +47,7 @@ def main():
     if WORKER_SECRET:
         payload["worker_secret"] = WORKER_SECRET
 
-    log(f"[worker] starting exit loop: url={url} interval={INTERVAL_SEC}s secret={'set' if WORKER_SECRET else 'not_set'}")
+    log(f"[worker] starting {WORKER_MODE} loop: url={url} interval={INTERVAL_SEC}s secret={'set' if WORKER_SECRET else 'not_set'} strategy_mode={os.getenv("STRATEGY_MODE", "intraday")}")
 
     while True:
         start = time.time()

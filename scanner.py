@@ -15,7 +15,7 @@ def getenv_int(name: str, default: int) -> int:
 
 def resolve_scan_url() -> str | None:
     # Preferred: full URL
-    url = os.getenv("SCAN_ENTRIES_URL")
+    url = os.getenv("SCAN_ENTRIES_URL") or os.getenv("SWING_SCAN_ENTRIES_URL")
     if url:
         return url.strip()
 
@@ -46,7 +46,7 @@ def main() -> None:
         print("[scanner] ERROR: missing target URL. Set SCAN_ENTRIES_URL (recommended, full URL) or MAIN_SERVICE_URL/WORKER_BASE_URL (base URL of the main service).")
         raise SystemExit(2)
 
-    interval = getenv_int("SCAN_INTERVAL_SEC", 60)
+    interval = getenv_int("SCAN_INTERVAL_SEC", getenv_int("SWING_SCAN_INTERVAL_SEC", 3600))
     timeout = getenv_int("SCAN_TIMEOUT_SEC", 60)
 
     # IMPORTANT: main service expects worker_secret in JSON body when WORKER_SECRET is set.
@@ -66,7 +66,7 @@ def main() -> None:
         if v is not None and v != "":
             payload[k] = v
 
-    print(f"[scanner] starting loop: url={url} interval={interval}s timeout={timeout}s has_worker_secret={bool(worker_secret)}")
+    print(f"[scanner] starting loop: url={url} interval={interval}s timeout={timeout}s has_worker_secret={bool(worker_secret)} strategy_mode={os.getenv("STRATEGY_MODE", "intraday")}")
 
     while True:
         try:

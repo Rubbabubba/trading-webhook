@@ -324,6 +324,27 @@ def env_bool(name: str, default: str | bool = "false") -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def env_bool_any(*names: str, default: str | bool = "false") -> bool:
+    raw = getenv_any(*names, default=str(default))
+    return str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def getenv_float_any(*names: str, default: float = 0.0) -> float:
+    raw = getenv_any(*names, default=str(default))
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def getenv_int_any(*names: str, default: int = 0) -> int:
+    raw = getenv_any(*names, default=str(default))
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
+
+
 def now_ny() -> datetime:
     return datetime.now(tz=NY_TZ)
 
@@ -417,27 +438,27 @@ ALLOWED_SYMBOLS = set(
 )
 
 # Risk / sizing
-RISK_DOLLARS = float(os.getenv("RISK_DOLLARS", "3"))
-STOP_PCT = float(os.getenv("STOP_PCT", "0.003"))  # 0.30%
-TAKE_PCT = float(os.getenv("TAKE_PCT", "0.006"))  # 0.60%
+RISK_DOLLARS = getenv_float_any("SWING_RISK_PER_TRADE_DOLLARS", "RISK_DOLLARS", default=3.0)
+STOP_PCT = getenv_float_any("SWING_STOP_PCT", "STOP_PCT", default=0.003)  # 0.30%
+TAKE_PCT = getenv_float_any("SWING_TAKE_PCT", "TAKE_PCT", default=0.006)  # 0.60%
 MIN_QTY = float(os.getenv("MIN_QTY", "0.01"))
 MAX_QTY = float(os.getenv("MAX_QTY", "1.50"))
 ORDER_BP_HAIRCUT_PCT = float(os.getenv("ORDER_BP_HAIRCUT_PCT", "0.95"))
 MIN_AFFORDABLE_QTY = float(os.getenv("MIN_AFFORDABLE_QTY", str(MIN_QTY)))
 
 # Safety / behavior
-ALLOW_SHORT = env_bool("ALLOW_SHORT", "false")
-ALLOW_REVERSAL = env_bool("ALLOW_REVERSAL", "true")
-DRY_RUN = env_bool("DRY_RUN", "false")
+ALLOW_SHORT = env_bool_any("ALLOW_SHORT", default="false")
+ALLOW_REVERSAL = env_bool_any("ALLOW_REVERSAL", default="true")
+DRY_RUN = env_bool_any("DRY_RUN", default="false")
 
 # Market hours
-ONLY_MARKET_HOURS = env_bool("ONLY_MARKET_HOURS", "true")
+ONLY_MARKET_HOURS = env_bool_any("SWING_ONLY_MARKET_HOURS", "ONLY_MARKET_HOURS", default="true")
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
-EOD_FLATTEN_TIME = os.getenv("EOD_FLATTEN_TIME", "15:55")  # NY time
+EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
 EXIT_COOLDOWN_SEC = int(os.getenv("EXIT_COOLDOWN_SEC", "20"))
 
 # Idempotency
@@ -447,13 +468,24 @@ DEDUP_WINDOW_SEC = int(getenv_any("DEDUP_WINDOW_SEC", "IDEMPOTENCY_WINDOW_SECOND
 
 # Symbol lock
 SYMBOL_LOCK_SEC = int(getenv_any("SYMBOL_LOCK_SEC", "SYMBOL_LOCK_SECONDS", default="180"))  # lock during entry/plan
-MAX_OPEN_POSITIONS = int(getenv_any("MAX_OPEN_POSITIONS", default="2"))
+MAX_OPEN_POSITIONS = getenv_int_any("SWING_MAX_OPEN_POSITIONS", "MAX_OPEN_POSITIONS", default=2)
 
 # Durable execution journal / restart diagnostics
 JOURNAL_ENABLED = env_bool("JOURNAL_ENABLED", "true")
 JOURNAL_PERSIST_SCANS = env_bool("JOURNAL_PERSIST_SCANS", "false")
 JOURNAL_PATH = getenv_any("JOURNAL_PATH", default="/var/data/execution_journal.jsonl")
 POSITION_SNAPSHOT_PATH = getenv_any("POSITION_SNAPSHOT_PATH", default="/var/data/positions_snapshot.json")
+SYSTEM_NAME = getenv_any("SYSTEM_NAME", default="trading-webhook")
+ENV_NAME = getenv_any("ENV_NAME", default="prod")
+STRATEGY_MODE = getenv_any("STRATEGY_MODE", default="intraday").strip().lower() or "intraday"
+LIVE_TRADING_ENABLED = env_bool_any("LIVE_TRADING_ENABLED", default="false")
+PERSISTENCE_REQUIRED = env_bool_any("PERSISTENCE_REQUIRED", default="true")
+SWING_ALLOW_SAME_DAY_EXIT = env_bool_any("SWING_ALLOW_SAME_DAY_EXIT", default="false")
+SWING_MAX_HOLD_DAYS = getenv_int_any("SWING_MAX_HOLD_DAYS", default=5)
+SWING_MAX_PORTFOLIO_EXPOSURE_PCT = getenv_float_any("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", default=0.90)
+SWING_MAX_SYMBOL_EXPOSURE_PCT = getenv_float_any("SWING_MAX_SYMBOL_EXPOSURE_PCT", default=0.35)
+SWING_STOP_ATR_DAILY_MULT = getenv_float_any("SWING_STOP_ATR_DAILY_MULT", default=1.20)
+SWING_TARGET_ATR_DAILY_MULT = getenv_float_any("SWING_TARGET_ATR_DAILY_MULT", default=2.00)
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
 
@@ -493,8 +525,8 @@ ALERT_INCLUDE_DETAILS = env_bool("ALERT_INCLUDE_DETAILS", True)
 # =============================
 # Scanner (Phase 1C - shadow mode default)
 # =============================
-SCANNER_ENABLED = env_bool("SCANNER_ENABLED", "false")
-SCANNER_DRY_RUN = env_bool("SCANNER_DRY_RUN", "true")
+SCANNER_ENABLED = env_bool_any("SWING_SCANNER_ENABLED", "SCANNER_ENABLED", default="false")
+SCANNER_DRY_RUN = env_bool_any("SCANNER_DRY_RUN", default="true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
 
 # --- Trades-Today forcing (emergency mode) ---
@@ -631,7 +663,7 @@ VWAP_PB_MICRO_CONFIRM_MODE = str(os.getenv("VWAP_PB_MICRO_CONFIRM_MODE", "soft2"
 VWAP_PB_SOFT_CONFIRM_MIN_PASSES = int(os.getenv("VWAP_PB_SOFT_CONFIRM_MIN_PASSES", "2"))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
-SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default="vwap_pullback").strip().lower()
+SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default=("daily_breakout" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "vwap_pullback")).strip().lower()
 SCANNER_CANDIDATE_LIMIT = int(getenv_any("SCANNER_CANDIDATE_LIMIT", default="25"))
 SCANNER_ACTIVITY_LOOKBACK_BARS = int(getenv_any("SCANNER_ACTIVITY_LOOKBACK_BARS", default="30"))
 SCANNER_ACTIVITY_RECENT_BARS = int(getenv_any("SCANNER_ACTIVITY_RECENT_BARS", default="6"))
@@ -1197,6 +1229,10 @@ _bootstrap_journal_decisions()
 def config_effective_snapshot() -> dict:
     return {
         "paper": APCA_PAPER,
+        "system_name": SYSTEM_NAME,
+        "env_name": ENV_NAME,
+        "strategy_mode": STRATEGY_MODE,
+        "live_trading_enabled": LIVE_TRADING_ENABLED,
         "allowed_symbols_count": len(ALLOWED_SYMBOLS),
         "allow_short": ALLOW_SHORT,
         "allow_reversal": ALLOW_REVERSAL,
@@ -1210,6 +1246,9 @@ def config_effective_snapshot() -> dict:
         "journal_enabled": JOURNAL_ENABLED,
         "journal_path": JOURNAL_PATH,
         "position_snapshot_path": POSITION_SNAPSHOT_PATH,
+        "persistence_required": PERSISTENCE_REQUIRED,
+        "swing_max_hold_days": SWING_MAX_HOLD_DAYS,
+        "swing_allow_same_day_exit": SWING_ALLOW_SAME_DAY_EXIT,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
         "enable_risk_recheck_after_fill": ENABLE_RISK_RECHECK_AFTER_FILL,
@@ -1433,8 +1472,8 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
     qty = abs(qty_signed)
     close_side = "sell" if qty_signed > 0 else "buy"
 
-    if DRY_RUN:
-        payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side}
+    if not is_live_trading_permitted(source):
+        payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED}
         record_decision("EXIT", source, symbol, side=close_side, action="dry_run", reason=reason or "dry_run", qty=qty)
         return payload
 
@@ -1895,6 +1934,47 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "actual_risk_dollars": actual_risk_dollars,
     }
 
+
+
+def is_live_trading_permitted(source: str = "") -> bool:
+    if DRY_RUN or (not LIVE_TRADING_ENABLED):
+        return False
+    if source == "worker_scan" and (not SCANNER_ALLOW_LIVE):
+        return False
+    return True
+
+
+def _parse_plan_opened_dt(plan: dict) -> Optional[datetime]:
+    raw = str((plan or {}).get("opened_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=NY_TZ)
+        return dt.astimezone(NY_TZ)
+    except Exception:
+        return None
+
+
+def plan_days_held(plan: dict) -> int:
+    opened = _parse_plan_opened_dt(plan)
+    if opened is None:
+        return 0
+    return max(0, (now_ny().date() - opened.date()).days)
+
+
+def same_day_exit_blocked(plan: dict, reason: str = "") -> bool:
+    if STRATEGY_MODE != "swing":
+        return False
+    if SWING_ALLOW_SAME_DAY_EXIT:
+        return False
+    if (reason or "").strip().lower() in {"kill_switch", "daily_stop_hit", "broker_reconcile_failure", "manual_emergency", "catastrophic_invalid"}:
+        return False
+    opened = _parse_plan_opened_dt(plan)
+    if opened is None:
+        return False
+    return opened.date() == now_ny().date()
 
 def cleanup_caches():
     """Housekeeping for in-memory caches (dedup + symbol locks)."""
@@ -3234,6 +3314,10 @@ def health():
     return {
         "ok": True,
         "paper": APCA_PAPER,
+        "system_name": SYSTEM_NAME,
+        "env_name": ENV_NAME,
+        "strategy_mode": STRATEGY_MODE,
+        "live_trading_enabled": LIVE_TRADING_ENABLED,
         "allowed_symbols": sorted(ALLOWED_SYMBOLS),
         "allow_short": ALLOW_SHORT,
         "allow_reversal": ALLOW_REVERSAL,
@@ -3254,7 +3338,7 @@ def scanner_status():
     Quick visibility into scanner configuration and the last scan summary.
     Safe for production; does not expose secrets.
     """
-    effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
+    effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("worker_scan")))
     return {
         "ok": True,
         "scanner": {
@@ -3328,6 +3412,9 @@ def diagnostics_execution(request: Request, limit: int = 100):
         "journal_enabled": JOURNAL_ENABLED,
         "journal_path": JOURNAL_PATH,
         "position_snapshot_path": POSITION_SNAPSHOT_PATH,
+        "persistence_required": PERSISTENCE_REQUIRED,
+        "swing_max_hold_days": SWING_MAX_HOLD_DAYS,
+        "swing_allow_same_day_exit": SWING_ALLOW_SAME_DAY_EXIT,
         "recent_count": len(rows),
         "entry_submits": len(entry_submits),
         "exit_submits": len(exit_submits),
@@ -3414,6 +3501,12 @@ def diagnostics_readiness(request: Request):
         try:
             _ensure_parent_dir(JOURNAL_PATH)
             Path(JOURNAL_PATH).parent.mkdir(parents=True, exist_ok=True)
+            if PERSISTENCE_REQUIRED:
+                try:
+                    if str(JOURNAL_PATH).startswith("/tmp") or str(POSITION_SNAPSHOT_PATH).startswith("/tmp"):
+                        log("PERSISTENCE_WARNING", journal_path=JOURNAL_PATH, position_snapshot_path=POSITION_SNAPSHOT_PATH, reason="tmp_path_detected")
+                except Exception:
+                    pass
         except Exception as e:
             journal_ok = False
             journal_error = str(e)
@@ -3637,7 +3730,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="symbol_locked", meta=meta)
         return {"ok": True, "ignored": True, "reason": "symbol_locked", "symbol": symbol, "signal": signal}
 
-    effective_dry_run = bool((SCANNER_DRY_RUN if source == "worker_scan" else False) or DRY_RUN or (source == "worker_scan" and (not SCANNER_ALLOW_LIVE)))
+    effective_dry_run = bool((SCANNER_DRY_RUN if source == "worker_scan" else False) or (not is_live_trading_permitted(source)))
 
     try:
         snapshot = get_latest_quote_snapshot(symbol)
@@ -3810,20 +3903,21 @@ async def worker_exit(req: Request):
     # Reconcile internal plans from Alpaca positions (protects positions across restarts)
     reconcile_actions = reconcile_trade_plans_from_alpaca()
 
-    eod_t = parse_hhmm(EOD_FLATTEN_TIME)
     now = now_ny()
     now_t = now.time()
     results = []
 
-    # EOD flatten: source of truth is Alpaca positions
-    if now_t >= eod_t:
-        for p in list_open_positions_allowed():
-            sym = p["symbol"]
-            out = close_position(sym, reason="eod_flatten", source="worker_exit")
-            if sym in TRADE_PLAN:
-                TRADE_PLAN[sym]["active"] = False
-            results.append({"symbol": sym, "action": "flatten_eod", **out})
-        return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results, "mode": "eod_flatten"}
+    # EOD flatten is intraday-only. Swing mode intentionally disables clock-based flattening.
+    if EOD_FLATTEN_TIME:
+        eod_t = parse_hhmm(EOD_FLATTEN_TIME)
+        if now_t >= eod_t:
+            for p in list_open_positions_allowed():
+                sym = p["symbol"]
+                out = close_position(sym, reason="eod_flatten", source="worker_exit")
+                if sym in TRADE_PLAN:
+                    TRADE_PLAN[sym]["active"] = False
+                results.append({"symbol": sym, "action": "flatten_eod", **out})
+            return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results, "mode": "eod_flatten"}
 
     # Manage active plans with stop/take
     for symbol, plan in list(TRADE_PLAN.items()):
@@ -3867,9 +3961,25 @@ async def worker_exit(req: Request):
             hit_stop = px >= stop_price
             hit_take = px <= take_price
 
+        hold_days = plan_days_held(plan)
+        plan["days_held"] = hold_days
+        if STRATEGY_MODE == "swing" and SWING_MAX_HOLD_DAYS > 0 and hold_days >= SWING_MAX_HOLD_DAYS:
+            if same_day_exit_blocked(plan, reason="time_exit"):
+                results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": "time_exit", "days_held": hold_days})
+            else:
+                plan["last_exit_attempt_ts"] = now_ts
+                out = close_position(symbol, reason="time_exit", source="worker_exit")
+                if out.get("closed"):
+                    plan["active"] = False
+                results.append({"symbol": symbol, "action": "time_exit", "days_held": hold_days, **out})
+                continue
+
         if hit_stop or hit_take:
             plan["last_exit_attempt_ts"] = now_ts
             reason = "stop" if hit_stop else "target"
+            if same_day_exit_blocked(plan, reason=reason):
+                results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": reason, "days_held": hold_days})
+                continue
             out = close_position(symbol, reason=reason, source="worker_exit")
             if out.get("closed"):
                 plan["active"] = False
@@ -3883,7 +3993,7 @@ async def worker_exit(req: Request):
     # --- Trades-Today forcing (optional, emergency) ---
     # Keep this path conservative and self-contained so it cannot crash the exit worker.
     try:
-        effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
+        effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("worker_scan")))
         if TRADES_TODAY_ENABLE and SCANNER_ALLOW_LIVE and (not effective_dry_run) and in_market_hours():
             forced_today = _count_forced_trades_today_ny()
             already_actionable = any(str(r.get("action", "")).startswith("exit_") for r in results)
@@ -4212,7 +4322,7 @@ def diagnostics_runtime(request: Request):
         checks["sample_symbol"] = {"ok": False, "error": "no_symbols_available"}
         checks["sample_symbol_5m_bars"] = {"ok": False, "error": "no_symbols_available"}
 
-    live_ready = all(v.get("ok") for v in checks.values()) and (not DRY_RUN) and SCANNER_ALLOW_LIVE
+    live_ready = all(v.get("ok") for v in checks.values()) and is_live_trading_permitted("worker_scan")
     return {
         "ok": True,
         "live_ready": live_ready,
@@ -4251,7 +4361,7 @@ async def worker_scan_entries(req: Request):
         if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
-    effective_dry_run = bool(SCANNER_DRY_RUN or DRY_RUN or (not SCANNER_ALLOW_LIVE))
+    effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("worker_scan")))
 
     def _set_last_scan(**kwargs):
         LAST_SCAN.clear()
