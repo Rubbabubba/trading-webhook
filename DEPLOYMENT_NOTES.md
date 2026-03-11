@@ -98,3 +98,8 @@ Adds fallback slope governance and fallback diagnostics summaries.
 
 ## Swing foundation patch
 Use the env template files in this bundle for the new swing-oriented deployment posture.
+
+
+## Patch 4 verification
+- Check `/diagnostics/regime` for current market state.
+- Check `/diagnostics/candidates` and confirm rejected names show `weak_tape` or `correlation_group_limit` when applicable.

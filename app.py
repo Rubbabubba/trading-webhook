@@ -510,6 +510,15 @@ SWING_TRAIL_LOOKBACK_DAYS = getenv_int_any("SWING_TRAIL_LOOKBACK_DAYS", default=
 SWING_STALL_EXIT_DAYS = getenv_int_any("SWING_STALL_EXIT_DAYS", default=3)
 SWING_STALL_MIN_R = getenv_float_any("SWING_STALL_MIN_R", default=0.25)
 SWING_CANDIDATE_TTL_HOURS = getenv_int_any("SWING_CANDIDATE_TTL_HOURS", default=24)
+SWING_REGIME_FILTER_ENABLED = getenv_bool_any("SWING_REGIME_FILTER_ENABLED", default=True)
+SWING_REGIME_FAST_MA_DAYS = getenv_int_any("SWING_REGIME_FAST_MA_DAYS", default=20)
+SWING_REGIME_SLOW_MA_DAYS = getenv_int_any("SWING_REGIME_SLOW_MA_DAYS", default=50)
+SWING_REGIME_MIN_BREADTH = getenv_float_any("SWING_REGIME_MIN_BREADTH", default=0.50)
+SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE = getenv_bool_any("SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE", default=False)
+SWING_WEAK_TAPE_MAX_NEW_ENTRIES = getenv_int_any("SWING_WEAK_TAPE_MAX_NEW_ENTRIES", default=0)
+SWING_MAX_GROUP_POSITIONS = getenv_int_any("SWING_MAX_GROUP_POSITIONS", default=1)
+SWING_CORRELATION_GROUPS = getenv_any("SWING_CORRELATION_GROUPS", default="SPY,QQQ,IWM|AAPL,MSFT,NVDA,AMD,AVGO|AMZN,META,GOOGL,CRM,ORCL,SNOW")
+SWING_REGIME_HISTORY_SIZE = getenv_int_any("SWING_REGIME_HISTORY_SIZE", default=100)
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
 
@@ -560,6 +569,8 @@ TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_fo
 TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
 LAST_SCAN: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
+LAST_REGIME_SNAPSHOT: dict = {}
+REGIME_HISTORY: list[dict] = []
 CANDIDATE_HISTORY_SIZE = int(os.getenv("CANDIDATE_HISTORY_SIZE", "100"))
 CANDIDATE_HISTORY: list[dict] = []
 
@@ -2392,6 +2403,97 @@ def _same_day_entry_count() -> int:
             n += 1
     return n
 
+
+def _parse_correlation_groups(raw: str) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    groups = [g.strip() for g in str(raw or '').split('|') if g.strip()]
+    for idx, group in enumerate(groups, start=1):
+        for sym in [s.strip().upper() for s in group.split(',') if s.strip()]:
+            mapping[sym] = idx
+    return mapping
+
+
+def _symbol_group_id(symbol: str) -> int | None:
+    return _parse_correlation_groups(SWING_CORRELATION_GROUPS).get(str(symbol or '').upper())
+
+
+def _open_group_position_count(symbol: str) -> int:
+    gid = _symbol_group_id(symbol)
+    if gid is None:
+        return 0
+    count = 0
+    seen = set()
+    for p in list_open_positions_details_allowed():
+        sym = str((p or {}).get('symbol') or '').upper()
+        if not sym or sym in seen:
+            continue
+        if _symbol_group_id(sym) == gid:
+            count += 1
+            seen.add(sym)
+    for sym, plan in (TRADE_PLAN or {}).items():
+        s = str(sym or '').upper()
+        if not s or s in seen:
+            continue
+        if isinstance(plan, dict) and plan.get('active') and _symbol_group_id(s) == gid:
+            count += 1
+            seen.add(s)
+    return count
+
+
+def _build_swing_regime(index_bars: list[dict], daily_map: dict[str, list[dict]], symbols: list[str]) -> dict:
+    closes = [_safe_float(b.get('close')) for b in (index_bars or [])]
+    idx_close = closes[-1] if closes else None
+    idx_fast = _sma(closes, SWING_REGIME_FAST_MA_DAYS) if closes else None
+    idx_slow = _sma(closes, SWING_REGIME_SLOW_MA_DAYS) if closes else None
+    index_trend_ok = bool(idx_close and idx_fast and idx_slow and idx_close > idx_fast > idx_slow) if idx_close and idx_fast and idx_slow else None
+    breadth_total = 0
+    breadth_pass = 0
+    ret_pass = 0
+    for sym in (symbols or []):
+        bars = daily_map.get(sym, []) or []
+        seq = [_safe_float(b.get('close')) for b in bars]
+        if len(seq) < max(SWING_REGIME_SLOW_MA_DAYS + 1, 21):
+            continue
+        breadth_total += 1
+        slow = _sma(seq, SWING_REGIME_SLOW_MA_DAYS)
+        if slow and seq[-1] > slow:
+            breadth_pass += 1
+        if seq[-21] > 0 and (seq[-1] / seq[-21] - 1.0) > 0:
+            ret_pass += 1
+    breadth = (breadth_pass / breadth_total) if breadth_total else None
+    ret_breadth = (ret_pass / breadth_total) if breadth_total else None
+    favorable = True
+    reasons = []
+    if SWING_REGIME_FILTER_ENABLED:
+        if index_trend_ok is False:
+            favorable = False
+            reasons.append('index_trend_weak')
+        if breadth is not None and breadth < SWING_REGIME_MIN_BREADTH:
+            favorable = False
+            reasons.append('breadth_below_min')
+    score = 0.0
+    if index_trend_ok is True:
+        score += 50.0
+    if breadth is not None:
+        score += max(0.0, min(30.0, breadth * 30.0))
+    if ret_breadth is not None:
+        score += max(0.0, min(20.0, ret_breadth * 20.0))
+    return {
+        'ts_utc': datetime.now(timezone.utc).isoformat(),
+        'enabled': SWING_REGIME_FILTER_ENABLED,
+        'index_symbol': SWING_INDEX_SYMBOL,
+        'index_close': round(idx_close, 4) if idx_close else None,
+        'index_fast_ma': round(idx_fast, 4) if idx_fast else None,
+        'index_slow_ma': round(idx_slow, 4) if idx_slow else None,
+        'index_trend_ok': index_trend_ok,
+        'breadth': round(breadth, 4) if breadth is not None else None,
+        'ret_breadth': round(ret_breadth, 4) if ret_breadth is not None else None,
+        'breadth_total': int(breadth_total),
+        'favorable': bool(favorable),
+        'score': round(score, 2),
+        'reasons': reasons,
+    }
+
 def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None) -> dict:
     candidate = {
         'symbol': symbol,
@@ -2502,10 +2604,24 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     lookback_days = max(int(SCANNER_LOOKBACK_DAYS or 20) + 20, SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 10)
     daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
     index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
+    regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, syms)
+    LAST_REGIME_SNAPSHOT.clear()
+    LAST_REGIME_SNAPSHOT.update(regime)
+    REGIME_HISTORY.append(dict(regime))
+    if len(REGIME_HISTORY) > SWING_REGIME_HISTORY_SIZE:
+        del REGIME_HISTORY[: len(REGIME_HISTORY) - SWING_REGIME_HISTORY_SIZE]
     open_total, open_by_symbol = _current_portfolio_exposure()
     equity = max(0.0, _current_equity_estimate())
     portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
     symbol_cap = equity * SWING_MAX_SYMBOL_EXPOSURE_PCT if equity > 0 else 0.0
+    new_entries_globally_blocked = False
+    global_block_reasons = []
+    if daily_halt_active() or daily_stop_hit():
+        new_entries_globally_blocked = True
+        global_block_reasons.append('daily_halt_active')
+    if regime.get('favorable') is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE:
+        new_entries_globally_blocked = True
+        global_block_reasons.append('weak_tape')
     candidates = []
     rejection_counts = Counter()
     for sym in syms:
@@ -2518,6 +2634,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('position_already_open')
         projected_notional = _safe_float(c.get('estimated_qty')) * _safe_float(c.get('close'))
+        if c.get('eligible') and new_entries_globally_blocked:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).extend(global_block_reasons)
+        group_count = _open_group_position_count(sym)
+        if c.get('eligible') and SWING_MAX_GROUP_POSITIONS > 0 and group_count >= SWING_MAX_GROUP_POSITIONS:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('correlation_group_limit')
+        c['correlation_group_id'] = _symbol_group_id(sym)
+        c['correlation_group_open_count'] = int(group_count)
         if c.get('eligible') and symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > symbol_cap:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
@@ -2530,6 +2655,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
     approved = [c for c in candidates if c.get('eligible')]
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
+    if regime.get('favorable') is False:
+        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
     remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - _same_day_entry_count())
     max_new_entries = min(max_new_entries, remaining_today)
     selected = approved[:max_new_entries]
@@ -2556,6 +2683,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'strategy_name': SWING_STRATEGY_NAME,
         'index_symbol': SWING_INDEX_SYMBOL,
         'index_alignment_ok': index_ok,
+        'regime': dict(regime),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
         'rejection_counts': dict(rejection_counts),
@@ -2566,6 +2694,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'strategy_name': SWING_STRATEGY_NAME,
         'index_symbol': SWING_INDEX_SYMBOL,
         'index_alignment_ok': index_ok,
+        'regime': dict(regime),
         'candidates_total': len(candidates),
         'eligible_total': len(approved),
         'selected_total': len(selected),
@@ -2577,6 +2706,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'portfolio_exposure_cap': round(portfolio_cap, 2),
         'symbol_exposure_cap': round(symbol_cap, 2),
         'remaining_new_entries_today': int(remaining_today),
+        'new_entries_globally_blocked': bool(new_entries_globally_blocked),
+        'global_block_reasons': list(global_block_reasons),
     }
     duration_ms = elapsed_ms_fn()
     set_last_scan_fn(skipped=False, reason=None, scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
@@ -4814,6 +4945,27 @@ def diagnostics_exits(limit: int = 25):
     }
 
 
+@app.get("/diagnostics/regime")
+def diagnostics_regime(limit: int = 20):
+    lim = max(1, min(int(limit or 20), 200))
+    return {
+        'ok': True,
+        'strategy_mode': STRATEGY_MODE,
+        'settings': {
+            'swing_regime_filter_enabled': SWING_REGIME_FILTER_ENABLED,
+            'swing_regime_fast_ma_days': SWING_REGIME_FAST_MA_DAYS,
+            'swing_regime_slow_ma_days': SWING_REGIME_SLOW_MA_DAYS,
+            'swing_regime_min_breadth': SWING_REGIME_MIN_BREADTH,
+            'swing_allow_new_entries_in_weak_tape': SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE,
+            'swing_weak_tape_max_new_entries': SWING_WEAK_TAPE_MAX_NEW_ENTRIES,
+            'swing_max_group_positions': SWING_MAX_GROUP_POSITIONS,
+            'swing_correlation_groups': SWING_CORRELATION_GROUPS,
+        },
+        'current': dict(LAST_REGIME_SNAPSHOT),
+        'history': REGIME_HISTORY[-lim:],
+    }
+
+
 @app.get("/diagnostics/candidates")
 def diagnostics_candidates(limit: int = 25):
     lim = max(1, min(int(limit or 25), 200))
@@ -4823,6 +4975,7 @@ def diagnostics_candidates(limit: int = 25):
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
         'strategy_name': SWING_STRATEGY_NAME,
+        'regime': dict(LAST_REGIME_SNAPSHOT),
         'count': len(latest),
         'items': latest,
         'history': hist,
