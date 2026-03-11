@@ -103,9 +103,3 @@ Use the env template files in this bundle for the new swing-oriented deployment 
 ## Patch 4 verification
 - Check `/diagnostics/regime` for current market state.
 - Check `/diagnostics/candidates` and confirm rejected names show `weak_tape` or `correlation_group_limit` when applicable.
-
-
-## Patch 9 - Scanner execution integrity
-- scanner stdout is forced unbuffered/line-buffered
-- scanner logs preflight connectivity and every scan attempt
-- startup scan retries added via SCAN_STARTUP_RETRIES and SCAN_STARTUP_RETRY_DELAY_SEC
