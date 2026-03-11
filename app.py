@@ -2394,62 +2394,14 @@ def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
             by_symbol[sym] = notion
     return total, by_symbol
 
-def _same_day_entry_stats() -> dict:
-    today = now_ny().date()
-    counted = 0
-    skipped_recovered = 0
-    skipped_inactive = 0
-    skipped_not_today = 0
-    items = []
-    for symbol, plan in (TRADE_PLAN or {}).items():
-        p = plan or {}
-        active = bool(p.get("active"))
-        signal = str(p.get("signal") or "").upper()
-        recovered = bool(p.get("recovered")) or signal == "RECOVERED"
-        dt = _parse_plan_opened_dt(p)
-        opened_today = bool(dt and dt.date() == today)
-        counted_here = False
-        if not active:
-            skipped_inactive += 1
-        elif recovered:
-            skipped_recovered += 1
-        elif not opened_today:
-            skipped_not_today += 1
-        else:
-            counted += 1
-            counted_here = True
-        items.append({
-            "symbol": str(symbol or "").upper(),
-            "active": active,
-            "recovered": recovered,
-            "signal": str(p.get("signal") or ""),
-            "opened_at": dt.isoformat() if dt else None,
-            "opened_today": opened_today,
-            "counted": counted_here,
-        })
-    return {
-        "today_ny": today.isoformat(),
-        "counted": counted,
-        "total_active": sum(1 for plan in (TRADE_PLAN or {}).values() if bool((plan or {}).get("active"))),
-        "skipped_recovered": skipped_recovered,
-        "skipped_inactive": skipped_inactive,
-        "skipped_not_today": skipped_not_today,
-        "items": items[:50],
-    }
-
-
 def _same_day_entry_count() -> int:
-    return int((_same_day_entry_stats() or {}).get("counted") or 0)
-
-
-def _has_pending_entry_plan(symbol: str) -> bool:
-    p = (TRADE_PLAN or {}).get(str(symbol or "").upper()) or {}
-    if not p:
-        return False
-    if bool(p.get("active")):
-        return True
-    status = str(p.get("order_status") or "").lower()
-    return status in {"submitted", "new", "accepted", "pending_new", "partially_filled"}
+    today = now_ny().date()
+    n = 0
+    for plan in (TRADE_PLAN or {}).values():
+        dt = _parse_plan_opened_dt(plan or {})
+        if dt and dt.date() == today:
+            n += 1
+    return n
 
 
 def _normalize_correlation_groups_raw(raw: str) -> str:
@@ -2533,12 +2485,19 @@ def _build_swing_regime(index_bars: list[dict], daily_map: dict[str, list[dict]]
     favorable = True
     reasons = []
     if SWING_REGIME_FILTER_ENABLED:
-        if index_trend_ok is False:
-            favorable = False
-            reasons.append('index_trend_weak')
-        if breadth is not None and breadth < SWING_REGIME_MIN_BREADTH:
-            favorable = False
-            reasons.append('breadth_below_min')
+        favorable = None
+        if index_trend_ok is None:
+            reasons.append('index_trend_unknown')
+        if breadth is None:
+            reasons.append('breadth_unknown')
+        if index_trend_ok is not None and breadth is not None:
+            favorable = True
+            if index_trend_ok is False:
+                favorable = False
+                reasons.append('index_trend_weak')
+            if breadth < SWING_REGIME_MIN_BREADTH:
+                favorable = False
+                reasons.append('breadth_below_min')
     score = 0.0
     if index_trend_ok is True:
         score += 50.0
@@ -2557,7 +2516,7 @@ def _build_swing_regime(index_bars: list[dict], daily_map: dict[str, list[dict]]
         'breadth': round(breadth, 4) if breadth is not None else None,
         'ret_breadth': round(ret_breadth, 4) if ret_breadth is not None else None,
         'breadth_total': int(breadth_total),
-        'favorable': bool(favorable),
+        'favorable': favorable,
         'score': round(score, 2),
         'reasons': reasons,
     }
@@ -2662,7 +2621,7 @@ def _index_alignment_ok(index_bars: list[dict]) -> bool | None:
         return None
     return bool(closes[-1] > fast_ma > slow_ma)
 
-def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None) -> dict:
+def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None, scan_reason: str | None = None) -> dict:
     reconcile_actions = reconcile_actions or []
     syms = universe_symbols()
     if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms:
@@ -2687,16 +2646,22 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     if daily_halt_active() or daily_stop_hit():
         new_entries_globally_blocked = True
         global_block_reasons.append('daily_halt_active')
+    if portfolio_cap > 0 and open_total >= portfolio_cap:
+        new_entries_globally_blocked = True
+        global_block_reasons.append('portfolio_already_over_cap')
     if regime.get('favorable') is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE:
         new_entries_globally_blocked = True
         global_block_reasons.append('weak_tape')
+    if SWING_REGIME_FILTER_ENABLED and regime.get('favorable') is None:
+        new_entries_globally_blocked = True
+        global_block_reasons.append('regime_unknown')
     candidates = []
     rejection_counts = Counter()
     for sym in syms:
         c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok)
-        if _has_pending_entry_plan(sym):
+        if TRADE_PLAN.get(sym, {}).get('active'):
             c['eligible'] = False
-            c.setdefault('rejection_reasons', []).append('plan_or_pending_entry_exists')
+            c.setdefault('rejection_reasons', []).append('plan_active')
         qty_signed, _ = get_position(sym)
         if qty_signed != 0:
             c['eligible'] = False
@@ -2725,8 +2690,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
     if regime.get('favorable') is False:
         max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
-    same_day_stats = _same_day_entry_stats()
-    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
+    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - _same_day_entry_count())
     max_new_entries = min(max_new_entries, remaining_today)
     selected = approved[:max_new_entries]
     would_submit = []
@@ -2779,7 +2743,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'global_block_reasons': list(global_block_reasons),
     }
     duration_ms = elapsed_ms_fn()
-    set_last_scan_fn(skipped=False, reason=None, scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
+    set_last_scan_fn(skipped=False, reason=(scan_reason or 'scan_cycle'), scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
     try:
         SCAN_HISTORY.append({
             'ts_utc': datetime.now(timezone.utc).isoformat(),
@@ -4487,6 +4451,7 @@ async def worker_exit(req: Request):
         body = await req.json()
     except Exception:
         body = {}
+    request_reason = str(body.get('reason') or '').strip() or None
 
     # Optional worker auth
     if WORKER_SECRET:
@@ -5018,8 +4983,7 @@ def _diagnostics_swing_blockers() -> dict:
     now = now_ny()
     market_blocked = bool(ONLY_MARKET_HOURS and not in_market_hours())
     scanner_enabled = bool(SCANNER_ENABLED)
-    same_day_stats = _same_day_entry_stats()
-    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
+    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - _same_day_entry_count())
     regime_favorable = LAST_REGIME_SNAPSHOT.get('favorable') if isinstance(LAST_REGIME_SNAPSHOT, dict) else None
     regime_blocked = bool(regime_favorable is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE)
     daily_halt_blocked = bool(daily_halt_active() or daily_stop_hit())
@@ -5044,8 +5008,6 @@ def _diagnostics_swing_blockers() -> dict:
         'last_scan_ts': LAST_SCAN.get('ts_utc'),
         'last_scan_reason': LAST_SCAN.get('reason'),
         'last_scan_summary': dict((LAST_SCAN.get('summary') or {})),
-        'same_day_entry_count': int(same_day_stats.get('counted') or 0),
-        'same_day_entry_details': same_day_stats,
         'now_ny': now.isoformat(),
     }
 
@@ -5072,7 +5034,6 @@ def diagnostics_swing():
         },
         'regime': dict(LAST_REGIME_SNAPSHOT),
         'blockers': _diagnostics_swing_blockers(),
-        'scan_history_size': len(SCAN_HISTORY),
         'last_scan': {
             'ts_utc': LAST_SCAN.get('ts_utc'),
             'reason': LAST_SCAN.get('reason'),
@@ -5140,6 +5101,7 @@ async def worker_scan_entries(req: Request):
         body = await req.json()
     except Exception:
         body = {}
+    request_reason = str(body.get('reason') or '').strip() or None
 
     # Optional worker auth
     if WORKER_SECRET:
@@ -5259,7 +5221,7 @@ async def worker_scan_entries(req: Request):
         reconcile_actions = reconcile_trade_plans_from_alpaca()
 
         if STRATEGY_MODE == "swing":
-            return run_swing_daily_scan(effective_dry_run, _set_last_scan, _elapsed_ms, reconcile_actions=reconcile_actions)
+            return run_swing_daily_scan(effective_dry_run, _set_last_scan, _elapsed_ms, reconcile_actions=reconcile_actions, scan_reason=request_reason)
 
         syms = universe_symbols()
         blocked = 0
