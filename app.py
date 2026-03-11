@@ -477,6 +477,11 @@ JOURNAL_PATH = getenv_any("JOURNAL_PATH", default="/var/data/execution_journal.j
 POSITION_SNAPSHOT_PATH = getenv_any("POSITION_SNAPSHOT_PATH", default="/var/data/positions_snapshot.json")
 SCAN_STATE_PATH = getenv_any("SCAN_STATE_PATH", default="/var/data/scan_state.json")
 REGIME_STATE_PATH = getenv_any("REGIME_STATE_PATH", default="/var/data/regime_state.json")
+PAPER_LIFECYCLE_STATE_PATH = getenv_any("PAPER_LIFECYCLE_STATE_PATH", default="/var/data/paper_lifecycle_state.json")
+PAPER_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("PAPER_LIFECYCLE_HISTORY_LIMIT", default="500"))
+REGIME_BREADTH_RETURN_LOOKBACK_DAYS = int(getenv_any("REGIME_BREADTH_RETURN_LOOKBACK_DAYS", default="20"))
+REGIME_MIN_SYMBOLS_FOR_BREADTH = int(getenv_any("REGIME_MIN_SYMBOLS_FOR_BREADTH", default="5"))
+REGIME_REQUIRE_COMPLETE_DATA = env_bool("REGIME_REQUIRE_COMPLETE_DATA", True)
 SYSTEM_NAME = getenv_any("SYSTEM_NAME", default="trading-webhook")
 ENV_NAME = getenv_any("ENV_NAME", default="prod")
 STRATEGY_MODE = getenv_any("STRATEGY_MODE", default="intraday").strip().lower() or "intraday"
@@ -582,6 +587,9 @@ LAST_REGIME_SNAPSHOT: dict = {}
 SCAN_STATE_RESTORE: dict = {}
 REGIME_STATE_RESTORE: dict = {}
 REGIME_HISTORY: list[dict] = []
+PAPER_LIFECYCLE_STATE_RESTORE: dict = {}
+LAST_PAPER_LIFECYCLE: dict = {}
+PAPER_LIFECYCLE_HISTORY: list[dict] = []
 CANDIDATE_HISTORY_SIZE = int(os.getenv("CANDIDATE_HISTORY_SIZE", "100"))
 CANDIDATE_HISTORY: list[dict] = []
 
@@ -989,6 +997,62 @@ def restore_regime_runtime_state() -> dict:
     return restored
 
 
+
+
+def persist_paper_lifecycle_state(reason: str = ""):
+    payload = {
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "last_event": dict(LAST_PAPER_LIFECYCLE or {}),
+        "history": list(PAPER_LIFECYCLE_HISTORY or []),
+    }
+    return _safe_json_write(PAPER_LIFECYCLE_STATE_PATH, payload)
+
+
+def restore_paper_lifecycle_state() -> dict:
+    payload = _safe_json_read(PAPER_LIFECYCLE_STATE_PATH)
+    restored = {"path": PAPER_LIFECYCLE_STATE_PATH, "loaded": False, "last_event_restored": False, "history_restored": 0}
+    if not payload:
+        return restored
+    try:
+        last_event = payload.get("last_event") or {}
+        history = payload.get("history") or []
+        if isinstance(last_event, dict) and last_event:
+            LAST_PAPER_LIFECYCLE.clear()
+            LAST_PAPER_LIFECYCLE.update(last_event)
+            restored["last_event_restored"] = True
+        if isinstance(history, list) and history:
+            PAPER_LIFECYCLE_HISTORY.clear()
+            PAPER_LIFECYCLE_HISTORY.extend(history[-PAPER_LIFECYCLE_HISTORY_LIMIT:])
+            restored["history_restored"] = len(PAPER_LIFECYCLE_HISTORY)
+        restored["loaded"] = restored["last_event_restored"] or bool(restored["history_restored"])
+    except Exception as e:
+        restored["error"] = str(e)
+    globals()["PAPER_LIFECYCLE_STATE_RESTORE"] = restored
+    return restored
+
+
+def _record_paper_lifecycle(stage: str, status: str, symbol: str | None = None, details: dict | None = None):
+    event = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "ts_ny": now_ny().isoformat(),
+        "stage": str(stage or ""),
+        "status": str(status or ""),
+        "symbol": (symbol or None),
+        "details": dict(details or {}),
+    }
+    LAST_PAPER_LIFECYCLE.clear()
+    LAST_PAPER_LIFECYCLE.update(event)
+    PAPER_LIFECYCLE_HISTORY.append(dict(event))
+    if len(PAPER_LIFECYCLE_HISTORY) > PAPER_LIFECYCLE_HISTORY_LIMIT:
+        del PAPER_LIFECYCLE_HISTORY[: len(PAPER_LIFECYCLE_HISTORY) - PAPER_LIFECYCLE_HISTORY_LIMIT]
+    try:
+        persist_paper_lifecycle_state(reason=f"{stage}:{status}")
+    except Exception:
+        pass
+    return event
+
+
 def _ensure_runtime_state_loaded():
     try:
         if (not LAST_SCAN) and (not SCAN_HISTORY):
@@ -998,6 +1062,11 @@ def _ensure_runtime_state_loaded():
     try:
         if (not LAST_REGIME_SNAPSHOT) and (not REGIME_HISTORY):
             restore_regime_runtime_state()
+    except Exception:
+        pass
+    try:
+        if (not LAST_PAPER_LIFECYCLE) and (not PAPER_LIFECYCLE_HISTORY):
+            restore_paper_lifecycle_state()
     except Exception:
         pass
 
@@ -1975,8 +2044,10 @@ def startup_restore_state() -> dict:
         logger.warning("STARTUP_STATE_RESTORE_FAILED err=%s", e)
     scan_restore = restore_scan_runtime_state()
     regime_restore = restore_regime_runtime_state()
+    paper_restore = restore_paper_lifecycle_state()
     state["scan_state_restore"] = scan_restore
     state["regime_state_restore"] = regime_restore
+    state["paper_lifecycle_state_restore"] = paper_restore
     STARTUP_STATE = state
     return state
 
@@ -2746,7 +2817,7 @@ def _open_group_position_count(symbol: str) -> int:
 
 
 def _build_swing_regime(index_bars: list[dict], daily_map: dict[str, list[dict]], symbols: list[str]) -> dict:
-    closes = [_safe_float(b.get('close')) for b in (index_bars or [])]
+    closes = [_safe_float(b.get('close')) for b in (index_bars or []) if _safe_float(b.get('close'))]
     idx_close = closes[-1] if closes else None
     idx_fast = _sma(closes, SWING_REGIME_FAST_MA_DAYS) if closes else None
     idx_slow = _sma(closes, SWING_REGIME_SLOW_MA_DAYS) if closes else None
@@ -2754,27 +2825,33 @@ def _build_swing_regime(index_bars: list[dict], daily_map: dict[str, list[dict]]
     breadth_total = 0
     breadth_pass = 0
     ret_pass = 0
+    ret_lookback = max(2, int(REGIME_BREADTH_RETURN_LOOKBACK_DAYS))
+    min_seq_needed = max(SWING_REGIME_SLOW_MA_DAYS + 1, ret_lookback + 1)
     for sym in (symbols or []):
         bars = daily_map.get(sym, []) or []
-        seq = [_safe_float(b.get('close')) for b in bars]
-        if len(seq) < max(SWING_REGIME_SLOW_MA_DAYS + 1, 21):
+        seq = [_safe_float(b.get('close')) for b in bars if _safe_float(b.get('close'))]
+        if len(seq) < min_seq_needed:
             continue
         breadth_total += 1
         slow = _sma(seq, SWING_REGIME_SLOW_MA_DAYS)
         if slow and seq[-1] > slow:
             breadth_pass += 1
-        if seq[-21] > 0 and (seq[-1] / seq[-21] - 1.0) > 0:
+        ref = seq[-(ret_lookback + 1)]
+        if ref > 0 and (seq[-1] / ref - 1.0) > 0:
             ret_pass += 1
     breadth = (breadth_pass / breadth_total) if breadth_total else None
     ret_breadth = (ret_pass / breadth_total) if breadth_total else None
+    data_complete = bool(index_trend_ok is not None and breadth is not None and breadth_total >= REGIME_MIN_SYMBOLS_FOR_BREADTH)
     favorable = None
     reasons = []
     if SWING_REGIME_FILTER_ENABLED:
         if index_trend_ok is None:
             reasons.append('index_trend_unknown')
-        if breadth is None:
+        if breadth is None or breadth_total < REGIME_MIN_SYMBOLS_FOR_BREADTH:
             reasons.append('breadth_unknown')
-        if index_trend_ok is False:
+        if REGIME_REQUIRE_COMPLETE_DATA and not data_complete:
+            favorable = None
+        elif index_trend_ok is False:
             favorable = False
             reasons.append('index_trend_weak')
         elif breadth is not None and breadth < SWING_REGIME_MIN_BREADTH:
@@ -2807,7 +2884,7 @@ def _build_swing_regime(index_bars: list[dict], daily_map: dict[str, list[dict]]
         'favorable': favorable,
         'score': round(score, 2),
         'reasons': reasons,
-        'data_complete': bool(index_trend_ok is not None and breadth is not None),
+        'data_complete': data_complete,
     }
 
 def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None) -> dict:
@@ -2917,7 +2994,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         syms_for_fetch = syms + [SWING_INDEX_SYMBOL]
     else:
         syms_for_fetch = list(syms)
-    lookback_days = max(int(SCANNER_LOOKBACK_DAYS or 20) + 20, SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 10)
+    lookback_days = max(int(SCANNER_LOOKBACK_DAYS or 20) + 40, SWING_REGIME_SLOW_MA_DAYS + REGIME_BREADTH_RETURN_LOOKBACK_DAYS + 30, SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 20)
     daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
     index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
     regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, syms)
@@ -3059,6 +3136,34 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     }
     duration_ms = elapsed_ms_fn()
     set_last_scan_fn(skipped=False, reason='scan_completed', scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
+    try:
+        _record_paper_lifecycle(
+            stage='scan',
+            status='completed',
+            details={
+                'scan_reason': summary.get('scan_reason'),
+                'candidates_total': int(summary.get('candidates_total') or 0),
+                'eligible_total': int(summary.get('eligible_total') or 0),
+                'selected_total': int(summary.get('selected_total') or 0),
+                'global_block_reasons': list(summary.get('global_block_reasons') or []),
+                'regime_favorable': summary.get('regime', {}).get('favorable') if isinstance(summary.get('regime'), dict) else None,
+                'regime_data_complete': summary.get('regime', {}).get('data_complete') if isinstance(summary.get('regime'), dict) else None,
+            }
+        )
+        for sel in (selected or []):
+            _record_paper_lifecycle(
+                stage='candidate',
+                status='selected',
+                symbol=str(sel.get('symbol') or ''),
+                details={
+                    'signal': sel.get('signal'),
+                    'rank_score': sel.get('rank_score'),
+                    'estimated_qty': sel.get('estimated_qty'),
+                    'close': sel.get('close'),
+                }
+            )
+    except Exception:
+        pass
     try:
         SCAN_HISTORY.append({
             'ts_utc': datetime.now(timezone.utc).isoformat(),
@@ -5401,10 +5506,13 @@ def diagnostics_swing():
         'persistence': {
             'scan_state_path': SCAN_STATE_PATH,
             'regime_state_path': REGIME_STATE_PATH,
+            'paper_lifecycle_state_path': PAPER_LIFECYCLE_STATE_PATH,
             'scan_state_restore': dict(globals().get('SCAN_STATE_RESTORE') or {}),
             'regime_state_restore': dict(globals().get('REGIME_STATE_RESTORE') or {}),
+            'paper_lifecycle_state_restore': dict(globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}),
             'last_scan_state_source': 'memory' if LAST_SCAN else ('restored' if (globals().get('SCAN_STATE_RESTORE') or {}).get('last_scan_restored') else 'empty'),
             'last_regime_state_source': 'memory' if LAST_REGIME_SNAPSHOT else ('restored' if (globals().get('REGIME_STATE_RESTORE') or {}).get('current_restored') else 'empty'),
+            'last_paper_lifecycle_source': 'memory' if LAST_PAPER_LIFECYCLE else ('restored' if (globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}).get('last_event_restored') else 'empty'),
         },
         'blockers': _diagnostics_swing_blockers(),
         'scan_history_size': len(SCAN_HISTORY),
@@ -5446,6 +5554,21 @@ def diagnostics_regime(limit: int = 20):
         'blockers': _diagnostics_swing_blockers(),
     }
 
+
+
+
+@app.get("/diagnostics/paper_lifecycle")
+def diagnostics_paper_lifecycle():
+    _ensure_runtime_state_loaded()
+    return {
+        "ok": True,
+        "state_path": PAPER_LIFECYCLE_STATE_PATH,
+        "state_restore": dict(globals().get("PAPER_LIFECYCLE_STATE_RESTORE") or {}),
+        "last_event": dict(LAST_PAPER_LIFECYCLE or {}),
+        "history_limit": PAPER_LIFECYCLE_HISTORY_LIMIT,
+        "history_count": len(PAPER_LIFECYCLE_HISTORY or []),
+        "history": list(PAPER_LIFECYCLE_HISTORY or []),
+    }
 
 @app.get("/diagnostics/candidates")
 def diagnostics_candidates(limit: int = 25):
@@ -6134,4 +6257,4 @@ async def worker_scan_entries(req: Request):
         return JSONResponse(
             status_code=500,
             content={'ok': False, 'error': 'scan_exception', 'detail': str(e), **LAST_SCAN},
-        )
+)
