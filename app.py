@@ -486,6 +486,23 @@ SWING_MAX_PORTFOLIO_EXPOSURE_PCT = getenv_float_any("SWING_MAX_PORTFOLIO_EXPOSUR
 SWING_MAX_SYMBOL_EXPOSURE_PCT = getenv_float_any("SWING_MAX_SYMBOL_EXPOSURE_PCT", default=0.35)
 SWING_STOP_ATR_DAILY_MULT = getenv_float_any("SWING_STOP_ATR_DAILY_MULT", default=1.20)
 SWING_TARGET_ATR_DAILY_MULT = getenv_float_any("SWING_TARGET_ATR_DAILY_MULT", default=2.00)
+SWING_STRATEGY_NAME = getenv_any("SWING_STRATEGY_NAME", default="daily_breakout").strip().lower()
+SWING_BREAKOUT_LOOKBACK_DAYS = getenv_int_any("SWING_BREAKOUT_LOOKBACK_DAYS", default=20)
+SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT", default=0.985)
+SWING_FAST_MA_DAYS = getenv_int_any("SWING_FAST_MA_DAYS", default=10)
+SWING_SLOW_MA_DAYS = getenv_int_any("SWING_SLOW_MA_DAYS", default=20)
+SWING_MIN_PRICE = getenv_float_any("SWING_MIN_PRICE", default=15.0)
+SWING_MIN_AVG_DOLLAR_VOLUME = getenv_float_any("SWING_MIN_AVG_DOLLAR_VOLUME", default=20000000.0)
+SWING_MIN_20D_RETURN_PCT = getenv_float_any("SWING_MIN_20D_RETURN_PCT", default=0.03)
+SWING_MAX_CANDIDATES = getenv_int_any("SWING_MAX_CANDIDATES", default=10)
+SWING_MAX_NEW_ENTRIES_PER_DAY = getenv_int_any("SWING_MAX_NEW_ENTRIES_PER_DAY", default=1)
+SWING_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REQUIRE_INDEX_ALIGNMENT", default="true")
+SWING_INDEX_SYMBOL = getenv_any("SWING_INDEX_SYMBOL", default="SPY").strip().upper()
+SWING_ENTRY_MODE = getenv_any("SWING_ENTRY_MODE", default="next_session_market").strip().lower()
+SWING_STOP_MODE = getenv_any("SWING_STOP_MODE", default="breakout_buffer").strip().lower()
+SWING_BREAKOUT_BUFFER_PCT = getenv_float_any("SWING_BREAKOUT_BUFFER_PCT", default=0.015)
+SWING_TARGET_R_MULT = getenv_float_any("SWING_TARGET_R_MULT", default=2.0)
+SWING_CANDIDATE_TTL_HOURS = getenv_int_any("SWING_CANDIDATE_TTL_HOURS", default=24)
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
 
@@ -535,6 +552,9 @@ TRADES_TODAY_TARGET_TRADES = int(getenv_any("TRADES_TODAY_TARGET_TRADES", defaul
 TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_force")
 TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
 LAST_SCAN: dict = {}
+LAST_SWING_CANDIDATES: list[dict] = []
+CANDIDATE_HISTORY_SIZE = int(os.getenv("CANDIDATE_HISTORY_SIZE", "100"))
+CANDIDATE_HISTORY: list[dict] = []
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
 SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
@@ -2275,6 +2295,301 @@ def rank_scan_candidates(symbols: list[str], bars_map: dict[str, list[dict]]) ->
     profiles.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
     return profiles
 
+
+def fetch_daily_bars_multi(symbols: list[str], lookback_days: int = 90) -> dict[str, list[dict]]:
+    end = datetime.now(tz=timezone.utc)
+    start = end - timedelta(days=max(5, int(lookback_days)))
+    req = StockBarsRequest(symbol_or_symbols=list(symbols or []), timeframe=TimeFrame.Day, start=start, end=end, adjustment=ADJUSTMENT, feed=DATA_FEED)
+    bars = data_client.get_stock_bars(req)
+    out: dict[str, list[dict]] = {}
+    data = getattr(bars, 'data', {}) or {}
+    for symbol in symbols or []:
+        rows = []
+        for b in data.get(symbol, []) or []:
+            try:
+                ts = b.timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                rows.append({
+                    'ts_utc': ts,
+                    'ts_ny': ts.astimezone(NY_TZ),
+                    'open': float(b.open),
+                    'high': float(b.high),
+                    'low': float(b.low),
+                    'close': float(b.close),
+                    'volume': float(getattr(b, 'volume', 0) or 0),
+                    'vwap': float(getattr(b, 'vwap', 0) or 0),
+                })
+            except Exception:
+                continue
+        out[symbol] = rows
+    return out
+
+def _sma(values: list[float], length: int) -> float | None:
+    if len(values) < max(1, int(length)):
+        return None
+    win = values[-int(length):]
+    return sum(win) / len(win) if win else None
+
+def _safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+def _current_equity_estimate() -> float:
+    snap = get_buying_power_snapshot()
+    return _safe_float(snap.get('equity') or 0.0)
+
+def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
+    total = 0.0
+    by_symbol: dict[str, float] = {}
+    for p in list_open_positions_details_allowed():
+        sym = str(p.get('symbol') or '').upper()
+        qty = abs(_safe_float(p.get('qty') or 0.0))
+        px = _safe_float(p.get('avg_entry_price') or 0.0)
+        notion = qty * px
+        total += notion
+        if sym:
+            by_symbol[sym] = notion
+    return total, by_symbol
+
+def _same_day_entry_count() -> int:
+    today = now_ny().date()
+    n = 0
+    for plan in (TRADE_PLAN or {}).values():
+        dt = _parse_plan_opened_dt(plan or {})
+        if dt and dt.date() == today:
+            n += 1
+    return n
+
+def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None) -> dict:
+    candidate = {
+        'symbol': symbol,
+        'strategy': SWING_STRATEGY_NAME,
+        'scan_ts_utc': datetime.now(timezone.utc).isoformat(),
+        'eligible': False,
+        'rejection_reasons': [],
+    }
+    closes = [_safe_float(b.get('close')) for b in bars]
+    highs = [_safe_float(b.get('high')) for b in bars]
+    lows = [_safe_float(b.get('low')) for b in bars]
+    vols = [_safe_float(b.get('volume')) for b in bars]
+    need = max(SWING_SLOW_MA_DAYS + 5, SWING_BREAKOUT_LOOKBACK_DAYS + 2, 25)
+    if len(closes) < need:
+        candidate['rejection_reasons'].append('insufficient_daily_bars')
+        return candidate
+    close = closes[-1]
+    prev_close = closes[-2]
+    high = highs[-1]
+    low = lows[-1]
+    fast_ma = _sma(closes, SWING_FAST_MA_DAYS)
+    slow_ma = _sma(closes, SWING_SLOW_MA_DAYS)
+    avg_dollar_vol_20 = sum((closes[-20+i] * vols[-20+i]) for i in range(20)) / 20.0
+    ret_20 = (close / closes[-21] - 1.0) if len(closes) >= 21 and closes[-21] > 0 else 0.0
+    breakout_ref = max(highs[-(SWING_BREAKOUT_LOOKBACK_DAYS+1):-1])
+    trailing_low = min(lows[-5:])
+    close_to_high = (close / max(high, 1e-9))
+    breakout_distance = (close / max(breakout_ref, 1e-9)) - 1.0
+    range_pct = (high - low) / max(close, 1e-9)
+    stop_price = min(trailing_low, breakout_ref * (1.0 - SWING_BREAKOUT_BUFFER_PCT))
+    risk_per_share = max(close - stop_price, close * 0.0025)
+    target_price = close + (risk_per_share * SWING_TARGET_R_MULT)
+    requested_qty = min(MAX_QTY, max(MIN_QTY, round(RISK_DOLLARS / max(risk_per_share, 1e-9), 2)))
+    affordable = clip_qty_for_affordability(close, requested_qty)
+    est_qty = float(affordable.get('submitted_qty') or 0.0)
+    score = 0.0
+    if close >= SWING_MIN_PRICE:
+        score += 10
+    else:
+        candidate['rejection_reasons'].append('price_below_min')
+    if avg_dollar_vol_20 >= SWING_MIN_AVG_DOLLAR_VOLUME:
+        score += min(20.0, avg_dollar_vol_20 / SWING_MIN_AVG_DOLLAR_VOLUME * 10.0)
+    else:
+        candidate['rejection_reasons'].append('avg_dollar_volume_below_min')
+    if fast_ma and slow_ma and close > fast_ma > slow_ma:
+        score += 25
+    else:
+        candidate['rejection_reasons'].append('trend_filter_failed')
+    if ret_20 >= SWING_MIN_20D_RETURN_PCT:
+        score += min(20.0, ret_20 * 200.0)
+    else:
+        candidate['rejection_reasons'].append('return_20d_below_min')
+    if close_to_high >= SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT:
+        score += 12
+    else:
+        candidate['rejection_reasons'].append('close_not_near_high')
+    if breakout_distance >= -SWING_BREAKOUT_BUFFER_PCT:
+        score += 18
+    else:
+        candidate['rejection_reasons'].append('too_far_below_breakout')
+    score += max(0.0, min(10.0, range_pct * 100.0))
+    if SWING_REQUIRE_INDEX_ALIGNMENT and index_aligned is False:
+        candidate['rejection_reasons'].append('index_alignment_failed')
+    candidate.update({
+        'close': round(close, 4),
+        'prev_close': round(prev_close, 4),
+        'high': round(high, 4),
+        'low': round(low, 4),
+        'fast_ma': round(fast_ma, 4) if fast_ma else None,
+        'slow_ma': round(slow_ma, 4) if slow_ma else None,
+        'avg_dollar_volume_20d': round(avg_dollar_vol_20, 2),
+        'return_20d_pct': round(ret_20 * 100.0, 3),
+        'close_to_high_pct': round(close_to_high * 100.0, 3),
+        'breakout_level': round(breakout_ref, 4),
+        'breakout_distance_pct': round(breakout_distance * 100.0, 3),
+        'range_pct': round(range_pct * 100.0, 3),
+        'stop_price': round(stop_price, 4),
+        'target_price': round(target_price, 4),
+        'risk_per_share': round(risk_per_share, 4),
+        'requested_qty': round(requested_qty, 2),
+        'estimated_qty': round(est_qty, 2),
+        'rank_score': round(score, 4),
+        'signal': 'daily_breakout',
+        'side': 'buy',
+    })
+    candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
+    if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
+        candidate['rejection_reasons'].append('insufficient_buying_power')
+    return candidate
+
+def _index_alignment_ok(index_bars: list[dict]) -> bool | None:
+    closes = [_safe_float(b.get('close')) for b in index_bars]
+    if len(closes) < max(25, SWING_SLOW_MA_DAYS + 2):
+        return None
+    fast_ma = _sma(closes, SWING_FAST_MA_DAYS)
+    slow_ma = _sma(closes, SWING_SLOW_MA_DAYS)
+    if not fast_ma or not slow_ma:
+        return None
+    return bool(closes[-1] > fast_ma > slow_ma)
+
+def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None) -> dict:
+    reconcile_actions = reconcile_actions or []
+    syms = universe_symbols()
+    if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms:
+        syms_for_fetch = syms + [SWING_INDEX_SYMBOL]
+    else:
+        syms_for_fetch = list(syms)
+    lookback_days = max(int(SCANNER_LOOKBACK_DAYS or 20) + 20, SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 10)
+    daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
+    index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
+    open_total, open_by_symbol = _current_portfolio_exposure()
+    equity = max(0.0, _current_equity_estimate())
+    portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
+    symbol_cap = equity * SWING_MAX_SYMBOL_EXPOSURE_PCT if equity > 0 else 0.0
+    candidates = []
+    rejection_counts = Counter()
+    for sym in syms:
+        c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok)
+        if TRADE_PLAN.get(sym, {}).get('active'):
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('plan_active')
+        qty_signed, _ = get_position(sym)
+        if qty_signed != 0:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('position_already_open')
+        projected_notional = _safe_float(c.get('estimated_qty')) * _safe_float(c.get('close'))
+        if c.get('eligible') and symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > symbol_cap:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
+        if c.get('eligible') and portfolio_cap > 0 and open_total + projected_notional > portfolio_cap:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('portfolio_exposure_limit')
+        for r in c.get('rejection_reasons', []):
+            rejection_counts[str(r)] += 1
+        candidates.append(c)
+    candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
+    approved = [c for c in candidates if c.get('eligible')]
+    max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
+    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - _same_day_entry_count())
+    max_new_entries = min(max_new_entries, remaining_today)
+    selected = approved[:max_new_entries]
+    would_submit = []
+    for c in selected:
+        meta = {
+            'rank_score': c.get('rank_score'),
+            'strategy_name': c.get('strategy'),
+            'breakout_level': c.get('breakout_level'),
+            'stop_price': c.get('stop_price'),
+            'target_price': c.get('target_price'),
+            'risk_per_share': c.get('risk_per_share'),
+        }
+        if SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run):
+            resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta)
+            would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), **resp})
+        else:
+            resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', 'worker_scan', meta=meta)
+            would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), **resp})
+    LAST_SWING_CANDIDATES.clear()
+    LAST_SWING_CANDIDATES.extend(candidates[: max(1, min(len(candidates), SWING_MAX_CANDIDATES))])
+    CANDIDATE_HISTORY.append({
+        'ts_utc': datetime.now(timezone.utc).isoformat(),
+        'strategy_name': SWING_STRATEGY_NAME,
+        'index_symbol': SWING_INDEX_SYMBOL,
+        'index_alignment_ok': index_ok,
+        'candidates': LAST_SWING_CANDIDATES.copy(),
+        'selected': [c.get('symbol') for c in selected],
+        'rejection_counts': dict(rejection_counts),
+    })
+    if len(CANDIDATE_HISTORY) > CANDIDATE_HISTORY_SIZE:
+        del CANDIDATE_HISTORY[: len(CANDIDATE_HISTORY) - CANDIDATE_HISTORY_SIZE]
+    summary = {
+        'strategy_name': SWING_STRATEGY_NAME,
+        'index_symbol': SWING_INDEX_SYMBOL,
+        'index_alignment_ok': index_ok,
+        'candidates_total': len(candidates),
+        'eligible_total': len(approved),
+        'selected_total': len(selected),
+        'top_candidates': LAST_SWING_CANDIDATES[:5],
+        'top_rejection_reasons': [{
+            'reason': k, 'count': int(v)
+        } for k, v in rejection_counts.most_common(10)],
+        'portfolio_exposure': round(open_total, 2),
+        'portfolio_exposure_cap': round(portfolio_cap, 2),
+        'symbol_exposure_cap': round(symbol_cap, 2),
+        'remaining_new_entries_today': int(remaining_today),
+    }
+    duration_ms = elapsed_ms_fn()
+    set_last_scan_fn(skipped=False, reason=None, scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
+    try:
+        SCAN_HISTORY.append({
+            'ts_utc': datetime.now(timezone.utc).isoformat(),
+            'universe_provider': SCANNER_UNIVERSE_PROVIDER,
+            'symbols': syms,
+            'scanned': len(syms),
+            'signals': len(approved),
+            'would_trade': len(selected),
+            'blocked': max(0, len(candidates)-len(approved)),
+            'duration_ms': duration_ms,
+            'summary': summary,
+            'results': LAST_SWING_CANDIDATES.copy(),
+            'candidate_slots': candidate_slots_available(),
+            'ignored_ranked_out': [c for c in candidates if not c.get('eligible')][:20],
+            'would_submit': would_submit,
+        })
+        if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
+            del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
+    except Exception:
+        pass
+    return {
+        'ok': True,
+        'scanner': {
+            'enabled': SCANNER_ENABLED,
+            'dry_run': SCANNER_DRY_RUN,
+            'allow_live': SCANNER_ALLOW_LIVE,
+            'effective_dry_run': effective_dry_run,
+            'universe_provider': SCANNER_UNIVERSE_PROVIDER,
+            'symbols_scanned': len(syms),
+            'signals': len(approved),
+            'would_trade': len(selected),
+            'blocked': max(0, len(candidates)-len(approved)),
+            'duration_ms': duration_ms,
+            'summary': summary,
+        },
+        'reconcile': reconcile_actions,
+        'would_submit': would_submit,
+        'results': LAST_SWING_CANDIDATES[:SWING_MAX_CANDIDATES],
+    }
 
 def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None) -> list[dict]:
     """Fetch recent 1-minute bars for a symbol. Returns list of dicts with UTC ts + OHLCV + vwap."""
@@ -4341,6 +4656,20 @@ def diagnostics_ranking(limit: int = 25):
         rows = list((LAST_SCAN.get("summary") or {}).get("top_pre_ranked_candidates") or [])[: max(1, min(int(limit or 25), 200))]
     return {"ok": True, "count": len(rows), "items": rows, "settings": {"enabled": bool(SIGNAL_RANKING_ENABLED), "scanner_rank_min_score": float(SCANNER_RANK_MIN_SCORE), "scanner_fallback_min_rank_score": float(SCANNER_FALLBACK_MIN_RANK_SCORE), "scanner_fallback_min_raw_score": float(SCANNER_FALLBACK_MIN_RAW_SCORE), "micro_confirm_mode": str(VWAP_PB_MICRO_CONFIRM_MODE), "soft_confirm_min_passes": int(VWAP_PB_SOFT_CONFIRM_MIN_PASSES), "fallback_min_ema_slope": float(VWAP_PB_FALLBACK_MIN_EMA_SLOPE), "fallback_min_vwap_slope": float(VWAP_PB_FALLBACK_MIN_VWAP_SLOPE), "fallback_bounce_slack_pct": float(VWAP_PB_FALLBACK_BOUNCE_SLACK_PCT), "fallback_max_dist_vwap_pct": float(VWAP_PB_FALLBACK_MAX_DIST_VWAP_PCT)}}
 
+@app.get("/diagnostics/candidates")
+def diagnostics_candidates(limit: int = 25):
+    lim = max(1, min(int(limit or 25), 200))
+    latest = LAST_SWING_CANDIDATES[-lim:] if LAST_SWING_CANDIDATES else []
+    hist = CANDIDATE_HISTORY[-5:]
+    return {
+        'ok': True,
+        'strategy_mode': STRATEGY_MODE,
+        'strategy_name': SWING_STRATEGY_NAME,
+        'count': len(latest),
+        'items': latest,
+        'history': hist,
+    }
+
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
     """Server-side scanner entry evaluation (Phase 1C). Default is shadow-mode (no orders)."""
@@ -4472,6 +4801,9 @@ async def worker_scan_entries(req: Request):
 
 # Reconcile first: never place entries against stale internal state.
         reconcile_actions = reconcile_trade_plans_from_alpaca()
+
+        if STRATEGY_MODE == "swing":
+            return run_swing_daily_scan(effective_dry_run, _set_last_scan, _elapsed_ms, reconcile_actions=reconcile_actions)
 
         syms = universe_symbols()
         blocked = 0
