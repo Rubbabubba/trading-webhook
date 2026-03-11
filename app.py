@@ -2394,14 +2394,62 @@ def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
             by_symbol[sym] = notion
     return total, by_symbol
 
-def _same_day_entry_count() -> int:
+def _same_day_entry_stats() -> dict:
     today = now_ny().date()
-    n = 0
-    for plan in (TRADE_PLAN or {}).values():
-        dt = _parse_plan_opened_dt(plan or {})
-        if dt and dt.date() == today:
-            n += 1
-    return n
+    counted = 0
+    skipped_recovered = 0
+    skipped_inactive = 0
+    skipped_not_today = 0
+    items = []
+    for symbol, plan in (TRADE_PLAN or {}).items():
+        p = plan or {}
+        active = bool(p.get("active"))
+        signal = str(p.get("signal") or "").upper()
+        recovered = bool(p.get("recovered")) or signal == "RECOVERED"
+        dt = _parse_plan_opened_dt(p)
+        opened_today = bool(dt and dt.date() == today)
+        counted_here = False
+        if not active:
+            skipped_inactive += 1
+        elif recovered:
+            skipped_recovered += 1
+        elif not opened_today:
+            skipped_not_today += 1
+        else:
+            counted += 1
+            counted_here = True
+        items.append({
+            "symbol": str(symbol or "").upper(),
+            "active": active,
+            "recovered": recovered,
+            "signal": str(p.get("signal") or ""),
+            "opened_at": dt.isoformat() if dt else None,
+            "opened_today": opened_today,
+            "counted": counted_here,
+        })
+    return {
+        "today_ny": today.isoformat(),
+        "counted": counted,
+        "total_active": sum(1 for plan in (TRADE_PLAN or {}).values() if bool((plan or {}).get("active"))),
+        "skipped_recovered": skipped_recovered,
+        "skipped_inactive": skipped_inactive,
+        "skipped_not_today": skipped_not_today,
+        "items": items[:50],
+    }
+
+
+def _same_day_entry_count() -> int:
+    return int((_same_day_entry_stats() or {}).get("counted") or 0)
+
+
+def _has_pending_entry_plan(symbol: str) -> bool:
+    p = (TRADE_PLAN or {}).get(str(symbol or "").upper()) or {}
+    if not p:
+        return False
+    if bool(p.get("active")):
+        return True
+    status = str(p.get("order_status") or "").lower()
+    return status in {"submitted", "new", "accepted", "pending_new", "partially_filled"}
 
 
 def _normalize_correlation_groups_raw(raw: str) -> str:
@@ -2646,9 +2694,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     rejection_counts = Counter()
     for sym in syms:
         c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok)
-        if TRADE_PLAN.get(sym, {}).get('active'):
+        if _has_pending_entry_plan(sym):
             c['eligible'] = False
-            c.setdefault('rejection_reasons', []).append('plan_active')
+            c.setdefault('rejection_reasons', []).append('plan_or_pending_entry_exists')
         qty_signed, _ = get_position(sym)
         if qty_signed != 0:
             c['eligible'] = False
@@ -2677,7 +2725,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
     if regime.get('favorable') is False:
         max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
-    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - _same_day_entry_count())
+    same_day_stats = _same_day_entry_stats()
+    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
     max_new_entries = min(max_new_entries, remaining_today)
     selected = approved[:max_new_entries]
     would_submit = []
@@ -4969,7 +5018,8 @@ def _diagnostics_swing_blockers() -> dict:
     now = now_ny()
     market_blocked = bool(ONLY_MARKET_HOURS and not in_market_hours())
     scanner_enabled = bool(SCANNER_ENABLED)
-    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - _same_day_entry_count())
+    same_day_stats = _same_day_entry_stats()
+    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
     regime_favorable = LAST_REGIME_SNAPSHOT.get('favorable') if isinstance(LAST_REGIME_SNAPSHOT, dict) else None
     regime_blocked = bool(regime_favorable is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE)
     daily_halt_blocked = bool(daily_halt_active() or daily_stop_hit())
@@ -4994,6 +5044,8 @@ def _diagnostics_swing_blockers() -> dict:
         'last_scan_ts': LAST_SCAN.get('ts_utc'),
         'last_scan_reason': LAST_SCAN.get('reason'),
         'last_scan_summary': dict((LAST_SCAN.get('summary') or {})),
+        'same_day_entry_count': int(same_day_stats.get('counted') or 0),
+        'same_day_entry_details': same_day_stats,
         'now_ny': now.isoformat(),
     }
 
@@ -5020,6 +5072,7 @@ def diagnostics_swing():
         },
         'regime': dict(LAST_REGIME_SNAPSHOT),
         'blockers': _diagnostics_swing_blockers(),
+        'scan_history_size': len(SCAN_HISTORY),
         'last_scan': {
             'ts_utc': LAST_SCAN.get('ts_utc'),
             'reason': LAST_SCAN.get('reason'),
