@@ -2436,7 +2436,7 @@ def release_gate_status() -> dict:
     stage = SYSTEM_RELEASE_STAGE
     lifecycle = _paper_lifecycle_counts()
     worker_status = _worker_status_snapshot()
-    reconcile = _reconcile_snapshot()
+    reconcile = build_reconcile_snapshot()
     regime = dict(LAST_REGIME_SNAPSHOT or {})
     now_utc = datetime.now(tz=timezone.utc)
     last_scan_age_sec = None
