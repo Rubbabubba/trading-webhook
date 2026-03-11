@@ -1069,6 +1069,102 @@ def _ensure_runtime_state_loaded():
             restore_paper_lifecycle_state()
     except Exception:
         pass
+    try:
+        _backfill_runtime_state_views()
+    except Exception:
+        pass
+
+
+def _backfill_runtime_state_views():
+    changed_scan = False
+    if (not SCAN_HISTORY) and isinstance(LAST_SCAN, dict) and LAST_SCAN.get("ts_utc"):
+        SCAN_HISTORY.append({
+            "ts_utc": LAST_SCAN.get("ts_utc"),
+            "universe_provider": LAST_SCAN.get("universe_provider") or SCANNER_UNIVERSE_PROVIDER,
+            "symbols": list(((LAST_SCAN.get("summary") or {}).get("symbols") or [])),
+            "scanned": int(LAST_SCAN.get("scanned") or 0),
+            "signals": int(LAST_SCAN.get("signals") or 0),
+            "would_trade": int(LAST_SCAN.get("would_trade") or 0),
+            "blocked": int(LAST_SCAN.get("blocked") or 0),
+            "duration_ms": int(LAST_SCAN.get("duration_ms") or 0),
+            "summary": dict(LAST_SCAN.get("summary") or {}),
+            "results": list(((LAST_SCAN.get("summary") or {}).get("top_candidates") or [])),
+            "candidate_slots": int(candidate_slots_available()) if callable(candidate_slots_available) else 0,
+            "ignored_ranked_out": [],
+            "would_submit": [],
+            "backfilled": True,
+        })
+        changed_scan = True
+    if changed_scan:
+        try:
+            persist_scan_runtime_state(reason="backfill_runtime_state_views")
+        except Exception:
+            pass
+
+    changed_paper = False
+    if (not LAST_PAPER_LIFECYCLE) and (not PAPER_LIFECYCLE_HISTORY) and isinstance(LAST_SCAN, dict) and LAST_SCAN.get("ts_utc"):
+        summary = dict(LAST_SCAN.get("summary") or {})
+        status = "completed"
+        if LAST_SCAN.get("skipped"):
+            status = "skipped"
+        elif str(LAST_SCAN.get("reason") or "").endswith("exception"):
+            status = "failed"
+        event = {
+            "ts_utc": LAST_SCAN.get("ts_utc"),
+            "ts_ny": LAST_SCAN.get("ts_ny") or now_ny().isoformat(),
+            "stage": "scan",
+            "status": status,
+            "symbol": None,
+            "details": {
+                "scan_reason": summary.get("scan_reason") or LAST_SCAN.get("reason"),
+                "candidates_total": int(summary.get("candidates_total") or 0),
+                "eligible_total": int(summary.get("eligible_total") or 0),
+                "selected_total": int(summary.get("selected_total") or 0),
+                "global_block_reasons": list(summary.get("global_block_reasons") or []),
+                "regime_favorable": summary.get("regime", {}).get("favorable") if isinstance(summary.get("regime"), dict) else None,
+                "regime_data_complete": summary.get("regime", {}).get("data_complete") if isinstance(summary.get("regime"), dict) else None,
+                "backfilled": True,
+            },
+        }
+        LAST_PAPER_LIFECYCLE.clear()
+        LAST_PAPER_LIFECYCLE.update(event)
+        PAPER_LIFECYCLE_HISTORY.append(dict(event))
+        changed_paper = True
+    if changed_paper:
+        try:
+            persist_paper_lifecycle_state(reason="backfill_runtime_state_views")
+        except Exception:
+            pass
+
+
+def _refresh_regime_snapshot_if_needed(force: bool = False) -> dict:
+    current = dict(LAST_REGIME_SNAPSHOT or {})
+    should_refresh = bool(force or (not current) or (current.get("data_complete") is False))
+    if not should_refresh:
+        return current
+    try:
+        syms = universe_symbols()
+        syms_for_fetch = list(syms)
+        if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms_for_fetch:
+            syms_for_fetch.append(SWING_INDEX_SYMBOL)
+        lookback_days = max(
+            int(SCANNER_LOOKBACK_DAYS or 20) + 40,
+            SWING_REGIME_SLOW_MA_DAYS + REGIME_BREADTH_RETURN_LOOKBACK_DAYS + 30,
+            SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 20,
+        )
+        daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
+        refreshed = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, syms)
+        if isinstance(refreshed, dict) and refreshed:
+            LAST_REGIME_SNAPSHOT.clear()
+            LAST_REGIME_SNAPSHOT.update(refreshed)
+            REGIME_HISTORY.append(dict(refreshed))
+            if len(REGIME_HISTORY) > SWING_REGIME_HISTORY_SIZE:
+                del REGIME_HISTORY[: len(REGIME_HISTORY) - SWING_REGIME_HISTORY_SIZE]
+            persist_regime_runtime_state(reason="refresh_regime_snapshot_if_needed")
+            return dict(refreshed)
+    except Exception as e:
+        logger.warning("REGIME_REFRESH_FAILED err=%s", e)
+    return dict(LAST_REGIME_SNAPSHOT or {})
 
 
 def persist_positions_snapshot(reason: str = "", extra: dict | None = None) -> dict:
@@ -1761,12 +1857,20 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
     if not is_live_trading_permitted(source):
         payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED}
         record_decision("EXIT", source, symbol, side=close_side, action="dry_run", reason=reason or "dry_run", qty=qty)
+        try:
+            _record_paper_lifecycle("exit", "dry_run", symbol=symbol, details={"reason": reason or "dry_run", "qty": qty, "source": source})
+        except Exception:
+            pass
         return payload
 
     order = submit_market_order(symbol, close_side, qty)
     out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": str(order.id)}
     record_decision("EXIT", source, symbol, side=close_side, action="order_submitted", reason=reason or "exit", qty=qty, order_id=str(order.id))
     persist_positions_snapshot(reason="close_position_submitted", extra={"symbol": symbol, "order_id": str(order.id), "exit_reason": reason, "source": source})
+    try:
+        _record_paper_lifecycle("exit", "submitted", symbol=symbol, details={"reason": reason or "exit", "qty": qty, "source": source, "order_id": str(order.id)})
+    except Exception:
+        pass
     return out
 
 
@@ -4803,6 +4907,10 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             TRADE_PLAN[symbol] = plan
             persist_positions_snapshot(reason="entry_dry_run_plan", extra={"symbol": symbol, "source": source, "signal": signal})
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="dry_run_plan_created", reason="", qty=qty, meta={"snapshot": snapshot, **(meta or {})})
+            try:
+                _record_paper_lifecycle("entry", "planned", symbol=symbol, details={"source": source, "signal": signal, "qty": qty, "dry_run": True, "base_price": round(float(base_price), 4)})
+            except Exception:
+                pass
             return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": plan}
 
         order = submit_market_order(symbol, side, qty)
@@ -4820,10 +4928,18 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(getattr(order, "id", "")), "source": source, "signal": signal})
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(getattr(order, "id", "")), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(getattr(order, "id", "")), qty=qty, meta={"snapshot": snapshot, **(meta or {})})
+        try:
+            _record_paper_lifecycle("entry", "submitted", symbol=symbol, details={"source": source, "signal": signal, "qty": qty, "order_id": str(getattr(order, "id", "")), "dry_run": False})
+        except Exception:
+            pass
         return {"ok": True, "submitted": True, "order_id": str(getattr(order, "id", "")), "order": payload, "plan": plan}
     except Exception as e:
         log("ORDER_REJECTED", symbol=symbol, side=side, err=str(e), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="alpaca_submit_failed", err=str(e), meta=meta)
+        try:
+            _record_paper_lifecycle("entry", "rejected", symbol=symbol, details={"source": source, "signal": signal, "reason": "alpaca_submit_failed", "error": str(e)})
+        except Exception:
+            pass
         soften_symbol_lock(symbol, 5)
         return {"ok": False, "rejected": True, "reason": f"alpaca_submit_failed:{e}", "symbol": symbol, "signal": signal, "affordability": affordability if "affordability" in locals() else None}
 
@@ -5479,6 +5595,7 @@ def _diagnostics_swing_blockers() -> dict:
 @app.get("/diagnostics/swing")
 def diagnostics_swing():
     _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
     return {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -5573,6 +5690,7 @@ def diagnostics_paper_lifecycle():
 @app.get("/diagnostics/candidates")
 def diagnostics_candidates(limit: int = 25):
     _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
     lim = max(1, min(int(limit or 25), 200))
     latest = LAST_SWING_CANDIDATES[-lim:] if LAST_SWING_CANDIDATES else []
     hist = CANDIDATE_HISTORY[-5:]
