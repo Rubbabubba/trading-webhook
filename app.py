@@ -5192,7 +5192,7 @@ def diagnostics_swing():
         },
         'regime': dict(LAST_REGIME_SNAPSHOT),
         'recovery': {
-            'startup_state_restore': dict(STARTUP_STATE_RESTORE),
+            'startup_state_restore': dict(globals().get('STARTUP_STATE') or {}),
             'recovered_active_symbols': [str(sym or '').upper() for sym, plan in (TRADE_PLAN or {}).items() if isinstance(plan, dict) and bool(plan.get('active')) and _plan_is_recovered(plan)],
         },
         'blockers': _diagnostics_swing_blockers(),
