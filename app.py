@@ -534,6 +534,10 @@ ENTRY_PRICE_MAX_AGE_SEC = float(getenv_any("ENTRY_PRICE_MAX_AGE_SEC", default="2
 ENTRY_MAX_SPREAD_PCT = float(getenv_any("ENTRY_MAX_SPREAD_PCT", default="0.0025"))
 PLAN_STALE_SUBMITTED_SEC = int(getenv_any("PLAN_STALE_SUBMITTED_SEC", default="180"))
 PLAN_STALE_NO_POSITION_SEC = int(getenv_any("PLAN_STALE_NO_POSITION_SEC", default="90"))
+RECONCILE_ORDER_LOOKBACK_LIMIT = int(getenv_any("RECONCILE_ORDER_LOOKBACK_LIMIT", default="100"))
+RECONCILE_ORPHAN_ORDER_MAX_AGE_SEC = int(getenv_any("RECONCILE_ORPHAN_ORDER_MAX_AGE_SEC", default="900"))
+RECONCILE_DEACTIVATE_ORPHAN_PLANS = env_bool_any("RECONCILE_DEACTIVATE_ORPHAN_PLANS", default=True)
+RECONCILE_PARTIAL_FILL_MAX_AGE_SEC = int(getenv_any("RECONCILE_PARTIAL_FILL_MAX_AGE_SEC", default="1800"))
 PLAN_RECONCILE_ORDER_STATUS = env_bool("PLAN_RECONCILE_ORDER_STATUS", True)
 PLAN_SYNC_ON_WORKER_EXIT = env_bool("PLAN_SYNC_ON_WORKER_EXIT", True)
 ENABLE_RISK_RECHECK_AFTER_FILL = env_bool("ENABLE_RISK_RECHECK_AFTER_FILL", True)
@@ -1613,6 +1617,69 @@ def get_order_status(order_id: str) -> dict:
         return {"id": oid, "status_error": str(e)}
 
 
+
+
+def list_open_orders_safe(limit: int | None = None) -> list[dict]:
+    lim = max(1, min(int(limit or RECONCILE_ORDER_LOOKBACK_LIMIT), 500))
+    try:
+        orders = trading_client.get_orders()
+    except Exception:
+        return []
+    out: list[dict] = []
+    active = {"new", "accepted", "pending_new", "partially_filled", "pending_replace", "accepted_for_bidding", "held"}
+    for order in list(orders or []):
+        try:
+            status = str(getattr(getattr(order, "status", None), "value", getattr(order, "status", "")) or "").lower()
+            if status and status not in active:
+                continue
+            rec = {
+                "id": str(getattr(order, "id", "") or ""),
+                "symbol": str(getattr(order, "symbol", "") or "").upper(),
+                "side": str(getattr(getattr(order, "side", None), "value", getattr(order, "side", "")) or ""),
+                "status": status,
+                "type": str(getattr(getattr(order, "type", None), "value", getattr(order, "type", "")) or ""),
+                "qty": str(getattr(order, "qty", "") or ""),
+                "filled_qty": str(getattr(order, "filled_qty", "") or ""),
+                "submitted_at": str(getattr(order, "submitted_at", "") or ""),
+            }
+            out.append(rec)
+        except Exception:
+            continue
+    out.sort(key=lambda x: str(x.get("submitted_at") or ""), reverse=True)
+    return out[:lim]
+
+
+def build_reconcile_snapshot() -> dict:
+    active_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")}
+    broker_positions = list_open_positions_details_allowed()
+    broker_syms = sorted({str(p.get("symbol") or "").upper() for p in broker_positions if str(p.get("symbol") or "").upper()})
+    open_orders = list_open_orders_safe()
+    active_order_statuses = {"submitted", "new", "accepted", "pending_new", "partially_filled"}
+    plan_symbols = sorted(active_plans.keys())
+    missing_from_plans = sorted([sym for sym in broker_syms if sym not in active_plans])
+    stale_active_plans = sorted([sym for sym in active_plans if sym not in broker_syms])
+    pending_entry_plan_symbols = sorted([sym for sym, plan in active_plans.items() if str(plan.get("order_status") or "").lower() in active_order_statuses])
+    open_order_symbols = sorted({str(o.get("symbol") or "").upper() for o in open_orders if str(o.get("symbol") or "").upper()})
+    orphan_open_order_symbols = sorted([sym for sym in open_order_symbols if sym not in active_plans and sym not in broker_syms])
+    plans_missing_open_order = sorted([sym for sym in pending_entry_plan_symbols if sym not in open_order_symbols and sym not in broker_syms])
+    partial_fill_plan_symbols = sorted([sym for sym, plan in active_plans.items() if str(plan.get("order_status") or "").lower() == "partially_filled"])
+    return {
+        "broker_positions_count": len(broker_positions),
+        "broker_symbols": broker_syms,
+        "active_plan_count": len(active_plans),
+        "active_plan_symbols": plan_symbols,
+        "open_order_count": len(open_orders),
+        "open_order_symbols": open_order_symbols,
+        "missing_from_plans": missing_from_plans,
+        "stale_active_plans": stale_active_plans,
+        "pending_entry_plan_symbols": pending_entry_plan_symbols,
+        "orphan_open_order_symbols": orphan_open_order_symbols,
+        "plans_missing_open_order": plans_missing_open_order,
+        "partial_fill_plan_symbols": partial_fill_plan_symbols,
+        "open_orders": open_orders[:25],
+    }
+
+
 def close_position(symbol: str, reason: str = "", source: str = "system") -> dict:
     qty_signed, _side = get_position(symbol)
     if qty_signed == 0:
@@ -1707,10 +1774,17 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
 
     if qty_signed == 0:
         terminal = {"canceled", "cancelled", "rejected", "expired"}
-        if str(order_status.get("status") or "").lower() in terminal:
+        order_status_lc = str(order_status.get("status") or "").lower()
+        if order_status_lc in terminal:
             plan["active"] = False
             out["changes"].append("deactivated_terminal_order_without_position")
             record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="terminal_order_without_position", meta={"order_status": order_status})
+            return out
+        orphan_status = bool(order_id and order_status.get("status_error")) or (order_id and not order_status)
+        if RECONCILE_DEACTIVATE_ORPHAN_PLANS and orphan_status and age_sec is not None and age_sec >= RECONCILE_ORPHAN_ORDER_MAX_AGE_SEC:
+            plan["active"] = False
+            out["changes"].append("deactivated_orphan_plan_without_position")
+            record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="orphan_plan_without_position", meta={"age_sec": age_sec, "order_id": order_id, "order_status": order_status})
             return out
         if age_sec is not None and age_sec >= PLAN_STALE_NO_POSITION_SEC:
             plan["active"] = False
@@ -1749,6 +1823,9 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
     if ENABLE_PARTIAL_FILL_TRACKING and filled_qty:
         plan["filled_qty"] = round(float(filled_qty), 4)
         plan["requested_qty"] = float(plan.get("requested_qty") or plan.get("qty") or live_qty)
+        if age_sec is not None and age_sec >= RECONCILE_PARTIAL_FILL_MAX_AGE_SEC and str(order_status.get("status") or "").lower() == "partially_filled":
+            out["changes"].append("partial_fill_age_exceeded")
+            record_decision("RECONCILE", "worker_exit", symbol, action="partial_fill_age_exceeded", reason="partial_fill_age_exceeded", meta={"age_sec": age_sec, "order_status": order_status})
 
     if fill_avg and fill_avg > 0:
         old_entry = float(plan.get("entry_price") or 0)
@@ -4133,9 +4210,29 @@ def diagnostics_orders(request: Request, limit: int = 50, include_broker_status:
             oid = details.get("order_id") if isinstance(details, dict) else None
             if oid:
                 row["broker_order"] = get_order_status(str(oid))
-    return {"ok": True, "count": len(rows), "orders": rows}
+    reconcile_snapshot = build_reconcile_snapshot()
+    return {"ok": True, "count": len(rows), "orders": rows, "reconcile_snapshot": reconcile_snapshot}
 
 
+
+
+
+
+@app.get("/diagnostics/reconcile")
+def diagnostics_reconcile(request: Request):
+    require_admin_if_configured(request)
+    latest_snapshot = read_positions_snapshot()
+    snap = build_reconcile_snapshot()
+    return {
+        "ok": True,
+        "reconcile_order_lookback_limit": RECONCILE_ORDER_LOOKBACK_LIMIT,
+        "reconcile_orphan_order_max_age_sec": RECONCILE_ORPHAN_ORDER_MAX_AGE_SEC,
+        "reconcile_deactivate_orphan_plans": RECONCILE_DEACTIVATE_ORPHAN_PLANS,
+        "reconcile_partial_fill_max_age_sec": RECONCILE_PARTIAL_FILL_MAX_AGE_SEC,
+        "startup_state": STARTUP_STATE,
+        "latest_snapshot": latest_snapshot,
+        **snap,
+    }
 
 
 @app.get("/diagnostics/journal")
@@ -4176,24 +4273,15 @@ def diagnostics_execution(request: Request, limit: int = 100):
 def diagnostics_state(request: Request):
     require_admin_if_configured(request)
     latest_snapshot = read_positions_snapshot()
-    broker_positions = list_open_positions_details_allowed()
-    broker_syms = sorted([str(p.get("symbol") or "").upper() for p in broker_positions if str(p.get("symbol") or "").upper()])
-    active_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")}
-    missing_from_plans = sorted([sym for sym in broker_syms if sym not in active_plans])
-    stale_active_plans = sorted([sym for sym in active_plans if sym not in broker_syms])
+    snap = build_reconcile_snapshot()
     return {
         "ok": True,
         "journal_enabled": JOURNAL_ENABLED,
         "journal_path": JOURNAL_PATH,
         "position_snapshot_path": POSITION_SNAPSHOT_PATH,
         "startup_state": STARTUP_STATE,
-        "broker_positions_count": len(broker_positions),
-        "broker_symbols": broker_syms,
-        "active_plan_count": len(active_plans),
-        "active_plan_symbols": sorted(list(active_plans.keys())),
-        "missing_from_plans": missing_from_plans,
-        "stale_active_plans": stale_active_plans,
         "latest_snapshot": latest_snapshot,
+        **snap,
     }
 
 
