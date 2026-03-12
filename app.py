@@ -1051,6 +1051,32 @@ def restore_scanner_telemetry_state() -> dict:
     return restored
 
 
+def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | None = None) -> dict:
+    rows = list(history if history is not None else (SCANNER_TELEMETRY_HISTORY or []))
+    if today_prefix is None:
+        today_prefix = str(now_ny().date())
+
+    def _event_count(name: str, only_today: bool = False) -> int:
+        total = 0
+        for ev in rows:
+            row = ev or {}
+            if str(row.get("event") or "") != name:
+                continue
+            if only_today and (not str(row.get("ts_ny") or "").startswith(today_prefix)):
+                continue
+            total += 1
+        return total
+
+    return {
+        "attempts_total": _event_count("scan_attempt"),
+        "success_total": _event_count("scan_ok"),
+        "failure_total": _event_count("scan_fail") + _event_count("scan_error"),
+        "attempts_today": _event_count("scan_attempt", only_today=True),
+        "success_today": _event_count("scan_ok", only_today=True),
+        "failure_today": _event_count("scan_fail", only_today=True) + _event_count("scan_error", only_today=True),
+    }
+
+
 def _record_scanner_telemetry(event: str, status: str, details: dict | None = None):
     prev = dict(LAST_SCANNER_TELEMETRY or {})
     now_utc = datetime.now(timezone.utc)
@@ -1066,7 +1092,7 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
         failure_today = 0
     event_l = str(event or "").strip().lower()
     status_l = str(status or "").strip().lower()
-    is_attempt = event_l in {"scan_attempt", "scan_request"} or status_l == "attempt"
+    is_attempt = event_l == "scan_attempt" or status_l == "attempt"
     is_failure = status_l in {"error", "failed", "http_error", "exception"}
     snapshot = {
         "ts_utc": now_utc.isoformat(),
@@ -1276,6 +1302,20 @@ def normalize_paper_lifecycle_current_state(reason: str = 'runtime_check') -> di
     return normalized
 
 
+def _continuity_display_lifecycle_event(event: dict | None = None, issues: list | None = None) -> dict:
+    row = dict(event or {})
+    details = dict(row.get('details') or {})
+    historical_issue_codes = [str((item or {}).get('code') or '') for item in (details.get('issues') or []) if str((item or {}).get('code') or '')]
+    if 'issues' in details:
+        details.pop('issues', None)
+    if historical_issue_codes:
+        details['historical_issue_codes'] = historical_issue_codes
+    row['details'] = details
+    row['authoritative_issue_count'] = len(list(issues or []))
+    row['authoritative_ok'] = len(list(issues or [])) == 0
+    return row
+
+
 def continuity_snapshot(normalize_current: bool = False) -> dict:
     _ensure_runtime_state_loaded()
     normalization = normalize_paper_lifecycle_current_state(reason='continuity_snapshot') if normalize_current else {'checked': False, 'mutated': False, 'issues': []}
@@ -1294,10 +1334,12 @@ def continuity_snapshot(normalize_current: bool = False) -> dict:
         issues.append({'code': 'orphan_open_order', 'severity': 'error', 'symbol': sym})
 
     issue_codes = [str(item.get('code') or '') for item in issues]
+    display_event = _continuity_display_lifecycle_event(last_event, issues)
     return {
         'session': _session_boundary_snapshot(),
         'startup_state': dict(globals().get('STARTUP_STATE') or {}),
-        'current_lifecycle_event': last_event,
+        'current_lifecycle_event': display_event,
+        'raw_current_lifecycle_event': last_event,
         'normalization': normalization,
         'authoritative_state': {
             'idle': bool(runtime.get('idle')),
@@ -6220,14 +6262,7 @@ def diagnostics_scanner():
     except Exception:
         pass
     today_prefix = str(now_ny().date())
-    summary = {
-        "attempts_total": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") == "scan_attempt"),
-        "success_total": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") == "scan_ok"),
-        "failure_total": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") in {"scan_fail", "scan_error"}),
-        "attempts_today": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") == "scan_attempt" and str((ev or {}).get("ts_ny") or "").startswith(today_prefix)),
-        "success_today": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") == "scan_ok" and str((ev or {}).get("ts_ny") or "").startswith(today_prefix)),
-        "failure_today": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") in {"scan_fail", "scan_error"} and str((ev or {}).get("ts_ny") or "").startswith(today_prefix)),
-    }
+    summary = _scanner_telemetry_summary(today_prefix=today_prefix)
     return {
         "ok": True,
         "telemetry_state_path": SCANNER_TELEMETRY_STATE_PATH,
@@ -6277,6 +6312,9 @@ def dashboard(request: Request):
     continuity_issues = list(continuity.get('issues') or [])
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
+    scanner_summary = _scanner_telemetry_summary()
+    scanner_last_success = (LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none'
+    authoritative_state = continuity.get('authoritative_state') or {}
 
     top_candidates = list((((last_scan.get('summary') or {}).get('top_candidates')) or []))[:5]
     rejection_counts = (((last_scan.get('summary') or {}).get('rejection_counts')) or {})
@@ -6381,11 +6419,11 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}</div>
     <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div></div>
     <div class="card"><div class="muted">Workers</div><div class="metric {'good' if release.get('worker_status',{}).get('scanner_running') else 'bad'}">{'UP' if release.get('worker_status',{}).get('scanner_running') else 'DOWN'}</div><div class="muted">Exit worker: {'UP' if release.get('worker_status',{}).get('exit_worker_running') else 'DOWN'}</div></div>
-    <div class="card"><div class="muted">Scanner telemetry</div><div class="metric">{_dashboard_fmt((LAST_SCANNER_TELEMETRY or {}).get('attempts_today') or 0)}</div><div class="muted">Attempts today / last success: {_dashboard_fmt((LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none')}</div></div>
+    <div class="card"><div class="muted">Scanner telemetry</div><div class="metric">{_dashboard_fmt(scanner_summary.get('attempts_today') or 0)}</div><div class="muted">Attempts today / last success: {_dashboard_fmt(scanner_last_success)}</div></div>
     <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div></div>
     <div class="card"><div class="muted">Freshness</div><div class="metric">{len(freshness.get('stale_entries') or [])} stale / {len(freshness.get('missing_entries') or [])} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div></div>
     <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div></div>
-    <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / normalized: {continuity.get('normalization',{}).get('mutated')}</div></div>
+    <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / idle: {authoritative_state.get('idle')}</div></div>
   </div>
 
   <div class="section grid">
