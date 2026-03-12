@@ -117,7 +117,7 @@ def main() -> None:
                     state["last_success_utc"] = ts_utc()
                     state["last_error"] = ""
                     log(f"scan_ok loop={loop_n} attempt={attempt}/{retries} reason={reason} status={status} body={body_prefix}")
-                    heartbeat("scan_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix})
+                    heartbeat("scan_dispatch_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix})
                     break
                 except urllib.error.HTTPError as e:
                     try:
@@ -131,7 +131,7 @@ def main() -> None:
                     state["last_failure_utc"] = ts_utc()
                     state["last_error"] = f"HTTP {e.code} {e.reason}"
                     log(f"scan_http_error loop={loop_n} attempt={attempt}/{retries} reason={reason} status={e.code} err={e.reason} body={body_prefix}")
-                    heartbeat("scan_http_error", "http_error", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": e.code, "error": f"{e.reason}", "body_prefix": body_prefix})
+                    heartbeat("scan_dispatch_http_error", "http_error", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": e.code, "error": f"{e.reason}", "body_prefix": body_prefix})
                 except Exception as e:
                     state["failure_total"] += 1
                     state["failure_today"] += 1
@@ -139,7 +139,7 @@ def main() -> None:
                     state["last_failure_utc"] = ts_utc()
                     state["last_error"] = repr(e)
                     log(f"scan_error loop={loop_n} attempt={attempt}/{retries} reason={reason} err={e!r}")
-                    heartbeat("scan_error", "exception", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e)})
+                    heartbeat("scan_dispatch_error", "exception", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e)})
                 if attempt < retries:
                     time.sleep(startup_retry_delay_sec)
         first = False

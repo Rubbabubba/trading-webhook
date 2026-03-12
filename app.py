@@ -1037,8 +1037,10 @@ def restore_scanner_telemetry_state() -> dict:
         last = payload.get("last") or {}
         history = payload.get("history") or []
         if isinstance(last, dict) and last:
+            restored_last = dict(last)
+            restored_last["restored_from_state"] = True
             LAST_SCANNER_TELEMETRY.clear()
-            LAST_SCANNER_TELEMETRY.update(last)
+            LAST_SCANNER_TELEMETRY.update(restored_last)
             restored["last_restored"] = True
         if isinstance(history, list) and history:
             SCANNER_TELEMETRY_HISTORY.clear()
@@ -1052,87 +1054,208 @@ def restore_scanner_telemetry_state() -> dict:
 
 
 def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | None = None) -> dict:
+    tel = dict(LAST_SCANNER_TELEMETRY or {})
+    if tel:
+        warnings = list(tel.get("warning_codes") or [])
+        return {
+            "attempts_total": int(tel.get("attempts_total") or 0),
+            "success_total": int(tel.get("success_total") or 0),
+            "failure_total": int(tel.get("failure_total") or 0),
+            "attempts_today": int(tel.get("attempts_today") or 0),
+            "success_today": int(tel.get("success_today") or 0),
+            "failure_today": int(tel.get("failure_today") or 0),
+            "dispatch_attempts_total": int(tel.get("dispatch_attempts_total") or 0),
+            "dispatch_attempts_today": int(tel.get("dispatch_attempts_today") or 0),
+            "dispatch_failures_total": int(tel.get("dispatch_failures_total") or 0),
+            "dispatch_failures_today": int(tel.get("dispatch_failures_today") or 0),
+            "closed_runs_total": int(tel.get("closed_runs_total") or 0),
+            "closed_runs_today": int(tel.get("closed_runs_today") or 0),
+            "incomplete_runs_total": int(tel.get("incomplete_runs_total") or 0),
+            "incomplete_runs_today": int(tel.get("incomplete_runs_today") or 0),
+            "consecutive_failures": int(tel.get("consecutive_failures") or 0),
+            "last_event": tel.get("event"),
+            "last_event_status": tel.get("status"),
+            "last_closed_event": tel.get("last_closed_event"),
+            "last_closed_status": tel.get("last_closed_status"),
+            "last_closed_utc": tel.get("last_closed_utc"),
+            "in_flight_run": bool(tel.get("in_flight_run")),
+            "has_warnings": bool(warnings),
+            "warning_codes": warnings,
+            "history_count": len(SCANNER_TELEMETRY_HISTORY),
+        }
+
     rows = list(history if history is not None else (SCANNER_TELEMETRY_HISTORY or []))
     if today_prefix is None:
         today_prefix = str(now_ny().date())
 
-    def _event_count(name: str, only_today: bool = False) -> int:
+    def _event_count(names: set[str], only_today: bool = False) -> int:
         total = 0
         for ev in rows:
             row = ev or {}
-            if str(row.get("event") or "") != name:
+            if str(row.get("event") or "").strip().lower() not in names:
                 continue
             if only_today and (not str(row.get("ts_ny") or "").startswith(today_prefix)):
                 continue
             total += 1
         return total
 
+    attempts_total = _event_count({"scan_request"})
+    attempts_today = _event_count({"scan_request"}, only_today=True)
+    success_total = _event_count({"scan_ok"})
+    success_today = _event_count({"scan_ok"}, only_today=True)
+    failure_total = _event_count({"scan_fail", "scan_error"})
+    failure_today = _event_count({"scan_fail", "scan_error"}, only_today=True)
     return {
-        "attempts_total": _event_count("scan_attempt"),
-        "success_total": _event_count("scan_ok"),
-        "failure_total": _event_count("scan_fail") + _event_count("scan_error"),
-        "attempts_today": _event_count("scan_attempt", only_today=True),
-        "success_today": _event_count("scan_ok", only_today=True),
-        "failure_today": _event_count("scan_fail", only_today=True) + _event_count("scan_error", only_today=True),
+        "attempts_total": attempts_total,
+        "success_total": success_total,
+        "failure_total": failure_total,
+        "attempts_today": attempts_today,
+        "success_today": success_today,
+        "failure_today": failure_today,
+        "dispatch_attempts_total": _event_count({"scan_attempt"}),
+        "dispatch_attempts_today": _event_count({"scan_attempt"}, only_today=True),
+        "dispatch_failures_total": _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}),
+        "dispatch_failures_today": _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}, only_today=True),
+        "closed_runs_total": success_total + failure_total,
+        "closed_runs_today": success_today + failure_today,
+        "incomplete_runs_total": max(0, attempts_total - (success_total + failure_total)),
+        "incomplete_runs_today": max(0, attempts_today - (success_today + failure_today)),
+        "consecutive_failures": 0,
+        "last_event": None,
+        "last_event_status": None,
+        "last_closed_event": None,
+        "last_closed_status": None,
+        "last_closed_utc": None,
+        "in_flight_run": max(0, attempts_total - (success_total + failure_total)) > 0,
+        "has_warnings": False,
+        "warning_codes": [],
+        "history_count": len(rows),
     }
 
 
 def _record_scanner_telemetry(event: str, status: str, details: dict | None = None):
     prev = dict(LAST_SCANNER_TELEMETRY or {})
+    details = dict(details or {})
     now_utc = datetime.now(timezone.utc)
+    now_utc_iso = now_utc.isoformat()
     now_ny_ts = now_ny().isoformat()
     today_ny = now_ny().date().isoformat()
     last_day = str(prev.get("today_ny") or "")
-    attempts_today = int(prev.get("attempts_today") or 0)
-    success_today = int(prev.get("success_today") or 0)
-    failure_today = int(prev.get("failure_today") or 0)
-    if last_day != today_ny:
-        attempts_today = 0
-        success_today = 0
-        failure_today = 0
+
+    def _day_value(key: str) -> int:
+        value = int(prev.get(key) or 0)
+        return value if last_day == today_ny else 0
+
     event_l = str(event or "").strip().lower()
     status_l = str(status or "").strip().lower()
-    is_attempt = event_l == "scan_attempt" or status_l == "attempt"
-    is_failure = status_l in {"error", "failed", "http_error", "exception"}
+    open_events = {"scan_request"}
+    close_success_events = {"scan_ok"}
+    close_failure_events = {"scan_fail", "scan_error"}
+    dispatch_attempt_events = {"scan_attempt"}
+    dispatch_failure_events = {"scan_dispatch_http_error", "scan_dispatch_error"}
+    worker_keepalive_events = {"boot", "preflight_ok", "preflight_error", "sleep", "heartbeat", *dispatch_attempt_events, *dispatch_failure_events, *open_events, *close_success_events, *close_failure_events}
+
+    is_dispatch_attempt = event_l in dispatch_attempt_events
+    is_dispatch_failure = event_l in dispatch_failure_events
+    is_run_open = event_l in open_events
+    is_run_success = event_l in close_success_events
+    is_run_failure = event_l in close_failure_events
+    is_run_close = is_run_success or is_run_failure
+    is_worker_event = event_l in worker_keepalive_events or status_l in {"attempt", "ok", "success", "error", "http_error", "exception"}
+
+    dispatch_attempts_total = int(prev.get("dispatch_attempts_total") or 0) + (1 if is_dispatch_attempt else 0)
+    dispatch_attempts_today = _day_value("dispatch_attempts_today") + (1 if is_dispatch_attempt else 0)
+    dispatch_failures_total = int(prev.get("dispatch_failures_total") or 0) + (1 if is_dispatch_failure else 0)
+    dispatch_failures_today = _day_value("dispatch_failures_today") + (1 if is_dispatch_failure else 0)
+
+    attempts_total = int(prev.get("attempts_total") or 0) + (1 if is_run_open else 0)
+    attempts_today = _day_value("attempts_today") + (1 if is_run_open else 0)
+    success_total = int(prev.get("success_total") or 0) + (1 if is_run_success else 0)
+    success_today = _day_value("success_today") + (1 if is_run_success else 0)
+    failure_total = int(prev.get("failure_total") or 0) + (1 if is_run_failure else 0)
+    failure_today = _day_value("failure_today") + (1 if is_run_failure else 0)
+    closed_runs_total = success_total + failure_total
+    closed_runs_today = success_today + failure_today
+    incomplete_runs_total = max(0, attempts_total - closed_runs_total)
+    incomplete_runs_today = max(0, attempts_today - closed_runs_today)
+
+    warning_codes = []
+    if incomplete_runs_total > 0:
+        warning_codes.append("partial_run_open")
+    if is_dispatch_failure:
+        warning_codes.append("dispatch_failure")
+    if bool(prev.get("restored_from_state")) and incomplete_runs_total > 0:
+        warning_codes.append("restored_partial_run")
+
+    last_error = prev.get("last_error")
+    if is_dispatch_failure or is_run_failure:
+        last_error = details.get("error") or prev.get("last_error")
+    elif details.get("error") not in (None, ""):
+        last_error = details.get("error")
+
     snapshot = {
-        "ts_utc": now_utc.isoformat(),
+        "ts_utc": now_utc_iso,
         "ts_ny": now_ny_ts,
         "today_ny": today_ny,
         "event": event,
         "status": status,
-        "details": dict(details or {}),
-        "boot_ts_utc": prev.get("boot_ts_utc") or (now_utc.isoformat() if event_l == "boot" else None),
+        "details": details,
+        "boot_ts_utc": prev.get("boot_ts_utc") or (now_utc_iso if event_l == "boot" else None),
         "boot_ts_ny": prev.get("boot_ts_ny") or (now_ny_ts if event_l == "boot" else None),
-        "last_event_utc": now_utc.isoformat(),
+        "restored_from_state": bool(prev.get("restored_from_state")),
+        "last_event_utc": now_utc_iso,
         "last_event_ny": now_ny_ts,
-        "last_attempt_utc": now_utc.isoformat() if is_attempt else prev.get("last_attempt_utc"),
-        "last_success_utc": now_utc.isoformat() if event_l == "scan_ok" else prev.get("last_success_utc"),
-        "last_failure_utc": now_utc.isoformat() if is_failure else prev.get("last_failure_utc"),
-        "attempts_total": int(prev.get("attempts_total") or 0) + (1 if is_attempt else 0),
-        "success_total": int(prev.get("success_total") or 0) + (1 if event_l == "scan_ok" else 0),
-        "failure_total": int(prev.get("failure_total") or 0) + (1 if is_failure else 0),
-        "attempts_today": attempts_today + (1 if is_attempt else 0),
-        "success_today": success_today + (1 if event_l == "scan_ok" else 0),
-        "failure_today": failure_today + (1 if is_failure else 0),
-        "consecutive_failures": 0 if event_l == "scan_ok" else (int(prev.get("consecutive_failures") or 0) + (1 if is_failure else 0)),
-        "current_sleep_sec": (details or {}).get("sleep_sec", prev.get("current_sleep_sec")),
-        "next_run_estimate_utc": (details or {}).get("next_run_estimate_utc", prev.get("next_run_estimate_utc")),
-        "last_http_status": (details or {}).get("status", prev.get("last_http_status")),
-        "last_error": (details or {}).get("error", prev.get("last_error") if not is_failure else (details or {}).get("error")),
-        "worker_pid": (details or {}).get("pid", prev.get("worker_pid")),
-        "interval_sec": (details or {}).get("interval_sec", prev.get("interval_sec")),
-        "timeout_sec": (details or {}).get("timeout_sec", prev.get("timeout_sec")),
-        "run_on_start": (details or {}).get("run_on_start", prev.get("run_on_start")),
-        "jitter_sec": (details or {}).get("jitter_sec", prev.get("jitter_sec")),
+        "last_worker_event_utc": now_utc_iso if is_worker_event else prev.get("last_worker_event_utc"),
+        "last_worker_event_ny": now_ny_ts if is_worker_event else prev.get("last_worker_event_ny"),
+        "last_worker_event": event if is_worker_event else prev.get("last_worker_event"),
+        "last_dispatch_attempt_utc": now_utc_iso if is_dispatch_attempt else prev.get("last_dispatch_attempt_utc"),
+        "last_dispatch_failure_utc": now_utc_iso if is_dispatch_failure else prev.get("last_dispatch_failure_utc"),
+        "last_attempt_utc": now_utc_iso if is_run_open else prev.get("last_attempt_utc"),
+        "last_success_utc": now_utc_iso if is_run_success else prev.get("last_success_utc"),
+        "last_failure_utc": now_utc_iso if is_run_failure else prev.get("last_failure_utc"),
+        "last_closed_utc": now_utc_iso if is_run_close else prev.get("last_closed_utc"),
+        "last_closed_ny": now_ny_ts if is_run_close else prev.get("last_closed_ny"),
+        "last_closed_event": event if is_run_close else prev.get("last_closed_event"),
+        "last_closed_status": status if is_run_close else prev.get("last_closed_status"),
+        "last_open_utc": now_utc_iso if is_run_open else prev.get("last_open_utc"),
+        "last_open_ny": now_ny_ts if is_run_open else prev.get("last_open_ny"),
+        "last_open_event": event if is_run_open else prev.get("last_open_event"),
+        "last_open_status": status if is_run_open else prev.get("last_open_status"),
+        "dispatch_attempts_total": dispatch_attempts_total,
+        "dispatch_attempts_today": dispatch_attempts_today,
+        "dispatch_failures_total": dispatch_failures_total,
+        "dispatch_failures_today": dispatch_failures_today,
+        "attempts_total": attempts_total,
+        "success_total": success_total,
+        "failure_total": failure_total,
+        "attempts_today": attempts_today,
+        "success_today": success_today,
+        "failure_today": failure_today,
+        "closed_runs_total": closed_runs_total,
+        "closed_runs_today": closed_runs_today,
+        "incomplete_runs_total": incomplete_runs_total,
+        "incomplete_runs_today": incomplete_runs_today,
+        "in_flight_run": incomplete_runs_total > 0,
+        "consecutive_failures": 0 if is_run_success else (int(prev.get("consecutive_failures") or 0) + (1 if is_run_failure else 0)),
+        "warning_codes": warning_codes,
+        "current_sleep_sec": details.get("sleep_sec", prev.get("current_sleep_sec")),
+        "next_run_estimate_utc": details.get("next_run_estimate_utc", prev.get("next_run_estimate_utc")),
+        "last_http_status": details.get("status", prev.get("last_http_status")),
+        "last_error": last_error,
+        "worker_pid": details.get("pid", prev.get("worker_pid")),
+        "interval_sec": details.get("interval_sec", prev.get("interval_sec")),
+        "timeout_sec": details.get("timeout_sec", prev.get("timeout_sec")),
+        "run_on_start": details.get("run_on_start", prev.get("run_on_start")),
+        "jitter_sec": details.get("jitter_sec", prev.get("jitter_sec")),
     }
     LAST_SCANNER_TELEMETRY.clear()
     LAST_SCANNER_TELEMETRY.update(snapshot)
     history_event = {
-        "ts_utc": now_utc.isoformat(),
+        "ts_utc": now_utc_iso,
         "ts_ny": now_ny_ts,
         "event": event,
         "status": status,
-        "details": dict(details or {}),
+        "details": details,
     }
     SCANNER_TELEMETRY_HISTORY.append(history_event)
     if len(SCANNER_TELEMETRY_HISTORY) > SCANNER_TELEMETRY_HISTORY_LIMIT:
@@ -2719,7 +2842,7 @@ def _worker_status_snapshot() -> dict:
     now_utc = datetime.now(tz=timezone.utc)
     scanner_running = False
     scanner_age_sec = None
-    scanner_ref_ts = str((LAST_SCANNER_TELEMETRY.get("last_event_utc") or LAST_SCANNER_TELEMETRY.get("last_attempt_utc") or LAST_SCANNER_TELEMETRY.get("last_success_utc") or LAST_SCAN.get("ts_utc") or "")).strip()
+    scanner_ref_ts = str((LAST_SCANNER_TELEMETRY.get("last_worker_event_utc") or LAST_SCANNER_TELEMETRY.get("last_event_utc") or LAST_SCANNER_TELEMETRY.get("last_attempt_utc") or LAST_SCANNER_TELEMETRY.get("last_success_utc") or LAST_SCAN.get("ts_utc") or "")).strip()
     if scanner_ref_ts:
         try:
             scanner_ts = datetime.fromisoformat(scanner_ref_ts)
@@ -2812,7 +2935,7 @@ def _freshness_entry(name: str, ts_value, *, source: str = "", max_age_sec: floa
 
 
 def freshness_snapshot() -> dict:
-    scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_success_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_event_utc")
+    scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_worker_event_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_success_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_event_utc")
     scan_source = "memory" if LAST_SCAN else ("restored" if (globals().get("SCAN_STATE_RESTORE") or {}).get("last_scan_restored") else "empty")
     regime_source = "memory" if LAST_REGIME_SNAPSHOT else ("restored" if (globals().get("REGIME_STATE_RESTORE") or {}).get("current_restored") else "empty")
     lifecycle_source = "memory" if LAST_PAPER_LIFECYCLE else ("restored" if (globals().get("PAPER_LIFECYCLE_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
@@ -5108,7 +5231,7 @@ def diagnostics_readiness(request: Request):
         broker_error = str(e)
     scanner_running = False
     scanner_age_sec = None
-    scanner_ref_ts = str((LAST_SCANNER_TELEMETRY.get("last_event_utc") or LAST_SCANNER_TELEMETRY.get("last_attempt_utc") or LAST_SCANNER_TELEMETRY.get("last_success_utc") or LAST_SCAN.get("ts_utc") or "")).strip()
+    scanner_ref_ts = str((LAST_SCANNER_TELEMETRY.get("last_worker_event_utc") or LAST_SCANNER_TELEMETRY.get("last_event_utc") or LAST_SCANNER_TELEMETRY.get("last_attempt_utc") or LAST_SCANNER_TELEMETRY.get("last_success_utc") or LAST_SCAN.get("ts_utc") or "")).strip()
     if scanner_ref_ts:
         try:
             scanner_ts = datetime.fromisoformat(scanner_ref_ts)
@@ -6242,6 +6365,7 @@ def diagnostics_scanner():
     now_utc = datetime.now(timezone.utc)
     tel = dict(LAST_SCANNER_TELEMETRY or {})
     last_event_age_sec = None
+    last_closed_age_sec = None
     next_run_in_sec = None
     try:
         ts = tel.get("last_event_utc")
@@ -6250,6 +6374,15 @@ def diagnostics_scanner():
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             last_event_age_sec = max(0.0, (now_utc - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        pass
+    try:
+        ts = tel.get("last_closed_utc")
+        if ts:
+            dt = datetime.fromisoformat(str(ts))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            last_closed_age_sec = max(0.0, (now_utc - dt.astimezone(timezone.utc)).total_seconds())
     except Exception:
         pass
     try:
@@ -6274,6 +6407,7 @@ def diagnostics_scanner():
         "history": list(SCANNER_TELEMETRY_HISTORY[-50:]),
         "derived": {
             "last_event_age_sec": last_event_age_sec,
+            "last_closed_age_sec": last_closed_age_sec,
             "next_run_in_sec": next_run_in_sec,
             "scanner_running": _worker_status_snapshot().get("scanner_running"),
             "scanner_age_sec": _worker_status_snapshot().get("scanner_age_sec"),
@@ -6313,7 +6447,7 @@ def dashboard(request: Request):
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
     scanner_summary = _scanner_telemetry_summary()
-    scanner_last_success = (LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none'
+    scanner_last_success = (LAST_SCANNER_TELEMETRY or {}).get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none'
     authoritative_state = continuity.get('authoritative_state') or {}
 
     top_candidates = list((((last_scan.get('summary') or {}).get('top_candidates')) or []))[:5]
@@ -6419,7 +6553,7 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}</div>
     <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div></div>
     <div class="card"><div class="muted">Workers</div><div class="metric {'good' if release.get('worker_status',{}).get('scanner_running') else 'bad'}">{'UP' if release.get('worker_status',{}).get('scanner_running') else 'DOWN'}</div><div class="muted">Exit worker: {'UP' if release.get('worker_status',{}).get('exit_worker_running') else 'DOWN'}</div></div>
-    <div class="card"><div class="muted">Scanner telemetry</div><div class="metric">{_dashboard_fmt(scanner_summary.get('attempts_today') or 0)}</div><div class="muted">Attempts today / last success: {_dashboard_fmt(scanner_last_success)}</div></div>
+    <div class="card"><div class="muted">Scanner telemetry</div><div class="metric">{_dashboard_fmt(scanner_summary.get('closed_runs_today') or 0)}</div><div class="muted">Closed runs today / last closed: {_dashboard_fmt(scanner_last_success)}{' ⚠' if scanner_summary.get('has_warnings') else ''}</div></div>
     <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div></div>
     <div class="card"><div class="muted">Freshness</div><div class="metric">{len(freshness.get('stale_entries') or [])} stale / {len(freshness.get('missing_entries') or [])} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div></div>
     <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div></div>
