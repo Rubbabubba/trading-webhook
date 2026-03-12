@@ -479,7 +479,9 @@ POSITION_SNAPSHOT_PATH = getenv_any("POSITION_SNAPSHOT_PATH", default="/var/data
 SCAN_STATE_PATH = getenv_any("SCAN_STATE_PATH", default="/var/data/scan_state.json")
 REGIME_STATE_PATH = getenv_any("REGIME_STATE_PATH", default="/var/data/regime_state.json")
 PAPER_LIFECYCLE_STATE_PATH = getenv_any("PAPER_LIFECYCLE_STATE_PATH", default="/var/data/paper_lifecycle_state.json")
+SCANNER_TELEMETRY_STATE_PATH = getenv_any("SCANNER_TELEMETRY_STATE_PATH", default="/var/data/scanner_telemetry_state.json")
 PAPER_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("PAPER_LIFECYCLE_HISTORY_LIMIT", default="500"))
+SCANNER_TELEMETRY_HISTORY_LIMIT = int(getenv_any("SCANNER_TELEMETRY_HISTORY_LIMIT", default="500"))
 REGIME_BREADTH_RETURN_LOOKBACK_DAYS = int(getenv_any("REGIME_BREADTH_RETURN_LOOKBACK_DAYS", default="20"))
 REGIME_MIN_SYMBOLS_FOR_BREADTH = int(getenv_any("REGIME_MIN_SYMBOLS_FOR_BREADTH", default="5"))
 REGIME_REQUIRE_COMPLETE_DATA = env_bool("REGIME_REQUIRE_COMPLETE_DATA", True)
@@ -794,6 +796,8 @@ REJECTION_HISTORY: list[dict] = []
 DAILY_HALT_STATE: dict = {"session": None, "active": False, "triggered_at": None, "reason": ""}
 LAST_EXIT_HEARTBEAT: dict = {}
 LAST_ALERT_HEARTBEAT: dict = {}
+LAST_SCANNER_TELEMETRY: dict = {}
+SCANNER_TELEMETRY_HISTORY: list[dict] = []
 
 
 def _count_forced_trades_today_ny() -> int:
@@ -1011,6 +1015,107 @@ def restore_regime_runtime_state() -> dict:
 
 
 
+def persist_scanner_telemetry_state(reason: str = ""):
+    payload = {
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "last": dict(LAST_SCANNER_TELEMETRY or {}),
+        "history": list(SCANNER_TELEMETRY_HISTORY or []),
+    }
+    return _safe_json_write(SCANNER_TELEMETRY_STATE_PATH, payload)
+
+
+def restore_scanner_telemetry_state() -> dict:
+    payload = _safe_json_read(SCANNER_TELEMETRY_STATE_PATH)
+    restored = {"path": SCANNER_TELEMETRY_STATE_PATH, "loaded": False, "last_restored": False, "history_restored": 0}
+    if not payload:
+        return restored
+    try:
+        last = payload.get("last") or {}
+        history = payload.get("history") or []
+        if isinstance(last, dict) and last:
+            LAST_SCANNER_TELEMETRY.clear()
+            LAST_SCANNER_TELEMETRY.update(last)
+            restored["last_restored"] = True
+        if isinstance(history, list) and history:
+            SCANNER_TELEMETRY_HISTORY.clear()
+            SCANNER_TELEMETRY_HISTORY.extend(history[-SCANNER_TELEMETRY_HISTORY_LIMIT:])
+            restored["history_restored"] = len(SCANNER_TELEMETRY_HISTORY)
+        restored["loaded"] = restored["last_restored"] or bool(restored["history_restored"])
+    except Exception as e:
+        restored["error"] = str(e)
+    globals()["SCANNER_TELEMETRY_STATE_RESTORE"] = restored
+    return restored
+
+
+def _record_scanner_telemetry(event: str, status: str, details: dict | None = None):
+    prev = dict(LAST_SCANNER_TELEMETRY or {})
+    now_utc = datetime.now(timezone.utc)
+    now_ny_ts = now_ny().isoformat()
+    today_ny = now_ny().date().isoformat()
+    last_day = str(prev.get("today_ny") or "")
+    attempts_today = int(prev.get("attempts_today") or 0)
+    success_today = int(prev.get("success_today") or 0)
+    failure_today = int(prev.get("failure_today") or 0)
+    if last_day != today_ny:
+        attempts_today = 0
+        success_today = 0
+        failure_today = 0
+    event_l = str(event or "").strip().lower()
+    status_l = str(status or "").strip().lower()
+    is_attempt = event_l in {"scan_attempt", "scan_request"} or status_l == "attempt"
+    is_failure = status_l in {"error", "failed", "http_error", "exception"}
+    snapshot = {
+        "ts_utc": now_utc.isoformat(),
+        "ts_ny": now_ny_ts,
+        "today_ny": today_ny,
+        "event": event,
+        "status": status,
+        "details": dict(details or {}),
+        "boot_ts_utc": prev.get("boot_ts_utc") or (now_utc.isoformat() if event_l == "boot" else None),
+        "boot_ts_ny": prev.get("boot_ts_ny") or (now_ny_ts if event_l == "boot" else None),
+        "last_event_utc": now_utc.isoformat(),
+        "last_event_ny": now_ny_ts,
+        "last_attempt_utc": now_utc.isoformat() if is_attempt else prev.get("last_attempt_utc"),
+        "last_success_utc": now_utc.isoformat() if event_l == "scan_ok" else prev.get("last_success_utc"),
+        "last_failure_utc": now_utc.isoformat() if is_failure else prev.get("last_failure_utc"),
+        "attempts_total": int(prev.get("attempts_total") or 0) + (1 if is_attempt else 0),
+        "success_total": int(prev.get("success_total") or 0) + (1 if event_l == "scan_ok" else 0),
+        "failure_total": int(prev.get("failure_total") or 0) + (1 if is_failure else 0),
+        "attempts_today": attempts_today + (1 if is_attempt else 0),
+        "success_today": success_today + (1 if event_l == "scan_ok" else 0),
+        "failure_today": failure_today + (1 if is_failure else 0),
+        "consecutive_failures": 0 if event_l == "scan_ok" else (int(prev.get("consecutive_failures") or 0) + (1 if is_failure else 0)),
+        "current_sleep_sec": (details or {}).get("sleep_sec", prev.get("current_sleep_sec")),
+        "next_run_estimate_utc": (details or {}).get("next_run_estimate_utc", prev.get("next_run_estimate_utc")),
+        "last_http_status": (details or {}).get("status", prev.get("last_http_status")),
+        "last_error": (details or {}).get("error", prev.get("last_error") if not is_failure else (details or {}).get("error")),
+        "worker_pid": (details or {}).get("pid", prev.get("worker_pid")),
+        "interval_sec": (details or {}).get("interval_sec", prev.get("interval_sec")),
+        "timeout_sec": (details or {}).get("timeout_sec", prev.get("timeout_sec")),
+        "run_on_start": (details or {}).get("run_on_start", prev.get("run_on_start")),
+        "jitter_sec": (details or {}).get("jitter_sec", prev.get("jitter_sec")),
+    }
+    LAST_SCANNER_TELEMETRY.clear()
+    LAST_SCANNER_TELEMETRY.update(snapshot)
+    history_event = {
+        "ts_utc": now_utc.isoformat(),
+        "ts_ny": now_ny_ts,
+        "event": event,
+        "status": status,
+        "details": dict(details or {}),
+    }
+    SCANNER_TELEMETRY_HISTORY.append(history_event)
+    if len(SCANNER_TELEMETRY_HISTORY) > SCANNER_TELEMETRY_HISTORY_LIMIT:
+        del SCANNER_TELEMETRY_HISTORY[: len(SCANNER_TELEMETRY_HISTORY) - SCANNER_TELEMETRY_HISTORY_LIMIT]
+    try:
+        persist_scanner_telemetry_state(reason=f"{event}:{status}")
+    except Exception:
+        pass
+    return snapshot
+
+
+
 def persist_paper_lifecycle_state(reason: str = ""):
     payload = {
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -1079,6 +1184,11 @@ def _ensure_runtime_state_loaded():
     try:
         if (not LAST_PAPER_LIFECYCLE) and (not PAPER_LIFECYCLE_HISTORY):
             restore_paper_lifecycle_state()
+    except Exception:
+        pass
+    try:
+        if (not LAST_SCANNER_TELEMETRY) and (not SCANNER_TELEMETRY_HISTORY):
+            restore_scanner_telemetry_state()
     except Exception:
         pass
     try:
@@ -2405,9 +2515,10 @@ def _worker_status_snapshot() -> dict:
     now_utc = datetime.now(tz=timezone.utc)
     scanner_running = False
     scanner_age_sec = None
-    if LAST_SCAN.get("ts_utc"):
+    scanner_ref_ts = str((LAST_SCANNER_TELEMETRY.get("last_event_utc") or LAST_SCANNER_TELEMETRY.get("last_attempt_utc") or LAST_SCANNER_TELEMETRY.get("last_success_utc") or LAST_SCAN.get("ts_utc") or "")).strip()
+    if scanner_ref_ts:
         try:
-            scanner_ts = datetime.fromisoformat(str(LAST_SCAN.get("ts_utc")))
+            scanner_ts = datetime.fromisoformat(scanner_ref_ts)
             if scanner_ts.tzinfo is None:
                 scanner_ts = scanner_ts.replace(tzinfo=timezone.utc)
             scanner_age_sec = max(0.0, (now_utc - scanner_ts.astimezone(timezone.utc)).total_seconds())
@@ -4673,9 +4784,10 @@ def diagnostics_readiness(request: Request):
         broker_error = str(e)
     scanner_running = False
     scanner_age_sec = None
-    if LAST_SCAN.get("ts_utc"):
+    scanner_ref_ts = str((LAST_SCANNER_TELEMETRY.get("last_event_utc") or LAST_SCANNER_TELEMETRY.get("last_attempt_utc") or LAST_SCANNER_TELEMETRY.get("last_success_utc") or LAST_SCAN.get("ts_utc") or "")).strip()
+    if scanner_ref_ts:
         try:
-            scanner_ts = datetime.fromisoformat(str(LAST_SCAN.get("ts_utc")))
+            scanner_ts = datetime.fromisoformat(scanner_ref_ts)
             if scanner_ts.tzinfo is None:
                 scanner_ts = scanner_ts.replace(tzinfo=timezone.utc)
             scanner_age_sec = max(0.0, (now_utc - scanner_ts.astimezone(timezone.utc)).total_seconds())
@@ -5781,6 +5893,66 @@ def _dashboard_rows(rows: list[tuple[str, object]]) -> str:
     )
 
 
+
+
+@app.post("/worker/scanner_heartbeat")
+async def worker_scanner_heartbeat(req: Request):
+    body = {}
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    if WORKER_SECRET:
+        if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid worker secret")
+    event = str(body.get("event") or "heartbeat").strip().lower() or "heartbeat"
+    status = str(body.get("status") or "ok").strip().lower() or "ok"
+    details = dict(body.get("details") or {})
+    snapshot = _record_scanner_telemetry(event, status, details=details)
+    return {"ok": True, "telemetry": snapshot}
+
+
+@app.get("/diagnostics/scanner")
+def diagnostics_scanner():
+    _ensure_runtime_state_loaded()
+    now_utc = datetime.now(timezone.utc)
+    tel = dict(LAST_SCANNER_TELEMETRY or {})
+    last_event_age_sec = None
+    next_run_in_sec = None
+    try:
+        ts = tel.get("last_event_utc")
+        if ts:
+            dt = datetime.fromisoformat(str(ts))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            last_event_age_sec = max(0.0, (now_utc - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        pass
+    try:
+        ts = tel.get("next_run_estimate_utc")
+        if ts:
+            dt = datetime.fromisoformat(str(ts))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            next_run_in_sec = (dt.astimezone(timezone.utc) - now_utc).total_seconds()
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "telemetry_state_path": SCANNER_TELEMETRY_STATE_PATH,
+        "state_restore": dict(globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}),
+        "last": tel,
+        "history_count": len(SCANNER_TELEMETRY_HISTORY),
+        "history_limit": SCANNER_TELEMETRY_HISTORY_LIMIT,
+        "history": list(SCANNER_TELEMETRY_HISTORY[-50:]),
+        "derived": {
+            "last_event_age_sec": last_event_age_sec,
+            "next_run_in_sec": next_run_in_sec,
+            "scanner_running": _worker_status_snapshot().get("scanner_running"),
+            "scanner_age_sec": _worker_status_snapshot().get("scanner_age_sec"),
+        },
+    }
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     require_admin_if_configured(request)
@@ -5862,6 +6034,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/release">release</a>
     <a href="/diagnostics/reconcile">reconcile</a>
     <a href="/diagnostics/paper_lifecycle">paper_lifecycle</a>
+    <a href="/diagnostics/scanner">scanner</a>
   </div>
 
   <div class="section grid">
@@ -5870,6 +6043,7 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}</div>
     <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div></div>
     <div class="card"><div class="muted">Workers</div><div class="metric {'good' if release.get('worker_status',{}).get('scanner_running') else 'bad'}">{'UP' if release.get('worker_status',{}).get('scanner_running') else 'DOWN'}</div><div class="muted">Exit worker: {'UP' if release.get('worker_status',{}).get('exit_worker_running') else 'DOWN'}</div></div>
+    <div class="card"><div class="muted">Scanner telemetry</div><div class="metric">{_dashboard_fmt((LAST_SCANNER_TELEMETRY or {}).get('attempts_today') or 0)}</div><div class="muted">Attempts today / last success: {_dashboard_fmt((LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none')}</div></div>
     <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div></div>
   </div>
 
@@ -5979,9 +6153,12 @@ def diagnostics_swing():
             'scan_state_restore': dict(globals().get('SCAN_STATE_RESTORE') or {}),
             'regime_state_restore': dict(globals().get('REGIME_STATE_RESTORE') or {}),
             'paper_lifecycle_state_restore': dict(globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}),
+            'scanner_telemetry_state_path': SCANNER_TELEMETRY_STATE_PATH,
+            'scanner_telemetry_state_restore': dict(globals().get('SCANNER_TELEMETRY_STATE_RESTORE') or {}),
             'last_scan_state_source': 'memory' if LAST_SCAN else ('restored' if (globals().get('SCAN_STATE_RESTORE') or {}).get('last_scan_restored') else 'empty'),
             'last_regime_state_source': 'memory' if LAST_REGIME_SNAPSHOT else ('restored' if (globals().get('REGIME_STATE_RESTORE') or {}).get('current_restored') else 'empty'),
             'last_paper_lifecycle_source': 'memory' if LAST_PAPER_LIFECYCLE else ('restored' if (globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}).get('last_event_restored') else 'empty'),
+            'last_scanner_telemetry_source': 'memory' if LAST_SCANNER_TELEMETRY else ('restored' if (globals().get('SCANNER_TELEMETRY_STATE_RESTORE') or {}).get('last_restored') else 'empty'),
         },
         'release': release_gate_status(),
         'blockers': _diagnostics_swing_blockers(),
@@ -6102,6 +6279,11 @@ async def worker_scan_entries(req: Request):
     if WORKER_SECRET:
         if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
+
+    try:
+        _record_scanner_telemetry("scan_request", "received", details={"requested_reason": str(body.get("reason") or ""), "user_agent": req.headers.get("user-agent", ""), "source_ip": getattr(req.client, "host", "")})
+    except Exception:
+        pass
 
     effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("worker_scan")))
     requested_reason = str(body.get("reason") or "").strip() or None
@@ -6717,6 +6899,10 @@ async def worker_scan_entries(req: Request):
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
                 persist_scan_runtime_state(reason="worker_scan_entries")
+                try:
+                    _record_scanner_telemetry("scan_ok", "success", details={"status": 200, "symbols_scanned": len(syms), "signals": len(signals), "blocked": blocked, "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled"})
+                except Exception:
+                    pass
         except Exception:
                 pass
 
@@ -6743,6 +6929,10 @@ async def worker_scan_entries(req: Request):
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
         try:
             _set_last_scan(skipped=False, reason='scan_exception', error=str(e), scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=duration_ms)
+            try:
+                _record_scanner_telemetry("scan_error", "exception", details={"error": str(e), "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled"})
+            except Exception:
+                pass
         except Exception:
             pass
         try:
