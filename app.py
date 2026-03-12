@@ -1173,6 +1173,157 @@ def _record_paper_lifecycle(stage: str, status: str, symbol: str | None = None, 
     return event
 
 
+def _authoritative_runtime_state_snapshot() -> dict:
+    snap = build_reconcile_snapshot()
+    active_plan_symbols = sorted([str(sym or '').upper() for sym, plan in (TRADE_PLAN or {}).items() if isinstance(plan, dict) and bool(plan.get('active'))])
+    pending_entry_plan_symbols = sorted([str(sym or '').upper() for sym in (snap.get('pending_entry_plan_symbols') or [])])
+    broker_symbols = sorted([str(sym or '').upper() for sym in (snap.get('broker_symbols') or [])])
+    open_order_symbols = sorted([str(sym or '').upper() for sym in (snap.get('open_order_symbols') or [])])
+    position_like_symbols = sorted(set(broker_symbols) | set(active_plan_symbols))
+    entry_pending_symbols = sorted(set(pending_entry_plan_symbols) | set(open_order_symbols))
+    return {
+        'active_plan_symbols': active_plan_symbols,
+        'pending_entry_plan_symbols': pending_entry_plan_symbols,
+        'broker_symbols': broker_symbols,
+        'open_order_symbols': open_order_symbols,
+        'position_like_symbols': position_like_symbols,
+        'entry_pending_symbols': entry_pending_symbols,
+        'reconcile': snap,
+        'idle': not bool(position_like_symbols or entry_pending_symbols),
+    }
+
+
+def _paper_lifecycle_integrity_issues(last_event: dict | None = None, state: dict | None = None) -> list[dict]:
+    event = dict(last_event or LAST_PAPER_LIFECYCLE or {})
+    runtime = dict(state or _authoritative_runtime_state_snapshot())
+    issues: list[dict] = []
+    if not event:
+        return issues
+
+    stage = str(event.get('stage') or '').lower()
+    status = str(event.get('status') or '').lower()
+    symbol = str(event.get('symbol') or '').upper()
+    pending_symbols = set(runtime.get('entry_pending_symbols') or [])
+    position_symbols = set(runtime.get('position_like_symbols') or [])
+    active_plan_symbols = set(runtime.get('active_plan_symbols') or [])
+    broker_symbols = set(runtime.get('broker_symbols') or [])
+    open_order_symbols = set(runtime.get('open_order_symbols') or [])
+
+    if stage == 'entry' and status in {'planned', 'submitted', 'dry_run'}:
+        symbol_ok = (symbol in pending_symbols) or (symbol in position_symbols) if symbol else bool(pending_symbols or position_symbols)
+        if not symbol_ok:
+            issues.append({
+                'code': 'stale_entry_lifecycle_without_authoritative_state',
+                'severity': 'error',
+                'symbol': symbol or None,
+                'details': {
+                    'stage': stage,
+                    'status': status,
+                    'pending_entry_plan_symbols': sorted(pending_symbols),
+                    'position_like_symbols': sorted(position_symbols),
+                },
+            })
+
+    if stage == 'exit' and status in {'submitted', 'dry_run'}:
+        symbol_open = (symbol in broker_symbols) or (symbol in active_plan_symbols) or (symbol in open_order_symbols) if symbol else bool(broker_symbols or active_plan_symbols or open_order_symbols)
+        if not symbol_open:
+            issues.append({
+                'code': 'stale_exit_lifecycle_without_authoritative_state',
+                'severity': 'warn',
+                'symbol': symbol or None,
+                'details': {
+                    'stage': stage,
+                    'status': status,
+                    'broker_symbols': sorted(broker_symbols),
+                    'active_plan_symbols': sorted(active_plan_symbols),
+                    'open_order_symbols': sorted(open_order_symbols),
+                },
+            })
+    return issues
+
+
+def normalize_paper_lifecycle_current_state(reason: str = 'runtime_check') -> dict:
+    runtime = _authoritative_runtime_state_snapshot()
+    issues = _paper_lifecycle_integrity_issues(LAST_PAPER_LIFECYCLE, runtime)
+    normalized = {'checked': True, 'mutated': False, 'issues': issues}
+    if not issues:
+        return normalized
+
+    codes = {str(item.get('code') or '') for item in issues}
+    if 'stale_entry_lifecycle_without_authoritative_state' in codes or 'stale_exit_lifecycle_without_authoritative_state' in codes:
+        last_event = dict(LAST_PAPER_LIFECYCLE or {})
+        event = _record_paper_lifecycle(
+            'state',
+            'idle',
+            symbol=None,
+            details={
+                'normalized': True,
+                'normalization_reason': reason,
+                'previous_event': {
+                    'ts_utc': last_event.get('ts_utc'),
+                    'stage': last_event.get('stage'),
+                    'status': last_event.get('status'),
+                    'symbol': last_event.get('symbol'),
+                },
+                'issues': issues,
+                'active_plan_count': int((runtime.get('reconcile') or {}).get('active_plan_count') or 0),
+                'open_order_count': int((runtime.get('reconcile') or {}).get('open_order_count') or 0),
+                'broker_positions_count': int((runtime.get('reconcile') or {}).get('broker_positions_count') or 0),
+            },
+        )
+        normalized['mutated'] = True
+        normalized['event'] = event
+    return normalized
+
+
+def continuity_snapshot(normalize_current: bool = False) -> dict:
+    _ensure_runtime_state_loaded()
+    normalization = normalize_paper_lifecycle_current_state(reason='continuity_snapshot') if normalize_current else {'checked': False, 'mutated': False, 'issues': []}
+    runtime = _authoritative_runtime_state_snapshot()
+    last_event = dict(LAST_PAPER_LIFECYCLE or {})
+    issues = list(_paper_lifecycle_integrity_issues(last_event, runtime))
+
+    reconcile = runtime.get('reconcile') or {}
+    for sym in sorted(set(reconcile.get('plans_missing_open_order') or [])):
+        issues.append({'code': 'pending_plan_missing_open_order', 'severity': 'error', 'symbol': sym})
+    for sym in sorted(set(reconcile.get('stale_active_plans') or [])):
+        issues.append({'code': 'stale_active_plan', 'severity': 'error', 'symbol': sym})
+    for sym in sorted(set(reconcile.get('partial_fill_plan_symbols') or [])):
+        issues.append({'code': 'partial_fill_plan_aging', 'severity': 'warn', 'symbol': sym})
+    for sym in sorted(set(reconcile.get('orphan_open_order_symbols') or [])):
+        issues.append({'code': 'orphan_open_order', 'severity': 'error', 'symbol': sym})
+
+    issue_codes = [str(item.get('code') or '') for item in issues]
+    return {
+        'session': _session_boundary_snapshot(),
+        'startup_state': dict(globals().get('STARTUP_STATE') or {}),
+        'current_lifecycle_event': last_event,
+        'normalization': normalization,
+        'authoritative_state': {
+            'idle': bool(runtime.get('idle')),
+            'active_plan_symbols': list(runtime.get('active_plan_symbols') or []),
+            'pending_entry_plan_symbols': list(runtime.get('pending_entry_plan_symbols') or []),
+            'broker_symbols': list(runtime.get('broker_symbols') or []),
+            'open_order_symbols': list(runtime.get('open_order_symbols') or []),
+            'position_like_symbols': list(runtime.get('position_like_symbols') or []),
+            'entry_pending_symbols': list(runtime.get('entry_pending_symbols') or []),
+        },
+        'reconcile_snapshot': {
+            'open_order_count': int(reconcile.get('open_order_count') or 0),
+            'active_plan_count': int(reconcile.get('active_plan_count') or 0),
+            'broker_positions_count': int(reconcile.get('broker_positions_count') or 0),
+            'plans_missing_open_order': list(reconcile.get('plans_missing_open_order') or []),
+            'stale_active_plans': list(reconcile.get('stale_active_plans') or []),
+            'partial_fill_plan_symbols': list(reconcile.get('partial_fill_plan_symbols') or []),
+            'orphan_open_order_symbols': list(reconcile.get('orphan_open_order_symbols') or []),
+            'pending_entry_plan_symbols': list(reconcile.get('pending_entry_plan_symbols') or []),
+        },
+        'issues': issues,
+        'issue_codes': issue_codes,
+        'ok': len(issues) == 0,
+    }
+
+
 def _ensure_runtime_state_loaded():
     try:
         if (not LAST_SCAN) and (not SCAN_HISTORY):
@@ -1196,6 +1347,10 @@ def _ensure_runtime_state_loaded():
         pass
     try:
         _backfill_runtime_state_views()
+    except Exception:
+        pass
+    try:
+        normalize_paper_lifecycle_current_state(reason="ensure_runtime_state_loaded")
     except Exception:
         pass
 
@@ -2259,6 +2414,10 @@ def startup_restore_state() -> dict:
         rec_actions = reconcile_trade_plans_from_alpaca()
         state["reconcile_actions"] = rec_actions
         state["recovered_from_broker_only_count"] = len([a for a in rec_actions if str(a.get("action")) == "recovered_plan"])
+        try:
+            state["paper_lifecycle_normalization"] = normalize_paper_lifecycle_current_state(reason="startup_restore_state")
+        except Exception as _norm_err:
+            state["paper_lifecycle_normalization"] = {"checked": False, "error": str(_norm_err)}
 
         if (state["recovered_from_snapshot_count"] or state["recovered_from_broker_only_count"] or state["stale_snapshot_count"]):
             persist_positions_snapshot(reason="startup_state_restore", extra=state)
@@ -2690,6 +2849,10 @@ def release_gate_status() -> dict:
         unmet.append("partial_fill_aging_present")
     go_live_eligible = len(unmet) == 0
     freshness = freshness_snapshot()
+    continuity_issues = list(continuity.get('issues') or [])
+    continuity = continuity_snapshot(normalize_current=False)
+    if continuity.get("issue_codes"):
+        unmet.extend(sorted(set(str(code or '') for code in continuity.get("issue_codes") or [] if code)))
     return {
         "system_release_stage": stage,
         "session": freshness.get("session"),
@@ -2718,6 +2881,7 @@ def release_gate_status() -> dict:
             "active_plan_count": int(reconcile.get("active_plan_count") or 0),
             "broker_positions_count": int(reconcile.get("broker_positions_count") or 0),
         },
+        "continuity": continuity,
     }
 
 
@@ -6078,12 +6242,14 @@ def dashboard(request: Request):
     _refresh_regime_snapshot_if_needed()
 
     release = release_gate_status()
+    continuity = continuity_snapshot(normalize_current=False)
     blockers = _diagnostics_swing_blockers()
     regime = dict(LAST_REGIME_SNAPSHOT or {})
     last_scan = dict(LAST_SCAN or {})
     last_lifecycle = dict(LAST_PAPER_LIFECYCLE or {})
     reconcile = build_reconcile_snapshot()
     freshness = freshness_snapshot()
+    continuity_issues = list(continuity.get('issues') or [])
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
 
@@ -6123,6 +6289,17 @@ def dashboard(request: Request):
     )
     if not freshness_rows:
         freshness_rows = '<tr><td colspan="5" class="muted">No freshness data available.</td></tr>'
+
+    continuity_rows = ''.join(
+        '<tr>'
+        f'<td>{html.escape(str((item or {}).get("code") or ""))}</td>'
+        f'<td>{html.escape(str((item or {}).get("severity") or ""))}</td>'
+        f'<td>{html.escape(str((item or {}).get("symbol") or ""))}</td>'
+        '</tr>'
+        for item in continuity_issues[:10]
+    )
+    if not continuity_rows:
+        continuity_rows = '<tr><td colspan="3" class="muted">No continuity issues detected.</td></tr>'
 
     html_doc = f'''<!doctype html>
 <html lang="en">
@@ -6170,6 +6347,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/paper_lifecycle">paper_lifecycle</a>
     <a href="/diagnostics/freshness">freshness</a>
     <a href="/diagnostics/scanner">scanner</a>
+    <a href="/diagnostics/continuity">continuity</a>
   </div>
 
   <div class="section grid">
@@ -6182,6 +6360,7 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div></div>
     <div class="card"><div class="muted">Freshness</div><div class="metric">{len(freshness.get('stale_entries') or [])} stale / {len(freshness.get('missing_entries') or [])} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div></div>
     <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div></div>
+    <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / normalized: {continuity.get('normalization',{}).get('mutated')}</div></div>
   </div>
 
   <div class="section grid">
@@ -6391,6 +6570,16 @@ def diagnostics_release(request: Request):
         },
     })
     return status
+
+
+@app.get("/diagnostics/continuity")
+def diagnostics_continuity(request: Request):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    snap = continuity_snapshot(normalize_current=True)
+    snap["ok"] = bool(snap.get("ok"))
+    return snap
 
 
 @app.get("/diagnostics/paper_lifecycle")
