@@ -2847,12 +2847,37 @@ def release_gate_status() -> dict:
         unmet.append("stale_active_plans_present")
     if reconcile.get("partial_fill_plan_symbols"):
         unmet.append("partial_fill_aging_present")
-    go_live_eligible = len(unmet) == 0
+
     freshness = freshness_snapshot()
-    continuity_issues = list(continuity.get('issues') or [])
-    continuity = continuity_snapshot(normalize_current=False)
+    continuity = {}
+    continuity_issues = []
+    continuity_error = ""
+    try:
+        continuity = continuity_snapshot(normalize_current=False)
+        continuity_issues = list(continuity.get("issues") or [])
+    except Exception as e:
+        continuity_error = str(e)
+        continuity = {
+            "ok": False,
+            "error": continuity_error,
+            "issues": [
+                {
+                    "code": "continuity_snapshot_failed",
+                    "severity": "error",
+                    "details": {"error": continuity_error},
+                }
+            ],
+            "issue_codes": ["continuity_snapshot_failed"],
+        }
+        continuity_issues = list(continuity.get("issues") or [])
+
+    if continuity_issues:
+        unmet.append("continuity_issues_present")
     if continuity.get("issue_codes"):
-        unmet.extend(sorted(set(str(code or '') for code in continuity.get("issue_codes") or [] if code)))
+        unmet.extend(sorted(set(str(code or "") for code in continuity.get("issue_codes") or [] if code)))
+
+    unmet = list(dict.fromkeys(str(x) for x in unmet if x))
+    go_live_eligible = len(unmet) == 0
     return {
         "system_release_stage": stage,
         "session": freshness.get("session"),
