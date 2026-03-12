@@ -2,6 +2,7 @@ import os
 import logging
 import hashlib
 import traceback
+import html
 import time as _time
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -5744,6 +5745,203 @@ def _diagnostics_swing_blockers() -> dict:
         'unmanaged_symbols': list(exposure.get('unmanaged_symbols') or []),
         'now_ny': now.isoformat(),
     }
+
+
+def _dashboard_badge(label: str, ok: bool | None) -> str:
+    cls = "neutral"
+    txt = "UNKNOWN"
+    if ok is True:
+        cls = "good"
+        txt = "YES"
+    elif ok is False:
+        cls = "bad"
+        txt = "NO"
+    return f'<span class="badge {cls}">{html.escape(label)}: {txt}</span>'
+
+
+def _dashboard_fmt(v):
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        return f"{v:,.2f}"
+    return html.escape(str(v))
+
+
+def _dashboard_json_block(obj) -> str:
+    import json
+    return html.escape(json.dumps(obj, indent=2, sort_keys=False, default=str))
+
+
+def _dashboard_rows(rows: list[tuple[str, object]]) -> str:
+    return ''.join(
+        f"<tr><th>{html.escape(str(k))}</th><td>{_dashboard_fmt(v)}</td></tr>"
+        for k, v in rows
+    )
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+
+    release = release_gate_status()
+    blockers = _diagnostics_swing_blockers()
+    regime = dict(LAST_REGIME_SNAPSHOT or {})
+    last_scan = dict(LAST_SCAN or {})
+    last_lifecycle = dict(LAST_PAPER_LIFECYCLE or {})
+    reconcile = build_reconcile_snapshot()
+
+    top_candidates = list((((last_scan.get('summary') or {}).get('top_candidates')) or []))[:5]
+    rejection_counts = (((last_scan.get('summary') or {}).get('rejection_counts')) or {})
+    top_rejections = sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+
+    candidate_rows = ''.join(
+        '<tr>'
+        f'<td>{html.escape(str(item.get("symbol") or ""))}</td>'
+        f'<td>{_dashboard_fmt(item.get("rank_score"))}</td>'
+        f'<td>{_dashboard_fmt(item.get("close"))}</td>'
+        f'<td>{_dashboard_fmt(item.get("breakout_distance_pct"))}</td>'
+        f'<td>{html.escape(", ".join(item.get("rejection_reasons") or []))}</td>'
+        '</tr>'
+        for item in top_candidates
+    )
+    if not candidate_rows:
+        candidate_rows = '<tr><td colspan="5" class="muted">No recent candidate set available.</td></tr>'
+
+    rejection_rows = ''.join(
+        f'<tr><td>{html.escape(str(reason))}</td><td>{count}</td></tr>'
+        for reason, count in top_rejections
+    )
+    if not rejection_rows:
+        rejection_rows = '<tr><td colspan="2" class="muted">No rejection data available.</td></tr>'
+
+    html_doc = f'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trading Webhook Dashboard</title>
+  <meta http-equiv="refresh" content="30">
+  <style>
+    :root {{ color-scheme: dark; }}
+    body {{ font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#0b1220; color:#e5e7eb; margin:0; padding:20px; }}
+    .wrap {{ max-width: 1400px; margin:0 auto; }}
+    h1,h2,h3 {{ margin:0 0 10px; }}
+    .sub {{ color:#94a3b8; margin:0 0 18px; }}
+    .grid {{ display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap:16px; }}
+    .card {{ background:#111827; border:1px solid #1f2937; border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,.25); }}
+    .metric {{ font-size:28px; font-weight:700; margin-top:8px; }}
+    .muted {{ color:#94a3b8; }}
+    .good {{ color:#86efac; }}
+    .bad {{ color:#fca5a5; }}
+    .neutral {{ color:#fcd34d; }}
+    .badge {{ display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; font-weight:700; background:#1f2937; margin:4px 6px 0 0; }}
+    .badge.good {{ background:#14532d; color:#bbf7d0; }}
+    .badge.bad {{ background:#7f1d1d; color:#fecaca; }}
+    .badge.neutral {{ background:#78350f; color:#fde68a; }}
+    table {{ width:100%; border-collapse: collapse; }}
+    th,td {{ text-align:left; padding:8px 10px; border-bottom:1px solid #1f2937; vertical-align:top; }}
+    th {{ color:#93c5fd; width:34%; font-weight:600; }}
+    pre {{ white-space:pre-wrap; word-break:break-word; background:#0f172a; border:1px solid #1f2937; border-radius:10px; padding:12px; overflow:auto; }}
+    .section {{ margin-top:18px; }}
+    .links a {{ color:#93c5fd; text-decoration:none; margin-right:14px; }}
+    .links a:hover {{ text-decoration:underline; }}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Read-Only Monitoring Dashboard</h1>
+  <p class="sub">Auto-refresh every 30 seconds. This page reads in-memory state only and does not place, modify, or cancel orders.</p>
+  <div class="links">
+    <a href="/diagnostics/swing">swing</a>
+    <a href="/diagnostics/candidates">candidates</a>
+    <a href="/diagnostics/regime">regime</a>
+    <a href="/diagnostics/release">release</a>
+    <a href="/diagnostics/reconcile">reconcile</a>
+    <a href="/diagnostics/paper_lifecycle">paper_lifecycle</a>
+  </div>
+
+  <div class="section grid">
+    <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}</div>
+    <div class="card"><div class="muted">Market hours</div><div class="metric {'bad' if blockers.get('blocked_by_market_hours') else 'good'}">{'BLOCKED' if blockers.get('blocked_by_market_hours') else 'OPEN'}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div></div>
+    <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}</div>
+    <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div></div>
+    <div class="card"><div class="muted">Workers</div><div class="metric {'good' if release.get('worker_status',{}).get('scanner_running') else 'bad'}">{'UP' if release.get('worker_status',{}).get('scanner_running') else 'DOWN'}</div><div class="muted">Exit worker: {'UP' if release.get('worker_status',{}).get('exit_worker_running') else 'DOWN'}</div></div>
+    <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div></div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Release Gates</h2>
+      <table>{_dashboard_rows([
+        ('go_live_eligible', release.get('go_live_eligible')),
+        ('live_orders_permitted', release.get('live_orders_permitted')),
+        ('recent_market_scan_ok', release.get('recent_market_scan_ok')),
+        ('last_scan_age_sec', release.get('last_scan_age_sec')),
+        ('scan_completed', ((release.get('lifecycle_counts') or {}).get('scan_completed'))),
+        ('candidate_selected', ((release.get('lifecycle_counts') or {}).get('candidate_selected'))),
+        ('entry_events', ((release.get('lifecycle_counts') or {}).get('entry_events'))),
+        ('exit_events', ((release.get('lifecycle_counts') or {}).get('exit_events'))),
+      ])}</table>
+      <h3 style="margin-top:14px;">Unmet conditions</h3>
+      <pre>{html.escape(chr(10).join(release.get('unmet_conditions') or ['none']))}</pre>
+    </div>
+
+    <div class="card">
+      <h2>Current Regime</h2>
+      <table>{_dashboard_rows([
+        ('index_symbol', regime.get('index_symbol')),
+        ('index_close', regime.get('index_close')),
+        ('index_fast_ma', regime.get('index_fast_ma')),
+        ('index_slow_ma', regime.get('index_slow_ma')),
+        ('index_trend_ok', regime.get('index_trend_ok')),
+        ('breadth', regime.get('breadth')),
+        ('ret_breadth', regime.get('ret_breadth')),
+        ('breadth_total', regime.get('breadth_total')),
+        ('score', regime.get('score')),
+        ('favorable', regime.get('favorable')),
+        ('data_complete', regime.get('data_complete')),
+      ])}</table>
+      <h3 style="margin-top:14px;">Reasons</h3>
+      <pre>{html.escape(chr(10).join(regime.get('reasons') or ['none']))}</pre>
+    </div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Top Candidate Rejections</h2>
+      <table>
+        <thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead>
+        <tbody>{candidate_rows}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Rejection Totals</h2>
+      <table>
+        <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+        <tbody>{rejection_rows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Blockers</h2>
+      <pre>{_dashboard_json_block(blockers)}</pre>
+    </div>
+    <div class="card">
+      <h2>Last Lifecycle Event</h2>
+      <pre>{_dashboard_json_block(last_lifecycle)}</pre>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>'''
+    return HTMLResponse(content=html_doc)
 
 
 @app.get("/diagnostics/swing")
