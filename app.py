@@ -2544,6 +2544,93 @@ def _worker_status_snapshot() -> dict:
     }
 
 
+def _safe_iso_to_dt(value) -> datetime | None:
+    s = str(value or '').strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _session_boundary_snapshot() -> dict:
+    now_local = now_ny()
+    today_ny = now_local.date().isoformat()
+    open_local = datetime.combine(now_local.date(), MARKET_OPEN, tzinfo=NY_TZ)
+    close_local = datetime.combine(now_local.date(), MARKET_CLOSE, tzinfo=NY_TZ)
+    return {
+        "today_ny": today_ny,
+        "now_ny": now_local.isoformat(),
+        "market_open_ny": open_local.isoformat(),
+        "market_close_ny": close_local.isoformat(),
+        "market_open_utc": open_local.astimezone(timezone.utc).isoformat(),
+        "market_close_utc": close_local.astimezone(timezone.utc).isoformat(),
+        "market_open_now": bool(in_market_hours()),
+    }
+
+
+def _freshness_entry(name: str, ts_value, *, source: str = "", max_age_sec: float | None = None, require_same_session: bool = False, extra: dict | None = None) -> dict:
+    now_utc = datetime.now(tz=timezone.utc)
+    session = _session_boundary_snapshot()
+    dt = _safe_iso_to_dt(ts_value)
+    row = {
+        "name": name,
+        "ts_utc": dt.isoformat() if dt else None,
+        "age_sec": None,
+        "source": source or "",
+        "same_session": None,
+        "fresh": False,
+        "status": "missing",
+    }
+    if dt:
+        age_sec = max(0.0, (now_utc - dt).total_seconds())
+        dt_ny = dt.astimezone(NY_TZ)
+        same_session = (dt_ny.date().isoformat() == session["today_ny"])
+        fresh = True
+        if max_age_sec is not None:
+            fresh = fresh and (age_sec <= max_age_sec)
+        if require_same_session:
+            fresh = fresh and same_session
+        row.update({
+            "ts_ny": dt_ny.isoformat(),
+            "age_sec": age_sec,
+            "same_session": same_session,
+            "fresh": bool(fresh),
+            "status": "fresh" if fresh else "stale",
+        })
+    if extra:
+        row.update(extra)
+    return row
+
+
+def freshness_snapshot() -> dict:
+    scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_success_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_event_utc")
+    scan_source = "memory" if LAST_SCAN else ("restored" if (globals().get("SCAN_STATE_RESTORE") or {}).get("last_scan_restored") else "empty")
+    regime_source = "memory" if LAST_REGIME_SNAPSHOT else ("restored" if (globals().get("REGIME_STATE_RESTORE") or {}).get("current_restored") else "empty")
+    lifecycle_source = "memory" if LAST_PAPER_LIFECYCLE else ("restored" if (globals().get("PAPER_LIFECYCLE_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
+    scanner_source = "memory" if LAST_SCANNER_TELEMETRY else ("restored" if (globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
+    entries = {
+        "last_scan": _freshness_entry("last_scan", LAST_SCAN.get("ts_utc"), source=scan_source, max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"reason": LAST_SCAN.get("reason")}),
+        "regime": _freshness_entry("regime", (LAST_REGIME_SNAPSHOT or {}).get("ts_utc"), source=regime_source, max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"favorable": (LAST_REGIME_SNAPSHOT or {}).get("favorable"), "data_complete": (LAST_REGIME_SNAPSHOT or {}).get("data_complete")}),
+        "paper_lifecycle": _freshness_entry("paper_lifecycle", (LAST_PAPER_LIFECYCLE or {}).get("ts_utc"), source=lifecycle_source, require_same_session=True, extra={"stage": (LAST_PAPER_LIFECYCLE or {}).get("stage"), "status_value": (LAST_PAPER_LIFECYCLE or {}).get("status")}),
+        "scanner_telemetry": _freshness_entry("scanner_telemetry", scanner_ref, source=scanner_source, max_age_sec=max(READINESS_SCANNER_MAX_AGE_SEC, SCANNER_INTERVAL_SEC + SCANNER_TIMEOUT_SEC + max(10, SCANNER_JITTER_SEC) + 60), extra={"event": (LAST_SCANNER_TELEMETRY or {}).get("event"), "attempts_today": (LAST_SCANNER_TELEMETRY or {}).get("attempts_today")}),
+        "exit_heartbeat": _freshness_entry("exit_heartbeat", LAST_EXIT_HEARTBEAT.get("ts_utc"), source="memory" if LAST_EXIT_HEARTBEAT else "empty", max_age_sec=max(READINESS_EXIT_MAX_AGE_SEC, 30)),
+    }
+    stale = [name for name, row in entries.items() if row.get("status") == "stale"]
+    missing = [name for name, row in entries.items() if row.get("status") == "missing"]
+    return {
+        "session": _session_boundary_snapshot(),
+        "entries": entries,
+        "stale_entries": stale,
+        "missing_entries": missing,
+        "all_fresh": (not stale and not missing),
+    }
+
+
 def release_gate_status() -> dict:
     stage = SYSTEM_RELEASE_STAGE
     lifecycle = _paper_lifecycle_counts()
@@ -2599,8 +2686,11 @@ def release_gate_status() -> dict:
     if reconcile.get("partial_fill_plan_symbols"):
         unmet.append("partial_fill_aging_present")
     go_live_eligible = len(unmet) == 0
+    freshness = freshness_snapshot()
     return {
         "system_release_stage": stage,
+        "session": freshness.get("session"),
+        "freshness": freshness,
         "release_gate_enforced": RELEASE_GATE_ENFORCED,
         "release_allowed_live_stages": sorted(RELEASE_ALLOWED_LIVE_STAGES),
         "go_live_eligible": go_live_eligible,
@@ -5937,10 +6027,20 @@ def diagnostics_scanner():
             next_run_in_sec = (dt.astimezone(timezone.utc) - now_utc).total_seconds()
     except Exception:
         pass
+    today_prefix = str(now_ny().date())
+    summary = {
+        "attempts_total": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") == "scan_attempt"),
+        "success_total": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") == "scan_ok"),
+        "failure_total": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") in {"scan_fail", "scan_error"}),
+        "attempts_today": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") == "scan_attempt" and str((ev or {}).get("ts_ny") or "").startswith(today_prefix)),
+        "success_today": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") == "scan_ok" and str((ev or {}).get("ts_ny") or "").startswith(today_prefix)),
+        "failure_today": sum(1 for ev in SCANNER_TELEMETRY_HISTORY if str((ev or {}).get("event") or "") in {"scan_fail", "scan_error"} and str((ev or {}).get("ts_ny") or "").startswith(today_prefix)),
+    }
     return {
         "ok": True,
         "telemetry_state_path": SCANNER_TELEMETRY_STATE_PATH,
         "state_restore": dict(globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}),
+        "summary": summary,
         "last": tel,
         "history_count": len(SCANNER_TELEMETRY_HISTORY),
         "history_limit": SCANNER_TELEMETRY_HISTORY_LIMIT,
@@ -5952,6 +6052,21 @@ def diagnostics_scanner():
             "scanner_age_sec": _worker_status_snapshot().get("scanner_age_sec"),
         },
     }
+
+@app.get("/diagnostics/freshness")
+def diagnostics_freshness(request: Request):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    snap = freshness_snapshot()
+    snap.update({
+        "ok": True,
+        "release_max_scan_age_sec": RELEASE_MAX_SCAN_AGE_SEC,
+        "readiness_scanner_max_age_sec": READINESS_SCANNER_MAX_AGE_SEC,
+        "readiness_exit_max_age_sec": READINESS_EXIT_MAX_AGE_SEC,
+    })
+    return snap
+
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
@@ -5965,6 +6080,9 @@ def dashboard(request: Request):
     last_scan = dict(LAST_SCAN or {})
     last_lifecycle = dict(LAST_PAPER_LIFECYCLE or {})
     reconcile = build_reconcile_snapshot()
+    freshness = freshness_snapshot()
+    freshness_entries = freshness.get("entries") or {}
+    session = freshness.get("session") or {}
 
     top_candidates = list((((last_scan.get('summary') or {}).get('top_candidates')) or []))[:5]
     rejection_counts = (((last_scan.get('summary') or {}).get('rejection_counts')) or {})
@@ -5989,6 +6107,19 @@ def dashboard(request: Request):
     )
     if not rejection_rows:
         rejection_rows = '<tr><td colspan="2" class="muted">No rejection data available.</td></tr>'
+
+    freshness_rows = ''.join(
+        '<tr>'
+        f'<td>{html.escape(str(name))}</td>'
+        f'<td>{html.escape(str((row or {}).get("status") or ""))}</td>'
+        f'<td>{_dashboard_fmt((row or {}).get("age_sec"))}</td>'
+        f'<td>{html.escape(str((row or {}).get("same_session")))}</td>'
+        f'<td>{html.escape(str((row or {}).get("source") or ""))}</td>'
+        '</tr>'
+        for name, row in freshness_entries.items()
+    )
+    if not freshness_rows:
+        freshness_rows = '<tr><td colspan="5" class="muted">No freshness data available.</td></tr>'
 
     html_doc = f'''<!doctype html>
 <html lang="en">
@@ -6034,6 +6165,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/release">release</a>
     <a href="/diagnostics/reconcile">reconcile</a>
     <a href="/diagnostics/paper_lifecycle">paper_lifecycle</a>
+    <a href="/diagnostics/freshness">freshness</a>
     <a href="/diagnostics/scanner">scanner</a>
   </div>
 
@@ -6044,6 +6176,8 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div></div>
     <div class="card"><div class="muted">Workers</div><div class="metric {'good' if release.get('worker_status',{}).get('scanner_running') else 'bad'}">{'UP' if release.get('worker_status',{}).get('scanner_running') else 'DOWN'}</div><div class="muted">Exit worker: {'UP' if release.get('worker_status',{}).get('exit_worker_running') else 'DOWN'}</div></div>
     <div class="card"><div class="muted">Scanner telemetry</div><div class="metric">{_dashboard_fmt((LAST_SCANNER_TELEMETRY or {}).get('attempts_today') or 0)}</div><div class="muted">Attempts today / last success: {_dashboard_fmt((LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none')}</div></div>
+    <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div></div>
+    <div class="card"><div class="muted">Freshness</div><div class="metric">{len(freshness.get('stale_entries') or [])} stale / {len(freshness.get('missing_entries') or [])} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div></div>
     <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div></div>
   </div>
 
@@ -6081,6 +6215,31 @@ def dashboard(request: Request):
       ])}</table>
       <h3 style="margin-top:14px;">Reasons</h3>
       <pre>{html.escape(chr(10).join(regime.get('reasons') or ['none']))}</pre>
+    </div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Session Boundaries</h2>
+      <table>{_dashboard_rows([
+        ('today_ny', session.get('today_ny')),
+        ('now_ny', session.get('now_ny')),
+        ('market_open_ny', session.get('market_open_ny')),
+        ('market_close_ny', session.get('market_close_ny')),
+        ('market_open_now', session.get('market_open_now')),
+        ('scan_same_session', ((freshness_entries.get('last_scan') or {}).get('same_session'))),
+        ('regime_same_session', ((freshness_entries.get('regime') or {}).get('same_session'))),
+        ('lifecycle_same_session', ((freshness_entries.get('paper_lifecycle') or {}).get('same_session'))),
+      ])}</table>
+    </div>
+    <div class="card">
+      <h2>Freshness Diagnostics</h2>
+      <table>
+        <thead><tr><th>Source</th><th>Status</th><th>Age sec</th><th>Same session</th><th>Source type</th></tr></thead>
+        <tbody>{freshness_rows}</tbody>
+      </table>
+      <h3 style="margin-top:14px;">Stale / missing</h3>
+      <pre>{html.escape(chr(10).join((freshness.get('stale_entries') or []) + (freshness.get('missing_entries') or []) or ['none']))}</pre>
     </div>
   </div>
 
@@ -6161,6 +6320,8 @@ def diagnostics_swing():
             'last_scanner_telemetry_source': 'memory' if LAST_SCANNER_TELEMETRY else ('restored' if (globals().get('SCANNER_TELEMETRY_STATE_RESTORE') or {}).get('last_restored') else 'empty'),
         },
         'release': release_gate_status(),
+        'session': _session_boundary_snapshot(),
+        'freshness': freshness_snapshot(),
         'blockers': _diagnostics_swing_blockers(),
         'scan_history_size': len(SCAN_HISTORY),
         'last_scan': {
