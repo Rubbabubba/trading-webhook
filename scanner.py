@@ -32,18 +32,12 @@ def resolve_base_url(scan_url: str) -> str:
 
 def post_json(url: str, payload: dict, timeout: int, user_agent: str = "equities-scanner/1.0") -> tuple[int, str]:
     data = json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json", "User-Agent": user_agent}
-    if user_agent.startswith("equities-scanner/"):
-        headers["X-Scanner-Source"] = "worker"
-    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json", "User-Agent": user_agent, "X-Scanner-Source": "worker"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status, resp.read().decode("utf-8", errors="replace")
 
 def get_text(url: str, timeout: int, user_agent: str = "equities-scanner/1.0") -> tuple[int, str]:
-    headers = {"User-Agent": user_agent}
-    if user_agent.startswith("equities-scanner/"):
-        headers["X-Scanner-Source"] = "worker"
-    req = urllib.request.Request(url, method="GET", headers=headers)
+    req = urllib.request.Request(url, method="GET", headers={"User-Agent": user_agent})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status, resp.read().decode("utf-8", errors="replace")
 

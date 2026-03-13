@@ -1073,6 +1073,11 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
             total += 1
         return total
 
+    def _source_kind(row: dict) -> str:
+        details = (row or {}).get("details") or {}
+        kind = str(details.get("source_kind") or "").strip().lower()
+        return kind or "unknown"
+
     def _dispatch_implies_skip(row: dict) -> bool:
         if str((row or {}).get("event") or "").strip().lower() != "scan_dispatch_ok":
             return False
@@ -1087,9 +1092,12 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
     closed_runs_total = closed_runs_today = 0
     active_incomplete_total = active_incomplete_today = 0
     historical_incomplete_total = historical_incomplete_today = 0
+    manual_request_total = manual_request_today = 0
+    external_request_total = external_request_today = 0
     last_closed_event = None
     last_closed_status = None
     last_closed_utc = None
+    last_request_source_kind = str(tel.get("last_request_source_kind") or "").strip().lower() or None
     explicit_close_events = {"scan_ok": "success", "scan_fail": "failure", "scan_error": "failure", "scan_skip": "skipped"}
 
     for pos, start_idx in enumerate(request_indexes):
@@ -1097,6 +1105,16 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         segment = rows[start_idx:end_idx]
         request_row = rows[start_idx] or {}
         segment_today = _is_today(request_row)
+        req_kind = _source_kind(request_row)
+        if req_kind == "manual":
+            manual_request_total += 1
+            if segment_today:
+                manual_request_today += 1
+        elif req_kind == "external":
+            external_request_total += 1
+            if segment_today:
+                external_request_today += 1
+        last_request_source_kind = req_kind or last_request_source_kind
         closed = None
         for row in segment[1:]:
             ev = str((row or {}).get("event") or "").strip().lower()
@@ -1157,49 +1175,18 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         warning_codes.append("restored_partial_run_history")
     if _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}) > 0:
         warning_codes.append("dispatch_failure")
-
-    now_utc = datetime.now(timezone.utc)
-    worker_age_sec = None
-    worker_status = "unknown"
-    worker_ref_ts = str(tel.get("last_worker_event_utc") or "").strip()
-    if worker_ref_ts:
-        try:
-            worker_dt = datetime.fromisoformat(worker_ref_ts)
-            if worker_dt.tzinfo is None:
-                worker_dt = worker_dt.replace(tzinfo=timezone.utc)
-            worker_age_sec = max(0.0, (now_utc - worker_dt.astimezone(timezone.utc)).total_seconds())
-            worker_status = "up" if worker_age_sec <= max(READINESS_SCANNER_MAX_AGE_SEC, 30) else "stale"
-        except Exception:
-            worker_status = "unknown"
-            worker_age_sec = None
-
-    manual_request_total = 0
-    manual_request_today = 0
-    external_request_total = 0
-    external_request_today = 0
-    last_request_source_kind = None
-    for row in rows:
-        if str((row or {}).get("event") or "").strip().lower() != "scan_request":
-            continue
-        source_kind = str((((row or {}).get("details") or {}).get("source_kind") or "unknown")).strip().lower() or "unknown"
-        if source_kind == "manual":
-            manual_request_total += 1
-            if _is_today(row or {}):
-                manual_request_today += 1
-        elif source_kind not in {"worker", "manual"}:
-            external_request_total += 1
-            if _is_today(row or {}):
-                external_request_today += 1
-        last_request_source_kind = source_kind
-
-    if worker_status == "unknown":
-        warning_codes.append("worker_status_unknown")
-    elif worker_status == "stale":
-        warning_codes.append("worker_heartbeat_stale")
-    if manual_request_total > 0:
+    if manual_request_today > 0:
         warning_codes.append("manual_scan_request_observed")
-    if external_request_total > 0:
-        warning_codes.append("non_worker_scan_request_observed")
+    if external_request_today > 0:
+        warning_codes.append("external_scan_request_observed")
+
+    worker = _worker_status_snapshot()
+    worker_status = str(worker.get("scanner_status") or ("up" if worker.get("scanner_running") else "unknown"))
+    if worker_status != "up":
+        if worker_status == "stale":
+            warning_codes.append("worker_heartbeat_stale")
+        else:
+            warning_codes.append("worker_status_unknown")
 
     return {
         "attempts_total": attempts_total,
@@ -1231,33 +1218,15 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         "manual_request_today": manual_request_today,
         "external_request_total": external_request_total,
         "external_request_today": external_request_today,
-        "worker_status": worker_status,
-        "worker_age_sec": worker_age_sec,
-        "worker_last_event_utc": tel.get("last_worker_event_utc"),
-        "worker_last_event": tel.get("last_worker_event"),
+        "worker_status": worker.get("scanner_status"),
+        "worker_age_sec": worker.get("scanner_age_sec"),
+        "worker_last_event_utc": worker.get("scanner_last_event_utc"),
+        "worker_last_event": worker.get("scanner_last_event"),
         "in_flight_run": active_incomplete_total > 0,
         "has_warnings": bool(warning_codes),
         "warning_codes": warning_codes,
         "history_count": len(rows),
     }
-
-
-def _scanner_request_source_kind(req: Request, body: dict | None = None) -> str:
-    body = dict(body or {})
-    user_agent = str(req.headers.get("user-agent") or "").strip()
-    ua_l = user_agent.lower()
-    explicit = str(req.headers.get("x-scanner-source") or body.get("source_kind") or "").strip().lower()
-    if explicit in {"worker", "internal"}:
-        return "worker"
-    if WORKER_SECRET and str(body.get("worker_secret") or "").strip() == WORKER_SECRET:
-        return "worker"
-    if user_agent.startswith("equities-scanner/"):
-        return "worker"
-    if not user_agent:
-        return "unknown"
-    if any(tok in ua_l for tok in ["postman", "curl", "insomnia", "python-requests", "httpie"]):
-        return "manual"
-    return "external"
 
 
 def _record_scanner_telemetry(event: str, status: str, details: dict | None = None):
@@ -1282,6 +1251,10 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
     dispatch_attempt_events = {"scan_attempt"}
     dispatch_failure_events = {"scan_dispatch_http_error", "scan_dispatch_error"}
     worker_keepalive_events = {"boot", "preflight_ok", "preflight_error", "sleep", "heartbeat", *dispatch_attempt_events, *dispatch_failure_events}
+    source_kind = str(details.get("source_kind") or prev.get("last_request_source_kind") or "unknown").strip().lower() or "unknown"
+    worker_source = bool(details.get("worker_source"))
+    manual_source = source_kind == "manual"
+    external_source = source_kind == "external"
 
     is_dispatch_attempt = event_l in dispatch_attempt_events
     is_dispatch_failure = event_l in dispatch_failure_events
@@ -1290,8 +1263,6 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
     is_run_failure = event_l in close_failure_events
     is_run_skip = event_l in close_skip_events
     is_run_close = is_run_success or is_run_failure or is_run_skip
-    source_kind = str(details.get("source_kind") or "").strip().lower() or None
-    worker_source = bool(details.get("worker_source")) or source_kind == "worker"
     is_worker_event = event_l in worker_keepalive_events or (worker_source and (is_run_open or is_run_close))
 
     dispatch_attempts_total = int(prev.get("dispatch_attempts_total") or 0) + (1 if is_dispatch_attempt else 0)
@@ -1319,6 +1290,10 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
         warning_codes.append("dispatch_failure")
     if bool(prev.get("restored_from_state")) and incomplete_runs_total > 0:
         warning_codes.append("restored_partial_run")
+    if manual_source:
+        warning_codes.append("manual_scan_request_observed")
+    if external_source:
+        warning_codes.append("external_scan_request_observed")
 
     last_error = prev.get("last_error")
     if is_dispatch_failure or is_run_failure:
@@ -1333,7 +1308,6 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
         "event": event,
         "status": status,
         "details": details,
-        "source_kind": source_kind,
         "boot_ts_utc": prev.get("boot_ts_utc") or (now_utc_iso if event_l == "boot" else None),
         "boot_ts_ny": prev.get("boot_ts_ny") or (now_ny_ts if event_l == "boot" else None),
         "restored_from_state": bool(prev.get("restored_from_state")),
@@ -1356,7 +1330,11 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
         "last_open_event": event if is_run_open else prev.get("last_open_event"),
         "last_open_status": status if is_run_open else prev.get("last_open_status"),
         "last_request_source_kind": source_kind if is_run_open else prev.get("last_request_source_kind"),
-        "last_worker_source_kind": source_kind if is_worker_event and source_kind else prev.get("last_worker_source_kind"),
+        "last_worker_source_kind": source_kind if (is_run_open and worker_source) else prev.get("last_worker_source_kind"),
+        "manual_request_total": int(prev.get("manual_request_total") or 0) + (1 if (is_run_open and manual_source) else 0),
+        "manual_request_today": _day_value("manual_request_today") + (1 if (is_run_open and manual_source) else 0),
+        "external_request_total": int(prev.get("external_request_total") or 0) + (1 if (is_run_open and external_source) else 0),
+        "external_request_today": _day_value("external_request_today") + (1 if (is_run_open and external_source) else 0),
         "dispatch_attempts_total": dispatch_attempts_total,
         "dispatch_attempts_today": dispatch_attempts_today,
         "dispatch_failures_total": dispatch_failures_total,
@@ -2980,8 +2958,9 @@ def _worker_status_snapshot() -> dict:
     now_utc = datetime.now(tz=timezone.utc)
     scanner_running = False
     scanner_age_sec = None
-    scanner_status = "unknown"
     scanner_ref_ts = str((LAST_SCANNER_TELEMETRY.get("last_worker_event_utc") or "")).strip()
+    scanner_status = "unknown"
+    scanner_last_event = (LAST_SCANNER_TELEMETRY.get("last_worker_event") or None)
     if scanner_ref_ts:
         try:
             scanner_ts = datetime.fromisoformat(scanner_ref_ts)
@@ -3008,7 +2987,7 @@ def _worker_status_snapshot() -> dict:
         "scanner_running": scanner_running,
         "scanner_status": scanner_status,
         "scanner_age_sec": scanner_age_sec,
-        "scanner_last_event": LAST_SCANNER_TELEMETRY.get("last_worker_event"),
+        "scanner_last_event": scanner_last_event,
         "scanner_last_event_utc": LAST_SCANNER_TELEMETRY.get("last_worker_event_utc"),
         "exit_worker_running": exit_worker_running,
         "exit_worker_age_sec": exit_age_sec,
@@ -3079,7 +3058,7 @@ def _freshness_entry(name: str, ts_value, *, source: str = "", max_age_sec: floa
 
 
 def freshness_snapshot() -> dict:
-    scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_worker_event_utc")
+    scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_worker_event_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_success_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_event_utc")
     scan_source = "memory" if LAST_SCAN else ("restored" if (globals().get("SCAN_STATE_RESTORE") or {}).get("last_scan_restored") else "empty")
     regime_source = "memory" if LAST_REGIME_SNAPSHOT else ("restored" if (globals().get("REGIME_STATE_RESTORE") or {}).get("current_restored") else "empty")
     lifecycle_source = "memory" if LAST_PAPER_LIFECYCLE else ("restored" if (globals().get("PAPER_LIFECYCLE_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
@@ -6484,6 +6463,27 @@ def _dashboard_rows(rows: list[tuple[str, object]]) -> str:
     )
 
 
+def _dashboard_metric_class(status: str | None, good_values: set[str] | None = None, bad_values: set[str] | None = None) -> str:
+    s = str(status or "").strip().lower()
+    if good_values and s in good_values:
+        return "good"
+    if bad_values and s in bad_values:
+        return "bad"
+    return "neutral"
+
+
+def _dashboard_warning_badges(warnings: list[str] | None) -> str:
+    out = []
+    for code in list(warnings or [])[:6]:
+        out.append(f'<span class="badge bad">{html.escape(str(code))}</span>')
+    return ''.join(out)
+
+
+def _dashboard_source_badge(label: str, source: str) -> str:
+    cls = "good" if source == "authoritative" else ("neutral" if source in {"derived", "summary"} else "bad")
+    return f'<span class="badge {cls}">{html.escape(label)}: {html.escape(source)}</span>'
+
+
 
 
 @app.post("/worker/scanner_heartbeat")
@@ -6499,8 +6499,6 @@ async def worker_scanner_heartbeat(req: Request):
     event = str(body.get("event") or "heartbeat").strip().lower() or "heartbeat"
     status = str(body.get("status") or "ok").strip().lower() or "ok"
     details = dict(body.get("details") or {})
-    details.setdefault("source_kind", "worker")
-    details.setdefault("worker_source", True)
     snapshot = _record_scanner_telemetry(event, status, details=details)
     return {"ok": True, "telemetry": snapshot}
 
@@ -6563,13 +6561,7 @@ def diagnostics_scanner():
         "last_closed_event": summary.get("last_closed_event"),
         "last_closed_status": summary.get("last_closed_status"),
         "last_closed_utc": summary.get("last_closed_utc"),
-        "worker_status": summary.get("worker_status"),
-        "worker_age_sec": summary.get("worker_age_sec"),
-        "last_request_source_kind": summary.get("last_request_source_kind"),
-        "manual_request_today": summary.get("manual_request_today"),
-        "external_request_today": summary.get("external_request_today"),
     })
-    worker_status = _worker_status_snapshot()
     return {
         "ok": True,
         "telemetry_state_path": SCANNER_TELEMETRY_STATE_PATH,
@@ -6583,11 +6575,11 @@ def diagnostics_scanner():
             "last_event_age_sec": last_event_age_sec,
             "last_closed_age_sec": last_closed_age_sec,
             "next_run_in_sec": next_run_in_sec,
-            "scanner_running": worker_status.get("scanner_running"),
-            "scanner_status": worker_status.get("scanner_status"),
-            "scanner_age_sec": worker_status.get("scanner_age_sec"),
+            "scanner_running": _worker_status_snapshot().get("scanner_running"),
+            "scanner_status": _worker_status_snapshot().get("scanner_status"),
+            "scanner_age_sec": _worker_status_snapshot().get("scanner_age_sec"),
         },
-        "worker": worker_status,
+        "worker": _worker_status_snapshot(),
     }
 
 @app.get("/diagnostics/freshness")
@@ -6623,12 +6615,22 @@ def dashboard(request: Request):
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
     scanner_summary = _scanner_telemetry_summary()
-    scanner_last_success = (LAST_SCANNER_TELEMETRY or {}).get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none'
-    scanner_worker_status = str(scanner_summary.get('worker_status') or 'unknown')
-    scanner_worker_label = 'UP' if scanner_worker_status == 'up' else 'STALE' if scanner_worker_status == 'stale' else 'UNKNOWN'
-    scanner_worker_class = 'good' if scanner_worker_status == 'up' else 'neutral' if scanner_worker_status == 'stale' else 'bad'
-    scanner_source_label = scanner_summary.get('last_request_source_kind') or 'unknown'
+    worker_snapshot = _worker_status_snapshot()
+    scanner_last_success = scanner_summary.get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none'
     authoritative_state = continuity.get('authoritative_state') or {}
+    freshness_stale = list(freshness.get('stale_entries') or [])
+    freshness_missing = list(freshness.get('missing_entries') or [])
+    scanner_card_warnings = list(scanner_summary.get('warning_codes') or [])
+    dashboard_warnings = []
+    if freshness_stale or freshness_missing:
+        dashboard_warnings.append('freshness_degraded')
+    if scanner_card_warnings:
+        dashboard_warnings.extend(scanner_card_warnings)
+    if not continuity.get('ok'):
+        dashboard_warnings.append('continuity_issues_present')
+    scanner_worker_status = str(scanner_summary.get('worker_status') or worker_snapshot.get('scanner_status') or 'unknown')
+    workers_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','down','unknown'})
+    scanner_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','unknown'})
 
     top_candidates = list((((last_scan.get('summary') or {}).get('top_candidates')) or []))[:5]
     rejection_counts = (((last_scan.get('summary') or {}).get('rejection_counts')) or {})
@@ -6727,17 +6729,19 @@ def dashboard(request: Request):
     <a href="/diagnostics/continuity">continuity</a>
   </div>
 
+  {('<div class="section"><div class="card"><h2>Operator Warnings</h2>' + _dashboard_warning_badges(dashboard_warnings) + '</div></div>') if dashboard_warnings else ''}
+
   <div class="section grid">
-    <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}</div>
-    <div class="card"><div class="muted">Market hours</div><div class="metric {'bad' if blockers.get('blocked_by_market_hours') else 'good'}">{'BLOCKED' if blockers.get('blocked_by_market_hours') else 'OPEN'}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div></div>
-    <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}</div>
-    <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div></div>
-    <div class="card"><div class="muted">Workers</div><div class="metric {'good' if release.get('worker_status',{}).get('scanner_running') else 'bad'}">{'UP' if release.get('worker_status',{}).get('scanner_running') else 'DOWN'}</div><div class="muted">Scanner worker: {html.escape(str(release.get('worker_status',{}).get('scanner_status') or 'unknown'))} / Exit worker: {'UP' if release.get('worker_status',{}).get('exit_worker_running') else 'DOWN'}</div></div>
-    <div class="card"><div class="muted">Scanner telemetry</div><div class="metric">{_dashboard_fmt(scanner_summary.get('closed_runs_today') or 0)}</div><div class="muted">Last closed: {_dashboard_fmt(scanner_last_success)} / Worker: <span class="{scanner_worker_class}">{scanner_worker_label}</span>{' ⚠' if scanner_summary.get('has_warnings') else ''}</div><div class="muted">Last request source: {html.escape(str(scanner_source_label))} / manual today: {_dashboard_fmt(scanner_summary.get('manual_request_today') or 0)}</div></div>
-    <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div></div>
-    <div class="card"><div class="muted">Freshness</div><div class="metric">{len(freshness.get('stale_entries') or [])} stale / {len(freshness.get('missing_entries') or [])} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div></div>
-    <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div></div>
-    <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / idle: {authoritative_state.get('idle')}</div></div>
+    <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Market hours</div><div class="metric {'bad' if blockers.get('blocked_by_market_hours') else 'good'}">{'BLOCKED' if blockers.get('blocked_by_market_hours') else 'OPEN'}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Workers</div><div class="metric {workers_metric_class}">{html.escape(str(scanner_worker_status).upper())}</div><div class="muted">Exit worker: {'UP' if worker_snapshot.get('exit_worker_running') else 'DOWN'} / scanner age: {_dashboard_fmt(worker_snapshot.get('scanner_age_sec'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Scanner telemetry</div><div class="metric {scanner_metric_class}">{_dashboard_fmt(scanner_summary.get('closed_runs_today') or 0)}</div><div class="muted">Closed today / last closed: {_dashboard_fmt(scanner_last_success)}</div><div class="muted">Worker: {html.escape(str(scanner_worker_status))} / last source: {html.escape(str(scanner_summary.get('last_request_source_kind') or 'unknown'))}</div><div class="muted">Manual today: {_dashboard_fmt(scanner_summary.get('manual_request_today') or 0)} / External today: {_dashboard_fmt(scanner_summary.get('external_request_today') or 0)}</div>{_dashboard_warning_badges(scanner_card_warnings)}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Freshness</div><div class="metric {'bad' if (freshness_stale or freshness_missing) else 'good'}">{len(freshness_stale)} stale / {len(freshness_missing)} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div>{_dashboard_warning_badges(freshness_stale + freshness_missing)}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric {'bad' if (reconcile.get('active_plan_count',0) or reconcile.get('open_order_count',0) or reconcile.get('broker_positions_count',0)) else 'good'}">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / idle: {authoritative_state.get('idle')}</div>{_dashboard_warning_badges(continuity.get('issue_codes') or [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
   </div>
 
   <div class="section grid">
@@ -7010,11 +7014,21 @@ async def worker_scan_entries(req: Request):
         if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
-    source_kind = _scanner_request_source_kind(req, body)
+    user_agent = str(req.headers.get("user-agent", "") or "")
+    scanner_source_header = str(req.headers.get("X-Scanner-Source", "") or "").strip().lower()
+    ua_l = user_agent.lower()
+    source_kind = "unknown"
+    if scanner_source_header == "worker" or ua_l.startswith("equities-scanner/"):
+        source_kind = "worker"
+    elif "postmanruntime" in ua_l or "insomnia" in ua_l:
+        source_kind = "manual"
+    elif ua_l:
+        source_kind = "external"
     worker_source = source_kind == "worker"
-    telemetry_request_details = {"requested_reason": str(body.get("reason") or ""), "user_agent": req.headers.get("user-agent", ""), "source_ip": getattr(req.client, "host", ""), "source_kind": source_kind, "worker_source": worker_source}
+    source_meta = {"requested_reason": str(body.get("reason") or ""), "user_agent": user_agent, "source_ip": getattr(req.client, "host", ""), "source_kind": source_kind, "worker_source": worker_source}
+
     try:
-        _record_scanner_telemetry("scan_request", "received", details=telemetry_request_details)
+        _record_scanner_telemetry("scan_request", "received", details=source_meta)
     except Exception:
         pass
 
@@ -7076,7 +7090,7 @@ async def worker_scan_entries(req: Request):
             except Exception:
                 pass
             try:
-                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "scanner_disabled", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled", "source_kind": source_kind, "worker_source": worker_source})
+                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "scanner_disabled", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled", **source_meta})
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
@@ -7111,7 +7125,7 @@ async def worker_scan_entries(req: Request):
             except Exception:
                 pass
             try:
-                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "outside_market_hours", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled", "source_kind": source_kind, "worker_source": worker_source})
+                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "outside_market_hours", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled", **source_meta})
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
@@ -7146,7 +7160,7 @@ async def worker_scan_entries(req: Request):
             except Exception:
                 pass
             try:
-                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "outside_scanner_session", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled", "source_kind": source_kind, "worker_source": worker_source})
+                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "outside_scanner_session", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled", **source_meta})
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
@@ -7645,7 +7659,7 @@ async def worker_scan_entries(req: Request):
                     del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
                 persist_scan_runtime_state(reason="worker_scan_entries")
                 try:
-                    _record_scanner_telemetry("scan_ok", "success", details={"status": 200, "symbols_scanned": len(syms), "signals": len(signals), "blocked": blocked, "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled", "source_kind": source_kind, "worker_source": worker_source})
+                    _record_scanner_telemetry("scan_ok", "success", details={"status": 200, "symbols_scanned": len(syms), "signals": len(signals), "blocked": blocked, "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled", **source_meta})
                 except Exception:
                     pass
         except Exception:
@@ -7675,7 +7689,7 @@ async def worker_scan_entries(req: Request):
         try:
             _set_last_scan(skipped=False, reason='scan_exception', error=str(e), scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=duration_ms)
             try:
-                _record_scanner_telemetry("scan_error", "exception", details={"error": str(e), "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled", "source_kind": source_kind, "worker_source": worker_source})
+                _record_scanner_telemetry("scan_error", "exception", details={"error": str(e), "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled", **source_meta})
             except Exception:
                 pass
         except Exception:
