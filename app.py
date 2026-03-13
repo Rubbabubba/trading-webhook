@@ -7834,7 +7834,25 @@ async def worker_scan_entries(req: Request):
         reconcile_actions = reconcile_trade_plans_from_alpaca()
 
         if STRATEGY_MODE == "swing":
-            return run_swing_daily_scan(effective_dry_run, _set_last_scan, _elapsed_ms, reconcile_actions=reconcile_actions)
+            swing_resp = run_swing_daily_scan(effective_dry_run, _set_last_scan, _elapsed_ms, reconcile_actions=reconcile_actions)
+            try:
+                scanner_payload = swing_resp.get("scanner") if isinstance(swing_resp, dict) else {}
+                _record_scanner_telemetry(
+                    "scan_ok",
+                    "success",
+                    details={
+                        "status": 200,
+                        "symbols_scanned": int((scanner_payload or {}).get("symbols_scanned") or 0),
+                        "signals": int((scanner_payload or {}).get("signals") or 0),
+                        "blocked": int((scanner_payload or {}).get("blocked") or 0),
+                        "duration_ms": int((scanner_payload or {}).get("duration_ms") or _elapsed_ms() or 0),
+                        "scan_reason": requested_reason or "scheduled",
+                        **source_meta,
+                    },
+                )
+            except Exception:
+                pass
+            return swing_resp
 
         syms = universe_symbols()
         blocked = 0
