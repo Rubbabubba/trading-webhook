@@ -7468,6 +7468,37 @@ def dashboard(request: Request):
     workers_metric_class = _dashboard_metric_class(combined_worker_status, good_values={'up'}, bad_values={'down','unknown'}, neutral_values={'late','late_but_alive'})
     scanner_metric_class = _dashboard_metric_class(scanner_display_status, good_values={'up'}, bad_values={'down','unknown'}, neutral_values={'late','late_but_alive'})
 
+    readiness = diagnostics_readiness(request)
+    lifecycle_counts = dict((release.get('lifecycle_counts') or {}))
+    lifecycle_events = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not lifecycle_events or lifecycle_events[-1] != LAST_PAPER_LIFECYCLE):
+        lifecycle_events.append(dict(LAST_PAPER_LIFECYCLE))
+
+    def _latest_lifecycle_event(stage: str, statuses: set[str] | None = None) -> dict:
+        target_stage = str(stage or '').strip().lower()
+        target_statuses = {str(s).strip().lower() for s in (statuses or set()) if str(s).strip()}
+        for ev in reversed(lifecycle_events):
+            if not isinstance(ev, dict):
+                continue
+            ev_stage = str(ev.get('stage') or '').strip().lower()
+            ev_status = str(ev.get('status') or '').strip().lower()
+            if ev_stage != target_stage:
+                continue
+            if target_statuses and ev_status not in target_statuses:
+                continue
+            return dict(ev)
+        return {}
+
+    last_selected_event = _latest_lifecycle_event('candidate', {'selected'})
+    last_entry_event = _latest_lifecycle_event('entry', {'planned', 'submitted', 'filled', 'opened'})
+    last_exit_event = _latest_lifecycle_event('exit', {'submitted', 'closed', 'filled', 'completed', 'dry_run'})
+    trade_path_proven = bool((lifecycle_counts.get('candidate_selected') or 0) > 0 and (lifecycle_counts.get('entry_events') or 0) > 0 and (lifecycle_counts.get('exit_events') or 0) > 0)
+    ready_for_guarded_live = bool(((release.get('release_workflow') or {}).get('promotion_targets') or {}).get('guarded_live_eligible', {}).get('ready'))
+    readiness_blockers = list((((release.get('release_workflow') or {}).get('promotion_targets') or {}).get('guarded_live_eligible', {}).get('unmet_conditions')) or (release.get('unmet_conditions') or []))
+    readiness_metric_class = 'good' if ready_for_guarded_live else ('neutral' if readiness.get('ready') else 'bad')
+    proof_metric_class = 'good' if trade_path_proven else 'neutral'
+    readiness_summary_badges = _dashboard_warning_badges(readiness_blockers[:4])
+
     scan_summary = (last_scan.get('summary') or {})
     top_candidates = list((scan_summary.get('top_candidates') or []))[:5]
     rejection_counts = dict(scan_summary.get('rejection_counts') or {})
@@ -7578,6 +7609,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/freshness">freshness</a>
     <a href="/diagnostics/scanner">scanner</a>
     <a href="/diagnostics/continuity">continuity</a>
+    <a href="/diagnostics/readiness">readiness</a>
   </div>
 
   {('<div class="section"><div class="card"><h2>Operator Warnings</h2>' + _dashboard_warning_badges(dashboard_warnings) + '</div></div>') if dashboard_warnings else ''}
@@ -7593,6 +7625,46 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Freshness</div><div class="metric {'bad' if (freshness_stale or freshness_missing) else 'good'}">{len(freshness_stale)} stale / {len(freshness_missing)} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div>{_dashboard_warning_badges(freshness_stale + freshness_missing)}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Reconcile</div><div class="metric {_dashboard_metric_class(reconcile_grade, good_values={'healthy'}, bad_values={'blocking','critical'}, neutral_values={'degraded'})}">{html.escape(str(reconcile_grade).upper())}</div><div class="muted">Plans / orders / broker positions: {reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Issues: {_dashboard_fmt(reconcile.get('issue_total') or 0)} / blocked: {'YES' if reconcile.get('trading_blocked') else 'NO'}</div>{_dashboard_warning_badges(reconcile_issue_codes[:3])}{_dashboard_warning_badges(['action_required'] if reconcile_actions else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / idle: {authoritative_state.get('idle')}</div>{_dashboard_warning_badges(continuity.get('issue_codes') or [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Readiness Evidence</h2>
+      <table>{_dashboard_rows([
+        ('diagnostics_readiness_ok', readiness.get('ready')),
+        ('trade_path_proven', trade_path_proven),
+        ('scan_completed', lifecycle_counts.get('scan_completed')),
+        ('candidate_selected', lifecycle_counts.get('candidate_selected')),
+        ('entry_events', lifecycle_counts.get('entry_events')),
+        ('exit_events', lifecycle_counts.get('exit_events')),
+        ('last_selected_candidate_utc', last_selected_event.get('ts_utc')),
+        ('last_entry_event_utc', last_entry_event.get('ts_utc')),
+        ('last_exit_event_utc', last_exit_event.get('ts_utc')),
+      ])}</table>
+      <h3 style="margin-top:14px;">Assessment</h3>
+      <div class="metric {proof_metric_class}">{'PROVEN' if trade_path_proven else 'NOT YET PROVEN'}</div>
+      <div class="muted">End-to-end trade path requires candidate selection, entry activity, and exit activity.</div>
+    </div>
+
+    <div class="card">
+      <h2>Guarded Live Path</h2>
+      <table>{_dashboard_rows([
+        ('guarded_live_ready', ready_for_guarded_live),
+        ('release_stage', release.get('effective_release_stage') or release.get('system_release_stage')),
+        ('workflow_live_activation_armed', ((release.get('release_workflow') or {}).get('live_activation_armed'))),
+        ('live_orders_permitted', release.get('live_orders_permitted')),
+        ('scanner_running', readiness.get('scanner_running')),
+        ('exit_worker_running', readiness.get('exit_worker_running')),
+        ('broker_connected', readiness.get('broker_connected')),
+        ('data_feed_ok', readiness.get('data_feed_ok')),
+        ('journal_ok', readiness.get('journal_ok')),
+        ('risk_limits_ok', readiness.get('risk_limits_ok')),
+      ])}</table>
+      <h3 style="margin-top:14px;">Current blockers</h3>
+      <pre>{html.escape(chr(10).join(readiness_blockers or ['none']))}</pre>
+      <div class="metric {readiness_metric_class}">{'READY' if ready_for_guarded_live else 'BLOCKED'}</div>
+      {readiness_summary_badges}
+    </div>
   </div>
 
   <div class="section grid">
