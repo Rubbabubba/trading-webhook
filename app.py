@@ -492,6 +492,11 @@ LIVE_TRADING_ENABLED = env_bool_any("LIVE_TRADING_ENABLED", default="false")
 SYSTEM_RELEASE_STAGE = str(getenv_any("SYSTEM_RELEASE_STAGE", default="paper") or "paper").strip().lower()
 RELEASE_GATE_ENFORCED = env_bool("RELEASE_GATE_ENFORCED", True)
 RELEASE_ALLOWED_LIVE_STAGES = {s.strip().lower() for s in str(getenv_any("RELEASE_ALLOWED_LIVE_STAGES", default="live_guarded") or "live_guarded").split(",") if s.strip()}
+RELEASE_STATE_PATH = getenv_any("RELEASE_STATE_PATH", default="/var/data/release_state.json")
+RELEASE_WORKFLOW_ENFORCED = env_bool("RELEASE_WORKFLOW_ENFORCED", True)
+RELEASE_PROMOTION_REQUIRE_READINESS = env_bool("RELEASE_PROMOTION_REQUIRE_READINESS", True)
+RELEASE_STATE_HISTORY_LIMIT = int(getenv_any("RELEASE_STATE_HISTORY_LIMIT", default="50"))
+RELEASE_VALID_STAGES = {"paper", "guarded_live_eligible", "live_guarded", "emergency_disabled"}
 RELEASE_REQUIRE_REGIME_COMPLETE = env_bool("RELEASE_REQUIRE_REGIME_COMPLETE", True)
 RELEASE_REQUIRE_REGIME_FAVORABLE = env_bool("RELEASE_REQUIRE_REGIME_FAVORABLE", True)
 RELEASE_REQUIRE_RECENT_MARKET_SCAN = env_bool("RELEASE_REQUIRE_RECENT_MARKET_SCAN", True)
@@ -801,6 +806,8 @@ LAST_EXIT_HEARTBEAT: dict = {}
 LAST_ALERT_HEARTBEAT: dict = {}
 LAST_SCANNER_TELEMETRY: dict = {}
 SCANNER_TELEMETRY_HISTORY: list[dict] = []
+RELEASE_STATE: dict = {}
+
 
 
 def _count_forced_trades_today_ny() -> int:
@@ -2717,12 +2724,12 @@ def startup_restore_state() -> dict:
     state["scan_state_restore"] = scan_restore
     state["regime_state_restore"] = regime_restore
     state["paper_lifecycle_state_restore"] = paper_restore
+    state["release_state_restore"] = restore_release_state()
     STARTUP_STATE = state
     return state
 
 
 # Run startup restore only after all helper functions it depends on are defined.
-startup_restore_state()
 
 
 def eval_hf_signal_with_debug(bars_today: list[dict], bars_5m: list[dict]) -> tuple[tuple[str, str] | None, dict]:
@@ -3057,32 +3064,164 @@ def _freshness_entry(name: str, ts_value, *, source: str = "", max_age_sec: floa
     return row
 
 
-def freshness_snapshot() -> dict:
-    scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_worker_event_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_success_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_event_utc")
-    scan_source = "memory" if LAST_SCAN else ("restored" if (globals().get("SCAN_STATE_RESTORE") or {}).get("last_scan_restored") else "empty")
-    regime_source = "memory" if LAST_REGIME_SNAPSHOT else ("restored" if (globals().get("REGIME_STATE_RESTORE") or {}).get("current_restored") else "empty")
-    lifecycle_source = "memory" if LAST_PAPER_LIFECYCLE else ("restored" if (globals().get("PAPER_LIFECYCLE_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
-    scanner_source = "memory" if LAST_SCANNER_TELEMETRY else ("restored" if (globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
-    entries = {
-        "last_scan": _freshness_entry("last_scan", LAST_SCAN.get("ts_utc"), source=scan_source, max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"reason": LAST_SCAN.get("reason")}),
-        "regime": _freshness_entry("regime", (LAST_REGIME_SNAPSHOT or {}).get("ts_utc"), source=regime_source, max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"favorable": (LAST_REGIME_SNAPSHOT or {}).get("favorable"), "data_complete": (LAST_REGIME_SNAPSHOT or {}).get("data_complete")}),
-        "paper_lifecycle": _freshness_entry("paper_lifecycle", (LAST_PAPER_LIFECYCLE or {}).get("ts_utc"), source=lifecycle_source, require_same_session=True, extra={"stage": (LAST_PAPER_LIFECYCLE or {}).get("stage"), "status_value": (LAST_PAPER_LIFECYCLE or {}).get("status")}),
-        "scanner_telemetry": _freshness_entry("scanner_telemetry", scanner_ref, source=scanner_source, max_age_sec=max(READINESS_SCANNER_MAX_AGE_SEC, SCANNER_INTERVAL_SEC + SCANNER_TIMEOUT_SEC + max(10, SCANNER_JITTER_SEC) + 60), extra={"event": (LAST_SCANNER_TELEMETRY or {}).get("event"), "attempts_today": (LAST_SCANNER_TELEMETRY or {}).get("attempts_today")}),
-        "exit_heartbeat": _freshness_entry("exit_heartbeat", LAST_EXIT_HEARTBEAT.get("ts_utc"), source="memory" if LAST_EXIT_HEARTBEAT else "empty", max_age_sec=max(READINESS_EXIT_MAX_AGE_SEC, 30)),
+
+def _normalize_release_stage(stage: object, default: str = "paper") -> str:
+    stage_s = str(stage or "").strip().lower()
+    aliases = {
+        "eligible": "guarded_live_eligible",
+        "guarded": "live_guarded",
+        "disabled": "emergency_disabled",
+        "emergency_disable": "emergency_disabled",
+        "emergency": "emergency_disabled",
     }
-    stale = [name for name, row in entries.items() if row.get("status") == "stale"]
-    missing = [name for name, row in entries.items() if row.get("status") == "missing"]
+    stage_s = aliases.get(stage_s, stage_s)
+    return stage_s if stage_s in RELEASE_VALID_STAGES else default
+
+
+def _default_release_state() -> dict:
+    configured_stage = _normalize_release_stage(SYSTEM_RELEASE_STAGE, default="paper")
+    now_utc = datetime.now(timezone.utc).isoformat()
+    now_ny_iso = now_ny().isoformat()
     return {
-        "session": _session_boundary_snapshot(),
-        "entries": entries,
-        "stale_entries": stale,
-        "missing_entries": missing,
-        "all_fresh": (not stale and not missing),
+        "configured_stage": configured_stage,
+        "current_stage": configured_stage,
+        "last_transition_utc": now_utc,
+        "last_transition_ny": now_ny_iso,
+        "last_transition_reason": "startup_default",
+        "last_transition_actor": "system",
+        "approval_status": "approved" if configured_stage == "live_guarded" else "not_required",
+        "approval_armed": bool(configured_stage == "live_guarded"),
+        "history": [
+            {
+                "ts_utc": now_utc,
+                "ts_ny": now_ny_iso,
+                "from_stage": None,
+                "to_stage": configured_stage,
+                "reason": "startup_default",
+                "actor": "system",
+            }
+        ],
     }
 
 
-def release_gate_status() -> dict:
-    stage = SYSTEM_RELEASE_STAGE
+def _sanitize_release_state(payload: dict) -> dict:
+    state = _default_release_state()
+    if not isinstance(payload, dict):
+        return state
+    configured_stage = _normalize_release_stage(payload.get("configured_stage") or SYSTEM_RELEASE_STAGE, default=state["configured_stage"])
+    current_stage = _normalize_release_stage(payload.get("current_stage") or configured_stage, default=configured_stage)
+    state.update({
+        "configured_stage": configured_stage,
+        "current_stage": current_stage,
+        "last_transition_utc": payload.get("last_transition_utc") or state.get("last_transition_utc"),
+        "last_transition_ny": payload.get("last_transition_ny") or state.get("last_transition_ny"),
+        "last_transition_reason": str(payload.get("last_transition_reason") or state.get("last_transition_reason") or ""),
+        "last_transition_actor": str(payload.get("last_transition_actor") or state.get("last_transition_actor") or "system"),
+        "approval_status": str(payload.get("approval_status") or ("approved" if current_stage == "live_guarded" else "not_required")),
+        "approval_armed": bool(payload.get("approval_armed") or (current_stage == "live_guarded")),
+    })
+    history = []
+    for item in list(payload.get("history") or [])[-max(1, RELEASE_STATE_HISTORY_LIMIT):]:
+        if not isinstance(item, dict):
+            continue
+        history.append({
+            "ts_utc": item.get("ts_utc"),
+            "ts_ny": item.get("ts_ny"),
+            "from_stage": _normalize_release_stage(item.get("from_stage"), default="paper") if item.get("from_stage") is not None else None,
+            "to_stage": _normalize_release_stage(item.get("to_stage"), default=current_stage),
+            "reason": str(item.get("reason") or ""),
+            "actor": str(item.get("actor") or "system"),
+        })
+    if history:
+        state["history"] = history
+    return state
+
+
+def restore_release_state() -> dict:
+    global RELEASE_STATE
+    payload = _safe_json_read(RELEASE_STATE_PATH)
+    if payload:
+        state = _sanitize_release_state(payload)
+        state["restored_from_state"] = True
+        RELEASE_STATE = state
+        return {
+            "path": RELEASE_STATE_PATH,
+            "loaded": True,
+            "current_stage": state.get("current_stage"),
+            "history_restored": len(state.get("history") or []),
+        }
+    state = _default_release_state()
+    state["restored_from_state"] = False
+    RELEASE_STATE = state
+    _safe_json_write(RELEASE_STATE_PATH, state)
+    return {
+        "path": RELEASE_STATE_PATH,
+        "loaded": False,
+        "current_stage": state.get("current_stage"),
+        "history_restored": len(state.get("history") or []),
+    }
+
+
+def persist_release_state(reason: str = "") -> bool:
+    payload = dict(RELEASE_STATE or _default_release_state())
+    payload["saved_at_utc"] = datetime.now(timezone.utc).isoformat()
+    if reason:
+        payload["save_reason"] = str(reason)
+    return _safe_json_write(RELEASE_STATE_PATH, payload)
+
+
+def _release_transition_allowed(current_stage: str, target_stage: str) -> bool:
+    allowed = {
+        "paper": {"paper", "guarded_live_eligible", "emergency_disabled"},
+        "guarded_live_eligible": {"paper", "guarded_live_eligible", "live_guarded", "emergency_disabled"},
+        "live_guarded": {"paper", "live_guarded", "emergency_disabled"},
+        "emergency_disabled": {"paper", "emergency_disabled"},
+    }
+    return target_stage in allowed.get(current_stage, {"paper"})
+
+
+def _release_workflow_snapshot(include_gate: bool = True) -> dict:
+    configured_stage = _normalize_release_stage(SYSTEM_RELEASE_STAGE, default="paper")
+    state = _sanitize_release_state(RELEASE_STATE or {})
+    persisted_stage = _normalize_release_stage(state.get("current_stage") or configured_stage, default=configured_stage)
+    effective_stage = persisted_stage if RELEASE_WORKFLOW_ENFORCED else configured_stage
+    history = list(state.get("history") or [])[-max(1, RELEASE_STATE_HISTORY_LIMIT):]
+    out = {
+        "workflow_enforced": bool(RELEASE_WORKFLOW_ENFORCED),
+        "promotion_require_readiness": bool(RELEASE_PROMOTION_REQUIRE_READINESS),
+        "configured_stage": configured_stage,
+        "persisted_stage": persisted_stage,
+        "effective_stage": effective_stage,
+        "configured_stage_drift": bool(configured_stage != persisted_stage),
+        "approval_status": str(state.get("approval_status") or "not_required"),
+        "approval_armed": bool(state.get("approval_armed")),
+        "last_transition_utc": state.get("last_transition_utc"),
+        "last_transition_ny": state.get("last_transition_ny"),
+        "last_transition_reason": state.get("last_transition_reason"),
+        "last_transition_actor": state.get("last_transition_actor"),
+        "history_count": len(history),
+        "history": history,
+        "allowed_transitions": sorted(_release_transition_allowed(effective_stage, s) and s or None for s in RELEASE_VALID_STAGES if _release_transition_allowed(effective_stage, s)),
+    }
+    out["allowed_transitions"] = [x for x in out["allowed_transitions"] if x]
+    if include_gate:
+        target_live = _build_release_gate_snapshot("live_guarded", include_stage_check=False)
+        target_eligible = _build_release_gate_snapshot("guarded_live_eligible", include_stage_check=False)
+        out["promotion_targets"] = {
+            "guarded_live_eligible": {
+                "ready": len(target_eligible.get("unmet_conditions") or []) == 0,
+                "unmet_conditions": list(target_eligible.get("unmet_conditions") or []),
+            },
+            "live_guarded": {
+                "ready": len(target_live.get("unmet_conditions") or []) == 0 and LIVE_TRADING_ENABLED and (not DRY_RUN),
+                "unmet_conditions": list(target_live.get("unmet_conditions") or []) + (["live_env_not_armed"] if (DRY_RUN or (not LIVE_TRADING_ENABLED)) else []),
+            },
+        }
+        out["live_activation_armed"] = bool(effective_stage == "live_guarded" and out.get("approval_armed") and LIVE_TRADING_ENABLED and (not DRY_RUN))
+    return out
+
+
+def _build_release_gate_snapshot(stage: str, include_stage_check: bool = True) -> dict:
     lifecycle = _paper_lifecycle_counts()
     worker_status = _worker_status_snapshot()
     reconcile = build_reconcile_snapshot()
@@ -3103,8 +3242,10 @@ def release_gate_status() -> dict:
         except Exception:
             recent_market_scan_ok = False
     unmet = []
-    if stage not in RELEASE_ALLOWED_LIVE_STAGES:
+    if include_stage_check and stage not in RELEASE_ALLOWED_LIVE_STAGES:
         unmet.append("release_stage_not_allowed")
+    if stage == "emergency_disabled":
+        unmet.append("release_stage_emergency_disabled")
     if KILL_SWITCH:
         unmet.append("kill_switch_on")
     if daily_halt_active():
@@ -3173,7 +3314,6 @@ def release_gate_status() -> dict:
         "release_gate_enforced": RELEASE_GATE_ENFORCED,
         "release_allowed_live_stages": sorted(RELEASE_ALLOWED_LIVE_STAGES),
         "go_live_eligible": go_live_eligible,
-        "live_orders_permitted": bool(go_live_eligible and LIVE_TRADING_ENABLED and (not DRY_RUN)),
         "unmet_conditions": unmet,
         "last_scan_age_sec": last_scan_age_sec,
         "recent_market_scan_ok": recent_market_scan_ok,
@@ -3196,6 +3336,96 @@ def release_gate_status() -> dict:
         },
         "continuity": continuity,
     }
+
+
+def release_stage_transition(target_stage: str, actor: str = "system", reason: str = "") -> dict:
+    global RELEASE_STATE
+    target_stage = _normalize_release_stage(target_stage, default="paper")
+    current = _sanitize_release_state(RELEASE_STATE or {})
+    current_stage = _normalize_release_stage(current.get("current_stage") or SYSTEM_RELEASE_STAGE, default="paper")
+    if not _release_transition_allowed(current_stage, target_stage):
+        raise HTTPException(status_code=400, detail=f"Transition not allowed: {current_stage} -> {target_stage}")
+    if RELEASE_PROMOTION_REQUIRE_READINESS and target_stage in {"guarded_live_eligible", "live_guarded"}:
+        preflight = _release_workflow_snapshot(include_gate=True).get("promotion_targets", {}).get(target_stage, {})
+        unmet = list(preflight.get("unmet_conditions") or [])
+        if unmet:
+            raise HTTPException(status_code=409, detail={"target_stage": target_stage, "unmet_conditions": unmet})
+    now_utc = datetime.now(timezone.utc).isoformat()
+    now_ny_iso = now_ny().isoformat()
+    entry = {
+        "ts_utc": now_utc,
+        "ts_ny": now_ny_iso,
+        "from_stage": current_stage,
+        "to_stage": target_stage,
+        "reason": str(reason or "manual_transition"),
+        "actor": str(actor or "system"),
+    }
+    history = list(current.get("history") or [])
+    history.append(entry)
+    current.update({
+        "configured_stage": _normalize_release_stage(SYSTEM_RELEASE_STAGE, default="paper"),
+        "current_stage": target_stage,
+        "last_transition_utc": now_utc,
+        "last_transition_ny": now_ny_iso,
+        "last_transition_reason": entry["reason"],
+        "last_transition_actor": entry["actor"],
+        "approval_status": "approved" if target_stage == "live_guarded" else ("not_required" if target_stage == "paper" else str(current.get("approval_status") or "not_required")),
+        "approval_armed": bool(target_stage == "live_guarded"),
+        "history": history[-max(1, RELEASE_STATE_HISTORY_LIMIT):],
+        "restored_from_state": False,
+    })
+    RELEASE_STATE = current
+    persist_release_state(reason=entry["reason"])
+    return _release_workflow_snapshot(include_gate=True)
+
+
+# Run startup restore only after all helper functions it depends on are defined.
+startup_restore_state()
+
+
+def freshness_snapshot() -> dict:
+    scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_worker_event_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_success_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_event_utc")
+    scan_source = "memory" if LAST_SCAN else ("restored" if (globals().get("SCAN_STATE_RESTORE") or {}).get("last_scan_restored") else "empty")
+    regime_source = "memory" if LAST_REGIME_SNAPSHOT else ("restored" if (globals().get("REGIME_STATE_RESTORE") or {}).get("current_restored") else "empty")
+    lifecycle_source = "memory" if LAST_PAPER_LIFECYCLE else ("restored" if (globals().get("PAPER_LIFECYCLE_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
+    scanner_source = "memory" if LAST_SCANNER_TELEMETRY else ("restored" if (globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
+    entries = {
+        "last_scan": _freshness_entry("last_scan", LAST_SCAN.get("ts_utc"), source=scan_source, max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"reason": LAST_SCAN.get("reason")}),
+        "regime": _freshness_entry("regime", (LAST_REGIME_SNAPSHOT or {}).get("ts_utc"), source=regime_source, max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"favorable": (LAST_REGIME_SNAPSHOT or {}).get("favorable"), "data_complete": (LAST_REGIME_SNAPSHOT or {}).get("data_complete")}),
+        "paper_lifecycle": _freshness_entry("paper_lifecycle", (LAST_PAPER_LIFECYCLE or {}).get("ts_utc"), source=lifecycle_source, require_same_session=True, extra={"stage": (LAST_PAPER_LIFECYCLE or {}).get("stage"), "status_value": (LAST_PAPER_LIFECYCLE or {}).get("status")}),
+        "scanner_telemetry": _freshness_entry("scanner_telemetry", scanner_ref, source=scanner_source, max_age_sec=max(READINESS_SCANNER_MAX_AGE_SEC, SCANNER_INTERVAL_SEC + SCANNER_TIMEOUT_SEC + max(10, SCANNER_JITTER_SEC) + 60), extra={"event": (LAST_SCANNER_TELEMETRY or {}).get("event"), "attempts_today": (LAST_SCANNER_TELEMETRY or {}).get("attempts_today")}),
+        "exit_heartbeat": _freshness_entry("exit_heartbeat", LAST_EXIT_HEARTBEAT.get("ts_utc"), source="memory" if LAST_EXIT_HEARTBEAT else "empty", max_age_sec=max(READINESS_EXIT_MAX_AGE_SEC, 30)),
+    }
+    stale = [name for name, row in entries.items() if row.get("status") == "stale"]
+    missing = [name for name, row in entries.items() if row.get("status") == "missing"]
+    return {
+        "session": _session_boundary_snapshot(),
+        "entries": entries,
+        "stale_entries": stale,
+        "missing_entries": missing,
+        "all_fresh": (not stale and not missing),
+    }
+
+
+def release_gate_status() -> dict:
+    workflow = _release_workflow_snapshot(include_gate=True)
+    stage = _normalize_release_stage(workflow.get("effective_stage") or SYSTEM_RELEASE_STAGE, default="paper")
+    status = _build_release_gate_snapshot(stage, include_stage_check=True)
+    status.update({
+        "system_release_stage": stage,
+        "configured_release_stage": workflow.get("configured_stage"),
+        "effective_release_stage": workflow.get("effective_stage"),
+        "release_workflow": workflow,
+    })
+    status["live_orders_permitted"] = bool(status.get("go_live_eligible") and workflow.get("live_activation_armed"))
+    if workflow.get("configured_stage_drift"):
+        unmet = list(status.get("unmet_conditions") or [])
+        if "release_stage_config_drift" not in unmet:
+            unmet.append("release_stage_config_drift")
+        status["unmet_conditions"] = unmet
+        status["go_live_eligible"] = False
+        status["live_orders_permitted"] = False
+    return status
 
 
 def is_live_trading_permitted(source: str = "") -> bool:
@@ -6628,6 +6858,8 @@ def dashboard(request: Request):
         dashboard_warnings.extend(scanner_card_warnings)
     if not continuity.get('ok'):
         dashboard_warnings.append('continuity_issues_present')
+    if ((release.get('release_workflow') or {}).get('configured_stage_drift')):
+        dashboard_warnings.append('release_stage_config_drift')
     scanner_worker_status = str(scanner_summary.get('worker_status') or worker_snapshot.get('scanner_status') or 'unknown')
     workers_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','down','unknown'})
     scanner_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','unknown'})
@@ -6722,6 +6954,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/candidates">candidates</a>
     <a href="/diagnostics/regime">regime</a>
     <a href="/diagnostics/release">release</a>
+    <a href="/diagnostics/release_workflow">release_workflow</a>
     <a href="/diagnostics/reconcile">reconcile</a>
     <a href="/diagnostics/paper_lifecycle">paper_lifecycle</a>
     <a href="/diagnostics/freshness">freshness</a>
@@ -6732,7 +6965,7 @@ def dashboard(request: Request):
   {('<div class="section"><div class="card"><h2>Operator Warnings</h2>' + _dashboard_warning_badges(dashboard_warnings) + '</div></div>') if dashboard_warnings else ''}
 
   <div class="section grid">
-    <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('effective_release_stage') or release.get('system_release_stage'))}</div><div class="muted">Configured: {_dashboard_fmt(release.get('configured_release_stage') or release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_badge('Workflow enforced', ((release.get('release_workflow') or {}).get('workflow_enforced')))}{_dashboard_warning_badges(['release_stage_config_drift'] if ((release.get('release_workflow') or {}).get('configured_stage_drift')) else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Market hours</div><div class="metric {'bad' if blockers.get('blocked_by_market_hours') else 'good'}">{'BLOCKED' if blockers.get('blocked_by_market_hours') else 'OPEN'}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
@@ -6750,6 +6983,9 @@ def dashboard(request: Request):
       <table>{_dashboard_rows([
         ('go_live_eligible', release.get('go_live_eligible')),
         ('live_orders_permitted', release.get('live_orders_permitted')),
+        ('effective_release_stage', release.get('effective_release_stage') or release.get('system_release_stage')),
+        ('configured_release_stage', release.get('configured_release_stage') or release.get('system_release_stage')),
+        ('workflow_live_activation_armed', ((release.get('release_workflow') or {}).get('live_activation_armed'))),
         ('recent_market_scan_ok', release.get('recent_market_scan_ok')),
         ('last_scan_age_sec', release.get('last_scan_age_sec')),
         ('scan_completed', ((release.get('lifecycle_counts') or {}).get('scan_completed'))),
@@ -6951,6 +7187,35 @@ def diagnostics_release(request: Request):
         },
     })
     return status
+
+
+@app.get("/diagnostics/release_workflow")
+def diagnostics_release_workflow(request: Request):
+    require_admin_if_configured(request)
+    return {
+        "ok": True,
+        "release_state_path": RELEASE_STATE_PATH,
+        "workflow": _release_workflow_snapshot(include_gate=True),
+        "dry_run": DRY_RUN,
+        "live_trading_enabled": LIVE_TRADING_ENABLED,
+        "scanner_allow_live": SCANNER_ALLOW_LIVE,
+    }
+
+
+@app.post("/admin/release/promote/{target_stage}")
+async def admin_release_promote(request: Request, target_stage: str):
+    require_admin(request)
+    actor = request.headers.get("x-admin-actor", "admin").strip() or "admin"
+    body = {}
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+    reason = str(body.get("reason") or request.headers.get("x-release-reason") or "manual_transition")
+    workflow = release_stage_transition(target_stage=target_stage, actor=actor, reason=reason)
+    return {"ok": True, "workflow": workflow}
 
 
 @app.get("/diagnostics/continuity")
