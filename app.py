@@ -479,6 +479,7 @@ POSITION_SNAPSHOT_PATH = getenv_any("POSITION_SNAPSHOT_PATH", default="/var/data
 SCAN_STATE_PATH = getenv_any("SCAN_STATE_PATH", default="/var/data/scan_state.json")
 REGIME_STATE_PATH = getenv_any("REGIME_STATE_PATH", default="/var/data/regime_state.json")
 PAPER_LIFECYCLE_STATE_PATH = getenv_any("PAPER_LIFECYCLE_STATE_PATH", default="/var/data/paper_lifecycle_state.json")
+EXECUTION_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("EXECUTION_LIFECYCLE_HISTORY_LIMIT", default="50"))
 SCANNER_TELEMETRY_STATE_PATH = getenv_any("SCANNER_TELEMETRY_STATE_PATH", default="/var/data/scanner_telemetry_state.json")
 PAPER_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("PAPER_LIFECYCLE_HISTORY_LIMIT", default="500"))
 SCANNER_TELEMETRY_HISTORY_LIMIT = int(getenv_any("SCANNER_TELEMETRY_HISTORY_LIMIT", default="500"))
@@ -1391,6 +1392,198 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
 
 
 
+
+EXECUTION_LIFECYCLE_ACTIVE_STATES = {"planned", "submitted", "acknowledged", "partially_filled", "filled", "close_submitted"}
+EXECUTION_LIFECYCLE_TERMINAL_STATES = {"canceled", "rejected", "closed", "error"}
+EXECUTION_LIFECYCLE_ALLOWED_TRANSITIONS = {
+    "": {"planned", "submitted", "filled", "closed", "rejected", "error"},
+    "idle": {"planned", "submitted", "filled", "closed", "rejected", "error"},
+    "planned": {"submitted", "canceled", "rejected", "error", "filled"},
+    "submitted": {"acknowledged", "partially_filled", "filled", "canceled", "rejected", "error", "close_submitted"},
+    "acknowledged": {"partially_filled", "filled", "canceled", "rejected", "error", "close_submitted"},
+    "partially_filled": {"filled", "canceled", "rejected", "error", "close_submitted"},
+    "filled": {"close_submitted", "closed", "error"},
+    "close_submitted": {"closed", "partially_filled", "filled", "canceled", "rejected", "error"},
+    "canceled": set(),
+    "rejected": set(),
+    "closed": set(),
+    "error": set(),
+}
+
+def _execution_lifecycle_history(plan: dict) -> list:
+    hist = plan.get("execution_lifecycle_history")
+    if not isinstance(hist, list):
+        hist = []
+        plan["execution_lifecycle_history"] = hist
+    return hist
+
+def _append_execution_lifecycle_issue(plan: dict, code: str, severity: str = "error", details: dict | None = None):
+    issues = plan.get("execution_lifecycle_issues")
+    if not isinstance(issues, list):
+        issues = []
+        plan["execution_lifecycle_issues"] = issues
+    issue = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "code": str(code or ""),
+        "severity": str(severity or "error"),
+        "details": dict(details or {}),
+    }
+    issues.append(issue)
+    if len(issues) > EXECUTION_LIFECYCLE_HISTORY_LIMIT:
+        del issues[: len(issues) - EXECUTION_LIFECYCLE_HISTORY_LIMIT]
+    return issue
+
+def _transition_execution_lifecycle(plan: dict, symbol: str, new_state: str, reason: str = "", details: dict | None = None, allow_illegal: bool = False) -> dict:
+    symbol = str(symbol or plan.get("symbol") or "").upper()
+    new_state = str(new_state or "").strip().lower()
+    prior_state = str(plan.get("execution_state") or plan.get("lifecycle_state") or "").strip().lower()
+    allowed = set(EXECUTION_LIFECYCLE_ALLOWED_TRANSITIONS.get(prior_state, set()))
+    illegal = bool(prior_state != new_state and prior_state and new_state and new_state not in allowed and not allow_illegal)
+    if illegal:
+        _append_execution_lifecycle_issue(plan, "illegal_execution_transition", details={"symbol": symbol, "from_state": prior_state, "to_state": new_state, "reason": reason, **dict(details or {})})
+        return {"ok": False, "symbol": symbol, "from_state": prior_state, "to_state": new_state, "illegal": True}
+    ts_utc = datetime.now(timezone.utc).isoformat()
+    ts_ny = now_ny().isoformat()
+    event = {
+        "ts_utc": ts_utc,
+        "ts_ny": ts_ny,
+        "symbol": symbol or None,
+        "from_state": prior_state or None,
+        "to_state": new_state,
+        "reason": str(reason or ""),
+        "details": dict(details or {}),
+    }
+    plan["execution_state"] = new_state
+    plan["lifecycle_state"] = new_state
+    plan["execution_state_reason"] = str(reason or "")
+    plan["execution_updated_utc"] = ts_utc
+    plan["execution_updated_ny"] = ts_ny
+    hist = _execution_lifecycle_history(plan)
+    hist.append(event)
+    if len(hist) > EXECUTION_LIFECYCLE_HISTORY_LIMIT:
+        del hist[: len(hist) - EXECUTION_LIFECYCLE_HISTORY_LIMIT]
+    return {"ok": True, **event}
+
+def _ensure_execution_lifecycle_plan(symbol: str, plan: dict) -> dict:
+    if not isinstance(plan, dict):
+        return {}
+    symbol = str(symbol or plan.get("symbol") or "").upper()
+    plan.setdefault("symbol", symbol or None)
+    if plan.get("execution_state"):
+        plan.setdefault("lifecycle_state", plan.get("execution_state"))
+        _execution_lifecycle_history(plan)
+        return plan
+    initial_state = "planned" if bool(plan.get("filled_qty") or 0) and bool(plan.get("avg_fill_price") or 0) and not plan.get("order_id") else "submitted" if plan.get("order_id") else "idle"
+    _transition_execution_lifecycle(plan, symbol, initial_state, reason="initialize_plan", details={"backfilled": True}, allow_illegal=True)
+    return plan
+
+def _canonical_order_state(status: str) -> str | None:
+    s = str(status or "").strip().lower()
+    if not s:
+        return None
+    if s in {"new", "accepted", "pending_new", "accepted_for_bidding", "held", "pending_replace"}:
+        return "acknowledged"
+    if s == "partially_filled":
+        return "partially_filled"
+    if s == "filled":
+        return "filled"
+    if s in {"canceled", "cancelled", "expired"}:
+        return "canceled"
+    if s in {"rejected", "suspended"}:
+        return "rejected"
+    return None
+
+def _derive_execution_lifecycle_state(symbol: str, plan: dict | None, broker_order: dict | None = None, broker_position_qty: float | None = None) -> dict:
+    symbol = str(symbol or (plan or {}).get("symbol") or "").upper()
+    plan = dict(plan or {})
+    current = str(plan.get("execution_state") or plan.get("lifecycle_state") or "").strip().lower()
+    issues: list[dict] = []
+    order_state = _canonical_order_state((broker_order or {}).get("status"))
+    order_status_lc = str((broker_order or {}).get("status") or "").strip().lower()
+    position_qty = None
+    try:
+        position_qty = abs(float(broker_position_qty)) if broker_position_qty is not None else None
+    except Exception:
+        position_qty = None
+    active = bool(plan.get("active"))
+    if position_qty and position_qty > 0:
+        derived = "filled"
+    elif order_state in {"acknowledged", "partially_filled", "filled", "canceled", "rejected"}:
+        derived = order_state
+    elif current:
+        derived = current
+    elif active:
+        derived = "submitted" if plan.get("order_id") else "planned"
+    else:
+        derived = "closed"
+    if current and derived != current:
+        allowed = set(EXECUTION_LIFECYCLE_ALLOWED_TRANSITIONS.get(current, set()))
+        if derived not in allowed and current != derived:
+            issues.append({"code": "illegal_execution_transition", "severity": "error", "symbol": symbol or None, "details": {"from_state": current, "to_state": derived, "order_status": order_status_lc}})
+    if current in EXECUTION_LIFECYCLE_ACTIVE_STATES and not active and not (position_qty and position_qty > 0) and order_state not in {"canceled", "rejected"}:
+        issues.append({"code": "inactive_plan_with_active_execution_state", "severity": "warn", "symbol": symbol or None, "details": {"current_state": current, "order_status": order_status_lc}})
+    if current in {"submitted", "acknowledged", "partially_filled"} and not plan.get("order_id"):
+        issues.append({"code": "execution_state_missing_order_id", "severity": "error", "symbol": symbol or None, "details": {"current_state": current}})
+    if current == "filled" and not (position_qty and position_qty > 0) and active:
+        issues.append({"code": "filled_state_without_broker_position", "severity": "warn", "symbol": symbol or None, "details": {"order_status": order_status_lc}})
+    return {"symbol": symbol or None, "current_state": current or None, "derived_state": derived, "order_state": order_state, "order_status": order_status_lc or None, "position_qty": position_qty, "issues": issues}
+
+def _apply_execution_lifecycle_reconcile(symbol: str, plan: dict, broker_order: dict | None = None, broker_position_qty: float | None = None) -> dict:
+    if not isinstance(plan, dict):
+        return {"symbol": str(symbol or "").upper(), "changed": False, "issues": []}
+    _ensure_execution_lifecycle_plan(symbol, plan)
+    derived = _derive_execution_lifecycle_state(symbol, plan, broker_order=broker_order, broker_position_qty=broker_position_qty)
+    for issue in list(derived.get("issues") or []):
+        _append_execution_lifecycle_issue(plan, str(issue.get("code") or "execution_issue"), severity=str(issue.get("severity") or "error"), details=dict(issue.get("details") or {}))
+    current = str(plan.get("execution_state") or "").strip().lower()
+    target = str(derived.get("derived_state") or current).strip().lower()
+    changed = False
+    if target and target != current:
+        if not derived.get("issues") or not any(str((i or {}).get("code") or "") == "illegal_execution_transition" for i in derived.get("issues") or []):
+            _transition_execution_lifecycle(plan, str(symbol or "").upper(), target, reason="reconcile", details={"order_status": derived.get("order_status"), "position_qty": derived.get("position_qty")})
+            changed = True
+    return {"symbol": str(symbol or "").upper(), "changed": changed, "current_state": plan.get("execution_state"), "derived_state": target, "issues": list(derived.get("issues") or [])}
+
+def execution_lifecycle_snapshot(limit: int = 100) -> dict:
+    _ensure_runtime_state_loaded()
+    lim = max(1, min(int(limit or 100), 500))
+    symbols = sorted({str(sym or "").upper() for sym in (TRADE_PLAN or {}).keys() if str(sym or "").upper()})
+    rows = []
+    issue_counts = {"error": 0, "warn": 0}
+    for sym in symbols[:lim]:
+        plan = TRADE_PLAN.get(sym) or {}
+        _ensure_execution_lifecycle_plan(sym, plan)
+        qty_signed, _pos_side = get_position(sym)
+        broker_order = get_order_status(str(plan.get("order_id") or "")) if str(plan.get("order_id") or "").strip() else {}
+        derived = _derive_execution_lifecycle_state(sym, plan, broker_order=broker_order, broker_position_qty=qty_signed)
+        issues = list(derived.get("issues") or [])
+        persisted_issues = list(plan.get("execution_lifecycle_issues") or [])
+        for issue in issues:
+            sev = str(issue.get("severity") or "warn").lower()
+            issue_counts["error" if sev == "error" else "warn"] = issue_counts.get("error" if sev == "error" else "warn", 0) + 1
+        row = {
+            "symbol": sym,
+            "active": bool(plan.get("active")),
+            "execution_state": plan.get("execution_state") or None,
+            "derived_state": derived.get("derived_state"),
+            "order_status": derived.get("order_status"),
+            "order_id": str(plan.get("order_id") or "") or None,
+            "position_qty": derived.get("position_qty"),
+            "submitted_at": plan.get("submitted_at") or plan.get("opened_at") or None,
+            "execution_updated_utc": plan.get("execution_updated_utc") or None,
+            "history_tail": list((_execution_lifecycle_history(plan) or [])[-5:]),
+            "issues": issues,
+            "persisted_issue_count": len(persisted_issues),
+        }
+        rows.append(row)
+    return {
+        "ok": True,
+        "execution_lifecycle_history_limit": EXECUTION_LIFECYCLE_HISTORY_LIMIT,
+        "plan_count": len(rows),
+        "issue_counts": issue_counts,
+        "items": rows,
+    }
+
 def persist_paper_lifecycle_state(reason: str = ""):
     payload = {
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -1511,6 +1704,13 @@ def _paper_lifecycle_integrity_issues(last_event: dict | None = None, state: dic
                     'open_order_symbols': sorted(open_order_symbols),
                 },
             })
+    if symbol:
+        plan = (TRADE_PLAN or {}).get(symbol) or {}
+        qty_signed, _pos_side = get_position(symbol)
+        broker_order = get_order_status(str(plan.get('order_id') or '')) if str(plan.get('order_id') or '').strip() else {}
+        exec_state = _derive_execution_lifecycle_state(symbol, plan, broker_order=broker_order, broker_position_qty=qty_signed)
+        for item in list(exec_state.get('issues') or []):
+            issues.append(item)
     return issues
 
 
@@ -2429,6 +2629,11 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
             _record_paper_lifecycle("exit", "dry_run", symbol=symbol, details={"reason": reason or "dry_run", "qty": qty, "source": source})
         except Exception:
             pass
+        try:
+            if isinstance(TRADE_PLAN.get(symbol), dict):
+                _transition_execution_lifecycle(TRADE_PLAN[symbol], symbol, "close_submitted", reason="exit_dry_run", details={"qty": qty, "source": source})
+        except Exception:
+            pass
         return payload
 
     order = submit_market_order(symbol, close_side, qty)
@@ -2437,6 +2642,13 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
     persist_positions_snapshot(reason="close_position_submitted", extra={"symbol": symbol, "order_id": str(order.id), "exit_reason": reason, "source": source})
     try:
         _record_paper_lifecycle("exit", "submitted", symbol=symbol, details={"reason": reason or "exit", "qty": qty, "source": source, "order_id": str(order.id)})
+    except Exception:
+        pass
+    try:
+        if isinstance(TRADE_PLAN.get(symbol), dict):
+            plan_ref = TRADE_PLAN[symbol]
+            plan_ref["last_exit_order_id"] = str(order.id)
+            _transition_execution_lifecycle(plan_ref, symbol, "close_submitted", reason="exit_submitted", details={"qty": qty, "source": source, "order_id": str(order.id)})
     except Exception:
         pass
     return out
@@ -2512,6 +2724,7 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
         if order_status:
             plan["order_status"] = order_status.get("status")
             out["order_status"] = order_status
+    _ensure_execution_lifecycle_plan(symbol, plan)
 
     if qty_signed == 0:
         terminal = {"canceled", "cancelled", "rejected", "expired"}
@@ -2519,19 +2732,23 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
         if order_status_lc in terminal:
             plan["active"] = False
             out["changes"].append("deactivated_terminal_order_without_position")
+            _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
             record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="terminal_order_without_position", meta={"order_status": order_status})
             return out
         orphan_status = bool(order_id and order_status.get("status_error")) or (order_id and not order_status)
         if RECONCILE_DEACTIVATE_ORPHAN_PLANS and orphan_status and age_sec is not None and age_sec >= RECONCILE_ORPHAN_ORDER_MAX_AGE_SEC:
             plan["active"] = False
             out["changes"].append("deactivated_orphan_plan_without_position")
+            _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
             record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="orphan_plan_without_position", meta={"age_sec": age_sec, "order_id": order_id, "order_status": order_status})
             return out
         if age_sec is not None and age_sec >= PLAN_STALE_NO_POSITION_SEC:
             plan["active"] = False
             out["changes"].append("deactivated_stale_without_position")
+            _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
             record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="stale_without_position", meta={"age_sec": age_sec, "order_status": order_status})
             return out
+        _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
         return out
 
     desired_side = "buy" if qty_signed > 0 else "sell"
@@ -2591,13 +2808,16 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                 record_decision("RECONCILE", "worker_exit", symbol, action="risk_recheck", reason="risk_exceeded_after_fill", meta={"actual_risk_dollars": actual_risk, "risk_dollars": RISK_DOLLARS})
                 if close_out.get("closed"):
                     plan["active"] = False
+                _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
                 return out
     elif age_sec is not None and age_sec >= PLAN_STALE_SUBMITTED_SEC and str(order_status.get("status") or "").lower() not in {"filled", "partially_filled"}:
         plan["active"] = False
         out["changes"].append("deactivated_stale_submitted_plan")
+        _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
         record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="stale_submitted_plan", meta={"age_sec": age_sec, "order_status": order_status})
         return out
 
+    _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
     return out
 
 
@@ -5972,6 +6192,8 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             plan["avg_fill_price"] = float(base_price)
             plan["affordability"] = affordability or {}
             TRADE_PLAN[symbol] = plan
+            _ensure_execution_lifecycle_plan(symbol, plan)
+            _transition_execution_lifecycle(plan, symbol, "planned", reason="entry_dry_run_plan", details={"source": source, "signal": signal, "qty": qty}, allow_illegal=True)
             persist_positions_snapshot(reason="entry_dry_run_plan", extra={"symbol": symbol, "source": source, "signal": signal})
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="dry_run_plan_created", reason="", qty=qty, meta={"snapshot": snapshot, **(meta or {})})
             try:
@@ -5992,6 +6214,8 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan["order_status"] = "submitted"
         plan["affordability"] = affordability or {}
         TRADE_PLAN[symbol] = plan
+        _ensure_execution_lifecycle_plan(symbol, plan)
+        _transition_execution_lifecycle(plan, symbol, "submitted", reason="entry_submitted", details={"source": source, "signal": signal, "qty": qty, "order_id": str(getattr(order, "id", ""))}, allow_illegal=True)
         persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(getattr(order, "id", "")), "source": source, "signal": signal})
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(getattr(order, "id", "")), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(getattr(order, "id", "")), qty=qty, meta={"snapshot": snapshot, **(meta or {})})
@@ -6005,6 +6229,13 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="alpaca_submit_failed", err=str(e), meta=meta)
         try:
             _record_paper_lifecycle("entry", "rejected", symbol=symbol, details={"source": source, "signal": signal, "reason": "alpaca_submit_failed", "error": str(e)})
+        except Exception:
+            pass
+        try:
+            stale_plan = TRADE_PLAN.get(symbol)
+            if isinstance(stale_plan, dict):
+                _ensure_execution_lifecycle_plan(symbol, stale_plan)
+                _transition_execution_lifecycle(stale_plan, symbol, "rejected", reason="alpaca_submit_failed", details={"source": source, "signal": signal, "error": str(e)}, allow_illegal=True)
         except Exception:
             pass
         soften_symbol_lock(symbol, 5)
@@ -6957,6 +7188,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/release_workflow">release_workflow</a>
     <a href="/diagnostics/reconcile">reconcile</a>
     <a href="/diagnostics/paper_lifecycle">paper_lifecycle</a>
+    <a href="/diagnostics/execution_lifecycle">execution_lifecycle</a>
     <a href="/diagnostics/freshness">freshness</a>
     <a href="/diagnostics/scanner">scanner</a>
     <a href="/diagnostics/continuity">continuity</a>
@@ -7240,6 +7472,10 @@ def diagnostics_paper_lifecycle():
         "history_count": len(PAPER_LIFECYCLE_HISTORY or []),
         "history": list(PAPER_LIFECYCLE_HISTORY or []),
     }
+
+@app.get("/diagnostics/execution_lifecycle")
+def diagnostics_execution_lifecycle(limit: int = 100):
+    return execution_lifecycle_snapshot(limit=limit)
 
 @app.get("/diagnostics/candidates")
 def diagnostics_candidates(limit: int = 25):
