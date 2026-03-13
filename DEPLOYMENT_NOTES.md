@@ -115,3 +115,9 @@ Use the env template files in this bundle for the new swing-oriented deployment 
 - Worker card shows separate scanner and exit statuses and ages.
 - Card color reflects the worst of scanner/exit status: UP, LATE, STALE, DOWN, or UNKNOWN.
 - Prevents dashboard from falsely showing exit worker as UP when diagnostics report UNKNOWN or DOWN.
+
+
+## Patch 37
+- Readiness endpoint now distinguishes component readiness from trade-path proof and guarded-live eligibility.
+- `/diagnostics/readiness` now reports `component_ready`, `ready_scope`, `trade_path_proven`, `same_session_proven`, `guarded_live_ready`, `go_live_eligible`, and proof timestamps.
+- Dashboard wording is hardened so a healthy component state is not mistaken for live-trading readiness.

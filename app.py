@@ -6071,6 +6071,44 @@ def diagnostics_readiness(request: Request):
     overall = broker_connected and data_feed_ok and journal_ok and risk_ok
     if READINESS_REQUIRE_WORKERS:
         overall = overall and scanner_running and exit_worker_running
+
+    lifecycle_counts = _paper_lifecycle_counts()
+    lifecycle_events = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not lifecycle_events or lifecycle_events[-1] != LAST_PAPER_LIFECYCLE):
+        lifecycle_events.append(dict(LAST_PAPER_LIFECYCLE))
+
+    def _latest_lifecycle_event_for_readiness(stage: str, statuses: set[str] | None = None) -> dict:
+        target_stage = str(stage or '').strip().lower()
+        target_statuses = {str(s).strip().lower() for s in (statuses or set()) if str(s).strip()}
+        for ev in reversed(lifecycle_events):
+            if not isinstance(ev, dict):
+                continue
+            ev_stage = str(ev.get('stage') or '').strip().lower()
+            ev_status = str(ev.get('status') or '').strip().lower()
+            if ev_stage != target_stage:
+                continue
+            if target_statuses and ev_status not in target_statuses:
+                continue
+            return dict(ev)
+        return {}
+
+    last_selected_event = _latest_lifecycle_event_for_readiness('candidate', {'selected'})
+    last_entry_event = _latest_lifecycle_event_for_readiness('entry', {'planned', 'submitted', 'filled', 'opened'})
+    last_exit_event = _latest_lifecycle_event_for_readiness('exit', {'submitted', 'closed', 'filled', 'completed', 'dry_run'})
+    trade_path_proven = bool((lifecycle_counts.get('candidate_selected') or 0) > 0 and (lifecycle_counts.get('entry_events') or 0) > 0 and (lifecycle_counts.get('exit_events') or 0) > 0)
+
+    freshness = freshness_snapshot()
+    freshness_entries = dict(freshness.get('entries') or {})
+    same_session_proven = all(bool((freshness_entries.get(name) or {}).get('same_session')) for name in ('last_scan', 'regime', 'paper_lifecycle', 'scanner_telemetry'))
+
+    release = release_gate_status()
+    workflow = dict(release.get('release_workflow') or {})
+    promotion_targets = dict(workflow.get('promotion_targets') or {})
+    guarded_live_ready = bool((promotion_targets.get('guarded_live_eligible') or {}).get('ready'))
+    live_guarded_ready = bool((promotion_targets.get('live_guarded') or {}).get('ready'))
+    unmet_conditions = list(release.get('unmet_conditions') or [])
+    component_truth = 'ready' if overall else 'not_ready'
+    proof_truth = 'proven' if trade_path_proven else 'not_proven'
     if (not overall) and ALERT_ON_READINESS_FAIL:
         problems = []
         if not broker_connected:
@@ -6104,8 +6142,25 @@ def diagnostics_readiness(request: Request):
             },
         )
     return {
-        "ok": overall,
+        "ok": True,
         "ready": overall,
+        "ready_scope": "component_only",
+        "component_ready": overall,
+        "component_truth": component_truth,
+        "trade_path_proven": trade_path_proven,
+        "trade_path_truth": proof_truth,
+        "same_session_proven": same_session_proven,
+        "guarded_live_ready": guarded_live_ready,
+        "live_guarded_ready": live_guarded_ready,
+        "go_live_eligible": bool(release.get('go_live_eligible')),
+        "release_stage": release.get('effective_release_stage') or release.get('system_release_stage'),
+        "unmet_conditions": unmet_conditions,
+        "proof_counts": lifecycle_counts,
+        "proof_events": {
+            "last_selected_candidate_utc": last_selected_event.get('ts_utc'),
+            "last_entry_event_utc": last_entry_event.get('ts_utc'),
+            "last_exit_event_utc": last_exit_event.get('ts_utc'),
+        },
         "scanner_running": scanner_running,
         "scanner_age_sec": scanner_age_sec,
         "exit_worker_running": exit_worker_running,
@@ -7469,6 +7524,7 @@ def dashboard(request: Request):
     scanner_metric_class = _dashboard_metric_class(scanner_display_status, good_values={'up'}, bad_values={'down','unknown'}, neutral_values={'late','late_but_alive'})
 
     readiness = diagnostics_readiness(request)
+    component_ready = bool(readiness.get('component_ready', readiness.get('ready')))
     lifecycle_counts = dict((release.get('lifecycle_counts') or {}))
     lifecycle_events = list(PAPER_LIFECYCLE_HISTORY or [])
     if LAST_PAPER_LIFECYCLE and (not lifecycle_events or lifecycle_events[-1] != LAST_PAPER_LIFECYCLE):
@@ -7495,7 +7551,7 @@ def dashboard(request: Request):
     trade_path_proven = bool((lifecycle_counts.get('candidate_selected') or 0) > 0 and (lifecycle_counts.get('entry_events') or 0) > 0 and (lifecycle_counts.get('exit_events') or 0) > 0)
     ready_for_guarded_live = bool(((release.get('release_workflow') or {}).get('promotion_targets') or {}).get('guarded_live_eligible', {}).get('ready'))
     readiness_blockers = list((((release.get('release_workflow') or {}).get('promotion_targets') or {}).get('guarded_live_eligible', {}).get('unmet_conditions')) or (release.get('unmet_conditions') or []))
-    readiness_metric_class = 'good' if ready_for_guarded_live else ('neutral' if readiness.get('ready') else 'bad')
+    readiness_metric_class = 'good' if ready_for_guarded_live else ('neutral' if component_ready else 'bad')
     proof_metric_class = 'good' if trade_path_proven else 'neutral'
     readiness_summary_badges = _dashboard_warning_badges(readiness_blockers[:4])
 
@@ -7631,7 +7687,9 @@ def dashboard(request: Request):
     <div class="card">
       <h2>Readiness Evidence</h2>
       <table>{_dashboard_rows([
-        ('diagnostics_readiness_ok', readiness.get('ready')),
+        ('component_readiness_ok', component_ready),
+        ('ready_scope', readiness.get('ready_scope')),
+        ('same_session_proven', readiness.get('same_session_proven')),
         ('trade_path_proven', trade_path_proven),
         ('scan_completed', lifecycle_counts.get('scan_completed')),
         ('candidate_selected', lifecycle_counts.get('candidate_selected')),
@@ -7643,13 +7701,16 @@ def dashboard(request: Request):
       ])}</table>
       <h3 style="margin-top:14px;">Assessment</h3>
       <div class="metric {proof_metric_class}">{'PROVEN' if trade_path_proven else 'NOT YET PROVEN'}</div>
-      <div class="muted">End-to-end trade path requires candidate selection, entry activity, and exit activity.</div>
+      <div class="muted">Components can be healthy while the trade path is still unproven. End-to-end proof requires candidate selection, entry activity, and exit activity in the lifecycle record.</div>
     </div>
 
     <div class="card">
       <h2>Guarded Live Path</h2>
       <table>{_dashboard_rows([
         ('guarded_live_ready', ready_for_guarded_live),
+        ('component_ready', component_ready),
+        ('trade_path_proven', trade_path_proven),
+        ('same_session_proven', readiness.get('same_session_proven')),
         ('release_stage', release.get('effective_release_stage') or release.get('system_release_stage')),
         ('workflow_live_activation_armed', ((release.get('release_workflow') or {}).get('live_activation_armed'))),
         ('live_orders_permitted', release.get('live_orders_permitted')),
