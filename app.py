@@ -7370,8 +7370,9 @@ def dashboard(request: Request):
     continuity_issues = list(continuity.get('issues') or [])
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
-    scanner_summary = _scanner_telemetry_summary()
-    worker_snapshot = _worker_status_snapshot()
+    scanner = diagnostics_scanner()
+    scanner_summary = dict(scanner.get('summary') or {})
+    worker_snapshot = dict(scanner.get('worker') or _worker_status_snapshot() or {})
     scanner_last_success = scanner_summary.get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none'
     authoritative_state = continuity.get('authoritative_state') or {}
     freshness_stale = list(freshness.get('stale_entries') or [])
