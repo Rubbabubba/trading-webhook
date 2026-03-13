@@ -108,3 +108,10 @@ Use the env template files in this bundle for the new swing-oriented deployment 
 ## Patch 4 verification
 - Check `/diagnostics/regime` for current market state.
 - Check `/diagnostics/candidates` and confirm rejected names show `weak_tape` or `correlation_group_limit` when applicable.
+
+
+## Patch 31
+- Dashboard worker card now uses authoritative worker snapshot for both scanner and exit workers.
+- Worker card shows separate scanner and exit statuses and ages.
+- Card color reflects the worst of scanner/exit status: UP, LATE, STALE, DOWN, or UNKNOWN.
+- Prevents dashboard from falsely showing exit worker as UP when diagnostics report UNKNOWN or DOWN.
