@@ -3399,85 +3399,6 @@ def _freshness_entry(name: str, ts_value, *, source: str = "", max_age_sec: floa
 
 
 
-
-
-def _session_phase_snapshot() -> dict:
-    session = _session_boundary_snapshot()
-    now_local = _safe_iso_to_dt(session.get("now_ny")) or now_ny()
-    open_local = _safe_iso_to_dt(session.get("market_open_ny"))
-    close_local = _safe_iso_to_dt(session.get("market_close_ny"))
-    phase = "unknown"
-    if open_local and close_local:
-        if now_local < open_local:
-            phase = "premarket"
-        elif now_local <= close_local:
-            phase = "market_hours"
-        else:
-            phase = "postmarket"
-    minutes_to_open = None
-    if open_local is not None:
-        minutes_to_open = max(0.0, (open_local - now_local).total_seconds() / 60.0) if now_local <= open_local else 0.0
-    session.update({
-        "phase": phase,
-        "minutes_to_open": minutes_to_open,
-    })
-    return session
-
-
-def premarket_readiness_snapshot() -> dict:
-    _ensure_runtime_state_loaded()
-    _refresh_regime_snapshot_if_needed()
-    freshness = freshness_snapshot()
-    session = _session_phase_snapshot()
-    entries = freshness.get("entries") or {}
-    phase = str(session.get("phase") or "unknown")
-    expected_preopen_names = {"regime", "paper_lifecycle"}
-    expected_stale_entries = []
-    overnight_carryover_entries = []
-    unexpected_stale_entries = []
-    missing_entries = list(freshness.get("missing_entries") or [])
-    warning_codes = []
-
-    for name, row in entries.items():
-        row = row or {}
-        if row.get("same_session") is False:
-            overnight_carryover_entries.append(name)
-        if row.get("status") != "stale":
-            continue
-        if phase == "premarket" and name in expected_preopen_names and row.get("same_session") is False:
-            expected_stale_entries.append(name)
-        else:
-            unexpected_stale_entries.append(name)
-
-    session_bootstrap_required = phase == "premarket" and bool(expected_stale_entries or missing_entries)
-    ready_for_open = phase == "premarket" and (not session_bootstrap_required) and (not unexpected_stale_entries)
-    if session_bootstrap_required:
-        warning_codes.append("premarket_session_bootstrap_pending")
-    if unexpected_stale_entries:
-        warning_codes.append("unexpected_stale_during_session")
-    if missing_entries:
-        warning_codes.append("premarket_missing_required_state")
-
-    return {
-        "ok": True,
-        "session": session,
-        "phase": phase,
-        "premarket_active": phase == "premarket",
-        "expected_stale_entries": expected_stale_entries,
-        "overnight_carryover_entries": overnight_carryover_entries,
-        "unexpected_stale_entries": unexpected_stale_entries,
-        "missing_entries": missing_entries,
-        "session_bootstrap_required": session_bootstrap_required,
-        "ready_for_open": ready_for_open,
-        "warning_codes": warning_codes,
-        "freshness": freshness,
-        "unmet_conditions": [
-            *( ["premarket_session_bootstrap_pending"] if session_bootstrap_required else [] ),
-            *( ["unexpected_stale_during_session"] if unexpected_stale_entries else [] ),
-            *( ["premarket_missing_required_state"] if missing_entries else [] ),
-        ],
-    }
-
 def _normalize_release_stage(stage: object, default: str = "paper") -> str:
     stage_s = str(stage or "").strip().lower()
     aliases = {
@@ -3824,23 +3745,12 @@ def release_gate_status() -> dict:
     workflow = _release_workflow_snapshot(include_gate=True)
     stage = _normalize_release_stage(workflow.get("effective_stage") or SYSTEM_RELEASE_STAGE, default="paper")
     status = _build_release_gate_snapshot(stage, include_stage_check=True)
-    premarket = premarket_readiness_snapshot()
     status.update({
         "system_release_stage": stage,
         "configured_release_stage": workflow.get("configured_stage"),
         "effective_release_stage": workflow.get("effective_stage"),
         "release_workflow": workflow,
-        "premarket_readiness": premarket,
     })
-    unmet = list(status.get("unmet_conditions") or [])
-    if premarket.get("session_bootstrap_required") and "premarket_session_bootstrap_pending" not in unmet:
-        unmet.append("premarket_session_bootstrap_pending")
-    for code in list(premarket.get("unexpected_stale_entries") or []):
-        key = f"premarket_unexpected_stale:{code}"
-        if key not in unmet:
-            unmet.append(key)
-    status["unmet_conditions"] = unmet
-    status["go_live_eligible"] = len(unmet) == 0
     status["live_orders_permitted"] = bool(status.get("go_live_eligible") and workflow.get("live_activation_armed"))
     if workflow.get("configured_stage_drift"):
         unmet = list(status.get("unmet_conditions") or [])
@@ -7277,18 +7187,6 @@ def diagnostics_freshness(request: Request):
     return snap
 
 
-@app.get("/diagnostics/premarket_readiness")
-def diagnostics_premarket_readiness(request: Request):
-    require_admin_if_configured(request)
-    snap = premarket_readiness_snapshot()
-    snap.update({
-        "release_max_scan_age_sec": RELEASE_MAX_SCAN_AGE_SEC,
-        "readiness_scanner_max_age_sec": READINESS_SCANNER_MAX_AGE_SEC,
-        "readiness_exit_max_age_sec": READINESS_EXIT_MAX_AGE_SEC,
-    })
-    return snap
-
-
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     require_admin_if_configured(request)
@@ -7303,7 +7201,6 @@ def dashboard(request: Request):
     last_lifecycle = dict(LAST_PAPER_LIFECYCLE or {})
     reconcile = build_reconcile_snapshot()
     freshness = freshness_snapshot()
-    premarket = premarket_readiness_snapshot()
     continuity_issues = list(continuity.get('issues') or [])
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
@@ -7314,13 +7211,19 @@ def dashboard(request: Request):
     freshness_stale = list(freshness.get('stale_entries') or [])
     freshness_missing = list(freshness.get('missing_entries') or [])
     scanner_card_warnings = list(scanner_summary.get('warning_codes') or [])
+    if not bool(scanner_summary.get('in_flight_run')):
+        scanner_card_warnings = [
+            code for code in scanner_card_warnings
+            if code not in {'partial_run_open', 'restored_partial_run', 'restored_partial_run_history'}
+        ]
+    if not bool(scanner_summary.get('dispatch_failures_total') or 0):
+        scanner_card_warnings = [code for code in scanner_card_warnings if code != 'dispatch_failure']
+    scanner_card_warnings = list(dict.fromkeys(scanner_card_warnings))
     reconcile_grade = str(reconcile.get('health_grade') or 'healthy')
     reconcile_actions = list(reconcile.get('recommended_actions') or [])
     reconcile_issue_codes = [str((item or {}).get('code') or '') for item in (reconcile.get('issues') or []) if str((item or {}).get('code') or '')]
     dashboard_warnings = []
-    if premarket.get('session_bootstrap_required'):
-        dashboard_warnings.append('premarket_session_bootstrap_pending')
-    elif freshness_stale or freshness_missing:
+    if freshness_stale or freshness_missing:
         dashboard_warnings.append('freshness_degraded')
     if scanner_card_warnings:
         dashboard_warnings.extend(scanner_card_warnings)
@@ -7334,9 +7237,6 @@ def dashboard(request: Request):
     scanner_worker_status = str(scanner_summary.get('worker_status') or worker_snapshot.get('scanner_status') or 'unknown')
     workers_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','down','unknown'})
     scanner_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','unknown'})
-    premarket_phase = str(premarket.get('phase') or 'unknown')
-    premarket_metric = 'READY' if premarket.get('ready_for_open') else ('BOOTSTRAP' if premarket.get('session_bootstrap_required') else premarket_phase.upper())
-    premarket_metric_class = _dashboard_metric_class(premarket_metric.lower(), good_values={'ready'}, bad_values={'bootstrapping'}, neutral_values={'bootstrap','premarket','postmarket','market_hours','unknown'})
 
     top_candidates = list((((last_scan.get('summary') or {}).get('top_candidates')) or []))[:5]
     rejection_counts = (((last_scan.get('summary') or {}).get('rejection_counts')) or {})
@@ -7433,7 +7333,6 @@ def dashboard(request: Request):
     <a href="/diagnostics/paper_lifecycle">paper_lifecycle</a>
     <a href="/diagnostics/execution_lifecycle">execution_lifecycle</a>
     <a href="/diagnostics/freshness">freshness</a>
-    <a href="/diagnostics/premarket_readiness">premarket_readiness</a>
     <a href="/diagnostics/scanner">scanner</a>
     <a href="/diagnostics/continuity">continuity</a>
   </div>
@@ -7448,8 +7347,7 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Workers</div><div class="metric {workers_metric_class}">{html.escape(str(scanner_worker_status).upper())}</div><div class="muted">Exit worker: {'UP' if worker_snapshot.get('exit_worker_running') else 'DOWN'} / scanner age: {_dashboard_fmt(worker_snapshot.get('scanner_age_sec'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Scanner telemetry</div><div class="metric {scanner_metric_class}">{_dashboard_fmt(scanner_summary.get('closed_runs_today') or 0)}</div><div class="muted">Closed today / last closed: {_dashboard_fmt(scanner_last_success)}</div><div class="muted">Worker: {html.escape(str(scanner_worker_status))} / last source: {html.escape(str(scanner_summary.get('last_request_source_kind') or 'unknown'))}</div><div class="muted">Manual today: {_dashboard_fmt(scanner_summary.get('manual_request_today') or 0)} / External today: {_dashboard_fmt(scanner_summary.get('external_request_today') or 0)}</div>{_dashboard_warning_badges(scanner_card_warnings)}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Premarket readiness</div><div class="metric {premarket_metric_class}">{html.escape(str(premarket_metric))}</div><div class="muted">Phase: {html.escape(premarket_phase)} / minutes to open: {_dashboard_fmt((premarket.get('session') or {}).get('minutes_to_open'))}</div><div class="muted">Expected stale: {_dashboard_fmt(len(premarket.get('expected_stale_entries') or []))} / Unexpected stale: {_dashboard_fmt(len(premarket.get('unexpected_stale_entries') or []))}</div>{_dashboard_warning_badges(premarket.get('warning_codes') or [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Freshness</div><div class="metric {'neutral' if (premarket.get('expected_stale_entries') and not premarket.get('unexpected_stale_entries') and not freshness_missing) else 'bad' if (freshness_stale or freshness_missing) else 'good'}">{len(freshness_stale)} stale / {len(freshness_missing)} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div>{_dashboard_warning_badges(freshness_stale + freshness_missing)}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Freshness</div><div class="metric {'bad' if (freshness_stale or freshness_missing) else 'good'}">{len(freshness_stale)} stale / {len(freshness_missing)} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div>{_dashboard_warning_badges(freshness_stale + freshness_missing)}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Reconcile</div><div class="metric {_dashboard_metric_class(reconcile_grade, good_values={'healthy'}, bad_values={'blocking','critical'}, neutral_values={'degraded'})}">{html.escape(str(reconcile_grade).upper())}</div><div class="muted">Plans / orders / broker positions: {reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Issues: {_dashboard_fmt(reconcile.get('issue_total') or 0)} / blocked: {'YES' if reconcile.get('trading_blocked') else 'NO'}</div>{_dashboard_warning_badges(reconcile_issue_codes[:3])}{_dashboard_warning_badges(['action_required'] if reconcile_actions else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / idle: {authoritative_state.get('idle')}</div>{_dashboard_warning_badges(continuity.get('issue_codes') or [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
   </div>
@@ -7463,7 +7361,6 @@ def dashboard(request: Request):
         ('effective_release_stage', release.get('effective_release_stage') or release.get('system_release_stage')),
         ('configured_release_stage', release.get('configured_release_stage') or release.get('system_release_stage')),
         ('workflow_live_activation_armed', ((release.get('release_workflow') or {}).get('live_activation_armed'))),
-        ('premarket_session_bootstrap_required', ((release.get('premarket_readiness') or {}).get('session_bootstrap_required'))),
         ('recent_market_scan_ok', release.get('recent_market_scan_ok')),
         ('last_scan_age_sec', release.get('last_scan_age_sec')),
         ('scan_completed', ((release.get('lifecycle_counts') or {}).get('scan_completed'))),
@@ -7496,20 +7393,6 @@ def dashboard(request: Request):
   </div>
 
   <div class="section grid">
-    <div class="card">
-      <h2>Premarket Readiness</h2>
-      <table>{_dashboard_rows([
-        ('phase', premarket.get('phase')),
-        ('premarket_active', premarket.get('premarket_active')),
-        ('session_bootstrap_required', premarket.get('session_bootstrap_required')),
-        ('ready_for_open', premarket.get('ready_for_open')),
-        ('expected_stale_entries', ', '.join(premarket.get('expected_stale_entries') or [])),
-        ('overnight_carryover_entries', ', '.join(premarket.get('overnight_carryover_entries') or [])),
-        ('unexpected_stale_entries', ', '.join(premarket.get('unexpected_stale_entries') or [])),
-      ])}</table>
-      <h3 style="margin-top:14px;">Warnings</h3>
-      <pre>{html.escape(chr(10).join(premarket.get('warning_codes') or ['none']))}</pre>
-    </div>
     <div class="card">
       <h2>Session Boundaries</h2>
       <table>{_dashboard_rows([
