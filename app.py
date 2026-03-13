@@ -7370,9 +7370,8 @@ def dashboard(request: Request):
     continuity_issues = list(continuity.get('issues') or [])
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
-    scanner = diagnostics_scanner()
-    scanner_summary = dict(scanner.get('summary') or {})
-    worker_snapshot = dict(scanner.get('worker') or _worker_status_snapshot() or {})
+    scanner_summary = _scanner_telemetry_summary()
+    worker_snapshot = _worker_status_snapshot()
     scanner_last_success = scanner_summary.get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none'
     authoritative_state = continuity.get('authoritative_state') or {}
     freshness_stale = list(freshness.get('stale_entries') or [])
@@ -7408,8 +7407,21 @@ def dashboard(request: Request):
     workers_metric_class = _dashboard_metric_class(combined_worker_status, good_values={'up'}, bad_values={'down','unknown'}, neutral_values={'late','late_but_alive'})
     scanner_metric_class = _dashboard_metric_class(scanner_display_status, good_values={'up'}, bad_values={'down','unknown'}, neutral_values={'late','late_but_alive'})
 
-    top_candidates = list((((last_scan.get('summary') or {}).get('top_candidates')) or []))[:5]
-    rejection_counts = (((last_scan.get('summary') or {}).get('rejection_counts')) or {})
+    scan_summary = (last_scan.get('summary') or {})
+    top_candidates = list((scan_summary.get('top_candidates') or []))[:5]
+    rejection_counts = dict(scan_summary.get('rejection_counts') or {})
+    if not rejection_counts:
+        for item in (scan_summary.get('top_rejection_reasons') or []):
+            if not isinstance(item, dict):
+                continue
+            reason = str(item.get('reason') or '').strip()
+            count = item.get('count')
+            if not reason:
+                continue
+            try:
+                rejection_counts[reason] = int(count)
+            except (TypeError, ValueError):
+                continue
     top_rejections = sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
 
     candidate_rows = ''.join(
