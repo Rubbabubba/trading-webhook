@@ -1061,6 +1061,85 @@ def restore_scanner_telemetry_state() -> dict:
     return restored
 
 
+
+
+def _safe_parse_iso_utc(ts):
+    try:
+        if not ts:
+            return None
+        dt = datetime.fromisoformat(str(ts))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _classify_scanner_warning_codes(state: dict) -> dict:
+    state = dict(state or {})
+    active = []
+    recovered = []
+    historical = []
+
+    def _add_unique(seq, code):
+        if code and code not in seq:
+            seq.append(code)
+
+    in_flight_run = bool(state.get("in_flight_run"))
+    incomplete_runs_total = int(state.get("incomplete_runs_total") or 0)
+    historical_incomplete_runs_total = int(state.get("historical_incomplete_runs_total") or 0)
+
+    worker_status = str(state.get("worker_status") or "unknown").strip().lower()
+
+    last_dispatch_failure_dt = _safe_parse_iso_utc(state.get("last_dispatch_failure_utc"))
+    last_success_dt = _safe_parse_iso_utc(state.get("last_success_utc"))
+    last_closed_dt = _safe_parse_iso_utc(state.get("last_closed_utc"))
+    last_closed_status = str(state.get("last_closed_status") or "").strip().lower()
+
+    manual_request_today = int(state.get("manual_request_today") or 0)
+    external_request_today = int(state.get("external_request_today") or 0)
+
+    if in_flight_run or incomplete_runs_total > 0:
+        _add_unique(active, "partial_run_open")
+    elif historical_incomplete_runs_total > 0:
+        _add_unique(historical, "restored_partial_run_history")
+
+    if manual_request_today > 0:
+        _add_unique(active, "manual_scan_request_observed")
+    if external_request_today > 0:
+        _add_unique(active, "external_scan_request_observed")
+
+    if worker_status != "up":
+        if worker_status == "late":
+            _add_unique(active, "worker_heartbeat_late")
+        elif worker_status in {"stale", "down"}:
+            _add_unique(active, "worker_heartbeat_stale")
+        else:
+            _add_unique(active, "worker_status_unknown")
+
+    if last_dispatch_failure_dt is not None:
+        dispatch_recovered = bool(
+            last_success_dt
+            and last_closed_dt
+            and last_closed_status in {"success", "skipped"}
+            and last_success_dt >= last_dispatch_failure_dt
+            and last_closed_dt >= last_dispatch_failure_dt
+        )
+        if dispatch_recovered:
+            _add_unique(recovered, "dispatch_failure_recovered")
+        else:
+            _add_unique(active, "dispatch_failure")
+
+    return {
+        "active_warning_codes": active,
+        "recovered_warning_codes": recovered,
+        "historical_warning_codes": historical,
+        "warning_codes": list(active),
+        "has_warnings": bool(active),
+        "has_active_warnings": bool(active),
+        "has_recovered_warnings": bool(recovered),
+    }
+
 def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | None = None) -> dict:
     rows = list(history if history is not None else (SCANNER_TELEMETRY_HISTORY or []))
     tel = dict(LAST_SCANNER_TELEMETRY or {})
@@ -1176,27 +1255,22 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
 
     attempts_total = len(request_indexes)
     attempts_today = sum(1 for idx in request_indexes if _is_today(rows[idx] or {}))
-    warning_codes = []
-    if active_incomplete_total > 0:
-        warning_codes.append("partial_run_open")
-    if historical_incomplete_total > 0:
-        warning_codes.append("restored_partial_run_history")
-    if _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}) > 0:
-        warning_codes.append("dispatch_failure")
-    if manual_request_today > 0:
-        warning_codes.append("manual_scan_request_observed")
-    if external_request_today > 0:
-        warning_codes.append("external_scan_request_observed")
 
     worker = _worker_status_snapshot()
     worker_status = str(worker.get("scanner_status") or ("up" if worker.get("scanner_running") else "unknown"))
-    if worker_status != "up":
-        if worker_status == "late":
-            warning_codes.append("worker_heartbeat_late")
-        elif worker_status in {"stale", "down"}:
-            warning_codes.append("worker_heartbeat_stale")
-        else:
-            warning_codes.append("worker_status_unknown")
+
+    warning_state = _classify_scanner_warning_codes({
+        "in_flight_run": active_incomplete_total > 0,
+        "incomplete_runs_total": active_incomplete_total,
+        "historical_incomplete_runs_total": historical_incomplete_total,
+        "last_dispatch_failure_utc": tel.get("last_dispatch_failure_utc"),
+        "last_success_utc": tel.get("last_success_utc"),
+        "last_closed_utc": last_closed_utc,
+        "last_closed_status": last_closed_status,
+        "manual_request_today": manual_request_today,
+        "external_request_today": external_request_today,
+        "worker_status": worker_status,
+    })
 
     return {
         "attempts_total": attempts_total,
@@ -1233,8 +1307,13 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         "worker_last_event_utc": worker.get("scanner_last_event_utc"),
         "worker_last_event": worker.get("scanner_last_event"),
         "in_flight_run": active_incomplete_total > 0,
-        "has_warnings": bool(warning_codes),
-        "warning_codes": warning_codes,
+        "has_warnings": warning_state.get("has_warnings"),
+        "warning_codes": list(warning_state.get("warning_codes") or []),
+        "active_warning_codes": list(warning_state.get("active_warning_codes") or []),
+        "recovered_warning_codes": list(warning_state.get("recovered_warning_codes") or []),
+        "historical_warning_codes": list(warning_state.get("historical_warning_codes") or []),
+        "has_active_warnings": warning_state.get("has_active_warnings"),
+        "has_recovered_warnings": warning_state.get("has_recovered_warnings"),
         "history_count": len(rows),
     }
 
@@ -1292,18 +1371,6 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
     closed_runs_today = success_today + failure_today + skipped_today
     incomplete_runs_total = max(0, attempts_total - closed_runs_total)
     incomplete_runs_today = max(0, attempts_today - closed_runs_today)
-
-    warning_codes = []
-    if incomplete_runs_total > 0:
-        warning_codes.append("partial_run_open")
-    if is_dispatch_failure:
-        warning_codes.append("dispatch_failure")
-    if bool(prev.get("restored_from_state")) and incomplete_runs_total > 0:
-        warning_codes.append("restored_partial_run")
-    if manual_source:
-        warning_codes.append("manual_scan_request_observed")
-    if external_source:
-        warning_codes.append("external_scan_request_observed")
 
     last_error = prev.get("last_error")
     if is_dispatch_failure or is_run_failure:
@@ -1363,7 +1430,6 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
         "incomplete_runs_today": incomplete_runs_today,
         "in_flight_run": incomplete_runs_total > 0,
         "consecutive_failures": 0 if is_run_success else (int(prev.get("consecutive_failures") or 0) + (1 if is_run_failure else 0)),
-        "warning_codes": warning_codes,
         "current_sleep_sec": details.get("sleep_sec", prev.get("current_sleep_sec")),
         "next_run_estimate_utc": details.get("next_run_estimate_utc", prev.get("next_run_estimate_utc")),
         "last_http_status": details.get("status", prev.get("last_http_status")),
@@ -1374,6 +1440,14 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
         "run_on_start": details.get("run_on_start", prev.get("run_on_start")),
         "jitter_sec": details.get("jitter_sec", prev.get("jitter_sec")),
     }
+    warning_state = _classify_scanner_warning_codes(snapshot)
+    snapshot["warning_codes"] = list(warning_state.get("warning_codes") or [])
+    snapshot["active_warning_codes"] = list(warning_state.get("active_warning_codes") or [])
+    snapshot["recovered_warning_codes"] = list(warning_state.get("recovered_warning_codes") or [])
+    snapshot["historical_warning_codes"] = list(warning_state.get("historical_warning_codes") or [])
+    snapshot["has_warnings"] = warning_state.get("has_warnings")
+    snapshot["has_active_warnings"] = warning_state.get("has_active_warnings")
+    snapshot["has_recovered_warnings"] = warning_state.get("has_recovered_warnings")
     LAST_SCANNER_TELEMETRY.clear()
     LAST_SCANNER_TELEMETRY.update(snapshot)
     history_event = {
@@ -7179,6 +7253,12 @@ def diagnostics_scanner():
         "historical_incomplete_runs_today": summary.get("historical_incomplete_runs_today"),
         "in_flight_run": summary.get("in_flight_run"),
         "warning_codes": summary.get("warning_codes"),
+        "active_warning_codes": summary.get("active_warning_codes"),
+        "recovered_warning_codes": summary.get("recovered_warning_codes"),
+        "historical_warning_codes": summary.get("historical_warning_codes"),
+        "has_warnings": summary.get("has_warnings"),
+        "has_active_warnings": summary.get("has_active_warnings"),
+        "has_recovered_warnings": summary.get("has_recovered_warnings"),
         "last_closed_event": summary.get("last_closed_event"),
         "last_closed_status": summary.get("last_closed_status"),
         "last_closed_utc": summary.get("last_closed_utc"),
@@ -7241,14 +7321,7 @@ def dashboard(request: Request):
     authoritative_state = continuity.get('authoritative_state') or {}
     freshness_stale = list(freshness.get('stale_entries') or [])
     freshness_missing = list(freshness.get('missing_entries') or [])
-    scanner_card_warnings = list(scanner_summary.get('warning_codes') or [])
-    if not bool(scanner_summary.get('in_flight_run')):
-        scanner_card_warnings = [
-            code for code in scanner_card_warnings
-            if code not in {'partial_run_open', 'restored_partial_run', 'restored_partial_run_history'}
-        ]
-    if not bool(scanner_summary.get('dispatch_failures_total') or 0):
-        scanner_card_warnings = [code for code in scanner_card_warnings if code != 'dispatch_failure']
+    scanner_card_warnings = list(scanner_summary.get('active_warning_codes') or scanner_summary.get('warning_codes') or [])
     scanner_card_warnings = list(dict.fromkeys(scanner_card_warnings))
     reconcile_grade = str(reconcile.get('health_grade') or 'healthy')
     reconcile_actions = list(reconcile.get('recommended_actions') or [])
