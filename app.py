@@ -1061,9 +1061,11 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
             "attempts_total": int(tel.get("attempts_total") or 0),
             "success_total": int(tel.get("success_total") or 0),
             "failure_total": int(tel.get("failure_total") or 0),
+            "skipped_total": int(tel.get("skipped_total") or 0),
             "attempts_today": int(tel.get("attempts_today") or 0),
             "success_today": int(tel.get("success_today") or 0),
             "failure_today": int(tel.get("failure_today") or 0),
+            "skipped_today": int(tel.get("skipped_today") or 0),
             "dispatch_attempts_total": int(tel.get("dispatch_attempts_total") or 0),
             "dispatch_attempts_today": int(tel.get("dispatch_attempts_today") or 0),
             "dispatch_failures_total": int(tel.get("dispatch_failures_total") or 0),
@@ -1105,21 +1107,25 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
     success_today = _event_count({"scan_ok"}, only_today=True)
     failure_total = _event_count({"scan_fail", "scan_error"})
     failure_today = _event_count({"scan_fail", "scan_error"}, only_today=True)
+    skipped_total = _event_count({"scan_skip"})
+    skipped_today = _event_count({"scan_skip"}, only_today=True)
     return {
         "attempts_total": attempts_total,
         "success_total": success_total,
         "failure_total": failure_total,
+        "skipped_total": skipped_total,
         "attempts_today": attempts_today,
         "success_today": success_today,
         "failure_today": failure_today,
+        "skipped_today": skipped_today,
         "dispatch_attempts_total": _event_count({"scan_attempt"}),
         "dispatch_attempts_today": _event_count({"scan_attempt"}, only_today=True),
         "dispatch_failures_total": _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}),
         "dispatch_failures_today": _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}, only_today=True),
-        "closed_runs_total": success_total + failure_total,
-        "closed_runs_today": success_today + failure_today,
-        "incomplete_runs_total": max(0, attempts_total - (success_total + failure_total)),
-        "incomplete_runs_today": max(0, attempts_today - (success_today + failure_today)),
+        "closed_runs_total": success_total + failure_total + skipped_total,
+        "closed_runs_today": success_today + failure_today + skipped_today,
+        "incomplete_runs_total": max(0, attempts_total - (success_total + failure_total + skipped_total)),
+        "incomplete_runs_today": max(0, attempts_today - (success_today + failure_today + skipped_today)),
         "consecutive_failures": 0,
         "last_event": None,
         "last_event_status": None,
@@ -1151,6 +1157,7 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
     open_events = {"scan_request"}
     close_success_events = {"scan_ok"}
     close_failure_events = {"scan_fail", "scan_error"}
+    close_skip_events = {"scan_skip"}
     dispatch_attempt_events = {"scan_attempt"}
     dispatch_failure_events = {"scan_dispatch_http_error", "scan_dispatch_error"}
     worker_keepalive_events = {"boot", "preflight_ok", "preflight_error", "sleep", "heartbeat", *dispatch_attempt_events, *dispatch_failure_events, *open_events, *close_success_events, *close_failure_events}
@@ -1160,7 +1167,8 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
     is_run_open = event_l in open_events
     is_run_success = event_l in close_success_events
     is_run_failure = event_l in close_failure_events
-    is_run_close = is_run_success or is_run_failure
+    is_run_skip = event_l in close_skip_events
+    is_run_close = is_run_success or is_run_failure or is_run_skip
     is_worker_event = event_l in worker_keepalive_events or status_l in {"attempt", "ok", "success", "error", "http_error", "exception"}
 
     dispatch_attempts_total = int(prev.get("dispatch_attempts_total") or 0) + (1 if is_dispatch_attempt else 0)
@@ -1174,8 +1182,10 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
     success_today = _day_value("success_today") + (1 if is_run_success else 0)
     failure_total = int(prev.get("failure_total") or 0) + (1 if is_run_failure else 0)
     failure_today = _day_value("failure_today") + (1 if is_run_failure else 0)
-    closed_runs_total = success_total + failure_total
-    closed_runs_today = success_today + failure_today
+    skipped_total = int(prev.get("skipped_total") or 0) + (1 if is_run_skip else 0)
+    skipped_today = _day_value("skipped_today") + (1 if is_run_skip else 0)
+    closed_runs_total = success_total + failure_total + skipped_total
+    closed_runs_today = success_today + failure_today + skipped_today
     incomplete_runs_total = max(0, attempts_total - closed_runs_total)
     incomplete_runs_today = max(0, attempts_today - closed_runs_today)
 
@@ -1228,9 +1238,11 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
         "attempts_total": attempts_total,
         "success_total": success_total,
         "failure_total": failure_total,
+        "skipped_total": skipped_total,
         "attempts_today": attempts_today,
         "success_today": success_today,
         "failure_today": failure_today,
+        "skipped_today": skipped_today,
         "closed_runs_total": closed_runs_total,
         "closed_runs_today": closed_runs_today,
         "incomplete_runs_total": incomplete_runs_total,
@@ -6892,6 +6904,10 @@ async def worker_scan_entries(req: Request):
                     del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
             except Exception:
                 pass
+            try:
+                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "scanner_disabled", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled"})
+            except Exception:
+                pass
             return {"ok": True, "skipped": True, "reason": "scanner_disabled", **LAST_SCAN}
 
         if SCANNER_REQUIRE_MARKET_HOURS and ONLY_MARKET_HOURS and not in_market_hours():
@@ -6923,6 +6939,10 @@ async def worker_scan_entries(req: Request):
                     del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
             except Exception:
                 pass
+            try:
+                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "outside_market_hours", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled"})
+            except Exception:
+                pass
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
 
                 # Optional intraday scanner session gating (NY time).
@@ -6952,6 +6972,10 @@ async def worker_scan_entries(req: Request):
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
+            except Exception:
+                pass
+            try:
+                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "outside_scanner_session", "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled"})
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
