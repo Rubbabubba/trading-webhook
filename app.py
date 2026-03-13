@@ -1054,41 +1054,13 @@ def restore_scanner_telemetry_state() -> dict:
 
 
 def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | None = None) -> dict:
-    tel = dict(LAST_SCANNER_TELEMETRY or {})
-    if tel:
-        warnings = list(tel.get("warning_codes") or [])
-        return {
-            "attempts_total": int(tel.get("attempts_total") or 0),
-            "success_total": int(tel.get("success_total") or 0),
-            "failure_total": int(tel.get("failure_total") or 0),
-            "skipped_total": int(tel.get("skipped_total") or 0),
-            "attempts_today": int(tel.get("attempts_today") or 0),
-            "success_today": int(tel.get("success_today") or 0),
-            "failure_today": int(tel.get("failure_today") or 0),
-            "skipped_today": int(tel.get("skipped_today") or 0),
-            "dispatch_attempts_total": int(tel.get("dispatch_attempts_total") or 0),
-            "dispatch_attempts_today": int(tel.get("dispatch_attempts_today") or 0),
-            "dispatch_failures_total": int(tel.get("dispatch_failures_total") or 0),
-            "dispatch_failures_today": int(tel.get("dispatch_failures_today") or 0),
-            "closed_runs_total": int(tel.get("closed_runs_total") or 0),
-            "closed_runs_today": int(tel.get("closed_runs_today") or 0),
-            "incomplete_runs_total": int(tel.get("incomplete_runs_total") or 0),
-            "incomplete_runs_today": int(tel.get("incomplete_runs_today") or 0),
-            "consecutive_failures": int(tel.get("consecutive_failures") or 0),
-            "last_event": tel.get("event"),
-            "last_event_status": tel.get("status"),
-            "last_closed_event": tel.get("last_closed_event"),
-            "last_closed_status": tel.get("last_closed_status"),
-            "last_closed_utc": tel.get("last_closed_utc"),
-            "in_flight_run": bool(tel.get("in_flight_run")),
-            "has_warnings": bool(warnings),
-            "warning_codes": warnings,
-            "history_count": len(SCANNER_TELEMETRY_HISTORY),
-        }
-
     rows = list(history if history is not None else (SCANNER_TELEMETRY_HISTORY or []))
+    tel = dict(LAST_SCANNER_TELEMETRY or {})
     if today_prefix is None:
         today_prefix = str(now_ny().date())
+
+    def _is_today(row: dict) -> bool:
+        return str((row or {}).get("ts_ny") or "").startswith(today_prefix)
 
     def _event_count(names: set[str], only_today: bool = False) -> int:
         total = 0
@@ -1096,19 +1068,96 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
             row = ev or {}
             if str(row.get("event") or "").strip().lower() not in names:
                 continue
-            if only_today and (not str(row.get("ts_ny") or "").startswith(today_prefix)):
+            if only_today and not _is_today(row):
                 continue
             total += 1
         return total
 
-    attempts_total = _event_count({"scan_request"})
-    attempts_today = _event_count({"scan_request"}, only_today=True)
-    success_total = _event_count({"scan_ok"})
-    success_today = _event_count({"scan_ok"}, only_today=True)
-    failure_total = _event_count({"scan_fail", "scan_error"})
-    failure_today = _event_count({"scan_fail", "scan_error"}, only_today=True)
-    skipped_total = _event_count({"scan_skip"})
-    skipped_today = _event_count({"scan_skip"}, only_today=True)
+    def _dispatch_implies_skip(row: dict) -> bool:
+        if str((row or {}).get("event") or "").strip().lower() != "scan_dispatch_ok":
+            return False
+        details = (row or {}).get("details") or {}
+        body = str(details.get("body_prefix") or "").lower()
+        return '"skipped":true' in body
+
+    request_indexes = [idx for idx, row in enumerate(rows) if str((row or {}).get("event") or "").strip().lower() == "scan_request"]
+    success_total = success_today = 0
+    failure_total = failure_today = 0
+    skipped_total = skipped_today = 0
+    closed_runs_total = closed_runs_today = 0
+    active_incomplete_total = active_incomplete_today = 0
+    historical_incomplete_total = historical_incomplete_today = 0
+    last_closed_event = None
+    last_closed_status = None
+    last_closed_utc = None
+    explicit_close_events = {"scan_ok": "success", "scan_fail": "failure", "scan_error": "failure", "scan_skip": "skipped"}
+
+    for pos, start_idx in enumerate(request_indexes):
+        end_idx = request_indexes[pos + 1] if (pos + 1) < len(request_indexes) else len(rows)
+        segment = rows[start_idx:end_idx]
+        request_row = rows[start_idx] or {}
+        segment_today = _is_today(request_row)
+        closed = None
+        for row in segment[1:]:
+            ev = str((row or {}).get("event") or "").strip().lower()
+            if ev in explicit_close_events:
+                closed = {
+                    "event": ev,
+                    "status": explicit_close_events[ev],
+                    "ts_utc": (row or {}).get("ts_utc"),
+                    "today": _is_today(row or {}),
+                }
+                break
+        if closed is None:
+            for row in segment[1:]:
+                if _dispatch_implies_skip(row or {}):
+                    closed = {
+                        "event": "scan_skip",
+                        "status": "skipped",
+                        "ts_utc": (row or {}).get("ts_utc"),
+                        "today": _is_today(row or {}),
+                    }
+                    break
+        if closed is None:
+            if pos == len(request_indexes) - 1:
+                active_incomplete_total += 1
+                if segment_today:
+                    active_incomplete_today += 1
+            else:
+                historical_incomplete_total += 1
+                if segment_today:
+                    historical_incomplete_today += 1
+            continue
+
+        if closed["status"] == "success":
+            success_total += 1
+            if closed["today"]:
+                success_today += 1
+        elif closed["status"] == "failure":
+            failure_total += 1
+            if closed["today"]:
+                failure_today += 1
+        else:
+            skipped_total += 1
+            if closed["today"]:
+                skipped_today += 1
+        closed_runs_total += 1
+        if closed["today"]:
+            closed_runs_today += 1
+        last_closed_event = closed["event"]
+        last_closed_status = closed["status"]
+        last_closed_utc = closed["ts_utc"]
+
+    attempts_total = len(request_indexes)
+    attempts_today = sum(1 for idx in request_indexes if _is_today(rows[idx] or {}))
+    warning_codes = []
+    if active_incomplete_total > 0:
+        warning_codes.append("partial_run_open")
+    if historical_incomplete_total > 0:
+        warning_codes.append("restored_partial_run_history")
+    if _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}) > 0:
+        warning_codes.append("dispatch_failure")
+
     return {
         "attempts_total": attempts_total,
         "success_total": success_total,
@@ -1122,19 +1171,21 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         "dispatch_attempts_today": _event_count({"scan_attempt"}, only_today=True),
         "dispatch_failures_total": _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}),
         "dispatch_failures_today": _event_count({"scan_dispatch_http_error", "scan_dispatch_error"}, only_today=True),
-        "closed_runs_total": success_total + failure_total + skipped_total,
-        "closed_runs_today": success_today + failure_today + skipped_today,
-        "incomplete_runs_total": max(0, attempts_total - (success_total + failure_total + skipped_total)),
-        "incomplete_runs_today": max(0, attempts_today - (success_today + failure_today + skipped_today)),
-        "consecutive_failures": 0,
-        "last_event": None,
-        "last_event_status": None,
-        "last_closed_event": None,
-        "last_closed_status": None,
-        "last_closed_utc": None,
-        "in_flight_run": max(0, attempts_total - (success_total + failure_total)) > 0,
-        "has_warnings": False,
-        "warning_codes": [],
+        "closed_runs_total": closed_runs_total,
+        "closed_runs_today": closed_runs_today,
+        "incomplete_runs_total": active_incomplete_total,
+        "incomplete_runs_today": active_incomplete_today,
+        "historical_incomplete_runs_total": historical_incomplete_total,
+        "historical_incomplete_runs_today": historical_incomplete_today,
+        "consecutive_failures": int(tel.get("consecutive_failures") or 0),
+        "last_event": tel.get("event") or ((rows[-1] or {}).get("event") if rows else None),
+        "last_event_status": tel.get("status") or ((rows[-1] or {}).get("status") if rows else None),
+        "last_closed_event": last_closed_event,
+        "last_closed_status": last_closed_status,
+        "last_closed_utc": last_closed_utc,
+        "in_flight_run": active_incomplete_total > 0,
+        "has_warnings": bool(warning_codes),
+        "warning_codes": warning_codes,
         "history_count": len(rows),
     }
 
@@ -6408,12 +6459,34 @@ def diagnostics_scanner():
         pass
     today_prefix = str(now_ny().date())
     summary = _scanner_telemetry_summary(today_prefix=today_prefix)
+    last_view = dict(tel)
+    last_view.update({
+        "attempts_total": summary.get("attempts_total"),
+        "success_total": summary.get("success_total"),
+        "failure_total": summary.get("failure_total"),
+        "skipped_total": summary.get("skipped_total"),
+        "attempts_today": summary.get("attempts_today"),
+        "success_today": summary.get("success_today"),
+        "failure_today": summary.get("failure_today"),
+        "skipped_today": summary.get("skipped_today"),
+        "closed_runs_total": summary.get("closed_runs_total"),
+        "closed_runs_today": summary.get("closed_runs_today"),
+        "incomplete_runs_total": summary.get("incomplete_runs_total"),
+        "incomplete_runs_today": summary.get("incomplete_runs_today"),
+        "historical_incomplete_runs_total": summary.get("historical_incomplete_runs_total"),
+        "historical_incomplete_runs_today": summary.get("historical_incomplete_runs_today"),
+        "in_flight_run": summary.get("in_flight_run"),
+        "warning_codes": summary.get("warning_codes"),
+        "last_closed_event": summary.get("last_closed_event"),
+        "last_closed_status": summary.get("last_closed_status"),
+        "last_closed_utc": summary.get("last_closed_utc"),
+    })
     return {
         "ok": True,
         "telemetry_state_path": SCANNER_TELEMETRY_STATE_PATH,
         "state_restore": dict(globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}),
         "summary": summary,
-        "last": tel,
+        "last": last_view,
         "history_count": len(SCANNER_TELEMETRY_HISTORY),
         "history_limit": SCANNER_TELEMETRY_HISTORY_LIMIT,
         "history": list(SCANNER_TELEMETRY_HISTORY[-50:]),
