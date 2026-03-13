@@ -7234,6 +7234,65 @@ def _dashboard_scanner_runtime_hint(scanner: dict | None, worker_snapshot: dict 
     }
 
 
+def _dashboard_scanner_attempt_summary(scanner: dict | None) -> dict:
+    scanner = dict(scanner or {})
+    summary = dict(scanner.get("summary") or {})
+    last = dict(scanner.get("last") or {})
+    history = list(scanner.get("history") or [])
+    current_boot_ts = str(last.get("boot_ts_utc") or "").strip()
+
+    current_boot_events = []
+    for item in history:
+        details = dict((item or {}).get("details") or {})
+        event_boot_ts = str(details.get("boot_ts_utc") or "").strip()
+        if current_boot_ts and event_boot_ts == current_boot_ts:
+            current_boot_events.append(item)
+    if not current_boot_events and current_boot_ts:
+        for item in history:
+            if str((item or {}).get("ts_utc") or "").strip() >= current_boot_ts:
+                current_boot_events.append(item)
+
+    startup_attempts = 0
+    startup_dispatch_errors = 0
+    startup_closed_success = 0
+    recent_events = []
+    for item in current_boot_events[-6:]:
+        event = str((item or {}).get("event") or "")
+        status = str((item or {}).get("status") or "")
+        ts = str((item or {}).get("ts_ny") or (item or {}).get("ts_utc") or "")
+        recent_events.append({"ts": ts, "event": event, "status": status})
+    for item in current_boot_events:
+        details = dict((item or {}).get("details") or {})
+        event = str((item or {}).get("event") or "")
+        reason = str(details.get("reason") or details.get("requested_reason") or "").strip().lower()
+        if event == "scan_attempt" and reason == "startup":
+            startup_attempts += 1
+        if event in {"scan_dispatch_http_error", "scan_dispatch_error"} and reason == "startup":
+            startup_dispatch_errors += 1
+        if event == "scan_ok" and str(details.get("scan_reason") or details.get("requested_reason") or "").strip().lower() == "startup":
+            startup_closed_success += 1
+
+    return {
+        "boot_ts_utc": last.get("boot_ts_utc"),
+        "boot_ts_ny": last.get("boot_ts_ny"),
+        "last_event": last.get("last_event"),
+        "last_event_status": last.get("last_event_status"),
+        "last_worker_event": last.get("last_worker_event"),
+        "last_success_utc": last.get("last_success_utc"),
+        "last_failure_utc": last.get("last_failure_utc"),
+        "last_dispatch_failure_utc": last.get("last_dispatch_failure_utc"),
+        "current_sleep_sec": last.get("current_sleep_sec"),
+        "next_run_estimate_utc": last.get("next_run_estimate_utc"),
+        "startup_attempts_current_boot": startup_attempts,
+        "startup_dispatch_errors_current_boot": startup_dispatch_errors,
+        "startup_successes_current_boot": startup_closed_success,
+        "dispatch_failures_today": summary.get("dispatch_failures_today"),
+        "attempts_today": summary.get("attempts_today"),
+        "success_today": summary.get("success_today"),
+        "failure_today": summary.get("failure_today"),
+        "closed_runs_today": summary.get("closed_runs_today"),
+        "recent_events": recent_events,
+    }
 
 
 @app.post("/worker/scanner_heartbeat")
@@ -7394,7 +7453,9 @@ def dashboard(request: Request):
     if ((release.get('release_workflow') or {}).get('configured_stage_drift')):
         dashboard_warnings.append('release_stage_config_drift')
     scanner_worker_status = str(scanner_summary.get('worker_status') or worker_snapshot.get('scanner_status') or 'unknown').strip().lower()
-    scanner_runtime = _dashboard_scanner_runtime_hint(diagnostics_scanner(), worker_snapshot)
+    scanner_diag = diagnostics_scanner()
+    scanner_runtime = _dashboard_scanner_runtime_hint(scanner_diag, worker_snapshot)
+    scanner_attempts = _dashboard_scanner_attempt_summary(scanner_diag)
     scanner_display_status = str(scanner_runtime.get('display_status') or scanner_worker_status)
     exit_worker_status = str(worker_snapshot.get('exit_worker_status') or ('up' if worker_snapshot.get('exit_worker_running') else 'unknown')).strip().lower()
     combined_worker_status = scanner_display_status
