@@ -7046,12 +7046,19 @@ def _dashboard_rows(rows: list[tuple[str, object]]) -> str:
     )
 
 
-def _dashboard_metric_class(status: str | None, good_values: set[str] | None = None, bad_values: set[str] | None = None) -> str:
+def _dashboard_metric_class(
+    status: str | None,
+    good_values: set[str] | None = None,
+    bad_values: set[str] | None = None,
+    neutral_values: set[str] | None = None,
+) -> str:
     s = str(status or "").strip().lower()
     if good_values and s in good_values:
         return "good"
     if bad_values and s in bad_values:
         return "bad"
+    if neutral_values and s in neutral_values:
+        return "neutral"
     return "neutral"
 
 
