@@ -1191,7 +1191,9 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
     worker = _worker_status_snapshot()
     worker_status = str(worker.get("scanner_status") or ("up" if worker.get("scanner_running") else "unknown"))
     if worker_status != "up":
-        if worker_status == "stale":
+        if worker_status == "late":
+            warning_codes.append("worker_heartbeat_late")
+        elif worker_status in {"stale", "down"}:
             warning_codes.append("worker_heartbeat_stale")
         else:
             warning_codes.append("worker_status_unknown")
@@ -3302,35 +3304,64 @@ def _worker_status_snapshot() -> dict:
     scanner_ref_ts = str((LAST_SCANNER_TELEMETRY.get("last_worker_event_utc") or "")).strip()
     scanner_status = "unknown"
     scanner_last_event = (LAST_SCANNER_TELEMETRY.get("last_worker_event") or None)
+    scanner_expected_cycle_sec = max(30, SCANNER_INTERVAL_SEC + SCANNER_TIMEOUT_SEC + max(10, SCANNER_JITTER_SEC) + 30)
+    scanner_late_after_sec = scanner_expected_cycle_sec
+    scanner_stale_after_sec = max(READINESS_SCANNER_MAX_AGE_SEC, scanner_expected_cycle_sec + max(60, SCANNER_TIMEOUT_SEC))
+    scanner_down_after_sec = max(scanner_stale_after_sec + max(120, SCANNER_TIMEOUT_SEC), scanner_expected_cycle_sec * 2)
     if scanner_ref_ts:
         try:
             scanner_ts = datetime.fromisoformat(scanner_ref_ts)
             if scanner_ts.tzinfo is None:
                 scanner_ts = scanner_ts.replace(tzinfo=timezone.utc)
             scanner_age_sec = max(0.0, (now_utc - scanner_ts.astimezone(timezone.utc)).total_seconds())
-            scanner_running = scanner_age_sec <= max(READINESS_SCANNER_MAX_AGE_SEC, 30)
-            scanner_status = "up" if scanner_running else "stale"
+            if scanner_age_sec <= scanner_late_after_sec:
+                scanner_status = "up"
+                scanner_running = True
+            elif scanner_age_sec <= scanner_stale_after_sec:
+                scanner_status = "late"
+                scanner_running = True
+            elif scanner_age_sec <= scanner_down_after_sec:
+                scanner_status = "stale"
+                scanner_running = False
+            else:
+                scanner_status = "down"
+                scanner_running = False
         except Exception:
             scanner_running = False
             scanner_status = "unknown"
     exit_worker_running = False
     exit_age_sec = None
+    exit_status = "unknown"
     if LAST_EXIT_HEARTBEAT.get("ts_utc"):
         try:
             exit_ts = datetime.fromisoformat(str(LAST_EXIT_HEARTBEAT.get("ts_utc")))
             if exit_ts.tzinfo is None:
                 exit_ts = exit_ts.replace(tzinfo=timezone.utc)
             exit_age_sec = max(0.0, (now_utc - exit_ts.astimezone(timezone.utc)).total_seconds())
-            exit_worker_running = exit_age_sec <= max(READINESS_EXIT_MAX_AGE_SEC, 15)
+            if exit_age_sec <= max(READINESS_EXIT_MAX_AGE_SEC, 15):
+                exit_worker_running = True
+                exit_status = "up"
+            elif exit_age_sec <= max(READINESS_EXIT_MAX_AGE_SEC * 2, 60):
+                exit_worker_running = False
+                exit_status = "stale"
+            else:
+                exit_worker_running = False
+                exit_status = "down"
         except Exception:
             exit_worker_running = False
+            exit_status = "unknown"
     return {
         "scanner_running": scanner_running,
         "scanner_status": scanner_status,
         "scanner_age_sec": scanner_age_sec,
         "scanner_last_event": scanner_last_event,
         "scanner_last_event_utc": LAST_SCANNER_TELEMETRY.get("last_worker_event_utc"),
+        "scanner_expected_cycle_sec": scanner_expected_cycle_sec,
+        "scanner_late_after_sec": scanner_late_after_sec,
+        "scanner_stale_after_sec": scanner_stale_after_sec,
+        "scanner_down_after_sec": scanner_down_after_sec,
         "exit_worker_running": exit_worker_running,
+        "exit_worker_status": exit_status,
         "exit_worker_age_sec": exit_age_sec,
     }
 
@@ -7235,8 +7266,8 @@ def dashboard(request: Request):
     if ((release.get('release_workflow') or {}).get('configured_stage_drift')):
         dashboard_warnings.append('release_stage_config_drift')
     scanner_worker_status = str(scanner_summary.get('worker_status') or worker_snapshot.get('scanner_status') or 'unknown')
-    workers_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','down','unknown'})
-    scanner_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','unknown'})
+    workers_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','down','unknown'}, neutral_values={'late'})
+    scanner_metric_class = _dashboard_metric_class(scanner_worker_status, good_values={'up'}, bad_values={'stale','down','unknown'}, neutral_values={'late'})
 
     top_candidates = list((((last_scan.get('summary') or {}).get('top_candidates')) or []))[:5]
     rejection_counts = (((last_scan.get('summary') or {}).get('rejection_counts')) or {})
@@ -7344,7 +7375,7 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Market hours</div><div class="metric {'bad' if blockers.get('blocked_by_market_hours') else 'good'}">{'BLOCKED' if blockers.get('blocked_by_market_hours') else 'OPEN'}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Workers</div><div class="metric {workers_metric_class}">{html.escape(str(scanner_worker_status).upper())}</div><div class="muted">Exit worker: {'UP' if worker_snapshot.get('exit_worker_running') else 'DOWN'} / scanner age: {_dashboard_fmt(worker_snapshot.get('scanner_age_sec'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Workers</div><div class="metric {workers_metric_class}">{html.escape(str(scanner_worker_status).upper())}</div><div class="muted">Exit worker: {html.escape(str((worker_snapshot.get('exit_worker_status') or ('UP' if worker_snapshot.get('exit_worker_running') else 'DOWN')).upper()))} / scanner age: {_dashboard_fmt(worker_snapshot.get('scanner_age_sec'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Scanner telemetry</div><div class="metric {scanner_metric_class}">{_dashboard_fmt(scanner_summary.get('closed_runs_today') or 0)}</div><div class="muted">Closed today / last closed: {_dashboard_fmt(scanner_last_success)}</div><div class="muted">Worker: {html.escape(str(scanner_worker_status))} / last source: {html.escape(str(scanner_summary.get('last_request_source_kind') or 'unknown'))}</div><div class="muted">Manual today: {_dashboard_fmt(scanner_summary.get('manual_request_today') or 0)} / External today: {_dashboard_fmt(scanner_summary.get('external_request_today') or 0)}</div>{_dashboard_warning_badges(scanner_card_warnings)}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Freshness</div><div class="metric {'bad' if (freshness_stale or freshness_missing) else 'good'}">{len(freshness_stale)} stale / {len(freshness_missing)} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div>{_dashboard_warning_badges(freshness_stale + freshness_missing)}{_dashboard_source_badge('Source', 'authoritative')}</div>
