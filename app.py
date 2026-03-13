@@ -2596,7 +2596,7 @@ def build_reconcile_snapshot() -> dict:
     orphan_open_order_symbols = sorted([sym for sym in open_order_symbols if sym not in active_plans and sym not in broker_syms])
     plans_missing_open_order = sorted([sym for sym in pending_entry_plan_symbols if sym not in open_order_symbols and sym not in broker_syms])
     partial_fill_plan_symbols = sorted([sym for sym, plan in active_plans.items() if str(plan.get("order_status") or "").lower() == "partially_filled"])
-    return {
+    snap = {
         "broker_positions_count": len(broker_positions),
         "broker_symbols": broker_syms,
         "active_plan_count": len(active_plans),
@@ -2610,6 +2610,120 @@ def build_reconcile_snapshot() -> dict:
         "plans_missing_open_order": plans_missing_open_order,
         "partial_fill_plan_symbols": partial_fill_plan_symbols,
         "open_orders": open_orders[:25],
+    }
+    snap.update(_build_reconcile_assessment(snap))
+    return snap
+
+
+_RECONCILE_SEVERITY_RANK = {"info": 0, "warn": 1, "error": 2, "critical": 3}
+
+
+def _reconcile_issue(code: str, severity: str, summary: str, details: dict | None = None,
+                     recommended_action: str = "", blocking: bool | None = None,
+                     symbols: list[str] | None = None) -> dict:
+    sev = str(severity or "warn").lower()
+    syms = [str(s or "").upper() for s in (symbols or []) if str(s or "").upper()]
+    return {
+        "code": code,
+        "severity": sev,
+        "summary": summary,
+        "symbols": syms,
+        "blocking": bool(blocking if blocking is not None else sev in {"error", "critical"}),
+        "recommended_action": recommended_action,
+        "details": details or {},
+    }
+
+
+def _reconcile_health_grade(issues: list[dict]) -> str:
+    max_rank = max((_RECONCILE_SEVERITY_RANK.get(str((i or {}).get("severity") or "info").lower(), 0) for i in (issues or [])), default=0)
+    if max_rank >= _RECONCILE_SEVERITY_RANK["critical"]:
+        return "critical"
+    if max_rank >= _RECONCILE_SEVERITY_RANK["error"]:
+        return "blocking"
+    if max_rank >= _RECONCILE_SEVERITY_RANK["warn"]:
+        return "degraded"
+    return "healthy"
+
+
+def _build_reconcile_assessment(snap: dict) -> dict:
+    issues: list[dict] = []
+    missing_from_plans = list(snap.get("missing_from_plans") or [])
+    stale_active_plans = list(snap.get("stale_active_plans") or [])
+    orphan_open_order_symbols = list(snap.get("orphan_open_order_symbols") or [])
+    plans_missing_open_order = list(snap.get("plans_missing_open_order") or [])
+    partial_fill_plan_symbols = list(snap.get("partial_fill_plan_symbols") or [])
+
+    if missing_from_plans:
+        issues.append(_reconcile_issue(
+            "broker_positions_missing_internal_plan",
+            "critical",
+            "Broker position exists without an active internal plan.",
+            details={"count": len(missing_from_plans)},
+            symbols=missing_from_plans,
+            recommended_action="Inspect the unmanaged broker position immediately. Freeze new entries for affected symbols until the position is reconciled or manually closed.",
+            blocking=True,
+        ))
+    if orphan_open_order_symbols:
+        issues.append(_reconcile_issue(
+            "orphan_open_orders",
+            "critical",
+            "Open broker orders exist without matching plan or position state.",
+            details={"count": len(orphan_open_order_symbols), "max_age_sec": RECONCILE_ORPHAN_ORDER_MAX_AGE_SEC},
+            symbols=orphan_open_order_symbols,
+            recommended_action="Review orphan orders immediately and cancel or adopt them into authoritative state before allowing new trading.",
+            blocking=True,
+        ))
+    if plans_missing_open_order:
+        issues.append(_reconcile_issue(
+            "plans_missing_open_order",
+            "error",
+            "Pending entry plans exist without matching open orders or positions.",
+            details={"count": len(plans_missing_open_order)},
+            symbols=plans_missing_open_order,
+            recommended_action="Inspect affected plans and either restore the missing order linkage or deactivate the stale pending plans.",
+            blocking=True,
+        ))
+    if partial_fill_plan_symbols:
+        issues.append(_reconcile_issue(
+            "partial_fills_open",
+            "warn",
+            "Plans are stuck in partially filled state and require monitoring.",
+            details={"count": len(partial_fill_plan_symbols), "max_age_sec": RECONCILE_PARTIAL_FILL_MAX_AGE_SEC},
+            symbols=partial_fill_plan_symbols,
+            recommended_action="Monitor partial fills closely. Reconcile remaining quantity, open orders, and broker position before the next trading session.",
+            blocking=False,
+        ))
+    if stale_active_plans:
+        issues.append(_reconcile_issue(
+            "stale_active_plans",
+            "warn",
+            "Active plans exist without broker position backing.",
+            details={"count": len(stale_active_plans)},
+            symbols=stale_active_plans,
+            recommended_action="Review stale active plans and deactivate any plan that no longer has broker backing or an active entry order.",
+            blocking=False,
+        ))
+
+    severity_counts = {"info": 0, "warn": 0, "error": 0, "critical": 0}
+    recommended_actions: list[str] = []
+    for issue in issues:
+        sev = str(issue.get("severity") or "info").lower()
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+        action = str(issue.get("recommended_action") or "").strip()
+        if action and action not in recommended_actions:
+            recommended_actions.append(action)
+    health_grade = _reconcile_health_grade(issues)
+    max_severity = "info"
+    if issues:
+        max_severity = max((str(i.get("severity") or "info").lower() for i in issues), key=lambda s: _RECONCILE_SEVERITY_RANK.get(s, 0))
+    return {
+        "health_grade": health_grade,
+        "max_severity": max_severity,
+        "trading_blocked": any(bool(i.get("blocking")) for i in issues),
+        "issue_counts": severity_counts,
+        "issue_total": len(issues),
+        "issues": issues,
+        "recommended_actions": recommended_actions,
     }
 
 
@@ -5726,6 +5840,14 @@ def diagnostics_reconcile(request: Request):
         "reconcile_partial_fill_max_age_sec": RECONCILE_PARTIAL_FILL_MAX_AGE_SEC,
         "startup_state": STARTUP_STATE,
         "latest_snapshot": latest_snapshot,
+        "summary": {
+            "health_grade": snap.get("health_grade"),
+            "max_severity": snap.get("max_severity"),
+            "trading_blocked": snap.get("trading_blocked"),
+            "issue_total": snap.get("issue_total"),
+            "issue_counts": snap.get("issue_counts") or {},
+            "recommended_action_count": len(snap.get("recommended_actions") or []),
+        },
         **snap,
     }
 
@@ -7082,11 +7204,17 @@ def dashboard(request: Request):
     freshness_stale = list(freshness.get('stale_entries') or [])
     freshness_missing = list(freshness.get('missing_entries') or [])
     scanner_card_warnings = list(scanner_summary.get('warning_codes') or [])
+    reconcile_grade = str(reconcile.get('health_grade') or 'healthy')
+    reconcile_actions = list(reconcile.get('recommended_actions') or [])
+    reconcile_issue_codes = [str((item or {}).get('code') or '') for item in (reconcile.get('issues') or []) if str((item or {}).get('code') or '')]
     dashboard_warnings = []
     if freshness_stale or freshness_missing:
         dashboard_warnings.append('freshness_degraded')
     if scanner_card_warnings:
         dashboard_warnings.extend(scanner_card_warnings)
+    if reconcile_grade != 'healthy':
+        dashboard_warnings.append(f'reconcile_{reconcile_grade}')
+        dashboard_warnings.extend(reconcile_issue_codes[:3])
     if not continuity.get('ok'):
         dashboard_warnings.append('continuity_issues_present')
     if ((release.get('release_workflow') or {}).get('configured_stage_drift')):
@@ -7205,7 +7333,7 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Scanner telemetry</div><div class="metric {scanner_metric_class}">{_dashboard_fmt(scanner_summary.get('closed_runs_today') or 0)}</div><div class="muted">Closed today / last closed: {_dashboard_fmt(scanner_last_success)}</div><div class="muted">Worker: {html.escape(str(scanner_worker_status))} / last source: {html.escape(str(scanner_summary.get('last_request_source_kind') or 'unknown'))}</div><div class="muted">Manual today: {_dashboard_fmt(scanner_summary.get('manual_request_today') or 0)} / External today: {_dashboard_fmt(scanner_summary.get('external_request_today') or 0)}</div>{_dashboard_warning_badges(scanner_card_warnings)}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Freshness</div><div class="metric {'bad' if (freshness_stale or freshness_missing) else 'good'}">{len(freshness_stale)} stale / {len(freshness_missing)} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div>{_dashboard_warning_badges(freshness_stale + freshness_missing)}{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Open plans / orders / broker positions</div><div class="metric {'bad' if (reconcile.get('active_plan_count',0) or reconcile.get('open_order_count',0) or reconcile.get('broker_positions_count',0)) else 'good'}">{reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Reconcile health snapshot</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Reconcile</div><div class="metric {_dashboard_metric_class(reconcile_grade, good_values={'healthy'}, bad_values={'blocking','critical'}, neutral_values={'degraded'})}">{html.escape(str(reconcile_grade).upper())}</div><div class="muted">Plans / orders / broker positions: {reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Issues: {_dashboard_fmt(reconcile.get('issue_total') or 0)} / blocked: {'YES' if reconcile.get('trading_blocked') else 'NO'}</div>{_dashboard_warning_badges(reconcile_issue_codes[:3])}{_dashboard_warning_badges(['action_required'] if reconcile_actions else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / idle: {authoritative_state.get('idle')}</div>{_dashboard_warning_badges(continuity.get('issue_codes') or [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
   </div>
 
@@ -7271,6 +7399,27 @@ def dashboard(request: Request):
       </table>
       <h3 style="margin-top:14px;">Stale / missing</h3>
       <pre>{html.escape(chr(10).join((freshness.get('stale_entries') or []) + (freshness.get('missing_entries') or []) or ['none']))}</pre>
+    </div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Reconcile Actions</h2>
+      <table>{_dashboard_rows([
+        ('health_grade', reconcile.get('health_grade')),
+        ('max_severity', reconcile.get('max_severity')),
+        ('trading_blocked', reconcile.get('trading_blocked')),
+        ('issue_total', reconcile.get('issue_total')),
+      ])}</table>
+      <h3 style="margin-top:14px;">Recommended actions</h3>
+      <pre>{html.escape(chr(10).join(reconcile_actions or ['none']))}</pre>
+    </div>
+    <div class="card">
+      <h2>Reconcile Issues</h2>
+      <table>
+        <thead><tr><th>Code</th><th>Severity</th><th>Symbols</th></tr></thead>
+        <tbody>{''.join('<tr><td>' + html.escape(str((item or {}).get('code') or '')) + '</td><td>' + html.escape(str((item or {}).get('severity') or '')) + '</td><td>' + html.escape(', '.join((item or {}).get('symbols') or [])) + '</td></tr>' for item in (reconcile.get('issues') or [])[:8]) or '<tr><td colspan="3" class="muted">No reconcile issues detected.</td></tr>'}</tbody>
+      </table>
     </div>
   </div>
 

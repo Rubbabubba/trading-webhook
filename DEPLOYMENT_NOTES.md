@@ -1,4 +1,9 @@
-# Patch 008
+# Patch 27
+
+Replace `app.py` and redeploy the main webhook/app service.
+
+This patch adds reconcile severity grading, operator-facing recommended actions, and dashboard reconcile health visibility.
+
 
 - Adds `VWAP_PB_MIN_BARS_5M` as a real env-controlled setting with default `15`.
 - Restores `/diagnostics/gatekeeper?symbol=SPY`.
