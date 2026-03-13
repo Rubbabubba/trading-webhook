@@ -7394,7 +7394,7 @@ def dashboard(request: Request):
     if ((release.get('release_workflow') or {}).get('configured_stage_drift')):
         dashboard_warnings.append('release_stage_config_drift')
     scanner_worker_status = str(scanner_summary.get('worker_status') or worker_snapshot.get('scanner_status') or 'unknown').strip().lower()
-    scanner_runtime = _dashboard_scanner_runtime_hint(scanner, worker_snapshot)
+    scanner_runtime = _dashboard_scanner_runtime_hint(diagnostics_scanner(), worker_snapshot)
     scanner_display_status = str(scanner_runtime.get('display_status') or scanner_worker_status)
     exit_worker_status = str(worker_snapshot.get('exit_worker_status') or ('up' if worker_snapshot.get('exit_worker_running') else 'unknown')).strip().lower()
     combined_worker_status = scanner_display_status
