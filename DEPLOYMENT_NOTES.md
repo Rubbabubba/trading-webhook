@@ -1,22 +1,23 @@
-# Patch 40
+Patch 42 (drop-in)
 
-This is a drop-in-ready patch built from the patch 39 baseline.
+Purpose
+- Clarify readiness semantics when the system is healthy but market data is not currently tradable.
+- Separate market-closed from quote/data-quality failures in readiness output and dashboard messaging.
 
-## Purpose
-Reduce overnight dashboard noise without changing release/readiness truth.
+What changed
+- Added `_readiness_data_feed_state()` classification helper.
+- `/diagnostics/readiness` now exposes:
+  - `data_feed_reason`
+  - `data_feed_label`
+  - `data_feed_detail`
+- Dashboard readiness assessment now distinguishes:
+  - `HEALTHY / MARKET CLOSED`
+  - `HEALTHY / DATA NOT TRADABLE`
+  - `FULLY PROVEN`
+  - `HEALTHY / PATH NOT PROVEN`
+- Guarded Live Path table now includes `data_feed_reason`.
+- Guarded Live Path blockers now use the specific readiness data-feed reason when market is open but quotes are not tradable.
 
-## Change included
-- Suppress the top-level `freshness_degraded` operator warning when the **only** stale freshness item is `regime` and the market is closed.
-
-## What does NOT change
-- `/dashboard`, `/diagnostics/readiness`, and `/diagnostics/release` logic remains intact.
-- Release gate behavior remains intact.
-- `recent_market_scan_missing` overnight behavior remains intact.
-- Regime can still show as stale in the freshness section overnight.
-
-## Expected result
-Overnight closed-market dashboard should:
-- still show market closed
-- still show guarded live blocked
-- still show stale regime in freshness diagnostics
-- no longer raise the top operator warning solely because overnight regime is stale
+Expected result
+- During market hours with bad/stale quotes, the dashboard should no longer imply a generic non-tradable state; it should explicitly point to the quote/data issue.
+- Outside market hours, the dashboard should explicitly show the market-closed condition instead of mixing it with quote tradability.

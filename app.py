@@ -3665,6 +3665,8 @@ def _build_release_gate_snapshot(stage: str, include_stage_check: bool = True) -
     worker_status = _worker_status_snapshot()
     reconcile = build_reconcile_snapshot()
     regime = dict(LAST_REGIME_SNAPSHOT or {})
+    session = _session_boundary_snapshot()
+    market_open_now = bool(session.get("market_open_now"))
     now_utc = datetime.now(tz=timezone.utc)
     last_scan_age_sec = None
     recent_market_scan_ok = False
@@ -3674,10 +3676,16 @@ def _build_release_gate_snapshot(stage: str, include_stage_check: bool = True) -
             if scan_ts.tzinfo is None:
                 scan_ts = scan_ts.replace(tzinfo=timezone.utc)
             last_scan_age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
+            last_scan_reason = str(LAST_SCAN.get("reason") or "")
             recent_market_scan_ok = (
-                str(LAST_SCAN.get("reason") or "") == "scan_completed"
+                last_scan_reason == "scan_completed"
                 and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
             )
+            if (not market_open_now) and (not recent_market_scan_ok):
+                recent_market_scan_ok = (
+                    last_scan_reason == "outside_market_hours"
+                    and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
+                )
         except Exception:
             recent_market_scan_ok = False
     unmet = []
@@ -6022,6 +6030,74 @@ def _is_market_tradable_now(session: dict, data_feed_ok: bool) -> bool:
     return market_open and bool(data_feed_ok)
 
 
+def _readiness_data_feed_state(session: dict, snapshot: dict) -> dict:
+    """Classify quote/trade readiness separately from component health."""
+    session = session or {}
+    snapshot = snapshot or {}
+    market_open = bool(session.get("market_open_now"))
+    price_present = bool(snapshot.get("price"))
+    quote_required = bool(ENTRY_REQUIRE_QUOTE)
+    quote_ok = bool(snapshot.get("quote_ok"))
+    fresh_required = bool(ENTRY_REQUIRE_FRESH_QUOTE)
+    fresh = bool(snapshot.get("fresh"))
+    spread_pct = snapshot.get("spread_pct")
+    spread_limit = float(ENTRY_MAX_SPREAD_PCT)
+    spread_ok = True
+    if spread_pct is not None:
+        try:
+            spread_ok = float(spread_pct) <= spread_limit
+        except Exception:
+            spread_ok = False
+
+    if not market_open:
+        return {
+            "ok": False,
+            "reason": "market_closed",
+            "label": "Market closed",
+            "detail": "The market is closed, so quote tradability is not evaluated for promotion.",
+        }
+    if not price_present:
+        return {
+            "ok": False,
+            "reason": "price_missing",
+            "label": "Price missing",
+            "detail": "No current trade or midpoint price was available for the readiness symbol.",
+        }
+    if quote_required and not quote_ok:
+        return {
+            "ok": False,
+            "reason": "quote_missing_or_invalid",
+            "label": "Quote missing/invalid",
+            "detail": "A tradable two-sided quote was not available for the readiness symbol.",
+        }
+    if fresh_required and not fresh:
+        age = snapshot.get("price_age_sec")
+        age_txt = _dashboard_fmt(age) if age is not None else "unknown"
+        return {
+            "ok": False,
+            "reason": "quote_stale",
+            "label": "Quote stale",
+            "detail": f"The latest readiness price is stale (age_sec={age_txt}).",
+        }
+    if not spread_ok:
+        try:
+            spread_txt = f"{float(spread_pct):.6f}"
+        except Exception:
+            spread_txt = "unknown"
+        return {
+            "ok": False,
+            "reason": "spread_too_wide",
+            "label": "Spread too wide",
+            "detail": f"Current spread_pct={spread_txt} exceeds ENTRY_MAX_SPREAD_PCT={spread_limit:.6f}.",
+        }
+    return {
+        "ok": True,
+        "reason": "tradable",
+        "label": "Tradable",
+        "detail": "Market is open and the current quote data passes tradability checks.",
+    }
+
+
 def _compute_system_health_ok(
     *,
     scanner_running: bool,
@@ -6052,7 +6128,8 @@ def diagnostics_readiness(request: Request):
     session = _session_boundary_snapshot()
     market_open = bool(session.get("market_open_now"))
     data_snapshot = get_latest_quote_snapshot(READINESS_SYMBOL)
-    data_feed_ok = bool(data_snapshot.get("price")) and ((not ENTRY_REQUIRE_QUOTE) or bool(data_snapshot.get("quote_ok")))
+    data_feed_state = _readiness_data_feed_state(session, data_snapshot)
+    data_feed_ok = bool(data_feed_state.get("ok"))
     broker_connected = True
     broker_error = ""
     try:
@@ -6155,7 +6232,7 @@ def diagnostics_readiness(request: Request):
         if not broker_connected:
             problems.append("broker_disconnected")
         if not data_feed_ok:
-            problems.append("data_feed")
+            problems.append(f"data_feed:{data_feed_state.get('reason') or 'unknown'}")
         if not journal_ok:
             problems.append("journal")
         if not risk_ok:
@@ -6178,6 +6255,7 @@ def diagnostics_readiness(request: Request):
                 "exit_worker_running": exit_worker_running,
                 "broker_connected": broker_connected,
                 "data_feed_ok": data_feed_ok,
+                "data_feed_reason": data_feed_state.get("reason"),
                 "journal_ok": journal_ok,
                 "risk_limits_ok": risk_ok,
             },
@@ -6210,6 +6288,9 @@ def diagnostics_readiness(request: Request):
         "exit_worker_age_sec": exit_age_sec,
         "market_open": market_open,
         "data_feed_ok": data_feed_ok,
+        "data_feed_reason": data_feed_state.get("reason"),
+        "data_feed_label": data_feed_state.get("label"),
+        "data_feed_detail": data_feed_state.get("detail"),
         "data_snapshot": data_snapshot,
         "broker_connected": broker_connected,
         "broker_error": broker_error,
@@ -7616,17 +7697,21 @@ def dashboard(request: Request):
         if not bool(readiness.get('market_open')):
             readiness_blockers.append('market_closed')
         elif not bool(readiness.get('data_feed_ok')):
-            readiness_blockers.append('data_feed_not_tradable')
+            readiness_blockers.append(str(readiness.get('data_feed_reason') or 'data_feed_not_tradable'))
     readiness_blockers = list(dict.fromkeys(readiness_blockers))
     readiness_summary_badges = _dashboard_warning_badges(readiness_blockers[:4])
     if system_health_ok and market_tradable_now and trade_path_proven:
         readiness_assessment_label = 'FULLY PROVEN'
         readiness_assessment_class = 'good'
         readiness_assessment_text = 'System health, current tradability, and trade-path proof are all present.'
-    elif system_health_ok and not market_tradable_now:
-        readiness_assessment_label = 'HEALTHY / NOT TRADABLE NOW'
+    elif system_health_ok and not bool(readiness.get('market_open')):
+        readiness_assessment_label = 'HEALTHY / MARKET CLOSED'
         readiness_assessment_class = 'neutral'
-        readiness_assessment_text = 'Components are healthy, but the market is closed or current quote conditions are not tradable.'
+        readiness_assessment_text = 'Components are healthy, but the market is currently closed.'
+    elif system_health_ok and bool(readiness.get('market_open')) and not market_tradable_now:
+        readiness_assessment_label = 'HEALTHY / DATA NOT TRADABLE'
+        readiness_assessment_class = 'neutral'
+        readiness_assessment_text = str(readiness.get('data_feed_detail') or 'Components are healthy, but the current quote data is not tradable.')
     elif system_health_ok and market_tradable_now and not trade_path_proven:
         readiness_assessment_label = 'HEALTHY / PATH NOT PROVEN'
         readiness_assessment_class = 'neutral'
@@ -7804,6 +7889,7 @@ def dashboard(request: Request):
         ('exit_worker_running', readiness.get('exit_worker_running')),
         ('broker_connected', readiness.get('broker_connected')),
         ('data_feed_ok', readiness.get('data_feed_ok')),
+        ('data_feed_reason', readiness.get('data_feed_reason')),
         ('journal_ok', readiness.get('journal_ok')),
         ('risk_limits_ok', readiness.get('risk_limits_ok')),
       ])}</table>
