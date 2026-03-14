@@ -6016,10 +6016,41 @@ def diagnostics_rejections(request: Request, limit: int = 100):
     return {"ok": True, "count": len(items), "buckets": dict(buckets), "items": items}
 
 
+def _is_market_tradable_now(session: dict, data_feed_ok: bool) -> bool:
+    """True only when the market is open and the current data feed is usable for trading decisions."""
+    market_open = bool((session or {}).get("market_open_now"))
+    return market_open and bool(data_feed_ok)
+
+
+def _compute_system_health_ok(
+    *,
+    scanner_running: bool,
+    exit_worker_running: bool,
+    broker_connected: bool,
+    risk_limits_ok: bool,
+    kill_switch: bool,
+    daily_halt_active_flag: bool,
+    journal_ok: bool,
+    require_workers: bool = True,
+) -> bool:
+    """Pure component/process health, excluding session state, quote freshness, and release gating."""
+    workers_ok = (bool(scanner_running) and bool(exit_worker_running)) if require_workers else True
+    return all([
+        workers_ok,
+        bool(broker_connected),
+        bool(risk_limits_ok),
+        bool(journal_ok),
+        not bool(kill_switch),
+        not bool(daily_halt_active_flag),
+    ])
+
+
 @app.get("/diagnostics/readiness")
 def diagnostics_readiness(request: Request):
     require_admin_if_configured(request)
     now_utc = datetime.now(tz=timezone.utc)
+    session = market_session_snapshot()
+    market_open = bool(session.get("market_open_now"))
     data_snapshot = get_latest_quote_snapshot(READINESS_SYMBOL)
     data_feed_ok = bool(data_snapshot.get("price")) and ((not ENTRY_REQUIRE_QUOTE) or bool(data_snapshot.get("quote_ok")))
     broker_connected = True
@@ -6068,9 +6099,19 @@ def diagnostics_readiness(request: Request):
             journal_ok = False
             journal_error = str(e)
     risk_ok = risk_limits_ok()
-    overall = broker_connected and data_feed_ok and journal_ok and risk_ok
-    if READINESS_REQUIRE_WORKERS:
-        overall = overall and scanner_running and exit_worker_running
+    halt_active = daily_halt_active()
+    system_health_ok = _compute_system_health_ok(
+        scanner_running=scanner_running,
+        exit_worker_running=exit_worker_running,
+        broker_connected=broker_connected,
+        risk_limits_ok=risk_ok,
+        kill_switch=KILL_SWITCH,
+        daily_halt_active_flag=halt_active,
+        journal_ok=journal_ok,
+        require_workers=READINESS_REQUIRE_WORKERS,
+    )
+    market_tradable_now = _is_market_tradable_now(session, data_feed_ok)
+    overall = system_health_ok
 
     lifecycle_counts = _paper_lifecycle_counts()
     lifecycle_events = list(PAPER_LIFECYCLE_HISTORY or [])
@@ -6107,9 +6148,9 @@ def diagnostics_readiness(request: Request):
     guarded_live_ready = bool((promotion_targets.get('guarded_live_eligible') or {}).get('ready'))
     live_guarded_ready = bool((promotion_targets.get('live_guarded') or {}).get('ready'))
     unmet_conditions = list(release.get('unmet_conditions') or [])
-    component_truth = 'ready' if overall else 'not_ready'
+    component_truth = 'ready' if system_health_ok else 'not_ready'
     proof_truth = 'proven' if trade_path_proven else 'not_proven'
-    if (not overall) and ALERT_ON_READINESS_FAIL:
+    if (not system_health_ok) and ALERT_ON_READINESS_FAIL:
         problems = []
         if not broker_connected:
             problems.append("broker_disconnected")
@@ -6143,9 +6184,11 @@ def diagnostics_readiness(request: Request):
         )
     return {
         "ok": True,
-        "ready": overall,
+        "ready": system_health_ok,
         "ready_scope": "component_only",
-        "component_ready": overall,
+        "system_health_ok": system_health_ok,
+        "market_tradable_now": market_tradable_now,
+        "component_ready": system_health_ok,
         "component_truth": component_truth,
         "trade_path_proven": trade_path_proven,
         "trade_path_truth": proof_truth,
@@ -6165,14 +6208,14 @@ def diagnostics_readiness(request: Request):
         "scanner_age_sec": scanner_age_sec,
         "exit_worker_running": exit_worker_running,
         "exit_worker_age_sec": exit_age_sec,
-        "market_open": in_market_hours(),
+        "market_open": market_open,
         "data_feed_ok": data_feed_ok,
         "data_snapshot": data_snapshot,
         "broker_connected": broker_connected,
         "broker_error": broker_error,
         "risk_limits_ok": risk_ok,
         "kill_switch": KILL_SWITCH,
-        "daily_halt_active": daily_halt_active(),
+        "daily_halt_active": halt_active,
         "daily_halt_state": DAILY_HALT_STATE,
         "journal_ok": journal_ok,
         "journal_error": journal_error,
@@ -7525,6 +7568,8 @@ def dashboard(request: Request):
 
     readiness = diagnostics_readiness(request)
     component_ready = bool(readiness.get('component_ready', readiness.get('ready')))
+    system_health_ok = bool(readiness.get('system_health_ok', component_ready))
+    market_tradable_now = bool(readiness.get('market_tradable_now', False))
     lifecycle_counts = dict((release.get('lifecycle_counts') or {}))
     lifecycle_events = list(PAPER_LIFECYCLE_HISTORY or [])
     if LAST_PAPER_LIFECYCLE and (not lifecycle_events or lifecycle_events[-1] != LAST_PAPER_LIFECYCLE):
@@ -7554,6 +7599,30 @@ def dashboard(request: Request):
     readiness_metric_class = 'good' if ready_for_guarded_live else ('neutral' if component_ready else 'bad')
     proof_metric_class = 'good' if trade_path_proven else 'neutral'
     readiness_summary_badges = _dashboard_warning_badges(readiness_blockers[:4])
+    if not market_tradable_now:
+        if not bool(readiness.get('market_open')):
+            readiness_blockers.append('market_closed')
+        elif not bool(readiness.get('data_feed_ok')):
+            readiness_blockers.append('data_feed_not_tradable')
+    readiness_blockers = list(dict.fromkeys(readiness_blockers))
+    readiness_summary_badges = _dashboard_warning_badges(readiness_blockers[:4])
+    if system_health_ok and market_tradable_now and trade_path_proven:
+        readiness_assessment_label = 'FULLY PROVEN'
+        readiness_assessment_class = 'good'
+        readiness_assessment_text = 'System health, current tradability, and trade-path proof are all present.'
+    elif system_health_ok and not market_tradable_now:
+        readiness_assessment_label = 'HEALTHY / NOT TRADABLE NOW'
+        readiness_assessment_class = 'neutral'
+        readiness_assessment_text = 'Components are healthy, but the market is closed or current quote conditions are not tradable.'
+    elif system_health_ok and market_tradable_now and not trade_path_proven:
+        readiness_assessment_label = 'HEALTHY / PATH NOT PROVEN'
+        readiness_assessment_class = 'neutral'
+        readiness_assessment_text = 'Components are healthy and the market is tradable, but end-to-end trade path is not yet proven.'
+    else:
+        readiness_assessment_label = 'NOT READY'
+        readiness_assessment_class = 'bad'
+        readiness_assessment_text = 'Component health is not sufficient for promotion.'
+
 
     scan_summary = (last_scan.get('summary') or {})
     top_candidates = list((scan_summary.get('top_candidates') or []))[:5]
@@ -7672,7 +7741,7 @@ def dashboard(request: Request):
 
   <div class="section grid">
     <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('effective_release_stage') or release.get('system_release_stage'))}</div><div class="muted">Configured: {_dashboard_fmt(release.get('configured_release_stage') or release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_badge('Workflow enforced', ((release.get('release_workflow') or {}).get('workflow_enforced')))}{_dashboard_warning_badges(['release_stage_config_drift'] if ((release.get('release_workflow') or {}).get('configured_stage_drift')) else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Market hours</div><div class="metric {'bad' if blockers.get('blocked_by_market_hours') else 'good'}">{'BLOCKED' if blockers.get('blocked_by_market_hours') else 'OPEN'}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Market hours</div><div class="metric {'good' if session.get('market_open_now') else 'neutral'}">{'OPEN' if session.get('market_open_now') else 'CLOSED'}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Workers</div><div class="metric {workers_metric_class}">{html.escape(str(combined_worker_status).upper())}</div><div class="muted">Scanner: {html.escape(str(scanner_display_status).upper())} ({_dashboard_fmt(worker_snapshot.get('scanner_age_sec'))}s)</div><div class="muted">Next run: {_dashboard_fmt(scanner_runtime.get('next_run_estimate_utc'))} / in {_dashboard_fmt(scanner_runtime.get('next_run_in_sec'))}s</div><div class="muted">Late by: {_dashboard_fmt(scanner_runtime.get('lateness_sec'))}s / hint: {html.escape(str(scanner_runtime.get('hint_text') or 'none'))}</div><div class="muted">Exit: {html.escape(str(exit_worker_status).upper())} ({_dashboard_fmt(worker_snapshot.get('exit_worker_age_sec'))}s)</div>{_dashboard_warning_badges([scanner_runtime.get('hint_code')] if scanner_runtime.get('hint_code') not in {'none', ''} else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
@@ -7687,7 +7756,9 @@ def dashboard(request: Request):
     <div class="card">
       <h2>Readiness Evidence</h2>
       <table>{_dashboard_rows([
-        ('component_readiness_ok', component_ready),
+        ('system_health_ok', system_health_ok),
+        ('market_tradable_now', market_tradable_now),
+        ('component_ready', component_ready),
         ('ready_scope', readiness.get('ready_scope')),
         ('same_session_proven', readiness.get('same_session_proven')),
         ('trade_path_proven', trade_path_proven),
@@ -7700,8 +7771,8 @@ def dashboard(request: Request):
         ('last_exit_event_utc', last_exit_event.get('ts_utc')),
       ])}</table>
       <h3 style="margin-top:14px;">Assessment</h3>
-      <div class="metric {proof_metric_class}">{'PROVEN' if trade_path_proven else 'NOT YET PROVEN'}</div>
-      <div class="muted">Components can be healthy while the trade path is still unproven. End-to-end proof requires candidate selection, entry activity, and exit activity in the lifecycle record.</div>
+      <div class="metric {readiness_assessment_class}">{readiness_assessment_label}</div>
+      <div class="muted">{html.escape(readiness_assessment_text)}</div>
     </div>
 
     <div class="card">
@@ -7709,6 +7780,8 @@ def dashboard(request: Request):
       <table>{_dashboard_rows([
         ('guarded_live_ready', ready_for_guarded_live),
         ('component_ready', component_ready),
+        ('system_health_ok', system_health_ok),
+        ('market_tradable_now', market_tradable_now),
         ('trade_path_proven', trade_path_proven),
         ('same_session_proven', readiness.get('same_session_proven')),
         ('release_stage', release.get('effective_release_stage') or release.get('system_release_stage')),
@@ -7946,7 +8019,7 @@ def diagnostics_release(request: Request):
         "live_trading_enabled": LIVE_TRADING_ENABLED,
         "scanner_allow_live": SCANNER_ALLOW_LIVE,
         "kill_switch": KILL_SWITCH,
-        "daily_halt_active": daily_halt_active(),
+        "daily_halt_active": halt_active,
         "requirements": {
             "release_require_regime_complete": RELEASE_REQUIRE_REGIME_COMPLETE,
             "release_require_regime_favorable": RELEASE_REQUIRE_REGIME_FAVORABLE,
