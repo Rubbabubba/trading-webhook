@@ -6049,7 +6049,7 @@ def _compute_system_health_ok(
 def diagnostics_readiness(request: Request):
     require_admin_if_configured(request)
     now_utc = datetime.now(tz=timezone.utc)
-    session = market_session_snapshot()
+    session = _session_boundary_snapshot()
     market_open = bool(session.get("market_open_now"))
     data_snapshot = get_latest_quote_snapshot(READINESS_SYMBOL)
     data_feed_ok = bool(data_snapshot.get("price")) and ((not ENTRY_REQUIRE_QUOTE) or bool(data_snapshot.get("quote_ok")))
@@ -6215,7 +6215,7 @@ def diagnostics_readiness(request: Request):
         "broker_error": broker_error,
         "risk_limits_ok": risk_ok,
         "kill_switch": KILL_SWITCH,
-        "daily_halt_active": halt_active,
+        "daily_halt_active": daily_halt_active(),
         "daily_halt_state": DAILY_HALT_STATE,
         "journal_ok": journal_ok,
         "journal_error": journal_error,
