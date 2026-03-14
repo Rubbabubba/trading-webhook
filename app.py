@@ -7510,6 +7510,19 @@ def diagnostics_freshness(request: Request):
     return snap
 
 
+def _dashboard_should_warn_on_freshness(*, stale_entries: list[str], missing_entries: list[str], session: dict | None = None) -> bool:
+    stale = [str(item or "").strip() for item in (stale_entries or []) if str(item or "").strip()]
+    missing = [str(item or "").strip() for item in (missing_entries or []) if str(item or "").strip()]
+    if missing:
+        return True
+    if not stale:
+        return False
+    market_open_now = bool((session or {}).get("market_open_now"))
+    if not market_open_now and set(stale) == {"regime"}:
+        return False
+    return True
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     require_admin_if_configured(request)
@@ -7539,7 +7552,7 @@ def dashboard(request: Request):
     reconcile_actions = list(reconcile.get('recommended_actions') or [])
     reconcile_issue_codes = [str((item or {}).get('code') or '') for item in (reconcile.get('issues') or []) if str((item or {}).get('code') or '')]
     dashboard_warnings = []
-    if freshness_stale or freshness_missing:
+    if _dashboard_should_warn_on_freshness(stale_entries=freshness_stale, missing_entries=freshness_missing, session=session):
         dashboard_warnings.append('freshness_degraded')
     if scanner_card_warnings:
         dashboard_warnings.extend(scanner_card_warnings)

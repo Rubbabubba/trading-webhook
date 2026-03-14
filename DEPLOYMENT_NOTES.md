@@ -1,123 +1,22 @@
-# Patch 27
+# Patch 40
 
-Replace `app.py` and redeploy the main webhook/app service.
+This is a drop-in-ready patch built from the patch 39 baseline.
 
-This patch adds reconcile severity grading, operator-facing recommended actions, and dashboard reconcile health visibility.
+## Purpose
+Reduce overnight dashboard noise without changing release/readiness truth.
 
+## Change included
+- Suppress the top-level `freshness_degraded` operator warning when the **only** stale freshness item is `regime` and the market is closed.
 
-- Adds `VWAP_PB_MIN_BARS_5M` as a real env-controlled setting with default `15`.
-- Restores `/diagnostics/gatekeeper?symbol=SPY`.
-- Adds `/diagnostics/strategy` and `/diagnostics/strategy?symbol=SPY`.
-- Shows whether VWAP min-bars came from env or code default.
+## What does NOT change
+- `/dashboard`, `/diagnostics/readiness`, and `/diagnostics/release` logic remains intact.
+- Release gate behavior remains intact.
+- `recent_market_scan_missing` overnight behavior remains intact.
+- Regime can still show as stale in the freshness section overnight.
 
-Render env add/change:
-
-```
-VWAP_PB_MIN_BARS_5M=15
-```
-
-# Patch 002 Deployment Notes
-
-- Patch 002 adds a durable execution journal and position snapshot files on disk.
-- New diagnostics endpoints: `/diagnostics/journal` and `/diagnostics/execution`.
-- `/diagnostics/orders` now includes ENTRY, EXIT, and RECONCILE rows and can enrich recent rows with broker order status.
-- Restart behavior improves because recent journal rows bootstrap the in-memory decision buffer.
-- Keep `JOURNAL_ENABLED=true` on Render and make sure `/var/data` is writable.
-
-# Render deployment: 3-service layout
-
-This repo supports a 3-service deployment on Render:
-
-1) **Main API Service** (FastAPI)
-   - Start command: `uvicorn app:app --host 0.0.0.0 --port $PORT`
-   - Env: your existing main env (ALPACA keys, WEBHOOK_SECRET, WORKER_SECRET, flags, etc.)
-
-2) **Exit Worker Service**
-   - Start command (recommended): `python worker.py`
-   - Env:
-     - BASE_URL = https://<main-service>
-     - WORKER_SECRET = <same as main>
-     - WORKER_MODE = exit
-     - EXIT_INTERVAL_SEC = 30 (or desired)
-     - EXIT_PATH = /worker/exit (default)
-
-3) **Scanner Worker Service**
-   - Start command (recommended): `python scanner.py`
-     - (Alternative: `python worker.py` with WORKER_MODE=scan)
-   - Env:
-     - BASE_URL = https://<main-service>
-     - WORKER_SECRET = <same as main>
-     - SCAN_INTERVAL_SEC = 60 (or desired)
-     - SCAN_PATH = /worker/scan_entries (default)
-     - Scanner flags live in the main service env (SCANNER_ENABLED, SCANNER_DRY_RUN, universe config)
-
-**Safety defaults**
-- Scanner is OFF by default unless SCANNER_ENABLED=true on the main service.
-- Scanner will not place orders unless SCANNER_DRY_RUN=false AND any additional live-gates you enable in the main service.
-
-
-
-## Patch 003
-- Adds pre-trade quote freshness and spread gates.
-- Rechecks broker position after symbol lock before entry submission.
-- Syncs active plans against broker order status during exit cycles.
-- Reconciles entry price to broker filled average price when available.
-- Deactivates stale submitted plans and stale no-position plans.
-- Adds /diagnostics/gatekeeper?symbol=SPY.
-
-
-## Patch 005
-- Tightens VWAP pullback signal quality with ATR/day-range regime filters, 1m micro-volume confirmation, and entry timing confirmation.
-- Adds /diagnostics/strategy for strategy config and per-symbol live diag.
-
-
-## Patch 006
-- Adaptive risk sizing based on signal score
-- 5m ATR-driven stop sizing
-- ATR / R-multiple target sizing
-- Notional cap per trade
-- New endpoint: /diagnostics/risk_model
-
-
-## Patch 007
-- Adds outbound webhook alerts for entries, exits, rejections, daily halts, and readiness failures.
-- Adds /diagnostics/alerts and /test/alert.
-- Supports Slack incoming webhooks, Discord webhooks, and generic JSON webhooks.
-- Alerts are deduplicated to reduce spam.
-
-
-## Patch 010
-- Adds rank-aware slot allocation so the scanner prefers the best candidates when position slots are limited.
-- Adds fallback minimum thresholds and /diagnostics/ranking.
-
-
-## Patch 011
-- Added micro confirmation flexibility with soft confirmation modes.
-- Added macro/micro blocker split in strategy diagnostics.
-- Added pre-ranked near-miss candidates to scan summaries and diagnostics/ranking fallback view.
-
-
-## Patch 012
-Adds fallback slope governance and fallback diagnostics summaries.
-
-
-## Swing foundation patch
-Use the env template files in this bundle for the new swing-oriented deployment posture.
-
-
-## Patch 4 verification
-- Check `/diagnostics/regime` for current market state.
-- Check `/diagnostics/candidates` and confirm rejected names show `weak_tape` or `correlation_group_limit` when applicable.
-
-
-## Patch 31
-- Dashboard worker card now uses authoritative worker snapshot for both scanner and exit workers.
-- Worker card shows separate scanner and exit statuses and ages.
-- Card color reflects the worst of scanner/exit status: UP, LATE, STALE, DOWN, or UNKNOWN.
-- Prevents dashboard from falsely showing exit worker as UP when diagnostics report UNKNOWN or DOWN.
-
-
-## Patch 37
-- Readiness endpoint now distinguishes component readiness from trade-path proof and guarded-live eligibility.
-- `/diagnostics/readiness` now reports `component_ready`, `ready_scope`, `trade_path_proven`, `same_session_proven`, `guarded_live_ready`, `go_live_eligible`, and proof timestamps.
-- Dashboard wording is hardened so a healthy component state is not mistaken for live-trading readiness.
+## Expected result
+Overnight closed-market dashboard should:
+- still show market closed
+- still show guarded live blocked
+- still show stale regime in freshness diagnostics
+- no longer raise the top operator warning solely because overnight regime is stale
