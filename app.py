@@ -8019,7 +8019,7 @@ def diagnostics_release(request: Request):
         "live_trading_enabled": LIVE_TRADING_ENABLED,
         "scanner_allow_live": SCANNER_ALLOW_LIVE,
         "kill_switch": KILL_SWITCH,
-        "daily_halt_active": halt_active,
+        "daily_halt_active": daily_halt_active(),
         "requirements": {
             "release_require_regime_complete": RELEASE_REQUIRE_REGIME_COMPLETE,
             "release_require_regime_favorable": RELEASE_REQUIRE_REGIME_FAVORABLE,
