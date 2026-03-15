@@ -2447,8 +2447,19 @@ log("CONFIG_EFFECTIVE", **config_effective_snapshot())
 # =============================
 # Core helpers
 # =============================
+def _is_regular_market_day(dt_local=None) -> bool:
+    dt_local = dt_local or now_ny()
+    try:
+        return int(dt_local.weekday()) < 5
+    except Exception:
+        return False
+
+
 def in_market_hours() -> bool:
-    t = now_ny().time()
+    dt_local = now_ny()
+    if not _is_regular_market_day(dt_local):
+        return False
+    t = dt_local.time()
     return (t >= MARKET_OPEN) and (t <= MARKET_CLOSE)
 
 
@@ -3458,6 +3469,8 @@ def _session_boundary_snapshot() -> dict:
     today_ny = now_local.date().isoformat()
     open_local = datetime.combine(now_local.date(), MARKET_OPEN, tzinfo=NY_TZ)
     close_local = datetime.combine(now_local.date(), MARKET_CLOSE, tzinfo=NY_TZ)
+    market_day = _is_regular_market_day(now_local)
+    market_closed_reason = "weekend" if not market_day else ""
     return {
         "today_ny": today_ny,
         "now_ny": now_local.isoformat(),
@@ -3465,6 +3478,8 @@ def _session_boundary_snapshot() -> dict:
         "market_close_ny": close_local.isoformat(),
         "market_open_utc": open_local.astimezone(timezone.utc).isoformat(),
         "market_close_utc": close_local.astimezone(timezone.utc).isoformat(),
+        "market_day": bool(market_day),
+        "market_closed_reason": market_closed_reason,
         "market_open_now": bool(in_market_hours()),
     }
 
@@ -7604,6 +7619,32 @@ def _dashboard_should_warn_on_freshness(*, stale_entries: list[str], missing_ent
     return True
 
 
+def _dashboard_latest_completed_scan_summary() -> dict:
+    def _usable_summary(scan_like: dict | None) -> dict:
+        summary = dict((scan_like or {}).get("summary") or {})
+        if not summary:
+            return {}
+        if summary.get("skipped"):
+            return {}
+        if summary.get("skip_reason"):
+            return {}
+        if summary.get("top_candidates") or summary.get("top_rejection_reasons") or summary.get("rejection_counts"):
+            return summary
+        return {}
+
+    preferred = _usable_summary(LAST_SCAN if isinstance(LAST_SCAN, dict) else {})
+    if preferred:
+        return preferred
+
+    for item in reversed(list(SCAN_HISTORY or [])):
+        if not isinstance(item, dict):
+            continue
+        preferred = _usable_summary(item)
+        if preferred:
+            return preferred
+    return {}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     require_admin_if_configured(request)
@@ -7722,7 +7763,9 @@ def dashboard(request: Request):
         readiness_assessment_text = 'Component health is not sufficient for promotion.'
 
 
-    scan_summary = (last_scan.get('summary') or {})
+    scan_summary = dict(last_scan.get('summary') or {})
+    if (not scan_summary) or scan_summary.get('skipped') or scan_summary.get('skip_reason'):
+        scan_summary = _dashboard_latest_completed_scan_summary()
     top_candidates = list((scan_summary.get('top_candidates') or []))[:5]
     rejection_counts = dict(scan_summary.get('rejection_counts') or {})
     if not rejection_counts:
@@ -7839,7 +7882,7 @@ def dashboard(request: Request):
 
   <div class="section grid">
     <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('effective_release_stage') or release.get('system_release_stage'))}</div><div class="muted">Configured: {_dashboard_fmt(release.get('configured_release_stage') or release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_badge('Workflow enforced', ((release.get('release_workflow') or {}).get('workflow_enforced')))}{_dashboard_warning_badges(['release_stage_config_drift'] if ((release.get('release_workflow') or {}).get('configured_stage_drift')) else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Market hours</div><div class="metric {'good' if session.get('market_open_now') else 'neutral'}">{'OPEN' if session.get('market_open_now') else 'CLOSED'}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Market hours</div><div class="metric {'good' if session.get('market_open_now') else 'neutral'}">{'OPEN' if session.get('market_open_now') else ('WEEKEND' if session.get('market_closed_reason') == 'weekend' else 'CLOSED')}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Workers</div><div class="metric {workers_metric_class}">{html.escape(str(combined_worker_status).upper())}</div><div class="muted">Scanner: {html.escape(str(scanner_display_status).upper())} ({_dashboard_fmt(worker_snapshot.get('scanner_age_sec'))}s)</div><div class="muted">Next run: {_dashboard_fmt(scanner_runtime.get('next_run_estimate_utc'))} / in {_dashboard_fmt(scanner_runtime.get('next_run_in_sec'))}s</div><div class="muted">Late by: {_dashboard_fmt(scanner_runtime.get('lateness_sec'))}s / hint: {html.escape(str(scanner_runtime.get('hint_text') or 'none'))}</div><div class="muted">Exit: {html.escape(str(exit_worker_status).upper())} ({_dashboard_fmt(worker_snapshot.get('exit_worker_age_sec'))}s)</div>{_dashboard_warning_badges([scanner_runtime.get('hint_code')] if scanner_runtime.get('hint_code') not in {'none', ''} else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
