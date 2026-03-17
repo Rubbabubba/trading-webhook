@@ -3846,6 +3846,7 @@ startup_restore_state()
 
 
 def freshness_snapshot() -> dict:
+    session = _session_boundary_snapshot()
     scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_worker_event_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_success_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_event_utc")
     scan_source = "memory" if LAST_SCAN else ("restored" if (globals().get("SCAN_STATE_RESTORE") or {}).get("last_scan_restored") else "empty")
     regime_source = "memory" if LAST_REGIME_SNAPSHOT else ("restored" if (globals().get("REGIME_STATE_RESTORE") or {}).get("current_restored") else "empty")
@@ -3858,10 +3859,17 @@ def freshness_snapshot() -> dict:
         "scanner_telemetry": _freshness_entry("scanner_telemetry", scanner_ref, source=scanner_source, max_age_sec=max(READINESS_SCANNER_MAX_AGE_SEC, SCANNER_INTERVAL_SEC + SCANNER_TIMEOUT_SEC + max(10, SCANNER_JITTER_SEC) + 60), extra={"event": (LAST_SCANNER_TELEMETRY or {}).get("event"), "attempts_today": (LAST_SCANNER_TELEMETRY or {}).get("attempts_today")}),
         "exit_heartbeat": _freshness_entry("exit_heartbeat", LAST_EXIT_HEARTBEAT.get("ts_utc"), source="memory" if LAST_EXIT_HEARTBEAT else "empty", max_age_sec=max(READINESS_EXIT_MAX_AGE_SEC, 30)),
     }
+    regime_row = entries.get("regime") or {}
+    if (not bool(session.get("market_day"))) and regime_row.get("status") == "stale":
+        regime_row["fresh"] = True
+        regime_row["status"] = "deferred"
+        regime_row["freshness_deferred"] = True
+        regime_row["freshness_deferred_reason"] = session.get("market_closed_reason") or "market_closed"
+        regime_row["freshness_note"] = "Regime freshness is deferred while the market is closed."
     stale = [name for name, row in entries.items() if row.get("status") == "stale"]
     missing = [name for name, row in entries.items() if row.get("status") == "missing"]
     return {
-        "session": _session_boundary_snapshot(),
+        "session": session,
         "entries": entries,
         "stale_entries": stale,
         "missing_entries": missing,
