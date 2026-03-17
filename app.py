@@ -546,6 +546,7 @@ SWING_REGIME_SLOW_MA_DAYS = getenv_int_any("SWING_REGIME_SLOW_MA_DAYS", default=
 SWING_REGIME_MIN_BREADTH = getenv_float_any("SWING_REGIME_MIN_BREADTH", default=0.50)
 SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE = env_bool_any("SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE", default=False)
 SWING_WEAK_TAPE_MAX_NEW_ENTRIES = getenv_int_any("SWING_WEAK_TAPE_MAX_NEW_ENTRIES", default=0)
+SHADOW_REGIME_MAX_CANDIDATES = max(1, getenv_int_any("SHADOW_REGIME_MAX_CANDIDATES", default=3))
 SWING_MAX_GROUP_POSITIONS = getenv_int_any("SWING_MAX_GROUP_POSITIONS", default=1)
 SWING_CORRELATION_GROUPS = getenv_any("SWING_CORRELATION_GROUPS", default="SPY,QQQ,IWM|AAPL,MSFT,NVDA,AMD,AVGO|AMZN,META,GOOGL,CRM,ORCL,SNOW")
 SWING_REGIME_HISTORY_SIZE = getenv_int_any("SWING_REGIME_HISTORY_SIZE", default=100)
@@ -4627,6 +4628,24 @@ def _index_alignment_ok(index_bars: list[dict]) -> bool | None:
         return None
     return bool(closes[-1] > fast_ma > slow_ma)
 
+def _shadow_market_gate_reasons() -> set[str]:
+    return {"weak_tape", "index_alignment_failed"}
+
+
+def _classify_shadow_candidate(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    reasons = [str(r) for r in (c.get("rejection_reasons") or []) if str(r)]
+    market_gate = _shadow_market_gate_reasons()
+    matched = [r for r in reasons if r in market_gate]
+    non_market = [r for r in reasons if r not in market_gate]
+    shadow_only = bool(matched) and not non_market
+    return {
+        "shadow_market_gate_reasons": matched,
+        "shadow_non_market_reasons": non_market,
+        "shadow_regime_candidate": shadow_only,
+    }
+
+
 def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None) -> dict:
     reconcile_actions = reconcile_actions or []
     syms = universe_symbols()
@@ -4679,7 +4698,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if block_strategy_cap:
             global_block_reasons.append('portfolio_already_over_cap_strategy')
     candidates = []
+    shadow_candidates = []
     rejection_counts = Counter()
+    shadow_rejection_counts = Counter()
     for sym in syms:
         c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok)
         if _has_pending_entry_plan(sym):
@@ -4705,10 +4726,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if c.get('eligible') and portfolio_cap > 0 and open_total + projected_notional > portfolio_cap:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('portfolio_exposure_limit')
+        c.update(_classify_shadow_candidate(c))
+        if c.get('shadow_regime_candidate'):
+            shadow_candidates.append(c)
+            for r in c.get('shadow_market_gate_reasons', []):
+                shadow_rejection_counts[str(r)] += 1
         for r in c.get('rejection_reasons', []):
             rejection_counts[str(r)] += 1
         candidates.append(c)
     candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
+    shadow_candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
     approved = [c for c in candidates if c.get('eligible')]
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
     if regime.get('favorable') is False:
@@ -4717,6 +4744,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
     max_new_entries = min(max_new_entries, remaining_today)
     selected = approved[:max_new_entries]
+    shadow_selected = shadow_candidates[:max_new_entries]
     would_submit = []
     for c in selected:
         meta = {
@@ -4743,7 +4771,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'regime': dict(regime),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
+        'shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
+        'shadow_selected': [c.get('symbol') for c in shadow_selected],
         'rejection_counts': dict(rejection_counts),
+        'shadow_rejection_counts': dict(shadow_rejection_counts),
     })
     if len(CANDIDATE_HISTORY) > CANDIDATE_HISTORY_SIZE:
         del CANDIDATE_HISTORY[: len(CANDIDATE_HISTORY) - CANDIDATE_HISTORY_SIZE]
@@ -4756,10 +4787,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'candidates_total': len(candidates),
         'eligible_total': len(approved),
         'selected_total': len(selected),
+        'shadow_candidates_total': len(shadow_candidates),
+        'shadow_selected_total': len(shadow_selected),
         'top_candidates': LAST_SWING_CANDIDATES[:5],
+        'top_shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
         'top_rejection_reasons': [{
             'reason': k, 'count': int(v)
         } for k, v in rejection_counts.most_common(10)],
+        'top_shadow_rejection_reasons': [{
+            'reason': k, 'count': int(v)
+        } for k, v in shadow_rejection_counts.most_common(10)],
         'portfolio_exposure': round(open_total, 2),
         'strategy_portfolio_exposure': round(open_strategy, 2),
         'recovered_portfolio_exposure': round(open_recovered, 2),
@@ -8247,6 +8284,7 @@ def diagnostics_candidates(limit: int = 25):
     lim = max(1, min(int(limit or 25), 200))
     latest = LAST_SWING_CANDIDATES[-lim:] if LAST_SWING_CANDIDATES else []
     hist = CANDIDATE_HISTORY[-5:]
+    shadow_items = [dict(item) for item in latest if bool((item or {}).get('shadow_regime_candidate'))]
     return {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -8255,6 +8293,8 @@ def diagnostics_candidates(limit: int = 25):
         'blockers': _diagnostics_swing_blockers(),
         'count': len(latest),
         'items': latest,
+        'shadow_count': len(shadow_items),
+        'shadow_items': shadow_items[:SHADOW_REGIME_MAX_CANDIDATES],
         'history': hist,
     }
 

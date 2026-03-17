@@ -21,3 +21,14 @@ What changed
 Expected result
 - During market hours with bad/stale quotes, the dashboard should no longer imply a generic non-tradable state; it should explicitly point to the quote/data issue.
 - Outside market hours, the dashboard should explicitly show the market-closed condition instead of mixing it with quote tradability.
+
+
+## Patch 45
+
+Adds shadow regime analytics for the swing scanner.
+
+Included changes:
+- Identifies shadow candidates whose only blockers are market-gate reasons (`weak_tape`, `index_alignment_failed`).
+- Persists shadow candidate details into scan summary and candidate history.
+- Exposes shadow candidate data on `/dashboard` and `/diagnostics/candidates`.
+- Keeps live release controls unchanged. This is analytics-only and does not relax any gate.
