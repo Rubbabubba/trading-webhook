@@ -4639,10 +4639,14 @@ def _classify_shadow_candidate(candidate: dict | None) -> dict:
     matched = [r for r in reasons if r in market_gate]
     non_market = [r for r in reasons if r not in market_gate]
     shadow_only = bool(matched) and not non_market
+    alignment_only = bool(matched) and set(matched) == {"index_alignment_failed"} and not non_market
+    weak_tape_only = bool(matched) and set(matched) == {"weak_tape"} and not non_market
     return {
         "shadow_market_gate_reasons": matched,
         "shadow_non_market_reasons": non_market,
         "shadow_regime_candidate": shadow_only,
+        "shadow_alignment_only_candidate": alignment_only,
+        "shadow_weak_tape_only_candidate": weak_tape_only,
     }
 
 
@@ -4699,8 +4703,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             global_block_reasons.append('portfolio_already_over_cap_strategy')
     candidates = []
     shadow_candidates = []
+    shadow_alignment_candidates = []
     rejection_counts = Counter()
     shadow_rejection_counts = Counter()
+    shadow_alignment_rejection_counts = Counter()
     for sym in syms:
         c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok)
         if _has_pending_entry_plan(sym):
@@ -4731,11 +4737,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             shadow_candidates.append(c)
             for r in c.get('shadow_market_gate_reasons', []):
                 shadow_rejection_counts[str(r)] += 1
+        if c.get('shadow_alignment_only_candidate'):
+            shadow_alignment_candidates.append(c)
+            shadow_alignment_rejection_counts['index_alignment_failed'] += 1
         for r in c.get('rejection_reasons', []):
             rejection_counts[str(r)] += 1
         candidates.append(c)
     candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
     shadow_candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
+    shadow_alignment_candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
     approved = [c for c in candidates if c.get('eligible')]
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
     if regime.get('favorable') is False:
@@ -4745,6 +4755,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     max_new_entries = min(max_new_entries, remaining_today)
     selected = approved[:max_new_entries]
     shadow_selected = shadow_candidates[:max_new_entries]
+    shadow_alignment_selected = shadow_alignment_candidates[:max_new_entries]
     would_submit = []
     for c in selected:
         meta = {
@@ -4773,8 +4784,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'selected': [c.get('symbol') for c in selected],
         'shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
         'shadow_selected': [c.get('symbol') for c in shadow_selected],
+        'shadow_alignment_candidates': [dict(c) for c in shadow_alignment_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
+        'shadow_alignment_selected': [c.get('symbol') for c in shadow_alignment_selected],
         'rejection_counts': dict(rejection_counts),
         'shadow_rejection_counts': dict(shadow_rejection_counts),
+        'shadow_alignment_rejection_counts': dict(shadow_alignment_rejection_counts),
     })
     if len(CANDIDATE_HISTORY) > CANDIDATE_HISTORY_SIZE:
         del CANDIDATE_HISTORY[: len(CANDIDATE_HISTORY) - CANDIDATE_HISTORY_SIZE]
@@ -4789,14 +4803,22 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'selected_total': len(selected),
         'shadow_candidates_total': len(shadow_candidates),
         'shadow_selected_total': len(shadow_selected),
+        'shadow_selected_symbols': [c.get('symbol') for c in shadow_selected],
+        'shadow_alignment_candidates_total': len(shadow_alignment_candidates),
+        'shadow_alignment_selected_total': len(shadow_alignment_selected),
+        'shadow_alignment_selected_symbols': [c.get('symbol') for c in shadow_alignment_selected],
         'top_candidates': LAST_SWING_CANDIDATES[:5],
         'top_shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
+        'top_shadow_alignment_candidates': [dict(c) for c in shadow_alignment_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
         'top_rejection_reasons': [{
             'reason': k, 'count': int(v)
         } for k, v in rejection_counts.most_common(10)],
         'top_shadow_rejection_reasons': [{
             'reason': k, 'count': int(v)
         } for k, v in shadow_rejection_counts.most_common(10)],
+        'top_shadow_alignment_rejection_reasons': [{
+            'reason': k, 'count': int(v)
+        } for k, v in shadow_alignment_rejection_counts.most_common(10)],
         'portfolio_exposure': round(open_total, 2),
         'strategy_portfolio_exposure': round(open_strategy, 2),
         'recovered_portfolio_exposure': round(open_recovered, 2),
@@ -7827,6 +7849,14 @@ def dashboard(request: Request):
                 continue
     top_rejections = sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
 
+    latest_candidate_summary = dict((last_scan.get('summary') or {}))
+    shadow_selected_symbols = list(latest_candidate_summary.get('shadow_selected_symbols') or latest_candidate_summary.get('shadow_selected') or [])
+    shadow_alignment_selected_symbols = list(latest_candidate_summary.get('shadow_alignment_selected_symbols') or [])
+    shadow_candidate_total = int(latest_candidate_summary.get('shadow_candidates_total') or 0)
+    shadow_alignment_candidate_total = int(latest_candidate_summary.get('shadow_alignment_candidates_total') or 0)
+    shadow_relaxed_text = 'Would become selected only if all market-gate blockers were ignored.' if shadow_selected_symbols else 'No current market-gate-only candidates would be selected.'
+    shadow_alignment_text = 'Would become selected if index alignment were softened only.' if shadow_alignment_selected_symbols else 'No index-alignment-only candidates would be selected.'
+
     candidate_rows = ''.join(
         '<tr>'
         f'<td>{html.escape(str(item.get("symbol") or ""))}</td>'
@@ -8093,6 +8123,29 @@ def dashboard(request: Request):
 
   <div class="section grid">
     <div class="card">
+      <h2>Relaxed Regime Shadow</h2>
+      <table>{_dashboard_rows([
+        ('shadow_candidates_total', shadow_candidate_total),
+        ('shadow_selected_total', len(shadow_selected_symbols)),
+        ('shadow_selected_symbols', ', '.join(shadow_selected_symbols) or '—'),
+      ])}</table>
+      <h3 style="margin-top:14px;">Assessment</h3>
+      <div class="muted">{html.escape(shadow_relaxed_text)}</div>
+    </div>
+    <div class="card">
+      <h2>Alignment-Only Shadow</h2>
+      <table>{_dashboard_rows([
+        ('alignment_only_candidates_total', shadow_alignment_candidate_total),
+        ('alignment_only_selected_total', len(shadow_alignment_selected_symbols)),
+        ('alignment_only_selected_symbols', ', '.join(shadow_alignment_selected_symbols) or '—'),
+      ])}</table>
+      <h3 style="margin-top:14px;">Assessment</h3>
+      <div class="muted">{html.escape(shadow_alignment_text)}</div>
+    </div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
       <h2>Blockers</h2>
       <pre>{_dashboard_json_block(blockers)}</pre>
     </div>
@@ -8285,6 +8338,8 @@ def diagnostics_candidates(limit: int = 25):
     latest = LAST_SWING_CANDIDATES[-lim:] if LAST_SWING_CANDIDATES else []
     hist = CANDIDATE_HISTORY[-5:]
     shadow_items = [dict(item) for item in latest if bool((item or {}).get('shadow_regime_candidate'))]
+    shadow_alignment_items = [dict(item) for item in latest if bool((item or {}).get('shadow_alignment_only_candidate'))]
+    latest_hist = dict(hist[-1]) if hist else {}
     return {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -8295,6 +8350,12 @@ def diagnostics_candidates(limit: int = 25):
         'items': latest,
         'shadow_count': len(shadow_items),
         'shadow_items': shadow_items[:SHADOW_REGIME_MAX_CANDIDATES],
+        'shadow_selected_count': len(latest_hist.get('shadow_selected') or []),
+        'shadow_selected': list(latest_hist.get('shadow_selected') or []),
+        'shadow_alignment_count': len(shadow_alignment_items),
+        'shadow_alignment_items': shadow_alignment_items[:SHADOW_REGIME_MAX_CANDIDATES],
+        'shadow_alignment_selected_count': len(latest_hist.get('shadow_alignment_selected') or []),
+        'shadow_alignment_selected': list(latest_hist.get('shadow_alignment_selected') or []),
         'history': hist,
     }
 
