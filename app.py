@@ -4731,6 +4731,341 @@ def _failure_decomp_near_miss(item: dict | None) -> bool:
     return False
 
 
+CURRENT_BREAKOUT_MAX_DISTANCE_PCT = round(SWING_BREAKOUT_BUFFER_PCT * 100.0, 3)
+CURRENT_CLOSE_TO_HIGH_MIN_PCT = round(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT * 100.0, 3)
+CURRENT_RETURN_20D_MIN_PCT = round(SWING_MIN_20D_RETURN_PCT * 100.0, 3)
+
+
+THRESHOLD_LADDER_BREAKOUT_MAX_DISTANCE_PCT = [
+    CURRENT_BREAKOUT_MAX_DISTANCE_PCT,
+    4.0,
+    3.0,
+    2.0,
+    1.0,
+]
+THRESHOLD_LADDER_CLOSE_TO_HIGH_MIN_PCT = [
+    CURRENT_CLOSE_TO_HIGH_MIN_PCT,
+    99.0,
+    98.5,
+    98.0,
+    97.5,
+]
+THRESHOLD_LADDER_RETURN_20D_MIN_PCT = [
+    CURRENT_RETURN_20D_MIN_PCT,
+    0.0,
+    2.0,
+    4.0,
+]
+
+
+def _dedupe_preserve_floats(values: list[float]) -> list[float]:
+    seen = set()
+    out = []
+    for val in values:
+        f = round(float(val), 4)
+        if f in seen:
+            continue
+        seen.add(f)
+        out.append(f)
+    return out
+
+
+def _candidate_fixed_reasons(item: dict | None) -> tuple[list[str], list[str]]:
+    item = dict(item or {})
+    reasons = [str(r) for r in (item.get("rejection_reasons") or []) if str(r)]
+    market_gate = _shadow_market_gate_reasons()
+    dynamic = {
+        "too_far_below_breakout",
+        "close_not_near_high",
+        "return_20d_below_min",
+        "trend_filter_failed",
+    }
+    fixed = [r for r in reasons if r not in dynamic and r not in market_gate]
+    market = [r for r in reasons if r in market_gate]
+    return fixed, market
+
+
+def _evaluate_candidate_under_thresholds(
+    item: dict | None,
+    breakout_max_distance_pct: float | None = None,
+    close_to_high_min_pct: float | None = None,
+    return_20d_min_pct: float | None = None,
+    include_market_gate: bool = True,
+) -> dict:
+    item = dict(item or {})
+    breakout_max_distance_pct = float(CURRENT_BREAKOUT_MAX_DISTANCE_PCT if breakout_max_distance_pct is None else breakout_max_distance_pct)
+    close_to_high_min_pct = float(CURRENT_CLOSE_TO_HIGH_MIN_PCT if close_to_high_min_pct is None else close_to_high_min_pct)
+    return_20d_min_pct = float(CURRENT_RETURN_20D_MIN_PCT if return_20d_min_pct is None else return_20d_min_pct)
+
+    fixed_reasons, market_reasons = _candidate_fixed_reasons(item)
+    reasons = list(fixed_reasons)
+    close = _safe_float(item.get("close"))
+    fast = _safe_float(item.get("fast_ma"))
+    slow = _safe_float(item.get("slow_ma"))
+    ret_20 = _safe_float(item.get("return_20d_pct"))
+    close_to_high = _safe_float(item.get("close_to_high_pct"))
+    breakout_distance = _safe_float(item.get("breakout_distance_pct"))
+
+    if close is None or fast is None or slow is None or not (close > fast > slow):
+        reasons.append("trend_filter_failed")
+    if ret_20 is None or ret_20 < return_20d_min_pct:
+        reasons.append("return_20d_below_min")
+    if close_to_high is None or close_to_high < close_to_high_min_pct:
+        reasons.append("close_not_near_high")
+    if breakout_distance is None or breakout_distance < (-1.0 * breakout_max_distance_pct):
+        reasons.append("too_far_below_breakout")
+    if include_market_gate:
+        reasons.extend(market_reasons)
+
+    non_market_reasons = [r for r in reasons if r not in _shadow_market_gate_reasons()]
+    market_only = bool(include_market_gate and market_reasons and not non_market_reasons)
+    return {
+        "symbol": item.get("symbol"),
+        "rank_score": item.get("rank_score"),
+        "reasons": reasons,
+        "non_market_reasons": non_market_reasons,
+        "market_reasons": list(market_reasons if include_market_gate else []),
+        "passes_non_market": len(non_market_reasons) == 0,
+        "market_gated": market_only,
+        "eligible": len(reasons) == 0,
+    }
+
+
+def _build_threshold_ladder(summary: dict | None = None) -> dict:
+    summary = dict(summary or {})
+    rows = _canonical_candidate_rows(summary)
+    meta = _canonical_scan_meta(summary)
+    breakout_levels = _dedupe_preserve_floats(THRESHOLD_LADDER_BREAKOUT_MAX_DISTANCE_PCT)
+    close_levels = _dedupe_preserve_floats(THRESHOLD_LADDER_CLOSE_TO_HIGH_MIN_PCT)
+    return_levels = _dedupe_preserve_floats(THRESHOLD_LADDER_RETURN_20D_MIN_PCT)
+
+    def _row_symbols_for(level_rows: list[dict]) -> list[str]:
+        sorted_rows = sorted(level_rows, key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)
+        return [str(r.get("symbol") or "") for r in sorted_rows[:10] if str(r.get("symbol") or "")]
+
+    def _ladder_for(kind: str, levels: list[float]) -> list[dict]:
+        out = []
+        for level in levels:
+            first_pass = []
+            market_gated = []
+            live_ok = []
+            for row in rows:
+                kwargs = {}
+                if kind == "breakout_distance":
+                    kwargs["breakout_max_distance_pct"] = level
+                elif kind == "close_to_high":
+                    kwargs["close_to_high_min_pct"] = level
+                elif kind == "return_20d":
+                    kwargs["return_20d_min_pct"] = level
+                evald = _evaluate_candidate_under_thresholds(row, **kwargs)
+                if evald["passes_non_market"]:
+                    first_pass.append(evald)
+                if evald["market_gated"]:
+                    market_gated.append(evald)
+                if evald["eligible"]:
+                    live_ok.append(evald)
+            label = "current" if (
+                (kind == "breakout_distance" and abs(level - CURRENT_BREAKOUT_MAX_DISTANCE_PCT) < 1e-6)
+                or (kind == "close_to_high" and abs(level - CURRENT_CLOSE_TO_HIGH_MIN_PCT) < 1e-6)
+                or (kind == "return_20d" and abs(level - CURRENT_RETURN_20D_MIN_PCT) < 1e-6)
+            ) else "relaxed"
+            out.append({
+                "label": label,
+                "level": level,
+                "first_pass_candidate_count": len(first_pass),
+                "first_pass_symbols": _row_symbols_for(first_pass),
+                "market_gated_candidate_count": len(market_gated),
+                "market_gated_symbols": _row_symbols_for(market_gated),
+                "live_eligible_count": len(live_ok),
+                "live_eligible_symbols": _row_symbols_for(live_ok),
+            })
+        return out
+
+    combined_relaxed = []
+    for row in rows:
+        evald = _evaluate_candidate_under_thresholds(
+            row,
+            breakout_max_distance_pct=max(breakout_levels),
+            close_to_high_min_pct=min(close_levels),
+            return_20d_min_pct=min(return_levels),
+        )
+        if evald["passes_non_market"]:
+            combined_relaxed.append(evald)
+
+    return {
+        "ok": True,
+        "ts_utc": meta.get("ts_utc"),
+        "strategy_name": meta.get("strategy_name"),
+        "scan_reason": meta.get("scan_reason"),
+        "index_symbol": meta.get("index_symbol"),
+        "candidates_total": len(rows),
+        "current_thresholds": {
+            "breakout_max_distance_pct": CURRENT_BREAKOUT_MAX_DISTANCE_PCT,
+            "close_to_high_min_pct": CURRENT_CLOSE_TO_HIGH_MIN_PCT,
+            "return_20d_min_pct": CURRENT_RETURN_20D_MIN_PCT,
+        },
+        "breakout_distance_ladder": _ladder_for("breakout_distance", breakout_levels),
+        "close_to_high_ladder": _ladder_for("close_to_high", close_levels),
+        "return_20d_ladder": _ladder_for("return_20d", return_levels),
+        "combined_relaxed_first_pass_count": len(combined_relaxed),
+        "combined_relaxed_first_pass_symbols": _row_symbols_for(combined_relaxed),
+    }
+
+
+def _pct_gap(current: float | None, required_min: float) -> float | None:
+    if current is None:
+        return None
+    return round(max(0.0, required_min - current), 3)
+
+
+def _pct_ceiling_gap(current: float | None, required_max_abs: float) -> float | None:
+    if current is None:
+        return None
+    return round(max(0.0, (-1.0 * required_max_abs) - current), 3)
+
+
+def _trend_gap_pct(item: dict | None) -> float:
+    item = dict(item or {})
+    close = _safe_float(item.get("close"))
+    fast = _safe_float(item.get("fast_ma"))
+    slow = _safe_float(item.get("slow_ma"))
+    if not close or not fast or not slow:
+        return 999.0
+    gap1 = max(0.0, ((fast - close) / close) * 100.0)
+    denom = abs(fast) if abs(fast or 0.0) > 1e-9 else 1.0
+    gap2 = max(0.0, ((slow - fast) / denom) * 100.0)
+    return round(max(gap1, gap2), 3)
+
+
+def _build_nearest_pass(summary: dict | None = None, limit: int = 10) -> dict:
+    summary = dict(summary or {})
+    rows = _canonical_candidate_rows(summary)
+    meta = _canonical_scan_meta(summary)
+    out = []
+    for item in rows:
+        item = dict(item or {})
+        symbol = str(item.get("symbol") or "")
+        fixed_reasons, market_reasons = _candidate_fixed_reasons(item)
+        breakout_gap = _pct_ceiling_gap(_safe_float(item.get("breakout_distance_pct")), CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
+        close_gap = _pct_gap(_safe_float(item.get("close_to_high_pct")), CURRENT_CLOSE_TO_HIGH_MIN_PCT)
+        ret_gap = _pct_gap(_safe_float(item.get("return_20d_pct")), CURRENT_RETURN_20D_MIN_PCT)
+        trend_gap = _trend_gap_pct(item)
+        fixed_penalty = float(len(fixed_reasons) * 5.0)
+        market_penalty = float(len(market_reasons) * 1.0)
+        non_market_gap_score = round((breakout_gap or 0.0) + (close_gap or 0.0) + (ret_gap or 0.0) + (trend_gap or 0.0) + fixed_penalty, 3)
+        total_gap_score = round(non_market_gap_score + market_penalty, 3)
+        out.append({
+            "symbol": symbol,
+            "rank_score": item.get("rank_score"),
+            "rejection_reasons": list(item.get("rejection_reasons") or []),
+            "market_gate_reasons": market_reasons,
+            "fixed_reasons": fixed_reasons,
+            "gaps": {
+                "breakout_distance_gap_pct": breakout_gap,
+                "close_to_high_gap_pct": close_gap,
+                "return_20d_gap_pct": ret_gap,
+                "trend_gap_pct": trend_gap,
+            },
+            "non_market_gap_score": non_market_gap_score,
+            "total_gap_score": total_gap_score,
+        })
+    out.sort(key=lambda x: (float(x.get("non_market_gap_score") or 0.0), -float(x.get("rank_score") or 0.0)))
+    return {
+        "ok": True,
+        "ts_utc": meta.get("ts_utc"),
+        "strategy_name": meta.get("strategy_name"),
+        "scan_reason": meta.get("scan_reason"),
+        "index_symbol": meta.get("index_symbol"),
+        "thresholds": {
+            "breakout_max_distance_pct": CURRENT_BREAKOUT_MAX_DISTANCE_PCT,
+            "close_to_high_min_pct": CURRENT_CLOSE_TO_HIGH_MIN_PCT,
+            "return_20d_min_pct": CURRENT_RETURN_20D_MIN_PCT,
+        },
+        "nearest_pass_candidates": out[:max(1, min(int(limit or 10), 25))],
+    }
+
+
+def _evaluate_alternate_entry_shadow(item: dict | None, include_market_gate: bool = True) -> dict:
+    item = dict(item or {})
+    fixed_reasons, market_reasons = _candidate_fixed_reasons(item)
+    reasons = list(fixed_reasons)
+    close = _safe_float(item.get("close"))
+    fast = _safe_float(item.get("fast_ma"))
+    slow = _safe_float(item.get("slow_ma"))
+    ret_20 = _safe_float(item.get("return_20d_pct"))
+    close_to_high = _safe_float(item.get("close_to_high_pct"))
+    avg_dollar = _safe_float(item.get("avg_dollar_volume_20d"))
+    if close is None or fast is None or slow is None:
+        reasons.append("alt_missing_trend_data")
+    else:
+        if fast < slow:
+            reasons.append("alt_fast_below_slow")
+        if close < slow:
+            reasons.append("alt_below_slow")
+        if close < fast * 0.985:
+            reasons.append("alt_below_pullback_zone")
+        if close > fast * 1.03:
+            reasons.append("alt_extended_above_fast")
+    if ret_20 is None or ret_20 < 0.0:
+        reasons.append("alt_return_20d_negative")
+    if close_to_high is None or close_to_high < 97.0:
+        reasons.append("alt_close_not_constructive")
+    if avg_dollar is None or avg_dollar < SWING_MIN_AVG_DOLLAR_VOLUME:
+        reasons.append("alt_liquidity_below_min")
+    if include_market_gate:
+        reasons.extend(market_reasons)
+    non_market = [r for r in reasons if r not in _shadow_market_gate_reasons()]
+    return {
+        "symbol": item.get("symbol"),
+        "rank_score": item.get("rank_score"),
+        "alt_rejection_reasons": reasons,
+        "market_gate_reasons": list(market_reasons if include_market_gate else []),
+        "passes_non_market": len(non_market) == 0,
+        "market_gated": bool(include_market_gate and market_reasons and not non_market),
+        "eligible": len(reasons) == 0,
+    }
+
+
+def _build_alternate_entry_shadow(summary: dict | None = None, limit: int = 10) -> dict:
+    summary = dict(summary or {})
+    rows = _canonical_candidate_rows(summary)
+    meta = _canonical_scan_meta(summary)
+    alt_rows = []
+    for item in rows:
+        evald = _evaluate_alternate_entry_shadow(item)
+        row = dict(item or {})
+        row.update(evald)
+        alt_rows.append(row)
+    alt_rows.sort(key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)
+    first_pass = [r for r in alt_rows if r.get("passes_non_market")]
+    market_gated = [r for r in alt_rows if r.get("market_gated")]
+    live_ok = [r for r in alt_rows if r.get("eligible")]
+    lim = max(1, min(int(limit or 10), 25))
+    return {
+        "ok": True,
+        "ts_utc": meta.get("ts_utc"),
+        "strategy_name": meta.get("strategy_name"),
+        "scan_reason": meta.get("scan_reason"),
+        "index_symbol": meta.get("index_symbol"),
+        "alternate_entry_name": "pullback_support_shadow",
+        "criteria": {
+            "fast_ma_gte_slow_ma": True,
+            "close_gte_slow_ma": True,
+            "close_between_fast_ma_minus_pct": 1.5,
+            "close_between_fast_ma_plus_pct": 3.0,
+            "min_return_20d_pct": 0.0,
+            "min_close_to_high_pct": 97.0,
+        },
+        "candidate_count": len(alt_rows),
+        "first_pass_candidate_count": len(first_pass),
+        "first_pass_candidates": first_pass[:lim],
+        "market_gated_candidate_count": len(market_gated),
+        "market_gated_candidates": market_gated[:lim],
+        "live_eligible_count": len(live_ok),
+        "live_eligible_candidates": live_ok[:lim],
+    }
+
+
 def _build_failure_decomposition(summary: dict | None = None) -> dict:
     summary = dict(summary or {})
     candidate_rows = _canonical_candidate_rows(summary)
@@ -8225,6 +8560,9 @@ def dashboard(request: Request):
     <a href="/diagnostics/scanner">scanner</a>
     <a href="/diagnostics/continuity">continuity</a>
     <a href="/diagnostics/readiness">readiness</a>
+    <a href="/diagnostics/threshold_ladder">threshold_ladder</a>
+    <a href="/diagnostics/nearest_pass">nearest_pass</a>
+    <a href="/diagnostics/alternate_entry_shadow">alternate_entry_shadow</a>
     <a href="/diagnostics/failure_decomp">failure_decomp</a>
     <a href="/diagnostics/entry_decomp">entry_decomp</a>
   </div>
@@ -8700,6 +9038,39 @@ def diagnostics_entry_decomp(history_limit: int = 10):
         "entry_geometry_failure_counts": dict(current.get("entry_geometry_failure_counts") or {}),
         "quality_trend_failure_counts": dict(current.get("quality_trend_failure_counts") or {}),
     }
+
+
+
+@app.get("/diagnostics/threshold_ladder")
+def diagnostics_threshold_ladder(history_limit: int = 1):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    hist_lim = max(1, min(int(history_limit or 1), 50))
+    latest_hist = {}
+    if CANDIDATE_HISTORY:
+        latest_hist = dict((CANDIDATE_HISTORY or [])[-1])
+    return _build_threshold_ladder(latest_hist)
+
+
+@app.get("/diagnostics/nearest_pass")
+def diagnostics_nearest_pass(limit: int = 10):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    latest_hist = {}
+    if CANDIDATE_HISTORY:
+        latest_hist = dict((CANDIDATE_HISTORY or [])[-1])
+    return _build_nearest_pass(latest_hist, limit=limit)
+
+
+@app.get("/diagnostics/alternate_entry_shadow")
+def diagnostics_alternate_entry_shadow(limit: int = 10):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    latest_hist = {}
+    if CANDIDATE_HISTORY:
+        latest_hist = dict((CANDIDATE_HISTORY or [])[-1])
+    return _build_alternate_entry_shadow(latest_hist, limit=limit)
+
 
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
