@@ -479,6 +479,9 @@ POSITION_SNAPSHOT_PATH = getenv_any("POSITION_SNAPSHOT_PATH", default="/var/data
 SCAN_STATE_PATH = getenv_any("SCAN_STATE_PATH", default="/var/data/scan_state.json")
 REGIME_STATE_PATH = getenv_any("REGIME_STATE_PATH", default="/var/data/regime_state.json")
 PAPER_LIFECYCLE_STATE_PATH = getenv_any("PAPER_LIFECYCLE_STATE_PATH", default="/var/data/paper_lifecycle_state.json")
+COHORT_EVIDENCE_STATE_PATH = getenv_any("COHORT_EVIDENCE_STATE_PATH", default="/var/data/cohort_evidence_state.json")
+COHORT_EVIDENCE_HISTORY_SIZE = int(getenv_any("COHORT_EVIDENCE_HISTORY_SIZE", default="200"))
+PATCH51_MULTI_SCAN_DEFAULT = int(getenv_any("PATCH51_MULTI_SCAN_DEFAULT", default="20"))
 EXECUTION_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("EXECUTION_LIFECYCLE_HISTORY_LIMIT", default="50"))
 SCANNER_TELEMETRY_STATE_PATH = getenv_any("SCANNER_TELEMETRY_STATE_PATH", default="/var/data/scanner_telemetry_state.json")
 PAPER_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("PAPER_LIFECYCLE_HISTORY_LIMIT", default="500"))
@@ -616,6 +619,8 @@ LAST_PAPER_LIFECYCLE: dict = {}
 PAPER_LIFECYCLE_HISTORY: list[dict] = []
 CANDIDATE_HISTORY_SIZE = int(os.getenv("CANDIDATE_HISTORY_SIZE", "100"))
 CANDIDATE_HISTORY: list[dict] = []
+COHORT_EVIDENCE_HISTORY: list[dict] = []
+COHORT_EVIDENCE_STATE_RESTORE: dict = {}
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
 SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
@@ -965,18 +970,22 @@ def persist_scan_runtime_state(reason: str = ""):
         "reason": reason,
         "last_scan": dict(LAST_SCAN or {}),
         "scan_history": list(SCAN_HISTORY or []),
+        "candidate_history": list(CANDIDATE_HISTORY or []),
+        "last_swing_candidates": list(LAST_SWING_CANDIDATES or []),
     }
     return _safe_json_write(SCAN_STATE_PATH, payload)
 
 
 def restore_scan_runtime_state() -> dict:
     payload = _safe_json_read(SCAN_STATE_PATH)
-    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "scan_history_restored": 0}
+    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
     if not payload:
         return restored
     try:
         last_scan = payload.get("last_scan") or {}
         scan_history = payload.get("scan_history") or []
+        candidate_history = payload.get("candidate_history") or []
+        last_swing_candidates = payload.get("last_swing_candidates") or []
         if isinstance(last_scan, dict) and last_scan:
             LAST_SCAN.clear()
             LAST_SCAN.update(last_scan)
@@ -985,11 +994,175 @@ def restore_scan_runtime_state() -> dict:
             SCAN_HISTORY.clear()
             SCAN_HISTORY.extend(scan_history[-SCAN_HISTORY_SIZE:])
             restored["scan_history_restored"] = len(SCAN_HISTORY)
-        restored["loaded"] = restored["last_scan_restored"] or bool(restored["scan_history_restored"])
+        if isinstance(candidate_history, list) and candidate_history:
+            CANDIDATE_HISTORY.clear()
+            CANDIDATE_HISTORY.extend(candidate_history[-CANDIDATE_HISTORY_SIZE:])
+            restored["candidate_history_restored"] = len(CANDIDATE_HISTORY)
+        if isinstance(last_swing_candidates, list) and last_swing_candidates:
+            LAST_SWING_CANDIDATES.clear()
+            LAST_SWING_CANDIDATES.extend(last_swing_candidates[: max(1, SWING_MAX_CANDIDATES)])
+            restored["last_swing_candidates_restored"] = len(LAST_SWING_CANDIDATES)
+        restored["loaded"] = restored["last_scan_restored"] or bool(restored["scan_history_restored"]) or bool(restored["candidate_history_restored"])
     except Exception as e:
         restored["error"] = str(e)
     globals()["SCAN_STATE_RESTORE"] = restored
     return restored
+
+
+def _symbol_rows(rows: list[dict] | None) -> list[str]:
+    out = []
+    for row in rows or []:
+        sym = str((row or {}).get("symbol") or "").upper()
+        if sym and sym not in out:
+            out.append(sym)
+    return out
+
+
+def _build_cohort_evidence_event(summary: dict | None = None, breakout_max_distance_pct: float | None = None, nearest_limit: int = PATCH50_NEAREST_PASS_TOP_N) -> dict:
+    summary = dict(summary or {})
+    meta = _canonical_scan_meta(summary)
+    nearest = _build_nearest_pass(summary, limit=nearest_limit)
+    relaxed = _build_breakout_relaxed_snapshot(summary, breakout_max_distance_pct=breakout_max_distance_pct, limit=25)
+    alt = _build_alternate_entry_shadow(summary, limit=25)
+    event = {
+        "ts_utc": meta.get("ts_utc"),
+        "strategy_name": meta.get("strategy_name"),
+        "scan_reason": meta.get("scan_reason"),
+        "index_symbol": meta.get("index_symbol"),
+        "index_alignment_ok": meta.get("index_alignment_ok"),
+        "global_block_reasons": list(meta.get("global_block_reasons") or []),
+        "nearest_pass_candidates": list(nearest.get("nearest_pass_candidates") or []),
+        "relaxed_first_pass_candidates": list(relaxed.get("first_pass_candidates") or []),
+        "relaxed_market_gated_candidates": list(relaxed.get("market_gated_candidates") or []),
+        "alternate_first_pass_candidates": list(alt.get("first_pass_candidates") or []),
+        "alternate_market_gated_candidates": list(alt.get("market_gated_candidates") or []),
+        "nearest_pass_symbols": _symbol_rows(nearest.get("nearest_pass_candidates") or []),
+        "relaxed_first_pass_symbols": _symbol_rows(relaxed.get("first_pass_candidates") or []),
+        "relaxed_market_gated_symbols": _symbol_rows(relaxed.get("market_gated_candidates") or []),
+        "alternate_first_pass_symbols": _symbol_rows(alt.get("first_pass_candidates") or []),
+        "alternate_market_gated_symbols": _symbol_rows(alt.get("market_gated_candidates") or []),
+    }
+    return event
+
+
+def _append_cohort_evidence_event(summary: dict | None = None):
+    try:
+        event = _build_cohort_evidence_event(summary)
+        COHORT_EVIDENCE_HISTORY.append(event)
+        if len(COHORT_EVIDENCE_HISTORY) > COHORT_EVIDENCE_HISTORY_SIZE:
+            del COHORT_EVIDENCE_HISTORY[: len(COHORT_EVIDENCE_HISTORY) - COHORT_EVIDENCE_HISTORY_SIZE]
+        return event
+    except Exception:
+        logger.exception("COHORT_EVIDENCE_APPEND_FAILED")
+        return {}
+
+
+def persist_cohort_evidence_state(reason: str = ""):
+    payload = {
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "history": list(COHORT_EVIDENCE_HISTORY or []),
+    }
+    return _safe_json_write(COHORT_EVIDENCE_STATE_PATH, payload)
+
+
+def restore_cohort_evidence_state() -> dict:
+    payload = _safe_json_read(COHORT_EVIDENCE_STATE_PATH)
+    restored = {"path": COHORT_EVIDENCE_STATE_PATH, "loaded": False, "history_restored": 0, "backfilled_from_candidate_history": 0}
+    if payload:
+        try:
+            hist = payload.get("history") or []
+            if isinstance(hist, list) and hist:
+                COHORT_EVIDENCE_HISTORY.clear()
+                COHORT_EVIDENCE_HISTORY.extend(hist[-COHORT_EVIDENCE_HISTORY_SIZE:])
+                restored["history_restored"] = len(COHORT_EVIDENCE_HISTORY)
+                restored["loaded"] = True
+        except Exception as e:
+            restored["error"] = str(e)
+    if not restored.get("loaded") and CANDIDATE_HISTORY:
+        try:
+            COHORT_EVIDENCE_HISTORY.clear()
+            for entry in (CANDIDATE_HISTORY or [])[-COHORT_EVIDENCE_HISTORY_SIZE:]:
+                COHORT_EVIDENCE_HISTORY.append(_build_cohort_evidence_event(entry))
+            restored["history_restored"] = len(COHORT_EVIDENCE_HISTORY)
+            restored["backfilled_from_candidate_history"] = len(COHORT_EVIDENCE_HISTORY)
+            restored["loaded"] = bool(COHORT_EVIDENCE_HISTORY)
+        except Exception as e:
+            restored["backfill_error"] = str(e)
+    globals()["COHORT_EVIDENCE_STATE_RESTORE"] = restored
+    return restored
+
+
+def _cohort_history_entries_limited(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT) -> list[dict]:
+    lim = max(1, min(int(history_limit or PATCH51_MULTI_SCAN_DEFAULT), COHORT_EVIDENCE_HISTORY_SIZE))
+    hist = [dict(item or {}) for item in (COHORT_EVIDENCE_HISTORY or [])[-lim:]]
+    if hist:
+        return hist
+    out = []
+    for entry in _history_entries_limited(lim):
+        out.append(_build_cohort_evidence_event(entry))
+    return out
+
+
+def _build_cohort_persistence_snapshot(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT, min_hits: int = 1, limit: int = 15) -> dict:
+    entries = _cohort_history_entries_limited(history_limit)
+    min_hits = max(1, int(min_hits or 1))
+    limit = max(1, min(int(limit or 15), 50))
+    evidence = {}
+    for entry in entries:
+        ts = entry.get("ts_utc")
+        for cohort_key, score_weight in (("nearest_pass_candidates", 1), ("relaxed_first_pass_candidates", 4), ("alternate_first_pass_candidates", 5), ("alternate_market_gated_candidates", 3)):
+            for item in entry.get(cohort_key) or []:
+                sym = str((item or {}).get("symbol") or "").upper()
+                if not sym:
+                    continue
+                ev = evidence.setdefault(sym, {
+                    "symbol": sym,
+                    "nearest_pass_hits": 0,
+                    "relaxed_first_pass_hits": 0,
+                    "alternate_first_pass_hits": 0,
+                    "alternate_market_gated_hits": 0,
+                    "best_rank_score": None,
+                    "best_non_market_gap_score": None,
+                    "last_seen_utc": None,
+                })
+                if cohort_key == "nearest_pass_candidates":
+                    ev["nearest_pass_hits"] += 1
+                    gap = _safe_float((item or {}).get("non_market_gap_score"))
+                    best_gap = ev.get("best_non_market_gap_score")
+                    if gap is not None and (best_gap is None or gap < best_gap):
+                        ev["best_non_market_gap_score"] = gap
+                elif cohort_key == "relaxed_first_pass_candidates":
+                    ev["relaxed_first_pass_hits"] += 1
+                elif cohort_key == "alternate_first_pass_candidates":
+                    ev["alternate_first_pass_hits"] += 1
+                elif cohort_key == "alternate_market_gated_candidates":
+                    ev["alternate_market_gated_hits"] += 1
+                rank = _safe_float((item or {}).get("rank_score"))
+                best_rank = ev.get("best_rank_score")
+                if rank is not None and (best_rank is None or rank > best_rank):
+                    ev["best_rank_score"] = rank
+                if ts and (not ev.get("last_seen_utc") or str(ts) > str(ev.get("last_seen_utc"))):
+                    ev["last_seen_utc"] = ts
+    rows = []
+    for ev in evidence.values():
+        total_hits = int(ev.get("nearest_pass_hits") or 0) + int(ev.get("relaxed_first_pass_hits") or 0) + int(ev.get("alternate_first_pass_hits") or 0) + int(ev.get("alternate_market_gated_hits") or 0)
+        if total_hits < min_hits:
+            continue
+        persistence_score = int(ev.get("nearest_pass_hits") or 0) + int(ev.get("relaxed_first_pass_hits") or 0) * 4 + int(ev.get("alternate_first_pass_hits") or 0) * 5 + int(ev.get("alternate_market_gated_hits") or 0) * 3
+        row = dict(ev)
+        row["total_hits"] = total_hits
+        row["persistence_score"] = persistence_score
+        rows.append(row)
+    rows.sort(key=lambda r: (-int(r.get("persistence_score") or 0), -int(r.get("alternate_first_pass_hits") or 0), -int(r.get("alternate_market_gated_hits") or 0), -int(r.get("relaxed_first_pass_hits") or 0), float(r.get("best_non_market_gap_score") if r.get("best_non_market_gap_score") is not None else 999.0), -(float(r.get("best_rank_score") or 0.0)), r.get("symbol") or ""))
+    latest = entries[-1] if entries else {}
+    return {
+        "ok": True,
+        "history_limit": len(entries),
+        "min_hits": min_hits,
+        "current": latest,
+        "cohort_persistence": rows[:limit],
+    }
 
 
 def persist_regime_runtime_state(reason: str = ""):
@@ -3143,9 +3316,11 @@ def startup_restore_state() -> dict:
     scan_restore = restore_scan_runtime_state()
     regime_restore = restore_regime_runtime_state()
     paper_restore = restore_paper_lifecycle_state()
+    cohort_restore = restore_cohort_evidence_state()
     state["scan_state_restore"] = scan_restore
     state["regime_state_restore"] = regime_restore
     state["paper_lifecycle_state_restore"] = paper_restore
+    state["cohort_evidence_state_restore"] = cohort_restore
     state["release_state_restore"] = restore_release_state()
     STARTUP_STATE = state
     return state
@@ -5656,6 +5831,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'strategy_symbols': list(exposure.get('strategy_symbols') or []),
         'unmanaged_symbols': list(exposure.get('unmanaged_symbols') or []),
     }
+    try:
+        _append_cohort_evidence_event(CANDIDATE_HISTORY[-1] if CANDIDATE_HISTORY else {})
+        persist_cohort_evidence_state(reason="worker_scan_entries")
+    except Exception:
+        logger.exception("COHORT_EVIDENCE_PERSIST_FAILED")
     duration_ms = elapsed_ms_fn()
     set_last_scan_fn(skipped=False, reason='scan_completed', scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
     try:
@@ -8810,6 +8990,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/alternate_entry_shadow">alternate_entry_shadow</a>
     <a href="/diagnostics/model_scorecard">model_scorecard</a>
     <a href="/diagnostics/repeatability">repeatability</a>
+    <a href="/diagnostics/cohort_evidence">cohort_evidence</a>
     <a href="/diagnostics/actionable_watchlist">actionable_watchlist</a>
     <a href="/diagnostics/failure_decomp">failure_decomp</a>
     <a href="/diagnostics/entry_decomp">entry_decomp</a>
