@@ -4757,6 +4757,10 @@ THRESHOLD_LADDER_RETURN_20D_MIN_PCT = [
     4.0,
 ]
 
+PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT = getenv_float_any("PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT", default=max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, 4.0))
+PATCH50_HISTORY_DEFAULT = max(1, getenv_int_any("PATCH50_HISTORY_DEFAULT", default=10))
+PATCH50_NEAREST_PASS_TOP_N = max(1, getenv_int_any("PATCH50_NEAREST_PASS_TOP_N", default=3))
+
 
 def _dedupe_preserve_floats(values: list[float]) -> list[float]:
     seen = set()
@@ -5225,6 +5229,247 @@ def _failure_decomposition_snapshot(history_limit: int = 10) -> dict:
             "repeat_market_gate_only_symbols": dict(repeat_market_gate_only_symbols.most_common(10)),
             "repeat_first_pass_symbols": dict(repeat_first_pass_symbols.most_common(10)),
         },
+    }
+
+
+
+
+def _history_entries_limited(history_limit: int = PATCH50_HISTORY_DEFAULT) -> list[dict]:
+    lim = max(1, min(int(history_limit or PATCH50_HISTORY_DEFAULT), 50))
+    return [dict(item or {}) for item in (CANDIDATE_HISTORY or [])[-lim:]]
+
+
+def _build_breakout_relaxed_snapshot(summary: dict | None = None, breakout_max_distance_pct: float | None = None, limit: int = 10) -> dict:
+    summary = dict(summary or {})
+    rows = _canonical_candidate_rows(summary)
+    meta = _canonical_scan_meta(summary)
+    breakout_test = float(PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT if breakout_max_distance_pct is None else breakout_max_distance_pct)
+    evaluated = []
+    for item in rows:
+        row = dict(item or {})
+        evald = _evaluate_candidate_under_thresholds(row, breakout_max_distance_pct=breakout_test)
+        row.update(evald)
+        evaluated.append(row)
+    evaluated.sort(key=lambda x: float(x.get('rank_score') or 0.0), reverse=True)
+    first_pass = [r for r in evaluated if r.get('passes_non_market')]
+    market_gated = [r for r in evaluated if r.get('market_gated')]
+    live_ok = [r for r in evaluated if r.get('eligible')]
+    lim = max(1, min(int(limit or 10), 25))
+    return {
+        'ok': True,
+        'ts_utc': meta.get('ts_utc'),
+        'strategy_name': meta.get('strategy_name'),
+        'scan_reason': meta.get('scan_reason'),
+        'index_symbol': meta.get('index_symbol'),
+        'breakout_test_max_distance_pct': breakout_test,
+        'candidate_count': len(evaluated),
+        'first_pass_candidate_count': len(first_pass),
+        'first_pass_candidates': [dict(r) for r in first_pass[:lim]],
+        'market_gated_candidate_count': len(market_gated),
+        'market_gated_candidates': [dict(r) for r in market_gated[:lim]],
+        'live_eligible_count': len(live_ok),
+        'live_eligible_candidates': [dict(r) for r in live_ok[:lim]],
+    }
+
+
+def _symbol_rows(rows: list[dict]) -> list[str]:
+    out = []
+    for row in rows or []:
+        sym = str((row or {}).get('symbol') or '')
+        if sym:
+            out.append(sym)
+    return out
+
+
+def _build_model_scorecard(history_limit: int = PATCH50_HISTORY_DEFAULT, breakout_max_distance_pct: float | None = None) -> dict:
+    entries = _history_entries_limited(history_limit)
+    breakout_test = float(PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT if breakout_max_distance_pct is None else breakout_max_distance_pct)
+    scans = []
+    primary_first_pass_symbols = Counter()
+    primary_market_gated_symbols = Counter()
+    relaxed_first_pass_symbols = Counter()
+    relaxed_market_gated_symbols = Counter()
+    alt_first_pass_symbols = Counter()
+    alt_market_gated_symbols = Counter()
+    repeat_cohort = Counter()
+    totals = {
+        'primary_first_pass_total': 0,
+        'primary_market_gated_total': 0,
+        'primary_live_eligible_total': 0,
+        'relaxed_first_pass_total': 0,
+        'relaxed_market_gated_total': 0,
+        'relaxed_live_eligible_total': 0,
+        'alternate_first_pass_total': 0,
+        'alternate_market_gated_total': 0,
+        'alternate_live_eligible_total': 0,
+    }
+    for entry in entries:
+        decomp = _build_failure_decomposition(entry)
+        relaxed = _build_breakout_relaxed_snapshot(entry, breakout_max_distance_pct=breakout_test, limit=25)
+        alt = _build_alternate_entry_shadow(entry, limit=25)
+        p_first = _symbol_rows(decomp.get('first_pass_candidates') or [])
+        p_gate = _symbol_rows(decomp.get('market_gated_candidates') or [])
+        r_first = _symbol_rows(relaxed.get('first_pass_candidates') or [])
+        r_gate = _symbol_rows(relaxed.get('market_gated_candidates') or [])
+        a_first = _symbol_rows(alt.get('first_pass_candidates') or [])
+        a_gate = _symbol_rows(alt.get('market_gated_candidates') or [])
+        for sym in p_first:
+            primary_first_pass_symbols[sym] += 1
+        for sym in p_gate:
+            primary_market_gated_symbols[sym] += 1
+        for sym in r_first:
+            relaxed_first_pass_symbols[sym] += 1
+        for sym in r_gate:
+            relaxed_market_gated_symbols[sym] += 1
+        for sym in a_first:
+            alt_first_pass_symbols[sym] += 1
+        for sym in a_gate:
+            alt_market_gated_symbols[sym] += 1
+        cohort = set(r_first) | set(r_gate) | set(a_first) | set(a_gate)
+        for sym in cohort:
+            repeat_cohort[sym] += 1
+        totals['primary_first_pass_total'] += len(p_first)
+        totals['primary_market_gated_total'] += len(p_gate)
+        totals['primary_live_eligible_total'] += int(decomp.get('eligible_total') or 0)
+        totals['relaxed_first_pass_total'] += int(relaxed.get('first_pass_candidate_count') or 0)
+        totals['relaxed_market_gated_total'] += int(relaxed.get('market_gated_candidate_count') or 0)
+        totals['relaxed_live_eligible_total'] += int(relaxed.get('live_eligible_count') or 0)
+        totals['alternate_first_pass_total'] += int(alt.get('first_pass_candidate_count') or 0)
+        totals['alternate_market_gated_total'] += int(alt.get('market_gated_candidate_count') or 0)
+        totals['alternate_live_eligible_total'] += int(alt.get('live_eligible_count') or 0)
+        scans.append({
+            'ts_utc': entry.get('ts_utc'),
+            'scan_reason': entry.get('scan_reason'),
+            'primary_first_pass_count': len(p_first),
+            'primary_market_gated_count': len(p_gate),
+            'primary_live_eligible_count': int(decomp.get('eligible_total') or 0),
+            'relaxed_first_pass_count': int(relaxed.get('first_pass_candidate_count') or 0),
+            'relaxed_market_gated_count': int(relaxed.get('market_gated_candidate_count') or 0),
+            'relaxed_live_eligible_count': int(relaxed.get('live_eligible_count') or 0),
+            'alternate_first_pass_count': int(alt.get('first_pass_candidate_count') or 0),
+            'alternate_market_gated_count': int(alt.get('market_gated_candidate_count') or 0),
+            'alternate_live_eligible_count': int(alt.get('live_eligible_count') or 0),
+            'relaxed_first_pass_symbols': r_first[:10],
+            'alternate_market_gated_symbols': a_gate[:10],
+        })
+    return {
+        'ok': True,
+        'history_limit': len(entries),
+        'breakout_test_max_distance_pct': breakout_test,
+        'totals': totals,
+        'symbol_frequency': {
+            'primary_first_pass_symbols': dict(primary_first_pass_symbols.most_common(10)),
+            'primary_market_gated_symbols': dict(primary_market_gated_symbols.most_common(10)),
+            'relaxed_first_pass_symbols': dict(relaxed_first_pass_symbols.most_common(10)),
+            'relaxed_market_gated_symbols': dict(relaxed_market_gated_symbols.most_common(10)),
+            'alternate_first_pass_symbols': dict(alt_first_pass_symbols.most_common(10)),
+            'alternate_market_gated_symbols': dict(alt_market_gated_symbols.most_common(10)),
+            'repeat_candidate_cohort': dict(repeat_cohort.most_common(10)),
+        },
+        'scans': scans,
+    }
+
+
+def _build_repeatability_snapshot(history_limit: int = PATCH50_HISTORY_DEFAULT, breakout_max_distance_pct: float | None = None, nearest_limit: int = PATCH50_NEAREST_PASS_TOP_N) -> dict:
+    entries = _history_entries_limited(history_limit)
+    breakout_test = float(PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT if breakout_max_distance_pct is None else breakout_max_distance_pct)
+    nearest_n = max(1, min(int(nearest_limit or PATCH50_NEAREST_PASS_TOP_N), 10))
+    nearest_counts = Counter()
+    relaxed_counts = Counter()
+    alt_counts = Counter()
+    evidence = {}
+    for entry in entries:
+        nearest = _build_nearest_pass(entry, limit=nearest_n)
+        relaxed = _build_breakout_relaxed_snapshot(entry, breakout_max_distance_pct=breakout_test, limit=25)
+        alt = _build_alternate_entry_shadow(entry, limit=25)
+        for item in nearest.get('nearest_pass_candidates') or []:
+            sym = str((item or {}).get('symbol') or '')
+            if not sym:
+                continue
+            nearest_counts[sym] += 1
+            evidence.setdefault(sym, {'nearest_pass': 0, 'relaxed_first_pass': 0, 'alternate_market_gated': 0, 'best_non_market_gap_score': None})
+            evidence[sym]['nearest_pass'] += 1
+            score = _safe_float((item or {}).get('non_market_gap_score'))
+            best = evidence[sym].get('best_non_market_gap_score')
+            if score is not None and (best is None or score < best):
+                evidence[sym]['best_non_market_gap_score'] = score
+        for item in relaxed.get('first_pass_candidates') or []:
+            sym = str((item or {}).get('symbol') or '')
+            if not sym:
+                continue
+            relaxed_counts[sym] += 1
+            evidence.setdefault(sym, {'nearest_pass': 0, 'relaxed_first_pass': 0, 'alternate_market_gated': 0, 'best_non_market_gap_score': None})
+            evidence[sym]['relaxed_first_pass'] += 1
+        for item in alt.get('market_gated_candidates') or []:
+            sym = str((item or {}).get('symbol') or '')
+            if not sym:
+                continue
+            alt_counts[sym] += 1
+            evidence.setdefault(sym, {'nearest_pass': 0, 'relaxed_first_pass': 0, 'alternate_market_gated': 0, 'best_non_market_gap_score': None})
+            evidence[sym]['alternate_market_gated'] += 1
+    rows = []
+    for sym in set(nearest_counts) | set(relaxed_counts) | set(alt_counts):
+        ev = dict(evidence.get(sym) or {})
+        composite = int(ev.get('nearest_pass') or 0) + int(ev.get('relaxed_first_pass') or 0) * 4 + int(ev.get('alternate_market_gated') or 0) * 3
+        rows.append({
+            'symbol': sym,
+            'nearest_pass_hits': int(ev.get('nearest_pass') or 0),
+            'relaxed_first_pass_hits': int(ev.get('relaxed_first_pass') or 0),
+            'alternate_market_gated_hits': int(ev.get('alternate_market_gated') or 0),
+            'best_non_market_gap_score': ev.get('best_non_market_gap_score'),
+            'composite_score': composite,
+        })
+    rows.sort(key=lambda x: (-int(x.get('composite_score') or 0), float(x.get('best_non_market_gap_score') if x.get('best_non_market_gap_score') is not None else 999.0), x.get('symbol') or ''))
+    return {
+        'ok': True,
+        'history_limit': len(entries),
+        'breakout_test_max_distance_pct': breakout_test,
+        'nearest_pass_top_n': nearest_n,
+        'repeatability_candidates': rows[:10],
+    }
+
+
+def _build_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAULT, breakout_max_distance_pct: float | None = None, limit: int = 10) -> dict:
+    entries = _history_entries_limited(history_limit)
+    breakout_test = float(PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT if breakout_max_distance_pct is None else breakout_max_distance_pct)
+    lim = max(1, min(int(limit or 10), 25))
+    scores = {}
+    for entry in entries:
+        nearest = _build_nearest_pass(entry, limit=PATCH50_NEAREST_PASS_TOP_N)
+        relaxed = _build_breakout_relaxed_snapshot(entry, breakout_max_distance_pct=breakout_test, limit=25)
+        alt = _build_alternate_entry_shadow(entry, limit=25)
+        for idx, item in enumerate(nearest.get('nearest_pass_candidates') or []):
+            sym = str((item or {}).get('symbol') or '')
+            if not sym:
+                continue
+            row = scores.setdefault(sym, {'symbol': sym, 'score': 0, 'nearest_hits': 0, 'relaxed_hits': 0, 'alt_market_gated_hits': 0, 'best_non_market_gap_score': None})
+            row['score'] += max(1, PATCH50_NEAREST_PASS_TOP_N - idx)
+            row['nearest_hits'] += 1
+            score = _safe_float((item or {}).get('non_market_gap_score'))
+            best = row.get('best_non_market_gap_score')
+            if score is not None and (best is None or score < best):
+                row['best_non_market_gap_score'] = score
+        for item in relaxed.get('first_pass_candidates') or []:
+            sym = str((item or {}).get('symbol') or '')
+            if not sym:
+                continue
+            row = scores.setdefault(sym, {'symbol': sym, 'score': 0, 'nearest_hits': 0, 'relaxed_hits': 0, 'alt_market_gated_hits': 0, 'best_non_market_gap_score': None})
+            row['score'] += 4
+            row['relaxed_hits'] += 1
+        for item in alt.get('market_gated_candidates') or []:
+            sym = str((item or {}).get('symbol') or '')
+            if not sym:
+                continue
+            row = scores.setdefault(sym, {'symbol': sym, 'score': 0, 'nearest_hits': 0, 'relaxed_hits': 0, 'alt_market_gated_hits': 0, 'best_non_market_gap_score': None})
+            row['score'] += 5
+            row['alt_market_gated_hits'] += 1
+    rows = list(scores.values())
+    rows.sort(key=lambda x: (-int(x.get('score') or 0), float(x.get('best_non_market_gap_score') if x.get('best_non_market_gap_score') is not None else 999.0), x.get('symbol') or ''))
+    return {
+        'ok': True,
+        'history_limit': len(entries),
+        'breakout_test_max_distance_pct': breakout_test,
+        'watchlist': rows[:lim],
     }
 
 
@@ -8563,6 +8808,9 @@ def dashboard(request: Request):
     <a href="/diagnostics/threshold_ladder">threshold_ladder</a>
     <a href="/diagnostics/nearest_pass">nearest_pass</a>
     <a href="/diagnostics/alternate_entry_shadow">alternate_entry_shadow</a>
+    <a href="/diagnostics/model_scorecard">model_scorecard</a>
+    <a href="/diagnostics/repeatability">repeatability</a>
+    <a href="/diagnostics/actionable_watchlist">actionable_watchlist</a>
     <a href="/diagnostics/failure_decomp">failure_decomp</a>
     <a href="/diagnostics/entry_decomp">entry_decomp</a>
   </div>
@@ -9070,6 +9318,27 @@ def diagnostics_alternate_entry_shadow(limit: int = 10):
     if CANDIDATE_HISTORY:
         latest_hist = dict((CANDIDATE_HISTORY or [])[-1])
     return _build_alternate_entry_shadow(latest_hist, limit=limit)
+
+
+@app.get("/diagnostics/model_scorecard")
+def diagnostics_model_scorecard(history_limit: int = PATCH50_HISTORY_DEFAULT, breakout_max_distance_pct: float | None = None):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    return _build_model_scorecard(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct)
+
+
+@app.get("/diagnostics/repeatability")
+def diagnostics_repeatability(history_limit: int = PATCH50_HISTORY_DEFAULT, breakout_max_distance_pct: float | None = None, nearest_limit: int = PATCH50_NEAREST_PASS_TOP_N):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    return _build_repeatability_snapshot(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct, nearest_limit=nearest_limit)
+
+
+@app.get("/diagnostics/actionable_watchlist")
+def diagnostics_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAULT, breakout_max_distance_pct: float | None = None, limit: int = 10):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    return _build_actionable_watchlist(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct, limit=limit)
 
 
 @app.post("/worker/scan_entries")
