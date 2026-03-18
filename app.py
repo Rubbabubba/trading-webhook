@@ -4650,6 +4650,146 @@ def _classify_shadow_candidate(candidate: dict | None) -> dict:
     }
 
 
+def _latest_candidate_history_entry() -> dict:
+    latest = dict((CANDIDATE_HISTORY or [])[-1]) if CANDIDATE_HISTORY else {}
+    return latest if isinstance(latest, dict) else {}
+
+
+def _failure_decomp_near_miss(item: dict | None) -> bool:
+    item = dict(item or {})
+    reasons = [str(r) for r in (item.get("rejection_reasons") or []) if str(r)]
+    if not reasons:
+        return False
+    market_gate = _shadow_market_gate_reasons()
+    matched = [r for r in reasons if r in market_gate]
+    non_market = [r for r in reasons if r not in market_gate]
+    if len(non_market) == 1:
+        reason = non_market[0]
+        if reason == "too_far_below_breakout":
+            distance = _safe_float(item.get("breakout_distance_pct"))
+            return distance is not None and distance >= -1.5
+        if reason == "close_not_near_high":
+            pct = _safe_float(item.get("close_to_high_pct"))
+            return pct is not None and pct >= 98.5
+        if reason in {"trend_filter_failed", "return_20d_below_min"} and matched:
+            return True
+    return False
+
+
+def _build_failure_decomposition(summary: dict | None = None) -> dict:
+    summary = dict(summary or {})
+    top_candidates = [dict(c or {}) for c in (summary.get("top_candidates") or []) if isinstance(c, dict)]
+    rejection_counts = Counter()
+    single_failure_counts = Counter()
+    pair_failure_counts = Counter()
+    near_miss_candidates = []
+    market_gate_only_candidates = []
+    soft_filter_only_candidates = []
+    for item in top_candidates:
+        reasons = [str(r) for r in (item.get("rejection_reasons") or []) if str(r)]
+        market_reasons = [r for r in reasons if r in _shadow_market_gate_reasons()]
+        non_market_reasons = [r for r in reasons if r not in _shadow_market_gate_reasons()]
+        for reason in reasons:
+            rejection_counts[reason] += 1
+        if len(reasons) == 1:
+            single_failure_counts[reasons[0]] += 1
+        unique_reasons = sorted(set(reasons))
+        for i in range(len(unique_reasons)):
+            for j in range(i + 1, len(unique_reasons)):
+                pair_failure_counts[f"{unique_reasons[i]} + {unique_reasons[j]}"] += 1
+        if market_reasons and not non_market_reasons:
+            market_gate_only_candidates.append({
+                "symbol": item.get("symbol"),
+                "rank_score": item.get("rank_score"),
+                "reasons": list(reasons),
+            })
+        if len(non_market_reasons) == 1 and not market_reasons:
+            soft_filter_only_candidates.append({
+                "symbol": item.get("symbol"),
+                "rank_score": item.get("rank_score"),
+                "reasons": list(reasons),
+            })
+        if _failure_decomp_near_miss(item):
+            near_miss_candidates.append({
+                "symbol": item.get("symbol"),
+                "rank_score": item.get("rank_score"),
+                "reasons": list(reasons),
+                "breakout_distance_pct": item.get("breakout_distance_pct"),
+                "close_to_high_pct": item.get("close_to_high_pct"),
+            })
+
+    def _sort_rows(rows: list[dict]) -> list[dict]:
+        return sorted(rows, key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)
+
+    return {
+        "ok": True,
+        "ts_utc": summary.get("ts_utc"),
+        "strategy_name": summary.get("strategy_name"),
+        "scan_reason": summary.get("scan_reason"),
+        "index_symbol": summary.get("index_symbol"),
+        "index_alignment_ok": summary.get("index_alignment_ok"),
+        "global_block_reasons": list(summary.get("global_block_reasons") or []),
+        "candidates_total": int(summary.get("candidates_total") or len(top_candidates)),
+        "eligible_total": int(summary.get("eligible_total") or 0),
+        "selected_total": int(summary.get("selected_total") or 0),
+        "rejection_counts": dict(rejection_counts.most_common()),
+        "single_failure_counts": dict(single_failure_counts.most_common()),
+        "pair_failure_counts": dict(pair_failure_counts.most_common(12)),
+        "near_miss_count": len(near_miss_candidates),
+        "near_miss_candidates": _sort_rows(near_miss_candidates)[:10],
+        "market_gate_only_count": len(market_gate_only_candidates),
+        "market_gate_only_candidates": _sort_rows(market_gate_only_candidates)[:10],
+        "soft_filter_only_count": len(soft_filter_only_candidates),
+        "soft_filter_only_candidates": _sort_rows(soft_filter_only_candidates)[:10],
+    }
+
+
+def _failure_decomposition_snapshot(history_limit: int = 10) -> dict:
+    latest_hist = _latest_candidate_history_entry()
+    history = [dict(item or {}) for item in (CANDIDATE_HISTORY or [])[-max(1, int(history_limit or 10)):]]
+    aggregate_rejection_counts = Counter()
+    aggregate_single_failure_counts = Counter()
+    aggregate_pair_failure_counts = Counter()
+    per_scan_top_blocker = []
+    repeat_near_miss_symbols = Counter()
+    repeat_market_gate_only_symbols = Counter()
+
+    for entry in history:
+        decomp = _build_failure_decomposition(entry)
+        for k, v in (decomp.get("rejection_counts") or {}).items():
+            aggregate_rejection_counts[str(k)] += int(v)
+        for k, v in (decomp.get("single_failure_counts") or {}).items():
+            aggregate_single_failure_counts[str(k)] += int(v)
+        for k, v in (decomp.get("pair_failure_counts") or {}).items():
+            aggregate_pair_failure_counts[str(k)] += int(v)
+        rc = decomp.get("rejection_counts") or {}
+        if rc:
+            top_reason = max(rc.items(), key=lambda kv: int(kv[1]))[0]
+            per_scan_top_blocker.append({
+                "ts_utc": entry.get("ts_utc"),
+                "top_reason": top_reason,
+                "count": int((rc or {}).get(top_reason) or 0),
+            })
+        for item in decomp.get("near_miss_candidates") or []:
+            repeat_near_miss_symbols[str(item.get("symbol") or "")] += 1
+        for item in decomp.get("market_gate_only_candidates") or []:
+            repeat_market_gate_only_symbols[str(item.get("symbol") or "")] += 1
+
+    return {
+        "ok": True,
+        "current": _build_failure_decomposition(latest_hist),
+        "history": {
+            "scan_count_considered": len(history),
+            "aggregate_rejection_counts": dict(aggregate_rejection_counts.most_common()),
+            "aggregate_single_failure_counts": dict(aggregate_single_failure_counts.most_common()),
+            "aggregate_pair_failure_counts": dict(aggregate_pair_failure_counts.most_common(15)),
+            "per_scan_top_blocker": per_scan_top_blocker,
+            "repeat_near_miss_symbols": dict(repeat_near_miss_symbols.most_common(10)),
+            "repeat_market_gate_only_symbols": dict(repeat_market_gate_only_symbols.most_common(10)),
+        },
+    }
+
+
 def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None) -> dict:
     reconcile_actions = reconcile_actions or []
     syms = universe_symbols()
@@ -7856,6 +7996,15 @@ def dashboard(request: Request):
     shadow_alignment_candidate_total = int(latest_candidate_summary.get('shadow_alignment_candidates_total') or 0)
     shadow_relaxed_text = 'Would become selected only if all market-gate blockers were ignored.' if shadow_selected_symbols else 'No current market-gate-only candidates would be selected.'
     shadow_alignment_text = 'Would become selected if index alignment were softened only.' if shadow_alignment_selected_symbols else 'No index-alignment-only candidates would be selected.'
+    failure_decomp = _failure_decomposition_snapshot()
+    failure_current = dict((failure_decomp.get('current') or {}))
+    failure_top_rejections = failure_current.get('rejection_counts') or {}
+    failure_top_singles = failure_current.get('single_failure_counts') or {}
+    failure_top_pairs = failure_current.get('pair_failure_counts') or {}
+    failure_near_miss = list(failure_current.get('near_miss_candidates') or [])
+    failure_market_only = list(failure_current.get('market_gate_only_candidates') or [])
+    failure_soft_only = list(failure_current.get('soft_filter_only_candidates') or [])
+
 
     candidate_rows = ''.join(
         '<tr>'
@@ -7876,6 +8025,23 @@ def dashboard(request: Request):
     )
     if not rejection_rows:
         rejection_rows = '<tr><td colspan="2" class="muted">No rejection data available.</td></tr>'
+
+    def _dashboard_reason_lines(mapping: dict | None, limit: int = 6) -> str:
+        items = list((mapping or {}).items())[:limit]
+        if not items:
+            return 'none'
+        return chr(10).join(f'{k}: {v}' for k, v in items)
+
+    def _dashboard_symbol_reason_lines(items: list[dict] | None, limit: int = 5) -> str:
+        rows = list(items or [])[:limit]
+        if not rows:
+            return 'none'
+        out = []
+        for row in rows:
+            sym = str((row or {}).get('symbol') or '—')
+            reasons = ', '.join([str(r) for r in ((row or {}).get('reasons') or [])]) or 'none'
+            out.append(f'{sym} — {reasons}')
+        return chr(10).join(out)
 
     freshness_rows = ''.join(
         '<tr>'
@@ -7951,6 +8117,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/scanner">scanner</a>
     <a href="/diagnostics/continuity">continuity</a>
     <a href="/diagnostics/readiness">readiness</a>
+    <a href="/diagnostics/failure_decomp">failure_decomp</a>
   </div>
 
   {('<div class="section"><div class="card"><h2>Operator Warnings</h2>' + _dashboard_warning_badges(dashboard_warnings) + '</div></div>') if dashboard_warnings else ''}
@@ -8141,6 +8308,35 @@ def dashboard(request: Request):
       ])}</table>
       <h3 style="margin-top:14px;">Assessment</h3>
       <div class="muted">{html.escape(shadow_alignment_text)}</div>
+    </div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Failure Decomposition</h2>
+      <table>{_dashboard_rows([
+        ('candidates_total', failure_current.get('candidates_total')),
+        ('eligible_total', failure_current.get('eligible_total')),
+        ('selected_total', failure_current.get('selected_total')),
+        ('market_gate_only_count', failure_current.get('market_gate_only_count')),
+        ('soft_filter_only_count', failure_current.get('soft_filter_only_count')),
+        ('near_miss_count', failure_current.get('near_miss_count')),
+      ])}</table>
+      <h3 style="margin-top:14px;">Top rejection reasons</h3>
+      <pre>{html.escape(_dashboard_reason_lines(failure_top_rejections))}</pre>
+      <h3 style="margin-top:14px;">Top single failures</h3>
+      <pre>{html.escape(_dashboard_reason_lines(failure_top_singles))}</pre>
+      <h3 style="margin-top:14px;">Top failure pairs</h3>
+      <pre>{html.escape(_dashboard_reason_lines(failure_top_pairs))}</pre>
+    </div>
+    <div class="card">
+      <h2>Near Miss / Single Gate</h2>
+      <h3 style="margin-top:0;">Market-gate only</h3>
+      <pre>{html.escape(_dashboard_symbol_reason_lines(failure_market_only))}</pre>
+      <h3 style="margin-top:14px;">Soft-filter only</h3>
+      <pre>{html.escape(_dashboard_symbol_reason_lines(failure_soft_only))}</pre>
+      <h3 style="margin-top:14px;">Near miss</h3>
+      <pre>{html.escape(_dashboard_symbol_reason_lines(failure_near_miss))}</pre>
     </div>
   </div>
 
@@ -8358,6 +8554,14 @@ def diagnostics_candidates(limit: int = 25):
         'shadow_alignment_selected': list(latest_hist.get('shadow_alignment_selected') or []),
         'history': hist,
     }
+
+
+@app.get("/diagnostics/failure_decomp")
+def diagnostics_failure_decomp(history_limit: int = 10):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    hist_lim = max(1, min(int(history_limit or 10), 50))
+    return _failure_decomposition_snapshot(history_limit=hist_lim)
 
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
