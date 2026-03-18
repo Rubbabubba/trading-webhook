@@ -4655,6 +4655,61 @@ def _latest_candidate_history_entry() -> dict:
     return latest if isinstance(latest, dict) else {}
 
 
+def _canonical_candidate_rows(payload: dict | None) -> list[dict]:
+    payload = dict(payload or {})
+    for key in ("candidates", "items", "top_candidates"):
+        rows = payload.get(key)
+        if isinstance(rows, list) and rows:
+            return [dict(r or {}) for r in rows if isinstance(r, dict)]
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        rows = summary.get("top_candidates") or summary.get("candidates") or summary.get("items")
+        if isinstance(rows, list) and rows:
+            return [dict(r or {}) for r in rows if isinstance(r, dict)]
+    last_scan_summary = payload.get("last_scan_summary")
+    if isinstance(last_scan_summary, dict):
+        rows = last_scan_summary.get("top_candidates") or last_scan_summary.get("candidates") or last_scan_summary.get("items")
+        if isinstance(rows, list) and rows:
+            return [dict(r or {}) for r in rows if isinstance(r, dict)]
+    return []
+
+
+def _canonical_scan_meta(payload: dict | None) -> dict:
+    payload = dict(payload or {})
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    last_scan_summary = payload.get("last_scan_summary") if isinstance(payload.get("last_scan_summary"), dict) else {}
+
+    def pick(*keys, default=None):
+        for src in (payload, summary, last_scan_summary):
+            for key in keys:
+                if key in src and src.get(key) is not None:
+                    return src.get(key)
+        return default
+
+    return {
+        "ts_utc": pick("ts_utc"),
+        "strategy_name": pick("strategy_name"),
+        "scan_reason": pick("scan_reason"),
+        "index_symbol": pick("index_symbol"),
+        "index_alignment_ok": pick("index_alignment_ok"),
+        "global_block_reasons": list(pick("global_block_reasons", default=[]) or []),
+        "candidates_total": int(pick("candidates_total", default=0) or 0),
+        "eligible_total": int(pick("eligible_total", default=0) or 0),
+        "selected_total": int(pick("selected_total", default=0) or 0),
+    }
+
+
+def _failure_reason_bucket(reason: str) -> str:
+    reason = str(reason or "")
+    if reason in {"weak_tape", "index_alignment_failed", "regime_not_favorable"}:
+        return "market_structure"
+    if reason in {"too_far_below_breakout", "close_not_near_high"}:
+        return "entry_geometry"
+    if reason in {"trend_filter_failed", "return_20d_below_min"}:
+        return "quality_trend"
+    return "other"
+
+
 def _failure_decomp_near_miss(item: dict | None) -> bool:
     item = dict(item or {})
     reasons = [str(r) for r in (item.get("rejection_reasons") or []) if str(r)]
@@ -4678,30 +4733,54 @@ def _failure_decomp_near_miss(item: dict | None) -> bool:
 
 def _build_failure_decomposition(summary: dict | None = None) -> dict:
     summary = dict(summary or {})
-    top_candidates = [dict(c or {}) for c in (summary.get("top_candidates") or []) if isinstance(c, dict)]
+    candidate_rows = _canonical_candidate_rows(summary)
+    meta = _canonical_scan_meta(summary)
     rejection_counts = Counter()
     single_failure_counts = Counter()
     pair_failure_counts = Counter()
+    bucket_counts = {
+        "market_structure": Counter(),
+        "entry_geometry": Counter(),
+        "quality_trend": Counter(),
+        "other": Counter(),
+    }
     near_miss_candidates = []
     market_gate_only_candidates = []
     soft_filter_only_candidates = []
-    for item in top_candidates:
+    first_pass_candidates = []
+    market_gated_candidates = []
+    for item in candidate_rows:
         reasons = [str(r) for r in (item.get("rejection_reasons") or []) if str(r)]
         market_reasons = [r for r in reasons if r in _shadow_market_gate_reasons()]
         non_market_reasons = [r for r in reasons if r not in _shadow_market_gate_reasons()]
         for reason in reasons:
             rejection_counts[reason] += 1
+            bucket_counts[_failure_reason_bucket(reason)][reason] += 1
         if len(reasons) == 1:
             single_failure_counts[reasons[0]] += 1
         unique_reasons = sorted(set(reasons))
         for i in range(len(unique_reasons)):
             for j in range(i + 1, len(unique_reasons)):
                 pair_failure_counts[f"{unique_reasons[i]} + {unique_reasons[j]}"] += 1
+        if not non_market_reasons:
+            first_pass_candidates.append({
+                "symbol": item.get("symbol"),
+                "rank_score": item.get("rank_score"),
+                "reasons": list(reasons),
+                "market_reasons": list(market_reasons),
+            })
         if market_reasons and not non_market_reasons:
             market_gate_only_candidates.append({
                 "symbol": item.get("symbol"),
                 "rank_score": item.get("rank_score"),
                 "reasons": list(reasons),
+                "market_reasons": list(market_reasons),
+            })
+            market_gated_candidates.append({
+                "symbol": item.get("symbol"),
+                "rank_score": item.get("rank_score"),
+                "reasons": list(reasons),
+                "market_reasons": list(market_reasons),
             })
         if len(non_market_reasons) == 1 and not market_reasons:
             soft_filter_only_candidates.append({
@@ -4723,24 +4802,32 @@ def _build_failure_decomposition(summary: dict | None = None) -> dict:
 
     return {
         "ok": True,
-        "ts_utc": summary.get("ts_utc"),
-        "strategy_name": summary.get("strategy_name"),
-        "scan_reason": summary.get("scan_reason"),
-        "index_symbol": summary.get("index_symbol"),
-        "index_alignment_ok": summary.get("index_alignment_ok"),
-        "global_block_reasons": list(summary.get("global_block_reasons") or []),
-        "candidates_total": int(summary.get("candidates_total") or len(top_candidates)),
-        "eligible_total": int(summary.get("eligible_total") or 0),
-        "selected_total": int(summary.get("selected_total") or 0),
+        "ts_utc": meta.get("ts_utc"),
+        "strategy_name": meta.get("strategy_name"),
+        "scan_reason": meta.get("scan_reason"),
+        "index_symbol": meta.get("index_symbol"),
+        "index_alignment_ok": meta.get("index_alignment_ok"),
+        "global_block_reasons": list(meta.get("global_block_reasons") or []),
+        "candidates_total": int(meta.get("candidates_total") or len(candidate_rows)),
+        "eligible_total": int(meta.get("eligible_total") or 0),
+        "selected_total": int(meta.get("selected_total") or 0),
         "rejection_counts": dict(rejection_counts.most_common()),
         "single_failure_counts": dict(single_failure_counts.most_common()),
         "pair_failure_counts": dict(pair_failure_counts.most_common(12)),
+        "market_structure_failure_counts": dict(bucket_counts["market_structure"].most_common()),
+        "entry_geometry_failure_counts": dict(bucket_counts["entry_geometry"].most_common()),
+        "quality_trend_failure_counts": dict(bucket_counts["quality_trend"].most_common()),
+        "other_failure_counts": dict(bucket_counts["other"].most_common()),
         "near_miss_count": len(near_miss_candidates),
         "near_miss_candidates": _sort_rows(near_miss_candidates)[:10],
         "market_gate_only_count": len(market_gate_only_candidates),
         "market_gate_only_candidates": _sort_rows(market_gate_only_candidates)[:10],
         "soft_filter_only_count": len(soft_filter_only_candidates),
         "soft_filter_only_candidates": _sort_rows(soft_filter_only_candidates)[:10],
+        "first_pass_candidate_count": len(first_pass_candidates),
+        "first_pass_candidates": _sort_rows(first_pass_candidates)[:10],
+        "market_gated_candidate_count": len(market_gated_candidates),
+        "market_gated_candidates": _sort_rows(market_gated_candidates)[:10],
     }
 
 
@@ -4750,9 +4837,13 @@ def _failure_decomposition_snapshot(history_limit: int = 10) -> dict:
     aggregate_rejection_counts = Counter()
     aggregate_single_failure_counts = Counter()
     aggregate_pair_failure_counts = Counter()
+    aggregate_market_structure_counts = Counter()
+    aggregate_entry_geometry_counts = Counter()
+    aggregate_quality_trend_counts = Counter()
     per_scan_top_blocker = []
     repeat_near_miss_symbols = Counter()
     repeat_market_gate_only_symbols = Counter()
+    repeat_first_pass_symbols = Counter()
 
     for entry in history:
         decomp = _build_failure_decomposition(entry)
@@ -4762,6 +4853,12 @@ def _failure_decomposition_snapshot(history_limit: int = 10) -> dict:
             aggregate_single_failure_counts[str(k)] += int(v)
         for k, v in (decomp.get("pair_failure_counts") or {}).items():
             aggregate_pair_failure_counts[str(k)] += int(v)
+        for k, v in (decomp.get("market_structure_failure_counts") or {}).items():
+            aggregate_market_structure_counts[str(k)] += int(v)
+        for k, v in (decomp.get("entry_geometry_failure_counts") or {}).items():
+            aggregate_entry_geometry_counts[str(k)] += int(v)
+        for k, v in (decomp.get("quality_trend_failure_counts") or {}).items():
+            aggregate_quality_trend_counts[str(k)] += int(v)
         rc = decomp.get("rejection_counts") or {}
         if rc:
             top_reason = max(rc.items(), key=lambda kv: int(kv[1]))[0]
@@ -4774,6 +4871,8 @@ def _failure_decomposition_snapshot(history_limit: int = 10) -> dict:
             repeat_near_miss_symbols[str(item.get("symbol") or "")] += 1
         for item in decomp.get("market_gate_only_candidates") or []:
             repeat_market_gate_only_symbols[str(item.get("symbol") or "")] += 1
+        for item in decomp.get("first_pass_candidates") or []:
+            repeat_first_pass_symbols[str(item.get("symbol") or "")] += 1
 
     return {
         "ok": True,
@@ -4783,9 +4882,13 @@ def _failure_decomposition_snapshot(history_limit: int = 10) -> dict:
             "aggregate_rejection_counts": dict(aggregate_rejection_counts.most_common()),
             "aggregate_single_failure_counts": dict(aggregate_single_failure_counts.most_common()),
             "aggregate_pair_failure_counts": dict(aggregate_pair_failure_counts.most_common(15)),
+            "aggregate_market_structure_counts": dict(aggregate_market_structure_counts.most_common()),
+            "aggregate_entry_geometry_counts": dict(aggregate_entry_geometry_counts.most_common()),
+            "aggregate_quality_trend_counts": dict(aggregate_quality_trend_counts.most_common()),
             "per_scan_top_blocker": per_scan_top_blocker,
             "repeat_near_miss_symbols": dict(repeat_near_miss_symbols.most_common(10)),
             "repeat_market_gate_only_symbols": dict(repeat_market_gate_only_symbols.most_common(10)),
+            "repeat_first_pass_symbols": dict(repeat_first_pass_symbols.most_common(10)),
         },
     }
 
@@ -8001,9 +8104,14 @@ def dashboard(request: Request):
     failure_top_rejections = failure_current.get('rejection_counts') or {}
     failure_top_singles = failure_current.get('single_failure_counts') or {}
     failure_top_pairs = failure_current.get('pair_failure_counts') or {}
+    failure_market_structure = failure_current.get('market_structure_failure_counts') or {}
+    failure_entry_geometry = failure_current.get('entry_geometry_failure_counts') or {}
+    failure_quality_trend = failure_current.get('quality_trend_failure_counts') or {}
     failure_near_miss = list(failure_current.get('near_miss_candidates') or [])
     failure_market_only = list(failure_current.get('market_gate_only_candidates') or [])
     failure_soft_only = list(failure_current.get('soft_filter_only_candidates') or [])
+    failure_first_pass = list(failure_current.get('first_pass_candidates') or [])
+    failure_market_gated = list(failure_current.get('market_gated_candidates') or [])
 
 
     candidate_rows = ''.join(
@@ -8118,6 +8226,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/continuity">continuity</a>
     <a href="/diagnostics/readiness">readiness</a>
     <a href="/diagnostics/failure_decomp">failure_decomp</a>
+    <a href="/diagnostics/entry_decomp">entry_decomp</a>
   </div>
 
   {('<div class="section"><div class="card"><h2>Operator Warnings</h2>' + _dashboard_warning_badges(dashboard_warnings) + '</div></div>') if dashboard_warnings else ''}
@@ -8321,17 +8430,25 @@ def dashboard(request: Request):
         ('market_gate_only_count', failure_current.get('market_gate_only_count')),
         ('soft_filter_only_count', failure_current.get('soft_filter_only_count')),
         ('near_miss_count', failure_current.get('near_miss_count')),
+        ('first_pass_candidate_count', failure_current.get('first_pass_candidate_count')),
+        ('market_gated_candidate_count', failure_current.get('market_gated_candidate_count')),
       ])}</table>
-      <h3 style="margin-top:14px;">Top rejection reasons</h3>
-      <pre>{html.escape(_dashboard_reason_lines(failure_top_rejections))}</pre>
-      <h3 style="margin-top:14px;">Top single failures</h3>
-      <pre>{html.escape(_dashboard_reason_lines(failure_top_singles))}</pre>
-      <h3 style="margin-top:14px;">Top failure pairs</h3>
-      <pre>{html.escape(_dashboard_reason_lines(failure_top_pairs))}</pre>
+      <h3 style="margin-top:14px;">Market structure failures</h3>
+      <pre>{html.escape(_dashboard_reason_lines(failure_market_structure))}</pre>
+      <h3 style="margin-top:14px;">Entry geometry failures</h3>
+      <pre>{html.escape(_dashboard_reason_lines(failure_entry_geometry))}</pre>
+      <h3 style="margin-top:14px;">Quality / trend failures</h3>
+      <pre>{html.escape(_dashboard_reason_lines(failure_quality_trend))}</pre>
     </div>
     <div class="card">
-      <h2>Near Miss / Single Gate</h2>
-      <h3 style="margin-top:0;">Market-gate only</h3>
+      <h2>Near Miss / Candidate Sets</h2>
+      <h3 style="margin-top:0;">First-pass candidates</h3>
+      <pre>{html.escape(_dashboard_symbol_reason_lines(failure_first_pass))}</pre>
+      <h3 style="margin-top:14px;">Market-gated candidates</h3>
+      <pre>{html.escape(_dashboard_symbol_reason_lines(failure_market_gated))}</pre>
+      <h3 style="margin-top:14px;">Near misses</h3>
+      <pre>{html.escape(_dashboard_symbol_reason_lines(failure_near_miss))}</pre>
+      <h3 style="margin-top:14px;">Market-gate only</h3>
       <pre>{html.escape(_dashboard_symbol_reason_lines(failure_market_only))}</pre>
       <h3 style="margin-top:14px;">Soft-filter only</h3>
       <pre>{html.escape(_dashboard_symbol_reason_lines(failure_soft_only))}</pre>
@@ -8562,6 +8679,27 @@ def diagnostics_failure_decomp(history_limit: int = 10):
     _refresh_regime_snapshot_if_needed()
     hist_lim = max(1, min(int(history_limit or 10), 50))
     return _failure_decomposition_snapshot(history_limit=hist_lim)
+
+
+@app.get("/diagnostics/entry_decomp")
+def diagnostics_entry_decomp(history_limit: int = 10):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    hist_lim = max(1, min(int(history_limit or 10), 50))
+    snap = _failure_decomposition_snapshot(history_limit=hist_lim)
+    current = dict((snap.get("current") or {}))
+    return {
+        "ok": True,
+        "current": current,
+        "history": snap.get("history") or {},
+        "first_pass_candidate_count": int(current.get("first_pass_candidate_count") or 0),
+        "first_pass_candidates": list(current.get("first_pass_candidates") or []),
+        "market_gated_candidate_count": int(current.get("market_gated_candidate_count") or 0),
+        "market_gated_candidates": list(current.get("market_gated_candidates") or []),
+        "market_structure_failure_counts": dict(current.get("market_structure_failure_counts") or {}),
+        "entry_geometry_failure_counts": dict(current.get("entry_geometry_failure_counts") or {}),
+        "quality_trend_failure_counts": dict(current.get("quality_trend_failure_counts") or {}),
+    }
 
 @app.post("/worker/scan_entries")
 async def worker_scan_entries(req: Request):
