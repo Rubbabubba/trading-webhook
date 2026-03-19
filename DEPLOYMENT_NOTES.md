@@ -32,3 +32,10 @@ Included changes:
 - Persists shadow candidate details into scan summary and candidate history.
 - Exposes shadow candidate data on `/dashboard` and `/diagnostics/candidates`.
 - Keeps live release controls unchanged. This is analytics-only and does not relax any gate.
+
+
+## Patch 51 Fixed
+- Adds cohort evidence persistence backed by `/var/data/cohort_evidence_state.json`.
+- Persists/restores `candidate_history` and `last_swing_candidates` inside `scan_state.json`.
+- Adds `/diagnostics/cohort_evidence` for multi-scan cohort persistence evidence.
+- Adds `/diagnostics/system_state` as a compatibility alias to `/diagnostics/state`.

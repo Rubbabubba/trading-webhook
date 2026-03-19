@@ -1112,7 +1112,7 @@ def _build_cohort_persistence_snapshot(history_limit: int = PATCH51_MULTI_SCAN_D
     evidence = {}
     for entry in entries:
         ts = entry.get("ts_utc")
-        for cohort_key, score_weight in (("nearest_pass_candidates", 1), ("relaxed_first_pass_candidates", 4), ("alternate_first_pass_candidates", 5), ("alternate_market_gated_candidates", 3)):
+        for cohort_key in ("nearest_pass_candidates", "relaxed_first_pass_candidates", "alternate_first_pass_candidates", "alternate_market_gated_candidates"):
             for item in entry.get(cohort_key) or []:
                 sym = str((item or {}).get("symbol") or "").upper()
                 if not sym:
@@ -1150,7 +1150,7 @@ def _build_cohort_persistence_snapshot(history_limit: int = PATCH51_MULTI_SCAN_D
         total_hits = int(ev.get("nearest_pass_hits") or 0) + int(ev.get("relaxed_first_pass_hits") or 0) + int(ev.get("alternate_first_pass_hits") or 0) + int(ev.get("alternate_market_gated_hits") or 0)
         if total_hits < min_hits:
             continue
-        persistence_score = int(ev.get("nearest_pass_hits") or 0) + int(ev.get("relaxed_first_pass_hits") or 0) * 4 + int(ev.get("alternate_first_pass_hits") or 0) * 5 + int(ev.get("alternate_market_gated_hits") or 0) * 3
+        persistence_score = int(ev.get("nearest_pass_hits") or 0) * 5 + int(ev.get("relaxed_first_pass_hits") or 0) * 4 + int(ev.get("alternate_first_pass_hits") or 0) + int(ev.get("alternate_market_gated_hits") or 0)
         row = dict(ev)
         row["total_hits"] = total_hits
         row["persistence_score"] = persistence_score
@@ -9514,6 +9514,19 @@ def diagnostics_repeatability(history_limit: int = PATCH50_HISTORY_DEFAULT, brea
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
     return _build_repeatability_snapshot(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct, nearest_limit=nearest_limit)
+
+
+@app.get("/diagnostics/cohort_evidence")
+def diagnostics_cohort_evidence(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT, min_hits: int = 1, limit: int = 15):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    return _build_cohort_persistence_snapshot(history_limit=history_limit, min_hits=min_hits, limit=limit)
+
+
+@app.get("/diagnostics/system_state")
+def diagnostics_system_state(request: Request):
+    require_admin_if_configured(request)
+    return diagnostics_state(request)
 
 
 @app.get("/diagnostics/actionable_watchlist")
