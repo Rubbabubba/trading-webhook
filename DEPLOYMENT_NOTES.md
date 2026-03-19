@@ -39,3 +39,9 @@ Included changes:
 - Persists/restores `candidate_history` and `last_swing_candidates` inside `scan_state.json`.
 - Adds `/diagnostics/cohort_evidence` for multi-scan cohort persistence evidence.
 - Adds `/diagnostics/system_state` as a compatibility alias to `/diagnostics/state`.
+
+
+## Patch 52
+- Adds `/diagnostics/cohort_scorecard` with recency-weighted cohort ranking, bucketed watchlists, and promotion states.
+- Adds `/diagnostics/promotion_watchlist` with top promotion candidates, separated into breakout, alternate-entry, and mixed-signal watchlists.
+- Preserves all Patch 51 diagnostics and routes.

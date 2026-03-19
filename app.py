@@ -482,6 +482,9 @@ PAPER_LIFECYCLE_STATE_PATH = getenv_any("PAPER_LIFECYCLE_STATE_PATH", default="/
 COHORT_EVIDENCE_STATE_PATH = getenv_any("COHORT_EVIDENCE_STATE_PATH", default="/var/data/cohort_evidence_state.json")
 COHORT_EVIDENCE_HISTORY_SIZE = int(getenv_any("COHORT_EVIDENCE_HISTORY_SIZE", default="200"))
 PATCH51_MULTI_SCAN_DEFAULT = int(getenv_any("PATCH51_MULTI_SCAN_DEFAULT", default="20"))
+PATCH52_RECENCY_HALFLIFE_SCANS = max(1, getenv_int_any("PATCH52_RECENCY_HALFLIFE_SCANS", default=3))
+PATCH52_SCORECARD_LIMIT = max(1, getenv_int_any("PATCH52_SCORECARD_LIMIT", default=15))
+PATCH52_WATCHLIST_TOP_N = max(1, getenv_int_any("PATCH52_WATCHLIST_TOP_N", default=3))
 EXECUTION_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("EXECUTION_LIFECYCLE_HISTORY_LIMIT", default="50"))
 SCANNER_TELEMETRY_STATE_PATH = getenv_any("SCANNER_TELEMETRY_STATE_PATH", default="/var/data/scanner_telemetry_state.json")
 PAPER_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("PAPER_LIFECYCLE_HISTORY_LIMIT", default="500"))
@@ -1165,6 +1168,188 @@ def _build_cohort_persistence_snapshot(history_limit: int = PATCH51_MULTI_SCAN_D
         "cohort_persistence": rows[:limit],
     }
 
+
+
+def _cohort_symbol_current_flags(entries: list[dict], history_limit: int = PATCH51_MULTI_SCAN_DEFAULT, breakout_max_distance_pct: float | None = None) -> dict[str, dict]:
+    breakout_test = float(PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT if breakout_max_distance_pct is None else breakout_max_distance_pct)
+    latest = entries[-1] if entries else {}
+    latest_hist = _history_entries_limited(1)
+    latest_scan = latest_hist[-1] if latest_hist else {}
+    relaxed = _build_breakout_relaxed_snapshot(latest_scan, breakout_max_distance_pct=breakout_test, limit=25) if latest_scan else {"first_pass_candidates": [], "market_gated_candidates": [], "live_eligible_candidates": []}
+    alt = _build_alternate_entry_shadow(latest_scan, limit=25) if latest_scan else {"first_pass_candidates": [], "market_gated_candidates": [], "live_eligible_candidates": []}
+    current_map: dict[str, dict] = {}
+
+    def ensure(sym: str) -> dict:
+        return current_map.setdefault(sym, {
+            "current_in_nearest_pass": False,
+            "current_in_relaxed_first_pass": False,
+            "current_in_relaxed_market_gated": False,
+            "current_in_alternate_first_pass": False,
+            "current_in_alternate_market_gated": False,
+            "current_primary_non_market_failures": 0,
+            "current_primary_non_market_reasons": [],
+            "current_status": "historical_only",
+            "promotion_state": "historical_only",
+            "attention_priority": 0,
+        })
+
+    for item in latest.get("nearest_pass_candidates") or []:
+        sym = str((item or {}).get("symbol") or "").upper()
+        if not sym:
+            continue
+        ensure(sym)["current_in_nearest_pass"] = True
+
+    for item in relaxed.get("first_pass_candidates") or []:
+        sym = str((item or {}).get("symbol") or "").upper()
+        if not sym:
+            continue
+        ensure(sym)["current_in_relaxed_first_pass"] = True
+    for item in relaxed.get("market_gated_candidates") or []:
+        sym = str((item or {}).get("symbol") or "").upper()
+        if not sym:
+            continue
+        ensure(sym)["current_in_relaxed_market_gated"] = True
+    for item in alt.get("first_pass_candidates") or []:
+        sym = str((item or {}).get("symbol") or "").upper()
+        if not sym:
+            continue
+        ensure(sym)["current_in_alternate_first_pass"] = True
+    for item in alt.get("market_gated_candidates") or []:
+        sym = str((item or {}).get("symbol") or "").upper()
+        if not sym:
+            continue
+        ensure(sym)["current_in_alternate_market_gated"] = True
+
+    for item in (latest_scan.get("candidates") or []):
+        sym = str((item or {}).get("symbol") or "").upper()
+        if not sym:
+            continue
+        row = ensure(sym)
+        non_market = list((item or {}).get("shadow_non_market_reasons") or [])
+        row["current_primary_non_market_reasons"] = non_market
+        row["current_primary_non_market_failures"] = len(non_market)
+
+    for sym, row in current_map.items():
+        if row.get("current_in_relaxed_first_pass"):
+            row["current_status"] = "relaxed_first_pass"
+            row["promotion_state"] = "one_gate_away"
+            row["attention_priority"] = 5
+        elif row.get("current_in_alternate_first_pass"):
+            row["current_status"] = "alternate_first_pass"
+            row["promotion_state"] = "one_gate_away"
+            row["attention_priority"] = 5
+        elif row.get("current_in_relaxed_market_gated"):
+            row["current_status"] = "relaxed_market_gated"
+            row["promotion_state"] = "market_gate_only"
+            row["attention_priority"] = 4
+        elif row.get("current_in_alternate_market_gated"):
+            row["current_status"] = "alternate_market_gated"
+            row["promotion_state"] = "market_gate_only"
+            row["attention_priority"] = 4
+        elif row.get("current_in_nearest_pass"):
+            fails = int(row.get("current_primary_non_market_failures") or 0)
+            row["current_status"] = "nearest_pass"
+            if fails <= 1:
+                row["promotion_state"] = "needs_1_threshold"
+                row["attention_priority"] = 3
+            elif fails == 2:
+                row["promotion_state"] = "needs_2_thresholds"
+                row["attention_priority"] = 2
+            else:
+                row["promotion_state"] = "needs_3plus_thresholds"
+                row["attention_priority"] = 1
+        else:
+            row["current_status"] = "historical_only"
+            row["promotion_state"] = "historical_only"
+            row["attention_priority"] = 0
+    return current_map
+
+
+def _classify_watchlist_bucket(row: dict) -> str:
+    nearest_hits = int(row.get("nearest_pass_hits") or 0)
+    relaxed_hits = int(row.get("relaxed_first_pass_hits") or 0)
+    alt_first_hits = int(row.get("alternate_first_pass_hits") or 0)
+    alt_gate_hits = int(row.get("alternate_market_gated_hits") or 0)
+    breakout_strength = nearest_hits * 2 + relaxed_hits * 3
+    alternate_strength = alt_first_hits * 2 + alt_gate_hits * 2
+    if breakout_strength > 0 and alternate_strength > 0:
+        return "mixed_signal"
+    if breakout_strength >= alternate_strength and breakout_strength > 0:
+        return "breakout_watch"
+    if alternate_strength > 0:
+        return "alternate_entry_watch"
+    return "historical_only"
+
+
+def _build_cohort_scorecard(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT, min_hits: int = 1, limit: int = PATCH52_SCORECARD_LIMIT, breakout_max_distance_pct: float | None = None) -> dict:
+    entries = _cohort_history_entries_limited(history_limit)
+    min_hits = max(1, int(min_hits or 1))
+    limit = max(1, min(int(limit or PATCH52_SCORECARD_LIMIT), 50))
+    breakout_test = float(PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT if breakout_max_distance_pct is None else breakout_max_distance_pct)
+    persistence = _build_cohort_persistence_snapshot(history_limit=history_limit, min_hits=min_hits, limit=200)
+    rows = []
+    current_flags = _cohort_symbol_current_flags(entries, history_limit=history_limit, breakout_max_distance_pct=breakout_test)
+    latest_index = max(0, len(entries) - 1)
+    halflife = max(1.0, float(PATCH52_RECENCY_HALFLIFE_SCANS))
+    seen_index_by_symbol: dict[str, list[int]] = {}
+    for idx, entry in enumerate(entries):
+        seen_syms = set()
+        for cohort_key in ("nearest_pass_candidates", "relaxed_first_pass_candidates", "alternate_first_pass_candidates", "alternate_market_gated_candidates"):
+            for item in entry.get(cohort_key) or []:
+                sym = str((item or {}).get("symbol") or "").upper()
+                if sym:
+                    seen_syms.add(sym)
+        for sym in seen_syms:
+            seen_index_by_symbol.setdefault(sym, []).append(idx)
+    for base in persistence.get("cohort_persistence") or []:
+        sym = str((base or {}).get("symbol") or "").upper()
+        if not sym:
+            continue
+        decayed = 0.0
+        for idx in seen_index_by_symbol.get(sym, []):
+            distance = max(0, latest_index - idx)
+            decayed += 0.5 ** (distance / halflife)
+        row = dict(base)
+        row.update(current_flags.get(sym) or {})
+        row["watchlist_bucket"] = _classify_watchlist_bucket(row)
+        row["decayed_hit_score"] = round(decayed, 4)
+        row["current_presence_score"] = (2 if row.get("current_in_relaxed_first_pass") else 0) + (2 if row.get("current_in_alternate_first_pass") else 0) + (1 if row.get("current_in_relaxed_market_gated") else 0) + (1 if row.get("current_in_alternate_market_gated") else 0) + (1 if row.get("current_in_nearest_pass") else 0)
+        rows.append(row)
+    rows.sort(key=lambda r: (-int(r.get("attention_priority") or 0), -float(r.get("decayed_hit_score") or 0.0), -int(r.get("persistence_score") or 0), float(r.get("best_non_market_gap_score") if r.get("best_non_market_gap_score") is not None else 999.0), -(float(r.get("best_rank_score") or 0.0)), r.get("symbol") or ""))
+    buckets = {
+        "breakout_watch": [r for r in rows if r.get("watchlist_bucket") == "breakout_watch"],
+        "alternate_entry_watch": [r for r in rows if r.get("watchlist_bucket") == "alternate_entry_watch"],
+        "mixed_signal_watch": [r for r in rows if r.get("watchlist_bucket") == "mixed_signal"],
+    }
+    return {
+        "ok": True,
+        "history_limit": len(entries),
+        "min_hits": min_hits,
+        "breakout_test_max_distance_pct": breakout_test,
+        "recency_halflife_scans": int(PATCH52_RECENCY_HALFLIFE_SCANS),
+        "scorecard": rows[:limit],
+        "breakout_watch": buckets["breakout_watch"][:limit],
+        "alternate_entry_watch": buckets["alternate_entry_watch"][:limit],
+        "mixed_signal_watch": buckets["mixed_signal_watch"][:limit],
+    }
+
+
+def _build_promotion_watchlist(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT, min_hits: int = 1, limit: int = PATCH52_WATCHLIST_TOP_N, breakout_max_distance_pct: float | None = None) -> dict:
+    scorecard = _build_cohort_scorecard(history_limit=history_limit, min_hits=min_hits, limit=100, breakout_max_distance_pct=breakout_max_distance_pct)
+    limit = max(1, min(int(limit or PATCH52_WATCHLIST_TOP_N), 25))
+    rows = list(scorecard.get("scorecard") or [])
+    promoteable = [r for r in rows if str(r.get("promotion_state") or "") != "historical_only"]
+    promoteable.sort(key=lambda r: (-int(r.get("attention_priority") or 0), -float(r.get("decayed_hit_score") or 0.0), -int(r.get("current_presence_score") or 0), float(r.get("best_non_market_gap_score") if r.get("best_non_market_gap_score") is not None else 999.0), -(float(r.get("best_rank_score") or 0.0)), r.get("symbol") or ""))
+    return {
+        "ok": True,
+        "history_limit": int(scorecard.get("history_limit") or 0),
+        "min_hits": min_hits,
+        "promotion_watchlist": promoteable[:limit],
+        "top_3_now": promoteable[:3],
+        "breakout_watchlist": [r for r in promoteable if r.get("watchlist_bucket") == "breakout_watch"][:limit],
+        "alternate_entry_watchlist": [r for r in promoteable if r.get("watchlist_bucket") == "alternate_entry_watch"][:limit],
+        "mixed_signal_watchlist": [r for r in promoteable if r.get("watchlist_bucket") == "mixed_signal"][:limit],
+    }
 
 def persist_regime_runtime_state(reason: str = ""):
     payload = {
@@ -8992,6 +9177,8 @@ def dashboard(request: Request):
     <a href="/diagnostics/model_scorecard">model_scorecard</a>
     <a href="/diagnostics/repeatability">repeatability</a>
     <a href="/diagnostics/cohort_evidence">cohort_evidence</a>
+    <a href="/diagnostics/cohort_scorecard">cohort_scorecard</a>
+    <a href="/diagnostics/promotion_watchlist">promotion_watchlist</a>
     <a href="/diagnostics/actionable_watchlist">actionable_watchlist</a>
     <a href="/diagnostics/failure_decomp">failure_decomp</a>
     <a href="/diagnostics/entry_decomp">entry_decomp</a>
@@ -9521,6 +9708,20 @@ def diagnostics_cohort_evidence(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT,
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
     return _build_cohort_persistence_snapshot(history_limit=history_limit, min_hits=min_hits, limit=limit)
+
+
+@app.get("/diagnostics/cohort_scorecard")
+def diagnostics_cohort_scorecard(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT, min_hits: int = 1, limit: int = PATCH52_SCORECARD_LIMIT, breakout_max_distance_pct: float | None = None):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    return _build_cohort_scorecard(history_limit=history_limit, min_hits=min_hits, limit=limit, breakout_max_distance_pct=breakout_max_distance_pct)
+
+
+@app.get("/diagnostics/promotion_watchlist")
+def diagnostics_promotion_watchlist(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT, min_hits: int = 1, limit: int = PATCH52_WATCHLIST_TOP_N, breakout_max_distance_pct: float | None = None):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    return _build_promotion_watchlist(history_limit=history_limit, min_hits=min_hits, limit=limit, breakout_max_distance_pct=breakout_max_distance_pct)
 
 
 @app.get("/diagnostics/system_state")
