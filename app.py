@@ -893,7 +893,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-066-runtime-truth-rebased"
+PATCH_VERSION = "patch-067-defensive-near-breakout-lab"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3217,6 +3217,15 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
     nearest = _build_nearest_pass(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"nearest_pass_candidates": []}
     relaxed = _build_breakout_relaxed_snapshot(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
     alt = _build_alternate_entry_shadow(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
+    defensive_unlock_lab = _defensive_unlock_lab_from_rows(
+        rows=candidates,
+        scan_symbols=[str(s).upper() for s in (summary.get("symbols") or scan.get("symbols") or []) if str(s).strip()],
+        ts_utc=scan.get("ts_utc") if isinstance(scan, dict) else None,
+        scan_source=scan.get("_scan_source") if isinstance(scan, dict) else None,
+        regime_mode=str(summary.get("regime_mode") or _get_regime_mode(dict(LAST_REGIME_SNAPSHOT or {}), None)),
+        current_thresholds=dict(summary.get("mode_thresholds") or _regime_mode_thresholds(_get_regime_mode(dict(LAST_REGIME_SNAPSHOT or {}), None))),
+        limit=max(1, min(int(limit or 10), 10)),
+    )
     candidate_symbols = _dedupe_keep_order([str((row or {}).get("symbol") or "").upper() for row in candidates if str((row or {}).get("symbol") or "").strip()])
     scanner_runtime = _scanner_universe_runtime()
     scan_symbols = _dedupe_keep_order([str(s).upper() for s in (summary.get("symbols") or scan.get("symbols") or []) if str(s).strip()])
@@ -3247,6 +3256,7 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
             "rejection_reasons": list(row.get("rejection_reasons") or []),
         } for row in candidates[:max(1, min(int(limit or 10), 10))]],
         "filter_pressure": _filter_pressure_snapshot(limit=max(1, min(int(limit or 10), 10))),
+        "defensive_unlock_lab": defensive_unlock_lab,
     }
 
 
@@ -5645,6 +5655,22 @@ THRESHOLD_LADDER_RETURN_20D_MIN_PCT = [
 ]
 
 PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT = getenv_float_any("PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT", default=max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, 4.0))
+PATCH67_DEFENSIVE_BREAKOUT_LADDER_PCT = _dedupe_preserve_floats([
+    max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, 1.0),
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    7.0,
+    8.0,
+])
+PATCH67_DEFENSIVE_CLOSE_TO_HIGH_LADDER_PCT = _dedupe_preserve_floats([
+    CURRENT_CLOSE_TO_HIGH_MIN_PCT,
+    98.0,
+    97.5,
+])
+PATCH67_DEFENSIVE_MAX_BREAKOUT_TEST_PCT = max(PATCH67_DEFENSIVE_BREAKOUT_LADDER_PCT) if PATCH67_DEFENSIVE_BREAKOUT_LADDER_PCT else CURRENT_BREAKOUT_MAX_DISTANCE_PCT
 PATCH50_HISTORY_DEFAULT = max(1, getenv_int_any("PATCH50_HISTORY_DEFAULT", default=10))
 PATCH50_NEAREST_PASS_TOP_N = max(1, getenv_int_any("PATCH50_NEAREST_PASS_TOP_N", default=3))
 
@@ -6025,6 +6051,140 @@ def _filter_pressure_snapshot(limit: int = 10) -> dict:
         limit=limit,
         eligible_total=int(summary.get("eligible_total") or 0),
         selected_total=int(summary.get("selected_total") or 0),
+    )
+
+def _defensive_unlock_lab_from_rows(
+    rows: list[dict],
+    scan_symbols: list[str],
+    ts_utc: str | None,
+    scan_source: str | None,
+    regime_mode: str,
+    current_thresholds: dict | None = None,
+    limit: int = 10,
+) -> dict:
+    row_limit = max(1, min(int(limit or 10), 25))
+    current_thresholds = dict(current_thresholds or {})
+    ranked_rows = sorted([dict(r or {}) for r in (rows or [])], key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)
+
+    def _top_symbols(eval_rows: list[dict]) -> list[str]:
+        ranked = sorted(eval_rows, key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)
+        return [str(r.get("symbol") or "") for r in ranked[:row_limit] if str(r.get("symbol") or "")]
+
+    if str(regime_mode or "").strip().lower() != "defensive":
+        return {
+            "ts_utc": ts_utc,
+            "scan_source": scan_source,
+            "scan_symbols": list(scan_symbols or []),
+            "regime_mode": regime_mode,
+            "current_thresholds": current_thresholds,
+            "ladder": [],
+            "combo_matrix": [],
+            "nearest_unlock_candidates": [],
+            "narrowest_unlock_step": None,
+            "note": "defensive_unlock_lab_only_applies_in_defensive_mode",
+        }
+
+    base_breakout = float(current_thresholds.get("breakout_max_distance_pct") or CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
+    base_close = float(current_thresholds.get("close_to_high_min_pct") or CURRENT_CLOSE_TO_HIGH_MIN_PCT)
+    base_return = float(current_thresholds.get("return_20d_min_pct") or CURRENT_RETURN_20D_MIN_PCT)
+
+    ladder = []
+    narrowest_unlock_step = None
+    for breakout_level in PATCH67_DEFENSIVE_BREAKOUT_LADDER_PCT:
+        eval_rows = [
+            _evaluate_candidate_under_thresholds(
+                row,
+                breakout_max_distance_pct=breakout_level,
+                close_to_high_min_pct=base_close,
+                return_20d_min_pct=base_return,
+                include_market_gate=False,
+            )
+            for row in ranked_rows
+        ]
+        passed = [r for r in eval_rows if r.get("eligible")]
+        item = {
+            "breakout_max_distance_pct": breakout_level,
+            "close_to_high_min_pct": base_close,
+            "return_20d_min_pct": base_return,
+            "eligible_count": len(passed),
+            "symbols": _top_symbols(passed),
+        }
+        ladder.append(item)
+        if narrowest_unlock_step is None and item["eligible_count"] > 0:
+            narrowest_unlock_step = {"type": "breakout_only", **item}
+
+    combo_matrix = []
+    for breakout_level in PATCH67_DEFENSIVE_BREAKOUT_LADDER_PCT:
+        for close_level in PATCH67_DEFENSIVE_CLOSE_TO_HIGH_LADDER_PCT:
+            eval_rows = [
+                _evaluate_candidate_under_thresholds(
+                    row,
+                    breakout_max_distance_pct=breakout_level,
+                    close_to_high_min_pct=close_level,
+                    return_20d_min_pct=base_return,
+                    include_market_gate=False,
+                )
+                for row in ranked_rows
+            ]
+            passed = [r for r in eval_rows if r.get("eligible")]
+            item = {
+                "breakout_max_distance_pct": breakout_level,
+                "close_to_high_min_pct": close_level,
+                "return_20d_min_pct": base_return,
+                "eligible_count": len(passed),
+                "symbols": _top_symbols(passed),
+            }
+            combo_matrix.append(item)
+            if narrowest_unlock_step is None and item["eligible_count"] > 0:
+                narrowest_unlock_step = {"type": "breakout_plus_close", **item}
+
+    nearest_unlock_candidates = []
+    min_close_test = min(PATCH67_DEFENSIVE_CLOSE_TO_HIGH_LADDER_PCT) if PATCH67_DEFENSIVE_CLOSE_TO_HIGH_LADDER_PCT else base_close
+    for row in ranked_rows[:row_limit]:
+        breakout_distance = _safe_float(row.get("breakout_distance_pct"))
+        close_to_high = _safe_float(row.get("close_to_high_pct"))
+        return_20d = _safe_float(row.get("return_20d_pct"))
+        nearest_unlock_candidates.append({
+            "symbol": str(row.get("symbol") or ""),
+            "rank_score": row.get("rank_score"),
+            "rejection_reasons": list(row.get("rejection_reasons") or []),
+            "breakout_distance_pct": breakout_distance,
+            "breakout_gap_to_current_pct": _pct_ceiling_gap(breakout_distance, base_breakout),
+            "breakout_gap_to_patch67_max_test_pct": _pct_ceiling_gap(breakout_distance, PATCH67_DEFENSIVE_MAX_BREAKOUT_TEST_PCT),
+            "close_to_high_pct": close_to_high,
+            "close_gap_to_current_pct": _pct_gap(close_to_high, base_close),
+            "close_gap_to_patch67_min_test_pct": _pct_gap(close_to_high, min_close_test),
+            "return_20d_pct": return_20d,
+            "return_gap_to_current_pct": _pct_gap(return_20d, base_return),
+        })
+
+    return {
+        "ts_utc": ts_utc,
+        "scan_source": scan_source,
+        "scan_symbols": list(scan_symbols or []),
+        "regime_mode": regime_mode,
+        "current_thresholds": {
+            "breakout_max_distance_pct": base_breakout,
+            "close_to_high_min_pct": base_close,
+            "return_20d_min_pct": base_return,
+        },
+        "ladder": ladder,
+        "combo_matrix": combo_matrix[: row_limit * 3],
+        "nearest_unlock_candidates": nearest_unlock_candidates,
+        "narrowest_unlock_step": narrowest_unlock_step,
+    }
+
+
+def _defensive_unlock_lab_snapshot(limit: int = 10) -> dict:
+    preview = _current_runtime_preview_snapshot(limit=max(5, min(int(limit or 10), 50)))
+    return _defensive_unlock_lab_from_rows(
+        rows=list(preview.get("top_candidates") or []),
+        scan_symbols=list(preview.get("runtime_symbols") or []),
+        ts_utc=preview.get("ts_utc"),
+        scan_source="current_runtime_preview",
+        regime_mode=str(preview.get("regime_mode") or ""),
+        current_thresholds=dict(preview.get("mode_thresholds") or {}),
+        limit=limit,
     )
 
 def _evaluate_alternate_entry_shadow(item: dict | None, include_market_gate: bool = True) -> dict:
@@ -10623,6 +10783,11 @@ def diagnostics_filter_pressure(limit: int = 10):
     return _filter_pressure_snapshot(limit=limit)
 
 
+@app.get("/diagnostics/defensive_unlock_lab")
+def diagnostics_defensive_unlock_lab(limit: int = 10):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    return _defensive_unlock_lab_snapshot(limit=limit)
 
 
 def _universe_shadow_snapshot(limit: int = 10) -> dict:
