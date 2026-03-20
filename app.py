@@ -485,9 +485,6 @@ PATCH51_MULTI_SCAN_DEFAULT = int(getenv_any("PATCH51_MULTI_SCAN_DEFAULT", defaul
 PATCH52_RECENCY_HALFLIFE_SCANS = max(1, getenv_int_any("PATCH52_RECENCY_HALFLIFE_SCANS", default=3))
 PATCH52_SCORECARD_LIMIT = max(1, getenv_int_any("PATCH52_SCORECARD_LIMIT", default=15))
 PATCH52_WATCHLIST_TOP_N = max(1, getenv_int_any("PATCH52_WATCHLIST_TOP_N", default=3))
-PATCH53_MOMENTUM_HISTORY_DEFAULT = max(2, getenv_int_any("PATCH53_MOMENTUM_HISTORY_DEFAULT", default=6))
-PATCH53_FASTEST_IMPROVERS_TOP_N = max(1, getenv_int_any("PATCH53_FASTEST_IMPROVERS_TOP_N", default=5))
-PATCH53_IMPROVEMENT_EPSILON = max(0.05, getenv_float_any("PATCH53_IMPROVEMENT_EPSILON", default=0.25))
 EXECUTION_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("EXECUTION_LIFECYCLE_HISTORY_LIMIT", default="50"))
 SCANNER_TELEMETRY_STATE_PATH = getenv_any("SCANNER_TELEMETRY_STATE_PATH", default="/var/data/scanner_telemetry_state.json")
 PAPER_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("PAPER_LIFECYCLE_HISTORY_LIMIT", default="500"))
@@ -1282,179 +1279,6 @@ def _classify_watchlist_bucket(row: dict) -> str:
     if alternate_strength > 0:
         return "alternate_entry_watch"
     return "historical_only"
-
-
-def _cohort_event_symbol_rows(entry: dict | None) -> dict[str, dict]:
-    entry = dict(entry or {})
-    out: dict[str, dict] = {}
-    for key in (
-        "nearest_pass_candidates",
-        "relaxed_first_pass_candidates",
-        "relaxed_market_gated_candidates",
-        "alternate_first_pass_candidates",
-        "alternate_market_gated_candidates",
-    ):
-        for item in entry.get(key) or []:
-            row = dict(item or {})
-            sym = str(row.get("symbol") or "").upper()
-            if sym and sym not in out:
-                out[sym] = row
-    return out
-
-
-
-def _status_rank(status: str | None) -> int:
-    order = {
-        "historical_only": 0,
-        "nearest_pass": 1,
-        "alternate_market_gated": 2,
-        "relaxed_market_gated": 3,
-        "alternate_first_pass": 4,
-        "relaxed_first_pass": 5,
-    }
-    return int(order.get(str(status or "historical_only"), 0))
-
-
-
-def _cohort_symbol_scan_series(history_limit: int = PATCH53_MOMENTUM_HISTORY_DEFAULT, breakout_max_distance_pct: float | None = None) -> dict[str, list[dict]]:
-    entries = _cohort_history_entries_limited(history_limit)
-    current_flags = _cohort_symbol_current_flags(entries, history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct)
-    out: dict[str, list[dict]] = {}
-    for idx, entry in enumerate(entries):
-        row_map = _cohort_event_symbol_rows(entry)
-        if not row_map:
-            continue
-        is_latest = idx == (len(entries) - 1)
-        for sym, row in row_map.items():
-            gaps = dict((row.get("gaps") or {}))
-            series_row = {
-                "ts_utc": entry.get("ts_utc"),
-                "symbol": sym,
-                "rank_score": _safe_float(row.get("rank_score")),
-                "non_market_gap_score": _safe_float(row.get("non_market_gap_score")),
-                "total_gap_score": _safe_float(row.get("total_gap_score")),
-                "rejection_reasons": list(row.get("rejection_reasons") or row.get("reasons") or []),
-                "market_gate_reasons": list(row.get("market_gate_reasons") or []),
-                "gaps": {
-                    "breakout_distance_gap_pct": _safe_float(gaps.get("breakout_distance_gap_pct")),
-                    "close_to_high_gap_pct": _safe_float(gaps.get("close_to_high_gap_pct")),
-                    "return_20d_gap_pct": _safe_float(gaps.get("return_20d_gap_pct")),
-                    "trend_gap_pct": _safe_float(gaps.get("trend_gap_pct")),
-                },
-            }
-            if is_latest:
-                series_row.update(current_flags.get(sym) or {})
-            out.setdefault(sym, []).append(series_row)
-    return out
-
-
-
-def _round_delta(value: float | None) -> float | None:
-    if value is None:
-        return None
-    return round(float(value), 3)
-
-
-
-def _build_promotion_momentum(history_limit: int = PATCH53_MOMENTUM_HISTORY_DEFAULT, min_hits: int = 1, limit: int = PATCH52_SCORECARD_LIMIT, breakout_max_distance_pct: float | None = None) -> dict:
-    history_limit = max(2, int(history_limit or PATCH53_MOMENTUM_HISTORY_DEFAULT))
-    limit = max(1, min(int(limit or PATCH52_SCORECARD_LIMIT), 50))
-    scorecard = _build_cohort_scorecard(history_limit=history_limit, min_hits=min_hits, limit=200, breakout_max_distance_pct=breakout_max_distance_pct)
-    series = _cohort_symbol_scan_series(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct)
-    rows = []
-    eps = float(PATCH53_IMPROVEMENT_EPSILON)
-    for base in scorecard.get("scorecard") or []:
-        sym = str((base or {}).get("symbol") or "").upper()
-        if not sym:
-            continue
-        scans = list(series.get(sym) or [])
-        if not scans:
-            continue
-        current = scans[-1]
-        prior = scans[-2] if len(scans) >= 2 else None
-        current_nm = _safe_float(current.get("non_market_gap_score"))
-        prior_nm = _safe_float((prior or {}).get("non_market_gap_score"))
-        current_total = _safe_float(current.get("total_gap_score"))
-        prior_total = _safe_float((prior or {}).get("total_gap_score"))
-        nm_delta = None if current_nm is None or prior_nm is None else round(prior_nm - current_nm, 3)
-        total_delta = None if current_total is None or prior_total is None else round(prior_total - current_total, 3)
-        current_fails = int(current.get("current_primary_non_market_failures") or len(current.get("rejection_reasons") or []))
-        prior_fails = len((prior or {}).get("rejection_reasons") or []) if prior else None
-        fail_delta = None if prior_fails is None else int(prior_fails - current_fails)
-        current_status = str(current.get("current_status") or base.get("current_status") or "historical_only")
-        prior_status = str((prior or {}).get("current_status") or "historical_only")
-        status_delta = _status_rank(current_status) - _status_rank(prior_status)
-        gap_deltas = {}
-        for k in ("breakout_distance_gap_pct", "close_to_high_gap_pct", "return_20d_gap_pct", "trend_gap_pct"):
-            c = _safe_float((current.get("gaps") or {}).get(k))
-            p = _safe_float(((prior or {}).get("gaps") or {}).get(k))
-            gap_deltas[k] = None if c is None or p is None else round(p - c, 3)
-        momentum_score = round((nm_delta or 0.0) * 1.5 + (total_delta or 0.0) * 0.5 + (fail_delta or 0) * 1.25 + status_delta * 1.5, 3)
-        if momentum_score > eps:
-            momentum_label = "improving"
-        elif momentum_score < (-1.0 * eps):
-            momentum_label = "deteriorating"
-        else:
-            momentum_label = "flat"
-        false_persistence = bool(int(base.get("total_hits") or 0) >= 4 and int(base.get("attention_priority") or 0) <= 1 and momentum_score <= eps)
-        row = dict(base)
-        row.update({
-            "scans_considered": len(scans),
-            "current_status": current_status,
-            "prior_status": prior_status,
-            "status_delta": status_delta,
-            "current_non_market_gap_score": current_nm,
-            "prior_non_market_gap_score": prior_nm,
-            "current_total_gap_score": current_total,
-            "prior_total_gap_score": prior_total,
-            "non_market_gap_delta": nm_delta,
-            "total_gap_delta": total_delta,
-            "current_primary_non_market_failures": current_fails,
-            "prior_primary_non_market_failures": prior_fails,
-            "primary_failure_delta": fail_delta,
-            "gap_deltas": gap_deltas,
-            "momentum_score": momentum_score,
-            "momentum_label": momentum_label,
-            "false_persistence": false_persistence,
-            "last_two_scans": [
-                {"ts_utc": (prior or {}).get("ts_utc"), "status": prior_status, "non_market_gap_score": prior_nm, "total_gap_score": prior_total} if prior else None,
-                {"ts_utc": current.get("ts_utc"), "status": current_status, "non_market_gap_score": current_nm, "total_gap_score": current_total},
-            ],
-        })
-        rows.append(row)
-    rows.sort(key=lambda r: (-float(r.get("momentum_score") or 0.0), -int(r.get("attention_priority") or 0), float(r.get("current_non_market_gap_score") if r.get("current_non_market_gap_score") is not None else 999.0), -(float(r.get("best_rank_score") or 0.0)), r.get("symbol") or ""))
-    improving = [r for r in rows if str(r.get("momentum_label") or "") == "improving"]
-    deteriorating = [r for r in rows if str(r.get("momentum_label") or "") == "deteriorating"]
-    stale = [r for r in rows if r.get("false_persistence")]
-    return {
-        "ok": True,
-        "history_limit": history_limit,
-        "min_hits": min_hits,
-        "improvement_epsilon": eps,
-        "promotion_momentum": rows[:limit],
-        "improving_candidates": improving[:limit],
-        "deteriorating_candidates": deteriorating[:limit],
-        "false_persistence_candidates": stale[:limit],
-    }
-
-
-
-def _build_fastest_improvers(history_limit: int = PATCH53_MOMENTUM_HISTORY_DEFAULT, min_hits: int = 1, limit: int = PATCH53_FASTEST_IMPROVERS_TOP_N, breakout_max_distance_pct: float | None = None) -> dict:
-    snap = _build_promotion_momentum(history_limit=history_limit, min_hits=min_hits, limit=200, breakout_max_distance_pct=breakout_max_distance_pct)
-    limit = max(1, min(int(limit or PATCH53_FASTEST_IMPROVERS_TOP_N), 25))
-    rows = list(snap.get("promotion_momentum") or [])
-    fastest = [r for r in rows if str(r.get("momentum_label") or "") == "improving"]
-    fastest.sort(key=lambda r: (-float(r.get("momentum_score") or 0.0), -int(r.get("attention_priority") or 0), float(r.get("current_non_market_gap_score") if r.get("current_non_market_gap_score") is not None else 999.0), -(float(r.get("best_rank_score") or 0.0)), r.get("symbol") or ""))
-    false_persistence = [r for r in rows if r.get("false_persistence")]
-    false_persistence.sort(key=lambda r: (-int(r.get("total_hits") or 0), float(r.get("momentum_score") or 0.0), float(r.get("current_non_market_gap_score") if r.get("current_non_market_gap_score") is not None else 999.0), r.get("symbol") or ""))
-    return {
-        "ok": True,
-        "history_limit": int(snap.get("history_limit") or 0),
-        "min_hits": min_hits,
-        "fastest_improvers": fastest[:limit],
-        "top_3_improvers_now": fastest[:3],
-        "false_persistence_watchlist": false_persistence[:limit],
-    }
 
 
 def _build_cohort_scorecard(history_limit: int = PATCH51_MULTI_SCAN_DEFAULT, min_hits: int = 1, limit: int = PATCH52_SCORECARD_LIMIT, breakout_max_distance_pct: float | None = None) -> dict:
@@ -9355,8 +9179,6 @@ def dashboard(request: Request):
     <a href="/diagnostics/cohort_evidence">cohort_evidence</a>
     <a href="/diagnostics/cohort_scorecard">cohort_scorecard</a>
     <a href="/diagnostics/promotion_watchlist">promotion_watchlist</a>
-    <a href="/diagnostics/promotion_momentum">promotion_momentum</a>
-    <a href="/diagnostics/fastest_improvers">fastest_improvers</a>
     <a href="/diagnostics/actionable_watchlist">actionable_watchlist</a>
     <a href="/diagnostics/failure_decomp">failure_decomp</a>
     <a href="/diagnostics/entry_decomp">entry_decomp</a>
