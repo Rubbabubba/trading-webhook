@@ -113,3 +113,11 @@ Included changes:
 - Converts policy-shadow evidence into an actionable runtime-universe redesign plan
 - Recommends additions, removals, and a drop-in `SCANNER_UNIVERSE_SYMBOLS` env string based on lowest blocker count and highest rank score
 - Purpose: decide the next runtime universe before touching production filter policy
+
+
+## Patch 062 - Regime Engine Mode Switching
+- Added regime mode switching with trend, neutral, and defensive operating modes.
+- Added /diagnostics/regime_mode endpoint.
+- Swing candidate evaluation now uses mode-aware thresholds for breakout distance, close-to-high, momentum, and trend requirements.
+- Weak tape can route into defensive mode instead of always hard blocking entries when regime-mode switching is enabled.
+- Scan summaries now include regime_mode and mode thresholds for diagnostics.

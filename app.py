@@ -553,6 +553,20 @@ SWING_REGIME_SLOW_MA_DAYS = getenv_int_any("SWING_REGIME_SLOW_MA_DAYS", default=
 SWING_REGIME_MIN_BREADTH = getenv_float_any("SWING_REGIME_MIN_BREADTH", default=0.50)
 SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE = env_bool_any("SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE", default=False)
 SWING_WEAK_TAPE_MAX_NEW_ENTRIES = getenv_int_any("SWING_WEAK_TAPE_MAX_NEW_ENTRIES", default=0)
+
+SWING_REGIME_MODE_SWITCHING_ENABLED = env_bool_any("SWING_REGIME_MODE_SWITCHING_ENABLED", default=True)
+SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES = env_bool_any("SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES", default=True)
+SWING_REGIME_NEUTRAL_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_NEUTRAL_REQUIRE_INDEX_ALIGNMENT", default=False)
+SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT", default=False)
+SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT", default=SWING_BREAKOUT_BUFFER_PCT)
+SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT", default=max(SWING_BREAKOUT_BUFFER_PCT, 0.025))
+SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT", default=0.01)
+SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=SWING_MIN_20D_RETURN_PCT)
+SWING_NEUTRAL_MIN_20D_RETURN_PCT = getenv_float_any("SWING_NEUTRAL_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
+SWING_DEFENSIVE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_20D_RETURN_PCT", default=0.0)
+SWING_TREND_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_TREND_MIN_CLOSE_TO_HIGH_PCT", default=SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT)
+SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.98)))
+SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.99)))
 SHADOW_REGIME_MAX_CANDIDATES = max(1, getenv_int_any("SHADOW_REGIME_MAX_CANDIDATES", default=3))
 SWING_MAX_GROUP_POSITIONS = getenv_int_any("SWING_MAX_GROUP_POSITIONS", default=1)
 SWING_CORRELATION_GROUPS = getenv_any("SWING_CORRELATION_GROUPS", default="SPY,QQQ,IWM|AAPL,MSFT,NVDA,AMD,AVGO|AMZN,META,GOOGL,CRM,ORCL,SNOW")
@@ -878,7 +892,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-061-universe-redesign-advisor"
+PATCH_VERSION = "patch-062-regime-engine-mode-switching"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -5240,7 +5254,56 @@ def _build_swing_regime(index_bars: list[dict], daily_map: dict[str, list[dict]]
         'data_complete': data_complete,
     }
 
-def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None) -> dict:
+
+def _get_regime_mode(regime: dict | None = None, index_alignment_ok: bool | None = None) -> str:
+    regime = dict(regime or {})
+    favorable = regime.get("favorable")
+    data_complete = bool(regime.get("data_complete"))
+    if favorable is True and (index_alignment_ok is not False):
+        return "trend"
+    breadth = _safe_float(regime.get("breadth_pct"))
+    range_ok = False
+    if breadth is not None:
+        range_ok = breadth >= max(0.0, SWING_REGIME_MIN_BREADTH * 0.75)
+    if data_complete and favorable is not True and range_ok:
+        return "neutral"
+    return "defensive"
+
+
+def _regime_mode_thresholds(mode: str) -> dict:
+    mode = str(mode or "trend").strip().lower()
+    if mode == "neutral":
+        return {
+            "mode": "neutral",
+            "breakout_max_distance_pct": float(SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT),
+            "close_to_high_min_pct": float(SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT),
+            "return_20d_min_pct": float(SWING_NEUTRAL_MIN_20D_RETURN_PCT),
+            "require_trend": False,
+            "require_index_alignment": bool(SWING_NEUTRAL_REQUIRE_INDEX_ALIGNMENT),
+            "allow_entries_when_regime_unfavorable": True,
+        }
+    if mode == "defensive":
+        return {
+            "mode": "defensive",
+            "breakout_max_distance_pct": float(SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT),
+            "close_to_high_min_pct": float(SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT),
+            "return_20d_min_pct": float(SWING_DEFENSIVE_MIN_20D_RETURN_PCT),
+            "require_trend": False,
+            "require_index_alignment": bool(SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT),
+            "allow_entries_when_regime_unfavorable": bool(SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES),
+        }
+    return {
+        "mode": "trend",
+        "breakout_max_distance_pct": float(SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT),
+        "close_to_high_min_pct": float(SWING_TREND_MIN_CLOSE_TO_HIGH_PCT),
+        "return_20d_min_pct": float(SWING_TREND_MIN_20D_RETURN_PCT),
+        "require_trend": True,
+        "require_index_alignment": True,
+        "allow_entries_when_regime_unfavorable": bool(SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE),
+    }
+
+
+def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None, regime_mode: str = 'trend') -> dict:
     candidate = {
         'symbol': symbol,
         'strategy': SWING_STRATEGY_NAME,
@@ -5256,6 +5319,7 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
     if len(closes) < need:
         candidate['rejection_reasons'].append('insufficient_daily_bars')
         return candidate
+    thresholds = _regime_mode_thresholds(regime_mode)
     close = closes[-1]
     prev_close = closes[-2]
     high = highs[-1]
@@ -5284,24 +5348,25 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         score += min(20.0, avg_dollar_vol_20 / SWING_MIN_AVG_DOLLAR_VOLUME * 10.0)
     else:
         candidate['rejection_reasons'].append('avg_dollar_volume_below_min')
-    if fast_ma and slow_ma and close > fast_ma > slow_ma:
+    trend_ok = bool(fast_ma and slow_ma and close > fast_ma > slow_ma)
+    if trend_ok:
         score += 25
-    else:
+    elif thresholds.get('require_trend'):
         candidate['rejection_reasons'].append('trend_filter_failed')
-    if ret_20 >= SWING_MIN_20D_RETURN_PCT:
+    if ret_20 >= float(thresholds.get('return_20d_min_pct') or 0.0):
         score += min(20.0, ret_20 * 200.0)
     else:
         candidate['rejection_reasons'].append('return_20d_below_min')
-    if close_to_high >= SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT:
+    if close_to_high >= float(thresholds.get('close_to_high_min_pct') or 0.0):
         score += 12
     else:
         candidate['rejection_reasons'].append('close_not_near_high')
-    if breakout_distance >= -SWING_BREAKOUT_BUFFER_PCT:
+    if breakout_distance >= -float(thresholds.get('breakout_max_distance_pct') or 0.0):
         score += 18
     else:
         candidate['rejection_reasons'].append('too_far_below_breakout')
     score += max(0.0, min(10.0, range_pct * 100.0))
-    if SWING_REQUIRE_INDEX_ALIGNMENT and index_aligned is False:
+    if bool(thresholds.get('require_index_alignment')) and index_aligned is False:
         candidate['rejection_reasons'].append('index_alignment_failed')
     candidate.update({
         'close': round(close, 4),
@@ -5324,6 +5389,14 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         'rank_score': round(score, 4),
         'signal': 'daily_breakout',
         'side': 'buy',
+        'regime_mode': thresholds.get('mode'),
+        'mode_thresholds': {
+            'breakout_max_distance_pct': round(float(thresholds.get('breakout_max_distance_pct') or 0.0) * 100.0, 3),
+            'close_to_high_min_pct': round(float(thresholds.get('close_to_high_min_pct') or 0.0) * 100.0, 3),
+            'return_20d_min_pct': round(float(thresholds.get('return_20d_min_pct') or 0.0) * 100.0, 3),
+            'require_trend': bool(thresholds.get('require_trend')),
+            'require_index_alignment': bool(thresholds.get('require_index_alignment')),
+        },
     })
     candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
     if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
@@ -6348,6 +6421,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
     index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
     regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, syms)
+    regime_mode = _get_regime_mode(regime, index_ok) if SWING_REGIME_MODE_SWITCHING_ENABLED else ('trend' if regime.get('favorable') else 'defensive')
+    regime_thresholds = _regime_mode_thresholds(regime_mode)
     LAST_REGIME_SNAPSHOT.clear()
     LAST_REGIME_SNAPSHOT.update(regime)
     REGIME_HISTORY.append(dict(regime))
@@ -6379,7 +6454,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     if daily_halt_active() or daily_stop_hit():
         new_entries_globally_blocked = True
         global_block_reasons.append('daily_halt_active')
-    if regime.get('favorable') is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE:
+    if regime.get('favorable') is False and not bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')):
         new_entries_globally_blocked = True
         global_block_reasons.append('weak_tape')
     if portfolio_cap_blocked:
@@ -6395,7 +6470,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     shadow_rejection_counts = Counter()
     shadow_alignment_rejection_counts = Counter()
     for sym in syms:
-        c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok)
+        c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode)
         if _has_pending_entry_plan(sym):
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('plan_or_pending_entry_exists')
@@ -6435,7 +6510,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     shadow_alignment_candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
     approved = [c for c in candidates if c.get('eligible')]
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
-    if regime.get('favorable') is False:
+    if regime_mode == 'defensive':
+        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
+    elif regime.get('favorable') is False:
         max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
     same_day_stats = _same_day_entry_stats()
     remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
@@ -6467,6 +6544,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'index_symbol': SWING_INDEX_SYMBOL,
         'index_alignment_ok': index_ok,
         'regime': dict(regime),
+        'regime_mode': regime_mode,
+        'regime_mode_thresholds': {
+            'breakout_max_distance_pct': round(float(regime_thresholds.get('breakout_max_distance_pct') or 0.0) * 100.0, 3),
+            'close_to_high_min_pct': round(float(regime_thresholds.get('close_to_high_min_pct') or 0.0) * 100.0, 3),
+            'return_20d_min_pct': round(float(regime_thresholds.get('return_20d_min_pct') or 0.0) * 100.0, 3),
+            'require_trend': bool(regime_thresholds.get('require_trend')),
+            'require_index_alignment': bool(regime_thresholds.get('require_index_alignment')),
+            'allow_entries_when_regime_unfavorable': bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')),
+        },
         'symbols': list(scan_symbols),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
@@ -6542,6 +6628,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 'global_block_reasons': list(summary.get('global_block_reasons') or []),
                 'regime_favorable': summary.get('regime', {}).get('favorable') if isinstance(summary.get('regime'), dict) else None,
                 'regime_data_complete': summary.get('regime', {}).get('data_complete') if isinstance(summary.get('regime'), dict) else None,
+                'regime_mode': summary.get('regime_mode'),
             }
         )
         for sel in (selected or []):
@@ -7913,6 +8000,23 @@ def _compute_system_health_ok(
     ])
 
 
+@app.get("/diagnostics/regime_mode")
+def diagnostics_regime_mode():
+    _ensure_runtime_state_loaded()
+    regime = dict(LAST_REGIME_SNAPSHOT or {})
+    mode = _get_regime_mode(regime, None)
+    return {
+        "ok": True,
+        "mode": mode,
+        "regime": regime,
+        "mode_thresholds": _regime_mode_thresholds(mode),
+        "blockers": _diagnostics_swing_blockers(),
+        "current_runtime_symbols": universe_symbols(),
+        "last_scan_summary": dict((LAST_SCAN.get("summary") or {})),
+    }
+
+
+
 @app.get("/diagnostics/readiness")
 def diagnostics_readiness(request: Request):
     require_admin_if_configured(request)
@@ -9060,6 +9164,8 @@ def _diagnostics_swing_blockers() -> dict:
         'regime_known': bool(LAST_REGIME_SNAPSHOT),
         'regime_data_complete': regime_data_complete,
         'regime_favorable': regime_favorable,
+        'regime_mode': _get_regime_mode(dict(LAST_REGIME_SNAPSHOT or {}), None),
+        'regime_mode_switching_enabled': bool(SWING_REGIME_MODE_SWITCHING_ENABLED),
         'blocked_by_weak_regime': regime_blocked,
         'remaining_new_entries_today': int(remaining_today),
         'blocked_by_entry_cap': bool(remaining_today <= 0),
@@ -10024,6 +10130,8 @@ def diagnostics_regime(limit: int = 20):
             'swing_regime_min_breadth': SWING_REGIME_MIN_BREADTH,
             'swing_allow_new_entries_in_weak_tape': SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE,
             'swing_weak_tape_max_new_entries': SWING_WEAK_TAPE_MAX_NEW_ENTRIES,
+            'swing_regime_mode_switching_enabled': SWING_REGIME_MODE_SWITCHING_ENABLED,
+            'swing_regime_mode_allow_defensive_entries': SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES,
             'swing_max_group_positions': SWING_MAX_GROUP_POSITIONS,
             'swing_portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
             'swing_correlation_groups': SWING_CORRELATION_GROUPS,
@@ -10031,6 +10139,8 @@ def diagnostics_regime(limit: int = 20):
             'swing_correlation_groups_parsed': parsed_groups,
         },
         'current': dict(LAST_REGIME_SNAPSHOT),
+        'current_mode': _get_regime_mode(dict(LAST_REGIME_SNAPSHOT or {}), None),
+        'mode_thresholds': _regime_mode_thresholds(_get_regime_mode(dict(LAST_REGIME_SNAPSHOT or {}), None)),
         'history': REGIME_HISTORY[-lim:],
         'blockers': _diagnostics_swing_blockers(),
     }
@@ -10320,7 +10430,7 @@ def _universe_shadow_snapshot(limit: int = 10) -> dict:
         candidates = []
         rejection_counts = Counter()
         for sym in symbols:
-            c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok)
+            c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode)
             if c.get('eligible') and global_block_reasons:
                 c['eligible'] = False
                 c.setdefault('rejection_reasons', []).extend(global_block_reasons)
