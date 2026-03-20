@@ -877,7 +877,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-054-promotion-failures-hotfix"
+PATCH_VERSION = "patch-055-scan-truth-alignment"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -2938,6 +2938,12 @@ def _config_integrity_snapshot() -> dict:
     policy = _release_gate_policy_snapshot()
     for warning in policy.get("warnings") or []:
         issues.append({"code": warning, "severity": "warn", "symbols": [], "count": 0})
+    latest_completed_scan = _latest_completed_scan_record()
+    latest_summary = dict((latest_completed_scan or {}).get("summary") or {})
+    latest_candidate_symbols = _dedupe_keep_order([str((row or {}).get("symbol") or "").upper() for row in (latest_summary.get("top_candidates") or []) if str((row or {}).get("symbol") or "").strip()])
+    candidates_outside_runtime = [s for s in latest_candidate_symbols if scanner_runtime and s not in scanner_runtime]
+    if candidates_outside_runtime:
+        issues.append({"code": "latest_completed_scan_contains_candidates_outside_runtime_universe", "severity": "error", "symbols": candidates_outside_runtime[:50], "count": len(candidates_outside_runtime)})
     return {
         "allowed_symbols": allowed,
         "allowed_symbols_count": len(allowed),
@@ -2948,10 +2954,48 @@ def _config_integrity_snapshot() -> dict:
         "allowed_not_scanned": allowed_not_scanned,
         "scanned_not_allowed": scanned_not_allowed,
         "overlap_count": len(overlap),
+        "latest_completed_scan": {
+            "ts_utc": (latest_completed_scan or {}).get("ts_utc"),
+            "scan_source": (latest_completed_scan or {}).get("_scan_source"),
+            "symbols": list(latest_summary.get("symbols") or (latest_completed_scan or {}).get("symbols") or []),
+            "top_candidate_symbols": latest_candidate_symbols,
+            "candidate_symbols_outside_runtime": candidates_outside_runtime,
+        },
         "release_gate_policy": policy,
         "issues": issues,
         "healthy": not any(str((i or {}).get("severity") or "").lower() in {"error", "critical"} for i in issues),
     }
+
+
+def _latest_completed_scan_record() -> dict:
+    def _usable_scan(scan_like: dict | None) -> bool:
+        if not isinstance(scan_like, dict):
+            return False
+        summary = dict(scan_like.get("summary") or {})
+        if not summary:
+            return False
+        if scan_like.get("skipped") or summary.get("skipped") or summary.get("skip_reason"):
+            return False
+        return bool(
+            summary.get("top_candidates")
+            or summary.get("top_rejection_reasons")
+            or summary.get("rejection_counts")
+            or int(summary.get("candidates_total") or 0) > 0
+            or int(summary.get("eligible_total") or 0) > 0
+            or int(summary.get("selected_total") or 0) > 0
+        )
+
+    preferred = dict(LAST_SCAN or {}) if _usable_scan(LAST_SCAN if isinstance(LAST_SCAN, dict) else {}) else {}
+    if preferred:
+        preferred["_scan_source"] = "last_scan"
+        return preferred
+
+    for item in reversed(list(SCAN_HISTORY or [])):
+        if _usable_scan(item):
+            scan = dict(item)
+            scan["_scan_source"] = "scan_history"
+            return scan
+    return {}
 
 
 def _trade_path_snapshot(limit: int = 20) -> dict:
@@ -2961,7 +3005,7 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
     decision_rows = list(DECISIONS or [])[-max(100, min(int(limit or 20) * 20, 500)):]
     lifecycle_counts = _paper_lifecycle_counts()
     recent_scans = list(SCAN_HISTORY or [])[-max(1, min(int(limit or 20), 50)):]
-    recent_scan = recent_scans[-1] if recent_scans else dict(LAST_SCAN or {})
+    recent_scan = _latest_completed_scan_record() or (recent_scans[-1] if recent_scans else dict(LAST_SCAN or {}))
     plans = []
     for sym, plan in sorted((TRADE_PLAN or {}).items()):
         if not isinstance(plan, dict):
@@ -3009,10 +3053,12 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
         "recent_scan_summary": {
             "ts_utc": recent_scan.get("ts_utc") if isinstance(recent_scan, dict) else None,
             "reason": recent_scan.get("reason") if isinstance(recent_scan, dict) else None,
+            "scan_source": recent_scan.get("_scan_source") if isinstance(recent_scan, dict) else None,
             "candidates_total": int(current_summary.get("candidates_total") or 0),
             "eligible_total": int(current_summary.get("eligible_total") or 0),
             "selected_total": int(current_summary.get("selected_total") or 0),
             "global_block_reasons": list(current_summary.get("global_block_reasons") or []),
+            "symbols": list(current_summary.get("symbols") or recent_scan.get("symbols") or []),
         },
         "active_plans": plans[:max(1, min(int(limit or 20), 50))],
         "recent_lifecycle_events": stage_rows[-max(1, min(int(limit or 20), 50)):],
@@ -3021,9 +3067,13 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
 
 
 def _promotion_failure_snapshot(limit: int = 10) -> dict:
-    scan = dict(LAST_SCAN or {})
+    scan = _latest_completed_scan_record() or dict(LAST_SCAN or {})
     summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
-    candidates = list(summary.get("top_candidates") or LAST_SWING_CANDIDATES or [])
+    candidate_source = "summary.top_candidates"
+    candidates = list(summary.get("top_candidates") or [])
+    if not candidates and LAST_SWING_CANDIDATES:
+        candidates = list(LAST_SWING_CANDIDATES or [])
+        candidate_source = "last_swing_candidates_fallback"
     selected_total = int(summary.get("selected_total") or 0)
     eligible_total = int(summary.get("eligible_total") or 0)
     reasons = list(summary.get("top_rejection_reasons") or [])
@@ -3043,8 +3093,13 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
     nearest = _build_nearest_pass(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"nearest_pass_candidates": []}
     relaxed = _build_breakout_relaxed_snapshot(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
     alt = _build_alternate_entry_shadow(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
+    candidate_symbols = _dedupe_keep_order([str((row or {}).get("symbol") or "").upper() for row in candidates if str((row or {}).get("symbol") or "").strip()])
+    scanner_runtime = _scanner_universe_runtime()
+    candidates_outside_runtime = [s for s in candidate_symbols if scanner_runtime and s not in scanner_runtime]
     return {
         "ts_utc": scan.get("ts_utc"),
+        "scan_source": scan.get("_scan_source") if isinstance(scan, dict) else None,
+        "candidate_source": candidate_source,
         "selected_total": selected_total,
         "eligible_total": eligible_total,
         "candidates_total": int(summary.get("candidates_total") or 0),
@@ -3055,6 +3110,8 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
         "nearest_pass_symbols": [str((r or {}).get("symbol") or "") for r in (nearest.get("nearest_pass_candidates") or [])][:max(1, min(int(limit or 10), 10))],
         "relaxed_first_pass_symbols": [str((r or {}).get("symbol") or "") for r in (relaxed.get("first_pass_candidates") or [])][:max(1, min(int(limit or 10), 10))],
         "alternate_first_pass_symbols": [str((r or {}).get("symbol") or "") for r in (alt.get("first_pass_candidates") or [])][:max(1, min(int(limit or 10), 10))],
+        "scanner_universe_runtime": scanner_runtime,
+        "candidate_symbols_outside_runtime": candidates_outside_runtime,
         "top_candidates": [{
             "symbol": row.get("symbol"),
             "eligible": bool(row.get("eligible")),

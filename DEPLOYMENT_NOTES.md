@@ -75,3 +75,9 @@ Included changes:
 - Adds `/diagnostics/cohort_scorecard` with recency-weighted cohort ranking, bucketed watchlists, and promotion states.
 - Adds `/diagnostics/promotion_watchlist` with top promotion candidates, separated into breakout, alternate-entry, and mixed-signal watchlists.
 - Preserves all Patch 51 diagnostics and routes.
+
+
+## Patch 55 - Scan Truth Alignment
+- Trade path now prefers the latest completed scan with real candidate data instead of the most recent skipped scan.
+- Promotion failure diagnostics now report scan_source and candidate_source and expose candidates outside the active runtime universe.
+- Config integrity now validates latest completed scan evidence against the active runtime scanner universe.
