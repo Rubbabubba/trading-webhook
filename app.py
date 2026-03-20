@@ -877,7 +877,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-056-static-universe-fix"
+PATCH_VERSION = "patch-057-filter-pressure-lab"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3126,6 +3126,7 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
             "rank_score": row.get("rank_score"),
             "rejection_reasons": list(row.get("rejection_reasons") or []),
         } for row in candidates[:max(1, min(int(limit or 10), 10))]],
+        "filter_pressure": _filter_pressure_snapshot(limit=max(1, min(int(limit or 10), 10))),
     }
 
 
@@ -5695,6 +5696,103 @@ def _build_nearest_pass(summary: dict | None = None, limit: int = 10) -> dict:
         "nearest_pass_candidates": out[:max(1, min(int(limit or 10), 25))],
     }
 
+
+
+def _filter_pressure_snapshot(limit: int = 10) -> dict:
+    scan = _latest_completed_scan_record() or dict(LAST_SCAN or {})
+    summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
+    rows = _canonical_candidate_rows(summary)
+    row_limit = max(1, min(int(limit or 10), 25))
+    scan_symbols = _dedupe_keep_order([str(s).upper() for s in (summary.get("symbols") or scan.get("symbols") or []) if str(s).strip()])
+    global_block_reasons = list(dict.fromkeys(summary.get("global_block_reasons") or []))
+
+    def _top_symbols_from(eval_rows: list[dict]) -> list[str]:
+        ranked = sorted(eval_rows, key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)
+        return [str(r.get("symbol") or "") for r in ranked[:row_limit] if str(r.get("symbol") or "")]
+
+    baseline_eval = [_evaluate_candidate_under_thresholds(r) for r in rows]
+    baseline_non_market = [r for r in baseline_eval if r.get("passes_non_market")]
+    baseline_live = [r for r in baseline_eval if r.get("eligible")]
+
+    single_reason_counts = {}
+    for reason in [
+        "trend_filter_failed",
+        "return_20d_below_min",
+        "too_far_below_breakout",
+        "close_not_near_high",
+        "index_alignment_failed",
+    ]:
+        passed = []
+        for row in baseline_eval:
+            reasons = [str(x) for x in (row.get("reasons") or []) if str(x)]
+            remaining = [r for r in reasons if r != reason]
+            if not remaining:
+                passed.append(row)
+        single_reason_counts[reason] = {
+            "eligible_count_if_removed": len(passed),
+            "symbols": _top_symbols_from(passed),
+        }
+
+    no_market_gate_eval = [_evaluate_candidate_under_thresholds(r, include_market_gate=False) for r in rows]
+    no_market_gate_pass = [r for r in no_market_gate_eval if r.get("eligible")]
+
+    relaxed_breakout_eval = [_evaluate_candidate_under_thresholds(r, breakout_max_distance_pct=PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT) for r in rows]
+    relaxed_breakout_pass = [r for r in relaxed_breakout_eval if r.get("eligible")]
+
+    relaxed_combo_eval = [
+        _evaluate_candidate_under_thresholds(
+            r,
+            breakout_max_distance_pct=max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT),
+            close_to_high_min_pct=min(CURRENT_CLOSE_TO_HIGH_MIN_PCT, 98.0),
+            return_20d_min_pct=min(CURRENT_RETURN_20D_MIN_PCT, 0.0),
+            include_market_gate=False,
+        )
+        for r in rows
+    ]
+    relaxed_combo_pass = [r for r in relaxed_combo_eval if r.get("eligible")]
+
+    blocker_pressure = []
+    for reason, payload in sorted(single_reason_counts.items(), key=lambda kv: (-int((kv[1] or {}).get("eligible_count_if_removed") or 0), kv[0])):
+        blocker_pressure.append({
+            "reason": reason,
+            "eligible_count_if_removed": int((payload or {}).get("eligible_count_if_removed") or 0),
+            "symbols": list((payload or {}).get("symbols") or []),
+        })
+
+    return {
+        "ts_utc": scan.get("ts_utc") if isinstance(scan, dict) else None,
+        "scan_source": scan.get("_scan_source") if isinstance(scan, dict) else None,
+        "scan_symbols": scan_symbols,
+        "candidates_total": int(summary.get("candidates_total") or len(rows) or 0),
+        "eligible_total": int(summary.get("eligible_total") or 0),
+        "selected_total": int(summary.get("selected_total") or 0),
+        "global_block_reasons": global_block_reasons,
+        "baseline": {
+            "passes_non_market_count": len(baseline_non_market),
+            "passes_non_market_symbols": _top_symbols_from(baseline_non_market),
+            "eligible_count": len(baseline_live),
+            "eligible_symbols": _top_symbols_from(baseline_live),
+        },
+        "counterfactuals": {
+            "remove_global_market_gate": {
+                "eligible_count": len(no_market_gate_pass),
+                "symbols": _top_symbols_from(no_market_gate_pass),
+            },
+            "relax_breakout_distance_only": {
+                "breakout_max_distance_pct": PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT,
+                "eligible_count": len(relaxed_breakout_pass),
+                "symbols": _top_symbols_from(relaxed_breakout_pass),
+            },
+            "relax_geometry_and_quality_ignore_market_gate": {
+                "breakout_max_distance_pct": max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT),
+                "close_to_high_min_pct": min(CURRENT_CLOSE_TO_HIGH_MIN_PCT, 98.0),
+                "return_20d_min_pct": min(CURRENT_RETURN_20D_MIN_PCT, 0.0),
+                "eligible_count": len(relaxed_combo_pass),
+                "symbols": _top_symbols_from(relaxed_combo_pass),
+            },
+        },
+        "single_filter_removal_pressure": blocker_pressure[:row_limit],
+    }
 
 def _evaluate_alternate_entry_shadow(item: dict | None, include_market_gate: bool = True) -> dict:
     item = dict(item or {})
@@ -10125,6 +10223,11 @@ def diagnostics_trade_path(limit: int = 20):
 @app.get("/diagnostics/promotion_failures")
 def diagnostics_promotion_failures(limit: int = 10):
     return _promotion_failure_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/filter_pressure")
+def diagnostics_filter_pressure(limit: int = 10):
+    return _filter_pressure_snapshot(limit=limit)
 
 
 @app.post("/worker/scan_entries")

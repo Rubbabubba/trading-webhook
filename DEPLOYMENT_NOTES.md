@@ -88,3 +88,9 @@ Included changes:
 - Fixed runtime universe diagnostics to resolve from the same universe function used by the scanner.
 - Added explicit `symbols`/`symbols_total` to swing scan summaries and trade-path snapshots.
 - Added candidate-vs-scan universe mismatch reporting in trade path and promotion failure diagnostics.
+
+
+## Patch 57 - Filter Pressure Lab
+- Added /diagnostics/filter_pressure to show baseline eligibility, market-gate-free eligibility, relaxed threshold counterfactuals, and single-filter-removal pressure.
+- Embedded filter_pressure inside /diagnostics/promotion_failures so latest non-promotion now includes counterfactual pass counts.
+- Purpose: quantify whether the current strategy is blocked primarily by market gate, entry geometry, quality filters, or combined strictness.
