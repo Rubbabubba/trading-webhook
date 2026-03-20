@@ -121,3 +121,10 @@ Included changes:
 - Swing candidate evaluation now uses mode-aware thresholds for breakout distance, close-to-high, momentum, and trend requirements.
 - Weak tape can route into defensive mode instead of always hard blocking entries when regime-mode switching is enabled.
 - Scan summaries now include regime_mode and mode thresholds for diagnostics.
+
+## Patch 063 - runtime preview and universe validation
+- Added /diagnostics/universe_validation to catch invalid runtime symbols and suggest likely matches.
+- Added /diagnostics/current_runtime_preview to evaluate the current env-driven runtime universe on demand, even when the last completed scan is stale or after-hours.
+- Aligned weak-regime blocker diagnostics with regime-mode thresholds so defensive mode no longer reports a false weak-regime block when defensive entries are allowed.
+- Enriched /diagnostics/candidates with current-vs-history runtime symbol mismatch visibility and invalid runtime symbol reporting.
+

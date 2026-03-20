@@ -11,6 +11,7 @@ import threading
 from collections import Counter
 from itertools import combinations
 from pathlib import Path
+from difflib import get_close_matches
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -892,7 +893,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-062-regime-engine-mode-switching"
+PATCH_VERSION = "patch-063-runtime-preview-and-universe-validation"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -8000,6 +8001,84 @@ def _compute_system_health_ok(
     ])
 
 
+
+
+def _universe_validation_snapshot() -> dict:
+    runtime_syms = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
+    allowed_syms = sorted({str(s).strip().upper() for s in ALLOWED_SYMBOLS if str(s).strip()})
+    allowed_set = set(allowed_syms)
+    invalid = []
+    valid = []
+    for sym in runtime_syms:
+        if sym in allowed_set:
+            valid.append(sym)
+        else:
+            invalid.append({
+                "symbol": sym,
+                "suggestions": get_close_matches(sym, allowed_syms, n=3, cutoff=0.6),
+            })
+    return {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "runtime_symbols": runtime_syms,
+        "runtime_symbols_count": len(runtime_syms),
+        "valid_runtime_symbols": valid,
+        "invalid_runtime_symbols": invalid,
+        "healthy": len(invalid) == 0,
+    }
+
+
+def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
+    limit = max(1, min(int(limit or 25), 100))
+    runtime_syms = list(universe_symbols() or [])
+    syms_for_fetch = list(runtime_syms)
+    if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms_for_fetch:
+        syms_for_fetch.append(SWING_INDEX_SYMBOL)
+    lookback_days = max(int(SCANNER_LOOKBACK_DAYS or 20) + 40, SWING_REGIME_SLOW_MA_DAYS + REGIME_BREADTH_RETURN_LOOKBACK_DAYS + 30, SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 20)
+    daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days) if runtime_syms else {}
+    index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
+    regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, runtime_syms) if runtime_syms else {}
+    regime_mode = _get_regime_mode(regime, index_ok) if SWING_REGIME_MODE_SWITCHING_ENABLED else ('trend' if regime.get('favorable') else 'defensive')
+    thresholds = _regime_mode_thresholds(regime_mode)
+    global_block_reasons = []
+    if regime.get('favorable') is False and not bool(thresholds.get('allow_entries_when_regime_unfavorable')):
+        global_block_reasons.append('weak_tape')
+    rows = []
+    for sym in runtime_syms:
+        c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode)
+        if c.get('eligible') and global_block_reasons:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).extend(global_block_reasons)
+        rows.append(c)
+    rows.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
+    approved = [r for r in rows if r.get('eligible')]
+    validation = _universe_validation_snapshot()
+    return {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "preview_source": "current_runtime_env",
+        "runtime_symbols": runtime_syms,
+        "runtime_symbols_count": len(runtime_syms),
+        "index_alignment_ok": index_ok,
+        "regime": regime,
+        "regime_mode": regime_mode,
+        "mode_thresholds": thresholds,
+        "global_block_reasons": global_block_reasons,
+        "eligible_total": len(approved),
+        "top_candidates": rows[:limit],
+        "invalid_runtime_symbols": list(validation.get('invalid_runtime_symbols') or []),
+        "healthy": len(validation.get('invalid_runtime_symbols') or []) == 0,
+    }
+
+
+@app.get("/diagnostics/universe_validation")
+def diagnostics_universe_validation():
+    return _universe_validation_snapshot()
+
+
+@app.get("/diagnostics/current_runtime_preview")
+def diagnostics_current_runtime_preview(limit: int = 25):
+    return _current_runtime_preview_snapshot(limit=limit)
+
+
 @app.get("/diagnostics/regime_mode")
 def diagnostics_regime_mode():
     _ensure_runtime_state_loaded()
@@ -9133,7 +9212,9 @@ def _diagnostics_swing_blockers() -> dict:
     remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
     regime_favorable = LAST_REGIME_SNAPSHOT.get('favorable') if isinstance(LAST_REGIME_SNAPSHOT, dict) else None
     regime_data_complete = bool((LAST_REGIME_SNAPSHOT or {}).get('data_complete')) if isinstance(LAST_REGIME_SNAPSHOT, dict) else False
-    regime_blocked = bool(regime_favorable is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE)
+    regime_mode = _get_regime_mode(dict(LAST_REGIME_SNAPSHOT or {}), None)
+    regime_thresholds = _regime_mode_thresholds(regime_mode)
+    regime_blocked = bool(regime_favorable is False and not bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')))
     daily_halt_blocked = bool(daily_halt_active() or daily_stop_hit())
     effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("diagnostics_swing")))
     corr_groups = _correlation_groups_list()
@@ -9164,8 +9245,16 @@ def _diagnostics_swing_blockers() -> dict:
         'regime_known': bool(LAST_REGIME_SNAPSHOT),
         'regime_data_complete': regime_data_complete,
         'regime_favorable': regime_favorable,
-        'regime_mode': _get_regime_mode(dict(LAST_REGIME_SNAPSHOT or {}), None),
+        'regime_mode': regime_mode,
         'regime_mode_switching_enabled': bool(SWING_REGIME_MODE_SWITCHING_ENABLED),
+        'regime_mode_thresholds': {
+            'breakout_max_distance_pct': round(float(regime_thresholds.get('breakout_max_distance_pct') or 0.0) * 100.0, 3),
+            'close_to_high_min_pct': round(float(regime_thresholds.get('close_to_high_min_pct') or 0.0) * 100.0, 3),
+            'return_20d_min_pct': round(float(regime_thresholds.get('return_20d_min_pct') or 0.0) * 100.0, 3),
+            'require_trend': bool(regime_thresholds.get('require_trend')),
+            'require_index_alignment': bool(regime_thresholds.get('require_index_alignment')),
+            'allow_entries_when_regime_unfavorable': bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')),
+        },
         'blocked_by_weak_regime': regime_blocked,
         'remaining_new_entries_today': int(remaining_today),
         'blocked_by_entry_cap': bool(remaining_today <= 0),
@@ -10239,6 +10328,9 @@ def diagnostics_candidates(limit: int = 25):
     shadow_items = [dict(item) for item in latest if bool((item or {}).get('shadow_regime_candidate'))]
     shadow_alignment_items = [dict(item) for item in latest if bool((item or {}).get('shadow_alignment_only_candidate'))]
     latest_hist = dict(hist[-1]) if hist else {}
+    current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
+    latest_hist_symbols = [str(s).strip().upper() for s in (latest_hist.get('symbols') or []) if str(s).strip()]
+    runtime_validation = _universe_validation_snapshot()
     return {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -10256,6 +10348,10 @@ def diagnostics_candidates(limit: int = 25):
         'shadow_alignment_selected_count': len(latest_hist.get('shadow_alignment_selected') or []),
         'shadow_alignment_selected': list(latest_hist.get('shadow_alignment_selected') or []),
         'history': hist,
+        'current_runtime_symbols': current_runtime,
+        'latest_history_symbols': latest_hist_symbols,
+        'history_matches_current_runtime': bool(current_runtime and latest_hist_symbols == current_runtime),
+        'invalid_runtime_symbols': list(runtime_validation.get('invalid_runtime_symbols') or []),
     }
 
 
