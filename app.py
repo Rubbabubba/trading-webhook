@@ -878,7 +878,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-059-universe-shadow-lab"
+PATCH_VERSION = "patch-060-policy-shadow-lab"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -2879,6 +2879,7 @@ def _routes_manifest_snapshot() -> dict:
         "/worker/exit",
         "/diagnostics/worker_exit_status",
         "/diagnostics/universe_shadow",
+        "/diagnostics/policy_shadow",
         "/webhook",
     }
     actual = {r["path"] for r in routes}
@@ -5701,13 +5702,8 @@ def _build_nearest_pass(summary: dict | None = None, limit: int = 10) -> dict:
 
 
 
-def _filter_pressure_snapshot(limit: int = 10) -> dict:
-    scan = _latest_completed_scan_record() or dict(LAST_SCAN or {})
-    summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
-    rows = _canonical_candidate_rows(summary)
+def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str], ts_utc: str | None, scan_source: str | None, global_block_reasons: list[str], limit: int = 10, eligible_total: int | None = None, selected_total: int | None = None) -> dict:
     row_limit = max(1, min(int(limit or 10), 25))
-    scan_symbols = _dedupe_keep_order([str(s).upper() for s in (summary.get("symbols") or scan.get("symbols") or []) if str(s).strip()])
-    global_block_reasons = list(dict.fromkeys(summary.get("global_block_reasons") or []))
 
     def _top_symbols_from(eval_rows: list[dict]) -> list[str]:
         ranked = sorted(eval_rows, key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)
@@ -5801,13 +5797,13 @@ def _filter_pressure_snapshot(limit: int = 10) -> dict:
         }
 
     return {
-        "ts_utc": scan.get("ts_utc") if isinstance(scan, dict) else None,
-        "scan_source": scan.get("_scan_source") if isinstance(scan, dict) else None,
+        "ts_utc": ts_utc,
+        "scan_source": scan_source,
         "scan_symbols": scan_symbols,
-        "candidates_total": int(summary.get("candidates_total") or len(rows) or 0),
-        "eligible_total": int(summary.get("eligible_total") or 0),
-        "selected_total": int(summary.get("selected_total") or 0),
-        "global_block_reasons": global_block_reasons,
+        "candidates_total": len(rows),
+        "eligible_total": int(len(baseline_live) if eligible_total is None else eligible_total),
+        "selected_total": int(0 if selected_total is None else selected_total),
+        "global_block_reasons": list(global_block_reasons or []),
         "baseline": {
             "passes_non_market_count": len(baseline_non_market),
             "passes_non_market_symbols": _top_symbols_from(baseline_non_market),
@@ -5837,6 +5833,24 @@ def _filter_pressure_snapshot(limit: int = 10) -> dict:
         "minimum_unlock_combo": minimum_unlock_combo,
         "candidate_unlock_requirements": candidate_unlock_requirements,
     }
+
+
+def _filter_pressure_snapshot(limit: int = 10) -> dict:
+    scan = _latest_completed_scan_record() or dict(LAST_SCAN or {})
+    summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
+    rows = _canonical_candidate_rows(summary)
+    scan_symbols = _dedupe_keep_order([str(s).upper() for s in (summary.get("symbols") or scan.get("symbols") or []) if str(s).strip()])
+    global_block_reasons = list(dict.fromkeys(summary.get("global_block_reasons") or []))
+    return _filter_pressure_payload_from_rows(
+        rows=rows,
+        scan_symbols=scan_symbols,
+        ts_utc=scan.get("ts_utc") if isinstance(scan, dict) else None,
+        scan_source=scan.get("_scan_source") if isinstance(scan, dict) else None,
+        global_block_reasons=global_block_reasons,
+        limit=limit,
+        eligible_total=int(summary.get("eligible_total") or 0),
+        selected_total=int(summary.get("selected_total") or 0),
+    )
 
 def _evaluate_alternate_entry_shadow(item: dict | None, include_market_gate: bool = True) -> dict:
     item = dict(item or {})
@@ -10354,6 +10368,80 @@ def _universe_shadow_snapshot(limit: int = 10) -> dict:
         },
     }
 
+def _policy_shadow_snapshot(limit: int = 10) -> dict:
+    limit = max(1, min(int(limit or 10), 25))
+    runtime_syms = list(universe_symbols() or [])
+    allowed_syms = sorted(ALLOWED_SYMBOLS)[: max(len(ALLOWED_SYMBOLS), SCANNER_MAX_SYMBOLS_PER_CYCLE or len(ALLOWED_SYMBOLS) or 0)]
+    expanded_syms = _dedupe_keep_order(list(runtime_syms) + list(allowed_syms))
+
+    def _rows_for_symbols(symbols: list[str]) -> tuple[list[dict], list[str], list[str], bool | None, bool | None]:
+        if not symbols:
+            return [], [], [], None, None
+        syms_for_fetch = list(symbols)
+        if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms_for_fetch:
+            syms_for_fetch.append(SWING_INDEX_SYMBOL)
+        lookback_days = max(int(SCANNER_LOOKBACK_DAYS or 20) + 40, SWING_REGIME_SLOW_MA_DAYS + REGIME_BREADTH_RETURN_LOOKBACK_DAYS + 30, SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 20)
+        daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
+        index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
+        regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, symbols)
+        global_block_reasons = []
+        if regime.get('favorable') is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE:
+            global_block_reasons.append('weak_tape')
+        rows = []
+        for sym in symbols:
+            rows.append(evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok))
+        return rows, list(symbols), global_block_reasons, index_ok, regime.get('favorable')
+
+    runtime_rows, runtime_scan_symbols, runtime_global, runtime_index_ok, runtime_regime = _rows_for_symbols(runtime_syms)
+    expanded_rows, expanded_scan_symbols, expanded_global, expanded_index_ok, expanded_regime = _rows_for_symbols(expanded_syms)
+
+    runtime_payload = _filter_pressure_payload_from_rows(
+        rows=runtime_rows,
+        scan_symbols=runtime_scan_symbols,
+        ts_utc=datetime.now(timezone.utc).isoformat(),
+        scan_source='policy_shadow_runtime',
+        global_block_reasons=runtime_global,
+        limit=limit,
+    )
+    expanded_payload = _filter_pressure_payload_from_rows(
+        rows=expanded_rows,
+        scan_symbols=expanded_scan_symbols,
+        ts_utc=datetime.now(timezone.utc).isoformat(),
+        scan_source='policy_shadow_expanded_allowed',
+        global_block_reasons=expanded_global,
+        limit=limit,
+    )
+
+    runtime_set = set(runtime_syms)
+    outside_runtime = [r for r in list(expanded_payload.get('candidate_unlock_requirements') or []) if str(r.get('symbol') or '') not in runtime_set]
+    outside_runtime.sort(key=lambda x: (int(x.get('reason_count') or 999), -float(x.get('rank_score') or 0.0), str(x.get('symbol') or '')))
+
+    return {
+        'ts_utc': datetime.now(timezone.utc).isoformat(),
+        'runtime_universe': {
+            'symbols': runtime_syms,
+            'symbols_total': len(runtime_syms),
+            'index_alignment_ok': runtime_index_ok,
+            'regime_favorable': runtime_regime,
+            'filter_pressure': runtime_payload,
+        },
+        'expanded_allowed_universe': {
+            'symbols': expanded_syms,
+            'symbols_total': len(expanded_syms),
+            'index_alignment_ok': expanded_index_ok,
+            'regime_favorable': expanded_regime,
+            'filter_pressure': expanded_payload,
+        },
+        'delta': {
+            'additional_symbols_total': max(0, len(expanded_syms) - len(runtime_syms)),
+            'additional_symbols': [s for s in expanded_syms if s not in runtime_set],
+            'minimum_unlock_combo_runtime': runtime_payload.get('minimum_unlock_combo'),
+            'minimum_unlock_combo_expanded': expanded_payload.get('minimum_unlock_combo'),
+            'best_unlock_candidates_outside_runtime': outside_runtime[:limit],
+        },
+    }
+
+
 def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     now_utc = datetime.now(timezone.utc)
     hb = dict(LAST_EXIT_HEARTBEAT or {})
@@ -10405,6 +10493,10 @@ def diagnostics_universe_shadow(limit: int = 10):
 @app.get("/diagnostics/worker_exit_status")
 def diagnostics_worker_exit_status(limit: int = 20):
     return _worker_exit_status_snapshot(limit=limit)
+
+@app.get("/diagnostics/policy_shadow")
+def diagnostics_policy_shadow(limit: int = 10):
+    return _policy_shadow_snapshot(limit=limit)
 
 
 @app.post("/worker/scan_entries")

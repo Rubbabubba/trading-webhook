@@ -100,3 +100,9 @@ Included changes:
 - Added /diagnostics/universe_shadow to compare current runtime universe vs expanded allowed-symbol universe under the same swing logic.
 - Quantifies whether the narrow 9-symbol runtime universe is suppressing candidate discovery relative to the broader allowed list.
 - Patch version: patch-059-universe-shadow-lab
+
+
+## Patch 060 - policy shadow lab
+- Added `/diagnostics/policy_shadow` to compare constraint pressure between runtime universe and expanded allowed universe.
+- Refactored filter-pressure logic into reusable payload generation so policy analysis can be run on alternate universes.
+- Exposes minimum unlock combo and best unlock candidates outside the runtime basket.
