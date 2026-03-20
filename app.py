@@ -877,6 +877,9 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
+PATCH_VERSION = "patch-053-baseline-integrity-trade-path-proof"
+PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
+EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
 
 # =============================
@@ -2789,6 +2792,267 @@ def config_effective_snapshot() -> dict:
         "entry_max_spread_pct": ENTRY_MAX_SPREAD_PCT,
         "dry_run": DRY_RUN,
         "decision_buffer_size": DECISION_BUFFER_SIZE,
+    }
+
+
+def _safe_file_sha256(path_str: str) -> str:
+    try:
+        path = Path(path_str).expanduser().resolve()
+        if not path.exists() or not path.is_file():
+            return ""
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _artifact_integrity_snapshot() -> dict:
+    base_dir = Path(__file__).resolve().parent
+    files = []
+    missing = []
+    for name in EXPECTED_ARTIFACT_FILES:
+        path = base_dir / name
+        exists = path.exists()
+        row = {
+            "name": name,
+            "exists": exists,
+            "size_bytes": (path.stat().st_size if exists and path.is_file() else None),
+            "sha256": (_safe_file_sha256(str(path))[:16] if exists and path.is_file() else ""),
+        }
+        files.append(row)
+        if not exists:
+            missing.append(name)
+    return {
+        "base_dir": str(base_dir),
+        "expected_files": files,
+        "missing_files": missing,
+        "healthy": len(missing) == 0,
+    }
+
+
+def _build_fingerprint_snapshot() -> dict:
+    artifact = _artifact_integrity_snapshot()
+    material = "|".join([PATCH_VERSION, PATCH_BUILD_TS_UTC] + [f"{row['name']}:{row['sha256']}:{row['size_bytes']}" for row in artifact.get("expected_files") or []])
+    fingerprint = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    return {
+        "patch_version": PATCH_VERSION,
+        "build_timestamp_utc": PATCH_BUILD_TS_UTC,
+        "build_fingerprint": fingerprint,
+        "system_name": SYSTEM_NAME,
+        "env_name": ENV_NAME,
+        "release_stage_configured": SYSTEM_RELEASE_STAGE,
+        "artifact_integrity": artifact,
+    }
+
+
+def _routes_manifest_snapshot() -> dict:
+    routes = []
+    for route in getattr(app, "routes", []):
+        path = str(getattr(route, "path", "") or "")
+        if not path:
+            continue
+        methods = sorted([m for m in (getattr(route, "methods", None) or []) if m not in {"HEAD", "OPTIONS"}])
+        routes.append({
+            "path": path,
+            "methods": methods,
+            "name": str(getattr(route, "name", "") or ""),
+        })
+    routes.sort(key=lambda x: (x.get("path") or "", ",".join(x.get("methods") or [])))
+    expected = {
+        "/diagnostics/release_workflow",
+        "/diagnostics/continuity",
+        "/diagnostics/paper_lifecycle",
+        "/diagnostics/nearest_pass",
+        "/diagnostics/alternate_entry_shadow",
+        "/diagnostics/repeatability",
+        "/diagnostics/cohort_evidence",
+        "/diagnostics/promotion_watchlist",
+        "/diagnostics/actionable_watchlist",
+        "/diagnostics/system_state",
+        "/worker/scan_entries",
+        "/worker/exit",
+        "/webhook",
+    }
+    actual = {r["path"] for r in routes}
+    missing_expected = sorted(expected - actual)
+    return {
+        "route_count": len(routes),
+        "missing_expected_routes": missing_expected,
+        "healthy": len(missing_expected) == 0,
+        "routes": routes,
+    }
+
+
+def _scanner_universe_runtime() -> list[str]:
+    try:
+        return [str(s).upper() for s in (resolve_scanner_symbols() or []) if str(s).strip()]
+    except Exception:
+        return []
+
+
+def _release_gate_policy_snapshot() -> dict:
+    warnings = []
+    if RELEASE_MIN_SELECTED_CANDIDATES <= 0:
+        warnings.append("release_min_selected_candidates_not_enforced")
+    if RELEASE_MIN_ENTRY_EVENTS <= 0:
+        warnings.append("release_min_entry_events_not_enforced")
+    if RELEASE_MIN_EXIT_EVENTS <= 0:
+        warnings.append("release_min_exit_events_not_enforced")
+    return {
+        "min_completed_scans": RELEASE_MIN_COMPLETED_SCANS,
+        "min_selected_candidates": RELEASE_MIN_SELECTED_CANDIDATES,
+        "min_entry_events": RELEASE_MIN_ENTRY_EVENTS,
+        "min_exit_events": RELEASE_MIN_EXIT_EVENTS,
+        "warnings": warnings,
+        "strict_execution_proof_required": len(warnings) == 0,
+    }
+
+
+def _config_integrity_snapshot() -> dict:
+    allowed = sorted(ALLOWED_SYMBOLS)
+    scanner_runtime = _scanner_universe_runtime()
+    scanner_env = [s.strip().upper() for s in SCANNER_UNIVERSE_SYMBOLS.split(",") if s.strip()]
+    allowed_not_scanned = sorted([s for s in allowed if s not in scanner_runtime])
+    scanned_not_allowed = sorted([s for s in scanner_runtime if s not in ALLOWED_SYMBOLS])
+    overlap = sorted([s for s in scanner_runtime if s in ALLOWED_SYMBOLS])
+    issues = []
+    if allowed_not_scanned:
+        issues.append({"code": "allowed_symbols_missing_from_active_scanner_universe", "severity": "warn", "symbols": allowed_not_scanned[:50], "count": len(allowed_not_scanned)})
+    if scanned_not_allowed:
+        issues.append({"code": "scanner_universe_contains_symbols_not_in_allowed_symbols", "severity": "error", "symbols": scanned_not_allowed[:50], "count": len(scanned_not_allowed)})
+    if len(overlap) == 0:
+        issues.append({"code": "scanner_universe_no_overlap_with_allowed_symbols", "severity": "critical", "symbols": [], "count": 0})
+    policy = _release_gate_policy_snapshot()
+    for warning in policy.get("warnings") or []:
+        issues.append({"code": warning, "severity": "warn", "symbols": [], "count": 0})
+    return {
+        "allowed_symbols": allowed,
+        "allowed_symbols_count": len(allowed),
+        "scanner_universe_provider": SCANNER_UNIVERSE_PROVIDER,
+        "scanner_universe_from_env": scanner_env,
+        "scanner_universe_runtime": scanner_runtime,
+        "scanner_universe_count": len(scanner_runtime),
+        "allowed_not_scanned": allowed_not_scanned,
+        "scanned_not_allowed": scanned_not_allowed,
+        "overlap_count": len(overlap),
+        "release_gate_policy": policy,
+        "issues": issues,
+        "healthy": not any(str((i or {}).get("severity") or "").lower() in {"error", "critical"} for i in issues),
+    }
+
+
+def _trade_path_snapshot(limit: int = 20) -> dict:
+    lifecycle_events = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not lifecycle_events or lifecycle_events[-1] != LAST_PAPER_LIFECYCLE):
+        lifecycle_events.append(dict(LAST_PAPER_LIFECYCLE))
+    decision_rows = list(DECISIONS or [])[-max(100, min(int(limit or 20) * 20, 500)):]
+    lifecycle_counts = _paper_lifecycle_counts()
+    recent_scans = list(SCAN_HISTORY or [])[-max(1, min(int(limit or 20), 50)):]
+    recent_scan = recent_scans[-1] if recent_scans else dict(LAST_SCAN or {})
+    plans = []
+    for sym, plan in sorted((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict):
+            continue
+        plans.append({
+            "symbol": sym,
+            "active": bool(plan.get("active")),
+            "order_id": plan.get("order_id"),
+            "order_status": plan.get("order_status"),
+            "filled_qty": plan.get("filled_qty"),
+            "submitted_qty": plan.get("submitted_qty"),
+            "opened_at": plan.get("opened_at"),
+            "strategy_name": plan.get("strategy_name"),
+            "source": plan.get("source"),
+        })
+    stage_rows = []
+    for ev in lifecycle_events[-max(20, min(int(limit or 20) * 4, 200)):]:
+        stage_rows.append({
+            "ts_utc": ev.get("ts_utc"),
+            "stage": ev.get("stage"),
+            "status": ev.get("status"),
+            "symbol": ev.get("symbol"),
+            "details": ev.get("details") or {},
+        })
+    recent_decisions = []
+    for row in decision_rows[-max(20, min(int(limit or 20) * 3, 120)):]:
+        recent_decisions.append({
+            "ts_utc": row.get("ts_utc"),
+            "event": row.get("event"),
+            "source": row.get("source"),
+            "symbol": row.get("symbol"),
+            "action": row.get("action"),
+            "reason": row.get("reason"),
+        })
+    coverage = {
+        "selected_candidates_present": lifecycle_counts.get("candidate_selected", 0) > 0,
+        "entry_events_present": lifecycle_counts.get("entry_events", 0) > 0,
+        "exit_events_present": lifecycle_counts.get("exit_events", 0) > 0,
+        "reconcile_healthy": not bool(build_reconcile_snapshot().get("trading_blocked")),
+    }
+    current_summary = (recent_scan.get("summary") if isinstance(recent_scan, dict) else {}) or {}
+    return {
+        "coverage": coverage,
+        "lifecycle_counts": lifecycle_counts,
+        "recent_scan_summary": {
+            "ts_utc": recent_scan.get("ts_utc") if isinstance(recent_scan, dict) else None,
+            "reason": recent_scan.get("reason") if isinstance(recent_scan, dict) else None,
+            "candidates_total": int(current_summary.get("candidates_total") or 0),
+            "eligible_total": int(current_summary.get("eligible_total") or 0),
+            "selected_total": int(current_summary.get("selected_total") or 0),
+            "global_block_reasons": list(current_summary.get("global_block_reasons") or []),
+        },
+        "active_plans": plans[:max(1, min(int(limit or 20), 50))],
+        "recent_lifecycle_events": stage_rows[-max(1, min(int(limit or 20), 50)):],
+        "recent_decisions": recent_decisions[-max(1, min(int(limit or 20), 50)):],
+    }
+
+
+def _promotion_failure_snapshot(limit: int = 10) -> dict:
+    scan = dict(LAST_SCAN or {})
+    summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
+    candidates = list(summary.get("top_candidates") or LAST_SWING_CANDIDATES or [])
+    selected_total = int(summary.get("selected_total") or 0)
+    eligible_total = int(summary.get("eligible_total") or 0)
+    reasons = list(summary.get("top_rejection_reasons") or [])
+    global_block_reasons = list(dict.fromkeys(summary.get("global_block_reasons") or []))
+    stage_failures = []
+    if int(summary.get("candidates_total") or 0) == 0:
+        stage_failures.append({"stage": "scan", "code": "no_candidates_scored", "severity": "error"})
+    if eligible_total == 0:
+        stage_failures.append({"stage": "eligibility", "code": "no_eligible_candidates", "severity": "error"})
+    if global_block_reasons:
+        stage_failures.append({"stage": "global_gate", "code": "global_entry_blocked", "severity": "warn", "reasons": global_block_reasons})
+    remaining_entries = int(summary.get("remaining_new_entries_today") or 0)
+    if eligible_total > 0 and selected_total == 0 and remaining_entries <= 0:
+        stage_failures.append({"stage": "selection", "code": "entry_capacity_exhausted", "severity": "warn", "remaining_new_entries_today": remaining_entries})
+    if eligible_total > 0 and selected_total == 0 and remaining_entries > 0 and not global_block_reasons:
+        stage_failures.append({"stage": "selection", "code": "eligible_candidates_did_not_promote", "severity": "warn"})
+    nearest = _build_nearest_pass_snapshot(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"nearest_pass_candidates": []}
+    relaxed = _build_breakout_relaxed_snapshot(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
+    alt = _build_alternate_entry_shadow(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
+    return {
+        "ts_utc": scan.get("ts_utc"),
+        "selected_total": selected_total,
+        "eligible_total": eligible_total,
+        "candidates_total": int(summary.get("candidates_total") or 0),
+        "no_candidate_promoted": selected_total == 0,
+        "stage_failures": stage_failures,
+        "top_rejection_reasons": reasons[:max(1, min(int(limit or 10), 10))],
+        "global_block_reasons": global_block_reasons,
+        "nearest_pass_symbols": [str((r or {}).get("symbol") or "") for r in (nearest.get("nearest_pass_candidates") or [])][:max(1, min(int(limit or 10), 10))],
+        "relaxed_first_pass_symbols": [str((r or {}).get("symbol") or "") for r in (relaxed.get("first_pass_candidates") or [])][:max(1, min(int(limit or 10), 10))],
+        "alternate_first_pass_symbols": [str((r or {}).get("symbol") or "") for r in (alt.get("first_pass_candidates") or [])][:max(1, min(int(limit or 10), 10))],
+        "top_candidates": [{
+            "symbol": row.get("symbol"),
+            "eligible": bool(row.get("eligible")),
+            "rank_score": row.get("rank_score"),
+            "rejection_reasons": list(row.get("rejection_reasons") or []),
+        } for row in candidates[:max(1, min(int(limit or 10), 10))]],
     }
 
 
@@ -6050,6 +6314,21 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     'close': sel.get('close'),
                 }
             )
+            try:
+                record_decision(
+                    "CANDIDATE",
+                    "worker_scan",
+                    str(sel.get('symbol') or ''),
+                    side='buy',
+                    signal=str(sel.get('signal') or ''),
+                    action='selected',
+                    reason='',
+                    rank_score=sel.get('rank_score'),
+                    estimated_qty=sel.get('estimated_qty'),
+                    close=sel.get('close'),
+                )
+            except Exception:
+                pass
     except Exception:
         pass
     try:
@@ -9735,6 +10014,31 @@ def diagnostics_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAUL
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
     return _build_actionable_watchlist(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct, limit=limit)
+
+
+@app.get("/diagnostics/build")
+def diagnostics_build():
+    return _build_fingerprint_snapshot()
+
+
+@app.get("/diagnostics/routes")
+def diagnostics_routes():
+    return _routes_manifest_snapshot()
+
+
+@app.get("/diagnostics/config_integrity")
+def diagnostics_config_integrity():
+    return _config_integrity_snapshot()
+
+
+@app.get("/diagnostics/trade_path")
+def diagnostics_trade_path(limit: int = 20):
+    return _trade_path_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/promotion_failures")
+def diagnostics_promotion_failures(limit: int = 10):
+    return _promotion_failure_snapshot(limit=limit)
 
 
 @app.post("/worker/scan_entries")

@@ -1,3 +1,15 @@
+# Patch 53 - Baseline Integrity + Trade Path Proof
+
+Adds hard diagnostics for baseline trust and execution-path evidence:
+- `/diagnostics/build` for patch/build/artifact fingerprint
+- `/diagnostics/routes` for registered route manifest and missing-expected-route detection
+- `/diagnostics/config_integrity` for allowed-symbol vs active scanner-universe mismatch detection and release-gate policy warnings
+- `/diagnostics/trade_path` for selected -> entry -> exit proof coverage from lifecycle and decision evidence
+- `/diagnostics/promotion_failures` for explicit why-no-promotion analysis from the latest scan
+- scanner candidate selections now emit structured `CANDIDATE` decisions for auditability
+
+This patch does **not** relax strategy quality or arm live trading. It is a baseline-integrity and execution-proof patch.
+
 Patch 42 (drop-in)
 
 Purpose
