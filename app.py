@@ -878,7 +878,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-060-policy-shadow-lab"
+PATCH_VERSION = "patch-061-universe-redesign-advisor"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -10442,6 +10442,112 @@ def _policy_shadow_snapshot(limit: int = 10) -> dict:
     }
 
 
+
+
+def _universe_redesign_snapshot(limit: int = 10, target_size: int | None = None) -> dict:
+    limit = max(1, min(int(limit or 10), 25))
+    shadow = _policy_shadow_snapshot(limit=max(limit, 25))
+
+    runtime = dict(shadow.get('runtime_universe') or {})
+    expanded = dict(shadow.get('expanded_allowed_universe') or {})
+    runtime_syms = list(runtime.get('symbols') or [])
+    runtime_set = set(runtime_syms)
+    expanded_unlock = list((((expanded.get('filter_pressure') or {}).get('candidate_unlock_requirements')) or []))
+    runtime_unlock = list((((runtime.get('filter_pressure') or {}).get('candidate_unlock_requirements')) or []))
+
+    def _sort_key(row: dict):
+        return (
+            int(row.get('reason_count') or 999),
+            -float(row.get('rank_score') or 0.0),
+            str(row.get('symbol') or ''),
+        )
+
+    expanded_sorted = sorted(expanded_unlock, key=_sort_key)
+    runtime_sorted = sorted(runtime_unlock, key=_sort_key)
+    outside_sorted = [r for r in expanded_sorted if str(r.get('symbol') or '') not in runtime_set]
+    runtime_worst = sorted(runtime_unlock, key=lambda r: (-int(r.get('reason_count') or -1), float(r.get('rank_score') or 0.0), str(r.get('symbol') or '')))
+
+    current_size = len(runtime_syms)
+    target_size = max(4, min(int(target_size or current_size or 9), max(len(expanded.get('symbols') or []), current_size or 4)))
+
+    recommended_runtime_v2 = []
+    seen = set()
+    for row in expanded_sorted:
+        sym = str(row.get('symbol') or '')
+        if not sym or sym in seen:
+            continue
+        recommended_runtime_v2.append(sym)
+        seen.add(sym)
+        if len(recommended_runtime_v2) >= target_size:
+            break
+
+    add_candidates = [r for r in outside_sorted if str(r.get('symbol') or '') in set(recommended_runtime_v2)]
+    add_syms = {str(r.get('symbol') or '') for r in add_candidates}
+    removal_candidates = []
+    for row in runtime_worst:
+        sym = str(row.get('symbol') or '')
+        if sym and sym not in set(recommended_runtime_v2):
+            removal_candidates.append(row)
+
+    min_runtime_combo = (((runtime.get('filter_pressure') or {}).get('minimum_unlock_combo')) or {})
+    min_expanded_combo = (((expanded.get('filter_pressure') or {}).get('minimum_unlock_combo')) or {})
+
+    improvement = None
+    try:
+        improvement = int(min_runtime_combo.get('combo_size')) - int(min_expanded_combo.get('combo_size'))
+    except Exception:
+        improvement = None
+
+    pilot_candidates = [
+        {
+            'symbol': str(r.get('symbol') or ''),
+            'rank_score': r.get('rank_score'),
+            'reasons': list(r.get('reasons') or []),
+            'reason_count': int(r.get('reason_count') or 0),
+        }
+        for r in outside_sorted[:limit]
+    ]
+
+    rationale = []
+    if improvement is not None and improvement > 0:
+        rationale.append('expanded_allowed_universe_unlocks_with_fewer_constraints_than_runtime')
+    if add_candidates:
+        rationale.append('outside_runtime_candidates_rank_ahead_of_current_runtime_symbols')
+    if removal_candidates:
+        rationale.append('current_runtime_contains_lower_priority_symbols_for_swing_unlock')
+
+    return {
+        'ts_utc': datetime.now(timezone.utc).isoformat(),
+        'target_runtime_size': target_size,
+        'current_runtime_symbols': runtime_syms,
+        'current_runtime_size': current_size,
+        'current_runtime_minimum_unlock_combo': min_runtime_combo,
+        'expanded_universe_minimum_unlock_combo': min_expanded_combo,
+        'combo_size_improvement_vs_runtime': improvement,
+        'recommended_additions': [
+            {
+                'symbol': str(r.get('symbol') or ''),
+                'rank_score': r.get('rank_score'),
+                'reasons': list(r.get('reasons') or []),
+                'reason_count': int(r.get('reason_count') or 0),
+            }
+            for r in add_candidates[:limit]
+        ],
+        'recommended_removals': [
+            {
+                'symbol': str(r.get('symbol') or ''),
+                'rank_score': r.get('rank_score'),
+                'reasons': list(r.get('reasons') or []),
+                'reason_count': int(r.get('reason_count') or 0),
+            }
+            for r in removal_candidates[:limit]
+        ],
+        'recommended_runtime_v2_symbols': recommended_runtime_v2,
+        'recommended_runtime_v2_env_value': ','.join(recommended_runtime_v2),
+        'outside_runtime_pilot_candidates': pilot_candidates,
+        'rationale': rationale,
+    }
+
 def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     now_utc = datetime.now(timezone.utc)
     hb = dict(LAST_EXIT_HEARTBEAT or {})
@@ -10497,6 +10603,11 @@ def diagnostics_worker_exit_status(limit: int = 20):
 @app.get("/diagnostics/policy_shadow")
 def diagnostics_policy_shadow(limit: int = 10):
     return _policy_shadow_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/universe_recommendation")
+def diagnostics_universe_recommendation(limit: int = 10, target_size: int | None = None):
+    return _universe_redesign_snapshot(limit=limit, target_size=target_size)
 
 
 @app.post("/worker/scan_entries")

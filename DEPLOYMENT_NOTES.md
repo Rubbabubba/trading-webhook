@@ -106,3 +106,10 @@ Included changes:
 - Added `/diagnostics/policy_shadow` to compare constraint pressure between runtime universe and expanded allowed universe.
 - Refactored filter-pressure logic into reusable payload generation so policy analysis can be run on alternate universes.
 - Exposes minimum unlock combo and best unlock candidates outside the runtime basket.
+
+
+## Patch 61 - universe redesign advisor
+- Added `/diagnostics/universe_recommendation`
+- Converts policy-shadow evidence into an actionable runtime-universe redesign plan
+- Recommends additions, removals, and a drop-in `SCANNER_UNIVERSE_SYMBOLS` env string based on lowest blocker count and highest rank score
+- Purpose: decide the next runtime universe before touching production filter policy
