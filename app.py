@@ -893,7 +893,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-064-runtime-truth-sync"
+PATCH_VERSION = "patch-066-runtime-truth-rebased"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3016,6 +3016,105 @@ def _latest_completed_scan_record() -> dict:
             return scan
     return {}
 
+
+
+
+def _scan_summary_from_candidates(candidates: list[dict], symbols: list[str], regime: dict | None = None, global_block_reasons: list[str] | None = None, selected_symbols: list[str] | None = None) -> dict:
+    candidates = [dict(c) for c in (candidates or []) if isinstance(c, dict)]
+    symbols = _dedupe_keep_order([str(s).strip().upper() for s in (symbols or []) if str(s).strip()])
+    global_block_reasons = list(dict.fromkeys(global_block_reasons or []))
+    selected_symbols = _dedupe_keep_order([str(s).strip().upper() for s in (selected_symbols or []) if str(s).strip()])
+    eligible = [c for c in candidates if bool(c.get('eligible'))]
+    rejection_counts = Counter()
+    for row in candidates:
+        for reason in (row.get('rejection_reasons') or []):
+            if str(reason).strip():
+                rejection_counts[str(reason).strip()] += 1
+    return {
+        'strategy_name': SWING_STRATEGY_NAME,
+        'index_symbol': SWING_INDEX_SYMBOL,
+        'regime': dict(regime or {}),
+        'symbols': list(symbols),
+        'symbols_total': len(symbols),
+        'candidates_total': len(candidates),
+        'eligible_total': len(eligible),
+        'selected_total': len(selected_symbols),
+        'top_candidates': candidates[:5],
+        'top_rejection_reasons': [{'reason': k, 'count': int(v)} for k, v in rejection_counts.most_common(10)],
+        'global_block_reasons': list(global_block_reasons),
+    }
+
+
+def _candidate_history_to_scan_record(hist: dict, scan_source: str = 'candidate_history') -> dict:
+    hist = dict(hist or {})
+    symbols = _dedupe_keep_order([str(s).strip().upper() for s in (hist.get('symbols') or []) if str(s).strip()])
+    candidates = [dict(c) for c in (hist.get('candidates') or []) if isinstance(c, dict)]
+    regime = dict(hist.get('regime') or {})
+    scan = {
+        'ts_utc': hist.get('ts_utc'),
+        'reason': hist.get('scan_reason') or 'candidate_history',
+        'symbols': list(symbols),
+        'summary': _scan_summary_from_candidates(
+            candidates=candidates,
+            symbols=symbols,
+            regime=regime,
+            global_block_reasons=list(dict.fromkeys(regime.get('reasons') or [])) if regime.get('favorable') is False else [],
+            selected_symbols=list(hist.get('selected') or []),
+        ),
+        '_scan_source': scan_source,
+    }
+    return scan
+
+
+def _latest_matching_scan_record(runtime_symbols: list[str] | None = None) -> dict:
+    target = _dedupe_keep_order([str(s).strip().upper() for s in (runtime_symbols or universe_symbols() or []) if str(s).strip()])
+    if not target:
+        return {}
+
+    def _matches(symbols: list[str] | None) -> bool:
+        probe = _dedupe_keep_order([str(s).strip().upper() for s in (symbols or []) if str(s).strip()])
+        return bool(probe) and probe == target
+
+    for hist in reversed(list(CANDIDATE_HISTORY or [])):
+        if isinstance(hist, dict) and _matches(hist.get('symbols')):
+            rec = _candidate_history_to_scan_record(hist, scan_source='candidate_history_match')
+            if rec:
+                return rec
+
+    if isinstance(LAST_SCAN, dict) and _matches((LAST_SCAN.get('summary') or {}).get('symbols') or LAST_SCAN.get('symbols')):
+        rec = dict(LAST_SCAN)
+        rec['_scan_source'] = rec.get('_scan_source') or 'last_scan_match'
+        return rec
+
+    for item in reversed(list(SCAN_HISTORY or [])):
+        if isinstance(item, dict) and _matches((item.get('summary') or {}).get('symbols') or item.get('symbols')):
+            rec = dict(item)
+            rec['_scan_source'] = rec.get('_scan_source') or 'scan_history_match'
+            return rec
+    return {}
+
+
+def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
+    preview = _current_runtime_preview_snapshot(limit=max(5, min(int(limit or 25), 100)))
+    if not isinstance(preview, dict) or not preview:
+        return {}
+    symbols = _dedupe_keep_order([str(s).strip().upper() for s in (preview.get('runtime_symbols') or []) if str(s).strip()])
+    top_candidates = [dict(c) for c in (preview.get('top_candidates') or []) if isinstance(c, dict)]
+    regime = dict(preview.get('regime') or {})
+    scan = {
+        'ts_utc': preview.get('ts_utc'),
+        'reason': 'current_runtime_preview',
+        'symbols': list(symbols),
+        'summary': _scan_summary_from_candidates(
+            candidates=top_candidates,
+            symbols=symbols,
+            regime=regime,
+            global_block_reasons=list(preview.get('global_block_reasons') or []),
+            selected_symbols=[],
+        ),
+        '_scan_source': 'current_runtime_preview',
+    }
+    return scan
 
 def _trade_path_snapshot(limit: int = 20) -> dict:
     lifecycle_events = list(PAPER_LIFECYCLE_HISTORY or [])
@@ -8081,6 +8180,22 @@ def diagnostics_current_runtime_preview(limit: int = 25):
     return _current_runtime_preview_snapshot(limit=limit)
 
 
+@app.get("/diagnostics/runtime_truth")
+def diagnostics_runtime_truth(limit: int = 25):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
+    matched = _latest_matching_scan_record(current_runtime)
+    preview = _current_runtime_truth_snapshot(limit=limit)
+    return {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "current_runtime_symbols": current_runtime,
+        "matched_history_scan": matched,
+        "current_runtime_preview_scan": preview,
+        "history_matches_current_runtime": bool(matched),
+    }
+
+
 @app.get("/diagnostics/regime_mode")
 def diagnostics_regime_mode():
     _ensure_runtime_state_loaded()
@@ -10325,42 +10440,46 @@ def diagnostics_candidates(limit: int = 25):
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
     lim = max(1, min(int(limit or 25), 200))
-    hist = CANDIDATE_HISTORY[-5:]
     current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
-    latest_hist = dict(hist[-1]) if hist else {}
-    latest_hist_symbols = [str(s).strip().upper() for s in (latest_hist.get('symbols') or []) if str(s).strip()]
-    history_matches = bool(current_runtime and latest_hist_symbols == current_runtime)
-    matched_hist = _latest_matching_scan_record(current_runtime)
-    source_payload = matched_hist if matched_hist else (_current_runtime_truth_snapshot(limit=lim) if current_runtime else latest_hist)
-    if history_matches and latest_hist:
-        source_payload = latest_hist
-    latest = _canonical_candidate_rows(source_payload)[:lim]
-    source_label = source_payload.get('_scan_source') or ('scan_history' if history_matches else ('current_runtime_preview' if source_payload is not latest_hist else 'latest_history'))
-    shadow_items = [dict(item) for item in latest if bool((item or {}).get('shadow_regime_candidate'))]
-    shadow_alignment_items = [dict(item) for item in latest if bool((item or {}).get('shadow_alignment_only_candidate'))]
-    active_hist = source_payload if isinstance(source_payload, dict) else {}
     runtime_validation = _universe_validation_snapshot()
+    matched_scan = _latest_matching_scan_record(current_runtime)
+    runtime_truth = _current_runtime_truth_snapshot(limit=lim)
+    active_scan = matched_scan or runtime_truth or _latest_completed_scan_record() or {}
+    active_summary = (active_scan.get('summary') if isinstance(active_scan, dict) else {}) or {}
+    items = list(active_summary.get('top_candidates') or LAST_SWING_CANDIDATES[-lim:] or [])
+    items = [dict(item) for item in items[:lim] if isinstance(item, dict)]
+    source = active_scan.get('_scan_source') if isinstance(active_scan, dict) else None
+    shadow_items = [dict(item) for item in items if bool((item or {}).get('shadow_regime_candidate'))]
+    shadow_alignment_items = [dict(item) for item in items if bool((item or {}).get('shadow_alignment_only_candidate'))]
+    latest_hist = {}
+    if CANDIDATE_HISTORY:
+        latest_hist = dict((CANDIDATE_HISTORY or [])[-1])
+    latest_hist_symbols = [str(s).strip().upper() for s in (latest_hist.get('symbols') or []) if str(s).strip()]
+    active_symbols = [str(s).strip().upper() for s in (active_summary.get('symbols') or active_scan.get('symbols') or []) if str(s).strip()]
     return {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
         'strategy_name': SWING_STRATEGY_NAME,
         'regime': dict(LAST_REGIME_SNAPSHOT),
         'blockers': _diagnostics_swing_blockers(),
-        'items_source': source_label,
-        'count': len(latest),
-        'items': latest,
+        'count': len(items),
+        'items': items,
+        'source': source,
+        'active_scan_ts_utc': active_scan.get('ts_utc') if isinstance(active_scan, dict) else None,
+        'active_scan_symbols': active_symbols,
         'shadow_count': len(shadow_items),
         'shadow_items': shadow_items[:SHADOW_REGIME_MAX_CANDIDATES],
-        'shadow_selected_count': len(active_hist.get('shadow_selected') or []),
-        'shadow_selected': list(active_hist.get('shadow_selected') or []),
+        'shadow_selected_count': len(latest_hist.get('shadow_selected') or []),
+        'shadow_selected': list(latest_hist.get('shadow_selected') or []),
         'shadow_alignment_count': len(shadow_alignment_items),
         'shadow_alignment_items': shadow_alignment_items[:SHADOW_REGIME_MAX_CANDIDATES],
-        'shadow_alignment_selected_count': len(active_hist.get('shadow_alignment_selected') or []),
-        'shadow_alignment_selected': list(active_hist.get('shadow_alignment_selected') or []),
-        'history': hist,
+        'shadow_alignment_selected_count': len(latest_hist.get('shadow_alignment_selected') or []),
+        'shadow_alignment_selected': list(latest_hist.get('shadow_alignment_selected') or []),
+        'history': (CANDIDATE_HISTORY or [])[-5:],
         'current_runtime_symbols': current_runtime,
         'latest_history_symbols': latest_hist_symbols,
-        'history_matches_current_runtime': history_matches,
+        'history_matches_current_runtime': bool(current_runtime and latest_hist_symbols == current_runtime),
+        'active_scan_matches_current_runtime': bool(current_runtime and active_symbols == current_runtime),
         'invalid_runtime_symbols': list(runtime_validation.get('invalid_runtime_symbols') or []),
     }
 
