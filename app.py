@@ -877,7 +877,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-053-baseline-integrity-trade-path-proof"
+PATCH_VERSION = "patch-054-promotion-failures-hotfix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -2890,9 +2890,17 @@ def _routes_manifest_snapshot() -> dict:
 
 def _scanner_universe_runtime() -> list[str]:
     try:
-        return [str(s).upper() for s in (resolve_scanner_symbols() or []) if str(s).strip()]
+        resolved = [str(s).upper() for s in (resolve_scanner_symbols() or []) if str(s).strip()]
     except Exception:
-        return []
+        resolved = []
+    if resolved:
+        return _dedupe_keep_order(resolved)
+    env_syms = [s.strip().upper() for s in SCANNER_UNIVERSE_SYMBOLS.split(",") if s.strip()]
+    if env_syms:
+        return _dedupe_keep_order(env_syms)
+    if ALLOWED_SYMBOLS:
+        return _dedupe_keep_order(sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
+    return []
 
 
 def _release_gate_policy_snapshot() -> dict:
@@ -3032,7 +3040,7 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
         stage_failures.append({"stage": "selection", "code": "entry_capacity_exhausted", "severity": "warn", "remaining_new_entries_today": remaining_entries})
     if eligible_total > 0 and selected_total == 0 and remaining_entries > 0 and not global_block_reasons:
         stage_failures.append({"stage": "selection", "code": "eligible_candidates_did_not_promote", "severity": "warn"})
-    nearest = _build_nearest_pass_snapshot(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"nearest_pass_candidates": []}
+    nearest = _build_nearest_pass(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"nearest_pass_candidates": []}
     relaxed = _build_breakout_relaxed_snapshot(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
     alt = _build_alternate_entry_shadow(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
     return {

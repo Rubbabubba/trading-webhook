@@ -1,3 +1,21 @@
+# Patch 54 - Promotion Failures Hotfix
+
+Fixes a production regression in `/diagnostics/promotion_failures` and hardens scanner-universe integrity diagnostics.
+
+What changed:
+- fixed `NameError` in `/diagnostics/promotion_failures` by calling the correct nearest-pass builder
+- hardened scanner universe runtime resolution so `/diagnostics/config_integrity` no longer reports a false zero-overlap state when the resolver returns empty during startup or fallback conditions
+- bumped patch version to `patch-054-promotion-failures-hotfix`
+
+Why this patch exists:
+- Patch 53 introduced a broken function reference inside the promotion-failure endpoint
+- The config integrity route was technically correct about the current runtime list being empty, but operationally misleading because the environment scanner universe was already configured
+
+Expected result:
+- `/diagnostics/promotion_failures` returns JSON instead of 500
+- `/diagnostics/config_integrity` shows the effective scanner universe with real overlap against `ALLOWED_SYMBOLS`
+- route set and all prior diagnostics remain intact
+
 # Patch 53 - Baseline Integrity + Trade Path Proof
 
 Adds hard diagnostics for baseline trust and execution-path evidence:
