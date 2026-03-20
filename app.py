@@ -877,7 +877,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-055-scan-truth-alignment"
+PATCH_VERSION = "patch-056-static-universe-fix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -2890,7 +2890,7 @@ def _routes_manifest_snapshot() -> dict:
 
 def _scanner_universe_runtime() -> list[str]:
     try:
-        resolved = [str(s).upper() for s in (resolve_scanner_symbols() or []) if str(s).strip()]
+        resolved = [str(s).upper() for s in (universe_symbols() or []) if str(s).strip()]
     except Exception:
         resolved = []
     if resolved:
@@ -3047,6 +3047,8 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
         "reconcile_healthy": not bool(build_reconcile_snapshot().get("trading_blocked")),
     }
     current_summary = (recent_scan.get("summary") if isinstance(recent_scan, dict) else {}) or {}
+    candidate_symbols = _dedupe_keep_order([str((row or {}).get("symbol") or "").upper() for row in (current_summary.get("top_candidates") or []) if str((row or {}).get("symbol") or "").strip()])
+    scan_symbols = _dedupe_keep_order([str(s).upper() for s in (current_summary.get("symbols") or recent_scan.get("symbols") or []) if str(s).strip()])
     return {
         "coverage": coverage,
         "lifecycle_counts": lifecycle_counts,
@@ -3058,7 +3060,9 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
             "eligible_total": int(current_summary.get("eligible_total") or 0),
             "selected_total": int(current_summary.get("selected_total") or 0),
             "global_block_reasons": list(current_summary.get("global_block_reasons") or []),
-            "symbols": list(current_summary.get("symbols") or recent_scan.get("symbols") or []),
+            "symbols": list(scan_symbols),
+            "candidate_symbols": list(candidate_symbols),
+            "candidate_symbols_outside_scan_symbols": [s for s in candidate_symbols if scan_symbols and s not in scan_symbols],
         },
         "active_plans": plans[:max(1, min(int(limit or 20), 50))],
         "recent_lifecycle_events": stage_rows[-max(1, min(int(limit or 20), 50)):],
@@ -3095,7 +3099,9 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
     alt = _build_alternate_entry_shadow(scan, limit=max(1, min(int(limit or 10), 15))) if scan else {"first_pass_candidates": [], "market_gated_candidates": []}
     candidate_symbols = _dedupe_keep_order([str((row or {}).get("symbol") or "").upper() for row in candidates if str((row or {}).get("symbol") or "").strip()])
     scanner_runtime = _scanner_universe_runtime()
+    scan_symbols = _dedupe_keep_order([str(s).upper() for s in (summary.get("symbols") or scan.get("symbols") or []) if str(s).strip()])
     candidates_outside_runtime = [s for s in candidate_symbols if scanner_runtime and s not in scanner_runtime]
+    candidates_outside_scan = [s for s in candidate_symbols if scan_symbols and s not in scan_symbols]
     return {
         "ts_utc": scan.get("ts_utc"),
         "scan_source": scan.get("_scan_source") if isinstance(scan, dict) else None,
@@ -3111,7 +3117,9 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
         "relaxed_first_pass_symbols": [str((r or {}).get("symbol") or "") for r in (relaxed.get("first_pass_candidates") or [])][:max(1, min(int(limit or 10), 10))],
         "alternate_first_pass_symbols": [str((r or {}).get("symbol") or "") for r in (alt.get("first_pass_candidates") or [])][:max(1, min(int(limit or 10), 10))],
         "scanner_universe_runtime": scanner_runtime,
+        "scan_symbols": scan_symbols,
         "candidate_symbols_outside_runtime": candidates_outside_runtime,
+        "candidate_symbols_outside_scan_symbols": candidates_outside_scan,
         "top_candidates": [{
             "symbol": row.get("symbol"),
             "eligible": bool(row.get("eligible")),
@@ -4827,8 +4835,17 @@ def _base_scanner_pool() -> list[str]:
 
 
 def universe_symbols() -> list[str]:
-    """Return the symbol universe for scanning."""
+    """Return the symbol universe for scanning.
+
+    static: fixed configured list. Prefer SCANNER_UNIVERSE_SYMBOLS when present.
+    env: explicit env-driven list.
+    dynamic: ranked/fetched pool.
+    """
     if SCANNER_UNIVERSE_PROVIDER == "static":
+        if SCANNER_UNIVERSE_SYMBOLS:
+            syms = [s.strip().upper() for s in SCANNER_UNIVERSE_SYMBOLS.split(",") if s.strip()]
+            if syms:
+                return _dedupe_keep_order(syms)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
         return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
 
     if SCANNER_UNIVERSE_PROVIDER == "env":
@@ -6166,6 +6183,7 @@ def _build_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAULT, br
 def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None) -> dict:
     reconcile_actions = reconcile_actions or []
     syms = universe_symbols()
+    scan_symbols = list(syms)
     if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms:
         syms_for_fetch = syms + [SWING_INDEX_SYMBOL]
     else:
@@ -6293,6 +6311,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'index_symbol': SWING_INDEX_SYMBOL,
         'index_alignment_ok': index_ok,
         'regime': dict(regime),
+        'symbols': list(scan_symbols),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
         'shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
@@ -6311,6 +6330,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'index_symbol': SWING_INDEX_SYMBOL,
         'index_alignment_ok': index_ok,
         'regime': dict(regime),
+        'symbols': list(scan_symbols),
+        'symbols_total': len(scan_symbols),
         'candidates_total': len(candidates),
         'eligible_total': len(approved),
         'selected_total': len(selected),

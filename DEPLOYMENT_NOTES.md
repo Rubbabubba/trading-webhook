@@ -81,3 +81,10 @@ Included changes:
 - Trade path now prefers the latest completed scan with real candidate data instead of the most recent skipped scan.
 - Promotion failure diagnostics now report scan_source and candidate_source and expose candidates outside the active runtime universe.
 - Config integrity now validates latest completed scan evidence against the active runtime scanner universe.
+
+
+## Patch 56 - Static Universe Fix
+- Fixed `universe_symbols()` so `SCANNER_UNIVERSE_PROVIDER=static` honors `SCANNER_UNIVERSE_SYMBOLS` when configured instead of silently scanning the alphabetically first allowed symbols.
+- Fixed runtime universe diagnostics to resolve from the same universe function used by the scanner.
+- Added explicit `symbols`/`symbols_total` to swing scan summaries and trade-path snapshots.
+- Added candidate-vs-scan universe mismatch reporting in trade path and promotion failure diagnostics.
