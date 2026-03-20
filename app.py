@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from collections import Counter
+from itertools import combinations
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
@@ -877,7 +878,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-057-filter-pressure-lab"
+PATCH_VERSION = "patch-058-exit-worker-and-constraint-lab"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -2876,6 +2877,7 @@ def _routes_manifest_snapshot() -> dict:
         "/diagnostics/system_state",
         "/worker/scan_entries",
         "/worker/exit",
+        "/diagnostics/worker_exit_status",
         "/webhook",
     }
     actual = {r["path"] for r in routes}
@@ -5714,24 +5716,53 @@ def _filter_pressure_snapshot(limit: int = 10) -> dict:
     baseline_non_market = [r for r in baseline_eval if r.get("passes_non_market")]
     baseline_live = [r for r in baseline_eval if r.get("eligible")]
 
-    single_reason_counts = {}
-    for reason in [
-        "trend_filter_failed",
-        "return_20d_below_min",
-        "too_far_below_breakout",
-        "close_not_near_high",
-        "index_alignment_failed",
-    ]:
+    observed_reasons = sorted({str(reason) for row in baseline_eval for reason in (row.get("reasons") or []) if str(reason)})
+
+    def _eligible_if_removed(removed_reasons: set[str]) -> list[dict]:
         passed = []
         for row in baseline_eval:
-            reasons = [str(x) for x in (row.get("reasons") or []) if str(x)]
-            remaining = [r for r in reasons if r != reason]
+            reasons = {str(x) for x in (row.get("reasons") or []) if str(x)}
+            remaining = [r for r in reasons if r not in removed_reasons]
             if not remaining:
                 passed.append(row)
+        return passed
+
+    single_reason_counts = {}
+    for reason in observed_reasons:
+        passed = _eligible_if_removed({reason})
         single_reason_counts[reason] = {
             "eligible_count_if_removed": len(passed),
             "symbols": _top_symbols_from(passed),
         }
+
+    pairwise_pressure = []
+    minimum_unlock_combo = None
+    max_combo_size = min(4, len(observed_reasons))
+    for combo_size in range(2, max_combo_size + 1):
+        combo_hits = []
+        for combo in combinations(observed_reasons, combo_size):
+            passed = _eligible_if_removed(set(combo))
+            payload = {
+                "reasons": list(combo),
+                "eligible_count_if_removed": len(passed),
+                "symbols": _top_symbols_from(passed),
+            }
+            combo_hits.append(payload)
+            if minimum_unlock_combo is None and payload["eligible_count_if_removed"] > 0:
+                minimum_unlock_combo = {"combo_size": combo_size, **payload}
+        combo_hits.sort(key=lambda x: (-int(x.get("eligible_count_if_removed") or 0), ",".join(x.get("reasons") or [])))
+        if combo_size == 2:
+            pairwise_pressure = combo_hits[:row_limit]
+
+    candidate_unlock_requirements = []
+    for row in sorted(baseline_eval, key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)[:row_limit]:
+        reasons = sorted({str(x) for x in (row.get("reasons") or []) if str(x)})
+        candidate_unlock_requirements.append({
+            "symbol": str(row.get("symbol") or ""),
+            "rank_score": row.get("rank_score"),
+            "reasons": reasons,
+            "reason_count": len(reasons),
+        })
 
     no_market_gate_eval = [_evaluate_candidate_under_thresholds(r, include_market_gate=False) for r in rows]
     no_market_gate_pass = [r for r in no_market_gate_eval if r.get("eligible")]
@@ -5758,6 +5789,15 @@ def _filter_pressure_snapshot(limit: int = 10) -> dict:
             "eligible_count_if_removed": int((payload or {}).get("eligible_count_if_removed") or 0),
             "symbols": list((payload or {}).get("symbols") or []),
         })
+
+    if minimum_unlock_combo is None and observed_reasons:
+        minimum_unlock_combo = {
+            "combo_size": None,
+            "reasons": [],
+            "eligible_count_if_removed": 0,
+            "symbols": [],
+            "message": "no_combo_up_to_size_4_unlocks_any_candidate",
+        }
 
     return {
         "ts_utc": scan.get("ts_utc") if isinstance(scan, dict) else None,
@@ -5792,6 +5832,9 @@ def _filter_pressure_snapshot(limit: int = 10) -> dict:
             },
         },
         "single_filter_removal_pressure": blocker_pressure[:row_limit],
+        "pairwise_filter_removal_pressure": pairwise_pressure,
+        "minimum_unlock_combo": minimum_unlock_combo,
+        "candidate_unlock_requirements": candidate_unlock_requirements,
     }
 
 def _evaluate_alternate_entry_shadow(item: dict | None, include_market_gate: bool = True) -> dict:
@@ -10228,6 +10271,55 @@ def diagnostics_promotion_failures(limit: int = 10):
 @app.get("/diagnostics/filter_pressure")
 def diagnostics_filter_pressure(limit: int = 10):
     return _filter_pressure_snapshot(limit=limit)
+
+
+def _worker_exit_status_snapshot(limit: int = 20) -> dict:
+    now_utc = datetime.now(timezone.utc)
+    hb = dict(LAST_EXIT_HEARTBEAT or {})
+    age_sec = None
+    if hb.get("ts_utc"):
+        try:
+            ts = datetime.fromisoformat(str(hb.get("ts_utc")))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_sec = max(0.0, (now_utc - ts.astimezone(timezone.utc)).total_seconds())
+        except Exception:
+            age_sec = None
+    recent = []
+    for row in list(DECISIONS or [])[-400:]:
+        if str(row.get("source") or "") != "worker_exit":
+            continue
+        recent.append({
+            "ts_utc": row.get("ts_utc"),
+            "event": row.get("event"),
+            "symbol": row.get("symbol"),
+            "action": row.get("action"),
+            "reason": row.get("reason"),
+        })
+    recent = recent[-max(1, min(int(limit or 20), 50)):]
+    error_like = [r for r in recent if "failed" in str(r.get("action") or "") or "error" in str(r.get("action") or "") or "failed" in str(r.get("reason") or "") or "error" in str(r.get("reason") or "")]
+    active_plans = []
+    for sym, plan in sorted((TRADE_PLAN or {}).items()):
+        if isinstance(plan, dict) and plan.get("active"):
+            active_plans.append({
+                "symbol": sym,
+                "order_status": plan.get("order_status"),
+                "side": plan.get("side"),
+                "filled_qty": plan.get("filled_qty"),
+            })
+    return {
+        "heartbeat": hb,
+        "heartbeat_age_sec": age_sec,
+        "active_plan_count": len(active_plans),
+        "active_plans": active_plans[:10],
+        "recent_worker_exit_decisions": recent,
+        "error_like_recent_count": len(error_like),
+        "healthy": hb.get("status") not in {"error", "failed"},
+    }
+
+@app.get("/diagnostics/worker_exit_status")
+def diagnostics_worker_exit_status(limit: int = 20):
+    return _worker_exit_status_snapshot(limit=limit)
 
 
 @app.post("/worker/scan_entries")
