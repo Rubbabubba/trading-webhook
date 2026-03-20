@@ -128,3 +128,8 @@ Included changes:
 - Aligned weak-regime blocker diagnostics with regime-mode thresholds so defensive mode no longer reports a false weak-regime block when defensive entries are allowed.
 - Enriched /diagnostics/candidates with current-vs-history runtime symbol mismatch visibility and invalid runtime symbol reporting.
 
+
+
+## Patch 064 - Runtime Truth Sync
+- diagnostics candidates, trade path, and promotion failures now prefer current runtime-matching scan truth or current runtime preview when history is stale.
+- fixes mixed current-config vs old-scan evidence after universe/env changes.

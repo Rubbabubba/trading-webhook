@@ -893,7 +893,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-063-runtime-preview-and-universe-validation"
+PATCH_VERSION = "patch-064-runtime-truth-sync"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3024,7 +3024,8 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
     decision_rows = list(DECISIONS or [])[-max(100, min(int(limit or 20) * 20, 500)):]
     lifecycle_counts = _paper_lifecycle_counts()
     recent_scans = list(SCAN_HISTORY or [])[-max(1, min(int(limit or 20), 50)):]
-    recent_scan = _latest_completed_scan_record() or (recent_scans[-1] if recent_scans else dict(LAST_SCAN or {}))
+    current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
+    recent_scan = _latest_matching_scan_record(current_runtime) or _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 20) * 2, 50))) or _latest_completed_scan_record() or (recent_scans[-1] if recent_scans else dict(LAST_SCAN or {}))
     plans = []
     for sym, plan in sorted((TRADE_PLAN or {}).items()):
         if not isinstance(plan, dict):
@@ -3090,7 +3091,8 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
 
 
 def _promotion_failure_snapshot(limit: int = 10) -> dict:
-    scan = _latest_completed_scan_record() or dict(LAST_SCAN or {})
+    current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
+    scan = _latest_matching_scan_record(current_runtime) or _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 10) * 2, 25))) or _latest_completed_scan_record() or dict(LAST_SCAN or {})
     summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
     candidate_source = "summary.top_candidates"
     candidates = list(summary.get("top_candidates") or [])
@@ -10323,13 +10325,20 @@ def diagnostics_candidates(limit: int = 25):
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
     lim = max(1, min(int(limit or 25), 200))
-    latest = LAST_SWING_CANDIDATES[-lim:] if LAST_SWING_CANDIDATES else []
     hist = CANDIDATE_HISTORY[-5:]
+    current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
+    latest_hist = dict(hist[-1]) if hist else {}
+    latest_hist_symbols = [str(s).strip().upper() for s in (latest_hist.get('symbols') or []) if str(s).strip()]
+    history_matches = bool(current_runtime and latest_hist_symbols == current_runtime)
+    matched_hist = _latest_matching_scan_record(current_runtime)
+    source_payload = matched_hist if matched_hist else (_current_runtime_truth_snapshot(limit=lim) if current_runtime else latest_hist)
+    if history_matches and latest_hist:
+        source_payload = latest_hist
+    latest = _canonical_candidate_rows(source_payload)[:lim]
+    source_label = source_payload.get('_scan_source') or ('scan_history' if history_matches else ('current_runtime_preview' if source_payload is not latest_hist else 'latest_history'))
     shadow_items = [dict(item) for item in latest if bool((item or {}).get('shadow_regime_candidate'))]
     shadow_alignment_items = [dict(item) for item in latest if bool((item or {}).get('shadow_alignment_only_candidate'))]
-    latest_hist = dict(hist[-1]) if hist else {}
-    current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
-    latest_hist_symbols = [str(s).strip().upper() for s in (latest_hist.get('symbols') or []) if str(s).strip()]
+    active_hist = source_payload if isinstance(source_payload, dict) else {}
     runtime_validation = _universe_validation_snapshot()
     return {
         'ok': True,
@@ -10337,20 +10346,21 @@ def diagnostics_candidates(limit: int = 25):
         'strategy_name': SWING_STRATEGY_NAME,
         'regime': dict(LAST_REGIME_SNAPSHOT),
         'blockers': _diagnostics_swing_blockers(),
+        'items_source': source_label,
         'count': len(latest),
         'items': latest,
         'shadow_count': len(shadow_items),
         'shadow_items': shadow_items[:SHADOW_REGIME_MAX_CANDIDATES],
-        'shadow_selected_count': len(latest_hist.get('shadow_selected') or []),
-        'shadow_selected': list(latest_hist.get('shadow_selected') or []),
+        'shadow_selected_count': len(active_hist.get('shadow_selected') or []),
+        'shadow_selected': list(active_hist.get('shadow_selected') or []),
         'shadow_alignment_count': len(shadow_alignment_items),
         'shadow_alignment_items': shadow_alignment_items[:SHADOW_REGIME_MAX_CANDIDATES],
-        'shadow_alignment_selected_count': len(latest_hist.get('shadow_alignment_selected') or []),
-        'shadow_alignment_selected': list(latest_hist.get('shadow_alignment_selected') or []),
+        'shadow_alignment_selected_count': len(active_hist.get('shadow_alignment_selected') or []),
+        'shadow_alignment_selected': list(active_hist.get('shadow_alignment_selected') or []),
         'history': hist,
         'current_runtime_symbols': current_runtime,
         'latest_history_symbols': latest_hist_symbols,
-        'history_matches_current_runtime': bool(current_runtime and latest_hist_symbols == current_runtime),
+        'history_matches_current_runtime': history_matches,
         'invalid_runtime_symbols': list(runtime_validation.get('invalid_runtime_symbols') or []),
     }
 
