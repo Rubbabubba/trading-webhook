@@ -94,3 +94,9 @@ Included changes:
 - Added /diagnostics/filter_pressure to show baseline eligibility, market-gate-free eligibility, relaxed threshold counterfactuals, and single-filter-removal pressure.
 - Embedded filter_pressure inside /diagnostics/promotion_failures so latest non-promotion now includes counterfactual pass counts.
 - Purpose: quantify whether the current strategy is blocked primarily by market gate, entry geometry, quality filters, or combined strictness.
+
+
+## Patch 59 - Universe Shadow Lab
+- Added /diagnostics/universe_shadow to compare current runtime universe vs expanded allowed-symbol universe under the same swing logic.
+- Quantifies whether the narrow 9-symbol runtime universe is suppressing candidate discovery relative to the broader allowed list.
+- Patch version: patch-059-universe-shadow-lab

@@ -878,7 +878,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-058-exit-worker-and-constraint-lab"
+PATCH_VERSION = "patch-059-universe-shadow-lab"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -2878,6 +2878,7 @@ def _routes_manifest_snapshot() -> dict:
         "/worker/scan_entries",
         "/worker/exit",
         "/diagnostics/worker_exit_status",
+        "/diagnostics/universe_shadow",
         "/webhook",
     }
     actual = {r["path"] for r in routes}
@@ -10273,6 +10274,86 @@ def diagnostics_filter_pressure(limit: int = 10):
     return _filter_pressure_snapshot(limit=limit)
 
 
+
+
+def _universe_shadow_snapshot(limit: int = 10) -> dict:
+    limit = max(1, min(int(limit or 10), 25))
+    runtime_syms = list(universe_symbols() or [])
+    allowed_syms = sorted(ALLOWED_SYMBOLS)[: max(len(ALLOWED_SYMBOLS), SCANNER_MAX_SYMBOLS_PER_CYCLE or len(ALLOWED_SYMBOLS) or 0)]
+    expanded_syms = _dedupe_keep_order(list(runtime_syms) + list(allowed_syms))
+
+    def _evaluate_universe(symbols: list[str]) -> dict:
+        if not symbols:
+            return {
+                "symbols": [],
+                "symbols_total": 0,
+                "candidates_total": 0,
+                "eligible_total": 0,
+                "selected_total": 0,
+                "global_block_reasons": [],
+                "top_candidates": [],
+            }
+        syms_for_fetch = list(symbols)
+        if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms_for_fetch:
+            syms_for_fetch.append(SWING_INDEX_SYMBOL)
+        lookback_days = max(int(SCANNER_LOOKBACK_DAYS or 20) + 40, SWING_REGIME_SLOW_MA_DAYS + REGIME_BREADTH_RETURN_LOOKBACK_DAYS + 30, SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 20)
+        daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
+        index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
+        regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, symbols)
+        global_block_reasons = []
+        if regime.get('favorable') is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE:
+            global_block_reasons.append('weak_tape')
+        candidates = []
+        rejection_counts = Counter()
+        for sym in symbols:
+            c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok)
+            if c.get('eligible') and global_block_reasons:
+                c['eligible'] = False
+                c.setdefault('rejection_reasons', []).extend(global_block_reasons)
+            for r in c.get('rejection_reasons', []):
+                rejection_counts[str(r)] += 1
+            candidates.append(c)
+        candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
+        approved = [c for c in candidates if c.get('eligible')]
+        return {
+            "symbols": list(symbols),
+            "symbols_total": len(symbols),
+            "candidates_total": len(candidates),
+            "eligible_total": len(approved),
+            "selected_total": 0,
+            "global_block_reasons": list(global_block_reasons),
+            "top_candidates": [
+                {
+                    "symbol": c.get('symbol'),
+                    "eligible": bool(c.get('eligible')),
+                    "rank_score": c.get('rank_score'),
+                    "rejection_reasons": list(c.get('rejection_reasons') or []),
+                }
+                for c in candidates[:limit]
+            ],
+            "top_rejection_reasons": [{"reason": k, "count": int(v)} for k, v in rejection_counts.most_common(10)],
+            "index_alignment_ok": index_ok,
+            "regime_favorable": regime.get('favorable'),
+        }
+
+    runtime_eval = _evaluate_universe(runtime_syms)
+    expanded_eval = _evaluate_universe(expanded_syms)
+    runtime_set = set(runtime_syms)
+    outside_runtime_top = [row for row in expanded_eval.get('top_candidates', []) if str(row.get('symbol') or '') not in runtime_set]
+    return {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "runtime_universe": runtime_eval,
+        "expanded_allowed_universe": expanded_eval,
+        "delta": {
+            "runtime_symbols_total": len(runtime_syms),
+            "expanded_symbols_total": len(expanded_syms),
+            "additional_symbols_total": max(0, len(expanded_syms) - len(runtime_syms)),
+            "additional_symbols": [s for s in expanded_syms if s not in runtime_set],
+            "eligible_delta": int(expanded_eval.get('eligible_total') or 0) - int(runtime_eval.get('eligible_total') or 0),
+            "top_candidates_outside_runtime": outside_runtime_top[:limit],
+        },
+    }
+
 def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     now_utc = datetime.now(timezone.utc)
     hb = dict(LAST_EXIT_HEARTBEAT or {})
@@ -10316,6 +10397,10 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "error_like_recent_count": len(error_like),
         "healthy": hb.get("status") not in {"error", "failed"},
     }
+
+@app.get("/diagnostics/universe_shadow")
+def diagnostics_universe_shadow(limit: int = 10):
+    return _universe_shadow_snapshot(limit=limit)
 
 @app.get("/diagnostics/worker_exit_status")
 def diagnostics_worker_exit_status(limit: int = 20):
