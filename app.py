@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-076-bar-truth-sync-and-lifecycle-hygiene"
+PATCH_VERSION = "patch-077-current-runtime-fill-truth-isolation"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4452,6 +4452,17 @@ def _symbol_lifecycle_proof(symbol: str, active_scan: dict | None = None) -> dic
         stage = str(exec_state.get("state") or stage)
     if exit_event:
         stage = f"exit_{str(exit_event.get('status') or '').lower()}"
+    fill_is_current = bool(fill_event) and _proof_row_is_active_or_recent({
+        "active_position": bool(abs(float(qty_signed or 0.0)) > 0),
+        "plan_created": bool(plan),
+        "order_submitted": bool(order_id),
+        "exit_armed": bool(plan and plan.get("active")),
+        "entry_event": dict(fill_event or {}),
+        "exit_event": dict(exit_event or {}),
+        "latest_decision": latest_decision,
+        "lifecycle_events": lifecycle_events,
+        "decisions": decisions,
+    })
     proof = {
         "symbol": sym,
         "candidate_present": bool(candidate),
@@ -4463,6 +4474,8 @@ def _symbol_lifecycle_proof(symbol: str, active_scan: dict | None = None) -> dic
         "plan_created": bool(plan),
         "order_submitted": bool(order_id),
         "fill_observed": bool(fill_event),
+        "current_fill_observed": bool(fill_event) and bool(fill_is_current),
+        "historical_fill_observed": bool(fill_event) and not bool(fill_is_current),
         "active_position": bool(abs(float(qty_signed or 0.0)) > 0),
         "position_qty": round(float(qty_signed or 0.0), 6),
         "position_side": pos_side,
@@ -4507,12 +4520,26 @@ def _proof_row_is_active_or_recent(row: dict, lookback_days: int = 5) -> bool:
     return False
 
 
+def _proof_row_fill_flags(row: dict, recency_days: int = 5) -> dict:
+    if not isinstance(row, dict):
+        return {"fill_observed": False, "historical_fill_observed": False}
+    any_fill = bool(row.get("fill_observed"))
+    if not any_fill:
+        return {"fill_observed": False, "historical_fill_observed": False}
+    current_fill = bool(row.get("active_position") or row.get("plan_created") or row.get("order_submitted") or row.get("exit_armed") or _proof_row_is_active_or_recent(row, lookback_days=recency_days))
+    return {
+        "fill_observed": bool(current_fill),
+        "historical_fill_observed": bool(any_fill and not current_fill),
+    }
+
+
 def _pipeline_guardrail_rows(rows: list[dict], truth_source: str | None = None) -> list[dict]:
     preview_only = str(truth_source or "") == "current_runtime_preview"
     now_ts = datetime.now(timezone.utc).isoformat()
     out = []
     for row in rows:
         sym = str(row.get("symbol") or "").strip().upper()
+        fill_flags = _proof_row_fill_flags(row)
         issues = []
         if row.get("selected") and not row.get("plan_created"):
             issues.append({
@@ -4524,7 +4551,7 @@ def _pipeline_guardrail_rows(rows: list[dict], truth_source: str | None = None) 
                 "code": "plan_waiting_for_order" if is_paper_execution_permitted("worker_scan") else "plan_without_order",
                 "severity": "warn" if is_paper_execution_permitted("worker_scan") else "info",
             })
-        if row.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event") and _proof_row_is_active_or_recent(row):
+        if fill_flags.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event"):
             issues.append({"code": "fill_without_exit_arm", "severity": "warn"})
         if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])) and _proof_row_is_active_or_recent(row):
             issues.append({"code": "reconcile_recovered", "severity": "warn"})
@@ -4535,7 +4562,8 @@ def _pipeline_guardrail_rows(rows: list[dict], truth_source: str | None = None) 
             "selected": bool(row.get("selected")),
             "plan_created": bool(row.get("plan_created")),
             "order_submitted": bool(row.get("order_submitted")),
-            "fill_observed": bool(row.get("fill_observed")),
+            "fill_observed": bool(fill_flags.get("fill_observed")),
+            "historical_fill_observed": bool(fill_flags.get("historical_fill_observed")),
             "exit_armed": bool(row.get("exit_armed")),
             "issues": issues,
         })
@@ -4560,6 +4588,7 @@ def _pipeline_guardrail_snapshot(limit: int = 20) -> dict:
         "planned_symbols": list(proof.get("planned_symbols") or []),
         "submitted_symbols": list(proof.get("submitted_symbols") or []),
         "filled_symbols": list(proof.get("filled_symbols") or []),
+        "historical_filled_symbols": list(proof.get("historical_filled_symbols") or []),
         "violation_count": len(violations),
         "violations": violations[:lim],
         "rows": rows[:lim],
@@ -4582,7 +4611,7 @@ def _paper_execution_stage_failures(rows: list[dict], truth_source: str | None =
             buckets["plan_without_order"].append(sym)
         if row.get("order_submitted") and not row.get("fill_observed"):
             buckets["order_without_fill"].append(sym)
-        if row.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event") and _proof_row_is_active_or_recent(row):
+        if fill_flags.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event"):
             buckets["fill_without_exit_arm"].append(sym)
         if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])) and _proof_row_is_active_or_recent(row):
             buckets["reconcile_recovered"].append(sym)
@@ -4618,7 +4647,8 @@ def _paper_execution_proof_snapshot(limit: int = 20) -> dict:
         "selected_symbols": [r.get("symbol") for r in rows if r.get("selected")],
         "planned_symbols": [r.get("symbol") for r in rows if r.get("plan_created")],
         "submitted_symbols": [r.get("symbol") for r in rows if r.get("order_submitted")],
-        "filled_symbols": [r.get("symbol") for r in rows if r.get("fill_observed")],
+        "filled_symbols": [r.get("symbol") for r in rows if _proof_row_fill_flags(r).get("fill_observed")],
+        "historical_filled_symbols": [r.get("symbol") for r in rows if _proof_row_fill_flags(r).get("historical_fill_observed")],
         "active_position_symbols": [r.get("symbol") for r in rows if r.get("active_position")],
         "recent_reconcile_symbols": [r.get("symbol") for r in rows if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (r.get("decisions") or []))],
     }

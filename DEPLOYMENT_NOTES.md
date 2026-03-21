@@ -1,18 +1,12 @@
-# Patch 076 – Bar Truth Sync and Lifecycle Hygiene
+# Patch 077 - Current Runtime Fill Truth Isolation
 
-This patch is built directly on patch 075 and stays surgical.
+This patch is built directly on patch 076.
 
 ## What changed
-- Updated build metadata so diagnostics report `patch-076-bar-truth-sync-and-lifecycle-hygiene`.
-- Synced bar-path diagnostics to evaluate the **latest available regular session** rather than only "today". This removes false negatives on weekends / after hours when REST has valid 1-minute bars from the most recent market session.
-- Extended `/diagnostics/bars_5m` and readiness bar probes with `latest_session_date`, `bars_1m_latest_session`, and `bars_5m_latest_session` for both SDK/fallback and REST paths.
-- Added lifecycle hygiene so stale historical recovery/fill artifacts no longer show up as active pipeline guardrail violations unless the symbol is still active or recent.
+- Isolated current-runtime fill truth from stale historical fills in lifecycle-derived diagnostics.
+- Added `historical_fill_observed` tracking so old fills can still be surfaced without contaminating present-tense pipeline state.
+- Updated pipeline guardrail summaries to report `historical_filled_symbols` separately from active/current `filled_symbols`.
+- Tightened stage-failure logic so `fill_without_exit_arm` only fires for current or recent fills, not legacy residue.
 
-## Why
-Patch 075 showed the guardrails were behaving, but readiness still reported `sample_symbol_5m_bars.ok=false` on a closed market day even though the REST probe showed valid prior-session bars. It also kept surfacing old SPY/AMZN/NVDA lifecycle noise as if it were current-state risk. Patch 076 fixes both without changing trading policy.
-
-## Deploy / verify
-1. Deploy the zip.
-2. Confirm `/diagnostics/build` shows `patch-076-bar-truth-sync-and-lifecycle-hygiene`.
-3. Confirm `/diagnostics/readiness` now reports `sample_symbol_5m_bars.ok=true` when prior-session bars are available.
-4. Confirm `/diagnostics/pipeline_guardrails` no longer flags stale historical lifecycle warnings unless the symbol is still active/recent.
+## Intent
+Keep current-runtime promotion and lifecycle diagnostics truthful when older journal or lifecycle events still exist for symbols that are back in the active runtime universe.
