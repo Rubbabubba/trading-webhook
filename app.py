@@ -5654,6 +5654,19 @@ THRESHOLD_LADDER_RETURN_20D_MIN_PCT = [
     4.0,
 ]
 
+
+def _dedupe_preserve_floats(values: list[float]) -> list[float]:
+    seen = set()
+    out = []
+    for val in values:
+        f = round(float(val), 4)
+        if f in seen:
+            continue
+        seen.add(f)
+        out.append(f)
+    return out
+
+
 PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT = getenv_float_any("PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT", default=max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, 4.0))
 PATCH67_DEFENSIVE_BREAKOUT_LADDER_PCT = _dedupe_preserve_floats([
     max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, 1.0),
@@ -5673,18 +5686,6 @@ PATCH67_DEFENSIVE_CLOSE_TO_HIGH_LADDER_PCT = _dedupe_preserve_floats([
 PATCH67_DEFENSIVE_MAX_BREAKOUT_TEST_PCT = max(PATCH67_DEFENSIVE_BREAKOUT_LADDER_PCT) if PATCH67_DEFENSIVE_BREAKOUT_LADDER_PCT else CURRENT_BREAKOUT_MAX_DISTANCE_PCT
 PATCH50_HISTORY_DEFAULT = max(1, getenv_int_any("PATCH50_HISTORY_DEFAULT", default=10))
 PATCH50_NEAREST_PASS_TOP_N = max(1, getenv_int_any("PATCH50_NEAREST_PASS_TOP_N", default=3))
-
-
-def _dedupe_preserve_floats(values: list[float]) -> list[float]:
-    seen = set()
-    out = []
-    for val in values:
-        f = round(float(val), 4)
-        if f in seen:
-            continue
-        seen.add(f)
-        out.append(f)
-    return out
 
 
 def _candidate_fixed_reasons(item: dict | None) -> tuple[list[str], list[str]]:
