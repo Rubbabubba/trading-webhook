@@ -1,13 +1,15 @@
-# Patch 073 - defensive threshold zero-truth hotfix
+# Patch 074 - paper lifecycle proof
 
-This patch is built directly on patch 072 and is intentionally surgical.
+This patch is built directly on patch 073 and stays surgical.
 
 ## What changed
-- Fixed filter-pressure threshold handling so a valid `0` defensive `return_20d_min_pct` is preserved instead of falling back to the legacy current threshold.
-- Fixed the defensive unlock lab to preserve valid zero-valued thresholds the same way.
-- Enriched `candidate_unlock_requirements` so filter reasons and selection blockers are explicitly separated.
+- Updated the build metadata so diagnostics report `patch-074-paper-lifecycle-proof`.
+- Added stitched paper lifecycle proof helpers that tie together candidate state, selection state, plan state, order state, fill state, exit arming, lifecycle events, and recent decisions per symbol.
+- Added `/diagnostics/paper_execution_proof` as the one-stop paper audit view for recent runtime symbols and active plan symbols.
+- Enriched `/diagnostics/trade_path` with per-symbol lifecycle rows and stage-failure buckets so entry and exit gaps are visible in one place.
+- Enriched `/diagnostics/paper_lifecycle` with current stage-failure summaries and active plan symbols for faster operator checks.
 
 ## Expected outcome
-- `/diagnostics/filter_pressure` should now report the same active defensive thresholds seen in the runtime preview.
-- `candidate_unlock_requirements` should distinguish filter failures from later selection blockers.
-- Defensive lab outputs should no longer drift back to the legacy 3% 20-day return floor when defensive mode uses 0%.
+- You can verify whether a candidate stopped at filter, selection, plan creation, order submission, fill, or exit from a single diagnostics view.
+- Trade path diagnostics now expose concrete stage buckets like `selected_but_no_plan`, `plan_without_order`, `order_without_fill`, and `fill_without_exit_arm`.
+- Paper lifecycle diagnostics are now usable as an operator view instead of just a raw event dump.

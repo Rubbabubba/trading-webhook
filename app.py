@@ -894,7 +894,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-072-filter-pressure-truth-alignment"
+PATCH_VERSION = "patch-074-paper-lifecycle-proof"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3233,6 +3233,7 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
     current_summary = (recent_scan.get("summary") if isinstance(recent_scan, dict) else {}) or {}
     candidate_symbols = _dedupe_keep_order([str((row or {}).get("symbol") or "").upper() for row in (current_summary.get("top_candidates") or []) if str((row or {}).get("symbol") or "").strip()])
     scan_symbols = _dedupe_keep_order([str(s).upper() for s in (current_summary.get("symbols") or recent_scan.get("symbols") or []) if str(s).strip()])
+    proof = _paper_execution_proof_snapshot(limit=max(5, min(int(limit or 20), 50)))
     return {
         "coverage": coverage,
         "lifecycle_counts": lifecycle_counts,
@@ -3252,6 +3253,8 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
         "active_plans": plans[:max(1, min(int(limit or 20), 50))],
         "recent_lifecycle_events": stage_rows[-max(1, min(int(limit or 20), 50)):],
         "recent_decisions": recent_decisions[-max(1, min(int(limit or 20), 50)):],
+        "stage_failures": list(proof.get("stage_failures") or []),
+        "lifecycle_rows": list(proof.get("rows") or []),
     }
 
 
@@ -4286,6 +4289,200 @@ def _paper_lifecycle_counts() -> dict:
             counts["exit_events"] += 1
     counts["history_count"] = len(events)
     return counts
+
+
+def _ts_parse_or_none(value) -> datetime | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        s = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _plan_exit_snapshot(symbol: str, plan: dict) -> dict:
+    now_dt = now_ny()
+    opened_dt = _ts_parse_or_none(plan.get("opened_at"))
+    max_hold_days = int(plan.get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0)
+    hold_deadline = (opened_dt + timedelta(days=max_hold_days)).isoformat() if opened_dt and max_hold_days > 0 else None
+    age_days = None
+    if opened_dt:
+        try:
+            age_days = round(max(0.0, (now_dt - opened_dt).total_seconds()) / 86400.0, 4)
+        except Exception:
+            age_days = None
+    next_trigger = []
+    if plan.get("active"):
+        next_trigger = [
+            {"type": "stop", "price": plan.get("stop_price")},
+            {"type": "target", "price": plan.get("take_price")},
+        ]
+        if hold_deadline:
+            next_trigger.append({"type": "max_hold", "deadline": hold_deadline})
+    return {
+        "signal": plan.get("signal"),
+        "strategy_name": plan.get("strategy_name"),
+        "opened_at": plan.get("opened_at"),
+        "age_days": age_days,
+        "max_hold_days": max_hold_days,
+        "max_hold_deadline": hold_deadline,
+        "entry_price": plan.get("entry_price"),
+        "avg_fill_price": plan.get("avg_fill_price"),
+        "requested_qty": plan.get("requested_qty"),
+        "submitted_qty": plan.get("submitted_qty"),
+        "filled_qty": plan.get("filled_qty"),
+        "stop_price": plan.get("stop_price"),
+        "take_price": plan.get("take_price"),
+        "initial_stop_price": plan.get("initial_stop_price"),
+        "initial_take_price": plan.get("initial_take_price"),
+        "last_exit_attempt_ts": plan.get("last_exit_attempt_ts"),
+        "actual_risk_dollars": plan.get("actual_risk_dollars"),
+        "risk_per_share": plan.get("risk_per_share"),
+        "order_id": plan.get("order_id"),
+        "order_status": plan.get("order_status"),
+        "source": plan.get("source"),
+        "active": bool(plan.get("active")),
+        "next_exit_triggers": next_trigger,
+    }
+
+
+def _symbol_lifecycle_proof(symbol: str, active_scan: dict | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return {}
+    active_scan = dict(active_scan or {})
+    summary = dict(active_scan.get("summary") or {})
+    candidates = [dict(r) for r in (summary.get("top_candidates") or []) if isinstance(r, dict)]
+    candidate = next((dict(r) for r in candidates if str(r.get("symbol") or "").strip().upper() == sym), {})
+    plan = dict((TRADE_PLAN or {}).get(sym) or {})
+    broker_order = None
+    order_id = str(plan.get("order_id") or "").strip()
+    if order_id:
+        try:
+            broker_order = get_order_status(order_id)
+        except Exception:
+            broker_order = None
+    qty_signed, pos_side = get_position(sym)
+    exec_state = _derive_execution_lifecycle_state(sym, plan or None, broker_order=broker_order, broker_position_qty=qty_signed)
+    lifecycle_events = [dict(ev) for ev in (PAPER_LIFECYCLE_HISTORY or []) if str((ev or {}).get("symbol") or "").strip().upper() == sym]
+    if LAST_PAPER_LIFECYCLE and str((LAST_PAPER_LIFECYCLE or {}).get("symbol") or "").strip().upper() == sym:
+        if not lifecycle_events or lifecycle_events[-1] != LAST_PAPER_LIFECYCLE:
+            lifecycle_events.append(dict(LAST_PAPER_LIFECYCLE))
+    lifecycle_events = lifecycle_events[-20:]
+    decisions = [dict(row) for row in (DECISIONS or []) if str((row or {}).get("symbol") or "").strip().upper() == sym]
+    decisions = decisions[-25:]
+    selected = sym in [str(s).strip().upper() for s in (summary.get("selected_symbols") or []) if str(s).strip()]
+    selection_blockers = list((candidate.get("selection_blockers") or [])) if candidate else []
+    entry_events = [ev for ev in lifecycle_events if str(ev.get("stage") or "").lower() == "entry"]
+    exit_events = [ev for ev in lifecycle_events if str(ev.get("stage") or "").lower() == "exit"]
+    plan_exit = _plan_exit_snapshot(sym, plan) if plan else {}
+    fill_event = next((ev for ev in reversed(entry_events) if str(ev.get("status") or "").lower() in {"filled", "opened", "submitted", "planned"}), None)
+    exit_event = next((ev for ev in reversed(exit_events) if str(ev.get("status") or "").lower() in {"submitted", "closed", "filled", "completed", "dry_run"}), None)
+    latest_decision = decisions[-1] if decisions else {}
+    stage = "candidate"
+    if candidate and candidate.get("eligible"):
+        stage = "eligible"
+    if selected:
+        stage = "selected"
+    if plan:
+        stage = "planned"
+    if str(exec_state.get("state") or "") in {"submitted", "partially_filled", "filled", "open", "close_submitted", "closed"}:
+        stage = str(exec_state.get("state") or stage)
+    if exit_event:
+        stage = f"exit_{str(exit_event.get('status') or '').lower()}"
+    proof = {
+        "symbol": sym,
+        "candidate_present": bool(candidate),
+        "candidate_rank_score": candidate.get("rank_score"),
+        "candidate_rejection_reasons": list(candidate.get("rejection_reasons") or []),
+        "selection_blockers": selection_blockers,
+        "eligible": bool(candidate.get("eligible")) if candidate else False,
+        "selected": bool(selected),
+        "plan_created": bool(plan),
+        "order_submitted": bool(order_id),
+        "fill_observed": bool(fill_event),
+        "active_position": bool(abs(float(qty_signed or 0.0)) > 0),
+        "position_qty": round(float(qty_signed or 0.0), 6),
+        "position_side": pos_side,
+        "exit_armed": bool(plan and plan.get("active")),
+        "current_stage": stage,
+        "latest_decision": latest_decision,
+        "entry_event": dict(fill_event or {}),
+        "exit_event": dict(exit_event or {}),
+        "execution_lifecycle": {
+            "state": exec_state.get("state"),
+            "order_status": exec_state.get("order_status"),
+            "position_qty": exec_state.get("position_qty"),
+            "issues": list(exec_state.get("issues") or []),
+        },
+        "exit_snapshot": plan_exit,
+        "lifecycle_events": lifecycle_events,
+        "decisions": decisions,
+    }
+    return proof
+
+
+def _paper_execution_stage_failures(rows: list[dict]) -> list[dict]:
+    buckets = {
+        "selected_but_no_plan": [],
+        "plan_without_order": [],
+        "order_without_fill": [],
+        "fill_without_exit_arm": [],
+        "reconcile_recovered": [],
+    }
+    for row in rows:
+        sym = row.get("symbol")
+        if row.get("selected") and not row.get("plan_created"):
+            buckets["selected_but_no_plan"].append(sym)
+        if row.get("plan_created") and not row.get("order_submitted"):
+            buckets["plan_without_order"].append(sym)
+        if row.get("order_submitted") and not row.get("fill_observed"):
+            buckets["order_without_fill"].append(sym)
+        if row.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event"):
+            buckets["fill_without_exit_arm"].append(sym)
+        if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])):
+            buckets["reconcile_recovered"].append(sym)
+    out = []
+    for code, syms in buckets.items():
+        out.append({"code": code, "count": len(syms), "symbols": syms})
+    return out
+
+
+def _paper_execution_proof_snapshot(limit: int = 20) -> dict:
+    lim = max(1, min(int(limit or 20), 50))
+    active_scan = _active_truth_scan(limit=max(10, lim * 2))
+    summary = dict((active_scan or {}).get("summary") or {})
+    runtime_symbols = _dedupe_keep_order([str(s).strip().upper() for s in (summary.get("symbols") or (active_scan or {}).get("symbols") or universe_symbols() or []) if str(s).strip()])
+    candidate_symbols = _dedupe_keep_order([str((r or {}).get("symbol") or "").strip().upper() for r in (summary.get("top_candidates") or []) if str((r or {}).get("symbol") or "").strip()])
+    plan_symbols = _dedupe_keep_order([str(s).strip().upper() for s, plan in (TRADE_PLAN or {}).items() if isinstance(plan, dict)])
+    decision_symbols = _dedupe_keep_order([str((r or {}).get("symbol") or "").strip().upper() for r in list(DECISIONS or [])[-250:] if str((r or {}).get("symbol") or "").strip()])
+    lifecycle_symbols = _dedupe_keep_order([str((r or {}).get("symbol") or "").strip().upper() for r in list(PAPER_LIFECYCLE_HISTORY or [])[-250:] if str((r or {}).get("symbol") or "").strip()])
+    symbols = _dedupe_keep_order(runtime_symbols + candidate_symbols + plan_symbols + lifecycle_symbols + decision_symbols)
+    rows = [_symbol_lifecycle_proof(sym, active_scan=active_scan) for sym in symbols[:max(lim, len(runtime_symbols))]]
+    rows = [r for r in rows if r]
+    stage_failures = _paper_execution_stage_failures(rows)
+    return {
+        "ok": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "truth_source": (active_scan or {}).get("_scan_source"),
+        "scan_ts_utc": (active_scan or {}).get("ts_utc"),
+        "runtime_symbols": runtime_symbols,
+        "candidate_symbols": candidate_symbols,
+        "rows": rows[:lim],
+        "row_count": min(len(rows), lim),
+        "stage_failures": stage_failures,
+        "selected_symbols": [r.get("symbol") for r in rows if r.get("selected")],
+        "planned_symbols": [r.get("symbol") for r in rows if r.get("plan_created")],
+        "submitted_symbols": [r.get("symbol") for r in rows if r.get("order_submitted")],
+        "filled_symbols": [r.get("symbol") for r in rows if r.get("fill_observed")],
+        "active_position_symbols": [r.get("symbol") for r in rows if r.get("active_position")],
+        "recent_reconcile_symbols": [r.get("symbol") for r in rows if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (r.get("decisions") or []))],
+    }
 
 
 def _worker_status_snapshot() -> dict:
@@ -10896,8 +11093,9 @@ def diagnostics_continuity(request: Request):
 
 
 @app.get("/diagnostics/paper_lifecycle")
-def diagnostics_paper_lifecycle():
+def diagnostics_paper_lifecycle(limit: int = 20):
     _ensure_runtime_state_loaded()
+    proof = _paper_execution_proof_snapshot(limit=max(5, min(int(limit or 20), 50)))
     return {
         "ok": True,
         "state_path": PAPER_LIFECYCLE_STATE_PATH,
@@ -10906,11 +11104,19 @@ def diagnostics_paper_lifecycle():
         "history_limit": PAPER_LIFECYCLE_HISTORY_LIMIT,
         "history_count": len(PAPER_LIFECYCLE_HISTORY or []),
         "history": list(PAPER_LIFECYCLE_HISTORY or []),
+        "active_plan_symbols": [r.get("symbol") for r in (proof.get("rows") or []) if r.get("plan_created")],
+        "stage_failures": list(proof.get("stage_failures") or []),
     }
 
 @app.get("/diagnostics/execution_lifecycle")
 def diagnostics_execution_lifecycle(limit: int = 100):
     return execution_lifecycle_snapshot(limit=limit)
+
+@app.get("/diagnostics/paper_execution_proof")
+def diagnostics_paper_execution_proof(limit: int = 20):
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    return _paper_execution_proof_snapshot(limit=limit)
 
 @app.get("/diagnostics/candidates")
 def diagnostics_candidates(limit: int = 25):
