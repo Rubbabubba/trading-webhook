@@ -3018,9 +3018,20 @@ def _latest_completed_scan_record() -> dict:
     return {}
 
 
+def _coalesce_threshold_value(value, fallback):
+    return fallback if value is None else value
 
 
-def _scan_summary_from_candidates(candidates: list[dict], symbols: list[str], regime: dict | None = None, global_block_reasons: list[str] | None = None, selected_symbols: list[str] | None = None) -> dict:
+def _scan_summary_from_candidates(
+    candidates: list[dict],
+    symbols: list[str],
+    regime: dict | None = None,
+    global_block_reasons: list[str] | None = None,
+    selected_symbols: list[str] | None = None,
+    remaining_new_entries_today: int | None = None,
+    regime_mode: str | None = None,
+    mode_thresholds: dict | None = None,
+) -> dict:
     candidates = [dict(c) for c in (candidates or []) if isinstance(c, dict)]
     symbols = _dedupe_keep_order([str(s).strip().upper() for s in (symbols or []) if str(s).strip()])
     global_block_reasons = list(dict.fromkeys(global_block_reasons or []))
@@ -3031,7 +3042,7 @@ def _scan_summary_from_candidates(candidates: list[dict], symbols: list[str], re
         for reason in (row.get('rejection_reasons') or []):
             if str(reason).strip():
                 rejection_counts[str(reason).strip()] += 1
-    return {
+    summary = {
         'strategy_name': SWING_STRATEGY_NAME,
         'index_symbol': SWING_INDEX_SYMBOL,
         'regime': dict(regime or {}),
@@ -3044,6 +3055,13 @@ def _scan_summary_from_candidates(candidates: list[dict], symbols: list[str], re
         'top_rejection_reasons': [{'reason': k, 'count': int(v)} for k, v in rejection_counts.most_common(10)],
         'global_block_reasons': list(global_block_reasons),
     }
+    if remaining_new_entries_today is not None:
+        summary['remaining_new_entries_today'] = int(remaining_new_entries_today)
+    if regime_mode is not None:
+        summary['regime_mode'] = str(regime_mode)
+    if mode_thresholds is not None:
+        summary['mode_thresholds'] = dict(mode_thresholds or {})
+    return summary
 
 
 def _candidate_history_to_scan_record(hist: dict, scan_source: str = 'candidate_history') -> dict:
@@ -3102,6 +3120,7 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
     symbols = _dedupe_keep_order([str(s).strip().upper() for s in (preview.get('runtime_symbols') or []) if str(s).strip()])
     top_candidates = [dict(c) for c in (preview.get('top_candidates') or []) if isinstance(c, dict)]
     regime = dict(preview.get('regime') or {})
+    blockers = _diagnostics_swing_blockers()
     scan = {
         'ts_utc': preview.get('ts_utc'),
         'reason': 'current_runtime_preview',
@@ -3112,9 +3131,13 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
             regime=regime,
             global_block_reasons=list(preview.get('global_block_reasons') or []),
             selected_symbols=[],
+            remaining_new_entries_today=blockers.get('remaining_new_entries_today'),
+            regime_mode=preview.get('regime_mode'),
+            mode_thresholds=dict(preview.get('mode_thresholds') or {}),
         ),
         '_scan_source': 'current_runtime_preview',
     }
+    scan['blockers'] = dict(blockers or {})
     return scan
 
 def _trade_path_snapshot(limit: int = 20) -> dict:
@@ -3125,7 +3148,7 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
     lifecycle_counts = _paper_lifecycle_counts()
     recent_scans = list(SCAN_HISTORY or [])[-max(1, min(int(limit or 20), 50)):]
     current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
-    recent_scan = _latest_matching_scan_record(current_runtime) or _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 20) * 2, 50))) or _latest_completed_scan_record() or (recent_scans[-1] if recent_scans else dict(LAST_SCAN or {}))
+    recent_scan = _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 20) * 2, 50))) or _latest_matching_scan_record(current_runtime) or _latest_completed_scan_record() or (recent_scans[-1] if recent_scans else dict(LAST_SCAN or {}))
     plans = []
     for sym, plan in sorted((TRADE_PLAN or {}).items()):
         if not isinstance(plan, dict):
@@ -3192,7 +3215,7 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
 
 def _promotion_failure_snapshot(limit: int = 10) -> dict:
     current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
-    scan = _latest_matching_scan_record(current_runtime) or _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 10) * 2, 25))) or _latest_completed_scan_record() or dict(LAST_SCAN or {})
+    scan = _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 10) * 2, 25))) or _latest_matching_scan_record(current_runtime) or _latest_completed_scan_record() or dict(LAST_SCAN or {})
     summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
     candidate_source = "summary.top_candidates"
     candidates = list(summary.get("top_candidates") or [])
@@ -3256,7 +3279,16 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
             "rank_score": row.get("rank_score"),
             "rejection_reasons": list(row.get("rejection_reasons") or []),
         } for row in candidates[:max(1, min(int(limit or 10), 10))]],
-        "filter_pressure": _filter_pressure_snapshot(limit=max(1, min(int(limit or 10), 10))),
+        "filter_pressure": _filter_pressure_payload_from_rows(
+            rows=candidates,
+            scan_symbols=scan_symbols,
+            ts_utc=scan.get('ts_utc') if isinstance(scan, dict) else None,
+            scan_source=scan.get('_scan_source') if isinstance(scan, dict) else None,
+            global_block_reasons=global_block_reasons,
+            limit=max(1, min(int(limit or 10), 10)),
+            eligible_total=eligible_total,
+            selected_total=selected_total,
+        ),
         "defensive_unlock_lab": defensive_unlock_lab,
     }
 
@@ -6086,9 +6118,9 @@ def _defensive_unlock_lab_from_rows(
             "note": "defensive_unlock_lab_only_applies_in_defensive_mode",
         }
 
-    base_breakout = float(current_thresholds.get("breakout_max_distance_pct") or CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
-    base_close = float(current_thresholds.get("close_to_high_min_pct") or CURRENT_CLOSE_TO_HIGH_MIN_PCT)
-    base_return = float(current_thresholds.get("return_20d_min_pct") or CURRENT_RETURN_20D_MIN_PCT)
+    base_breakout = float(_coalesce_threshold_value(current_thresholds.get("breakout_max_distance_pct"), CURRENT_BREAKOUT_MAX_DISTANCE_PCT))
+    base_close = float(_coalesce_threshold_value(current_thresholds.get("close_to_high_min_pct"), CURRENT_CLOSE_TO_HIGH_MIN_PCT))
+    base_return = float(_coalesce_threshold_value(current_thresholds.get("return_20d_min_pct"), CURRENT_RETURN_20D_MIN_PCT))
 
     ladder = []
     narrowest_unlock_step = None

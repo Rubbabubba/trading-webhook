@@ -1,33 +1,16 @@
-# Patch 068 - Defensive Breakout Promotion
+# Patch 069 - runtime promotion truth sync
 
-Baseline: patch-067-hotfix-drop-in
+This patch is built from patch 068 as the baseline.
 
 ## What changed
 
-- Promoted the defensive-mode breakout distance default from **1%** to **7%**.
-- Kept defensive close-to-high at **98.5%** and defensive 20-day return at **0%**.
-- Kept defensive mode trend and index-alignment requirements disabled, matching patch 062/063 policy-switch behavior.
-- Added `/diagnostics/defensive_policy` so you can compare the current defensive policy against the prior 1% defensive breakout setting on the current runtime universe.
+- Fixed defensive unlock lab threshold handling so zero-valued thresholds like `return_20d_min_pct = 0` are preserved instead of falling back to legacy defaults.
+- Updated current runtime truth snapshot to carry live blockers, remaining entry capacity, regime mode, and active mode thresholds.
+- Updated promotion-failure and trade-path diagnostics to prefer current runtime truth over stale history when the active runtime universe has changed.
+- Updated promotion-failure filter-pressure output to analyze the current runtime candidate set instead of the last completed historical scan from a different universe.
 
-## Why this patch exists
+## Expected outcome
 
-Patch 067 measured the current runtime universe under defensive-mode rules and showed the narrowest breakout-only unlock at **7%**, with **NET** as the first runtime symbol to unlock. This patch converts that measured result into live policy for defensive mode instead of leaving it as lab-only information.
-
-## Expected verification
-
-After deploy, verify:
-
-- `/diagnostics/build`
-- `/diagnostics/current_runtime_preview`
-- `/diagnostics/defensive_policy`
-- `/diagnostics/defensive_unlock_lab`
-- `/diagnostics/promotion_failures`
-- `/diagnostics/candidates`
-- `/diagnostics/trade_path`
-
-## Expected behavior
-
-- No regression to the patch 067 helper/import stability.
-- Defensive mode should now use `breakout_max_distance_pct = 7%`.
-- `/diagnostics/defensive_policy` should show the prior 1% policy versus the current 7% policy on the current runtime universe.
-- `NET` should become the first current-runtime name eligible under defensive-mode non-market rules when the rest of its defensive checks pass.
+- `/diagnostics/defensive_unlock_lab` should reflect the actual active defensive thresholds.
+- `/diagnostics/promotion_failures` should stay aligned with `/diagnostics/current_runtime_preview` for the active runtime universe.
+- `/diagnostics/trade_path` should report the active runtime truth instead of stale prior-universe scan history when available.
