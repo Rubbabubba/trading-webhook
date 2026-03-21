@@ -5810,6 +5810,15 @@ def _threshold_to_percent(value, default_percent: float) -> float:
     return f
 
 
+def _threshold_percent_or_default(value, default_percent: float) -> float:
+    if value is None:
+        return float(default_percent)
+    try:
+        return float(value)
+    except Exception:
+        return float(default_percent)
+
+
 def _filter_pressure_mode_thresholds(summary: dict | None) -> dict:
     summary = dict(summary or {})
     thresholds = dict(summary.get("mode_thresholds") or {})
@@ -6037,9 +6046,9 @@ def _build_nearest_pass(summary: dict | None = None, limit: int = 10) -> dict:
 def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str], ts_utc: str | None, scan_source: str | None, global_block_reasons: list[str], limit: int = 10, eligible_total: int | None = None, selected_total: int | None = None, mode_thresholds: dict | None = None) -> dict:
     row_limit = max(1, min(int(limit or 10), 25))
     mode_thresholds = dict(mode_thresholds or {})
-    breakout_max_distance_pct = float(mode_thresholds.get("breakout_max_distance_pct") or CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
-    close_to_high_min_pct = float(mode_thresholds.get("close_to_high_min_pct") or CURRENT_CLOSE_TO_HIGH_MIN_PCT)
-    return_20d_min_pct = float(mode_thresholds.get("return_20d_min_pct") or CURRENT_RETURN_20D_MIN_PCT)
+    breakout_max_distance_pct = _threshold_percent_or_default(mode_thresholds.get("breakout_max_distance_pct"), CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
+    close_to_high_min_pct = _threshold_percent_or_default(mode_thresholds.get("close_to_high_min_pct"), CURRENT_CLOSE_TO_HIGH_MIN_PCT)
+    return_20d_min_pct = _threshold_percent_or_default(mode_thresholds.get("return_20d_min_pct"), CURRENT_RETURN_20D_MIN_PCT)
     require_trend = bool(mode_thresholds.get("require_trend", True))
     require_index_alignment = bool(mode_thresholds.get("require_index_alignment", True))
 
@@ -6126,12 +6135,17 @@ def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str]
     candidate_unlock_requirements = []
     for row in sorted(baseline_eval, key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)[:row_limit]:
         reasons = sorted({str(x) for x in (row.get("reasons") or []) if str(x)})
+        selection_blockers = list(dict.fromkeys([str(x) for x in (row.get("selection_blockers") or []) if str(x)]))
         candidate_unlock_requirements.append({
             "symbol": str(row.get("symbol") or ""),
             "rank_score": row.get("rank_score"),
             "reasons": reasons,
+            "filter_reasons": list(reasons),
             "reason_count": len(reasons),
-            "selection_blockers": list(row.get("selection_blockers") or []),
+            "selection_blockers": selection_blockers,
+            "selection_blocker_count": len(selection_blockers),
+            "filter_eligible": bool(row.get("filter_eligible")),
+            "live_eligible": bool(row.get("live_eligible")),
         })
 
     def _scenario_rows(**override_kwargs) -> list[dict]:
@@ -6261,9 +6275,9 @@ def _defensive_unlock_lab_from_rows(
             "note": "defensive_unlock_lab_only_applies_in_defensive_mode",
         }
 
-    base_breakout = float(current_thresholds.get("breakout_max_distance_pct") or CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
-    base_close = float(current_thresholds.get("close_to_high_min_pct") or CURRENT_CLOSE_TO_HIGH_MIN_PCT)
-    base_return = float(current_thresholds.get("return_20d_min_pct") or CURRENT_RETURN_20D_MIN_PCT)
+    base_breakout = _threshold_percent_or_default(current_thresholds.get("breakout_max_distance_pct"), CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
+    base_close = _threshold_percent_or_default(current_thresholds.get("close_to_high_min_pct"), CURRENT_CLOSE_TO_HIGH_MIN_PCT)
+    base_return = _threshold_percent_or_default(current_thresholds.get("return_20d_min_pct"), CURRENT_RETURN_20D_MIN_PCT)
 
     ladder = []
     narrowest_unlock_step = None
