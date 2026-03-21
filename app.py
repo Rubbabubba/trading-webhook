@@ -894,7 +894,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-070-promotion-truth-selection-sync"
+PATCH_VERSION = "patch-072-filter-pressure-truth-alignment"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3116,7 +3116,7 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
         'mode_thresholds': dict(preview.get('mode_thresholds') or {}),
         'selected_symbols': list(preview.get('selected_symbols') or []),
         'eligible_but_not_selected': [dict(r) for r in (preview.get('eligible_but_not_selected') or []) if isinstance(r, dict)],
-        'top_candidates': top_candidates[:5],
+        'top_candidates': top_candidates[:max(5, min(int(limit or 25), 100))],
     })
     scan = {
         'ts_utc': preview.get('ts_utc'),
@@ -3175,6 +3175,7 @@ def _active_filter_pressure_snapshot(limit: int = 10) -> dict:
         limit=limit,
         eligible_total=int(summary.get("eligible_total") or 0),
         selected_total=int(summary.get("selected_total") or 0),
+        mode_thresholds=_filter_pressure_mode_thresholds(summary),
     )
     payload["truth_source"] = scan.get("_scan_source") if isinstance(scan, dict) else None
     return payload
@@ -5778,12 +5779,58 @@ def _candidate_fixed_reasons(item: dict | None) -> tuple[list[str], list[str]]:
     return fixed, market
 
 
+FILTER_PRESSURE_SELECTION_BLOCKERS = {
+    "plan_or_pending_entry_exists",
+    "position_already_open",
+    "correlation_group_limit",
+    "symbol_exposure_limit",
+    "portfolio_exposure_limit",
+    "selection_capacity_exhausted",
+}
+
+
+def _candidate_selection_blockers(item: dict | None) -> list[str]:
+    item = dict(item or {})
+    blockers = [str(r) for r in (item.get("selection_blockers") or []) if str(r)]
+    if blockers:
+        return list(dict.fromkeys(blockers))
+    reasons = [str(r) for r in (item.get("rejection_reasons") or []) if str(r)]
+    return [r for r in reasons if r in FILTER_PRESSURE_SELECTION_BLOCKERS]
+
+
+def _threshold_to_percent(value, default_percent: float) -> float:
+    if value is None:
+        return float(default_percent)
+    try:
+        f = float(value)
+    except Exception:
+        return float(default_percent)
+    if abs(f) <= 1.0:
+        return f * 100.0
+    return f
+
+
+def _filter_pressure_mode_thresholds(summary: dict | None) -> dict:
+    summary = dict(summary or {})
+    thresholds = dict(summary.get("mode_thresholds") or {})
+    return {
+        "breakout_max_distance_pct": _threshold_to_percent(thresholds.get("breakout_max_distance_pct"), CURRENT_BREAKOUT_MAX_DISTANCE_PCT),
+        "close_to_high_min_pct": _threshold_to_percent(thresholds.get("close_to_high_min_pct"), CURRENT_CLOSE_TO_HIGH_MIN_PCT),
+        "return_20d_min_pct": _threshold_to_percent(thresholds.get("return_20d_min_pct"), CURRENT_RETURN_20D_MIN_PCT),
+        "require_trend": bool(thresholds.get("require_trend", True)),
+        "require_index_alignment": bool(thresholds.get("require_index_alignment", True)),
+    }
+
+
 def _evaluate_candidate_under_thresholds(
     item: dict | None,
     breakout_max_distance_pct: float | None = None,
     close_to_high_min_pct: float | None = None,
     return_20d_min_pct: float | None = None,
     include_market_gate: bool = True,
+    require_trend: bool = True,
+    require_index_alignment: bool = True,
+    ignore_selection_blockers: bool = False,
 ) -> dict:
     item = dict(item or {})
     breakout_max_distance_pct = float(CURRENT_BREAKOUT_MAX_DISTANCE_PCT if breakout_max_distance_pct is None else breakout_max_distance_pct)
@@ -5791,6 +5838,9 @@ def _evaluate_candidate_under_thresholds(
     return_20d_min_pct = float(CURRENT_RETURN_20D_MIN_PCT if return_20d_min_pct is None else return_20d_min_pct)
 
     fixed_reasons, market_reasons = _candidate_fixed_reasons(item)
+    selection_blockers = _candidate_selection_blockers(item)
+    if ignore_selection_blockers and selection_blockers:
+        fixed_reasons = [r for r in fixed_reasons if r not in selection_blockers]
     reasons = list(fixed_reasons)
     close = _safe_float(item.get("close"))
     fast = _safe_float(item.get("fast_ma"))
@@ -5799,7 +5849,8 @@ def _evaluate_candidate_under_thresholds(
     close_to_high = _safe_float(item.get("close_to_high_pct"))
     breakout_distance = _safe_float(item.get("breakout_distance_pct"))
 
-    if close is None or fast is None or slow is None or not (close > fast > slow):
+    trend_ok = close is not None and fast is not None and slow is not None and (close > fast > slow)
+    if require_trend and not trend_ok:
         reasons.append("trend_filter_failed")
     if ret_20 is None or ret_20 < return_20d_min_pct:
         reasons.append("return_20d_below_min")
@@ -5807,20 +5858,24 @@ def _evaluate_candidate_under_thresholds(
         reasons.append("close_not_near_high")
     if breakout_distance is None or breakout_distance < (-1.0 * breakout_max_distance_pct):
         reasons.append("too_far_below_breakout")
-    if include_market_gate:
+    if include_market_gate and require_index_alignment:
         reasons.extend(market_reasons)
 
     non_market_reasons = [r for r in reasons if r not in _shadow_market_gate_reasons()]
-    market_only = bool(include_market_gate and market_reasons and not non_market_reasons)
+    market_only = bool(include_market_gate and require_index_alignment and market_reasons and not non_market_reasons)
+    filter_eligible = len(reasons) == 0
     return {
         "symbol": item.get("symbol"),
         "rank_score": item.get("rank_score"),
         "reasons": reasons,
         "non_market_reasons": non_market_reasons,
-        "market_reasons": list(market_reasons if include_market_gate else []),
+        "market_reasons": list(market_reasons if (include_market_gate and require_index_alignment) else []),
         "passes_non_market": len(non_market_reasons) == 0,
         "market_gated": market_only,
-        "eligible": len(reasons) == 0,
+        "eligible": filter_eligible,
+        "filter_eligible": filter_eligible,
+        "selection_blockers": list(dict.fromkeys(selection_blockers)),
+        "live_eligible": bool(filter_eligible and not selection_blockers),
     }
 
 
@@ -5979,16 +6034,46 @@ def _build_nearest_pass(summary: dict | None = None, limit: int = 10) -> dict:
 
 
 
-def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str], ts_utc: str | None, scan_source: str | None, global_block_reasons: list[str], limit: int = 10, eligible_total: int | None = None, selected_total: int | None = None) -> dict:
+def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str], ts_utc: str | None, scan_source: str | None, global_block_reasons: list[str], limit: int = 10, eligible_total: int | None = None, selected_total: int | None = None, mode_thresholds: dict | None = None) -> dict:
     row_limit = max(1, min(int(limit or 10), 25))
+    mode_thresholds = dict(mode_thresholds or {})
+    breakout_max_distance_pct = float(mode_thresholds.get("breakout_max_distance_pct") or CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
+    close_to_high_min_pct = float(mode_thresholds.get("close_to_high_min_pct") or CURRENT_CLOSE_TO_HIGH_MIN_PCT)
+    return_20d_min_pct = float(mode_thresholds.get("return_20d_min_pct") or CURRENT_RETURN_20D_MIN_PCT)
+    require_trend = bool(mode_thresholds.get("require_trend", True))
+    require_index_alignment = bool(mode_thresholds.get("require_index_alignment", True))
 
-    def _top_symbols_from(eval_rows: list[dict]) -> list[str]:
+    def _top_symbols_from(eval_rows: list[dict], key: str | None = "live_eligible") -> list[str]:
         ranked = sorted(eval_rows, key=lambda x: float(x.get("rank_score") or 0.0), reverse=True)
-        return [str(r.get("symbol") or "") for r in ranked[:row_limit] if str(r.get("symbol") or "")]
+        out = []
+        for row in ranked:
+            sym = str(row.get("symbol") or "")
+            if not sym:
+                continue
+            if key is not None and not row.get(key):
+                continue
+            out.append(sym)
+            if len(out) >= row_limit:
+                break
+        return out
 
-    baseline_eval = [_evaluate_candidate_under_thresholds(r) for r in rows]
+    baseline_eval = [
+        _evaluate_candidate_under_thresholds(
+            r,
+            breakout_max_distance_pct=breakout_max_distance_pct,
+            close_to_high_min_pct=close_to_high_min_pct,
+            return_20d_min_pct=return_20d_min_pct,
+            include_market_gate=True,
+            require_trend=require_trend,
+            require_index_alignment=require_index_alignment,
+            ignore_selection_blockers=True,
+        )
+        for r in rows
+    ]
     baseline_non_market = [r for r in baseline_eval if r.get("passes_non_market")]
-    baseline_live = [r for r in baseline_eval if r.get("eligible")]
+    baseline_filter_eligible = [r for r in baseline_eval if r.get("filter_eligible")]
+    baseline_live = [r for r in baseline_eval if r.get("live_eligible")]
+    selection_blocked = [r for r in baseline_eval if r.get("filter_eligible") and not r.get("live_eligible") and (r.get("selection_blockers") or [])]
 
     observed_reasons = sorted({str(reason) for row in baseline_eval for reason in (row.get("reasons") or []) if str(reason)})
 
@@ -5998,15 +6083,22 @@ def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str]
             reasons = {str(x) for x in (row.get("reasons") or []) if str(x)}
             remaining = [r for r in reasons if r not in removed_reasons]
             if not remaining:
-                passed.append(row)
+                candidate = dict(row)
+                candidate["eligible"] = True
+                candidate["filter_eligible"] = True
+                candidate["live_eligible"] = not bool(candidate.get("selection_blockers") or [])
+                passed.append(candidate)
         return passed
 
     single_reason_counts = {}
     for reason in observed_reasons:
         passed = _eligible_if_removed({reason})
+        live = [r for r in passed if r.get("live_eligible")]
         single_reason_counts[reason] = {
-            "eligible_count_if_removed": len(passed),
-            "symbols": _top_symbols_from(passed),
+            "eligible_count_if_removed": len(live),
+            "symbols": _top_symbols_from(live, key=None),
+            "filter_pass_count_if_removed": len(passed),
+            "selection_blocked_symbols": _top_symbols_from([r for r in passed if not r.get("live_eligible")], key=None),
         }
 
     pairwise_pressure = []
@@ -6016,15 +6108,18 @@ def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str]
         combo_hits = []
         for combo in combinations(observed_reasons, combo_size):
             passed = _eligible_if_removed(set(combo))
+            live = [r for r in passed if r.get("live_eligible")]
             payload = {
                 "reasons": list(combo),
-                "eligible_count_if_removed": len(passed),
-                "symbols": _top_symbols_from(passed),
+                "eligible_count_if_removed": len(live),
+                "symbols": _top_symbols_from(live, key=None),
+                "filter_pass_count_if_removed": len(passed),
+                "selection_blocked_symbols": _top_symbols_from([r for r in passed if not r.get("live_eligible")], key=None),
             }
             combo_hits.append(payload)
             if minimum_unlock_combo is None and payload["eligible_count_if_removed"] > 0:
                 minimum_unlock_combo = {"combo_size": combo_size, **payload}
-        combo_hits.sort(key=lambda x: (-int(x.get("eligible_count_if_removed") or 0), ",".join(x.get("reasons") or [])))
+        combo_hits.sort(key=lambda x: (-int(x.get("eligible_count_if_removed") or 0), -int(x.get("filter_pass_count_if_removed") or 0), ",".join(x.get("reasons") or [])))
         if combo_size == 2:
             pairwise_pressure = combo_hits[:row_limit]
 
@@ -6036,33 +6131,42 @@ def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str]
             "rank_score": row.get("rank_score"),
             "reasons": reasons,
             "reason_count": len(reasons),
+            "selection_blockers": list(row.get("selection_blockers") or []),
         })
 
-    no_market_gate_eval = [_evaluate_candidate_under_thresholds(r, include_market_gate=False) for r in rows]
-    no_market_gate_pass = [r for r in no_market_gate_eval if r.get("eligible")]
+    def _scenario_rows(**override_kwargs) -> list[dict]:
+        return [
+            _evaluate_candidate_under_thresholds(
+                r,
+                breakout_max_distance_pct=override_kwargs.get("breakout_max_distance_pct", breakout_max_distance_pct),
+                close_to_high_min_pct=override_kwargs.get("close_to_high_min_pct", close_to_high_min_pct),
+                return_20d_min_pct=override_kwargs.get("return_20d_min_pct", return_20d_min_pct),
+                include_market_gate=override_kwargs.get("include_market_gate", True),
+                require_trend=override_kwargs.get("require_trend", require_trend),
+                require_index_alignment=override_kwargs.get("require_index_alignment", require_index_alignment),
+                ignore_selection_blockers=True,
+            )
+            for r in rows
+        ]
 
-    relaxed_breakout_eval = [_evaluate_candidate_under_thresholds(r, breakout_max_distance_pct=PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT) for r in rows]
-    relaxed_breakout_pass = [r for r in relaxed_breakout_eval if r.get("eligible")]
+    def _scenario_payload(eval_rows: list[dict]) -> dict:
+        live = [r for r in eval_rows if r.get("live_eligible")]
+        return {
+            "eligible_count": len(live),
+            "symbols": _top_symbols_from(live, key=None),
+            "filter_pass_count": len([r for r in eval_rows if r.get("filter_eligible")]),
+            "selection_blocked_symbols": _top_symbols_from([r for r in eval_rows if r.get("filter_eligible") and not r.get("live_eligible")], key=None),
+        }
 
-    relaxed_combo_eval = [
-        _evaluate_candidate_under_thresholds(
-            r,
-            breakout_max_distance_pct=max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT),
-            close_to_high_min_pct=min(CURRENT_CLOSE_TO_HIGH_MIN_PCT, 98.0),
-            return_20d_min_pct=min(CURRENT_RETURN_20D_MIN_PCT, 0.0),
-            include_market_gate=False,
-        )
-        for r in rows
-    ]
-    relaxed_combo_pass = [r for r in relaxed_combo_eval if r.get("eligible")]
-
-    blocker_pressure = []
-    for reason, payload in sorted(single_reason_counts.items(), key=lambda kv: (-int((kv[1] or {}).get("eligible_count_if_removed") or 0), kv[0])):
-        blocker_pressure.append({
-            "reason": reason,
-            "eligible_count_if_removed": int((payload or {}).get("eligible_count_if_removed") or 0),
-            "symbols": list((payload or {}).get("symbols") or []),
-        })
+    no_market_gate_counter = _scenario_payload(_scenario_rows(include_market_gate=False, require_index_alignment=False))
+    relaxed_breakout_counter = _scenario_payload(_scenario_rows(breakout_max_distance_pct=PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT))
+    relaxed_combo_counter = _scenario_payload(_scenario_rows(
+        breakout_max_distance_pct=max(breakout_max_distance_pct, PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT),
+        close_to_high_min_pct=min(close_to_high_min_pct, 98.0),
+        return_20d_min_pct=min(return_20d_min_pct, 0.0),
+        include_market_gate=False,
+        require_index_alignment=False,
+    ))
 
     if minimum_unlock_combo is None and observed_reasons:
         minimum_unlock_combo = {
@@ -6070,6 +6174,8 @@ def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str]
             "reasons": [],
             "eligible_count_if_removed": 0,
             "symbols": [],
+            "filter_pass_count_if_removed": 0,
+            "selection_blocked_symbols": [],
             "message": "no_combo_up_to_size_4_unlocks_any_candidate",
         }
 
@@ -6081,34 +6187,43 @@ def _filter_pressure_payload_from_rows(rows: list[dict], scan_symbols: list[str]
         "eligible_total": int(len(baseline_live) if eligible_total is None else eligible_total),
         "selected_total": int(0 if selected_total is None else selected_total),
         "global_block_reasons": list(global_block_reasons or []),
+        "mode_thresholds": {
+            "breakout_max_distance_pct": breakout_max_distance_pct,
+            "close_to_high_min_pct": close_to_high_min_pct,
+            "return_20d_min_pct": return_20d_min_pct,
+            "require_trend": require_trend,
+            "require_index_alignment": require_index_alignment,
+        },
         "baseline": {
             "passes_non_market_count": len(baseline_non_market),
-            "passes_non_market_symbols": _top_symbols_from(baseline_non_market),
-            "eligible_count": len(baseline_live),
-            "eligible_symbols": _top_symbols_from(baseline_live),
+            "passes_non_market_symbols": _top_symbols_from(baseline_non_market, key=None),
+            "filter_eligible_count": len(baseline_filter_eligible),
+            "filter_eligible_symbols": _top_symbols_from(baseline_filter_eligible, key=None),
+            "eligible_count": int(len(baseline_live) if eligible_total is None else eligible_total),
+            "eligible_symbols": _top_symbols_from(baseline_live, key=None),
+            "selection_blocked_count": len(selection_blocked),
+            "selection_blocked_symbols": _top_symbols_from(selection_blocked, key=None),
         },
         "counterfactuals": {
-            "remove_global_market_gate": {
-                "eligible_count": len(no_market_gate_pass),
-                "symbols": _top_symbols_from(no_market_gate_pass),
-            },
+            "remove_global_market_gate": no_market_gate_counter,
             "relax_breakout_distance_only": {
                 "breakout_max_distance_pct": PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT,
-                "eligible_count": len(relaxed_breakout_pass),
-                "symbols": _top_symbols_from(relaxed_breakout_pass),
+                **relaxed_breakout_counter,
             },
             "relax_geometry_and_quality_ignore_market_gate": {
-                "breakout_max_distance_pct": max(CURRENT_BREAKOUT_MAX_DISTANCE_PCT, PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT),
-                "close_to_high_min_pct": min(CURRENT_CLOSE_TO_HIGH_MIN_PCT, 98.0),
-                "return_20d_min_pct": min(CURRENT_RETURN_20D_MIN_PCT, 0.0),
-                "eligible_count": len(relaxed_combo_pass),
-                "symbols": _top_symbols_from(relaxed_combo_pass),
+                "breakout_max_distance_pct": max(breakout_max_distance_pct, PATCH50_BREAKOUT_TEST_MAX_DISTANCE_PCT),
+                "close_to_high_min_pct": min(close_to_high_min_pct, 98.0),
+                "return_20d_min_pct": min(return_20d_min_pct, 0.0),
+                **relaxed_combo_counter,
             },
         },
-        "single_filter_removal_pressure": blocker_pressure[:row_limit],
+        "single_filter_removal_pressure": [
+            {"reason": reason, **single_reason_counts[reason]} for reason in observed_reasons[:row_limit]
+        ],
         "pairwise_filter_removal_pressure": pairwise_pressure,
         "minimum_unlock_combo": minimum_unlock_combo,
         "candidate_unlock_requirements": candidate_unlock_requirements,
+        "rows_considered": len(rows),
     }
 
 

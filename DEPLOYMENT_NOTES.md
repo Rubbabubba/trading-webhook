@@ -1,40 +1,36 @@
-Patch 071: active truth source cleanup
+Patch 072: filter pressure truth alignment
 
-- Forces filter pressure to recompute from the active current-runtime truth source instead of stale scan history.
-- Cleans /diagnostics/candidates so headline regime and candidate sections come from the same active truth source.
-- Restricts diagnostics history on /diagnostics/candidates to runtime-matching history only.
-- Adds truth_source fields to promotion/trade-path style diagnostics and separates selection blockers from eligibility output.
-
-# Patch 070 - promotion truth alignment and selection diagnostics
-
-Baseline: patch-068-defensive-breakout-promotion
+Baseline: patch-071 active truth source cleanup
 
 ## What changed
 
-- Carried forward the intended patch 069 runtime-truth alignment behavior, but rebuilt cleanly from patch 068.
-- Upgraded `/diagnostics/current_runtime_preview` to apply the same live selection constraints used by the swing scan for pending plans, open positions, correlation-group limits, symbol exposure, portfolio exposure, and entry-cap limits.
-- Added `selected_total`, `selected_symbols`, `remaining_new_entries_today`, and `max_new_entries_effective` to current runtime preview output.
-- Updated runtime truth and promotion-failure snapshots to carry current-runtime selected symbols and eligible-but-not-selected diagnostics instead of always reporting zero promoted names.
-- Added `/diagnostics/promotion_selection` for a compact promotion-decision view on the active runtime universe.
-- Added `selection_blockers` to promotion-failure top-candidate rows for clearer diagnosis when a candidate is rank-worthy but still blocked.
+- Corrected the patch metadata so the deployed build reports `patch-072-filter-pressure-truth-alignment`.
+- Fixed `/diagnostics/filter_pressure` to evaluate candidates with the active regime-mode thresholds from current runtime truth instead of the old global trend defaults.
+- Preserved the full active runtime candidate set inside current runtime truth so downstream diagnostics do not silently truncate to five rows.
+- Split filter eligibility from live selection blockers inside filter-pressure analysis.
+- Added baseline visibility for:
+  - `filter_eligible_count` / `filter_eligible_symbols`
+  - `selection_blocked_count` / `selection_blocked_symbols`
+  - active `mode_thresholds` used by the filter-pressure engine
+- Updated counterfactual and unlock-combo analysis to keep selection blockers in place, so simulated unlock counts stay closer to live truth.
+- Added unit coverage for defensive-mode filter-pressure alignment and full-row runtime-truth preservation.
 
 ## Why this patch exists
 
-Patch 068 correctly unlocked defensive-mode eligibility for names like CRM and UBER, but promotion diagnostics could still report `eligible_candidates_did_not_promote` because preview truth stopped at eligibility and did not simulate the actual selection layer. This patch makes current-runtime diagnostics reflect the same selection rules the scan uses.
+Patch 071 got current-runtime promotion truth into much better shape, but filter-pressure was still drifting because it recomputed candidates with the old trend-policy thresholds and only a truncated subset of rows. That created mismatches like `eligible_total = 1` while `baseline.eligible_count = 0`. This patch makes filter-pressure evaluate the same active universe under the same active mode thresholds and distinguishes filter failures from downstream selection blockers.
 
 ## Expected verification
 
 - `/diagnostics/build`
 - `/diagnostics/current_runtime_preview`
-- `/diagnostics/promotion_selection`
-- `/diagnostics/promotion_failures`
 - `/diagnostics/runtime_truth`
-- `/diagnostics/defensive_unlock_lab`
+- `/diagnostics/filter_pressure`
 - `/diagnostics/candidates`
-- `/diagnostics/trade_path`
+- `/diagnostics/promotion_failures`
 
 ## Expected behavior
 
-- If the current runtime preview shows eligible candidates and there is entry capacity, selected symbols should now appear instead of staying at zero by diagnostic drift alone.
-- Promotion-failure output should align with current-runtime preview on the active universe.
-- Eligible-but-not-selected names should be identified explicitly when entry capacity is the reason they were not promoted.
+- Build metadata should report patch 072.
+- `/diagnostics/filter_pressure` baseline counts should no longer contradict current-runtime preview when the active truth source is current runtime preview.
+- If a symbol passes filters but is blocked by portfolio or symbol exposure, it should appear under selection-blocked fields instead of being miscounted as a filter failure.
+- Counterfactual unlock output should remain grounded in the active regime-mode thresholds rather than the old static trend thresholds.
