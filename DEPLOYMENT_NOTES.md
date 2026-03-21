@@ -1,16 +1,33 @@
-# Patch 069 - runtime promotion truth sync
+# Patch 070 - promotion truth alignment and selection diagnostics
 
-This patch is built from patch 068 as the baseline.
+Baseline: patch-068-defensive-breakout-promotion
 
 ## What changed
 
-- Fixed defensive unlock lab threshold handling so zero-valued thresholds like `return_20d_min_pct = 0` are preserved instead of falling back to legacy defaults.
-- Updated current runtime truth snapshot to carry live blockers, remaining entry capacity, regime mode, and active mode thresholds.
-- Updated promotion-failure and trade-path diagnostics to prefer current runtime truth over stale history when the active runtime universe has changed.
-- Updated promotion-failure filter-pressure output to analyze the current runtime candidate set instead of the last completed historical scan from a different universe.
+- Carried forward the intended patch 069 runtime-truth alignment behavior, but rebuilt cleanly from patch 068.
+- Upgraded `/diagnostics/current_runtime_preview` to apply the same live selection constraints used by the swing scan for pending plans, open positions, correlation-group limits, symbol exposure, portfolio exposure, and entry-cap limits.
+- Added `selected_total`, `selected_symbols`, `remaining_new_entries_today`, and `max_new_entries_effective` to current runtime preview output.
+- Updated runtime truth and promotion-failure snapshots to carry current-runtime selected symbols and eligible-but-not-selected diagnostics instead of always reporting zero promoted names.
+- Added `/diagnostics/promotion_selection` for a compact promotion-decision view on the active runtime universe.
+- Added `selection_blockers` to promotion-failure top-candidate rows for clearer diagnosis when a candidate is rank-worthy but still blocked.
 
-## Expected outcome
+## Why this patch exists
 
-- `/diagnostics/defensive_unlock_lab` should reflect the actual active defensive thresholds.
-- `/diagnostics/promotion_failures` should stay aligned with `/diagnostics/current_runtime_preview` for the active runtime universe.
-- `/diagnostics/trade_path` should report the active runtime truth instead of stale prior-universe scan history when available.
+Patch 068 correctly unlocked defensive-mode eligibility for names like CRM and UBER, but promotion diagnostics could still report `eligible_candidates_did_not_promote` because preview truth stopped at eligibility and did not simulate the actual selection layer. This patch makes current-runtime diagnostics reflect the same selection rules the scan uses.
+
+## Expected verification
+
+- `/diagnostics/build`
+- `/diagnostics/current_runtime_preview`
+- `/diagnostics/promotion_selection`
+- `/diagnostics/promotion_failures`
+- `/diagnostics/runtime_truth`
+- `/diagnostics/defensive_unlock_lab`
+- `/diagnostics/candidates`
+- `/diagnostics/trade_path`
+
+## Expected behavior
+
+- If the current runtime preview shows eligible candidates and there is entry capacity, selected symbols should now appear instead of staying at zero by diagnostic drift alone.
+- Promotion-failure output should align with current-runtime preview on the active universe.
+- Eligible-but-not-selected names should be identified explicitly when entry capacity is the reason they were not promoted.

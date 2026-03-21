@@ -894,7 +894,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-068-defensive-breakout-promotion"
+PATCH_VERSION = "patch-070-promotion-truth-selection-sync"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3018,20 +3018,9 @@ def _latest_completed_scan_record() -> dict:
     return {}
 
 
-def _coalesce_threshold_value(value, fallback):
-    return fallback if value is None else value
 
 
-def _scan_summary_from_candidates(
-    candidates: list[dict],
-    symbols: list[str],
-    regime: dict | None = None,
-    global_block_reasons: list[str] | None = None,
-    selected_symbols: list[str] | None = None,
-    remaining_new_entries_today: int | None = None,
-    regime_mode: str | None = None,
-    mode_thresholds: dict | None = None,
-) -> dict:
+def _scan_summary_from_candidates(candidates: list[dict], symbols: list[str], regime: dict | None = None, global_block_reasons: list[str] | None = None, selected_symbols: list[str] | None = None) -> dict:
     candidates = [dict(c) for c in (candidates or []) if isinstance(c, dict)]
     symbols = _dedupe_keep_order([str(s).strip().upper() for s in (symbols or []) if str(s).strip()])
     global_block_reasons = list(dict.fromkeys(global_block_reasons or []))
@@ -3042,7 +3031,7 @@ def _scan_summary_from_candidates(
         for reason in (row.get('rejection_reasons') or []):
             if str(reason).strip():
                 rejection_counts[str(reason).strip()] += 1
-    summary = {
+    return {
         'strategy_name': SWING_STRATEGY_NAME,
         'index_symbol': SWING_INDEX_SYMBOL,
         'regime': dict(regime or {}),
@@ -3055,13 +3044,6 @@ def _scan_summary_from_candidates(
         'top_rejection_reasons': [{'reason': k, 'count': int(v)} for k, v in rejection_counts.most_common(10)],
         'global_block_reasons': list(global_block_reasons),
     }
-    if remaining_new_entries_today is not None:
-        summary['remaining_new_entries_today'] = int(remaining_new_entries_today)
-    if regime_mode is not None:
-        summary['regime_mode'] = str(regime_mode)
-    if mode_thresholds is not None:
-        summary['mode_thresholds'] = dict(mode_thresholds or {})
-    return summary
 
 
 def _candidate_history_to_scan_record(hist: dict, scan_source: str = 'candidate_history') -> dict:
@@ -3120,24 +3102,29 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
     symbols = _dedupe_keep_order([str(s).strip().upper() for s in (preview.get('runtime_symbols') or []) if str(s).strip()])
     top_candidates = [dict(c) for c in (preview.get('top_candidates') or []) if isinstance(c, dict)]
     regime = dict(preview.get('regime') or {})
-    blockers = _diagnostics_swing_blockers()
+    summary = _scan_summary_from_candidates(
+        candidates=top_candidates,
+        symbols=symbols,
+        regime=regime,
+        global_block_reasons=list(preview.get('global_block_reasons') or []),
+        selected_symbols=list(preview.get('selected_symbols') or []),
+    )
+    summary.update({
+        'remaining_new_entries_today': int(preview.get('remaining_new_entries_today') or 0),
+        'max_new_entries_effective': int(preview.get('max_new_entries_effective') or 0),
+        'regime_mode': preview.get('regime_mode'),
+        'mode_thresholds': dict(preview.get('mode_thresholds') or {}),
+        'selected_symbols': list(preview.get('selected_symbols') or []),
+        'eligible_but_not_selected': [dict(r) for r in (preview.get('eligible_but_not_selected') or []) if isinstance(r, dict)],
+        'top_candidates': top_candidates[:5],
+    })
     scan = {
         'ts_utc': preview.get('ts_utc'),
         'reason': 'current_runtime_preview',
         'symbols': list(symbols),
-        'summary': _scan_summary_from_candidates(
-            candidates=top_candidates,
-            symbols=symbols,
-            regime=regime,
-            global_block_reasons=list(preview.get('global_block_reasons') or []),
-            selected_symbols=[],
-            remaining_new_entries_today=blockers.get('remaining_new_entries_today'),
-            regime_mode=preview.get('regime_mode'),
-            mode_thresholds=dict(preview.get('mode_thresholds') or {}),
-        ),
+        'summary': summary,
         '_scan_source': 'current_runtime_preview',
     }
-    scan['blockers'] = dict(blockers or {})
     return scan
 
 def _trade_path_snapshot(limit: int = 20) -> dict:
@@ -3148,7 +3135,7 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
     lifecycle_counts = _paper_lifecycle_counts()
     recent_scans = list(SCAN_HISTORY or [])[-max(1, min(int(limit or 20), 50)):]
     current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
-    recent_scan = _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 20) * 2, 50))) or _latest_matching_scan_record(current_runtime) or _latest_completed_scan_record() or (recent_scans[-1] if recent_scans else dict(LAST_SCAN or {}))
+    recent_scan = _latest_matching_scan_record(current_runtime) or _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 20) * 2, 50))) or _latest_completed_scan_record() or (recent_scans[-1] if recent_scans else dict(LAST_SCAN or {}))
     plans = []
     for sym, plan in sorted((TRADE_PLAN or {}).items()):
         if not isinstance(plan, dict):
@@ -3215,7 +3202,7 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
 
 def _promotion_failure_snapshot(limit: int = 10) -> dict:
     current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
-    scan = _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 10) * 2, 25))) or _latest_matching_scan_record(current_runtime) or _latest_completed_scan_record() or dict(LAST_SCAN or {})
+    scan = _latest_matching_scan_record(current_runtime) or _current_runtime_truth_snapshot(limit=max(10, min(int(limit or 10) * 2, 25))) or _latest_completed_scan_record() or dict(LAST_SCAN or {})
     summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
     candidate_source = "summary.top_candidates"
     candidates = list(summary.get("top_candidates") or [])
@@ -3255,12 +3242,20 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
     scan_symbols = _dedupe_keep_order([str(s).upper() for s in (summary.get("symbols") or scan.get("symbols") or []) if str(s).strip()])
     candidates_outside_runtime = [s for s in candidate_symbols if scanner_runtime and s not in scanner_runtime]
     candidates_outside_scan = [s for s in candidate_symbols if scan_symbols and s not in scan_symbols]
+    eligible_symbols = [str((row or {}).get('symbol') or '').upper() for row in candidates if bool((row or {}).get('eligible')) and str((row or {}).get('symbol') or '').strip()]
+    selected_symbols = [str(s).strip().upper() for s in (summary.get('selected_symbols') or []) if str(s).strip()]
+    eligible_but_not_selected = [dict(r) for r in (summary.get('eligible_but_not_selected') or []) if isinstance(r, dict)]
     return {
         "ts_utc": scan.get("ts_utc"),
         "scan_source": scan.get("_scan_source") if isinstance(scan, dict) else None,
         "candidate_source": candidate_source,
         "selected_total": selected_total,
+        "selected_symbols": selected_symbols,
         "eligible_total": eligible_total,
+        "eligible_symbols": eligible_symbols,
+        "eligible_but_not_selected": eligible_but_not_selected[:max(1, min(int(limit or 10), 10))],
+        "remaining_new_entries_today": int(summary.get('remaining_new_entries_today') or 0),
+        "max_new_entries_effective": int(summary.get('max_new_entries_effective') or 0),
         "candidates_total": int(summary.get("candidates_total") or 0),
         "no_candidate_promoted": selected_total == 0,
         "stage_failures": stage_failures,
@@ -3278,17 +3273,9 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
             "eligible": bool(row.get("eligible")),
             "rank_score": row.get("rank_score"),
             "rejection_reasons": list(row.get("rejection_reasons") or []),
+            "selection_blockers": list(row.get('selection_blockers') or []),
         } for row in candidates[:max(1, min(int(limit or 10), 10))]],
-        "filter_pressure": _filter_pressure_payload_from_rows(
-            rows=candidates,
-            scan_symbols=scan_symbols,
-            ts_utc=scan.get('ts_utc') if isinstance(scan, dict) else None,
-            scan_source=scan.get('_scan_source') if isinstance(scan, dict) else None,
-            global_block_reasons=global_block_reasons,
-            limit=max(1, min(int(limit or 10), 10)),
-            eligible_total=eligible_total,
-            selected_total=selected_total,
-        ),
+        "filter_pressure": _filter_pressure_snapshot(limit=max(1, min(int(limit or 10), 10))),
         "defensive_unlock_lab": defensive_unlock_lab,
     }
 
@@ -6118,9 +6105,9 @@ def _defensive_unlock_lab_from_rows(
             "note": "defensive_unlock_lab_only_applies_in_defensive_mode",
         }
 
-    base_breakout = float(_coalesce_threshold_value(current_thresholds.get("breakout_max_distance_pct"), CURRENT_BREAKOUT_MAX_DISTANCE_PCT))
-    base_close = float(_coalesce_threshold_value(current_thresholds.get("close_to_high_min_pct"), CURRENT_CLOSE_TO_HIGH_MIN_PCT))
-    base_return = float(_coalesce_threshold_value(current_thresholds.get("return_20d_min_pct"), CURRENT_RETURN_20D_MIN_PCT))
+    base_breakout = float(current_thresholds.get("breakout_max_distance_pct") or CURRENT_BREAKOUT_MAX_DISTANCE_PCT)
+    base_close = float(current_thresholds.get("close_to_high_min_pct") or CURRENT_CLOSE_TO_HIGH_MIN_PCT)
+    base_return = float(current_thresholds.get("return_20d_min_pct") or CURRENT_RETURN_20D_MIN_PCT)
 
     ladder = []
     narrowest_unlock_step = None
@@ -8391,15 +8378,72 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
     global_block_reasons = []
     if regime.get('favorable') is False and not bool(thresholds.get('allow_entries_when_regime_unfavorable')):
         global_block_reasons.append('weak_tape')
+
+    exposure = _current_portfolio_exposure_breakdown()
+    open_total = float(exposure.get('total') or 0.0)
+    open_strategy = float(exposure.get('strategy_managed') or 0.0)
+    open_by_symbol = dict(exposure.get('by_symbol') or {})
+    equity = max(0.0, _current_equity_estimate())
+    portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
+    symbol_cap = equity * SWING_MAX_SYMBOL_EXPOSURE_PCT if equity > 0 else 0.0
+    same_day_stats = _same_day_entry_stats()
+    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
+    max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
+    if regime_mode == 'defensive':
+        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
+    elif regime.get('favorable') is False:
+        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
+    max_new_entries = min(max_new_entries, remaining_today)
+
     rows = []
     for sym in runtime_syms:
         c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode)
+        qty_signed, _ = get_position(sym)
+        group_count = _open_group_position_count(sym)
+        projected_notional = _safe_float(c.get('estimated_qty')) * _safe_float(c.get('close'))
+        selection_blockers = []
+        if _has_pending_entry_plan(sym):
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('plan_or_pending_entry_exists')
+            selection_blockers.append('plan_or_pending_entry_exists')
+        if qty_signed != 0:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('position_already_open')
+            selection_blockers.append('position_already_open')
         if c.get('eligible') and global_block_reasons:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).extend(global_block_reasons)
+            selection_blockers.extend([str(r) for r in global_block_reasons if str(r)])
+        c['correlation_group_id'] = _symbol_group_id(sym)
+        c['correlation_group_open_count'] = int(group_count)
+        if c.get('eligible') and SWING_MAX_GROUP_POSITIONS > 0 and group_count >= SWING_MAX_GROUP_POSITIONS:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('correlation_group_limit')
+            selection_blockers.append('correlation_group_limit')
+        if c.get('eligible') and symbol_cap > 0 and projected_notional + float(open_by_symbol.get(sym, 0.0) or 0.0) > symbol_cap:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
+            selection_blockers.append('symbol_exposure_limit')
+        if c.get('eligible') and portfolio_cap > 0 and open_total + projected_notional > portfolio_cap:
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('portfolio_exposure_limit')
+            selection_blockers.append('portfolio_exposure_limit')
+        c['selection_blockers'] = list(dict.fromkeys([str(r) for r in selection_blockers if str(r)]))
         rows.append(c)
+
     rows.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
     approved = [r for r in rows if r.get('eligible')]
+    selected = approved[:max_new_entries]
+    selected_symbols = [str((r or {}).get('symbol') or '').upper() for r in selected if str((r or {}).get('symbol') or '').strip()]
+    eligible_but_not_selected = []
+    if max_new_entries < len(approved):
+        for row in approved[max_new_entries:]:
+            sym = str((row or {}).get('symbol') or '').upper()
+            eligible_but_not_selected.append({
+                'symbol': sym,
+                'rank_score': row.get('rank_score'),
+                'reason': 'selection_capacity_exhausted',
+            })
     validation = _universe_validation_snapshot()
     return {
         "ts_utc": datetime.now(timezone.utc).isoformat(),
@@ -8412,7 +8456,16 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         "mode_thresholds": thresholds,
         "global_block_reasons": global_block_reasons,
         "eligible_total": len(approved),
+        "selected_total": len(selected_symbols),
+        "selected_symbols": selected_symbols,
+        "remaining_new_entries_today": int(remaining_today),
+        "max_new_entries_effective": int(max_new_entries),
+        "portfolio_exposure": round(open_total, 2),
+        "strategy_portfolio_exposure": round(open_strategy, 2),
+        "portfolio_exposure_cap": round(portfolio_cap, 2),
+        "symbol_exposure_cap": round(symbol_cap, 2),
         "top_candidates": rows[:limit],
+        "eligible_but_not_selected": eligible_but_not_selected[:limit],
         "invalid_runtime_symbols": list(validation.get('invalid_runtime_symbols') or []),
         "healthy": len(validation.get('invalid_runtime_symbols') or []) == 0,
     }
@@ -10870,6 +10923,23 @@ def diagnostics_trade_path(limit: int = 20):
 @app.get("/diagnostics/promotion_failures")
 def diagnostics_promotion_failures(limit: int = 10):
     return _promotion_failure_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/promotion_selection")
+def diagnostics_promotion_selection(limit: int = 10):
+    preview = _current_runtime_preview_snapshot(limit=max(5, min(int(limit or 10), 50)))
+    return {
+        "ts_utc": preview.get("ts_utc"),
+        "runtime_symbols": list(preview.get("runtime_symbols") or []),
+        "regime_mode": preview.get("regime_mode"),
+        "mode_thresholds": dict(preview.get("mode_thresholds") or {}),
+        "eligible_total": int(preview.get("eligible_total") or 0),
+        "selected_total": int(preview.get("selected_total") or 0),
+        "selected_symbols": list(preview.get("selected_symbols") or []),
+        "remaining_new_entries_today": int(preview.get("remaining_new_entries_today") or 0),
+        "max_new_entries_effective": int(preview.get("max_new_entries_effective") or 0),
+        "eligible_but_not_selected": [dict(r) for r in (preview.get("eligible_but_not_selected") or []) if isinstance(r, dict)][:max(1, min(int(limit or 10), 25))],
+    }
 
 
 @app.get("/diagnostics/filter_pressure")
