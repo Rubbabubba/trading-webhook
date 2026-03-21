@@ -1,27 +1,18 @@
-# Patch 075 – Paper Execution Guardrails
+# Patch 076 – Bar Truth Sync and Lifecycle Hygiene
 
-This patch is built directly on patch 074 and is intentionally surgical.
+This patch is built directly on patch 075 and stays surgical.
 
 ## What changed
-- Updated build metadata so diagnostics report `patch-075-paper-execution-guardrails`.
-- Added a safe paper-execution mode for `worker_scan` that can bypass dry-run **only** when all of the following are true:
-  - release stage is `paper`
-  - `APCA_PAPER=true`
-  - `SCANNER_ALLOW_LIVE=true`
-  - `PAPER_EXECUTION_ENABLED=true`
-- Centralized entry dry-run resolution with `effective_entry_dry_run(...)` so scanner, diagnostics, and execution paths stay aligned.
-- Added `/diagnostics/pipeline_guardrails` to show symbols stuck between selected/plan/order/fill/exit stages.
-- Downgraded preview-only `selected_but_no_plan` noise when truth is coming from `current_runtime_preview` rather than an authoritative live scan.
-- Added post-scan guardrail logging and decisions for `selected_without_plan` and `plan_without_order`.
+- Updated build metadata so diagnostics report `patch-076-bar-truth-sync-and-lifecycle-hygiene`.
+- Synced bar-path diagnostics to evaluate the **latest available regular session** rather than only "today". This removes false negatives on weekends / after hours when REST has valid 1-minute bars from the most recent market session.
+- Extended `/diagnostics/bars_5m` and readiness bar probes with `latest_session_date`, `bars_1m_latest_session`, and `bars_5m_latest_session` for both SDK/fallback and REST paths.
+- Added lifecycle hygiene so stale historical recovery/fill artifacts no longer show up as active pipeline guardrail violations unless the symbol is still active or recent.
 
 ## Why
-Patch 074 proved lifecycle persistence and surfaced a false-positive drift case where preview-selected symbols looked like pipeline failures even when no authoritative market-hours scan had run. Patch 075 keeps the paper-lifecycle proof intact, adds explicit guardrails, and safely enables real paper execution when the environment is correctly armed.
+Patch 075 showed the guardrails were behaving, but readiness still reported `sample_symbol_5m_bars.ok=false` on a closed market day even though the REST probe showed valid prior-session bars. It also kept surfacing old SPY/AMZN/NVDA lifecycle noise as if it were current-state risk. Patch 076 fixes both without changing trading policy.
 
 ## Deploy / verify
 1. Deploy the zip.
-2. Confirm `/diagnostics/build` shows `patch-075-paper-execution-guardrails`.
-3. Confirm `/diagnostics/pipeline_guardrails` loads.
-4. Confirm `/diagnostics/runtime` (or build/runtime diagnostics) shows:
-   - `paper_execution_enabled`
-   - `paper_execution_permitted`
-5. During market hours, verify selected symbols either create a plan or surface an explicit guardrail violation.
+2. Confirm `/diagnostics/build` shows `patch-076-bar-truth-sync-and-lifecycle-hygiene`.
+3. Confirm `/diagnostics/readiness` now reports `sample_symbol_5m_bars.ok=true` when prior-session bars are available.
+4. Confirm `/diagnostics/pipeline_guardrails` no longer flags stale historical lifecycle warnings unless the symbol is still active/recent.

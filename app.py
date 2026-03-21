@@ -115,6 +115,62 @@ def _normalize_bar_row(ts_utc: datetime, row) -> Optional[dict]:
         return None
 
 
+def _coerce_dt_ny(value):
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            s = str(value or "").strip()
+            if not s:
+                return None
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            return None
+    try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=NY_TZ)
+        return dt.astimezone(NY_TZ)
+    except Exception:
+        return None
+
+
+def _regular_session_date_for_bars(bars: list[dict]):
+    latest = None
+    for b in bars or []:
+        dt = _coerce_dt_ny((b or {}).get("ts_ny"))
+        if not dt:
+            continue
+        if MARKET_OPEN <= dt.time() <= MARKET_CLOSE:
+            d = dt.date()
+            if latest is None or d > latest:
+                latest = d
+    return latest
+
+
+def _bars_for_regular_session_date(bars: list[dict], session_date) -> list[dict]:
+    if not bars or not session_date:
+        return []
+    out: list[dict] = []
+    for b in bars:
+        try:
+            dt = _coerce_dt_ny((b or {}).get("ts_ny"))
+            if not dt or dt.date() != session_date:
+                continue
+            if MARKET_OPEN <= dt.time() <= MARKET_CLOSE:
+                out.append(b)
+        except Exception:
+            continue
+    return out
+
+
+def _bars_for_latest_regular_session(bars: list[dict]) -> tuple[list[dict], Optional[str]]:
+    session_date = _regular_session_date_for_bars(bars)
+    rows = _bars_for_regular_session_date(bars, session_date)
+    return rows, (session_date.isoformat() if session_date else None)
+
+
 def _alpaca_data_base_url() -> str:
     return (os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets").strip() or "https://data.alpaca.markets").rstrip("/")
 
@@ -895,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-075-paper-execution-guardrails"
+PATCH_VERSION = "patch-076-bar-truth-sync-and-lifecycle-hygiene"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4428,6 +4484,29 @@ def _symbol_lifecycle_proof(symbol: str, active_scan: dict | None = None) -> dic
     return proof
 
 
+def _proof_row_is_active_or_recent(row: dict, lookback_days: int = 5) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if row.get("active_position") or row.get("plan_created") or row.get("order_submitted") or row.get("exit_armed"):
+        return True
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(lookback_days or 5)))
+    candidates = []
+    for ev in (row.get("entry_event"), row.get("exit_event"), row.get("latest_decision")):
+        if isinstance(ev, dict):
+            candidates.append(ev)
+    candidates.extend([ev for ev in (row.get("lifecycle_events") or []) if isinstance(ev, dict)])
+    candidates.extend([ev for ev in (row.get("decisions") or []) if isinstance(ev, dict)])
+    for ev in candidates:
+        ts = _parse_bar_ts(ev.get("ts_utc"))
+        if ts is None:
+            dt_ny = _coerce_dt_ny(ev.get("ts_ny"))
+            if dt_ny is not None:
+                ts = dt_ny.astimezone(timezone.utc)
+        if ts is not None and ts >= cutoff:
+            return True
+    return False
+
+
 def _pipeline_guardrail_rows(rows: list[dict], truth_source: str | None = None) -> list[dict]:
     preview_only = str(truth_source or "") == "current_runtime_preview"
     now_ts = datetime.now(timezone.utc).isoformat()
@@ -4445,9 +4524,9 @@ def _pipeline_guardrail_rows(rows: list[dict], truth_source: str | None = None) 
                 "code": "plan_waiting_for_order" if is_paper_execution_permitted("worker_scan") else "plan_without_order",
                 "severity": "warn" if is_paper_execution_permitted("worker_scan") else "info",
             })
-        if row.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event"):
+        if row.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event") and _proof_row_is_active_or_recent(row):
             issues.append({"code": "fill_without_exit_arm", "severity": "warn"})
-        if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])):
+        if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])) and _proof_row_is_active_or_recent(row):
             issues.append({"code": "reconcile_recovered", "severity": "warn"})
         out.append({
             "symbol": sym,
@@ -4503,9 +4582,9 @@ def _paper_execution_stage_failures(rows: list[dict], truth_source: str | None =
             buckets["plan_without_order"].append(sym)
         if row.get("order_submitted") and not row.get("fill_observed"):
             buckets["order_without_fill"].append(sym)
-        if row.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event"):
+        if row.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event") and _proof_row_is_active_or_recent(row):
             buckets["fill_without_exit_arm"].append(sym)
-        if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])):
+        if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])) and _proof_row_is_active_or_recent(row):
             buckets["reconcile_recovered"].append(sym)
     out = []
     for code, syms in buckets.items():
@@ -5353,18 +5432,7 @@ def universe_symbols() -> list[str]:
 def _bars_for_today_regular_session(bars: list[dict]) -> list[dict]:
     if not bars:
         return []
-    today = now_ny().date()
-    out: list[dict] = []
-    for b in bars:
-        try:
-            ts = b.get("ts_ny")
-            if not ts or ts.date() != today:
-                continue
-            if MARKET_OPEN <= ts.time() <= MARKET_CLOSE:
-                out.append(b)
-        except Exception:
-            continue
-    return out
+    return _bars_for_regular_session_date(bars, now_ny().date())
 
 
 def _mean(nums: list[float]) -> float:
@@ -9747,9 +9815,16 @@ def _bar_path_probe(symbol: str, lookback_days: int = 1) -> dict:
     rows = fetch_1m_bars_multi([sym], lookback_days=lookback_days, limit_per_symbol=500).get(sym, [])
     today_rows = _bars_for_today_regular_session(rows)
     bars_5m = resample_5m(today_rows) if today_rows else []
+    latest_rows, latest_session_date = _bars_for_latest_regular_session(rows)
+    latest_5m = resample_5m(latest_rows) if latest_rows else []
+
     rest_rows, rest_debug = _fetch_bars_via_rest([sym], start_utc, end_utc, feed_override=_DATA_FEED_RAW, limit=500)
-    rest_today = _bars_for_today_regular_session(rest_rows.get(sym, []))
+    rest_sym_rows = rest_rows.get(sym, [])
+    rest_today = _bars_for_today_regular_session(rest_sym_rows)
     rest_5m = resample_5m(rest_today) if rest_today else []
+    rest_latest_rows, rest_latest_session_date = _bars_for_latest_regular_session(rest_sym_rows)
+    rest_latest_5m = resample_5m(rest_latest_rows) if rest_latest_rows else []
+
     return {
         "symbol": sym,
         "feed": str(DATA_FEED),
@@ -9763,17 +9838,27 @@ def _bar_path_probe(symbol: str, lookback_days: int = 1) -> dict:
         "latest_5m_ts": bars_5m[-1].get("ts_ny") if bars_5m else None,
         "first_1m_ts": today_rows[0].get("ts_ny").isoformat() if today_rows else None,
         "first_5m_ts": bars_5m[0].get("ts_ny") if bars_5m else None,
+        "latest_session_date": latest_session_date,
+        "bars_1m_latest_session": len(latest_rows),
+        "bars_5m_latest_session": len(latest_5m),
+        "latest_session_latest_1m_ts": latest_rows[-1].get("ts_ny").isoformat() if latest_rows else None,
+        "latest_session_latest_5m_ts": latest_5m[-1].get("ts_ny") if latest_5m else None,
         "rest_probe": {
-            "bars_1m": len(rest_rows.get(sym, [])),
+            "bars_1m": len(rest_sym_rows),
             "bars_1m_today": len(rest_today),
             "bars_5m_today": len(rest_5m),
             "latest_1m_ts": rest_today[-1].get("ts_ny").isoformat() if rest_today else None,
             "latest_5m_ts": rest_5m[-1].get("ts_ny") if rest_5m else None,
             "first_1m_ts": rest_today[0].get("ts_ny").isoformat() if rest_today else None,
             "first_5m_ts": rest_5m[0].get("ts_ny") if rest_5m else None,
+            "latest_session_date": rest_latest_session_date,
+            "bars_1m_latest_session": len(rest_latest_rows),
+            "bars_5m_latest_session": len(rest_latest_5m),
+            "latest_session_latest_1m_ts": rest_latest_rows[-1].get("ts_ny").isoformat() if rest_latest_rows else None,
+            "latest_session_latest_5m_ts": rest_latest_5m[-1].get("ts_ny") if rest_latest_5m else None,
             "debug": rest_debug,
         },
-        "ok": len(bars_5m) > 0 or len(rest_5m) > 0,
+        "ok": len(latest_5m) > 0 or len(rest_latest_5m) > 0,
     }
 
 
