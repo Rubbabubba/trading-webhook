@@ -1,15 +1,27 @@
-# Patch 074 - paper lifecycle proof
+# Patch 075 – Paper Execution Guardrails
 
-This patch is built directly on patch 073 and stays surgical.
+This patch is built directly on patch 074 and is intentionally surgical.
 
 ## What changed
-- Updated the build metadata so diagnostics report `patch-074-paper-lifecycle-proof`.
-- Added stitched paper lifecycle proof helpers that tie together candidate state, selection state, plan state, order state, fill state, exit arming, lifecycle events, and recent decisions per symbol.
-- Added `/diagnostics/paper_execution_proof` as the one-stop paper audit view for recent runtime symbols and active plan symbols.
-- Enriched `/diagnostics/trade_path` with per-symbol lifecycle rows and stage-failure buckets so entry and exit gaps are visible in one place.
-- Enriched `/diagnostics/paper_lifecycle` with current stage-failure summaries and active plan symbols for faster operator checks.
+- Updated build metadata so diagnostics report `patch-075-paper-execution-guardrails`.
+- Added a safe paper-execution mode for `worker_scan` that can bypass dry-run **only** when all of the following are true:
+  - release stage is `paper`
+  - `APCA_PAPER=true`
+  - `SCANNER_ALLOW_LIVE=true`
+  - `PAPER_EXECUTION_ENABLED=true`
+- Centralized entry dry-run resolution with `effective_entry_dry_run(...)` so scanner, diagnostics, and execution paths stay aligned.
+- Added `/diagnostics/pipeline_guardrails` to show symbols stuck between selected/plan/order/fill/exit stages.
+- Downgraded preview-only `selected_but_no_plan` noise when truth is coming from `current_runtime_preview` rather than an authoritative live scan.
+- Added post-scan guardrail logging and decisions for `selected_without_plan` and `plan_without_order`.
 
-## Expected outcome
-- You can verify whether a candidate stopped at filter, selection, plan creation, order submission, fill, or exit from a single diagnostics view.
-- Trade path diagnostics now expose concrete stage buckets like `selected_but_no_plan`, `plan_without_order`, `order_without_fill`, and `fill_without_exit_arm`.
-- Paper lifecycle diagnostics are now usable as an operator view instead of just a raw event dump.
+## Why
+Patch 074 proved lifecycle persistence and surfaced a false-positive drift case where preview-selected symbols looked like pipeline failures even when no authoritative market-hours scan had run. Patch 075 keeps the paper-lifecycle proof intact, adds explicit guardrails, and safely enables real paper execution when the environment is correctly armed.
+
+## Deploy / verify
+1. Deploy the zip.
+2. Confirm `/diagnostics/build` shows `patch-075-paper-execution-guardrails`.
+3. Confirm `/diagnostics/pipeline_guardrails` loads.
+4. Confirm `/diagnostics/runtime` (or build/runtime diagnostics) shows:
+   - `paper_execution_enabled`
+   - `paper_execution_permitted`
+5. During market hours, verify selected symbols either create a plan or surface an explicit guardrail violation.

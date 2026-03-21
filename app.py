@@ -622,6 +622,7 @@ ALERT_INCLUDE_DETAILS = env_bool("ALERT_INCLUDE_DETAILS", True)
 SCANNER_ENABLED = env_bool_any("SWING_SCANNER_ENABLED", "SCANNER_ENABLED", default="false")
 SCANNER_DRY_RUN = env_bool_any("SCANNER_DRY_RUN", default="true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
+PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
 
 # --- Trades-Today forcing (emergency mode) ---
 TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
@@ -894,7 +895,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-074-paper-lifecycle-proof"
+PATCH_VERSION = "patch-075-paper-execution-guardrails"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4427,7 +4428,66 @@ def _symbol_lifecycle_proof(symbol: str, active_scan: dict | None = None) -> dic
     return proof
 
 
-def _paper_execution_stage_failures(rows: list[dict]) -> list[dict]:
+def _pipeline_guardrail_rows(rows: list[dict], truth_source: str | None = None) -> list[dict]:
+    preview_only = str(truth_source or "") == "current_runtime_preview"
+    now_ts = datetime.now(timezone.utc).isoformat()
+    out = []
+    for row in rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        issues = []
+        if row.get("selected") and not row.get("plan_created"):
+            issues.append({
+                "code": "selected_preview_only" if preview_only else "selected_without_plan",
+                "severity": "info" if preview_only else "error",
+            })
+        if row.get("plan_created") and not row.get("order_submitted"):
+            issues.append({
+                "code": "plan_waiting_for_order" if is_paper_execution_permitted("worker_scan") else "plan_without_order",
+                "severity": "warn" if is_paper_execution_permitted("worker_scan") else "info",
+            })
+        if row.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event"):
+            issues.append({"code": "fill_without_exit_arm", "severity": "warn"})
+        if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])):
+            issues.append({"code": "reconcile_recovered", "severity": "warn"})
+        out.append({
+            "symbol": sym,
+            "ts_utc": now_ts,
+            "current_stage": str(row.get("current_stage") or ""),
+            "selected": bool(row.get("selected")),
+            "plan_created": bool(row.get("plan_created")),
+            "order_submitted": bool(row.get("order_submitted")),
+            "fill_observed": bool(row.get("fill_observed")),
+            "exit_armed": bool(row.get("exit_armed")),
+            "issues": issues,
+        })
+    return out
+
+
+def _pipeline_guardrail_snapshot(limit: int = 20) -> dict:
+    proof = _paper_execution_proof_snapshot(limit=limit)
+    truth_source = str(proof.get("truth_source") or "")
+    rows = _pipeline_guardrail_rows(list(proof.get("rows") or []), truth_source=truth_source)
+    violations = [r for r in rows if r.get("issues")]
+    lim = max(1, min(int(limit or 20), 100))
+    return {
+        "ok": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "truth_source": truth_source,
+        "preview_only": truth_source == "current_runtime_preview",
+        "paper_execution_enabled": PAPER_EXECUTION_ENABLED,
+        "paper_execution_permitted": bool(is_paper_execution_permitted("worker_scan")),
+        "effective_entry_dry_run": bool(effective_entry_dry_run("worker_scan")),
+        "selected_symbols": list(proof.get("selected_symbols") or []),
+        "planned_symbols": list(proof.get("planned_symbols") or []),
+        "submitted_symbols": list(proof.get("submitted_symbols") or []),
+        "filled_symbols": list(proof.get("filled_symbols") or []),
+        "violation_count": len(violations),
+        "violations": violations[:lim],
+        "rows": rows[:lim],
+    }
+
+
+def _paper_execution_stage_failures(rows: list[dict], truth_source: str | None = None) -> list[dict]:
     buckets = {
         "selected_but_no_plan": [],
         "plan_without_order": [],
@@ -4437,7 +4497,7 @@ def _paper_execution_stage_failures(rows: list[dict]) -> list[dict]:
     }
     for row in rows:
         sym = row.get("symbol")
-        if row.get("selected") and not row.get("plan_created"):
+        if row.get("selected") and not row.get("plan_created") and str(truth_source or "") != "current_runtime_preview":
             buckets["selected_but_no_plan"].append(sym)
         if row.get("plan_created") and not row.get("order_submitted"):
             buckets["plan_without_order"].append(sym)
@@ -4465,7 +4525,7 @@ def _paper_execution_proof_snapshot(limit: int = 20) -> dict:
     symbols = _dedupe_keep_order(runtime_symbols + candidate_symbols + plan_symbols + lifecycle_symbols + decision_symbols)
     rows = [_symbol_lifecycle_proof(sym, active_scan=active_scan) for sym in symbols[:max(lim, len(runtime_symbols))]]
     rows = [r for r in rows if r]
-    stage_failures = _paper_execution_stage_failures(rows)
+    stage_failures = _paper_execution_stage_failures(rows, truth_source=(active_scan or {}).get("_scan_source"))
     return {
         "ok": True,
         "ts_utc": datetime.now(timezone.utc).isoformat(),
@@ -5009,6 +5069,29 @@ def is_live_trading_permitted(source: str = "") -> bool:
     if RELEASE_GATE_ENFORCED and (not release_gate_status().get("live_orders_permitted")):
         return False
     return True
+
+
+def is_paper_execution_permitted(source: str = "") -> bool:
+    stage = _normalize_release_stage(SYSTEM_RELEASE_STAGE, default="paper")
+    if source != "worker_scan":
+        return False
+    if not PAPER_EXECUTION_ENABLED:
+        return False
+    if stage != "paper":
+        return False
+    if not APCA_PAPER:
+        return False
+    if not SCANNER_ALLOW_LIVE:
+        return False
+    return True
+
+
+def effective_entry_dry_run(source: str = "") -> bool:
+    if is_paper_execution_permitted(source):
+        return False
+    if source == "worker_scan":
+        return bool(SCANNER_DRY_RUN or (not is_live_trading_permitted(source)))
+    return bool(not is_live_trading_permitted(source))
 
 
 def _parse_plan_opened_dt(plan: dict) -> Optional[datetime]:
@@ -7365,6 +7448,26 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     except Exception:
         pass
     try:
+        for sel in (selected or []):
+            sym = str(sel.get('symbol') or '').upper()
+            if not sym:
+                continue
+            plan = dict((TRADE_PLAN or {}).get(sym) or {})
+            if not plan:
+                logger.warning("PIPELINE_GUARDRAIL_SELECTED_WITHOUT_PLAN symbol=%s source=worker_scan", sym)
+                try:
+                    record_decision("GUARDRAIL", "worker_scan", sym, side='buy', signal=str(sel.get('signal') or ''), action='selected_without_plan', reason='post_scan_guardrail')
+                except Exception:
+                    pass
+            elif is_paper_execution_permitted("worker_scan") and not str(plan.get('order_id') or '').strip():
+                logger.warning("PIPELINE_GUARDRAIL_PLAN_WITHOUT_ORDER symbol=%s source=worker_scan", sym)
+                try:
+                    record_decision("GUARDRAIL", "worker_scan", sym, side='buy', signal=str(sel.get('signal') or ''), action='plan_without_order', reason='post_scan_guardrail')
+                except Exception:
+                    pass
+    except Exception:
+        logger.exception("PIPELINE_GUARDRAIL_CHECK_FAILED")
+    try:
         SCAN_HISTORY.append({
             'ts_utc': datetime.now(timezone.utc).isoformat(),
             'universe_provider': SCANNER_UNIVERSE_PROVIDER,
@@ -8466,7 +8569,7 @@ def scanner_status():
     Quick visibility into scanner configuration and the last scan summary.
     Safe for production; does not expose secrets.
     """
-    effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("worker_scan")))
+    effective_dry_run = effective_entry_dry_run("worker_scan")
     return {
         "ok": True,
         "scanner": {
@@ -9290,7 +9393,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="symbol_locked", meta=meta)
         return {"ok": True, "ignored": True, "reason": "symbol_locked", "symbol": symbol, "signal": signal}
 
-    effective_dry_run = bool((SCANNER_DRY_RUN if source == "worker_scan" else False) or (not is_live_trading_permitted(source)))
+    effective_dry_run = effective_entry_dry_run(source)
 
     try:
         snapshot = get_latest_quote_snapshot(symbol)
@@ -9599,7 +9702,7 @@ async def worker_exit(req: Request):
     # --- Trades-Today forcing (optional, emergency) ---
     # Keep this path conservative and self-contained so it cannot crash the exit worker.
     try:
-        effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("worker_scan")))
+        effective_dry_run = effective_entry_dry_run("worker_scan")
         if TRADES_TODAY_ENABLE and SCANNER_ALLOW_LIVE and (not effective_dry_run) and in_market_hours():
             forced_today = _count_forced_trades_today_ny()
             already_actionable = any(str(r.get("action", "")).startswith("exit_") for r in results)
@@ -9936,6 +10039,8 @@ def diagnostics_runtime(request: Request):
         "dry_run": DRY_RUN,
         "scanner_dry_run": SCANNER_DRY_RUN,
         "scanner_allow_live": SCANNER_ALLOW_LIVE,
+        "paper_execution_enabled": PAPER_EXECUTION_ENABLED,
+        "paper_execution_permitted": is_paper_execution_permitted("worker_scan"),
         "checks": checks,
     }
 
@@ -10001,7 +10106,7 @@ def _diagnostics_swing_blockers() -> dict:
     regime_thresholds = _regime_mode_thresholds(regime_mode)
     regime_blocked = bool(regime_favorable is False and not bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')))
     daily_halt_blocked = bool(daily_halt_active() or daily_stop_hit())
-    effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("diagnostics_swing")))
+    effective_dry_run = effective_entry_dry_run("diagnostics_swing")
     corr_groups = _correlation_groups_list()
     exposure = _current_portfolio_exposure_breakdown()
     open_total = float(exposure.get('total') or 0.0)
@@ -10667,6 +10772,7 @@ def dashboard(request: Request):
     <a href="/diagnostics/release_workflow">release_workflow</a>
     <a href="/diagnostics/reconcile">reconcile</a>
     <a href="/diagnostics/paper_lifecycle">paper_lifecycle</a>
+    <a href="/diagnostics/pipeline_guardrails">pipeline_guardrails</a>
     <a href="/diagnostics/execution_lifecycle">execution_lifecycle</a>
     <a href="/diagnostics/freshness">freshness</a>
     <a href="/diagnostics/scanner">scanner</a>
@@ -11107,6 +11213,12 @@ def diagnostics_paper_lifecycle(limit: int = 20):
         "active_plan_symbols": [r.get("symbol") for r in (proof.get("rows") or []) if r.get("plan_created")],
         "stage_failures": list(proof.get("stage_failures") or []),
     }
+
+
+@app.get("/diagnostics/pipeline_guardrails")
+def diagnostics_pipeline_guardrails(limit: int = 20):
+    _ensure_runtime_state_loaded()
+    return _pipeline_guardrail_snapshot(limit=limit)
 
 @app.get("/diagnostics/execution_lifecycle")
 def diagnostics_execution_lifecycle(limit: int = 100):
@@ -11711,7 +11823,7 @@ async def worker_scan_entries(req: Request):
     except Exception:
         pass
 
-    effective_dry_run = bool(SCANNER_DRY_RUN or (not is_live_trading_permitted("worker_scan")))
+    effective_dry_run = effective_entry_dry_run("worker_scan")
     requested_reason = str(body.get("reason") or "").strip() or None
 
     def _set_last_scan(**kwargs):
