@@ -1,3 +1,10 @@
+Patch 071: active truth source cleanup
+
+- Forces filter pressure to recompute from the active current-runtime truth source instead of stale scan history.
+- Cleans /diagnostics/candidates so headline regime and candidate sections come from the same active truth source.
+- Restricts diagnostics history on /diagnostics/candidates to runtime-matching history only.
+- Adds truth_source fields to promotion/trade-path style diagnostics and separates selection blockers from eligibility output.
+
 # Patch 070 - promotion truth alignment and selection diagnostics
 
 Baseline: patch-068-defensive-breakout-promotion
