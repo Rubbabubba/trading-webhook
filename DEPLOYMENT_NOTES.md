@@ -1,19 +1,17 @@
-# Patch 067 - Defensive Near-Breakout Lab
+# Patch 068 - Defensive Breakout Promotion
 
-Baseline: patch-066-runtime-truth-rebased
-
-This patch builds directly on patch 066 and keeps the runtime-truth fixes intact.
+Baseline: patch-067-hotfix-drop-in
 
 ## What changed
 
-- Added `/diagnostics/defensive_unlock_lab`.
-- Added a defensive-mode unlock lab that evaluates the **current runtime universe** against a controlled breakout-distance ladder and a narrow close-to-high relaxation matrix.
-- Added nearest-unlock diagnostics so you can see exactly how far each top runtime candidate is from passing the current defensive thresholds.
-- Added the defensive unlock lab payload into `/diagnostics/promotion_failures` so the failure view shows both the current rejection stack and the smallest defensive-only relaxation that would unlock names.
+- Promoted the defensive-mode breakout distance default from **1%** to **7%**.
+- Kept defensive close-to-high at **98.5%** and defensive 20-day return at **0%**.
+- Kept defensive mode trend and index-alignment requirements disabled, matching patch 062/063 policy-switch behavior.
+- Added `/diagnostics/defensive_policy` so you can compare the current defensive policy against the prior 1% defensive breakout setting on the current runtime universe.
 
 ## Why this patch exists
 
-The system is now truthful about the runtime universe, but it still is not producing paper candidates. At this stage the right move is not changing live behavior blindly. The right move is to measure how close the current runtime names are to qualifying under defensive-mode rules and identify the narrowest controlled relaxation that would unlock candidates.
+Patch 067 measured the current runtime universe under defensive-mode rules and showed the narrowest breakout-only unlock at **7%**, with **NET** as the first runtime symbol to unlock. This patch converts that measured result into live policy for defensive mode instead of leaving it as lab-only information.
 
 ## Expected verification
 
@@ -21,6 +19,7 @@ After deploy, verify:
 
 - `/diagnostics/build`
 - `/diagnostics/current_runtime_preview`
+- `/diagnostics/defensive_policy`
 - `/diagnostics/defensive_unlock_lab`
 - `/diagnostics/promotion_failures`
 - `/diagnostics/candidates`
@@ -28,7 +27,7 @@ After deploy, verify:
 
 ## Expected behavior
 
-- No regression to the patch 064 helper-reference failures.
-- `/diagnostics/defensive_unlock_lab` should report the current runtime symbols and defensive thresholds.
-- The lab should show a breakout-distance ladder, a breakout-plus-close matrix, and a narrowest unlock step when one exists.
-- `/diagnostics/promotion_failures` should include a `defensive_unlock_lab` section.
+- No regression to the patch 067 helper/import stability.
+- Defensive mode should now use `breakout_max_distance_pct = 7%`.
+- `/diagnostics/defensive_policy` should show the prior 1% policy versus the current 7% policy on the current runtime universe.
+- `NET` should become the first current-runtime name eligible under defensive-mode non-market rules when the rest of its defensive checks pass.

@@ -561,13 +561,14 @@ SWING_REGIME_NEUTRAL_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_NEUTRA
 SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT", default=False)
 SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT", default=SWING_BREAKOUT_BUFFER_PCT)
 SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT", default=max(SWING_BREAKOUT_BUFFER_PCT, 0.025))
-SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT", default=0.01)
+SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT", default=0.07)
 SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=SWING_MIN_20D_RETURN_PCT)
 SWING_NEUTRAL_MIN_20D_RETURN_PCT = getenv_float_any("SWING_NEUTRAL_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
 SWING_DEFENSIVE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_20D_RETURN_PCT", default=0.0)
 SWING_TREND_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_TREND_MIN_CLOSE_TO_HIGH_PCT", default=SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT)
 SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.98)))
 SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.99)))
+PATCH68_PREVIOUS_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT = 0.01
 SHADOW_REGIME_MAX_CANDIDATES = max(1, getenv_int_any("SHADOW_REGIME_MAX_CANDIDATES", default=3))
 SWING_MAX_GROUP_POSITIONS = getenv_int_any("SWING_MAX_GROUP_POSITIONS", default=1)
 SWING_CORRELATION_GROUPS = getenv_any("SWING_CORRELATION_GROUPS", default="SPY,QQQ,IWM|AAPL,MSFT,NVDA,AMD,AVGO|AMZN,META,GOOGL,CRM,ORCL,SNOW")
@@ -893,7 +894,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-067-defensive-near-breakout-lab"
+PATCH_VERSION = "patch-068-defensive-breakout-promotion"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -6188,6 +6189,60 @@ def _defensive_unlock_lab_snapshot(limit: int = 10) -> dict:
         limit=limit,
     )
 
+def _defensive_policy_snapshot(limit: int = 10) -> dict:
+    limit = max(1, min(int(limit or 10), 50))
+    preview = _current_runtime_preview_snapshot(limit=max(limit, 25))
+    regime_mode = str(preview.get("regime_mode") or "")
+    mode_thresholds = dict(preview.get("mode_thresholds") or {})
+    current_breakout_pct = _safe_float(mode_thresholds.get("breakout_max_distance_pct"))
+    rows = list(preview.get("top_candidates") or [])
+    previous_thresholds = dict(mode_thresholds)
+    if regime_mode == "defensive":
+        previous_thresholds["breakout_max_distance_pct"] = PATCH68_PREVIOUS_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT
+    previous_eval = [
+        _evaluate_candidate_under_thresholds(
+            row,
+            breakout_max_distance_pct=_safe_float(previous_thresholds.get("breakout_max_distance_pct")),
+            close_to_high_min_pct=_safe_float(previous_thresholds.get("close_to_high_min_pct")),
+            return_20d_min_pct=_safe_float(previous_thresholds.get("return_20d_min_pct")),
+            require_trend=bool(previous_thresholds.get("require_trend")),
+            require_index_alignment=bool(previous_thresholds.get("require_index_alignment")),
+            include_market_gate=False,
+        )
+        for row in rows
+    ]
+    current_eval = [
+        _evaluate_candidate_under_thresholds(
+            row,
+            breakout_max_distance_pct=_safe_float(mode_thresholds.get("breakout_max_distance_pct")),
+            close_to_high_min_pct=_safe_float(mode_thresholds.get("close_to_high_min_pct")),
+            return_20d_min_pct=_safe_float(mode_thresholds.get("return_20d_min_pct")),
+            require_trend=bool(mode_thresholds.get("require_trend")),
+            require_index_alignment=bool(mode_thresholds.get("require_index_alignment")),
+            include_market_gate=False,
+        )
+        for row in rows
+    ]
+    prev_syms = [str(r.get("symbol") or "").upper() for r in previous_eval if r.get("eligible")]
+    curr_syms = [str(r.get("symbol") or "").upper() for r in current_eval if r.get("eligible")]
+    newly_unlocked = [s for s in curr_syms if s not in prev_syms]
+    return {
+        "ts_utc": preview.get("ts_utc"),
+        "scan_source": preview.get("preview_source"),
+        "runtime_symbols": list(preview.get("runtime_symbols") or []),
+        "runtime_symbols_count": len(list(preview.get("runtime_symbols") or [])),
+        "regime_mode": regime_mode,
+        "mode_thresholds": mode_thresholds,
+        "previous_defensive_breakout_max_distance_pct": PATCH68_PREVIOUS_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT * 100.0,
+        "current_defensive_breakout_max_distance_pct": (current_breakout_pct or 0.0) * 100.0 if regime_mode == "defensive" else None,
+        "eligible_count_previous_policy": len(prev_syms),
+        "eligible_symbols_previous_policy": prev_syms[:limit],
+        "eligible_count_current_policy": len(curr_syms),
+        "eligible_symbols_current_policy": curr_syms[:limit],
+        "newly_unlocked_symbols": newly_unlocked[:limit],
+        "top_candidates": rows[:limit],
+    }
+
 def _evaluate_alternate_entry_shadow(item: dict | None, include_market_gate: bool = True) -> dict:
     item = dict(item or {})
     fixed_reasons, market_reasons = _candidate_fixed_reasons(item)
@@ -10513,6 +10568,12 @@ def diagnostics_regime(limit: int = 20):
     }
 
 
+
+
+@app.get("/diagnostics/defensive_policy")
+def diagnostics_defensive_policy(limit: int = 10):
+    _ensure_runtime_state_loaded()
+    return _defensive_policy_snapshot(limit=limit)
 
 
 @app.get("/diagnostics/release")
