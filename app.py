@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-081-execution-proof-lifecycle"
+PATCH_VERSION = "patch-082-live-readiness-and-execution-visibility"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4771,6 +4771,114 @@ def _execution_proof_snapshot(limit: int = 10) -> dict:
         "filled_count": sum(1 for r in out_rows if r.get("fill_observed")),
         "exit_armed_count": sum(1 for r in out_rows if r.get("exit_armed")),
         "items": out_rows,
+    }
+
+
+def _execution_visibility_snapshot(limit: int = 10) -> dict:
+    lim = max(1, min(int(limit or 10), 100))
+    proof = _execution_proof_snapshot(limit=max(10, lim))
+    lifecycle = execution_lifecycle_snapshot(limit=max(10, lim * 2))
+    lifecycle_rows = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row)
+        for row in (lifecycle.get("items") or [])
+        if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
+    }
+    out_items = []
+    for row in (proof.get("items") or [])[:lim]:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").strip().upper()
+        life = dict(lifecycle_rows.get(sym) or {})
+        history_tail = list(life.get("history_tail") or [])
+        latest_transition = dict(history_tail[-1] or {}) if history_tail else {}
+        out_items.append({
+            **dict(row),
+            "execution_state": life.get("execution_state"),
+            "derived_state": life.get("derived_state"),
+            "order_status": life.get("order_status"),
+            "position_qty": life.get("position_qty"),
+            "execution_updated_utc": life.get("execution_updated_utc"),
+            "submitted_at": life.get("submitted_at"),
+            "latest_transition": latest_transition,
+            "execution_issue_count": len(list(life.get("issues") or [])),
+            "persisted_issue_count": int(life.get("persisted_issue_count") or 0),
+        })
+    visible_symbols = [str((row or {}).get("symbol") or "").strip().upper() for row in out_items if str((row or {}).get("symbol") or "").strip()]
+    selected_symbols = [s for s in (proof.get("selected_symbols") or []) if s in visible_symbols]
+    return {
+        "ok": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "truth_source": proof.get("truth_source"),
+        "runtime_symbols": list(proof.get("runtime_symbols") or []),
+        "selected_symbols": selected_symbols,
+        "selected_count": len(selected_symbols),
+        "planned_count": int(proof.get("planned_count") or 0),
+        "submitted_count": int(proof.get("submitted_count") or 0),
+        "filled_count": int(proof.get("filled_count") or 0),
+        "exit_armed_count": int(proof.get("exit_armed_count") or 0),
+        "execution_lifecycle_issue_counts": dict(lifecycle.get("issue_counts") or {}),
+        "items": out_items,
+    }
+
+
+def _live_readiness_gate_snapshot(limit: int = 10) -> dict:
+    release = release_gate_status()
+    readiness = diagnostics_readiness(Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/diagnostics/live_readiness_gate"}))
+    proof = _execution_proof_snapshot(limit=max(5, min(int(limit or 10), 25)))
+    workflow = dict(release.get("release_workflow") or {})
+    promotion_targets = dict(workflow.get("promotion_targets") or {})
+    live_target = dict(promotion_targets.get("live_guarded") or {})
+    eligible_target = dict(promotion_targets.get("guarded_live_eligible") or {})
+    blockers = []
+    if not bool(readiness.get("component_ready")):
+        blockers.append("component_not_ready")
+    if not bool(readiness.get("trade_path_proven")):
+        blockers.append("trade_path_not_proven")
+    if not bool(readiness.get("same_session_proven")):
+        blockers.append("same_session_not_proven")
+    if DRY_RUN:
+        blockers.append("dry_run_enabled")
+    if not LIVE_TRADING_ENABLED:
+        blockers.append("live_trading_disabled")
+    if not SCANNER_ALLOW_LIVE:
+        blockers.append("scanner_live_disabled")
+    blockers.extend([str(x) for x in (release.get("unmet_conditions") or []) if str(x)])
+    blockers = list(dict.fromkeys(blockers))
+    return {
+        "ok": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "component_ready": bool(readiness.get("component_ready")),
+        "trade_path_proven": bool(readiness.get("trade_path_proven")),
+        "same_session_proven": bool(readiness.get("same_session_proven")),
+        "go_live_eligible": bool(release.get("go_live_eligible")),
+        "live_orders_permitted": bool(release.get("live_orders_permitted")),
+        "effective_release_stage": release.get("effective_release_stage"),
+        "configured_release_stage": release.get("configured_release_stage"),
+        "approval_armed": bool(workflow.get("approval_armed")),
+        "live_activation_armed": bool(workflow.get("live_activation_armed")),
+        "env": {
+            "dry_run": bool(DRY_RUN),
+            "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "release_gate_enforced": bool(RELEASE_GATE_ENFORCED),
+        },
+        "promotion_targets": {
+            "guarded_live_eligible": eligible_target,
+            "live_guarded": live_target,
+        },
+        "proof_counts": {
+            "selected_count": int(proof.get("selected_count") or 0),
+            "planned_count": int(proof.get("planned_count") or 0),
+            "submitted_count": int(proof.get("submitted_count") or 0),
+            "filled_count": int(proof.get("filled_count") or 0),
+            "exit_armed_count": int(proof.get("exit_armed_count") or 0),
+        },
+        "proof_symbols": {
+            "selected_symbols": list(proof.get("selected_symbols") or []),
+        },
+        "blockers": blockers,
+        "unmet_conditions": list(release.get("unmet_conditions") or []),
+        "worker_status": dict(release.get("worker_status") or {}),
     }
 
 
@@ -9392,6 +9500,16 @@ def diagnostics_readiness(request: Request):
         "alert_webhook_configured": bool(ALERT_WEBHOOK_URL),
         "last_alert_heartbeat": LAST_ALERT_HEARTBEAT,
     }
+
+@app.get("/diagnostics/execution_visibility")
+def diagnostics_execution_visibility(limit: int = 10):
+    return _execution_visibility_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/live_readiness_gate")
+def diagnostics_live_readiness_gate(limit: int = 10):
+    return _live_readiness_gate_snapshot(limit=limit)
+
 
 @app.get("/diagnostics/decisions")
 def diagnostics_decisions(request: Request, symbol: str = "", limit: int = 200):
