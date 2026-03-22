@@ -3344,6 +3344,7 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
             "action": row.get("action"),
             "reason": row.get("reason"),
         })
+    proof = _paper_execution_proof_snapshot(limit=max(5, min(int(limit or 20), 50)))
     coverage = {
         "selected_candidates_present": bool((proof.get("selected_symbols") or [])) or lifecycle_counts.get("candidate_selected", 0) > 0,
         "entry_events_present": bool((proof.get("planned_symbols") or [])) or lifecycle_counts.get("entry_events", 0) > 0,
@@ -3353,7 +3354,6 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
     current_summary = (recent_scan.get("summary") if isinstance(recent_scan, dict) else {}) or {}
     candidate_symbols = _dedupe_keep_order([str((row or {}).get("symbol") or "").upper() for row in (current_summary.get("top_candidates") or []) if str((row or {}).get("symbol") or "").strip()])
     scan_symbols = _dedupe_keep_order([str(s).upper() for s in (current_summary.get("symbols") or recent_scan.get("symbols") or []) if str(s).strip()])
-    proof = _paper_execution_proof_snapshot(limit=max(5, min(int(limit or 20), 50)))
     return {
         "coverage": coverage,
         "lifecycle_counts": lifecycle_counts,
@@ -9114,6 +9114,11 @@ def diagnostics_universe_validation():
 
 @app.get("/diagnostics/current_runtime_preview")
 def diagnostics_current_runtime_preview(limit: int = 25):
+    return _current_runtime_preview_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/runtime_preview")
+def diagnostics_runtime_preview(limit: int = 25):
     return _current_runtime_preview_snapshot(limit=limit)
 
 
