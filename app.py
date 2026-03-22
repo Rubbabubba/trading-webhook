@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-080-runtime-preview-alias-and-trade-path-fix"
+PATCH_VERSION = "patch-081-execution-proof-lifecycle"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -974,6 +974,8 @@ def _journal_should_persist(event: str, action: str = "") -> bool:
     if event_u in {"ENTRY", "EXIT", "RECONCILE", "SYSTEM"}:
         return True
     if JOURNAL_PERSIST_SCANS and event_u == "SCAN":
+        return True
+    if event_u == "SCAN" and action_s in {"candidate_selected", "candidate_ignored_after_selection"}:
         return True
     return action_s in {"error", "rejected"}
 
@@ -4719,6 +4721,56 @@ def _paper_execution_proof_snapshot(limit: int = 20) -> dict:
         "historical_filled_symbols": [r.get("symbol") for r in rows if _proof_row_fill_flags(r).get("historical_fill_observed")],
         "active_position_symbols": [r.get("symbol") for r in rows if r.get("active_position")],
         "recent_reconcile_symbols": [r.get("symbol") for r in rows if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (r.get("decisions") or []))],
+    }
+
+
+def _execution_proof_snapshot(limit: int = 10) -> dict:
+    lim = max(1, min(int(limit or 10), 50))
+    active_scan = _active_truth_scan(limit=max(10, lim * 2))
+    proof = _paper_execution_proof_snapshot(limit=max(10, lim * 2))
+    summary = dict((active_scan or {}).get("summary") or {})
+    selected_symbols = _dedupe_keep_order([str(s).strip().upper() for s in (summary.get("selected_symbols") or proof.get("selected_symbols") or []) if str(s).strip()])
+    proof_rows = {str((r or {}).get("symbol") or "").strip().upper(): dict(r) for r in (proof.get("rows") or []) if isinstance(r, dict) and str((r or {}).get("symbol") or "").strip()}
+    out_rows = []
+    for sym in selected_symbols[:lim]:
+        row = dict(proof_rows.get(sym) or {})
+        decisions = [dict(d) for d in (row.get("decisions") or []) if isinstance(d, dict)]
+        lifecycle_events = [dict(ev) for ev in (row.get("lifecycle_events") or []) if isinstance(ev, dict)]
+        selected_event = next((d for d in reversed(decisions) if str(d.get("event") or "").upper() == "SCAN" and str(d.get("action") or "") == "candidate_selected"), {})
+        plan_event = next((d for d in reversed(decisions) if str(d.get("event") or "").upper() == "ENTRY" and str(d.get("action") or "") in {"dry_run_plan_created", "order_submitted"}), {})
+        order_event = next((d for d in reversed(decisions) if str(d.get("event") or "").upper() == "ENTRY" and str(d.get("action") or "") == "order_submitted"), {})
+        fill_event = dict(row.get("entry_event") or {})
+        exit_event = dict(row.get("exit_event") or {})
+        out_rows.append({
+            "symbol": sym,
+            "selected": bool(row.get("selected")),
+            "plan_created": bool(row.get("plan_created")),
+            "order_submitted": bool(row.get("order_submitted")),
+            "fill_observed": bool(row.get("fill_observed")),
+            "exit_armed": bool(row.get("exit_armed")),
+            "current_stage": row.get("current_stage"),
+            "preview_only": bool((active_scan or {}).get("_scan_source") == "current_runtime_preview" and str(((row.get("latest_decision") or {}).get("action") or "")) != "order_submitted"),
+            "selected_event": selected_event,
+            "plan_event": plan_event,
+            "order_event": order_event,
+            "fill_event": fill_event,
+            "exit_event": exit_event,
+            "decision_count": len(decisions),
+            "lifecycle_event_count": len(lifecycle_events),
+            "issues": list(next((g.get("issues") for g in (_pipeline_guardrail_rows([row], truth_source=(proof.get("truth_source") or "")) or []) if isinstance(g, dict)), []) or []),
+        })
+    return {
+        "ok": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "truth_source": proof.get("truth_source"),
+        "runtime_symbols": list((proof.get("runtime_symbols") or [])),
+        "selected_symbols": selected_symbols,
+        "selected_count": len(selected_symbols),
+        "planned_count": sum(1 for r in out_rows if r.get("plan_created")),
+        "submitted_count": sum(1 for r in out_rows if r.get("order_submitted")),
+        "filled_count": sum(1 for r in out_rows if r.get("fill_observed")),
+        "exit_armed_count": sum(1 for r in out_rows if r.get("exit_armed")),
+        "items": out_rows,
     }
 
 
@@ -11608,6 +11660,16 @@ def diagnostics_trade_path(limit: int = 20):
     return _trade_path_snapshot(limit=limit)
 
 
+@app.get("/diagnostics/execution_proof")
+def diagnostics_execution_proof(limit: int = 10):
+    return _execution_proof_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/current_runtime_execution_proof")
+def diagnostics_current_runtime_execution_proof(limit: int = 10):
+    return _execution_proof_snapshot(limit=limit)
+
+
 @app.get("/diagnostics/promotion_failures")
 def diagnostics_promotion_failures(limit: int = 10):
     return _promotion_failure_snapshot(limit=limit)
@@ -12629,11 +12691,21 @@ async def worker_scan_entries(req: Request):
                 side = plan.get("side") or "buy"
                 sig = plan.get("signal") or "scan"
                 payload = {"symbol": sym, "side": side, "signal": sig, "rank_score": float(plan.get("rank_score", plan.get("score", 0.0)) or 0.0), "signal_family": plan.get("signal_family", "primary")}
-                if SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run):
-                    resp = submit_scan_trade(sym, side, sig, meta={"rank_score": payload["rank_score"], "signal_family": payload["signal_family"]})
-                    would_submit.append({**payload, **resp})
-                else:
-                    would_submit.append({**payload, "ok": True, "action": "dry_run", "reason": "scanner_not_live_or_dry_run"})
+                record_decision(
+                    "SCAN",
+                    "worker_scan",
+                    symbol=sym,
+                    side=side,
+                    signal=sig,
+                    action="candidate_selected",
+                    reason="top_ranked_within_slots",
+                    rank_score=payload["rank_score"],
+                    signal_family=payload["signal_family"],
+                    candidate_slots=candidate_slots,
+                    scan_reason=requested_reason or "scheduled",
+                )
+                resp = submit_scan_trade(sym, side, sig, meta={"rank_score": payload["rank_score"], "signal_family": payload["signal_family"], "selected_by_scanner": True, "candidate_slots": candidate_slots, "scan_reason": requested_reason or "scheduled"})
+                would_submit.append({**payload, **resp})
 
         # Store diagnostics for Postman/curl inspection.
         try:

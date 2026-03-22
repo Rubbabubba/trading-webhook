@@ -1,3 +1,19 @@
+# Patch 081 – Execution proof lifecycle
+
+This patch builds on patch 080 and turns scanner-selected dry-run candidates into real dry-run plan artifacts so the execution lifecycle can be proven end to end without widening live trading permissions.
+
+What changed:
+- Worker scan now records `SCAN/candidate_selected` for top-ranked symbols that win the current submission slots.
+- Worker scan now routes selected dry-run candidates through the normal `submit_scan_trade()` path instead of returning a placeholder dry-run stub. That means dry-run selections create the same plan, decision, and lifecycle evidence as other dry-run entries.
+- Added `/diagnostics/execution_proof` and `/diagnostics/current_runtime_execution_proof` to show the selected -> plan -> order -> fill -> exit-arm progression for the current truth source only.
+- Journal persistence now explicitly keeps `SCAN/candidate_selected` events even when general scan journaling is not the main source of truth.
+
+Safety:
+- No live execution permissions were widened.
+- Dry-run behavior still remains dry-run.
+- This patch is focused on evidence and observability, not on changing trading thresholds.
+
+
 # Patch 079 – Preview plan activation
 
 This patch builds on patch 078 and activates synthetic preview plan creation for current runtime preview selections without allowing order submission.
