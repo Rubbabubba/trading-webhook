@@ -1,13 +1,13 @@
-# Patch 078 - Paper Execution Guardrail Hotfix
+# Patch 079 – Preview plan activation
 
-This patch is a surgical stability fix built on patch 077.
+This patch builds on patch 078 and activates synthetic preview plan creation for current runtime preview selections without allowing order submission.
 
-## Changes
-- Fixes a NameError in `_paper_execution_stage_failures` by deriving `fill_flags` per row with `_proof_row_fill_flags(row)`.
-- Restores `/diagnostics/pipeline_guardrails` and downstream snapshots such as `/diagnostics/trade_path` and `/diagnostics/promotion_failures` that depend on paper execution proof generation.
-- Preserves patch 077 logic and truth-source behavior without changing entry, selection, or regime rules.
+What changed:
+- Selected symbols in current runtime preview now materialize as preview-only plans in runtime truth and paper execution proof diagnostics.
+- Pipeline guardrails now show selected -> planned progression in preview mode without creating real orders.
+- Coverage now reflects preview-selected/planned symbols so diagnostics match actual runtime preview state.
 
-## Expected verification
-- `/diagnostics/pipeline_guardrails` returns 200
-- `/diagnostics/trade_path` returns 200
-- `/diagnostics/promotion_failures` returns 200
+Safety:
+- No broker orders are submitted.
+- No live paper execution permission logic was widened.
+- Preview plans are diagnostic-only and marked preview_only=true.

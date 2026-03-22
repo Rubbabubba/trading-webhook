@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-078-paper-execution-guardrail-hotfix"
+PATCH_VERSION = "patch-079-preview-plan-activation"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3152,6 +3152,59 @@ def _latest_matching_scan_record(runtime_symbols: list[str] | None = None) -> di
     return {}
 
 
+def _preview_plan_from_candidate(candidate: dict | None = None) -> dict:
+    row = dict(candidate or {})
+    symbol = str(row.get('symbol') or '').strip().upper()
+    if not symbol:
+        return {}
+    side = str(row.get('side') or 'buy').strip().lower() or 'buy'
+    signal = str(row.get('signal') or row.get('strategy') or SWING_STRATEGY_NAME or 'daily_breakout').strip() or 'daily_breakout'
+    qty = _safe_float(row.get('estimated_qty')) or _safe_float(row.get('requested_qty')) or 0.0
+    price = _safe_float(row.get('close'))
+    if qty <= 0 or price <= 0:
+        return {}
+    meta = {
+        'rank_score': row.get('rank_score'),
+        'strategy_name': row.get('strategy') or SWING_STRATEGY_NAME,
+        'breakout_level': row.get('breakout_level'),
+        'stop_price': row.get('stop_price'),
+        'target_price': row.get('target_price'),
+        'risk_per_share': row.get('risk_per_share'),
+        'scan_ts': row.get('scan_ts_utc') or row.get('ts_utc') or datetime.now(timezone.utc).isoformat(),
+        'breakout_lookback_days': SWING_BREAKOUT_LOOKBACK_DAYS,
+        'stop_basis': SWING_STOP_MODE,
+        'target_r_mult': SWING_TARGET_R_MULT,
+    }
+    try:
+        plan = build_trade_plan(symbol, side, qty, price, signal, meta=meta)
+    except Exception:
+        plan = {
+            'symbol': symbol,
+            'side': side,
+            'qty': round(float(qty), 4),
+            'requested_qty': round(float(qty), 4),
+            'submitted_qty': round(float(qty), 4),
+            'filled_qty': 0.0,
+            'entry_price': round(float(price), 4),
+            'avg_fill_price': None,
+            'stop_price': row.get('stop_price'),
+            'take_price': row.get('target_price'),
+            'signal': signal,
+            'strategy_name': row.get('strategy') or SWING_STRATEGY_NAME,
+        }
+    plan['active'] = False
+    plan['preview_only'] = True
+    plan['preview_plan'] = True
+    plan['source'] = 'current_runtime_preview'
+    plan['requested_qty'] = float(plan.get('requested_qty') or qty)
+    plan['submitted_qty'] = float(plan.get('submitted_qty') or qty)
+    plan['filled_qty'] = 0.0
+    plan['avg_fill_price'] = None
+    plan['order_id'] = ''
+    plan['order_status'] = 'preview_planned'
+    return plan
+
+
 def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
     preview = _current_runtime_preview_snapshot(limit=max(5, min(int(limit or 25), 100)))
     if not isinstance(preview, dict) or not preview:
@@ -3159,27 +3212,37 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
     symbols = _dedupe_keep_order([str(s).strip().upper() for s in (preview.get('runtime_symbols') or []) if str(s).strip()])
     top_candidates = [dict(c) for c in (preview.get('top_candidates') or []) if isinstance(c, dict)]
     regime = dict(preview.get('regime') or {})
+    selected_symbols = [str(s).strip().upper() for s in (preview.get('selected_symbols') or []) if str(s).strip()]
+    preview_plans = {}
+    for row in top_candidates:
+        sym = str(row.get('symbol') or '').strip().upper()
+        if sym in selected_symbols:
+            plan = _preview_plan_from_candidate(row)
+            if plan:
+                preview_plans[sym] = plan
     summary = _scan_summary_from_candidates(
         candidates=top_candidates,
         symbols=symbols,
         regime=regime,
         global_block_reasons=list(preview.get('global_block_reasons') or []),
-        selected_symbols=list(preview.get('selected_symbols') or []),
+        selected_symbols=selected_symbols,
     )
     summary.update({
         'remaining_new_entries_today': int(preview.get('remaining_new_entries_today') or 0),
         'max_new_entries_effective': int(preview.get('max_new_entries_effective') or 0),
         'regime_mode': preview.get('regime_mode'),
         'mode_thresholds': dict(preview.get('mode_thresholds') or {}),
-        'selected_symbols': list(preview.get('selected_symbols') or []),
+        'selected_symbols': list(selected_symbols),
         'eligible_but_not_selected': [dict(r) for r in (preview.get('eligible_but_not_selected') or []) if isinstance(r, dict)],
         'top_candidates': top_candidates[:max(5, min(int(limit or 25), 100))],
+        'preview_plans': dict(preview_plans),
     })
     scan = {
         'ts_utc': preview.get('ts_utc'),
         'reason': 'current_runtime_preview',
         'symbols': list(symbols),
         'summary': summary,
+        'preview_plans': dict(preview_plans),
         '_scan_source': 'current_runtime_preview',
     }
     return scan
@@ -3282,8 +3345,8 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
             "reason": row.get("reason"),
         })
     coverage = {
-        "selected_candidates_present": lifecycle_counts.get("candidate_selected", 0) > 0,
-        "entry_events_present": lifecycle_counts.get("entry_events", 0) > 0,
+        "selected_candidates_present": bool((proof.get("selected_symbols") or [])) or lifecycle_counts.get("candidate_selected", 0) > 0,
+        "entry_events_present": bool((proof.get("planned_symbols") or [])) or lifecycle_counts.get("entry_events", 0) > 0,
         "exit_events_present": lifecycle_counts.get("exit_events", 0) > 0,
         "reconcile_healthy": not bool(build_reconcile_snapshot().get("trading_blocked")),
     }
@@ -4417,6 +4480,9 @@ def _symbol_lifecycle_proof(symbol: str, active_scan: dict | None = None) -> dic
     candidates = [dict(r) for r in (summary.get("top_candidates") or []) if isinstance(r, dict)]
     candidate = next((dict(r) for r in candidates if str(r.get("symbol") or "").strip().upper() == sym), {})
     plan = dict((TRADE_PLAN or {}).get(sym) or {})
+    if not plan and str(active_scan.get('_scan_source') or '') == 'current_runtime_preview':
+        preview_plans = dict(active_scan.get('preview_plans') or summary.get('preview_plans') or {})
+        plan = dict(preview_plans.get(sym) or {})
     broker_order = None
     order_id = str(plan.get("order_id") or "").strip()
     if order_id:
