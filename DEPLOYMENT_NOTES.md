@@ -16,4 +16,4 @@ Safety:
 ## patch-080-diagnostics-continuity-hotfix
 - Fixes `/diagnostics/trade_path` by computing paper execution proof before coverage fields reference it.
 - Restores backward-compatible alias route `/diagnostics/runtime_preview` alongside `/diagnostics/current_runtime_preview`.
-- Keeps paper execution proof and promotion failure behavior from patch 079 unchanged.
+- Keeps paper execution proof and promotion failure behavior from patch 080 unchanged.
