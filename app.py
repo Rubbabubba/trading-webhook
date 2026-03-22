@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-082-live-readiness-and-execution-visibility"
+PATCH_VERSION = "patch-083-proof-capture-plan"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4983,6 +4983,127 @@ def _session_boundary_snapshot() -> dict:
         "market_open_now": bool(in_market_hours()),
     }
 
+
+
+
+def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
+    lim = max(1, min(int(limit or 10), 25))
+    preview = _current_runtime_preview_snapshot(limit=max(5, lim))
+    visibility = _execution_visibility_snapshot(limit=max(5, lim))
+    live_gate = _live_readiness_gate_snapshot(limit=max(5, lim))
+    readiness = diagnostics_readiness(Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/diagnostics/proof_capture_plan"}))
+    worker_status = dict(live_gate.get("worker_status") or {})
+    truth_source = str(visibility.get("truth_source") or preview.get("preview_source") or "")
+
+    def _next_step(row: dict) -> str:
+        current_stage = str((row or {}).get("current_stage") or "").strip().lower()
+        selected = bool((row or {}).get("selected"))
+        plan_created = bool((row or {}).get("plan_created"))
+        order_submitted = bool((row or {}).get("order_submitted"))
+        fill_observed = bool((row or {}).get("fill_observed"))
+        exit_armed = bool((row or {}).get("exit_armed"))
+        preview_only = bool((row or {}).get("preview_only"))
+        if exit_armed:
+            return "observe_exit_fill_or_close"
+        if fill_observed or current_stage in {"filled", "open", "opened", "exit_armed", "close_submitted"}:
+            return "arm_or_submit_exit"
+        if order_submitted or current_stage in {"submitted", "entry_submitted"}:
+            return "observe_entry_fill"
+        if plan_created or current_stage in {"planned", "selected"}:
+            return "submit_entry_order" if not preview_only else "disable_dry_run_and_submit_in_paper_session"
+        if selected:
+            return "create_trade_plan"
+        return "wait_for_selection"
+
+    def _status_label(row: dict) -> str:
+        if bool((row or {}).get("exit_armed")):
+            return "exit_armed"
+        if bool((row or {}).get("fill_observed")):
+            return "filled"
+        if bool((row or {}).get("order_submitted")):
+            return "submitted"
+        if bool((row or {}).get("plan_created")):
+            return "planned"
+        if bool((row or {}).get("selected")):
+            return "selected"
+        return "watching"
+
+    items = []
+    for row in list(visibility.get("items") or [])[:lim]:
+        symbol = str((row or {}).get("symbol") or "").upper()
+        if not symbol:
+            continue
+        items.append({
+            "symbol": symbol,
+            "status": _status_label(row),
+            "next_step": _next_step(row),
+            "selected": bool((row or {}).get("selected")),
+            "plan_created": bool((row or {}).get("plan_created")),
+            "order_submitted": bool((row or {}).get("order_submitted")),
+            "fill_observed": bool((row or {}).get("fill_observed")),
+            "exit_armed": bool((row or {}).get("exit_armed")),
+            "preview_only": bool((row or {}).get("preview_only")),
+            "issues": list((row or {}).get("issues") or []),
+            "execution_state": (row or {}).get("execution_state"),
+            "derived_state": (row or {}).get("derived_state"),
+        })
+
+    selected_symbols = list(visibility.get("selected_symbols") or preview.get("selected_symbols") or [])
+    top_candidates = []
+    selected_set = {str(s).upper() for s in selected_symbols if str(s).strip()}
+    for row in list(preview.get("top_candidates") or [])[: max(lim, 10)]:
+        symbol = str((row or {}).get("symbol") or "").upper()
+        if not symbol or symbol in selected_set:
+            continue
+        top_candidates.append({
+            "symbol": symbol,
+            "eligible": bool((row or {}).get("eligible")),
+            "rejection_reasons": list((row or {}).get("rejection_reasons") or []),
+            "selection_blockers": list((row or {}).get("selection_blockers") or []),
+            "rank_score": (row or {}).get("rank_score"),
+        })
+        if len(top_candidates) >= lim:
+            break
+
+    env_requirements = {
+        "market_open": bool((readiness or {}).get("market_open")),
+        "scanner_running": bool(worker_status.get("scanner_running")),
+        "exit_worker_running": bool(worker_status.get("exit_worker_running")),
+        "release_stage_paper": str(live_gate.get("effective_release_stage") or "").lower() == "paper",
+        "dry_run_disabled": not bool((live_gate.get("env") or {}).get("dry_run")),
+        "live_trading_enabled": bool((live_gate.get("env") or {}).get("live_trading_enabled")),
+        "scanner_live_enabled": bool((live_gate.get("env") or {}).get("scanner_allow_live")),
+        "component_ready": bool(live_gate.get("component_ready")),
+        "regime_favorable": "regime_not_favorable" not in list(live_gate.get("blockers") or []),
+    }
+    proof_capture_possible_now = all(bool(v) for v in env_requirements.values())
+    arming_gaps = [name for name, ok in env_requirements.items() if not bool(ok)]
+
+    return {
+        "ok": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "truth_source": truth_source,
+        "proof_capture_possible_now": proof_capture_possible_now,
+        "arming_gaps": arming_gaps,
+        "env_requirements": env_requirements,
+        "component_ready": bool(live_gate.get("component_ready")),
+        "trade_path_proven": bool(live_gate.get("trade_path_proven")),
+        "same_session_proven": bool(live_gate.get("same_session_proven")),
+        "go_live_eligible": bool(live_gate.get("go_live_eligible")),
+        "blockers": list(live_gate.get("blockers") or []),
+        "runtime_symbols": list(preview.get("runtime_symbols") or []),
+        "selected_symbols": selected_symbols,
+        "selected_count": int(visibility.get("selected_count") or 0),
+        "proof_counts": {
+            "planned_count": int(visibility.get("planned_count") or 0),
+            "submitted_count": int(visibility.get("submitted_count") or 0),
+            "filled_count": int(visibility.get("filled_count") or 0),
+            "exit_armed_count": int(visibility.get("exit_armed_count") or 0),
+        },
+        "items": items,
+        "top_runtime_candidates": top_candidates,
+        "operator_focus": items[0] if items else {},
+    }
 
 def _freshness_entry(name: str, ts_value, *, source: str = "", max_age_sec: float | None = None, require_same_session: bool = False, extra: dict | None = None) -> dict:
     now_utc = datetime.now(tz=timezone.utc)
@@ -9509,6 +9630,11 @@ def diagnostics_execution_visibility(limit: int = 10):
 @app.get("/diagnostics/live_readiness_gate")
 def diagnostics_live_readiness_gate(limit: int = 10):
     return _live_readiness_gate_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/proof_capture_plan")
+def diagnostics_proof_capture_plan(limit: int = 10):
+    return _proof_capture_plan_snapshot(limit=limit)
 
 
 @app.get("/diagnostics/decisions")

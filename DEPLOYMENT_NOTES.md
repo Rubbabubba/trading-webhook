@@ -1,13 +1,12 @@
-# Patch 082 – Live readiness gate and execution visibility
+# Patch 083 – Proof capture plan
 
-This patch builds on patch 081 and adds the operator-facing summaries needed to finish today’s visibility/readiness work without changing trading thresholds or widening live permissions.
+This patch builds on patch 082 and adds one operator-facing diagnostic to help capture paper execution proof and same-session proof during market hours without loosening live controls.
 
 What changed:
-- Added `/diagnostics/execution_visibility` to join current execution proof rows with execution lifecycle state so each selected symbol shows plan/order/fill/exit progress in one place.
-- Added `/diagnostics/live_readiness_gate` to summarize component readiness, proof status, release workflow state, live env arming, and current blockers in one response.
-- Kept existing runtime truth, execution proof, readiness, and release gate logic intact; this patch only adds summaries on top of the existing baseline.
+- Added `/diagnostics/proof_capture_plan` to combine current runtime preview, execution visibility, readiness, and live readiness gate into one response.
+- The new snapshot shows exact arming gaps, whether proof capture is possible right now, the next required step for each selected symbol, and the next-best runtime candidates if nothing is currently selected.
 
 Safety:
 - No trading thresholds were changed.
-- No live execution permissions were widened.
-- No existing diagnostics routes were removed or renamed.
+- No release-gate logic was loosened.
+- No live permissions were widened.
