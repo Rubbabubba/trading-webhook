@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-077-current-runtime-fill-truth-isolation"
+PATCH_VERSION = "patch-078-paper-execution-guardrail-hotfix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4604,14 +4604,16 @@ def _paper_execution_stage_failures(rows: list[dict], truth_source: str | None =
         "reconcile_recovered": [],
     }
     for row in rows:
+        row = row if isinstance(row, dict) else {}
         sym = row.get("symbol")
+        fill_flags = _proof_row_fill_flags(row)
         if row.get("selected") and not row.get("plan_created") and str(truth_source or "") != "current_runtime_preview":
             buckets["selected_but_no_plan"].append(sym)
         if row.get("plan_created") and not row.get("order_submitted"):
             buckets["plan_without_order"].append(sym)
-        if row.get("order_submitted") and not row.get("fill_observed"):
+        if row.get("order_submitted") and not bool(fill_flags.get("fill_observed")):
             buckets["order_without_fill"].append(sym)
-        if fill_flags.get("fill_observed") and not row.get("exit_armed") and not row.get("exit_event"):
+        if bool(fill_flags.get("fill_observed")) and not row.get("exit_armed") and not row.get("exit_event"):
             buckets["fill_without_exit_arm"].append(sym)
         if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (row.get("decisions") or [])) and _proof_row_is_active_or_recent(row):
             buckets["reconcile_recovered"].append(sym)

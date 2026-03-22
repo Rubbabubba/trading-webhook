@@ -1,12 +1,13 @@
-# Patch 077 - Current Runtime Fill Truth Isolation
+# Patch 078 - Paper Execution Guardrail Hotfix
 
-This patch is built directly on patch 076.
+This patch is a surgical stability fix built on patch 077.
 
-## What changed
-- Isolated current-runtime fill truth from stale historical fills in lifecycle-derived diagnostics.
-- Added `historical_fill_observed` tracking so old fills can still be surfaced without contaminating present-tense pipeline state.
-- Updated pipeline guardrail summaries to report `historical_filled_symbols` separately from active/current `filled_symbols`.
-- Tightened stage-failure logic so `fill_without_exit_arm` only fires for current or recent fills, not legacy residue.
+## Changes
+- Fixes a NameError in `_paper_execution_stage_failures` by deriving `fill_flags` per row with `_proof_row_fill_flags(row)`.
+- Restores `/diagnostics/pipeline_guardrails` and downstream snapshots such as `/diagnostics/trade_path` and `/diagnostics/promotion_failures` that depend on paper execution proof generation.
+- Preserves patch 077 logic and truth-source behavior without changing entry, selection, or regime rules.
 
-## Intent
-Keep current-runtime promotion and lifecycle diagnostics truthful when older journal or lifecycle events still exist for symbols that are back in the active runtime universe.
+## Expected verification
+- `/diagnostics/pipeline_guardrails` returns 200
+- `/diagnostics/trade_path` returns 200
+- `/diagnostics/promotion_failures` returns 200
