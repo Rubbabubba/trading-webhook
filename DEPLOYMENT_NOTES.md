@@ -1,6 +1,12 @@
-Patch 084: paper proof control alignment
+# Patch 083 – Proof capture plan
 
-- Adds paper proof gate snapshot so proof capture uses paper-session controls instead of guarded-live controls.
-- Exposes paper_proof_eligible, paper_orders_permitted, and paper_proof_unmet_conditions on release and live readiness diagnostics.
-- Aligns /diagnostics/proof_capture_plan blockers and arming gaps with paper execution reality.
-- Preserves guarded live gating for live promotion logic; this patch only fixes paper proof truth.
+This patch builds on patch 082 and adds one operator-facing diagnostic to help capture paper execution proof and same-session proof during market hours without loosening live controls.
+
+What changed:
+- Added `/diagnostics/proof_capture_plan` to combine current runtime preview, execution visibility, readiness, and live readiness gate into one response.
+- The new snapshot shows exact arming gaps, whether proof capture is possible right now, the next required step for each selected symbol, and the next-best runtime candidates if nothing is currently selected.
+
+Safety:
+- No trading thresholds were changed.
+- No release-gate logic was loosened.
+- No live permissions were widened.
