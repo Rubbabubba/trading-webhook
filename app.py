@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-083-proof-capture-plan"
+PATCH_VERSION = "patch-084-paper-proof-control-alignment-fixed"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4823,6 +4823,7 @@ def _execution_visibility_snapshot(limit: int = 10) -> dict:
 
 def _live_readiness_gate_snapshot(limit: int = 10) -> dict:
     release = release_gate_status()
+    paper_gate = _paper_proof_gate_snapshot()
     readiness = diagnostics_readiness(Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/diagnostics/live_readiness_gate"}))
     proof = _execution_proof_snapshot(limit=max(5, min(int(limit or 10), 25)))
     workflow = dict(release.get("release_workflow") or {})
@@ -4879,6 +4880,9 @@ def _live_readiness_gate_snapshot(limit: int = 10) -> dict:
         "blockers": blockers,
         "unmet_conditions": list(release.get("unmet_conditions") or []),
         "worker_status": dict(release.get("worker_status") or {}),
+        "paper_proof_eligible": bool(paper_gate.get("paper_proof_eligible")),
+        "paper_orders_permitted": bool(paper_gate.get("paper_orders_permitted")),
+        "paper_proof_unmet_conditions": list(paper_gate.get("paper_proof_unmet_conditions") or []),
     }
 
 
@@ -4986,13 +4990,131 @@ def _session_boundary_snapshot() -> dict:
 
 
 
+def _paper_proof_gate_snapshot() -> dict:
+    session = _session_boundary_snapshot()
+    worker_status = _worker_status_snapshot()
+    freshness = freshness_snapshot()
+    freshness_entries = dict(freshness.get("entries") or {})
+    same_session_proven = all(bool((freshness_entries.get(name) or {}).get("same_session")) for name in ("last_scan", "regime", "paper_lifecycle", "scanner_telemetry"))
+
+    now_utc = datetime.now(tz=timezone.utc)
+    last_scan_age_sec = None
+    recent_market_scan_ok = False
+    if LAST_SCAN.get("ts_utc"):
+        try:
+            scan_ts = datetime.fromisoformat(str(LAST_SCAN.get("ts_utc")))
+            if scan_ts.tzinfo is None:
+                scan_ts = scan_ts.replace(tzinfo=timezone.utc)
+            last_scan_age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
+            last_scan_reason = str(LAST_SCAN.get("reason") or "")
+            recent_market_scan_ok = (
+                last_scan_reason == "scan_completed"
+                and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
+            )
+            if (not bool(session.get("market_open_now"))) and (not recent_market_scan_ok):
+                recent_market_scan_ok = (
+                    last_scan_reason == "outside_market_hours"
+                    and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
+                )
+        except Exception:
+            recent_market_scan_ok = False
+
+    broker_connected = True
+    broker_error = ""
+    try:
+        trading_client.get_account()
+    except Exception as e:
+        broker_connected = False
+        broker_error = str(e)
+
+    journal_ok = True
+    journal_error = ""
+    if JOURNAL_ENABLED:
+        try:
+            _ensure_parent_dir(JOURNAL_PATH)
+            Path(JOURNAL_PATH).parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            journal_ok = False
+            journal_error = str(e)
+
+    risk_ok = risk_limits_ok()
+    halt_active = daily_halt_active()
+    component_ready = _compute_system_health_ok(
+        scanner_running=bool(worker_status.get("scanner_running")),
+        exit_worker_running=bool(worker_status.get("exit_worker_running")),
+        broker_connected=broker_connected,
+        risk_limits_ok=risk_ok,
+        kill_switch=KILL_SWITCH,
+        daily_halt_active_flag=halt_active,
+        journal_ok=journal_ok,
+        require_workers=READINESS_REQUIRE_WORKERS,
+    )
+
+    workflow = _release_workflow_snapshot(include_gate=False)
+    effective_stage = _normalize_release_stage(workflow.get("effective_stage") or SYSTEM_RELEASE_STAGE, default="paper")
+
+    unmet = []
+    if effective_stage != "paper":
+        unmet.append("release_stage_not_paper")
+    if not bool(session.get("market_open_now")):
+        unmet.append("market_closed")
+    if READINESS_REQUIRE_WORKERS and not bool(worker_status.get("scanner_running")):
+        unmet.append("scanner_worker_not_ready")
+    if READINESS_REQUIRE_WORKERS and not bool(worker_status.get("exit_worker_running")):
+        unmet.append("exit_worker_not_ready")
+    if not component_ready:
+        unmet.append("component_not_ready")
+    if not same_session_proven:
+        unmet.append("same_session_not_proven")
+    if RELEASE_REQUIRE_RECENT_MARKET_SCAN and not recent_market_scan_ok:
+        unmet.append("recent_market_scan_missing")
+    if KILL_SWITCH:
+        unmet.append("kill_switch_on")
+    if halt_active:
+        unmet.append("daily_halt_active")
+    if DRY_RUN:
+        unmet.append("dry_run_enabled")
+    if not bool(PAPER_EXECUTION_ENABLED):
+        unmet.append("paper_execution_disabled")
+    if not bool(SCANNER_ALLOW_LIVE):
+        unmet.append("scanner_live_disabled")
+    unmet = list(dict.fromkeys(str(x) for x in unmet if x))
+
+    return {
+        "ok": True,
+        "paper_release_stage": effective_stage == "paper",
+        "paper_proof_eligible": len(unmet) == 0,
+        "paper_orders_permitted": len(unmet) == 0,
+        "paper_proof_unmet_conditions": unmet,
+        "effective_release_stage": effective_stage,
+        "recent_market_scan_ok": recent_market_scan_ok,
+        "last_scan_age_sec": last_scan_age_sec,
+        "component_ready": component_ready,
+        "same_session_proven": same_session_proven,
+        "worker_status": worker_status,
+        "session": session,
+        "broker_connected": broker_connected,
+        "broker_error": broker_error,
+        "journal_ok": journal_ok,
+        "journal_error": journal_error,
+        "risk_limits_ok": risk_ok,
+        "env": {
+            "dry_run": bool(DRY_RUN),
+            "paper_execution_enabled": bool(PAPER_EXECUTION_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+        },
+    }
+
+
 def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
     lim = max(1, min(int(limit or 10), 25))
     preview = _current_runtime_preview_snapshot(limit=max(5, lim))
     visibility = _execution_visibility_snapshot(limit=max(5, lim))
     live_gate = _live_readiness_gate_snapshot(limit=max(5, lim))
+    paper_gate = _paper_proof_gate_snapshot()
     readiness = diagnostics_readiness(Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/diagnostics/proof_capture_plan"}))
-    worker_status = dict(live_gate.get("worker_status") or {})
+    worker_status = dict((paper_gate.get("worker_status") or live_gate.get("worker_status") or {}))
     truth_source = str(visibility.get("truth_source") or preview.get("preview_source") or "")
 
     def _next_step(row: dict) -> str:
@@ -5066,18 +5188,20 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
             break
 
     env_requirements = {
-        "market_open": bool((readiness or {}).get("market_open")),
+        "market_open": bool((paper_gate.get("session") or {}).get("market_open_now", (readiness or {}).get("market_open"))),
         "scanner_running": bool(worker_status.get("scanner_running")),
         "exit_worker_running": bool(worker_status.get("exit_worker_running")),
-        "release_stage_paper": str(live_gate.get("effective_release_stage") or "").lower() == "paper",
-        "dry_run_disabled": not bool((live_gate.get("env") or {}).get("dry_run")),
-        "live_trading_enabled": bool((live_gate.get("env") or {}).get("live_trading_enabled")),
-        "scanner_live_enabled": bool((live_gate.get("env") or {}).get("scanner_allow_live")),
-        "component_ready": bool(live_gate.get("component_ready")),
-        "regime_favorable": "regime_not_favorable" not in list(live_gate.get("blockers") or []),
+        "release_stage_paper": bool(paper_gate.get("paper_release_stage")),
+        "dry_run_disabled": not bool((paper_gate.get("env") or {}).get("dry_run")),
+        "paper_execution_enabled": bool((paper_gate.get("env") or {}).get("paper_execution_enabled")),
+        "scanner_live_enabled": bool((paper_gate.get("env") or {}).get("scanner_allow_live")),
+        "component_ready": bool(paper_gate.get("component_ready")),
+        "same_session_proven": bool(paper_gate.get("same_session_proven")),
+        "recent_market_scan_ok": bool(paper_gate.get("recent_market_scan_ok")),
     }
-    proof_capture_possible_now = all(bool(v) for v in env_requirements.values())
+    proof_capture_possible_now = bool(paper_gate.get("paper_orders_permitted"))
     arming_gaps = [name for name, ok in env_requirements.items() if not bool(ok)]
+    plan_blockers = list(dict.fromkeys([str(x) for x in (paper_gate.get("paper_proof_unmet_conditions") or []) if str(x)]))
 
     return {
         "ok": True,
@@ -5086,11 +5210,13 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
         "proof_capture_possible_now": proof_capture_possible_now,
         "arming_gaps": arming_gaps,
         "env_requirements": env_requirements,
-        "component_ready": bool(live_gate.get("component_ready")),
+        "component_ready": bool(paper_gate.get("component_ready")),
         "trade_path_proven": bool(live_gate.get("trade_path_proven")),
-        "same_session_proven": bool(live_gate.get("same_session_proven")),
+        "same_session_proven": bool(paper_gate.get("same_session_proven")),
         "go_live_eligible": bool(live_gate.get("go_live_eligible")),
-        "blockers": list(live_gate.get("blockers") or []),
+        "paper_proof_eligible": bool(paper_gate.get("paper_proof_eligible")),
+        "paper_orders_permitted": bool(paper_gate.get("paper_orders_permitted")),
+        "blockers": plan_blockers,
         "runtime_symbols": list(preview.get("runtime_symbols") or []),
         "selected_symbols": selected_symbols,
         "selected_count": int(visibility.get("selected_count") or 0),
@@ -5502,11 +5628,15 @@ def release_gate_status() -> dict:
     workflow = _release_workflow_snapshot(include_gate=True)
     stage = _normalize_release_stage(workflow.get("effective_stage") or SYSTEM_RELEASE_STAGE, default="paper")
     status = _build_release_gate_snapshot(stage, include_stage_check=True)
+    paper_gate = _paper_proof_gate_snapshot()
     status.update({
         "system_release_stage": stage,
         "configured_release_stage": workflow.get("configured_stage"),
         "effective_release_stage": workflow.get("effective_stage"),
         "release_workflow": workflow,
+        "paper_proof_eligible": bool(paper_gate.get("paper_proof_eligible")),
+        "paper_orders_permitted": bool(paper_gate.get("paper_orders_permitted")),
+        "paper_proof_unmet_conditions": list(paper_gate.get("paper_proof_unmet_conditions") or []),
     })
     status["live_orders_permitted"] = bool(status.get("go_live_eligible") and workflow.get("live_activation_armed"))
     if workflow.get("configured_stage_drift"):

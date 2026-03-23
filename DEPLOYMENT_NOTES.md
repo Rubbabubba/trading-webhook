@@ -1,12 +1,9 @@
-# Patch 083 – Proof capture plan
+# Patch 084
 
-This patch builds on patch 082 and adds one operator-facing diagnostic to help capture paper execution proof and same-session proof during market hours without loosening live controls.
+Corrected paper-proof control alignment built from patch 083.
 
-What changed:
-- Added `/diagnostics/proof_capture_plan` to combine current runtime preview, execution visibility, readiness, and live readiness gate into one response.
-- The new snapshot shows exact arming gaps, whether proof capture is possible right now, the next required step for each selected symbol, and the next-best runtime candidates if nothing is currently selected.
-
-Safety:
-- No trading thresholds were changed.
-- No release-gate logic was loosened.
-- No live permissions were widened.
+Changes:
+- adds non-recursive paper proof gate snapshot
+- exposes paper proof fields on release and live readiness diagnostics
+- updates proof capture plan to use paper-session truth without live-only stage poisoning
+- avoids endpoint cross-calls that caused hanging diagnostics in the prior 084 build
