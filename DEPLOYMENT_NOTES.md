@@ -1,9 +1,14 @@
-# Patch 084
+Patch 085 — proof truth and exit-arm hardening
 
-Corrected paper-proof control alignment built from patch 083.
+Changes in this patch:
+- fixes proof visibility so entry statuses planned/submitted no longer count as fills
+- treats exit lifecycle status armed as a valid exit-proof state
+- hardens reconcile recovery so broker-open positions rebuild a filled execution state and re-arm exit protection
+- preserves paper-proof and guarded-live controls from patch 084-fixed
 
-Changes:
-- adds non-recursive paper proof gate snapshot
-- exposes paper proof fields on release and live readiness diagnostics
-- updates proof capture plan to use paper-session truth without live-only stage poisoning
-- avoids endpoint cross-calls that caused hanging diagnostics in the prior 084 build
+Post-deploy checks:
+- /diagnostics/build
+- /diagnostics/proof_capture_plan
+- /diagnostics/release
+- /diagnostics/live_readiness_gate
+- /diagnostics/execution_lifecycle

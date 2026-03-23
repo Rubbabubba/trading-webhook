@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-084-paper-proof-control-alignment-fixed"
+PATCH_VERSION = "patch-085-proof-truth-and-exit-arm-hardening"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -2151,6 +2151,45 @@ def _record_paper_lifecycle(stage: str, status: str, symbol: str | None = None, 
     except Exception:
         pass
     return event
+
+
+def _latest_symbol_lifecycle_event(symbol: str, stage: str, statuses: set[str] | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    stage_lc = str(stage or "").strip().lower()
+    allowed = {str(s).strip().lower() for s in (statuses or set()) if str(s).strip()}
+    events = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not events or events[-1] != LAST_PAPER_LIFECYCLE):
+        events.append(dict(LAST_PAPER_LIFECYCLE))
+    for ev in reversed(events):
+        if str((ev or {}).get("symbol") or "").strip().upper() != sym:
+            continue
+        if str((ev or {}).get("stage") or "").strip().lower() != stage_lc:
+            continue
+        if allowed and str((ev or {}).get("status") or "").strip().lower() not in allowed:
+            continue
+        return dict(ev or {})
+    return {}
+
+
+def _ensure_exit_arm_for_symbol(symbol: str, plan: dict | None, *, source: str = "reconcile", qty_signed: float | None = None, entry_price: float | None = None) -> bool:
+    sym = str(symbol or "").strip().upper()
+    if not sym or not isinstance(plan, dict):
+        return False
+    if not plan.get("active"):
+        plan["active"] = True
+    changed = False
+    if not plan.get("exit_armed_at"):
+        plan["exit_armed_at"] = now_ny().isoformat()
+        changed = True
+    existing = _latest_symbol_lifecycle_event(sym, "exit", {"armed", "submitted", "closed", "filled", "completed", "dry_run"})
+    if not existing:
+        _record_paper_lifecycle("exit", "armed", sym, {
+            "source": source,
+            "qty": round(abs(float(qty_signed or plan.get("qty") or 0.0)), 6),
+            "entry_price": float(entry_price or plan.get("avg_fill_price") or plan.get("entry_price") or 0.0),
+        })
+        changed = True
+    return changed
 
 
 def _authoritative_runtime_state_snapshot() -> dict:
@@ -4091,7 +4130,10 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
         recovered_plan = build_trade_plan(sym, side, qty, float(avg_entry), signal="RECOVERED")
         recovered_plan["recovered"] = True
         recovered_plan["recovered_at"] = now_ny().isoformat()
+        _ensure_execution_lifecycle_plan(sym, recovered_plan)
+        _transition_execution_lifecycle(recovered_plan, sym, "filled", reason="recovered_open_position", details={"qty": qty, "entry_price": float(avg_entry)}, allow_illegal=True)
         TRADE_PLAN[sym] = recovered_plan
+        _ensure_exit_arm_for_symbol(sym, recovered_plan, source="reconcile", qty_signed=qty_signed, entry_price=float(avg_entry))
         actions.append({"symbol": sym, "action": "recovered_plan", "qty": qty_signed, "entry": recovered_plan["entry_price"]})
         record_decision("RECONCILE", "worker_exit", sym, side=side, signal="RECOVERED",
                         action="recovered_plan", reason="missing_internal_plan",
@@ -4407,7 +4449,7 @@ def _paper_lifecycle_counts() -> dict:
             counts["candidate_selected"] += 1
         if stage == "entry" and status in {"planned", "submitted", "filled", "opened"}:
             counts["entry_events"] += 1
-        if stage == "exit" and status in {"submitted", "closed", "filled", "completed", "dry_run"}:
+        if stage == "exit" and status in {"armed", "submitted", "closed", "filled", "completed", "dry_run"}:
             counts["exit_events"] += 1
     counts["history_count"] = len(events)
     return counts
@@ -4506,9 +4548,18 @@ def _symbol_lifecycle_proof(symbol: str, active_scan: dict | None = None) -> dic
     entry_events = [ev for ev in lifecycle_events if str(ev.get("stage") or "").lower() == "entry"]
     exit_events = [ev for ev in lifecycle_events if str(ev.get("stage") or "").lower() == "exit"]
     plan_exit = _plan_exit_snapshot(sym, plan) if plan else {}
-    fill_event = next((ev for ev in reversed(entry_events) if str(ev.get("status") or "").lower() in {"filled", "opened", "submitted", "planned"}), None)
-    exit_event = next((ev for ev in reversed(exit_events) if str(ev.get("status") or "").lower() in {"submitted", "closed", "filled", "completed", "dry_run"}), None)
+    fill_event = next((ev for ev in reversed(entry_events) if str(ev.get("status") or "").lower() in {"filled", "opened"}), None)
+    exit_event = next((ev for ev in reversed(exit_events) if str(ev.get("status") or "").lower() in {"armed", "submitted", "closed", "filled", "completed", "dry_run"}), None)
     latest_decision = decisions[-1] if decisions else {}
+    if not fill_event and abs(float(qty_signed or 0.0)) > 0:
+        fill_event = {
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "ts_ny": now_ny().isoformat(),
+            "stage": "entry",
+            "status": "opened",
+            "symbol": sym,
+            "details": {"synthetic": True, "source": "broker_position", "qty": abs(float(qty_signed or 0.0))},
+        }
     stage = "candidate"
     if candidate and candidate.get("eligible"):
         stage = "eligible"
