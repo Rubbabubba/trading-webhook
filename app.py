@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-085-proof-truth-and-exit-arm-hardening"
+PATCH_VERSION = "patch-086-paper-submit-path-visibility"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4792,6 +4792,7 @@ def _execution_proof_snapshot(limit: int = 10) -> dict:
         order_event = next((d for d in reversed(decisions) if str(d.get("event") or "").upper() == "ENTRY" and str(d.get("action") or "") == "order_submitted"), {})
         fill_event = dict(row.get("entry_event") or {})
         exit_event = dict(row.get("exit_event") or {})
+        submit_decision = _latest_scan_submit_decision(decisions)
         out_rows.append({
             "symbol": sym,
             "selected": bool(row.get("selected")),
@@ -4806,6 +4807,10 @@ def _execution_proof_snapshot(limit: int = 10) -> dict:
             "order_event": order_event,
             "fill_event": fill_event,
             "exit_event": exit_event,
+            "submit_decision": submit_decision,
+            "submit_state": str(submit_decision.get("action") or "").replace("paper_submit_", "") if submit_decision else ("submitted" if bool(row.get("order_submitted")) else ""),
+            "submit_reason": str(submit_decision.get("reason") or "") if submit_decision else "",
+            "submit_attempted": bool(submit_decision.get("attempted")) if submit_decision else bool(row.get("order_submitted")),
             "decision_count": len(decisions),
             "lifecycle_event_count": len(lifecycle_events),
             "issues": list(next((g.get("issues") for g in (_pipeline_guardrail_rows([row], truth_source=(proof.get("truth_source") or "")) or []) if isinstance(g, dict)), []) or []),
@@ -5180,10 +5185,17 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
             return "observe_exit_fill_or_close"
         if fill_observed or current_stage in {"filled", "open", "opened", "exit_armed", "close_submitted"}:
             return "arm_or_submit_exit"
+        submit_state = str((row or {}).get("submit_state") or "").strip().lower()
         if order_submitted or current_stage in {"submitted", "entry_submitted"}:
             return "observe_entry_fill"
+        if submit_state == "blocked":
+            return "resolve_submit_blocker"
+        if submit_state == "ignored":
+            return "clear_submit_blocker_or_wait_next_scan"
         if plan_created or current_stage in {"planned", "selected"}:
-            return "submit_entry_order" if not preview_only else "disable_dry_run_and_submit_in_paper_session"
+            if preview_only and bool((paper_gate.get("env") or {}).get("dry_run", DRY_RUN)):
+                return "disable_dry_run_and_submit_in_paper_session"
+            return "submit_entry_order"
         if selected:
             return "create_trade_plan"
         return "wait_for_selection"
@@ -5216,6 +5228,9 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
             "fill_observed": bool((row or {}).get("fill_observed")),
             "exit_armed": bool((row or {}).get("exit_armed")),
             "preview_only": bool((row or {}).get("preview_only")),
+            "submit_state": (row or {}).get("submit_state"),
+            "submit_reason": (row or {}).get("submit_reason"),
+            "submit_attempted": bool((row or {}).get("submit_attempted")),
             "issues": list((row or {}).get("issues") or []),
             "execution_state": (row or {}).get("execution_state"),
             "derived_state": (row or {}).get("derived_state"),
@@ -10163,6 +10178,32 @@ def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = N
     """Submit a market order originating from the scanner (shared execution path)."""
     return execute_entry_signal(symbol=symbol, side=side, signal=signal, source="worker_scan", meta=meta)
 
+
+def _classify_scan_submit_response(resp: dict | None) -> dict:
+    resp = dict(resp or {})
+    reason = str(resp.get("reason") or resp.get("action") or "").strip()
+    if bool(resp.get("submitted")):
+        return {"state": "submitted", "reason": reason, "attempted": True, "order_id": str(resp.get("order_id") or "").strip()}
+    if bool(resp.get("dry_run")):
+        return {"state": "preview_only", "reason": reason or "dry_run", "attempted": False, "order_id": ""}
+    if bool(resp.get("ignored")):
+        return {"state": "ignored", "reason": reason or "ignored", "attempted": False, "order_id": ""}
+    if bool(resp.get("rejected")):
+        return {"state": "blocked", "reason": reason or "rejected", "attempted": False, "order_id": ""}
+    if bool(resp.get("ok")):
+        return {"state": "not_submitted", "reason": reason or "ok_without_submit", "attempted": False, "order_id": ""}
+    return {"state": "error", "reason": reason or "unknown", "attempted": False, "order_id": ""}
+
+
+def _latest_scan_submit_decision(decisions: list[dict] | None) -> dict:
+    for d in reversed(list(decisions or [])):
+        if str(d.get("event") or "").upper() != "SCAN":
+            continue
+        action = str(d.get("action") or "")
+        if action.startswith("paper_submit_"):
+            return dict(d)
+    return {}
+
 @app.post("/webhook")
 async def webhook(req: Request):
     cleanup_caches()
@@ -13130,7 +13171,23 @@ async def worker_scan_entries(req: Request):
                     scan_reason=requested_reason or "scheduled",
                 )
                 resp = submit_scan_trade(sym, side, sig, meta={"rank_score": payload["rank_score"], "signal_family": payload["signal_family"], "selected_by_scanner": True, "candidate_slots": candidate_slots, "scan_reason": requested_reason or "scheduled"})
-                would_submit.append({**payload, **resp})
+                submit_meta = _classify_scan_submit_response(resp)
+                record_decision(
+                    "SCAN",
+                    "worker_scan",
+                    symbol=sym,
+                    side=side,
+                    signal=sig,
+                    action=f"paper_submit_{submit_meta.get('state')}",
+                    reason=submit_meta.get("reason", ""),
+                    order_id=submit_meta.get("order_id", ""),
+                    rank_score=payload["rank_score"],
+                    signal_family=payload["signal_family"],
+                    attempted=bool(submit_meta.get("attempted")),
+                    candidate_slots=candidate_slots,
+                    scan_reason=requested_reason or "scheduled",
+                )
+                would_submit.append({**payload, **resp, "submit_state": submit_meta.get("state"), "submit_reason": submit_meta.get("reason"), "submit_attempted": bool(submit_meta.get("attempted"))})
 
         # Store diagnostics for Postman/curl inspection.
         try:
