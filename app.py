@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-086-paper-submit-path-visibility"
+PATCH_VERSION = "patch-087-proof-submit-reason-propagation"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -5172,6 +5172,27 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
     readiness = diagnostics_readiness(Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/diagnostics/proof_capture_plan"}))
     worker_status = dict((paper_gate.get("worker_status") or live_gate.get("worker_status") or {}))
     truth_source = str(visibility.get("truth_source") or preview.get("preview_source") or "")
+    current_runtime = list(preview.get("runtime_symbols") or [])
+    matched_scan = _latest_matching_scan_record(current_runtime)
+    matched_scan_source = str((matched_scan or {}).get('_scan_source') or '')
+    matched_would_submit = list((matched_scan or {}).get("would_submit") or [])
+    submit_decisions = {}
+    for row in matched_would_submit:
+        symbol = str((row or {}).get("symbol") or "").strip().upper()
+        if not symbol or symbol in submit_decisions:
+            continue
+        state = str((row or {}).get("submit_state") or "").strip().lower()
+        reason = str((row or {}).get("submit_reason") or (row or {}).get("reason") or "")
+        attempted = bool((row or {}).get("submit_attempted"))
+        rejected = bool((row or {}).get("rejected"))
+        submit_decisions[symbol] = {
+            "submit_state": state or None,
+            "submit_reason": reason,
+            "submit_attempted": attempted,
+            "submit_ok": (row or {}).get("ok"),
+            "submit_rejected": rejected,
+            "submit_preview_only": (not attempted) and (rejected or state in {"blocked", "preview_only", "not_submitted"}),
+        }
 
     def _next_step(row: dict) -> str:
         current_stage = str((row or {}).get("current_stage") or "").strip().lower()
@@ -5186,9 +5207,12 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
         if fill_observed or current_stage in {"filled", "open", "opened", "exit_armed", "close_submitted"}:
             return "arm_or_submit_exit"
         submit_state = str((row or {}).get("submit_state") or "").strip().lower()
+        submit_reason = str((row or {}).get("submit_reason") or "").strip().lower()
         if order_submitted or current_stage in {"submitted", "entry_submitted"}:
             return "observe_entry_fill"
         if submit_state == "blocked":
+            if submit_reason in {"spread_too_wide", "quote_missing", "quote_stale", "fresh_quote_required"}:
+                return "wait_for_submitable_quote"
             return "resolve_submit_blocker"
         if submit_state == "ignored":
             return "clear_submit_blocker_or_wait_next_scan"
@@ -5218,22 +5242,32 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
         symbol = str((row or {}).get("symbol") or "").upper()
         if not symbol:
             continue
+        submit_meta = dict(submit_decisions.get(symbol) or {})
+        effective_row = dict(row or {})
+        if not effective_row.get("submit_state") and submit_meta.get("submit_state") is not None:
+            effective_row["submit_state"] = submit_meta.get("submit_state")
+        if not effective_row.get("submit_reason") and submit_meta.get("submit_reason"):
+            effective_row["submit_reason"] = submit_meta.get("submit_reason")
+        if not bool(effective_row.get("submit_attempted")) and submit_meta:
+            effective_row["submit_attempted"] = bool(submit_meta.get("submit_attempted"))
+        if submit_meta.get("submit_preview_only"):
+            effective_row["preview_only"] = True
         items.append({
             "symbol": symbol,
-            "status": _status_label(row),
-            "next_step": _next_step(row),
-            "selected": bool((row or {}).get("selected")),
-            "plan_created": bool((row or {}).get("plan_created")),
-            "order_submitted": bool((row or {}).get("order_submitted")),
-            "fill_observed": bool((row or {}).get("fill_observed")),
-            "exit_armed": bool((row or {}).get("exit_armed")),
-            "preview_only": bool((row or {}).get("preview_only")),
-            "submit_state": (row or {}).get("submit_state"),
-            "submit_reason": (row or {}).get("submit_reason"),
-            "submit_attempted": bool((row or {}).get("submit_attempted")),
-            "issues": list((row or {}).get("issues") or []),
-            "execution_state": (row or {}).get("execution_state"),
-            "derived_state": (row or {}).get("derived_state"),
+            "status": _status_label(effective_row),
+            "next_step": _next_step(effective_row),
+            "selected": bool((effective_row or {}).get("selected")),
+            "plan_created": bool((effective_row or {}).get("plan_created")),
+            "order_submitted": bool((effective_row or {}).get("order_submitted")),
+            "fill_observed": bool((effective_row or {}).get("fill_observed")),
+            "exit_armed": bool((effective_row or {}).get("exit_armed")),
+            "preview_only": bool((effective_row or {}).get("preview_only")),
+            "submit_state": (effective_row or {}).get("submit_state"),
+            "submit_reason": (effective_row or {}).get("submit_reason"),
+            "submit_attempted": bool((effective_row or {}).get("submit_attempted")),
+            "issues": list((effective_row or {}).get("issues") or []),
+            "execution_state": (effective_row or {}).get("execution_state"),
+            "derived_state": (effective_row or {}).get("derived_state"),
         })
 
     selected_symbols = list(visibility.get("selected_symbols") or preview.get("selected_symbols") or [])
@@ -5293,6 +5327,7 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
             "exit_armed_count": int(visibility.get("exit_armed_count") or 0),
         },
         "items": items,
+        "submit_truth_source": matched_scan_source or None,
         "top_runtime_candidates": top_candidates,
         "operator_focus": items[0] if items else {},
     }
