@@ -1,5 +1,1 @@
-# Patch 087
-
-- propagate would_submit submit state/reason/attempted into proof capture plan
-- improve next_step for quote/spread-blocked paper submissions
-- preserve patch 086 submit-path instrumentation with no broader workflow changes
+Patch 088: hotfixes entry submit path variable scope so quote-missing / stale-quote rejection paths do not reference an uninitialized payload before Alpaca submission.

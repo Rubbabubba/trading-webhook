@@ -951,7 +951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-087-proof-submit-reason-propagation"
+PATCH_VERSION = "patch-088-alpaca-payload-scope-hotfix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -10092,6 +10092,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         return {"ok": True, "ignored": True, "reason": "symbol_locked", "symbol": symbol, "signal": signal}
 
     effective_dry_run = effective_entry_dry_run(source)
+    payload = None
 
     try:
         snapshot = get_latest_quote_snapshot(symbol)
