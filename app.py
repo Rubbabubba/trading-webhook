@@ -290,8 +290,33 @@ def get_latest_quote_snapshot(symbol: str) -> dict:
         trade_px = None
         trade_ts = None
 
-    quotes, quote_debug = _fetch_latest_quotes_via_rest([symbol])
-    quote = quotes.get(symbol) or {}
+    quote_attempts = []
+    quote = {}
+    quote_debug = {"method": "rest_quote", "feed": str(_DATA_FEED_RAW), "count": 0, "url": None}
+    max_attempts = 3
+    retry_sleep_sec = 0.20
+    for attempt in range(1, max_attempts + 1):
+        quotes, quote_debug = _fetch_latest_quotes_via_rest([symbol])
+        quote = quotes.get(symbol) or {}
+        attempt_row = {
+            "attempt": attempt,
+            "bid": quote.get("bid"),
+            "ask": quote.get("ask"),
+            "quote_ts_utc": quote.get("ts_utc").isoformat() if quote.get("ts_utc") else None,
+            "count": quote_debug.get("count"),
+            "error": quote_debug.get("error"),
+        }
+        quote_attempts.append(attempt_row)
+        bid = quote.get("bid")
+        ask = quote.get("ask")
+        if bid and ask and float(bid) > 0 and float(ask) > 0 and float(ask) >= float(bid):
+            break
+        if attempt < max_attempts:
+            try:
+                time.sleep(retry_sleep_sec)
+            except Exception:
+                pass
+
     bid = quote.get("bid")
     ask = quote.get("ask")
     quote_ts = quote.get("ts_utc")
@@ -308,6 +333,14 @@ def get_latest_quote_snapshot(symbol: str) -> dict:
     age_sec = None
     if ref_ts is not None:
         age_sec = max(0.0, (datetime.now(timezone.utc) - ref_ts).total_seconds())
+
+    quote_debug = dict(quote_debug or {})
+    quote_debug["attempts"] = quote_attempts
+    quote_debug["attempt_count"] = len(quote_attempts)
+    quote_debug["retry_sleep_sec"] = retry_sleep_sec
+    quote_debug["final_missing_fields"] = [
+        field for field, value in (("bid", bid), ("ask", ask)) if value in (None, 0, 0.0)
+    ]
 
     return {
         "symbol": symbol,
@@ -951,7 +984,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-088-alpaca-payload-scope-hotfix"
+PATCH_VERSION = "patch-089-quote-missing-resilience"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 

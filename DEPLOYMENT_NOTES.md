@@ -1,1 +1,1 @@
-Patch 088: hotfixes entry submit path variable scope so quote-missing / stale-quote rejection paths do not reference an uninitialized payload before Alpaca submission.
+Patch 089: add small bounded retry loop for latest quote fetches and richer quote_missing diagnostics; no change to execution safety.
