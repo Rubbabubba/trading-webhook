@@ -1,1 +1,1 @@
-Patch 089: add small bounded retry loop for latest quote fetches and richer quote_missing diagnostics; no change to execution safety.
+Patch 090: Quote fallback completeness upgrade with synthetic quote from latest trade when one side missing; preserves spread/freshness checks.

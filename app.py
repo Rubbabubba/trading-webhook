@@ -267,6 +267,45 @@ def _fetch_latest_quotes_via_rest(symbols: list[str]) -> tuple[dict[str, dict], 
     return out, debug
 
 
+def _build_fallback_quote(bid, ask, last_trade_price):
+    """Construct a synthetic quote when one side is missing using the latest trade price as fallback."""
+    synthetic = False
+    try:
+        bid = float(bid) if bid not in (None, "") else None
+    except Exception:
+        bid = None
+    try:
+        ask = float(ask) if ask not in (None, "") else None
+    except Exception:
+        ask = None
+    try:
+        last_trade_price = float(last_trade_price) if last_trade_price not in (None, "") else None
+    except Exception:
+        last_trade_price = None
+
+    if bid is None and ask is None:
+        return None, False
+    if bid is None and ask is not None:
+        bid = last_trade_price or ask
+        synthetic = True
+    if ask is None and bid is not None:
+        ask = last_trade_price or bid
+        synthetic = True
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return None, False
+
+    mid = round((bid + ask) / 2.0, 6)
+    spread = round(abs(ask - bid), 6)
+    spread_pct = float(spread) / float(mid) if mid else None
+    return {
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+        "spread": spread,
+        "spread_pct": spread_pct,
+    }, synthetic
+
+
 def get_latest_quote_snapshot(symbol: str) -> dict:
     symbol = str(symbol or "").upper()
     trade_px = None
@@ -323,21 +362,39 @@ def get_latest_quote_snapshot(symbol: str) -> dict:
     mid = None
     spread = None
     spread_pct = None
+    quote_debug = dict(quote_debug or {})
+    quote_debug["attempts"] = quote_attempts
+    quote_debug["attempt_count"] = len(quote_attempts)
+    quote_debug["retry_sleep_sec"] = retry_sleep_sec
+    quote_debug["fallback_used"] = False
+    quote_debug["fallback_source"] = None
+    quote_debug["synthetic_quote"] = False
+    quote_debug["final_quote_valid"] = False
+
     if bid and ask and bid > 0 and ask > 0 and ask >= bid:
         mid = round((float(bid) + float(ask)) / 2.0, 6)
         spread = round(float(ask) - float(bid), 6)
         if mid > 0:
             spread_pct = float(spread) / float(mid)
+            quote_debug["final_quote_valid"] = True
+    else:
+        fallback_quote, synthetic = _build_fallback_quote(bid, ask, trade_px)
+        if fallback_quote:
+            bid = fallback_quote["bid"]
+            ask = fallback_quote["ask"]
+            mid = fallback_quote["mid"]
+            spread = fallback_quote["spread"]
+            spread_pct = fallback_quote["spread_pct"]
+            quote_debug["fallback_used"] = True
+            quote_debug["fallback_source"] = "trade"
+            quote_debug["synthetic_quote"] = bool(synthetic)
+            quote_debug["final_quote_valid"] = True
 
     ref_ts = quote_ts or trade_ts
     age_sec = None
     if ref_ts is not None:
         age_sec = max(0.0, (datetime.now(timezone.utc) - ref_ts).total_seconds())
 
-    quote_debug = dict(quote_debug or {})
-    quote_debug["attempts"] = quote_attempts
-    quote_debug["attempt_count"] = len(quote_attempts)
-    quote_debug["retry_sleep_sec"] = retry_sleep_sec
     quote_debug["final_missing_fields"] = [
         field for field, value in (("bid", bid), ("ask", ask)) if value in (None, 0, 0.0)
     ]
@@ -984,7 +1041,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-089-quote-missing-resilience"
+PATCH_VERSION = "patch-090-quote-fallback-completeness"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
