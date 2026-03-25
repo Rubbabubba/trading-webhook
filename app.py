@@ -1041,7 +1041,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-090-quote-fallback-completeness"
+PATCH_VERSION = "patch-091-proof-preview-submit-guardrails"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3264,11 +3264,11 @@ def _latest_matching_scan_record(runtime_symbols: list[str] | None = None) -> di
         probe = _dedupe_keep_order([str(s).strip().upper() for s in (symbols or []) if str(s).strip()])
         return bool(probe) and probe == target
 
-    for hist in reversed(list(CANDIDATE_HISTORY or [])):
-        if isinstance(hist, dict) and _matches(hist.get('symbols')):
-            rec = _candidate_history_to_scan_record(hist, scan_source='candidate_history_match')
-            if rec:
-                return rec
+    def _recent_enough(ts_value: str | None, max_age_minutes: int = 120) -> bool:
+        ts = _parse_bar_ts(ts_value)
+        if ts is None:
+            return False
+        return (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)) <= timedelta(minutes=max(1, int(max_age_minutes or 120)))
 
     if isinstance(LAST_SCAN, dict) and _matches((LAST_SCAN.get('summary') or {}).get('symbols') or LAST_SCAN.get('symbols')):
         rec = dict(LAST_SCAN)
@@ -3280,6 +3280,12 @@ def _latest_matching_scan_record(runtime_symbols: list[str] | None = None) -> di
             rec = dict(item)
             rec['_scan_source'] = rec.get('_scan_source') or 'scan_history_match'
             return rec
+
+    for hist in reversed(list(CANDIDATE_HISTORY or [])):
+        if isinstance(hist, dict) and _matches(hist.get('symbols')) and _recent_enough(hist.get('ts_utc')):
+            rec = _candidate_history_to_scan_record(hist, scan_source='candidate_history_match')
+            if rec:
+                return rec
     return {}
 
 
@@ -5266,6 +5272,8 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
     matched_scan = _latest_matching_scan_record(current_runtime)
     matched_scan_source = str((matched_scan or {}).get('_scan_source') or '')
     matched_would_submit = list((matched_scan or {}).get("would_submit") or [])
+    if truth_source == "current_runtime_preview" and matched_scan_source == "candidate_history_match":
+        matched_would_submit = []
     submit_decisions = {}
     for row in matched_would_submit:
         symbol = str((row or {}).get("symbol") or "").strip().upper()
@@ -5309,6 +5317,8 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
         if plan_created or current_stage in {"planned", "selected"}:
             if preview_only and bool((paper_gate.get("env") or {}).get("dry_run", DRY_RUN)):
                 return "disable_dry_run_and_submit_in_paper_session"
+            if preview_only and truth_source == "current_runtime_preview":
+                return "await_next_scanner_submission_window"
             return "submit_entry_order"
         if selected:
             return "create_trade_plan"
@@ -5342,6 +5352,10 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
             effective_row["submit_attempted"] = bool(submit_meta.get("submit_attempted"))
         if submit_meta.get("submit_preview_only"):
             effective_row["preview_only"] = True
+        row_preview_only = bool((effective_row or {}).get("preview_only"))
+        if truth_source == "current_runtime_preview" and not submit_meta.get("submit_preview_only") and not bool((effective_row or {}).get("order_submitted")):
+            row_preview_only = False
+        effective_row["preview_only"] = row_preview_only
         items.append({
             "symbol": symbol,
             "status": _status_label(effective_row),
@@ -5351,7 +5365,7 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
             "order_submitted": bool((effective_row or {}).get("order_submitted")),
             "fill_observed": bool((effective_row or {}).get("fill_observed")),
             "exit_armed": bool((effective_row or {}).get("exit_armed")),
-            "preview_only": bool((effective_row or {}).get("preview_only")),
+            "preview_only": bool(row_preview_only),
             "submit_state": (effective_row or {}).get("submit_state"),
             "submit_reason": (effective_row or {}).get("submit_reason"),
             "submit_attempted": bool((effective_row or {}).get("submit_attempted")),

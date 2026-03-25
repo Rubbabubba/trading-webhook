@@ -1,1 +1,1 @@
-Patch 090: Quote fallback completeness upgrade with synthetic quote from latest trade when one side missing; preserves spread/freshness checks.
+Patch 091 - proof preview submit guardrails
