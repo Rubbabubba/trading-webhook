@@ -1041,7 +1041,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-091-proof-preview-submit-guardrails"
+PATCH_VERSION = "patch-092-paper-proof-recovered-fill-alignment"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4547,6 +4547,32 @@ def _paper_lifecycle_counts() -> dict:
             counts["entry_events"] += 1
         if stage == "exit" and status in {"armed", "submitted", "closed", "filled", "completed", "dry_run"}:
             counts["exit_events"] += 1
+    synthetic_exit_symbols = []
+    for symbol, plan in list((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not plan.get("active"):
+            continue
+        try:
+            qty_signed, _ = get_position(symbol)
+        except Exception:
+            qty_signed = 0.0
+        if abs(float(qty_signed or 0.0)) <= 0:
+            continue
+        if plan.get("stop_price") is None and plan.get("take_price") is None:
+            continue
+        has_exit_event = False
+        for ev in reversed(events):
+            if str((ev or {}).get("symbol") or "").strip().upper() != str(symbol or "").strip().upper():
+                continue
+            if str((ev or {}).get("stage") or "").strip().lower() != "exit":
+                continue
+            if str((ev or {}).get("status") or "").strip().lower() in {"armed", "submitted", "closed", "filled", "completed", "dry_run"}:
+                has_exit_event = True
+                break
+        if not has_exit_event:
+            synthetic_exit_symbols.append(str(symbol).strip().upper())
+    counts["synthetic_exit_events"] = len(synthetic_exit_symbols)
+    counts["synthetic_exit_symbols"] = synthetic_exit_symbols
+    counts["exit_events"] += len(synthetic_exit_symbols)
     counts["history_count"] = len(events)
     return counts
 
@@ -4655,6 +4681,21 @@ def _symbol_lifecycle_proof(symbol: str, active_scan: dict | None = None) -> dic
             "status": "opened",
             "symbol": sym,
             "details": {"synthetic": True, "source": "broker_position", "qty": abs(float(qty_signed or 0.0))},
+        }
+    if not exit_event and bool(plan and plan.get("active")) and abs(float(qty_signed or 0.0)) > 0 and (plan.get("stop_price") is not None or plan.get("take_price") is not None):
+        exit_event = {
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "ts_ny": now_ny().isoformat(),
+            "stage": "exit",
+            "status": "armed",
+            "symbol": sym,
+            "details": {
+                "synthetic": True,
+                "source": "active_plan",
+                "stop_price": plan.get("stop_price"),
+                "take_price": plan.get("take_price"),
+                "qty": abs(float(qty_signed or 0.0)),
+            },
         }
     stage = "candidate"
     if candidate and candidate.get("eligible"):
@@ -4851,6 +4892,14 @@ def _paper_execution_proof_snapshot(limit: int = 20) -> dict:
     rows = [_symbol_lifecycle_proof(sym, active_scan=active_scan) for sym in symbols[:max(lim, len(runtime_symbols))]]
     rows = [r for r in rows if r]
     stage_failures = _paper_execution_stage_failures(rows, truth_source=(active_scan or {}).get("_scan_source"))
+    selected_symbols = [r.get("symbol") for r in rows if r.get("selected")]
+    planned_symbols = [r.get("symbol") for r in rows if r.get("plan_created")]
+    submitted_symbols = [r.get("symbol") for r in rows if r.get("order_submitted")]
+    filled_symbols = [r.get("symbol") for r in rows if _proof_row_fill_flags(r).get("fill_observed")]
+    historical_filled_symbols = [r.get("symbol") for r in rows if _proof_row_fill_flags(r).get("historical_fill_observed")]
+    active_position_symbols = [r.get("symbol") for r in rows if r.get("active_position")]
+    exit_armed_symbols = [r.get("symbol") for r in rows if r.get("exit_armed") or r.get("exit_event")]
+    recent_reconcile_symbols = [r.get("symbol") for r in rows if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (r.get("decisions") or []))]
     return {
         "ok": True,
         "ts_utc": datetime.now(timezone.utc).isoformat(),
@@ -4861,13 +4910,18 @@ def _paper_execution_proof_snapshot(limit: int = 20) -> dict:
         "rows": rows[:lim],
         "row_count": min(len(rows), lim),
         "stage_failures": stage_failures,
-        "selected_symbols": [r.get("symbol") for r in rows if r.get("selected")],
-        "planned_symbols": [r.get("symbol") for r in rows if r.get("plan_created")],
-        "submitted_symbols": [r.get("symbol") for r in rows if r.get("order_submitted")],
-        "filled_symbols": [r.get("symbol") for r in rows if _proof_row_fill_flags(r).get("fill_observed")],
-        "historical_filled_symbols": [r.get("symbol") for r in rows if _proof_row_fill_flags(r).get("historical_fill_observed")],
-        "active_position_symbols": [r.get("symbol") for r in rows if r.get("active_position")],
-        "recent_reconcile_symbols": [r.get("symbol") for r in rows if any(str((d or {}).get("action") or "") == "recovered_plan" for d in (r.get("decisions") or []))],
+        "selected_symbols": selected_symbols,
+        "planned_symbols": planned_symbols,
+        "submitted_symbols": submitted_symbols,
+        "filled_symbols": filled_symbols,
+        "historical_filled_symbols": historical_filled_symbols,
+        "active_position_symbols": active_position_symbols,
+        "exit_armed_symbols": exit_armed_symbols,
+        "recent_reconcile_symbols": recent_reconcile_symbols,
+        "planned_count": len(planned_symbols),
+        "submitted_count": len(submitted_symbols),
+        "filled_count": len(filled_symbols),
+        "exit_armed_count": len(exit_armed_symbols),
     }
 
 
@@ -4878,8 +4932,12 @@ def _execution_proof_snapshot(limit: int = 10) -> dict:
     summary = dict((active_scan or {}).get("summary") or {})
     selected_symbols = _dedupe_keep_order([str(s).strip().upper() for s in (summary.get("selected_symbols") or proof.get("selected_symbols") or []) if str(s).strip()])
     proof_rows = {str((r or {}).get("symbol") or "").strip().upper(): dict(r) for r in (proof.get("rows") or []) if isinstance(r, dict) and str((r or {}).get("symbol") or "").strip()}
+    focus_symbols = _dedupe_keep_order(
+        list(selected_symbols)
+        + [str((r or {}).get("symbol") or "").strip().upper() for r in (proof.get("rows") or []) if isinstance(r, dict) and (r.get("plan_created") or r.get("order_submitted") or _proof_row_fill_flags(r).get("fill_observed") or r.get("active_position") or r.get("exit_armed") or r.get("exit_event"))]
+    )
     out_rows = []
-    for sym in selected_symbols[:lim]:
+    for sym in focus_symbols[:lim]:
         row = dict(proof_rows.get(sym) or {})
         decisions = [dict(d) for d in (row.get("decisions") or []) if isinstance(d, dict)]
         lifecycle_events = [dict(ev) for ev in (row.get("lifecycle_events") or []) if isinstance(ev, dict)]
@@ -4917,6 +4975,7 @@ def _execution_proof_snapshot(limit: int = 10) -> dict:
         "truth_source": proof.get("truth_source"),
         "runtime_symbols": list((proof.get("runtime_symbols") or [])),
         "selected_symbols": selected_symbols,
+        "focus_symbols": focus_symbols,
         "selected_count": len(selected_symbols),
         "planned_count": sum(1 for r in out_rows if r.get("plan_created")),
         "submitted_count": sum(1 for r in out_rows if r.get("order_submitted")),
@@ -4957,6 +5016,8 @@ def _execution_visibility_snapshot(limit: int = 10) -> dict:
         })
     visible_symbols = [str((row or {}).get("symbol") or "").strip().upper() for row in out_items if str((row or {}).get("symbol") or "").strip()]
     selected_symbols = [s for s in (proof.get("selected_symbols") or []) if s in visible_symbols]
+    if not selected_symbols:
+        selected_symbols = [s for s in (proof.get("focus_symbols") or []) if s in visible_symbols]
     return {
         "ok": True,
         "ts_utc": datetime.now(timezone.utc).isoformat(),
@@ -5375,6 +5436,8 @@ def _proof_capture_plan_snapshot(limit: int = 10) -> dict:
         })
 
     selected_symbols = list(visibility.get("selected_symbols") or preview.get("selected_symbols") or [])
+    if not selected_symbols and items:
+        selected_symbols = [str((row or {}).get("symbol") or "").strip().upper() for row in items if str((row or {}).get("symbol") or "").strip()]
     top_candidates = []
     selected_set = {str(s).upper() for s in selected_symbols if str(s).strip()}
     for row in list(preview.get("top_candidates") or [])[: max(lim, 10)]:
