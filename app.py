@@ -1041,7 +1041,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-092-paper-proof-recovered-fill-alignment"
+PATCH_VERSION = "patch-093-lifecycle-hygiene-cleanup"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -2358,10 +2358,36 @@ def _paper_lifecycle_integrity_issues(last_event: dict | None = None, state: dic
     return issues
 
 
+def _clear_inactive_execution_residue(runtime: dict | None = None, reason: str = 'runtime_check') -> dict:
+    runtime = dict(runtime or _authoritative_runtime_state_snapshot())
+    authoritative_symbols = set(runtime.get('position_like_symbols') or []) | set(runtime.get('entry_pending_symbols') or [])
+    changed_symbols = []
+    for sym, plan in list((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict):
+            continue
+        symbol = str(sym or plan.get('symbol') or '').upper()
+        if not symbol or symbol in authoritative_symbols:
+            continue
+        current = str(plan.get('execution_state') or plan.get('lifecycle_state') or '').strip().lower()
+        if bool(plan.get('active')) or current not in EXECUTION_LIFECYCLE_ACTIVE_STATES:
+            continue
+        _transition_execution_lifecycle(plan, symbol, 'closed', reason='normalize_inactive_execution_residue', details={'normalization_reason': reason}, allow_illegal=True)
+        changed_symbols.append(symbol)
+    if changed_symbols:
+        try:
+            persist_positions_snapshot(reason='normalize_inactive_execution_residue', extra={'symbols': changed_symbols, 'normalization_reason': reason})
+        except Exception:
+            pass
+    return {'changed_symbols': changed_symbols, 'changed_count': len(changed_symbols)}
+
+
 def normalize_paper_lifecycle_current_state(reason: str = 'runtime_check') -> dict:
     runtime = _authoritative_runtime_state_snapshot()
+    cleanup = _clear_inactive_execution_residue(runtime=runtime, reason=reason)
+    if cleanup.get('changed_count'):
+        runtime = _authoritative_runtime_state_snapshot()
     issues = _paper_lifecycle_integrity_issues(LAST_PAPER_LIFECYCLE, runtime)
-    normalized = {'checked': True, 'mutated': False, 'issues': issues}
+    normalized = {'checked': True, 'mutated': bool(cleanup.get('changed_count')), 'issues': issues, 'execution_cleanup': cleanup}
     if not issues:
         return normalized
 
@@ -5759,7 +5785,7 @@ def _build_release_gate_snapshot(stage: str, include_stage_check: bool = True) -
     continuity_issues = []
     continuity_error = ""
     try:
-        continuity = continuity_snapshot(normalize_current=False)
+        continuity = continuity_snapshot(normalize_current=True)
         continuity_issues = list(continuity.get("issues") or [])
     except Exception as e:
         continuity_error = str(e)
@@ -11423,7 +11449,7 @@ def dashboard(request: Request):
     _refresh_regime_snapshot_if_needed()
 
     release = release_gate_status()
-    continuity = continuity_snapshot(normalize_current=False)
+    continuity = continuity_snapshot(normalize_current=True)
     blockers = _diagnostics_swing_blockers()
     regime = dict(LAST_REGIME_SNAPSHOT or {})
     last_scan = dict(LAST_SCAN or {})
