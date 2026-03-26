@@ -650,6 +650,22 @@ RELEASE_ALLOWED_LIVE_STAGES = {s.strip().lower() for s in str(getenv_any("RELEAS
 RELEASE_STATE_PATH = getenv_any("RELEASE_STATE_PATH", default="/var/data/release_state.json")
 RELEASE_WORKFLOW_ENFORCED = env_bool("RELEASE_WORKFLOW_ENFORCED", True)
 RELEASE_PROMOTION_REQUIRE_READINESS = env_bool("RELEASE_PROMOTION_REQUIRE_READINESS", True)
+RELEASE_PROMOTION_MANUAL_ARM_ALLOWED = env_bool("RELEASE_PROMOTION_MANUAL_ARM_ALLOWED", True)
+RELEASE_PROMOTION_ARMING_IGNORE_CONDITIONS = {
+    s.strip().lower()
+    for s in str(
+        getenv_any(
+            "RELEASE_PROMOTION_ARMING_IGNORE_CONDITIONS",
+            default=(
+                "regime_not_favorable,recent_market_scan_missing,"
+                "insufficient_completed_scans,insufficient_selected_candidates,"
+                "insufficient_entry_events,insufficient_exit_events"
+            ),
+        )
+        or ""
+    ).split(",")
+    if s.strip()
+}
 RELEASE_STATE_HISTORY_LIMIT = int(getenv_any("RELEASE_STATE_HISTORY_LIMIT", default="50"))
 RELEASE_VALID_STAGES = {"paper", "guarded_live_eligible", "live_guarded", "emergency_disabled"}
 RELEASE_REQUIRE_REGIME_COMPLETE = env_bool("RELEASE_REQUIRE_REGIME_COMPLETE", True)
@@ -5667,12 +5683,23 @@ def persist_release_state(reason: str = "") -> bool:
 
 def _release_transition_allowed(current_stage: str, target_stage: str) -> bool:
     allowed = {
-        "paper": {"paper", "guarded_live_eligible", "emergency_disabled"},
+        "paper": {"paper", "guarded_live_eligible", "live_guarded", "emergency_disabled"},
         "guarded_live_eligible": {"paper", "guarded_live_eligible", "live_guarded", "emergency_disabled"},
         "live_guarded": {"paper", "live_guarded", "emergency_disabled"},
         "emergency_disabled": {"paper", "emergency_disabled"},
     }
     return target_stage in allowed.get(current_stage, {"paper"})
+
+
+def _manual_promotion_unmet_conditions(target_stage: str, preflight: dict | None = None) -> list[str]:
+    target_stage = _normalize_release_stage(target_stage, default="paper")
+    if target_stage not in {"guarded_live_eligible", "live_guarded"}:
+        return list((preflight or {}).get("unmet_conditions") or [])
+    base_unmet = [str(x or "").strip().lower() for x in list((preflight or {}).get("unmet_conditions") or []) if str(x or "").strip()]
+    if not RELEASE_PROMOTION_MANUAL_ARM_ALLOWED:
+        return base_unmet
+    arm_safe_ignored = set(RELEASE_PROMOTION_ARMING_IGNORE_CONDITIONS)
+    return [item for item in base_unmet if item not in arm_safe_ignored]
 
 
 def _release_workflow_snapshot(include_gate: bool = True) -> dict:
@@ -5702,14 +5729,22 @@ def _release_workflow_snapshot(include_gate: bool = True) -> dict:
     if include_gate:
         target_live = _build_release_gate_snapshot("live_guarded", include_stage_check=False)
         target_eligible = _build_release_gate_snapshot("guarded_live_eligible", include_stage_check=False)
+        eligible_execution_unmet = list(target_eligible.get("unmet_conditions") or [])
+        live_execution_unmet = list(target_live.get("unmet_conditions") or []) + (["live_env_not_armed"] if (DRY_RUN or (not LIVE_TRADING_ENABLED)) else [])
+        eligible_arm_unmet = _manual_promotion_unmet_conditions("guarded_live_eligible", {"unmet_conditions": eligible_execution_unmet})
+        live_arm_unmet = _manual_promotion_unmet_conditions("live_guarded", {"unmet_conditions": live_execution_unmet})
         out["promotion_targets"] = {
             "guarded_live_eligible": {
-                "ready": len(target_eligible.get("unmet_conditions") or []) == 0,
-                "unmet_conditions": list(target_eligible.get("unmet_conditions") or []),
+                "ready": len(eligible_execution_unmet) == 0,
+                "unmet_conditions": eligible_execution_unmet,
+                "arm_ready": len(eligible_arm_unmet) == 0,
+                "arm_unmet_conditions": eligible_arm_unmet,
             },
             "live_guarded": {
-                "ready": len(target_live.get("unmet_conditions") or []) == 0 and LIVE_TRADING_ENABLED and (not DRY_RUN),
-                "unmet_conditions": list(target_live.get("unmet_conditions") or []) + (["live_env_not_armed"] if (DRY_RUN or (not LIVE_TRADING_ENABLED)) else []),
+                "ready": len(live_execution_unmet) == 0,
+                "unmet_conditions": live_execution_unmet,
+                "arm_ready": len(live_arm_unmet) == 0,
+                "arm_unmet_conditions": live_arm_unmet,
             },
         }
         out["live_activation_armed"] = bool(effective_stage == "live_guarded" and out.get("approval_armed") and LIVE_TRADING_ENABLED and (not DRY_RUN))
@@ -5850,9 +5885,18 @@ def release_stage_transition(target_stage: str, actor: str = "system", reason: s
         raise HTTPException(status_code=400, detail=f"Transition not allowed: {current_stage} -> {target_stage}")
     if RELEASE_PROMOTION_REQUIRE_READINESS and target_stage in {"guarded_live_eligible", "live_guarded"}:
         preflight = _release_workflow_snapshot(include_gate=True).get("promotion_targets", {}).get(target_stage, {})
-        unmet = list(preflight.get("unmet_conditions") or [])
+        unmet = _manual_promotion_unmet_conditions(target_stage, preflight)
         if unmet:
-            raise HTTPException(status_code=409, detail={"target_stage": target_stage, "unmet_conditions": unmet})
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "target_stage": target_stage,
+                    "unmet_conditions": unmet,
+                    "arm_ready": bool(preflight.get("arm_ready")),
+                    "execution_unmet_conditions": list(preflight.get("unmet_conditions") or []),
+                    "arm_unmet_conditions": list(preflight.get("arm_unmet_conditions") or []),
+                },
+            )
     now_utc = datetime.now(timezone.utc).isoformat()
     now_ny_iso = now_ny().isoformat()
     entry = {
