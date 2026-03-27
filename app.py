@@ -6198,8 +6198,13 @@ def require_admin(request: Request):
       
 
 def require_admin_if_configured(request: Request):
-    if ADMIN_SECRET:
-        require_admin(request)
+    """Legacy no-op auth shim for non-/admin routes.
+
+    Patch 095 narrows ADMIN_SECRET enforcement to explicit /admin routes only.
+    Existing call sites can remain in place without forcing header auth on
+    dashboards and read-only diagnostics.
+    """
+    return None
 
 
 def flatten_all(reason: str) -> list[dict]:
@@ -12478,6 +12483,7 @@ def _universe_shadow_snapshot(limit: int = 10) -> dict:
         daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
         index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
         regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, symbols)
+        regime_mode = _get_regime_mode(regime, index_ok) if SWING_REGIME_MODE_SWITCHING_ENABLED else ('trend' if regime.get('favorable') else 'defensive')
         global_block_reasons = []
         if regime.get('favorable') is False and not SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE:
             global_block_reasons.append('weak_tape')
