@@ -6,3 +6,6 @@ patch-093-lifecycle-hygiene-cleanup
 - Restores frictionless access to `/dashboard` and routine read-only diagnostics without headers.
 - Fixes `/diagnostics/universe_shadow` crash by defining `regime_mode` before candidate evaluation.
 - No strategy, release workflow, scanner universe, or risk logic changes.
+
+
+Patch 096 note: corrects build metadata version string to patch-096-admin-scope-auth-and-universe-shadow while preserving Patch 095 logic.
