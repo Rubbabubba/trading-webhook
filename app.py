@@ -1085,7 +1085,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-097-regime-b-mean-reversion"
+PATCH_VERSION = "patch-098-dashboard-route-fix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -11712,8 +11712,6 @@ def _dashboard_latest_completed_scan_summary() -> dict:
     return {}
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
     state = _recompute_strategy_performance_state()
@@ -11726,6 +11724,7 @@ def diagnostics_regime_b(request: Request):
     return {"ok": True, "enabled": bool(SWING_MEAN_REVERSION_ENABLED), "strategy_name": MEAN_REVERSION_STRATEGY_NAME, "only_when_regime_unfavorable": bool(SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE), "kill_switch_active": bool(kill_active), "kill_switch_reasons": list(kill_reasons), "kill_switch_state": dict((state.get("kill_switch") or {}).get(MEAN_REVERSION_STRATEGY_NAME) or {}), "performance": mr_perf, "latest_scan_summary": {"mean_reversion_candidates_total": int(summary.get("mean_reversion_candidates_total") or 0), "mean_reversion_eligible_total": int(summary.get("mean_reversion_eligible_total") or 0), "selected_strategy": summary.get("selected_strategy"), "top_mean_reversion_candidates": list(summary.get("top_mean_reversion_candidates") or []), "regime": dict(summary.get("regime") or {})}, "config": {"target_pct": float(SWING_MEAN_REVERSION_TARGET_PCT), "stop_pct": float(SWING_MEAN_REVERSION_STOP_PCT), "max_hold_days": int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), "risk_multiplier": float(SWING_MEAN_REVERSION_RISK_MULTIPLIER), "symbol_exposure_multiplier": float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER), "weak_tape_max_new_entries": int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES)}}
 
 
+@app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     require_admin_if_configured(request)
     _ensure_runtime_state_loaded()
