@@ -735,6 +735,33 @@ SHADOW_REGIME_MAX_CANDIDATES = max(1, getenv_int_any("SHADOW_REGIME_MAX_CANDIDAT
 SWING_MAX_GROUP_POSITIONS = getenv_int_any("SWING_MAX_GROUP_POSITIONS", default=1)
 SWING_CORRELATION_GROUPS = getenv_any("SWING_CORRELATION_GROUPS", default="SPY,QQQ,IWM|AAPL,MSFT,NVDA,AMD,AVGO|AMZN,META,GOOGL,CRM,ORCL,SNOW")
 SWING_REGIME_HISTORY_SIZE = getenv_int_any("SWING_REGIME_HISTORY_SIZE", default=100)
+
+BREAKOUT_STRATEGY_NAME = str(SWING_STRATEGY_NAME or "daily_breakout").strip().lower() or "daily_breakout"
+MEAN_REVERSION_STRATEGY_NAME = str(getenv_any("SWING_MEAN_REVERSION_STRATEGY_NAME", default="daily_mean_reversion") or "daily_mean_reversion").strip().lower() or "daily_mean_reversion"
+SWING_MEAN_REVERSION_ENABLED = env_bool_any("SWING_MEAN_REVERSION_ENABLED", default="true")
+SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE = env_bool_any("SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE", default="true")
+SWING_MEAN_REVERSION_MAX_CANDIDATES = getenv_int_any("SWING_MEAN_REVERSION_MAX_CANDIDATES", default=5)
+SWING_MEAN_REVERSION_MIN_PRICE = getenv_float_any("SWING_MEAN_REVERSION_MIN_PRICE", default=SWING_MIN_PRICE)
+SWING_MEAN_REVERSION_MIN_AVG_DOLLAR_VOLUME = getenv_float_any("SWING_MEAN_REVERSION_MIN_AVG_DOLLAR_VOLUME", default=SWING_MIN_AVG_DOLLAR_VOLUME)
+SWING_MEAN_REVERSION_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_MEAN_REVERSION_MIN_CLOSE_TO_HIGH_PCT", default=0.985)
+SWING_MEAN_REVERSION_MIN_5D_RETURN_PCT = getenv_float_any("SWING_MEAN_REVERSION_MIN_5D_RETURN_PCT", default=-0.08)
+SWING_MEAN_REVERSION_MAX_5D_RETURN_PCT = getenv_float_any("SWING_MEAN_REVERSION_MAX_5D_RETURN_PCT", default=-0.02)
+SWING_MEAN_REVERSION_MIN_20D_RETURN_PCT = getenv_float_any("SWING_MEAN_REVERSION_MIN_20D_RETURN_PCT", default=-0.10)
+SWING_MEAN_REVERSION_MAX_DIST_TO_SLOW_MA_PCT = getenv_float_any("SWING_MEAN_REVERSION_MAX_DIST_TO_SLOW_MA_PCT", default=0.02)
+SWING_MEAN_REVERSION_MIN_RANGE_PCT = getenv_float_any("SWING_MEAN_REVERSION_MIN_RANGE_PCT", default=0.01)
+SWING_MEAN_REVERSION_TARGET_PCT = getenv_float_any("SWING_MEAN_REVERSION_TARGET_PCT", default=0.03)
+SWING_MEAN_REVERSION_STOP_PCT = getenv_float_any("SWING_MEAN_REVERSION_STOP_PCT", default=0.02)
+SWING_MEAN_REVERSION_MAX_HOLD_DAYS = getenv_int_any("SWING_MEAN_REVERSION_MAX_HOLD_DAYS", default=2)
+SWING_MEAN_REVERSION_RISK_MULTIPLIER = getenv_float_any("SWING_MEAN_REVERSION_RISK_MULTIPLIER", default=0.50)
+SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER = getenv_float_any("SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER", default=0.70)
+SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES = getenv_int_any("SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES", default=1)
+SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED = env_bool_any("SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED", default="true")
+SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES = getenv_int_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES", default=5)
+SWING_MEAN_REVERSION_KILL_SWITCH_LOOKBACK_TRADES = getenv_int_any("SWING_MEAN_REVERSION_KILL_SWITCH_LOOKBACK_TRADES", default=8)
+SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE", default=0.35)
+SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R", default=-0.15)
+STRATEGY_PERFORMANCE_STATE_PATH = getenv_any("STRATEGY_PERFORMANCE_STATE_PATH", default="/var/data/strategy_performance_state.json")
+STRATEGY_PERFORMANCE_HISTORY_LIMIT = getenv_int_any("STRATEGY_PERFORMANCE_HISTORY_LIMIT", default=200)
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
 
@@ -793,6 +820,7 @@ TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_fo
 TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
 LAST_SCAN: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
+STRATEGY_PERFORMANCE_STATE: dict = {"closed_trades": [], "by_strategy": {}, "kill_switch": {}}
 LAST_REGIME_SNAPSHOT: dict = {}
 SCAN_STATE_RESTORE: dict = {}
 REGIME_STATE_RESTORE: dict = {}
@@ -1057,7 +1085,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-096-admin-scope-auth-and-universe-shadow"
+PATCH_VERSION = "patch-097-regime-b-mean-reversion"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -4352,10 +4380,12 @@ def startup_restore_state() -> dict:
     regime_restore = restore_regime_runtime_state()
     paper_restore = restore_paper_lifecycle_state()
     cohort_restore = restore_cohort_evidence_state()
+    strategy_perf_restore = restore_strategy_performance_state()
     state["scan_state_restore"] = scan_restore
     state["regime_state_restore"] = regime_restore
     state["paper_lifecycle_state_restore"] = paper_restore
     state["cohort_evidence_state_restore"] = cohort_restore
+    state["strategy_performance_state_restore"] = strategy_perf_restore
     state["release_state_restore"] = restore_release_state()
     STARTUP_STATE = state
     return state
@@ -4567,6 +4597,92 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "candidate_ts": meta.get("scan_ts") or now_ny().isoformat(),
     }
     return plan
+
+
+
+def _strategy_performance_default_state() -> dict:
+    return {"closed_trades": [], "by_strategy": {}, "kill_switch": {}}
+
+
+def persist_strategy_performance_state(reason: str = ""):
+    payload = {"saved_at_utc": datetime.now(timezone.utc).isoformat(), "reason": reason, "state": dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state())}
+    return _safe_json_write(STRATEGY_PERFORMANCE_STATE_PATH, payload)
+
+
+def restore_strategy_performance_state() -> dict:
+    payload = _safe_json_read(STRATEGY_PERFORMANCE_STATE_PATH)
+    restored = {"path": STRATEGY_PERFORMANCE_STATE_PATH, "loaded": False, "closed_trades_restored": 0}
+    state = payload.get("state") if isinstance(payload, dict) else {}
+    if not isinstance(state, dict) or not state:
+        globals()["STRATEGY_PERFORMANCE_STATE"] = _strategy_performance_default_state()
+        return restored
+    closed = list(state.get("closed_trades") or [])[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]
+    globals()["STRATEGY_PERFORMANCE_STATE"] = {"closed_trades": closed, "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {})}
+    restored["loaded"] = True
+    restored["closed_trades_restored"] = len(closed)
+    return restored
+
+
+def _recompute_strategy_performance_state() -> dict:
+    state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state())
+    closed = list(state.get("closed_trades") or [])[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]
+    by_strategy = {}
+    for row in closed:
+        strategy = str(row.get("strategy_name") or row.get("signal") or "unknown").strip().lower() or "unknown"
+        bucket = by_strategy.setdefault(strategy, {"closed_trades": 0, "wins": 0, "losses": 0, "flat": 0, "avg_r_total": 0.0, "avg_return_total": 0.0, "gross_pnl": 0.0, "last_exit_utc": None, "regime_mode_counts": {}})
+        bucket["closed_trades"] += 1
+        pnl_r = float(row.get("pnl_r") or 0.0)
+        ret_pct = float(row.get("return_pct") or 0.0)
+        pnl = float(row.get("gross_pnl") or 0.0)
+        if pnl_r > 0: bucket["wins"] += 1
+        elif pnl_r < 0: bucket["losses"] += 1
+        else: bucket["flat"] += 1
+        bucket["avg_r_total"] += pnl_r
+        bucket["avg_return_total"] += ret_pct
+        bucket["gross_pnl"] += pnl
+        bucket["last_exit_utc"] = row.get("ts_utc") or bucket.get("last_exit_utc")
+        rm = str(row.get("entry_regime_mode") or "unknown").strip().lower() or "unknown"
+        bucket["regime_mode_counts"][rm] = int(bucket["regime_mode_counts"].get(rm) or 0) + 1
+    for bucket in by_strategy.values():
+        count = max(1, int(bucket.get("closed_trades") or 0))
+        bucket["avg_r"] = round(float(bucket.pop("avg_r_total") or 0.0) / count, 4)
+        bucket["avg_return_pct"] = round(float(bucket.pop("avg_return_total") or 0.0) / count, 4)
+        bucket["gross_pnl"] = round(float(bucket.get("gross_pnl") or 0.0), 4)
+        bucket["win_rate"] = round(float(bucket.get("wins") or 0) / count, 4)
+    mr_recent = [r for r in reversed(closed) if str(r.get("strategy_name") or "").strip().lower() == MEAN_REVERSION_STRATEGY_NAME][:max(1, int(SWING_MEAN_REVERSION_KILL_SWITCH_LOOKBACK_TRADES or 1))]
+    mr_count = len(mr_recent)
+    mr_win_rate = (sum(1 for r in mr_recent if float(r.get("pnl_r") or 0.0) > 0.0) / mr_count) if mr_count else 0.0
+    mr_avg_r = (sum(float(r.get("pnl_r") or 0.0) for r in mr_recent) / mr_count) if mr_count else 0.0
+    active = False; reasons = []
+    if SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED and mr_count >= max(1, int(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES or 1)):
+        if mr_win_rate < float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE): active = True; reasons.append("win_rate_below_min")
+        if mr_avg_r < float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R): active = True; reasons.append("avg_r_below_min")
+    kill_switch = dict(state.get("kill_switch") or {})
+    kill_switch[MEAN_REVERSION_STRATEGY_NAME] = {"enabled": bool(SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED), "active": bool(active), "reasons": reasons, "sample_trades": mr_count, "lookback_trades": int(SWING_MEAN_REVERSION_KILL_SWITCH_LOOKBACK_TRADES or 0), "min_trades": int(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES or 0), "win_rate": round(mr_win_rate, 4), "avg_r": round(mr_avg_r, 4), "min_win_rate": float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE), "min_avg_r": float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R)}
+    globals()["STRATEGY_PERFORMANCE_STATE"] = {"closed_trades": closed, "by_strategy": by_strategy, "kill_switch": kill_switch}
+    return globals()["STRATEGY_PERFORMANCE_STATE"]
+
+
+def _append_strategy_closed_trade(plan: dict | None, exit_price: float | None, reason: str = "", source: str = "") -> dict:
+    plan = dict(plan or {})
+    strategy_name = str(plan.get("strategy_name") or plan.get("signal") or "").strip().lower()
+    if not strategy_name: return {}
+    entry_price = _safe_float(plan.get("entry_price") or plan.get("avg_fill_price")); stop_price = _safe_float(plan.get("initial_stop_price") or plan.get("stop_price")); qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or 0.0)); exit_px = _safe_float(exit_price)
+    if entry_price <= 0 or qty <= 0 or exit_px <= 0: return {}
+    side = str(plan.get("side") or "buy").strip().lower() or "buy"
+    pnl_per_share = (exit_px - entry_price) if side == "buy" else (entry_price - exit_px)
+    gross_pnl = pnl_per_share * qty
+    risk_per_share = abs(entry_price - stop_price) if stop_price > 0 else abs(_safe_float(plan.get("risk_per_share") or 0.0))
+    row = {"ts_utc": datetime.now(timezone.utc).isoformat(), "symbol": str(plan.get("symbol") or plan.get("instrument") or "").upper(), "strategy_name": strategy_name, "signal": str(plan.get("signal") or strategy_name), "entry_price": round(entry_price,4), "exit_price": round(exit_px,4), "qty": round(qty,4), "gross_pnl": round(gross_pnl,4), "pnl_r": round((pnl_per_share / risk_per_share) if risk_per_share > 0 else 0.0,4), "return_pct": round((pnl_per_share / entry_price * 100.0) if entry_price > 0 else 0.0,4), "reason": str(reason or ""), "source": str(source or ""), "entry_regime_mode": str(((plan.get("thesis") or {}).get("regime_mode") or "")).strip().lower() or None, "max_hold_days": int(plan.get("max_hold_days") or 0)}
+    state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state()); closed = list(state.get("closed_trades") or []); closed.append(row); state["closed_trades"] = closed[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]; globals()["STRATEGY_PERFORMANCE_STATE"] = state; _recompute_strategy_performance_state(); persist_strategy_performance_state(reason=f"closed_trade:{strategy_name}"); return row
+
+
+def _strategy_kill_switch_active(strategy_name: str) -> tuple[bool, list[str]]:
+    strategy = str(strategy_name or "").strip().lower(); state = dict((STRATEGY_PERFORMANCE_STATE or {}).get("kill_switch") or {}).get(strategy) or {}; return bool(state.get("active")), list(state.get("reasons") or [])
+
+
+def _strategy_perf_summary(strategy_name: str) -> dict:
+    strategy = str(strategy_name or "").strip().lower(); return dict((STRATEGY_PERFORMANCE_STATE or {}).get("by_strategy") or {}).get(strategy) or {}
 
 def _paper_lifecycle_counts() -> dict:
     events = list(PAPER_LIFECYCLE_HISTORY or [])
@@ -6694,7 +6810,7 @@ def _regime_mode_thresholds(mode: str) -> dict:
 def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None, regime_mode: str = 'trend') -> dict:
     candidate = {
         'symbol': symbol,
-        'strategy': SWING_STRATEGY_NAME,
+        'strategy': BREAKOUT_STRATEGY_NAME,
         'scan_ts_utc': datetime.now(timezone.utc).isoformat(),
         'eligible': False,
         'rejection_reasons': [],
@@ -6800,6 +6916,66 @@ def _index_alignment_ok(index_bars: list[dict]) -> bool | None:
     if not fast_ma or not slow_ma:
         return None
     return bool(closes[-1] > fast_ma > slow_ma)
+
+
+
+def _return_pct(closes: list[float], lookback: int) -> float | None:
+    try:
+        lb = max(1, int(lookback or 0))
+        if len(closes) < lb + 1: return None
+        base = float(closes[-(lb + 1)] or 0.0)
+        if base <= 0: return None
+        return (float(closes[-1]) / base) - 1.0
+    except Exception:
+        return None
+
+
+def _distance_to_ma_pct(close: float | None, ma: float | None) -> float | None:
+    try:
+        c = float(close or 0.0); m = float(ma or 0.0)
+        if c <= 0 or m <= 0: return None
+        return abs(c - m) / m
+    except Exception:
+        return None
+
+
+def evaluate_daily_mean_reversion_candidate(symbol: str, bars: list[dict], regime: dict | None = None, regime_mode: str = 'defensive') -> dict:
+    candidate = {'symbol': symbol, 'strategy': MEAN_REVERSION_STRATEGY_NAME, 'scan_ts_utc': datetime.now(timezone.utc).isoformat(), 'eligible': False, 'rejection_reasons': []}
+    if not SWING_MEAN_REVERSION_ENABLED:
+        candidate['rejection_reasons'].append('mean_reversion_disabled'); return candidate
+    regime = dict(regime or {})
+    if SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE and regime.get('favorable') is True:
+        candidate['rejection_reasons'].append('regime_not_unfavorable'); return candidate
+    closes = [_safe_float(b.get('close')) for b in bars]; highs = [_safe_float(b.get('high')) for b in bars]; lows = [_safe_float(b.get('low')) for b in bars]; vols = [_safe_float(b.get('volume')) for b in bars]
+    need = max(SWING_SLOW_MA_DAYS + 5, 25)
+    if len(closes) < need:
+        candidate['rejection_reasons'].append('insufficient_daily_bars'); return candidate
+    close = closes[-1]; prev_close = closes[-2]; high = highs[-1]; low = lows[-1]; fast_ma = _sma(closes, SWING_FAST_MA_DAYS); slow_ma = _sma(closes, SWING_SLOW_MA_DAYS)
+    avg_dollar_vol_20 = sum((closes[-20+i] * vols[-20+i]) for i in range(20)) / 20.0
+    ret_5 = _return_pct(closes, 5); ret_20 = _return_pct(closes, 20); close_to_high = close / max(high, 1e-9); dist_to_slow = _distance_to_ma_pct(close, slow_ma); range_pct = (high - low) / max(close, 1e-9); mean_anchor = slow_ma or fast_ma or close
+    stop_price = round(close * (1.0 - float(SWING_MEAN_REVERSION_STOP_PCT)), 4); target_price = round(close * (1.0 + float(SWING_MEAN_REVERSION_TARGET_PCT)), 4); risk_per_share = max(close - stop_price, close * 0.0025)
+    risk_budget = max(0.01, float(RISK_DOLLARS) * max(0.01, float(SWING_MEAN_REVERSION_RISK_MULTIPLIER))); requested_qty = min(MAX_QTY, max(MIN_QTY, round(risk_budget / max(risk_per_share, 1e-9), 2))); affordable = clip_qty_for_affordability(close, requested_qty); est_qty = float(affordable.get('submitted_qty') or 0.0)
+    score = 0.0
+    if close >= SWING_MEAN_REVERSION_MIN_PRICE: score += 10.0
+    else: candidate['rejection_reasons'].append('price_below_min')
+    if avg_dollar_vol_20 >= SWING_MEAN_REVERSION_MIN_AVG_DOLLAR_VOLUME: score += min(15.0, avg_dollar_vol_20 / max(1.0, SWING_MEAN_REVERSION_MIN_AVG_DOLLAR_VOLUME) * 6.0)
+    else: candidate['rejection_reasons'].append('avg_dollar_volume_below_min')
+    if ret_5 is None or ret_5 < float(SWING_MEAN_REVERSION_MIN_5D_RETURN_PCT): candidate['rejection_reasons'].append('return_5d_too_weak')
+    elif ret_5 > float(SWING_MEAN_REVERSION_MAX_5D_RETURN_PCT): candidate['rejection_reasons'].append('return_5d_not_pulled_back')
+    else: score += max(0.0, min(18.0, abs(ret_5) * 300.0))
+    if ret_20 is None or ret_20 < float(SWING_MEAN_REVERSION_MIN_20D_RETURN_PCT): candidate['rejection_reasons'].append('return_20d_below_floor')
+    else: score += max(0.0, min(12.0, (ret_20 + 0.10) * 40.0))
+    if close_to_high >= float(SWING_MEAN_REVERSION_MIN_CLOSE_TO_HIGH_PCT): score += 20.0
+    else: candidate['rejection_reasons'].append('close_not_near_high')
+    if dist_to_slow is None or dist_to_slow > float(SWING_MEAN_REVERSION_MAX_DIST_TO_SLOW_MA_PCT): candidate['rejection_reasons'].append('too_far_from_mean')
+    else: score += max(0.0, 15.0 - (dist_to_slow * 500.0))
+    if range_pct >= float(SWING_MEAN_REVERSION_MIN_RANGE_PCT): score += max(0.0, min(10.0, range_pct * 100.0))
+    else: candidate['rejection_reasons'].append('insufficient_range')
+    if slow_ma and close >= slow_ma: score += 8.0
+    candidate.update({'close': round(close,4), 'prev_close': round(prev_close,4), 'high': round(high,4), 'low': round(low,4), 'fast_ma': round(fast_ma,4) if fast_ma else None, 'slow_ma': round(slow_ma,4) if slow_ma else None, 'avg_dollar_volume_20d': round(avg_dollar_vol_20,2), 'return_5d_pct': round((ret_5 or 0.0) * 100.0,3) if ret_5 is not None else None, 'return_20d_pct': round((ret_20 or 0.0) * 100.0,3) if ret_20 is not None else None, 'close_to_high_pct': round(close_to_high * 100.0,3), 'distance_to_slow_ma_pct': round((dist_to_slow or 0.0) * 100.0,3) if dist_to_slow is not None else None, 'mean_anchor': round(mean_anchor,4) if mean_anchor else None, 'breakout_level': round((slow_ma or high),4) if (slow_ma or high) else None, 'breakout_distance_pct': round((((close / max(mean_anchor, 1e-9)) - 1.0) if mean_anchor else 0.0) * 100.0,3), 'range_pct': round(range_pct * 100.0,3), 'stop_price': round(stop_price,4), 'target_price': round(target_price,4), 'risk_per_share': round(risk_per_share,4), 'requested_qty': round(requested_qty,2), 'estimated_qty': round(est_qty,2), 'rank_score': round(score,4), 'signal': MEAN_REVERSION_STRATEGY_NAME, 'side': 'buy', 'regime_mode': regime_mode, 'max_hold_days': int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), 'strategy_priority': 50, 'mode_thresholds': {'close_to_high_min_pct': round(float(SWING_MEAN_REVERSION_MIN_CLOSE_TO_HIGH_PCT) * 100.0,3), 'return_5d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_5D_RETURN_PCT) * 100.0,3), 'return_5d_max_pct': round(float(SWING_MEAN_REVERSION_MAX_5D_RETURN_PCT) * 100.0,3), 'return_20d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_20D_RETURN_PCT) * 100.0,3), 'max_dist_to_slow_ma_pct': round(float(SWING_MEAN_REVERSION_MAX_DIST_TO_SLOW_MA_PCT) * 100.0,3), 'target_pct': round(float(SWING_MEAN_REVERSION_TARGET_PCT) * 100.0,3), 'stop_pct': round(float(SWING_MEAN_REVERSION_STOP_PCT) * 100.0,3)}})
+    candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
+    if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY): candidate['rejection_reasons'].append('insufficient_buying_power')
+    return candidate
 
 def _shadow_market_gate_reasons() -> set[str]:
     return {"weak_tape", "index_alignment_failed"}
@@ -8170,14 +8346,19 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             global_block_reasons.append('portfolio_already_over_cap_total')
         if block_strategy_cap:
             global_block_reasons.append('portfolio_already_over_cap_strategy')
+
     candidates = []
     shadow_candidates = []
     shadow_alignment_candidates = []
     rejection_counts = Counter()
     shadow_rejection_counts = Counter()
     shadow_alignment_rejection_counts = Counter()
-    for sym in syms:
-        c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode)
+    breakout_candidates = []
+    mean_reversion_candidates = []
+
+    def _finalize_candidate(candidate: dict, sym: str):
+        c = dict(candidate or {})
+        strategy_name = str(c.get('strategy') or '').strip().lower()
         if _has_pending_entry_plan(sym):
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('plan_or_pending_entry_exists')
@@ -8186,16 +8367,25 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('position_already_open')
         projected_notional = _safe_float(c.get('estimated_qty')) * _safe_float(c.get('close'))
-        if c.get('eligible') and new_entries_globally_blocked:
+        kill_active, kill_reasons = _strategy_kill_switch_active(strategy_name)
+        if c.get('eligible') and kill_active:
             c['eligible'] = False
-            c.setdefault('rejection_reasons', []).extend(global_block_reasons)
+            c.setdefault('rejection_reasons', []).append('strategy_kill_switch_active')
+            c['strategy_kill_switch_reasons'] = list(kill_reasons)
+        if c.get('eligible') and new_entries_globally_blocked:
+            if not (strategy_name == MEAN_REVERSION_STRATEGY_NAME and 'weak_tape' in global_block_reasons and SWING_MEAN_REVERSION_ENABLED):
+                c['eligible'] = False
+                c.setdefault('rejection_reasons', []).extend(global_block_reasons)
         group_count = _open_group_position_count(sym)
         if c.get('eligible') and SWING_MAX_GROUP_POSITIONS > 0 and group_count >= SWING_MAX_GROUP_POSITIONS:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('correlation_group_limit')
         c['correlation_group_id'] = _symbol_group_id(sym)
         c['correlation_group_open_count'] = int(group_count)
-        if c.get('eligible') and symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > symbol_cap:
+        local_symbol_cap = float(symbol_cap)
+        if strategy_name == MEAN_REVERSION_STRATEGY_NAME and local_symbol_cap > 0:
+            local_symbol_cap = local_symbol_cap * max(0.0, float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER))
+        if c.get('eligible') and local_symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > local_symbol_cap:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
         if c.get('eligible') and portfolio_cap > 0 and open_total + projected_notional > portfolio_cap:
@@ -8212,15 +8402,31 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         for r in c.get('rejection_reasons', []):
             rejection_counts[str(r)] += 1
         candidates.append(c)
-    candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
+        if strategy_name == MEAN_REVERSION_STRATEGY_NAME:
+            mean_reversion_candidates.append(c)
+        else:
+            breakout_candidates.append(c)
+        return c
+
+    for sym in syms:
+        _finalize_candidate(evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode), sym)
+        if SWING_MEAN_REVERSION_ENABLED and regime.get('favorable') is False:
+            _finalize_candidate(evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode), sym)
+
+    candidates.sort(key=lambda x: (1 if str(x.get('strategy') or '').strip().lower() == BREAKOUT_STRATEGY_NAME else 0, float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     shadow_candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
     shadow_alignment_candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
-    approved = [c for c in candidates if c.get('eligible')]
+    breakout_approved = [c for c in breakout_candidates if c.get('eligible')]
+    mean_reversion_approved = [c for c in mean_reversion_candidates if c.get('eligible')]
+    approved = breakout_approved if breakout_approved else mean_reversion_approved
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
-    if regime_mode == 'defensive':
-        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
-    elif regime.get('favorable') is False:
-        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
+    if breakout_approved:
+        if regime_mode == 'defensive':
+            max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
+        elif regime.get('favorable') is False:
+            max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
+    elif mean_reversion_approved:
+        max_new_entries = min(max_new_entries, max(0, int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
     same_day_stats = _same_day_entry_stats()
     remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
     max_new_entries = min(max_new_entries, remaining_today)
@@ -8236,6 +8442,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'stop_price': c.get('stop_price'),
             'target_price': c.get('target_price'),
             'risk_per_share': c.get('risk_per_share'),
+            'max_hold_days': c.get('max_hold_days'),
+            'regime_mode': c.get('regime_mode'),
+            'strategy': c.get('strategy'),
         }
         if SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run):
             resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta)
@@ -8252,6 +8461,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'index_alignment_ok': index_ok,
         'regime': dict(regime),
         'regime_mode': regime_mode,
+        'selected_strategy': (selected[0].get('strategy') if selected else None),
         'regime_mode_thresholds': {
             'breakout_max_distance_pct': round(float(regime_thresholds.get('breakout_max_distance_pct') or 0.0) * 100.0, 3),
             'close_to_high_min_pct': round(float(regime_thresholds.get('close_to_high_min_pct') or 0.0) * 100.0, 3),
@@ -8284,6 +8494,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'candidates_total': len(candidates),
         'eligible_total': len(approved),
         'selected_total': len(selected),
+        'breakout_candidates_total': len(breakout_candidates),
+        'mean_reversion_candidates_total': len(mean_reversion_candidates),
+        'breakout_eligible_total': len(breakout_approved),
+        'mean_reversion_eligible_total': len(mean_reversion_approved),
+        'selected_strategy': (selected[0].get('strategy') if selected else None),
+        'selected_symbols': [c.get('symbol') for c in selected],
         'shadow_candidates_total': len(shadow_candidates),
         'shadow_selected_total': len(shadow_selected),
         'shadow_selected_symbols': [c.get('symbol') for c in shadow_selected],
@@ -8291,6 +8507,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'shadow_alignment_selected_total': len(shadow_alignment_selected),
         'shadow_alignment_selected_symbols': [c.get('symbol') for c in shadow_alignment_selected],
         'top_candidates': LAST_SWING_CANDIDATES[:5],
+        'top_breakout_candidates': [dict(c) for c in breakout_candidates[:5]],
+        'top_mean_reversion_candidates': [dict(c) for c in mean_reversion_candidates[:5]],
         'top_shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
         'top_shadow_alignment_candidates': [dict(c) for c in shadow_alignment_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
         'top_rejection_reasons': [{
@@ -10633,6 +10851,7 @@ async def worker_exit(req: Request):
                 out = close_position(symbol, reason="time_exit", source="worker_exit")
                 if out.get("closed"):
                     plan["active"] = False
+                    _append_strategy_closed_trade(plan, px, reason="time_exit", source="worker_exit")
                 results.append({"symbol": symbol, "action": "time_exit", "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
                 continue
 
@@ -10645,6 +10864,7 @@ async def worker_exit(req: Request):
             out = close_position(symbol, reason=reason, source="worker_exit")
             if out.get("closed"):
                 plan["active"] = False
+                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
                 results.append({"symbol": symbol, "action": reason, "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
             else:
                 results.append({"symbol": symbol, "action": f"{reason}_failed", "price": px, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
@@ -10659,6 +10879,7 @@ async def worker_exit(req: Request):
             out = close_position(symbol, reason=reason, source="worker_exit")
             if out.get("closed"):
                 plan["active"] = False
+                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
                 results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
             else:
                 results.append({"symbol": symbol, "action": f"exit_{reason}_failed", "price": px, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
@@ -11492,6 +11713,19 @@ def _dashboard_latest_completed_scan_summary() -> dict:
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
+
+@app.get("/diagnostics/strategy_performance")
+def diagnostics_strategy_performance(request: Request):
+    state = _recompute_strategy_performance_state()
+    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
+
+
+@app.get("/diagnostics/regime_b")
+def diagnostics_regime_b(request: Request):
+    state = _recompute_strategy_performance_state(); mr_perf = _strategy_perf_summary(MEAN_REVERSION_STRATEGY_NAME); kill_active, kill_reasons = _strategy_kill_switch_active(MEAN_REVERSION_STRATEGY_NAME); latest_scan = dict(LAST_SCAN or {}); summary = dict(latest_scan.get("summary") or {})
+    return {"ok": True, "enabled": bool(SWING_MEAN_REVERSION_ENABLED), "strategy_name": MEAN_REVERSION_STRATEGY_NAME, "only_when_regime_unfavorable": bool(SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE), "kill_switch_active": bool(kill_active), "kill_switch_reasons": list(kill_reasons), "kill_switch_state": dict((state.get("kill_switch") or {}).get(MEAN_REVERSION_STRATEGY_NAME) or {}), "performance": mr_perf, "latest_scan_summary": {"mean_reversion_candidates_total": int(summary.get("mean_reversion_candidates_total") or 0), "mean_reversion_eligible_total": int(summary.get("mean_reversion_eligible_total") or 0), "selected_strategy": summary.get("selected_strategy"), "top_mean_reversion_candidates": list(summary.get("top_mean_reversion_candidates") or []), "regime": dict(summary.get("regime") or {})}, "config": {"target_pct": float(SWING_MEAN_REVERSION_TARGET_PCT), "stop_pct": float(SWING_MEAN_REVERSION_STOP_PCT), "max_hold_days": int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), "risk_multiplier": float(SWING_MEAN_REVERSION_RISK_MULTIPLIER), "symbol_exposure_multiplier": float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER), "weak_tape_max_new_entries": int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES)}}
+
+
 def dashboard(request: Request):
     require_admin_if_configured(request)
     _ensure_runtime_state_loaded()
@@ -11773,6 +12007,8 @@ def dashboard(request: Request):
     <a href="/diagnostics/actionable_watchlist">actionable_watchlist</a>
     <a href="/diagnostics/failure_decomp">failure_decomp</a>
     <a href="/diagnostics/entry_decomp">entry_decomp</a>
+            <a href="/diagnostics/regime_b">regime_b</a>
+            <a href="/diagnostics/strategy_performance">strategy_performance</a>
   </div>
 
   {('<div class="section"><div class="card"><h2>Operator Warnings</h2>' + _dashboard_warning_badges(dashboard_warnings) + '</div></div>') if dashboard_warnings else ''}
