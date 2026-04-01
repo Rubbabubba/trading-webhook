@@ -758,6 +758,14 @@ SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES = getenv_int_any("SWING_MEAN_REVE
 SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED = env_bool_any("SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED", default="true")
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES = getenv_int_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES", default=5)
 SWING_MEAN_REVERSION_KILL_SWITCH_LOOKBACK_TRADES = getenv_int_any("SWING_MEAN_REVERSION_KILL_SWITCH_LOOKBACK_TRADES", default=8)
+SWING_EARLY_ENTRY_OVERRIDE_ENABLED = env_bool_any("SWING_EARLY_ENTRY_OVERRIDE_ENABLED", default="false")
+SWING_EARLY_ENTRY_OVERRIDE_ONLY_WHEN_REGIME_UNFAVORABLE = env_bool_any("SWING_EARLY_ENTRY_OVERRIDE_ONLY_WHEN_REGIME_UNFAVORABLE", default="true")
+SWING_EARLY_ENTRY_OVERRIDE_MIN_RANK_SCORE = getenv_float_any("SWING_EARLY_ENTRY_OVERRIDE_MIN_RANK_SCORE", default=90.0)
+SWING_EARLY_ENTRY_OVERRIDE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_EARLY_ENTRY_OVERRIDE_MIN_CLOSE_TO_HIGH_PCT", default=SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT)
+SWING_EARLY_ENTRY_OVERRIDE_MIN_RANGE_PCT = getenv_float_any("SWING_EARLY_ENTRY_OVERRIDE_MIN_RANGE_PCT", default=0.02)
+SWING_EARLY_ENTRY_OVERRIDE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_EARLY_ENTRY_OVERRIDE_MIN_20D_RETURN_PCT", default=0.0)
+SWING_EARLY_ENTRY_OVERRIDE_MAX_NEW_ENTRIES_PER_DAY = getenv_int_any("SWING_EARLY_ENTRY_OVERRIDE_MAX_NEW_ENTRIES_PER_DAY", default=1)
+EARLY_ENTRY_OVERRIDE_SOURCE = "worker_scan_early_override"
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE", default=0.35)
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R", default=-0.15)
 STRATEGY_PERFORMANCE_STATE_PATH = getenv_any("STRATEGY_PERFORMANCE_STATE_PATH", default="/var/data/strategy_performance_state.json")
@@ -1085,7 +1093,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-098-dashboard-route-fix"
+PATCH_VERSION = "patch-099-early-entry-override"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -6129,6 +6137,8 @@ def is_paper_execution_permitted(source: str = "") -> bool:
 
 
 def effective_entry_dry_run(source: str = "") -> bool:
+    if source == EARLY_ENTRY_OVERRIDE_SOURCE and SWING_EARLY_ENTRY_OVERRIDE_ENABLED:
+        return False
     if is_paper_execution_permitted(source):
         return False
     if source == "worker_scan":
@@ -6619,6 +6629,82 @@ def _same_day_entry_stats() -> dict:
 
 def _same_day_entry_count() -> int:
     return int((_same_day_entry_stats() or {}).get("counted") or 0)
+
+
+def _early_entry_override_count_today() -> int:
+    today = now_ny().date()
+    count = 0
+    events = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not events or events[-1] != LAST_PAPER_LIFECYCLE):
+        events.append(dict(LAST_PAPER_LIFECYCLE))
+    for ev in events:
+        row = dict(ev or {})
+        if str(row.get("stage") or "").strip().lower() != "entry":
+            continue
+        if str(row.get("status") or "").strip().lower() not in {"planned", "submitted", "filled"}:
+            continue
+        try:
+            ts_ny = datetime.fromisoformat(str(row.get("ts_ny") or row.get("ts_utc")))
+            if ts_ny.tzinfo is None:
+                ts_ny = ts_ny.replace(tzinfo=timezone.utc).astimezone(NY_TZ)
+            else:
+                ts_ny = ts_ny.astimezone(NY_TZ)
+        except Exception:
+            continue
+        if ts_ny.date() != today:
+            continue
+        details = dict(row.get("details") or {})
+        if str(details.get("entry_type") or "").strip().lower() != "early_override":
+            continue
+        count += 1
+    return count
+
+
+def _candidate_qualifies_early_entry_override(candidate: dict | None, regime: dict | None = None) -> tuple[bool, list[str]]:
+    c = dict(candidate or {})
+    reasons: list[str] = []
+    if not SWING_EARLY_ENTRY_OVERRIDE_ENABLED:
+        reasons.append("disabled")
+    if str(c.get("strategy") or "").strip().lower() != BREAKOUT_STRATEGY_NAME:
+        reasons.append("strategy_not_breakout")
+    if not bool(c.get("eligible")):
+        reasons.append("candidate_not_eligible")
+    if SWING_EARLY_ENTRY_OVERRIDE_ONLY_WHEN_REGIME_UNFAVORABLE and bool((regime or {}).get("favorable")):
+        reasons.append("regime_not_unfavorable")
+    if _safe_float(c.get("rank_score")) < float(SWING_EARLY_ENTRY_OVERRIDE_MIN_RANK_SCORE):
+        reasons.append("rank_below_threshold")
+    if (_safe_float(c.get("close_to_high_pct")) / 100.0) < float(SWING_EARLY_ENTRY_OVERRIDE_MIN_CLOSE_TO_HIGH_PCT):
+        reasons.append("close_not_strong_enough")
+    if (_safe_float(c.get("range_pct")) / 100.0) < float(SWING_EARLY_ENTRY_OVERRIDE_MIN_RANGE_PCT):
+        reasons.append("range_below_threshold")
+    if ((_safe_float(c.get("return_20d_pct")) if c.get("return_20d_pct") is not None else -999.0) / 100.0) < float(SWING_EARLY_ENTRY_OVERRIDE_MIN_20D_RETURN_PCT):
+        reasons.append("return_20d_below_threshold")
+    return (len(reasons) == 0, reasons)
+
+
+def _early_entry_override_live_permitted(candidate: dict | None, regime: dict | None = None) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    if not SWING_EARLY_ENTRY_OVERRIDE_ENABLED:
+        reasons.append("disabled")
+        return False, reasons
+    if str(SYSTEM_RELEASE_STAGE or "").strip().lower() != "live_guarded":
+        reasons.append("release_stage_not_live_guarded")
+    if DRY_RUN or (not LIVE_TRADING_ENABLED) or SCANNER_DRY_RUN or (not SCANNER_ALLOW_LIVE):
+        reasons.append("live_path_disabled")
+    ok, candidate_reasons = _candidate_qualifies_early_entry_override(candidate, regime=regime)
+    if not ok:
+        reasons.extend(candidate_reasons)
+    gate = release_gate_status()
+    if bool(gate.get("live_orders_permitted")):
+        reasons.append("normal_live_path_already_permitted")
+    unmet = {str(x) for x in (gate.get("unmet_conditions") or []) if str(x)}
+    if not unmet:
+        reasons.append("no_override_needed")
+    elif not unmet.issubset({"regime_not_favorable"}):
+        reasons.append("non_regime_gate_blockers_present")
+    if _early_entry_override_count_today() >= max(0, int(SWING_EARLY_ENTRY_OVERRIDE_MAX_NEW_ENTRIES_PER_DAY)):
+        reasons.append("daily_override_limit_reached")
+    return (len(reasons) == 0), reasons
 
 
 def _has_pending_entry_plan(symbol: str) -> bool:
@@ -8433,8 +8519,38 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     selected = approved[:max_new_entries]
     shadow_selected = shadow_candidates[:max_new_entries]
     shadow_alignment_selected = shadow_alignment_candidates[:max_new_entries]
+    override_candidates = []
+    override_selected = []
+    override_live_permitted = False
+    override_live_reasons = []
+    override_symbol = None
+    override_source = None
+    if selected and SWING_EARLY_ENTRY_OVERRIDE_ENABLED:
+        for c in selected:
+            eligible_override, override_reasons = _candidate_qualifies_early_entry_override(c, regime=regime)
+            row = dict(c)
+            row['early_entry_override_candidate'] = bool(eligible_override)
+            row['early_entry_override_reasons'] = list(override_reasons)
+            if eligible_override:
+                override_candidates.append(row)
+        if override_candidates:
+            override_candidates.sort(key=lambda x: float(x.get('rank_score') or 0.0), reverse=True)
+            permit, reasons = _early_entry_override_live_permitted(override_candidates[0], regime=regime)
+            override_live_permitted = bool(permit)
+            override_live_reasons = list(reasons or [])
+            if permit:
+                override_selected = [override_candidates[0]]
+                override_symbol = str((override_candidates[0] or {}).get('symbol') or '').upper() or None
+                override_source = EARLY_ENTRY_OVERRIDE_SOURCE
     would_submit = []
     for c in selected:
+        entry_type = 'standard'
+        source_name = 'worker_scan'
+        live_allowed = SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run)
+        if override_live_permitted and override_symbol and str(c.get('symbol') or '').upper() == override_symbol:
+            entry_type = 'early_override'
+            source_name = override_source or EARLY_ENTRY_OVERRIDE_SOURCE
+            live_allowed = True
         meta = {
             'rank_score': c.get('rank_score'),
             'strategy_name': c.get('strategy'),
@@ -8445,13 +8561,17 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'max_hold_days': c.get('max_hold_days'),
             'regime_mode': c.get('regime_mode'),
             'strategy': c.get('strategy'),
+            'entry_type': entry_type,
+            'early_entry_override_enabled': bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED),
+            'early_entry_override_triggered': bool(entry_type == 'early_override'),
+            'early_entry_override_reasons': list(override_live_reasons if entry_type == 'early_override' else (_candidate_qualifies_early_entry_override(c, regime=regime)[1] if SWING_EARLY_ENTRY_OVERRIDE_ENABLED else [])),
         }
-        if SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run):
+        if live_allowed:
             resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta)
-            would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), **resp})
+            would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), 'entry_type': entry_type, **resp})
         else:
-            resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', 'worker_scan', meta=meta)
-            would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), **resp})
+            resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', source_name, meta=meta)
+            would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), 'entry_type': entry_type, **resp})
     LAST_SWING_CANDIDATES.clear()
     LAST_SWING_CANDIDATES.extend(candidates[: max(1, min(len(candidates), SWING_MAX_CANDIDATES))])
     CANDIDATE_HISTORY.append({
@@ -8500,6 +8620,21 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'mean_reversion_eligible_total': len(mean_reversion_approved),
         'selected_strategy': (selected[0].get('strategy') if selected else None),
         'selected_symbols': [c.get('symbol') for c in selected],
+        'early_entry_override': {
+            'enabled': bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED),
+            'candidate_count': len(override_candidates),
+            'candidate_symbols': [c.get('symbol') for c in override_candidates],
+            'triggered': bool(override_live_permitted and override_symbol),
+            'selected_symbol': override_symbol,
+            'source': override_source,
+            'reasons': list(override_live_reasons),
+            'max_new_entries_per_day': int(SWING_EARLY_ENTRY_OVERRIDE_MAX_NEW_ENTRIES_PER_DAY),
+            'count_today': int(_early_entry_override_count_today()),
+            'min_rank_score': float(SWING_EARLY_ENTRY_OVERRIDE_MIN_RANK_SCORE),
+            'min_close_to_high_pct': round(float(SWING_EARLY_ENTRY_OVERRIDE_MIN_CLOSE_TO_HIGH_PCT) * 100.0, 3),
+            'min_range_pct': round(float(SWING_EARLY_ENTRY_OVERRIDE_MIN_RANGE_PCT) * 100.0, 3),
+            'min_20d_return_pct': round(float(SWING_EARLY_ENTRY_OVERRIDE_MIN_20D_RETURN_PCT) * 100.0, 3),
+        },
         'shadow_candidates_total': len(shadow_candidates),
         'shadow_selected_total': len(shadow_selected),
         'shadow_selected_symbols': [c.get('symbol') for c in shadow_selected],

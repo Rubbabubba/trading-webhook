@@ -9,3 +9,5 @@ patch-093-lifecycle-hygiene-cleanup
 
 
 Patch 096 note: corrects build metadata version string to patch-096-admin-scope-auth-and-universe-shadow while preserving Patch 095 logic.
+
+- Patch 099 adds a controlled early-entry override for one elite breakout in live_guarded when regime is the only remaining live gate blocker.
