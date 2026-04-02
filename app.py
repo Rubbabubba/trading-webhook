@@ -1187,7 +1187,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-104-price-freshness-threshold-fix"
+PATCH_VERSION = "patch-105-scan-submit-source-fix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -8734,7 +8734,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'early_entry_override_reasons': list(override_live_reasons if entry_type == 'early_override' else (_candidate_qualifies_early_entry_override(c, regime=regime)[1] if SWING_EARLY_ENTRY_OVERRIDE_ENABLED else [])),
         }
         if live_allowed:
-            resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta)
+            resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta, source=source_name)
             would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), 'entry_type': entry_type, **resp})
         else:
             resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', source_name, meta=meta)
@@ -10991,9 +10991,10 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         }
 
 
-def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None) -> dict:
+def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None, source: str = "worker_scan") -> dict:
     """Submit a market order originating from the scanner (shared execution path)."""
-    return execute_entry_signal(symbol=symbol, side=side, signal=signal, source="worker_scan", meta=meta)
+    source_name = str(source or "worker_scan").strip() or "worker_scan"
+    return execute_entry_signal(symbol=symbol, side=side, signal=signal, source=source_name, meta=meta)
 
 
 def _classify_scan_submit_response(resp: dict | None) -> dict:
