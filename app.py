@@ -403,11 +403,17 @@ def get_latest_quote_snapshot(symbol: str) -> dict:
     price = trade_px if trade_px is not None else mid
     trade_price = trade_px if trade_px is not None else mid
     fresh = False
+    freshness_threshold_sec = None
     if age_sec is not None:
         try:
-            fresh = float(age_sec) <= float(ENTRY_MAX_PRICE_AGE_SEC)
+            freshness_threshold_sec = float(ENTRY_PRICE_MAX_AGE_SEC)
+            fresh = float(age_sec) <= freshness_threshold_sec
         except Exception:
             fresh = False
+
+    freshness_reference = "quote_ts" if quote_ts is not None else "trade_ts" if trade_ts is not None else None
+    quote_debug["freshness_reference"] = freshness_reference
+    quote_debug["freshness_threshold_sec"] = freshness_threshold_sec
 
     return {
         "symbol": symbol,
@@ -1181,7 +1187,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-103-quote-snapshot-return-fix"
+PATCH_VERSION = "patch-104-price-freshness-threshold-fix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
