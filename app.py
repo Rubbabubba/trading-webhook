@@ -59,6 +59,7 @@ from datetime import datetime
 from typing import Optional
 import re
 import json
+import uuid
 from urllib.request import Request as UrlRequest, urlopen
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
@@ -1154,7 +1155,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-101-spread-override-diagnostics-and-fallback"
+PATCH_VERSION = "patch-102-submit-fallback-and-order-diagnostics"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -3910,14 +3911,86 @@ def get_position(symbol: str):
         return 0.0, "flat"
 
 
-def submit_market_order(symbol: str, side: str, qty: float):
-    order_req = MarketOrderRequest(
-        symbol=symbol,
-        qty=qty,
-        side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
-        time_in_force=TimeInForce.DAY,
+def _order_attr(order, key: str, default=None):
+    if isinstance(order, dict):
+        return order.get(key, default)
+    return getattr(order, key, default)
+
+
+def _alpaca_trading_base_url() -> str:
+    return "https://paper-api.alpaca.markets" if APCA_PAPER else "https://api.alpaca.markets"
+
+
+def _format_order_qty(qty: float) -> str:
+    q = float(qty)
+    if q.is_integer():
+        return str(int(q))
+    return (f"{q:.6f}").rstrip("0").rstrip(".")
+
+
+def _alpaca_submit_order_rest(symbol: str, side: str, qty: float, client_order_id: str):
+    body = {
+        "symbol": str(symbol).upper(),
+        "side": str(side).lower(),
+        "type": "market",
+        "time_in_force": "day",
+        "qty": _format_order_qty(qty),
+        "client_order_id": client_order_id,
+    }
+    req = UrlRequest(
+        _alpaca_trading_base_url().rstrip("/") + "/v2/orders",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "accept": "application/json",
+            "content-type": "application/json",
+            "APCA-API-KEY-ID": APCA_KEY,
+            "APCA-API-SECRET-KEY": APCA_SECRET,
+        },
+        method="POST",
     )
-    return trading_client.submit_order(order_req)
+    with urlopen(req, timeout=20) as resp:
+        raw = resp.read().decode("utf-8") if resp else ""
+    data = json.loads(raw) if raw else {}
+    if not isinstance(data, dict):
+        raise RuntimeError("alpaca_rest_submit_non_dict_response")
+    if not data.get("id"):
+        raise RuntimeError(f"alpaca_rest_submit_missing_id:{data}")
+    data.setdefault("_submit_transport", "rest_fallback")
+    data.setdefault("client_order_id", client_order_id)
+    return data
+
+
+def submit_market_order(symbol: str, side: str, qty: float):
+    client_order_id = f"scan-{str(uuid.uuid4())[:8]}-{str(symbol).lower()}"
+    sdk_error = None
+    try:
+        try:
+            order_req = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+                client_order_id=client_order_id,
+            )
+        except TypeError:
+            order_req = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+            )
+        order = trading_client.submit_order(order_req)
+        if order is None:
+            raise RuntimeError("alpaca_sdk_submit_returned_none")
+        return order
+    except Exception as e:
+        sdk_error = str(e)
+        try:
+            order = _alpaca_submit_order_rest(symbol, side, qty, client_order_id)
+            order.setdefault("_sdk_error", sdk_error)
+            return order
+        except Exception as rest_e:
+            raise RuntimeError(f"sdk:{sdk_error}; rest:{rest_e}")
 
 
 def get_order_status(order_id: str) -> dict:
@@ -3927,14 +4000,14 @@ def get_order_status(order_id: str) -> dict:
     try:
         order = trading_client.get_order_by_id(oid)
         return {
-            "id": str(getattr(order, "id", oid)),
-            "symbol": str(getattr(order, "symbol", "") or "").upper(),
-            "side": str(getattr(getattr(order, "side", None), "value", getattr(order, "side", ""))),
-            "status": str(getattr(getattr(order, "status", None), "value", getattr(order, "status", ""))),
-            "type": str(getattr(getattr(order, "type", None), "value", getattr(order, "type", ""))),
-            "filled_qty": str(getattr(order, "filled_qty", "") or ""),
-            "filled_avg_price": str(getattr(order, "filled_avg_price", "") or ""),
-            "submitted_at": str(getattr(order, "submitted_at", "") or ""),
+            "id": str(_order_attr(order, "id", oid)),
+            "symbol": str(_order_attr(order, "symbol", "") or "").upper(),
+            "side": str(getattr(_order_attr(order, "side", None), "value", _order_attr(order, "side", ""))),
+            "status": str(getattr(_order_attr(order, "status", None), "value", _order_attr(order, "status", ""))),
+            "type": str(getattr(_order_attr(order, "type", None), "value", _order_attr(order, "type", ""))),
+            "filled_qty": str(_order_attr(order, "filled_qty", "") or ""),
+            "filled_avg_price": str(_order_attr(order, "filled_avg_price", "") or ""),
+            "submitted_at": str(_order_attr(order, "submitted_at", "") or ""),
         }
     except Exception as e:
         return {"id": oid, "status_error": str(e)}
@@ -3957,13 +4030,13 @@ def list_open_orders_safe(limit: int | None = None) -> list[dict]:
                 continue
             rec = {
                 "id": str(getattr(order, "id", "") or ""),
-                "symbol": str(getattr(order, "symbol", "") or "").upper(),
+                "symbol": str(_order_attr(order, "symbol", "") or "").upper(),
                 "side": str(getattr(getattr(order, "side", None), "value", getattr(order, "side", "")) or ""),
                 "status": status,
                 "type": str(getattr(getattr(order, "type", None), "value", getattr(order, "type", "")) or ""),
                 "qty": str(getattr(order, "qty", "") or ""),
-                "filled_qty": str(getattr(order, "filled_qty", "") or ""),
-                "submitted_at": str(getattr(order, "submitted_at", "") or ""),
+                "filled_qty": str(_order_attr(order, "filled_qty", "") or ""),
+                "submitted_at": str(_order_attr(order, "submitted_at", "") or ""),
             }
             out.append(rec)
         except Exception:
@@ -10778,7 +10851,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         if qty_signed_post_lock != 0:
             desired_side = "long" if side == "buy" else "short"
             reason = f"position_open_after_lock:{pos_side_post_lock}"
-            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason=reason, meta={"snapshot": snapshot, **(meta or {})})
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason=reason, meta={"snapshot": snapshot, "submit_transport": _order_attr(order, "_submit_transport", "sdk") if "order" in locals() else None, **(meta or {})})
             return {"ok": True, "ignored": True, "reason": reason, "symbol": symbol, "signal": signal, "snapshot": snapshot}
         if TRADE_PLAN.get(symbol, {}).get("active"):
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="plan_active_after_lock", meta={"snapshot": snapshot, **(meta or {})})
@@ -10834,7 +10907,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         order = submit_market_order(symbol, side, qty)
         plan = build_trade_plan(symbol, side, qty, float(base_price), signal, meta=meta)
         plan["source"] = source
-        plan["order_id"] = str(getattr(order, "id", ""))
+        plan["order_id"] = str(_order_attr(order, "id", ""))
         plan["submitted_at"] = now_ny().isoformat()
         plan["requested_qty"] = float(risk_qty)
         plan["submitted_qty"] = float(qty)
@@ -10844,15 +10917,15 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan["affordability"] = affordability or {}
         TRADE_PLAN[symbol] = plan
         _ensure_execution_lifecycle_plan(symbol, plan)
-        _transition_execution_lifecycle(plan, symbol, "submitted", reason="entry_submitted", details={"source": source, "signal": signal, "qty": qty, "order_id": str(getattr(order, "id", ""))}, allow_illegal=True)
-        persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(getattr(order, "id", "")), "source": source, "signal": signal})
-        log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(getattr(order, "id", "")), signal=signal, source=source)
-        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(getattr(order, "id", "")), qty=qty, meta={"snapshot": snapshot, **(meta or {})})
+        _transition_execution_lifecycle(plan, symbol, "submitted", reason="entry_submitted", details={"source": source, "signal": signal, "qty": qty, "order_id": str(_order_attr(order, "id", ""))}, allow_illegal=True)
+        persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(_order_attr(order, "id", "")), "source": source, "signal": signal})
+        log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(_order_attr(order, "id", "")), signal=signal, source=source)
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(_order_attr(order, "id", "")), qty=qty, meta={"snapshot": snapshot, **(meta or {})})
         try:
-            _record_paper_lifecycle("entry", "submitted", symbol=symbol, details={"source": source, "signal": signal, "qty": qty, "order_id": str(getattr(order, "id", "")), "dry_run": False})
+            _record_paper_lifecycle("entry", "submitted", symbol=symbol, details={"source": source, "signal": signal, "qty": qty, "order_id": str(_order_attr(order, "id", "")), "dry_run": False})
         except Exception:
             pass
-        return {"ok": True, "submitted": True, "order_id": str(getattr(order, "id", "")), "order": payload, "plan": plan}
+        return {"ok": True, "submitted": True, "order_id": str(_order_attr(order, "id", "")), "order": payload, "plan": plan}
     except Exception as e:
         log("ORDER_REJECTED", symbol=symbol, side=side, err=str(e), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="alpaca_submit_failed", err=str(e), meta=meta)
@@ -10868,7 +10941,22 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         except Exception:
             pass
         soften_symbol_lock(symbol, 5)
-        return {"ok": False, "rejected": True, "reason": f"alpaca_submit_failed:{e}", "symbol": symbol, "signal": signal, "affordability": affordability if "affordability" in locals() else None}
+        return {
+            "ok": False,
+            "rejected": True,
+            "reason": f"alpaca_submit_failed:{e}",
+            "symbol": symbol,
+            "signal": signal,
+            "affordability": affordability if "affordability" in locals() else None,
+            "submit_diagnostics": {
+                "snapshot_present": isinstance(locals().get("snapshot"), dict),
+                "payload_present": isinstance(locals().get("payload"), dict),
+                "base_price": (locals().get("payload") or {}).get("base_price") if isinstance(locals().get("payload"), dict) else None,
+                "qty": (locals().get("payload") or {}).get("qty") if isinstance(locals().get("payload"), dict) else None,
+                "side": side,
+                "source": source,
+            },
+        }
 
 
 def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None) -> dict:
