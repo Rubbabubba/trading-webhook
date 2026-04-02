@@ -411,46 +411,65 @@ def _entry_spread_override_decision(snapshot: dict | None, meta: dict | None = N
         meta.get("avg_dollar_volume_20d")
         or meta.get("avg_dollar_volume")
         or meta.get("adv20")
+        or snapshot.get("avg_dollar_volume_20d")
         or 0.0
     )
     trade_mid_deviation_pct = None
     if mid and trade_price and mid > 0:
         trade_mid_deviation_pct = abs(float(trade_price) - float(mid)) / float(mid)
 
+    primary_limit = float(ENTRY_MAX_SPREAD_PCT)
+    override_enabled = bool(ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED)
+    override_min_liquidity = float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME)
+    override_max_spread = float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT)
+    override_max_trade_mid_dev = float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT)
+
     allowed = False
+    selected_path = None
     reasons = []
     if spread_pct is None:
+        selected_path = "reject"
         reasons.append("spread_missing")
-    elif spread_pct <= float(ENTRY_MAX_SPREAD_PCT):
+    elif spread_pct <= primary_limit:
+        selected_path = "primary_allow"
         reasons.append("spread_within_primary_limit")
-    elif not bool(ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED):
+    elif not override_enabled:
+        selected_path = "reject"
         reasons.append("liquidity_override_disabled")
     elif feed != "iex":
+        selected_path = "reject"
         reasons.append("feed_not_iex")
-    elif avg_dollar_volume < float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME):
+    elif avg_dollar_volume < override_min_liquidity:
+        selected_path = "reject"
         reasons.append("insufficient_liquidity")
-    elif spread_pct > float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT):
+    elif spread_pct > override_max_spread:
+        selected_path = "reject"
         reasons.append("spread_above_override_cap")
     elif trade_mid_deviation_pct is None:
+        selected_path = "reject"
         reasons.append("trade_mid_deviation_missing")
-    elif trade_mid_deviation_pct > float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT):
+    elif trade_mid_deviation_pct > override_max_trade_mid_dev:
+        selected_path = "reject"
         reasons.append("trade_mid_deviation_too_large")
     else:
         allowed = True
+        selected_path = "iex_liquidity_override"
         reasons.append("iex_liquidity_override")
 
     return {
+        "evaluated": bool(spread_pct is not None and spread_pct > primary_limit),
         "allowed": bool(allowed),
+        "selected_path": selected_path,
         "feed": feed or None,
         "spread_pct": spread_pct,
         "trade_mid_deviation_pct": trade_mid_deviation_pct,
         "avg_dollar_volume_20d": avg_dollar_volume,
         "reasons": reasons,
         "thresholds": {
-            "entry_max_spread_pct": float(ENTRY_MAX_SPREAD_PCT),
-            "override_min_avg_dollar_volume": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME),
-            "override_max_spread_pct": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT),
-            "override_max_trade_mid_deviation_pct": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT),
+            "entry_max_spread_pct": primary_limit,
+            "override_min_avg_dollar_volume": override_min_liquidity,
+            "override_max_spread_pct": override_max_spread,
+            "override_max_trade_mid_deviation_pct": override_max_trade_mid_dev,
         },
     }
 
@@ -1135,7 +1154,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-100-execution-liquidity-override"
+PATCH_VERSION = "patch-101-spread-override-diagnostics-and-fallback"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -10752,7 +10771,8 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             if not spread_override.get("allowed"):
                 record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="spread_too_wide", meta={"snapshot": snapshot, "spread_override": spread_override, **(meta or {})})
                 soften_symbol_lock(symbol, 5)
-                return {"ok": False, "rejected": True, "reason": "spread_too_wide", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+                return {"ok": False, "rejected": True, "reason": "spread_too_wide", "symbol": symbol, "signal": signal, "snapshot": snapshot, "spread_override": spread_override}
+            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="allowed", reason="spread_override_allowed", meta={"snapshot": snapshot, "spread_override": spread_override, **(meta or {})})
 
         qty_signed_post_lock, pos_side_post_lock = get_position(symbol)
         if qty_signed_post_lock != 0:
@@ -11897,6 +11917,11 @@ def _dashboard_latest_completed_scan_summary() -> dict:
 def diagnostics_strategy_performance(request: Request):
     state = _recompute_strategy_performance_state()
     return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
+
+
+@app.get("/diagnostics/execution_spread_policy")
+def diagnostics_execution_spread_policy(request: Request):
+    return {"ok": True, "patch_version": PATCH_VERSION, "entry_max_spread_pct": float(ENTRY_MAX_SPREAD_PCT), "iex_liquidity_override": {"enabled": bool(ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED), "min_avg_dollar_volume": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME), "max_spread_pct": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT), "max_trade_mid_deviation_pct": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT)}}
 
 
 @app.get("/diagnostics/regime_b")
