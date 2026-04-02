@@ -399,21 +399,59 @@ def get_latest_quote_snapshot(symbol: str) -> dict:
         field for field, value in (("bid", bid), ("ask", ask)) if value in (None, 0, 0.0)
     ]
 
+def _entry_spread_override_decision(snapshot: dict | None, meta: dict | None = None) -> dict:
+    snapshot = dict(snapshot or {})
+    meta = dict(meta or {})
+    spread_pct = _safe_float(snapshot.get("spread_pct"))
+    trade_price = _safe_float(snapshot.get("trade_price") or snapshot.get("price"))
+    mid = _safe_float(snapshot.get("mid"))
+    quote_debug = snapshot.get("quote_debug") or {}
+    feed = str((quote_debug or {}).get("feed") or "").strip().lower()
+    avg_dollar_volume = _safe_float(
+        meta.get("avg_dollar_volume_20d")
+        or meta.get("avg_dollar_volume")
+        or meta.get("adv20")
+        or 0.0
+    )
+    trade_mid_deviation_pct = None
+    if mid and trade_price and mid > 0:
+        trade_mid_deviation_pct = abs(float(trade_price) - float(mid)) / float(mid)
+
+    allowed = False
+    reasons = []
+    if spread_pct is None:
+        reasons.append("spread_missing")
+    elif spread_pct <= float(ENTRY_MAX_SPREAD_PCT):
+        reasons.append("spread_within_primary_limit")
+    elif not bool(ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED):
+        reasons.append("liquidity_override_disabled")
+    elif feed != "iex":
+        reasons.append("feed_not_iex")
+    elif avg_dollar_volume < float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME):
+        reasons.append("insufficient_liquidity")
+    elif spread_pct > float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT):
+        reasons.append("spread_above_override_cap")
+    elif trade_mid_deviation_pct is None:
+        reasons.append("trade_mid_deviation_missing")
+    elif trade_mid_deviation_pct > float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT):
+        reasons.append("trade_mid_deviation_too_large")
+    else:
+        allowed = True
+        reasons.append("iex_liquidity_override")
+
     return {
-        "symbol": symbol,
-        "price": trade_px or mid,
-        "trade_price": trade_px,
-        "bid": bid,
-        "ask": ask,
-        "mid": mid,
-        "spread": spread,
+        "allowed": bool(allowed),
+        "feed": feed or None,
         "spread_pct": spread_pct,
-        "quote_ts_utc": quote_ts.isoformat() if quote_ts else None,
-        "trade_ts_utc": trade_ts.isoformat() if trade_ts else None,
-        "price_age_sec": age_sec,
-        "quote_ok": bool(bid and ask and ask >= bid),
-        "fresh": bool(age_sec is not None and age_sec <= ENTRY_PRICE_MAX_AGE_SEC),
-        "quote_debug": quote_debug,
+        "trade_mid_deviation_pct": trade_mid_deviation_pct,
+        "avg_dollar_volume_20d": avg_dollar_volume,
+        "reasons": reasons,
+        "thresholds": {
+            "entry_max_spread_pct": float(ENTRY_MAX_SPREAD_PCT),
+            "override_min_avg_dollar_volume": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME),
+            "override_max_spread_pct": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT),
+            "override_max_trade_mid_deviation_pct": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT),
+        },
     }
 
 
@@ -778,6 +816,10 @@ ENTRY_REQUIRE_QUOTE = env_bool("ENTRY_REQUIRE_QUOTE", True)
 ENTRY_REQUIRE_FRESH_QUOTE = env_bool("ENTRY_REQUIRE_FRESH_QUOTE", True)
 ENTRY_PRICE_MAX_AGE_SEC = float(getenv_any("ENTRY_PRICE_MAX_AGE_SEC", default="20"))
 ENTRY_MAX_SPREAD_PCT = float(getenv_any("ENTRY_MAX_SPREAD_PCT", default="0.0025"))
+ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED = env_bool_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED", default="true")
+ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME = float(getenv_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME", default="50000000"))
+ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT = float(getenv_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT", default="0.05"))
+ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT = float(getenv_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT", default="0.005"))
 PLAN_STALE_SUBMITTED_SEC = int(getenv_any("PLAN_STALE_SUBMITTED_SEC", default="180"))
 PLAN_STALE_NO_POSITION_SEC = int(getenv_any("PLAN_STALE_NO_POSITION_SEC", default="90"))
 RECONCILE_ORDER_LOOKBACK_LIMIT = int(getenv_any("RECONCILE_ORDER_LOOKBACK_LIMIT", default="100"))
@@ -1093,7 +1135,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-099-early-entry-override"
+PATCH_VERSION = "patch-100-execution-liquidity-override"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -8553,6 +8595,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             live_allowed = True
         meta = {
             'rank_score': c.get('rank_score'),
+            'avg_dollar_volume_20d': c.get('avg_dollar_volume_20d'),
             'strategy_name': c.get('strategy'),
             'breakout_level': c.get('breakout_level'),
             'stop_price': c.get('stop_price'),
@@ -10704,9 +10747,12 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
         spread_pct = snapshot.get("spread_pct")
         if spread_pct is not None and float(spread_pct) > float(ENTRY_MAX_SPREAD_PCT):
-            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="spread_too_wide", meta={"snapshot": snapshot, **(meta or {})})
-            soften_symbol_lock(symbol, 5)
-            return {"ok": False, "rejected": True, "reason": "spread_too_wide", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+            spread_override = _entry_spread_override_decision(snapshot, meta=meta)
+            snapshot["spread_override"] = spread_override
+            if not spread_override.get("allowed"):
+                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="spread_too_wide", meta={"snapshot": snapshot, "spread_override": spread_override, **(meta or {})})
+                soften_symbol_lock(symbol, 5)
+                return {"ok": False, "rejected": True, "reason": "spread_too_wide", "symbol": symbol, "signal": signal, "snapshot": snapshot}
 
         qty_signed_post_lock, pos_side_post_lock = get_position(symbol)
         if qty_signed_post_lock != 0:
