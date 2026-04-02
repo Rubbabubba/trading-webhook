@@ -400,6 +400,32 @@ def get_latest_quote_snapshot(symbol: str) -> dict:
         field for field, value in (("bid", bid), ("ask", ask)) if value in (None, 0, 0.0)
     ]
 
+    price = trade_px if trade_px is not None else mid
+    trade_price = trade_px if trade_px is not None else mid
+    fresh = False
+    if age_sec is not None:
+        try:
+            fresh = float(age_sec) <= float(ENTRY_MAX_PRICE_AGE_SEC)
+        except Exception:
+            fresh = False
+
+    return {
+        "symbol": symbol,
+        "price": round(float(price), 6) if price is not None else None,
+        "trade_price": round(float(trade_price), 6) if trade_price is not None else None,
+        "bid": round(float(bid), 6) if bid is not None else None,
+        "ask": round(float(ask), 6) if ask is not None else None,
+        "mid": round(float(mid), 6) if mid is not None else None,
+        "spread": round(float(spread), 6) if spread is not None else None,
+        "spread_pct": float(spread_pct) if spread_pct is not None else None,
+        "quote_ts_utc": quote_ts.isoformat() if quote_ts is not None else None,
+        "trade_ts_utc": trade_ts.isoformat() if trade_ts is not None else None,
+        "price_age_sec": round(float(age_sec), 6) if age_sec is not None else None,
+        "quote_ok": bool(quote_debug.get("final_quote_valid")),
+        "fresh": bool(fresh),
+        "quote_debug": quote_debug,
+    }
+
 def _entry_spread_override_decision(snapshot: dict | None, meta: dict | None = None) -> dict:
     snapshot = dict(snapshot or {})
     meta = dict(meta or {})
@@ -1155,7 +1181,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-102-submit-fallback-and-order-diagnostics"
+PATCH_VERSION = "patch-103-quote-snapshot-return-fix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
