@@ -1187,7 +1187,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-105-scan-submit-source-fix"
+PATCH_VERSION = "patch-106-final-submit-source-plumbing-fix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -10914,6 +10914,8 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             "paper": APCA_PAPER,
             "dry_run": effective_dry_run,
             "source": source,
+            "effective_submit_source": source,
+            "selected_source": (meta or {}).get("selected_source") or source,
             "snapshot": snapshot,
         }
 
@@ -10987,6 +10989,8 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 "qty": (locals().get("payload") or {}).get("qty") if isinstance(locals().get("payload"), dict) else None,
                 "side": side,
                 "source": source,
+                "effective_submit_source": source,
+                "selected_source": (meta or {}).get("selected_source") or source,
             },
         }
 
@@ -11221,7 +11225,7 @@ async def worker_exit(req: Request):
             if (not already_actionable) and pick and forced_today < max(TRADES_TODAY_TARGET_TRADES, 0):
                 side = "buy"
                 signal = TRADES_TODAY_SIGNAL
-                submit = submit_scan_trade(pick, side=side, signal=signal, meta={"forced": True, "mode": "trades_today"})
+                submit = submit_scan_trade(pick, side=side, signal=signal, meta={"forced": True, "mode": "trades_today", "selected_source": "worker_scan"}, source="worker_scan")
                 results.insert(0, {
                     "symbol": pick,
                     "action": submit.get("action", "submit"),
@@ -14011,7 +14015,8 @@ async def worker_scan_entries(req: Request):
                     candidate_slots=candidate_slots,
                     scan_reason=requested_reason or "scheduled",
                 )
-                resp = submit_scan_trade(sym, side, sig, meta={"rank_score": payload["rank_score"], "signal_family": payload["signal_family"], "selected_by_scanner": True, "candidate_slots": candidate_slots, "scan_reason": requested_reason or "scheduled"})
+                submit_source = str(plan.get("submit_source") or plan.get("source") or "worker_scan").strip() or "worker_scan"
+                resp = submit_scan_trade(sym, side, sig, meta={"rank_score": payload["rank_score"], "signal_family": payload["signal_family"], "selected_by_scanner": True, "candidate_slots": candidate_slots, "scan_reason": requested_reason or "scheduled", "selected_source": submit_source}, source=submit_source)
                 submit_meta = _classify_scan_submit_response(resp)
                 record_decision(
                     "SCAN",
