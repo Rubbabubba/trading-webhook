@@ -1187,7 +1187,8 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-107-execute-entry-source-reconciliation-fix"
+PATCH_VERSION = "patch-108-scan-diagnostics-current-boot-fix"
+SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -10674,15 +10675,21 @@ def diagnostics_last_scan(request: Request, symbol: str = ""):
     require_admin_if_configured(request)
     """Convenience: return the most recent scan cycle (optionally filtered to a symbol)."""
     if not SCAN_HISTORY:
-        return {"ok": True, "item": None}
-    item = SCAN_HISTORY[-1]
+        return {"ok": True, "item": None, "current_boot_scan_available": False, "current_boot_id": SYSTEM_BOOT_ID, "patch_version": PATCH_VERSION}
+    item = next((it for it in reversed(SCAN_HISTORY) if str((it or {}).get("boot_id") or "") == SYSTEM_BOOT_ID), None)
+    current_boot_scan_available = item is not None
+    if item is None:
+        item = SCAN_HISTORY[-1]
     sym = (symbol or "").upper().strip()
     if sym:
         items = [it for it in (item.get("results") or []) if it.get("symbol") == sym]
         copy_item = dict(item)
         copy_item["results"] = items
         item = copy_item
-    return {"ok": True, "item": item}
+    copy_item = dict(item)
+    copy_item.setdefault("patch_version", PATCH_VERSION)
+    copy_item.setdefault("boot_id", SYSTEM_BOOT_ID if current_boot_scan_available else copy_item.get("boot_id"))
+    return {"ok": True, "item": copy_item, "current_boot_scan_available": current_boot_scan_available, "current_boot_id": SYSTEM_BOOT_ID, "patch_version": PATCH_VERSION}
 
 
 @app.get("/diagnostics/scans/latest")
@@ -13431,6 +13438,8 @@ async def worker_scan_entries(req: Request):
                 }
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "patch_version": PATCH_VERSION,
+                    "boot_id": SYSTEM_BOOT_ID,
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
                     "symbols": [],
                     "scanned": 0,
@@ -13466,6 +13475,8 @@ async def worker_scan_entries(req: Request):
                 }
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "patch_version": PATCH_VERSION,
+                    "boot_id": SYSTEM_BOOT_ID,
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
                     "symbols": [],
                     "scanned": 0,
@@ -13501,6 +13512,8 @@ async def worker_scan_entries(req: Request):
                 }
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "patch_version": PATCH_VERSION,
+                    "boot_id": SYSTEM_BOOT_ID,
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
                     "symbols": [],
                     "scanned": 0,
@@ -14043,6 +14056,8 @@ async def worker_scan_entries(req: Request):
         try:
                 SCAN_HISTORY.append({
                     "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "patch_version": PATCH_VERSION,
+                    "boot_id": SYSTEM_BOOT_ID,
                     "universe_provider": SCANNER_UNIVERSE_PROVIDER,
                     "symbols": syms,
                     "scanned": len(syms),
