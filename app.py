@@ -1187,7 +1187,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-106-final-submit-source-plumbing-fix"
+PATCH_VERSION = "patch-107-execute-entry-source-reconciliation-fix"
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 
@@ -10780,6 +10780,10 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
     """Shared entry execution path for scanner + webhook."""
     meta = meta or {}
     auth_payload = auth_payload or {}
+    selected_source = str(meta.get("selected_source") or "").strip()
+    source = str(source or "").strip() or "unknown"
+    if selected_source and source == "worker_scan" and selected_source != source:
+        source = selected_source
     symbol = (symbol or "").upper().strip()
     side = (side or "").lower().strip()
     signal = (signal or "").strip()
