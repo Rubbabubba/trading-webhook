@@ -1188,7 +1188,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-113-pending-entry-plans-stay-active"
+PATCH_VERSION = "patch-114-preserve-broker-backed-execution-state"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4079,6 +4079,67 @@ def list_open_orders_safe(limit: int | None = None) -> list[dict]:
     return out[:lim]
 
 
+def find_open_order_for_symbol(symbol: str) -> dict:
+    sym = str(symbol or "").upper()
+    if not sym:
+        return {}
+    for order in list_open_orders_safe():
+        if str(order.get("symbol") or "").upper() == sym:
+            return dict(order)
+    return {}
+
+
+def _adopt_open_broker_order_as_plan(symbol: str, broker_order: dict, source: str = "reconcile", signal: str = "RECOVERED", base_price: float | None = None, meta: dict | None = None) -> dict:
+    sym = str(symbol or "").upper()
+    order = dict(broker_order or {})
+    if not sym or not order:
+        return {}
+    side = str(order.get("side") or "buy").lower() or "buy"
+    try:
+        qty = abs(float(order.get("qty") or 0.0))
+    except Exception:
+        qty = 0.0
+    if qty <= 0:
+        qty = 1.0
+    price = None
+    for candidate in [base_price, (meta or {}).get("price"), (meta or {}).get("trade_price"), (meta or {}).get("close"), order.get("filled_avg_price")]:
+        try:
+            if candidate not in (None, "", 0, 0.0, "0", "0.0"):
+                price = float(candidate)
+                break
+        except Exception:
+            pass
+    if not price or price <= 0:
+        try:
+            snapshot = get_latest_quote_snapshot(sym, candidate=((meta or {}).get("candidate") if isinstance(meta, dict) else None))
+            price = float((snapshot or {}).get("price") or 0.0)
+        except Exception:
+            price = 0.0
+    if not price or price <= 0:
+        price = 1.0
+    plan = build_trade_plan(sym, side, qty, float(price), signal=signal, meta=meta)
+    plan["active"] = True
+    plan["source"] = source
+    plan["order_id"] = str(order.get("id") or "")
+    plan["submitted_at"] = str(order.get("submitted_at") or plan.get("submitted_at") or now_ny().isoformat())
+    plan["requested_qty"] = qty
+    plan["submitted_qty"] = qty
+    try:
+        filled_qty = float(order.get("filled_qty") or 0.0)
+    except Exception:
+        filled_qty = 0.0
+    plan["filled_qty"] = filled_qty
+    plan["avg_fill_price"] = float(price)
+    plan["order_status"] = str(order.get("status") or "").lower() or "accepted"
+    plan["recovered"] = True
+    plan["recovered_at"] = now_ny().isoformat()
+    plan["broker_backed"] = True
+    _ensure_execution_lifecycle_plan(sym, plan)
+    _apply_execution_lifecycle_reconcile(sym, plan, broker_order=order, broker_position_qty=0.0)
+    TRADE_PLAN[sym] = plan
+    return plan
+
+
 def build_reconcile_snapshot() -> dict:
     active_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")}
     authoritative_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active") or _plan_is_pending_entry(plan)}
@@ -4450,6 +4511,17 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
     Returns a list of reconcile actions.
     """
     actions: list[dict] = []
+    for order in list_open_orders_safe():
+        sym = str(order.get("symbol") or "").upper()
+        if not sym:
+            continue
+        plan = TRADE_PLAN.get(sym, {})
+        if plan.get("active") or _plan_is_pending_entry(plan):
+            continue
+        recovered_plan = _adopt_open_broker_order_as_plan(sym, order, source="reconcile", signal="RECOVERED_OPEN_ORDER")
+        if recovered_plan:
+            actions.append({"symbol": sym, "action": "recovered_open_order_plan", "order_id": str(order.get("id") or ""), "status": str(order.get("status") or "")})
+            record_decision("RECONCILE", "worker_exit", sym, side=str(order.get("side") or "buy"), signal="RECOVERED_OPEN_ORDER", action="recovered_open_order_plan", reason="missing_internal_plan_for_open_order", order_id=str(order.get("id") or ""))
     for p in list_open_positions_details_allowed():
         sym = p["symbol"]
         qty_signed = float(p["qty"])
@@ -11124,6 +11196,15 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         }
 
         if effective_dry_run:
+            existing_open_order = find_open_order_for_symbol(symbol)
+            if existing_open_order:
+                adopted = _adopt_open_broker_order_as_plan(symbol, existing_open_order, source=str((meta or {}).get("selected_source") or source or "reconcile"), signal=signal, base_price=float(base_price), meta=meta)
+                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="broker_backed_execution_exists", qty=qty, meta={"snapshot": snapshot, "open_order": existing_open_order, **(meta or {})})
+                return {"ok": True, "ignored": True, "reason": "broker_backed_execution_exists", "symbol": symbol, "signal": signal, "open_order": existing_open_order, "plan": adopted}
+            existing_plan = TRADE_PLAN.get(symbol) or {}
+            if _plan_is_pending_entry(existing_plan):
+                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="pending_entry_plan_preserved", qty=qty, meta={"snapshot": snapshot, **(meta or {})})
+                return {"ok": True, "ignored": True, "reason": "pending_entry_plan_preserved", "symbol": symbol, "signal": signal, "plan": existing_plan}
             plan = build_trade_plan(symbol, side, qty, float(base_price), signal, meta=meta)
             plan["source"] = source
             plan["requested_qty"] = float(risk_qty)
