@@ -867,6 +867,7 @@ ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default=
 ENTRY_REQUIRE_QUOTE = env_bool("ENTRY_REQUIRE_QUOTE", True)
 ENTRY_REQUIRE_FRESH_QUOTE = env_bool("ENTRY_REQUIRE_FRESH_QUOTE", True)
 ENTRY_PRICE_MAX_AGE_SEC = float(getenv_any("ENTRY_PRICE_MAX_AGE_SEC", default="20"))
+ENTRY_BAR_FALLBACK_MAX_AGE_SEC = float(getenv_any("ENTRY_BAR_FALLBACK_MAX_AGE_SEC", default=str(max(90.0, ENTRY_PRICE_MAX_AGE_SEC))))
 ENTRY_MAX_SPREAD_PCT = float(getenv_any("ENTRY_MAX_SPREAD_PCT", default="0.0025"))
 ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED = env_bool_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED", default="true")
 ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME = float(getenv_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME", default="50000000"))
@@ -1187,7 +1188,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-109-quote-freshness-fallback"
+PATCH_VERSION = "patch-110-bar-fallback-freshness-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -9000,7 +9001,7 @@ def _build_snapshot_from_recent_1m_bar(symbol: str, max_age_sec: float | None = 
     if ts_utc.tzinfo is None:
         ts_utc = ts_utc.replace(tzinfo=timezone.utc)
     age_sec = max(0.0, (datetime.now(timezone.utc) - ts_utc.astimezone(timezone.utc)).total_seconds())
-    threshold = float(max_age_sec if max_age_sec is not None else ENTRY_PRICE_MAX_AGE_SEC)
+    threshold = float(max_age_sec if max_age_sec is not None else ENTRY_BAR_FALLBACK_MAX_AGE_SEC)
     if age_sec > threshold:
         return None
     quote_debug = {
@@ -9018,6 +9019,8 @@ def _build_snapshot_from_recent_1m_bar(symbol: str, max_age_sec: float | None = 
         "final_missing_fields": [],
         "freshness_reference": "bar_ts",
         "freshness_threshold_sec": threshold,
+        "bar_ts_utc": ts_utc.isoformat(),
+        "bar_age_sec": round(float(age_sec), 6),
     }
     return {
         "symbol": str(symbol or "").upper(),
@@ -10935,15 +10938,22 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             return {"ok": False, "rejected": True, "reason": "quote_missing", "symbol": symbol, "signal": signal, "snapshot": snapshot}
         if ENTRY_REQUIRE_FRESH_QUOTE and not snapshot.get("fresh"):
             fallback_snapshot = None
+            fallback_attempt = {"attempted": True, "source": "recent_1m_bar", "max_age_sec": float(ENTRY_BAR_FALLBACK_MAX_AGE_SEC), "activated": False}
             try:
-                fallback_snapshot = _build_snapshot_from_recent_1m_bar(symbol, max_age_sec=ENTRY_PRICE_MAX_AGE_SEC)
-            except Exception:
+                fallback_snapshot = _build_snapshot_from_recent_1m_bar(symbol, max_age_sec=ENTRY_BAR_FALLBACK_MAX_AGE_SEC)
+            except Exception as e:
                 fallback_snapshot = None
+                fallback_attempt["error"] = str(e)
             if fallback_snapshot:
                 stale_snapshot = dict(snapshot or {})
                 fallback_snapshot["stale_snapshot"] = stale_snapshot
+                fallback_snapshot.setdefault("quote_debug", {})["fallback_activation_reason"] = "stale_primary_quote"
                 snapshot = fallback_snapshot
+                fallback_attempt["activated"] = True
+                fallback_attempt["bar_ts_utc"] = (snapshot.get("quote_ts_utc") or snapshot.get("trade_ts_utc"))
+                fallback_attempt["bar_age_sec"] = snapshot.get("price_age_sec")
             else:
+                snapshot.setdefault("quote_debug", {})["bar_fallback_attempted"] = fallback_attempt
                 record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, "payload": payload, **(meta or {})})
                 soften_symbol_lock(symbol, 5)
                 return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
