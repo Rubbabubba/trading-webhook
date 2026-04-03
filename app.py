@@ -1188,7 +1188,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-110-bar-fallback-freshness-fix"
+PATCH_VERSION = "patch-111-bar-fallback-diagnostics-and-acceptance-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -8981,29 +8981,47 @@ def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None)
     return rows
 
 
-def _build_snapshot_from_recent_1m_bar(symbol: str, max_age_sec: float | None = None) -> dict | None:
-    """Build a synthetic fresh quote snapshot from the latest recent 1-minute bar.
+def _try_build_snapshot_from_recent_1m_bar(symbol: str, max_age_sec: float | None = None) -> tuple[dict | None, dict]:
+    """Try to build a synthetic fresh quote snapshot from the latest recent 1-minute bar.
 
-    Used only as a fallback when the latest quote/trade endpoints return stale prior-session data.
-    This preserves a conservative current-session price reference without widening system scope.
+    Returns (snapshot, debug). The debug payload is always populated so callers can see *why*
+    the fallback was not accepted.
     """
+    threshold = float(max_age_sec if max_age_sec is not None else ENTRY_BAR_FALLBACK_MAX_AGE_SEC)
+    debug = {
+        "attempted": True,
+        "source": "recent_1m_bar",
+        "max_age_sec": threshold,
+        "activated": False,
+    }
     try:
         bars = fetch_1m_bars(symbol, lookback_days=1)
-    except Exception:
-        bars = []
+        debug["bar_count"] = int(len(bars or []))
+    except Exception as e:
+        debug["reason"] = "bar_fetch_error"
+        debug["error"] = str(e)
+        return None, debug
     if not bars:
-        return None
+        debug["reason"] = "no_bars"
+        return None, debug
     latest = bars[-1] or {}
     ts_utc = latest.get("ts_utc")
     px = _safe_float(latest.get("close"))
-    if ts_utc is None or px is None or px <= 0:
-        return None
+    debug["bar_ts_utc"] = ts_utc.isoformat() if hasattr(ts_utc, "isoformat") else ts_utc
+    debug["bar_close"] = px
+    if ts_utc is None:
+        debug["reason"] = "missing_bar_timestamp"
+        return None, debug
+    if px is None or px <= 0:
+        debug["reason"] = "invalid_bar_close"
+        return None, debug
     if ts_utc.tzinfo is None:
         ts_utc = ts_utc.replace(tzinfo=timezone.utc)
     age_sec = max(0.0, (datetime.now(timezone.utc) - ts_utc.astimezone(timezone.utc)).total_seconds())
-    threshold = float(max_age_sec if max_age_sec is not None else ENTRY_BAR_FALLBACK_MAX_AGE_SEC)
+    debug["bar_age_sec"] = round(float(age_sec), 6)
     if age_sec > threshold:
-        return None
+        debug["reason"] = "bar_too_old"
+        return None, debug
     quote_debug = {
         "method": "recent_1m_bar",
         "feed": str(_DATA_FEED_RAW),
@@ -9022,6 +9040,8 @@ def _build_snapshot_from_recent_1m_bar(symbol: str, max_age_sec: float | None = 
         "bar_ts_utc": ts_utc.isoformat(),
         "bar_age_sec": round(float(age_sec), 6),
     }
+    debug["activated"] = True
+    debug["reason"] = "accepted"
     return {
         "symbol": str(symbol or "").upper(),
         "price": round(float(px), 6),
@@ -9037,7 +9057,84 @@ def _build_snapshot_from_recent_1m_bar(symbol: str, max_age_sec: float | None = 
         "quote_ok": True,
         "fresh": True,
         "quote_debug": quote_debug,
+    }, debug
+
+
+def _try_build_snapshot_from_candidate_meta(symbol: str, meta: dict | None = None, max_age_sec: float | None = None) -> tuple[dict | None, dict]:
+    """Last-resort fallback using the current scan candidate's own observed close/scan timestamp.
+
+    This only activates when the selected candidate metadata is fresh enough from the current scan.
+    """
+    threshold = float(max_age_sec if max_age_sec is not None else max(120.0, ENTRY_BAR_FALLBACK_MAX_AGE_SEC))
+    debug = {
+        "attempted": True,
+        "source": "candidate_scan",
+        "max_age_sec": threshold,
+        "activated": False,
     }
+    meta = dict(meta or {})
+    ts_raw = meta.get("scan_ts_utc") or meta.get("ts_utc")
+    px = _safe_float(meta.get("close") or meta.get("price") or meta.get("trade_price"))
+    debug["scan_ts_utc"] = str(ts_raw) if ts_raw is not None else None
+    debug["candidate_price"] = px
+    if ts_raw is None:
+        debug["reason"] = "missing_scan_timestamp"
+        return None, debug
+    if px is None or px <= 0:
+        debug["reason"] = "invalid_candidate_price"
+        return None, debug
+    try:
+        if isinstance(ts_raw, datetime):
+            ts_utc = ts_raw
+        else:
+            ts_utc = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+        if ts_utc.tzinfo is None:
+            ts_utc = ts_utc.replace(tzinfo=timezone.utc)
+    except Exception as e:
+        debug["reason"] = "scan_timestamp_parse_error"
+        debug["error"] = str(e)
+        return None, debug
+    age_sec = max(0.0, (datetime.now(timezone.utc) - ts_utc.astimezone(timezone.utc)).total_seconds())
+    debug["scan_age_sec"] = round(float(age_sec), 6)
+    if age_sec > threshold:
+        debug["reason"] = "candidate_scan_too_old"
+        return None, debug
+    quote_debug = {
+        "method": "candidate_scan",
+        "feed": str(_DATA_FEED_RAW),
+        "count": 1,
+        "url": None,
+        "attempts": [],
+        "attempt_count": 1,
+        "retry_sleep_sec": 0.0,
+        "fallback_used": True,
+        "fallback_source": "candidate_scan",
+        "synthetic_quote": True,
+        "final_quote_valid": True,
+        "final_missing_fields": [],
+        "freshness_reference": "scan_ts",
+        "freshness_threshold_sec": threshold,
+        "scan_ts_utc": ts_utc.isoformat(),
+        "scan_age_sec": round(float(age_sec), 6),
+    }
+    debug["activated"] = True
+    debug["reason"] = "accepted"
+    return {
+        "symbol": str(symbol or "").upper(),
+        "price": round(float(px), 6),
+        "trade_price": round(float(px), 6),
+        "bid": round(float(px), 6),
+        "ask": round(float(px), 6),
+        "mid": round(float(px), 6),
+        "spread": 0.0,
+        "spread_pct": 0.0,
+        "quote_ts_utc": ts_utc.isoformat(),
+        "trade_ts_utc": ts_utc.isoformat(),
+        "price_age_sec": round(float(age_sec), 6),
+        "quote_ok": True,
+        "fresh": True,
+        "quote_debug": quote_debug,
+    }, debug
 
 
 def ema_series(closes: list[float], length: int) -> list[float]:
@@ -10937,26 +11034,31 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             soften_symbol_lock(symbol, 5)
             return {"ok": False, "rejected": True, "reason": "quote_missing", "symbol": symbol, "signal": signal, "snapshot": snapshot}
         if ENTRY_REQUIRE_FRESH_QUOTE and not snapshot.get("fresh"):
-            fallback_snapshot = None
-            fallback_attempt = {"attempted": True, "source": "recent_1m_bar", "max_age_sec": float(ENTRY_BAR_FALLBACK_MAX_AGE_SEC), "activated": False}
-            try:
-                fallback_snapshot = _build_snapshot_from_recent_1m_bar(symbol, max_age_sec=ENTRY_BAR_FALLBACK_MAX_AGE_SEC)
-            except Exception as e:
-                fallback_snapshot = None
-                fallback_attempt["error"] = str(e)
+            fallback_snapshot, bar_fallback_debug = _try_build_snapshot_from_recent_1m_bar(symbol, max_age_sec=ENTRY_BAR_FALLBACK_MAX_AGE_SEC)
             if fallback_snapshot:
                 stale_snapshot = dict(snapshot or {})
                 fallback_snapshot["stale_snapshot"] = stale_snapshot
-                fallback_snapshot.setdefault("quote_debug", {})["fallback_activation_reason"] = "stale_primary_quote"
+                qd = fallback_snapshot.setdefault("quote_debug", {})
+                qd["fallback_activation_reason"] = "stale_primary_quote"
+                qd["bar_fallback_attempted"] = bar_fallback_debug
                 snapshot = fallback_snapshot
-                fallback_attempt["activated"] = True
-                fallback_attempt["bar_ts_utc"] = (snapshot.get("quote_ts_utc") or snapshot.get("trade_ts_utc"))
-                fallback_attempt["bar_age_sec"] = snapshot.get("price_age_sec")
             else:
-                snapshot.setdefault("quote_debug", {})["bar_fallback_attempted"] = fallback_attempt
-                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, "payload": payload, **(meta or {})})
-                soften_symbol_lock(symbol, 5)
-                return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+                candidate_fallback_snapshot, candidate_fallback_debug = _try_build_snapshot_from_candidate_meta(symbol, meta=meta, max_age_sec=max(120.0, ENTRY_BAR_FALLBACK_MAX_AGE_SEC))
+                if candidate_fallback_snapshot:
+                    stale_snapshot = dict(snapshot or {})
+                    candidate_fallback_snapshot["stale_snapshot"] = stale_snapshot
+                    qd = candidate_fallback_snapshot.setdefault("quote_debug", {})
+                    qd["fallback_activation_reason"] = "stale_primary_quote"
+                    qd["bar_fallback_attempted"] = bar_fallback_debug
+                    qd["candidate_fallback_attempted"] = candidate_fallback_debug
+                    snapshot = candidate_fallback_snapshot
+                else:
+                    qd = snapshot.setdefault("quote_debug", {})
+                    qd["bar_fallback_attempted"] = bar_fallback_debug
+                    qd["candidate_fallback_attempted"] = candidate_fallback_debug
+                    record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, "payload": payload, **(meta or {})})
+                    soften_symbol_lock(symbol, 5)
+                    return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
         spread_pct = snapshot.get("spread_pct")
         if spread_pct is not None and float(spread_pct) > float(ENTRY_MAX_SPREAD_PCT):
             spread_override = _entry_spread_override_decision(snapshot, meta=meta)
