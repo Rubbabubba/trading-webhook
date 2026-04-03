@@ -1188,7 +1188,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-114-preserve-broker-backed-execution-state"
+PATCH_VERSION = "patch-115-startup-helper-order-adoption-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -6301,7 +6301,6 @@ def release_stage_transition(target_stage: str, actor: str = "system", reason: s
 
 
 # Run startup restore only after all helper functions it depends on are defined.
-startup_restore_state()
 
 
 def freshness_snapshot() -> dict:
@@ -6975,6 +6974,10 @@ def _has_pending_entry_plan(symbol: str) -> bool:
     if bool(p.get("active")):
         return True
     return _plan_is_pending_entry(p)
+
+
+# Run startup restore only after all helper functions it depends on are defined.
+startup_restore_state()
 
 
 def _normalize_correlation_groups_raw(raw: str) -> str:
