@@ -1188,7 +1188,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-112-iex-safe-bar-fallback-and-candidate-payload-fix"
+PATCH_VERSION = "patch-113-pending-entry-plans-stay-active"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4081,22 +4081,22 @@ def list_open_orders_safe(limit: int | None = None) -> list[dict]:
 
 def build_reconcile_snapshot() -> dict:
     active_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")}
+    authoritative_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active") or _plan_is_pending_entry(plan)}
     broker_positions = list_open_positions_details_allowed()
     broker_syms = sorted({str(p.get("symbol") or "").upper() for p in broker_positions if str(p.get("symbol") or "").upper()})
     open_orders = list_open_orders_safe()
-    active_order_statuses = {"submitted", "new", "accepted", "pending_new", "partially_filled"}
-    plan_symbols = sorted(active_plans.keys())
-    missing_from_plans = sorted([sym for sym in broker_syms if sym not in active_plans])
-    stale_active_plans = sorted([sym for sym in active_plans if sym not in broker_syms])
-    pending_entry_plan_symbols = sorted([sym for sym, plan in active_plans.items() if str(plan.get("order_status") or "").lower() in active_order_statuses])
+    plan_symbols = sorted(authoritative_plans.keys())
+    missing_from_plans = sorted([sym for sym in broker_syms if sym not in authoritative_plans])
+    stale_active_plans = sorted([sym for sym in active_plans if sym not in broker_syms and sym not in {str(o.get('symbol') or '').upper() for o in open_orders if str(o.get('symbol') or '').upper()}])
+    pending_entry_plan_symbols = sorted([sym for sym, plan in authoritative_plans.items() if _plan_is_pending_entry(plan)])
     open_order_symbols = sorted({str(o.get("symbol") or "").upper() for o in open_orders if str(o.get("symbol") or "").upper()})
-    orphan_open_order_symbols = sorted([sym for sym in open_order_symbols if sym not in active_plans and sym not in broker_syms])
+    orphan_open_order_symbols = sorted([sym for sym in open_order_symbols if sym not in authoritative_plans and sym not in broker_syms])
     plans_missing_open_order = sorted([sym for sym in pending_entry_plan_symbols if sym not in open_order_symbols and sym not in broker_syms])
     partial_fill_plan_symbols = sorted([sym for sym, plan in active_plans.items() if str(plan.get("order_status") or "").lower() == "partially_filled"])
     snap = {
         "broker_positions_count": len(broker_positions),
         "broker_symbols": broker_syms,
-        "active_plan_count": len(active_plans),
+        "active_plan_count": len(authoritative_plans),
         "active_plan_symbols": plan_symbols,
         "open_order_count": len(open_orders),
         "open_order_symbols": open_order_symbols,
@@ -4314,7 +4314,9 @@ def list_open_positions_details_allowed() -> list[dict]:
 def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
     """Best-effort sync between internal plan, broker order state, and live position."""
     out = {"symbol": symbol, "active": bool((plan or {}).get("active")), "changes": []}
-    if not plan or not plan.get("active"):
+    if not plan:
+        return out
+    if not plan.get("active") and not _plan_is_pending_entry(plan):
         return out
 
     now = now_ny()
@@ -4339,7 +4341,15 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
 
     if qty_signed == 0:
         terminal = {"canceled", "cancelled", "rejected", "expired"}
-        order_status_lc = str(order_status.get("status") or "").lower()
+        active_pending_statuses = {"new", "accepted", "pending_new", "accepted_for_bidding", "held", "pending_replace", "partially_filled"}
+        order_status_lc = str(order_status.get("status") or plan.get("order_status") or "").lower()
+        if order_status_lc in active_pending_statuses:
+            if not plan.get("active"):
+                plan["active"] = True
+                out["changes"].append("reactivated_pending_entry_plan")
+            plan["order_status"] = order_status_lc
+            _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=(order_status or {"status": order_status_lc}), broker_position_qty=qty_signed)
+            return out
         if order_status_lc in terminal:
             plan["active"] = False
             out["changes"].append("deactivated_terminal_order_without_position")
@@ -6875,14 +6885,24 @@ def _early_entry_override_live_permitted(candidate: dict | None, regime: dict | 
     return (len(reasons) == 0), reasons
 
 
+def _plan_is_pending_entry(plan: dict | None) -> bool:
+    p = dict(plan or {})
+    if not p:
+        return False
+    status = str(p.get("order_status") or "").lower()
+    exec_state = str(p.get("execution_state") or p.get("lifecycle_state") or "").lower()
+    active_order_statuses = {"submitted", "new", "accepted", "pending_new", "partially_filled", "accepted_for_bidding", "held", "pending_replace"}
+    active_exec_states = {"submitted", "acknowledged", "partially_filled"}
+    return status in active_order_statuses or exec_state in active_exec_states
+
+
 def _has_pending_entry_plan(symbol: str) -> bool:
     p = (TRADE_PLAN or {}).get(str(symbol or "").upper()) or {}
     if not p:
         return False
     if bool(p.get("active")):
         return True
-    status = str(p.get("order_status") or "").lower()
-    return status in {"submitted", "new", "accepted", "pending_new", "partially_filled"}
+    return _plan_is_pending_entry(p)
 
 
 def _normalize_correlation_groups_raw(raw: str) -> str:
@@ -11302,19 +11322,22 @@ async def worker_exit(req: Request):
 
     # Manage active plans with stop/take
     for symbol, plan in list(TRADE_PLAN.items()):
-        if not plan.get("active"):
+        if not plan.get("active") and not _plan_is_pending_entry(plan):
             continue
 
         if PLAN_SYNC_ON_WORKER_EXIT:
             sync_info = sync_trade_plan_with_broker(symbol, plan)
             if sync_info.get("changes"):
                 results.append({"symbol": symbol, "action": "plan_sync", "changes": sync_info.get("changes"), "order_status": sync_info.get("order_status")})
-            if not plan.get("active"):
+            if not plan.get("active") and not _plan_is_pending_entry(plan):
                 results.append({"symbol": symbol, "action": "plan_deactivated", "reason": "sync_rule"})
                 continue
 
         qty_signed, _pos_side = get_position(symbol)
         if qty_signed == 0:
+            if _plan_is_pending_entry(plan):
+                results.append({"symbol": symbol, "action": "pending_entry_wait", "order_status": plan.get("order_status")})
+                continue
             plan["active"] = False
             results.append({"symbol": symbol, "action": "plan_deactivated", "reason": "no_open_position"})
             continue
