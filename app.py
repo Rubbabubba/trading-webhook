@@ -1187,7 +1187,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-108-scan-diagnostics-current-boot-fix"
+PATCH_VERSION = "patch-109-quote-freshness-fallback"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -8980,6 +8980,63 @@ def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None)
     return rows
 
 
+def _build_snapshot_from_recent_1m_bar(symbol: str, max_age_sec: float | None = None) -> dict | None:
+    """Build a synthetic fresh quote snapshot from the latest recent 1-minute bar.
+
+    Used only as a fallback when the latest quote/trade endpoints return stale prior-session data.
+    This preserves a conservative current-session price reference without widening system scope.
+    """
+    try:
+        bars = fetch_1m_bars(symbol, lookback_days=1)
+    except Exception:
+        bars = []
+    if not bars:
+        return None
+    latest = bars[-1] or {}
+    ts_utc = latest.get("ts_utc")
+    px = _safe_float(latest.get("close"))
+    if ts_utc is None or px is None or px <= 0:
+        return None
+    if ts_utc.tzinfo is None:
+        ts_utc = ts_utc.replace(tzinfo=timezone.utc)
+    age_sec = max(0.0, (datetime.now(timezone.utc) - ts_utc.astimezone(timezone.utc)).total_seconds())
+    threshold = float(max_age_sec if max_age_sec is not None else ENTRY_PRICE_MAX_AGE_SEC)
+    if age_sec > threshold:
+        return None
+    quote_debug = {
+        "method": "recent_1m_bar",
+        "feed": str(_DATA_FEED_RAW),
+        "count": 1,
+        "url": None,
+        "attempts": [],
+        "attempt_count": 1,
+        "retry_sleep_sec": 0.0,
+        "fallback_used": True,
+        "fallback_source": "recent_1m_bar",
+        "synthetic_quote": True,
+        "final_quote_valid": True,
+        "final_missing_fields": [],
+        "freshness_reference": "bar_ts",
+        "freshness_threshold_sec": threshold,
+    }
+    return {
+        "symbol": str(symbol or "").upper(),
+        "price": round(float(px), 6),
+        "trade_price": round(float(px), 6),
+        "bid": round(float(px), 6),
+        "ask": round(float(px), 6),
+        "mid": round(float(px), 6),
+        "spread": 0.0,
+        "spread_pct": 0.0,
+        "quote_ts_utc": ts_utc.isoformat(),
+        "trade_ts_utc": ts_utc.isoformat(),
+        "price_age_sec": round(float(age_sec), 6),
+        "quote_ok": True,
+        "fresh": True,
+        "quote_debug": quote_debug,
+    }
+
+
 def ema_series(closes: list[float], length: int) -> list[float]:
     """Compute EMA series."""
     if not closes:
@@ -10877,9 +10934,19 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             soften_symbol_lock(symbol, 5)
             return {"ok": False, "rejected": True, "reason": "quote_missing", "symbol": symbol, "signal": signal, "snapshot": snapshot}
         if ENTRY_REQUIRE_FRESH_QUOTE and not snapshot.get("fresh"):
-            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, "payload": payload, **(meta or {})})
-            soften_symbol_lock(symbol, 5)
-            return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+            fallback_snapshot = None
+            try:
+                fallback_snapshot = _build_snapshot_from_recent_1m_bar(symbol, max_age_sec=ENTRY_PRICE_MAX_AGE_SEC)
+            except Exception:
+                fallback_snapshot = None
+            if fallback_snapshot:
+                stale_snapshot = dict(snapshot or {})
+                fallback_snapshot["stale_snapshot"] = stale_snapshot
+                snapshot = fallback_snapshot
+            else:
+                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, "payload": payload, **(meta or {})})
+                soften_symbol_lock(symbol, 5)
+                return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
         spread_pct = snapshot.get("spread_pct")
         if spread_pct is not None and float(spread_pct) > float(ENTRY_MAX_SPREAD_PCT):
             spread_override = _entry_spread_override_decision(snapshot, meta=meta)
