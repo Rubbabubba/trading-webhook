@@ -1188,7 +1188,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-111-bar-fallback-diagnostics-and-acceptance-fix"
+PATCH_VERSION = "patch-112-iex-safe-bar-fallback-and-candidate-payload-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -8731,6 +8731,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'regime_mode': c.get('regime_mode'),
             'strategy': c.get('strategy'),
             'entry_type': entry_type,
+            'scan_ts_utc': c.get('scan_ts_utc'),
+            'close': c.get('close'),
+            'price': c.get('close'),
+            'trade_price': c.get('close'),
+            'symbol': c.get('symbol'),
+            'signal': c.get('signal'),
+            'selected_source': source_name,
             'early_entry_override_enabled': bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED),
             'early_entry_override_triggered': bool(entry_type == 'early_override'),
             'early_entry_override_reasons': list(override_live_reasons if entry_type == 'early_override' else (_candidate_qualifies_early_entry_override(c, regime=regime)[1] if SWING_EARLY_ENTRY_OVERRIDE_ENABLED else [])),
@@ -8949,35 +8956,22 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'results': LAST_SWING_CANDIDATES[:SWING_MAX_CANDIDATES],
     }
 
-def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None) -> list[dict]:
-    """Fetch recent 1-minute bars for a symbol. Returns list of dicts with UTC ts + OHLCV + vwap."""
-    # Conservative lookback to stay within API limits and keep scan fast.
+def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None, feed_override=None) -> list[dict]:
+    """Fetch recent 1-minute bars for a symbol using the REST helper on the configured feed.
+
+    This intentionally avoids the SDK default path so the bar fallback stays on an IEX-safe
+    code path when the account is not entitled to recent SIP data.
+    """
     end = datetime.now(tz=timezone.utc)
-    start = end - timedelta(days=max(1, lookback_days))
-    req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Minute, start=start, end=end)
-    bars = data_client.get_stock_bars(req)
-    rows = []
-    try:
-        seq = bars.data.get(symbol, [])
-    except Exception:
-        seq = []
-    for b in seq:
-        try:
-            ts = b.timestamp
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            rows.append({
-                "ts_utc": ts,
-                "ts_ny": ts.astimezone(NY_TZ),
-                "open": float(b.open),
-                "high": float(b.high),
-                "low": float(b.low),
-                "close": float(b.close),
-                "volume": float(getattr(b, "volume", 0) or 0),
-                "vwap": float(getattr(b, "vwap", 0) or 0),
-            })
-        except Exception:
-            continue
+    start = end - timedelta(days=max(1, int(lookback_days or 1)))
+    rows_by_symbol, _debug = _fetch_bars_via_rest(
+        [str(symbol or '').upper()],
+        start=start,
+        end=end,
+        feed_override=(feed_override or _DATA_FEED_RAW or "iex"),
+        limit=int(limit or 5000),
+    )
+    rows = list((rows_by_symbol or {}).get(str(symbol or '').upper(), []) or [])
     return rows
 
 
@@ -8995,7 +8989,7 @@ def _try_build_snapshot_from_recent_1m_bar(symbol: str, max_age_sec: float | Non
         "activated": False,
     }
     try:
-        bars = fetch_1m_bars(symbol, lookback_days=1)
+        bars = fetch_1m_bars(symbol, lookback_days=1, feed_override=_DATA_FEED_RAW or "iex")
         debug["bar_count"] = int(len(bars or []))
     except Exception as e:
         debug["reason"] = "bar_fetch_error"
@@ -14212,7 +14206,20 @@ async def worker_scan_entries(req: Request):
                     scan_reason=requested_reason or "scheduled",
                 )
                 submit_source = str(plan.get("submit_source") or plan.get("source") or "worker_scan").strip() or "worker_scan"
-                resp = submit_scan_trade(sym, side, sig, meta={"rank_score": payload["rank_score"], "signal_family": payload["signal_family"], "selected_by_scanner": True, "candidate_slots": candidate_slots, "scan_reason": requested_reason or "scheduled", "selected_source": submit_source}, source=submit_source)
+                resp = submit_scan_trade(sym, side, sig, meta={
+                    "rank_score": payload["rank_score"],
+                    "signal_family": payload["signal_family"],
+                    "selected_by_scanner": True,
+                    "candidate_slots": candidate_slots,
+                    "scan_reason": requested_reason or "scheduled",
+                    "selected_source": submit_source,
+                    "scan_ts_utc": plan.get("scan_ts_utc"),
+                    "close": plan.get("close"),
+                    "price": plan.get("close"),
+                    "trade_price": plan.get("close"),
+                    "symbol": sym,
+                    "signal": sig,
+                }, source=submit_source)
                 submit_meta = _classify_scan_submit_response(resp)
                 record_decision(
                     "SCAN",
