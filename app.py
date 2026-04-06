@@ -1188,7 +1188,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-115-startup-helper-order-adoption-fix"
+PATCH_VERSION = "patch-116-recovered-stop-restoration-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4134,6 +4134,7 @@ def _adopt_open_broker_order_as_plan(symbol: str, broker_order: dict, source: st
     plan["recovered"] = True
     plan["recovered_at"] = now_ny().isoformat()
     plan["broker_backed"] = True
+    _restore_recovered_plan_protection(plan)
     _ensure_execution_lifecycle_plan(sym, plan)
     _apply_execution_lifecycle_reconcile(sym, plan, broker_order=order, broker_position_qty=0.0)
     TRADE_PLAN[sym] = plan
@@ -4482,6 +4483,8 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
             plan["requested_qty"] = float(plan.get("requested_qty") or plan.get("qty") or live_qty)
             actual_risk = round(abs(float(plan.get("entry_price") or fill_avg) - float(plan.get("stop_price") or 0)) * abs(float(plan.get("filled_qty") or live_qty)), 4)
             plan["actual_risk_dollars"] = actual_risk
+            if _restore_recovered_plan_protection(plan):
+                out["changes"].append("recovered_stop_restored_from_initial")
             out["changes"].append("entry_price_reconciled_to_fill")
             if ENABLE_RISK_RECHECK_AFTER_FILL and RISK_DOLLARS > 0 and actual_risk > (float(RISK_DOLLARS) * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT), 0.0))):
                 close_out = close_position(symbol, reason="risk_exceeded_after_fill", source="risk_guard")
@@ -10976,6 +10979,36 @@ def _plan_risk_per_share(plan: dict) -> float:
         return abs(float(plan.get("entry_price") or 0.0) - float(plan.get("initial_stop_price") or plan.get("stop_price") or 0.0))
     except Exception:
         return 0.0
+
+
+def _restore_recovered_plan_protection(plan: dict) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    if not bool(plan.get("recovered")) or not bool(plan.get("broker_backed")):
+        return False
+    if str(plan.get("execution_state") or "").lower() not in {"filled", "open", "partial", "partially_filled"} and str(plan.get("order_status") or "").lower() not in {"filled", "partially_filled"}:
+        return False
+    side = str(plan.get("side") or "buy").lower()
+    entry = _safe_float(plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price") or 0.0)
+    current_stop = _safe_float(plan.get("stop_price") or 0.0)
+    initial_stop = _safe_float(plan.get("initial_stop_price") or 0.0)
+    if entry <= 0 or initial_stop <= 0:
+        return False
+    # Recovery should never silently neutralize initial protection by pinning stop to entry.
+    if side == "buy":
+        should_restore = abs(current_stop - entry) <= 0.011 and initial_stop < entry - 0.011
+    else:
+        should_restore = abs(current_stop - entry) <= 0.011 and initial_stop > entry + 0.011
+    if not should_restore:
+        return False
+    plan["stop_price"] = round(initial_stop, 4)
+    qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or 0.0))
+    risk_per_share = abs(entry - initial_stop)
+    if risk_per_share > 0:
+        plan["risk_per_share"] = round(risk_per_share, 4)
+        if qty > 0:
+            plan["actual_risk_dollars"] = round(risk_per_share * qty, 4)
+    return True
 
 
 def _swing_unrealized_r(plan: dict, px: float) -> float:
