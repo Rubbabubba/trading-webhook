@@ -811,12 +811,18 @@ SWING_REGIME_MODE_SWITCHING_ENABLED = env_bool_any("SWING_REGIME_MODE_SWITCHING_
 SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES = env_bool_any("SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES", default=True)
 SWING_REGIME_NEUTRAL_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_NEUTRAL_REQUIRE_INDEX_ALIGNMENT", default=False)
 SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT", default=False)
-SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT", default=SWING_BREAKOUT_BUFFER_PCT)
-SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT", default=max(SWING_BREAKOUT_BUFFER_PCT, 0.025))
+SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT", default=max(SWING_BREAKOUT_BUFFER_PCT, 0.02))
+SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT", default=max(SWING_BREAKOUT_BUFFER_PCT, 0.03))
 SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT", default=0.07)
-SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=SWING_MIN_20D_RETURN_PCT)
-SWING_NEUTRAL_MIN_20D_RETURN_PCT = getenv_float_any("SWING_NEUTRAL_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
+SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
+SWING_NEUTRAL_MIN_20D_RETURN_PCT = getenv_float_any("SWING_NEUTRAL_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.01)))
 SWING_DEFENSIVE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_20D_RETURN_PCT", default=0.0)
+SWING_BREAKOUT_MIN_ATR_PCT = getenv_float_any("SWING_BREAKOUT_MIN_ATR_PCT", default=0.012)
+SWING_BREAKOUT_STRONG_ATR_PCT = getenv_float_any("SWING_BREAKOUT_STRONG_ATR_PCT", default=0.018)
+SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT = getenv_float_any("SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT", default=0.005)
+SWING_TREND_BREAKOUT_MIN_RANK_SCORE = getenv_float_any("SWING_TREND_BREAKOUT_MIN_RANK_SCORE", default=85.0)
+SWING_NEUTRAL_BREAKOUT_MIN_RANK_SCORE = getenv_float_any("SWING_NEUTRAL_BREAKOUT_MIN_RANK_SCORE", default=88.0)
+SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE = getenv_float_any("SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE", default=90.0)
 SWING_TREND_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_TREND_MIN_CLOSE_TO_HIGH_PCT", default=SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT)
 SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.98)))
 SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.99)))
@@ -1188,7 +1194,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-119-recovered-stop-restoration-final-fix"
+PATCH_VERSION = "patch-120-profitability-recalibration-phase-a"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -6768,6 +6774,27 @@ def _sma(values: list[float], length: int) -> float | None:
     win = values[-int(length):]
     return sum(win) / len(win) if win else None
 
+def _atr(highs: list[float], lows: list[float], closes: list[float], length: int = 14) -> float | None:
+    length = max(1, int(length))
+    if len(highs) < length + 1 or len(lows) < length + 1 or len(closes) < length + 1:
+        return None
+    start = len(closes) - length
+    trs: list[float] = []
+    for i in range(start, len(closes)):
+        hi = _safe_float(highs[i])
+        lo = _safe_float(lows[i])
+        prev_close = _safe_float(closes[i - 1])
+        trs.append(max(hi - lo, abs(hi - prev_close), abs(lo - prev_close)))
+    return (sum(trs) / len(trs)) if trs else None
+
+def _breakout_min_rank_score_for_mode(mode: str | None) -> float:
+    mode = str(mode or "trend").strip().lower() or "trend"
+    if mode == "defensive":
+        return float(SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE)
+    if mode == "neutral":
+        return float(SWING_NEUTRAL_BREAKOUT_MIN_RANK_SCORE)
+    return float(SWING_TREND_BREAKOUT_MIN_RANK_SCORE)
+
 def _safe_float(x, default=0.0):
     try:
         return float(x)
@@ -7181,6 +7208,8 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
     low = lows[-1]
     fast_ma = _sma(closes, SWING_FAST_MA_DAYS)
     slow_ma = _sma(closes, SWING_SLOW_MA_DAYS)
+    atr_14 = _atr(highs, lows, closes, length=14)
+    atr_pct = ((atr_14 or 0.0) / max(close, 1e-9)) if close else 0.0
     avg_dollar_vol_20 = sum((closes[-20+i] * vols[-20+i]) for i in range(20)) / 20.0
     ret_20 = (close / closes[-21] - 1.0) if len(closes) >= 21 and closes[-21] > 0 else 0.0
     breakout_ref = max(highs[-(SWING_BREAKOUT_LOOKBACK_DAYS+1):-1])
@@ -7216,13 +7245,25 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         score += 12
     else:
         candidate['rejection_reasons'].append('close_not_near_high')
-    if breakout_distance >= -float(thresholds.get('breakout_max_distance_pct') or 0.0):
+    effective_breakout_max_distance = float(thresholds.get('breakout_max_distance_pct') or 0.0)
+    strong_atr_relax_applied = False
+    if (
+        atr_pct >= float(SWING_BREAKOUT_STRONG_ATR_PCT)
+        and close_to_high >= float(thresholds.get('close_to_high_min_pct') or 0.0)
+        and ret_20 >= float(thresholds.get('return_20d_min_pct') or 0.0)
+    ):
+        effective_breakout_max_distance += float(SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT)
+        strong_atr_relax_applied = True
+    if breakout_distance >= -effective_breakout_max_distance:
         score += 18
     else:
         candidate['rejection_reasons'].append('too_far_below_breakout')
     score += max(0.0, min(10.0, range_pct * 100.0))
+    if atr_pct >= float(SWING_BREAKOUT_MIN_ATR_PCT):
+        score += min(5.0, atr_pct * 100.0)
     if bool(thresholds.get('require_index_alignment')) and index_aligned is False:
         candidate['rejection_reasons'].append('index_alignment_failed')
+    min_rank_score = _breakout_min_rank_score_for_mode(thresholds.get('mode'))
     candidate.update({
         'close': round(close, 4),
         'prev_close': round(prev_close, 4),
@@ -7230,11 +7271,15 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         'low': round(low, 4),
         'fast_ma': round(fast_ma, 4) if fast_ma else None,
         'slow_ma': round(slow_ma, 4) if slow_ma else None,
+        'atr_14': round(atr_14, 4) if atr_14 is not None else None,
+        'atr_pct': round(atr_pct * 100.0, 3) if atr_pct is not None else None,
         'avg_dollar_volume_20d': round(avg_dollar_vol_20, 2),
         'return_20d_pct': round(ret_20 * 100.0, 3),
         'close_to_high_pct': round(close_to_high * 100.0, 3),
         'breakout_level': round(breakout_ref, 4),
         'breakout_distance_pct': round(breakout_distance * 100.0, 3),
+        'effective_breakout_max_distance_pct': round(effective_breakout_max_distance * 100.0, 3),
+        'strong_atr_relax_applied': bool(strong_atr_relax_applied),
         'range_pct': round(range_pct * 100.0, 3),
         'stop_price': round(stop_price, 4),
         'target_price': round(target_price, 4),
@@ -7242,17 +7287,25 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         'requested_qty': round(requested_qty, 2),
         'estimated_qty': round(est_qty, 2),
         'rank_score': round(score, 4),
+        'min_rank_score': round(min_rank_score, 4),
         'signal': 'daily_breakout',
         'side': 'buy',
         'regime_mode': thresholds.get('mode'),
         'mode_thresholds': {
             'breakout_max_distance_pct': round(float(thresholds.get('breakout_max_distance_pct') or 0.0) * 100.0, 3),
+            'effective_breakout_max_distance_pct': round(float(effective_breakout_max_distance or 0.0) * 100.0, 3),
             'close_to_high_min_pct': round(float(thresholds.get('close_to_high_min_pct') or 0.0) * 100.0, 3),
             'return_20d_min_pct': round(float(thresholds.get('return_20d_min_pct') or 0.0) * 100.0, 3),
+            'min_atr_pct': round(float(SWING_BREAKOUT_MIN_ATR_PCT) * 100.0, 3),
+            'strong_atr_pct': round(float(SWING_BREAKOUT_STRONG_ATR_PCT) * 100.0, 3),
+            'distance_relax_pct': round(float(SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT) * 100.0, 3),
+            'min_rank_score': round(float(min_rank_score), 3),
             'require_trend': bool(thresholds.get('require_trend')),
             'require_index_alignment': bool(thresholds.get('require_index_alignment')),
         },
     })
+    if score < min_rank_score:
+        candidate['rejection_reasons'].append('rank_score_below_min')
     candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
     if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
         candidate['rejection_reasons'].append('insufficient_buying_power')
@@ -7405,7 +7458,7 @@ def _failure_reason_bucket(reason: str) -> str:
         return "market_structure"
     if reason in {"too_far_below_breakout", "close_not_near_high"}:
         return "entry_geometry"
-    if reason in {"trend_filter_failed", "return_20d_below_min"}:
+    if reason in {"trend_filter_failed", "return_20d_below_min", "rank_score_below_min"}:
         return "quality_trend"
     return "other"
 
@@ -7426,7 +7479,7 @@ def _failure_decomp_near_miss(item: dict | None) -> bool:
         if reason == "close_not_near_high":
             pct = _safe_float(item.get("close_to_high_pct"))
             return pct is not None and pct >= 98.5
-        if reason in {"trend_filter_failed", "return_20d_below_min"} and matched:
+        if reason in {"trend_filter_failed", "return_20d_below_min", "rank_score_below_min"} and matched:
             return True
     return False
 
@@ -7500,6 +7553,7 @@ def _candidate_fixed_reasons(item: dict | None) -> tuple[list[str], list[str]]:
         "close_not_near_high",
         "return_20d_below_min",
         "trend_filter_failed",
+        "rank_score_below_min",
     }
     fixed = [r for r in reasons if r not in dynamic and r not in market_gate]
     market = [r for r in reasons if r in market_gate]
