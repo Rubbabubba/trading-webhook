@@ -1188,7 +1188,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-116-recovered-stop-restoration-fix"
+PATCH_VERSION = "patch-119-recovered-stop-restoration-final-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -2529,32 +2529,13 @@ def _clear_inactive_execution_residue(runtime: dict | None = None, reason: str =
     return {'changed_symbols': changed_symbols, 'changed_count': len(changed_symbols)}
 
 
-def _normalize_recovered_plan_protection(reason: str = "runtime_check") -> dict:
-    changed_symbols: list[str] = []
-    for sym, plan in list((TRADE_PLAN or {}).items()):
-        if not isinstance(plan, dict):
-            continue
-        symbol = str(sym or plan.get("symbol") or "").upper()
-        if not symbol:
-            continue
-        qty_signed = 0.0
-        try:
-            qty_signed, _ = get_position(symbol)
-        except Exception:
-            qty_signed = 0.0
-        if _restore_recovered_plan_protection(plan, source=f"normalize:{reason}", broker_position_qty=qty_signed):
-            changed_symbols.append(symbol)
-    return {"changed_symbols": changed_symbols, "changed_count": len(changed_symbols)}
-
-
 def normalize_paper_lifecycle_current_state(reason: str = 'runtime_check') -> dict:
     runtime = _authoritative_runtime_state_snapshot()
     cleanup = _clear_inactive_execution_residue(runtime=runtime, reason=reason)
-    protection = _normalize_recovered_plan_protection(reason=reason)
-    if cleanup.get('changed_count') or protection.get('changed_count'):
+    if cleanup.get('changed_count'):
         runtime = _authoritative_runtime_state_snapshot()
     issues = _paper_lifecycle_integrity_issues(LAST_PAPER_LIFECYCLE, runtime)
-    normalized = {'checked': True, 'mutated': bool(cleanup.get('changed_count') or protection.get('changed_count')), 'issues': issues, 'execution_cleanup': cleanup, 'protection_cleanup': protection}
+    normalized = {'checked': True, 'mutated': bool(cleanup.get('changed_count')), 'issues': issues, 'execution_cleanup': cleanup}
     if not issues:
         return normalized
 
@@ -4153,7 +4134,7 @@ def _adopt_open_broker_order_as_plan(symbol: str, broker_order: dict, source: st
     plan["recovered"] = True
     plan["recovered_at"] = now_ny().isoformat()
     plan["broker_backed"] = True
-    _restore_recovered_plan_protection(plan, source="reconcile_adopt_open_order")
+    _restore_recovered_plan_protection(plan)
     _ensure_execution_lifecycle_plan(sym, plan)
     _apply_execution_lifecycle_reconcile(sym, plan, broker_order=order, broker_position_qty=0.0)
     TRADE_PLAN[sym] = plan
@@ -4470,9 +4451,6 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
     except Exception:
         live_qty = abs(float(qty_signed))
 
-    if _restore_recovered_plan_protection(plan, source="sync_trade_plan_with_broker", broker_position_qty=qty_signed):
-        out["changes"].append("recovered_stop_restored_from_initial")
-
     fill_avg = None
     try:
         fill_avg = float(order_status.get("filled_avg_price") or 0) or None
@@ -4505,7 +4483,7 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
             plan["requested_qty"] = float(plan.get("requested_qty") or plan.get("qty") or live_qty)
             actual_risk = round(abs(float(plan.get("entry_price") or fill_avg) - float(plan.get("stop_price") or 0)) * abs(float(plan.get("filled_qty") or live_qty)), 4)
             plan["actual_risk_dollars"] = actual_risk
-            if _restore_recovered_plan_protection(plan, source="sync_trade_plan_with_broker", broker_position_qty=qty_signed):
+            if _restore_recovered_plan_protection(plan):
                 out["changes"].append("recovered_stop_restored_from_initial")
             out["changes"].append("entry_price_reconciled_to_fill")
             if ENABLE_RISK_RECHECK_AFTER_FILL and RISK_DOLLARS > 0 and actual_risk > (float(RISK_DOLLARS) * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT), 0.0))):
@@ -4637,8 +4615,6 @@ def startup_restore_state() -> dict:
                 restored["recovered"] = True
                 restored["recovered_at"] = now_ny().isoformat()
                 restored["startup_restored"] = True
-                restored["broker_backed"] = True
-                _restore_recovered_plan_protection(restored, source="startup_restore_snapshot", broker_position_qty=1.0)
                 TRADE_PLAN[sym] = restored
                 state["recovered_from_snapshot_count"] += 1
 
@@ -7004,7 +6980,6 @@ def _has_pending_entry_plan(symbol: str) -> bool:
 
 
 # Run startup restore only after all helper functions it depends on are defined.
-startup_restore_state()
 
 
 def _normalize_correlation_groups_raw(raw: str) -> str:
@@ -11005,57 +10980,38 @@ def _plan_risk_per_share(plan: dict) -> float:
         return 0.0
 
 
-def _restore_recovered_plan_protection(plan: dict, *, source: str = "runtime", broker_position_qty: float | None = None) -> bool:
+def _restore_recovered_plan_protection(plan: dict) -> bool:
     if not isinstance(plan, dict):
         return False
-
-    recovery_like = bool(plan.get("recovered")) or bool(plan.get("startup_restored")) or bool(plan.get("broker_backed"))
-    if not recovery_like:
+    if not bool(plan.get("recovered")) or not bool(plan.get("broker_backed")):
         return False
-
+    if str(plan.get("execution_state") or "").lower() not in {"filled", "open", "partial", "partially_filled"} and str(plan.get("order_status") or "").lower() not in {"filled", "partially_filled"}:
+        return False
     side = str(plan.get("side") or "buy").lower()
     entry = _safe_float(plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price") or 0.0)
     current_stop = _safe_float(plan.get("stop_price") or 0.0)
     initial_stop = _safe_float(plan.get("initial_stop_price") or 0.0)
     if entry <= 0 or initial_stop <= 0:
         return False
-
-    has_live_position = False
-    try:
-        has_live_position = abs(float(broker_position_qty or 0.0)) > 0
-    except Exception:
-        has_live_position = False
-    if not has_live_position:
-        execution_state = str(plan.get("execution_state") or plan.get("lifecycle_state") or "").lower()
-        order_status = str(plan.get("order_status") or "").lower()
-        has_live_position = bool(plan.get("active")) or execution_state in {"filled", "open", "partial", "partially_filled"} or order_status in {"filled", "partially_filled"}
-    if not has_live_position:
-        return False
-
-    tol = 0.011
+    # Recovery should never silently neutralize initial protection by pinning stop to entry.
     if side == "buy":
-        current_invalid = (current_stop <= 0) or (current_stop >= entry - tol)
-        initial_protective = initial_stop < entry - tol
+        should_restore = abs(current_stop - entry) <= 0.011 and initial_stop < entry - 0.011
     else:
-        current_invalid = (current_stop <= 0) or (current_stop <= entry + tol)
-        initial_protective = initial_stop > entry + tol
-    if not (current_invalid and initial_protective):
+        should_restore = abs(current_stop - entry) <= 0.011 and initial_stop > entry + 0.011
+    if not should_restore:
         return False
-
-    restored_stop = round(initial_stop, 4)
-    if abs(current_stop - restored_stop) <= 0.0001:
-        return False
-
-    plan["stop_price"] = restored_stop
+    plan["stop_price"] = round(initial_stop, 4)
     qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or 0.0))
     risk_per_share = abs(entry - initial_stop)
     if risk_per_share > 0:
         plan["risk_per_share"] = round(risk_per_share, 4)
         if qty > 0:
             plan["actual_risk_dollars"] = round(risk_per_share * qty, 4)
-    plan["protection_restored_at"] = now_ny().isoformat()
-    plan["protection_restored_source"] = str(source or "runtime")
     return True
+
+
+# Run startup restore only after all helper functions it depends on are defined.
+startup_restore_state()
 
 
 def _swing_unrealized_r(plan: dict, px: float) -> float:
