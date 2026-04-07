@@ -800,6 +800,12 @@ SWING_TRAIL_AFTER_R = getenv_float_any("SWING_TRAIL_AFTER_R", default=1.25)
 SWING_TRAIL_LOOKBACK_DAYS = getenv_int_any("SWING_TRAIL_LOOKBACK_DAYS", default=3)
 SWING_STALL_EXIT_DAYS = getenv_int_any("SWING_STALL_EXIT_DAYS", default=3)
 SWING_STALL_MIN_R = getenv_float_any("SWING_STALL_MIN_R", default=0.25)
+SWING_PARTIAL_PROFIT_ENABLED = env_bool_any("SWING_PARTIAL_PROFIT_ENABLED", default=True)
+SWING_PARTIAL_PROFIT_R = getenv_float_any("SWING_PARTIAL_PROFIT_R", default=1.0)
+SWING_PARTIAL_PROFIT_FRACTION = getenv_float_any("SWING_PARTIAL_PROFIT_FRACTION", default=0.5)
+SWING_PARTIAL_PROFIT_MIN_QTY = getenv_float_any("SWING_PARTIAL_PROFIT_MIN_QTY", default=0.25)
+SWING_TIME_EXIT_GRACE_R = getenv_float_any("SWING_TIME_EXIT_GRACE_R", default=0.75)
+SWING_TIME_EXIT_GRACE_DAYS = getenv_int_any("SWING_TIME_EXIT_GRACE_DAYS", default=1)
 SWING_CANDIDATE_TTL_HOURS = getenv_int_any("SWING_CANDIDATE_TTL_HOURS", default=24)
 SWING_REGIME_FILTER_ENABLED = env_bool_any("SWING_REGIME_FILTER_ENABLED", default=True)
 SWING_REGIME_FAST_MA_DAYS = getenv_int_any("SWING_REGIME_FAST_MA_DAYS", default=20)
@@ -1195,7 +1201,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-121-winrate-quality-layer"
+PATCH_VERSION = "patch-122-exit-quality-layer"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4333,6 +4339,49 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
         pass
     return out
 
+
+
+
+def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", source: str = "system") -> dict:
+    qty_signed, _side = get_position(symbol)
+    if qty_signed == 0:
+        record_decision("EXIT", source, symbol, action="ignored", reason="no_open_position", exit_reason=reason)
+        return {"closed": False, "reason": "No open position"}
+
+    available_qty = abs(float(qty_signed or 0.0))
+    requested_qty = abs(float(qty_to_close or 0.0))
+    if available_qty <= 0 or requested_qty <= 0:
+        return {"closed": False, "reason": "Invalid partial quantity"}
+
+    qty = min(available_qty, requested_qty)
+    close_side = "sell" if qty_signed > 0 else "buy"
+
+    if not is_live_trading_permitted(source):
+        payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED, "partial": True}
+        record_decision("EXIT", source, symbol, side=close_side, action="dry_run_partial", reason=reason or "partial_dry_run", qty=qty)
+        try:
+            _record_paper_lifecycle("exit", "dry_run", symbol=symbol, details={"reason": reason or "partial_dry_run", "qty": qty, "source": source, "partial": True})
+        except Exception:
+            pass
+        return payload
+
+    order = submit_market_order(symbol, close_side, qty)
+    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": str(order.id), "partial": True}
+    record_decision("EXIT", source, symbol, side=close_side, action="partial_order_submitted", reason=reason or "partial_exit", qty=qty, order_id=str(order.id))
+    persist_positions_snapshot(reason="partial_close_submitted", extra={"symbol": symbol, "order_id": str(order.id), "exit_reason": reason, "source": source, "qty": qty})
+    try:
+        _record_paper_lifecycle("exit", "submitted", symbol=symbol, details={"reason": reason or "partial_exit", "qty": qty, "source": source, "order_id": str(order.id), "partial": True})
+    except Exception:
+        pass
+    try:
+        if isinstance(TRADE_PLAN.get(symbol), dict):
+            plan_ref = TRADE_PLAN[symbol]
+            plan_ref["last_exit_order_id"] = str(order.id)
+            plan_ref["last_partial_exit_order_id"] = str(order.id)
+            _transition_execution_lifecycle(plan_ref, symbol, "close_submitted", reason="partial_exit_submitted", details={"qty": qty, "source": source, "order_id": str(order.id), "partial": True})
+    except Exception:
+        pass
+    return out
 
 def list_open_positions_allowed() -> list[dict]:
     out = []
@@ -11083,8 +11132,9 @@ def _swing_unrealized_r(plan: dict, px: float) -> float:
     return (entry - float(px)) / risk
 
 
+
 def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
-    out = {"updates": {}, "flags": [], "stall_exit": False, "stall_r": 0.0}
+    out = {"updates": {}, "flags": [], "stall_exit": False, "stall_r": 0.0, "partial_profit_ready": False, "partial_profit_qty": 0.0, "time_exit_grace": False}
     if STRATEGY_MODE != "swing":
         return out
     side = str((plan or {}).get("side") or "buy").lower()
@@ -11099,6 +11149,17 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     out["stall_r"] = round(unrealized_r, 4)
 
     new_stop = current_stop
+    partial_taken = bool((plan or {}).get("partial_profit_taken"))
+    if SWING_PARTIAL_PROFIT_ENABLED and (not partial_taken) and unrealized_r >= float(SWING_PARTIAL_PROFIT_R):
+        qty_now = abs(_safe_float((plan or {}).get("filled_qty") or (plan or {}).get("qty") or 0.0))
+        fraction = min(max(float(SWING_PARTIAL_PROFIT_FRACTION), 0.05), 0.95)
+        qty_to_close = round(qty_now * fraction, 4)
+        if qty_to_close >= float(SWING_PARTIAL_PROFIT_MIN_QTY) and qty_to_close < qty_now:
+            out["partial_profit_ready"] = True
+            out["partial_profit_qty"] = qty_to_close
+            out["flags"].append("partial_profit_ready")
+            new_stop = max(new_stop, entry)
+
     if SWING_ENABLE_BREAK_EVEN_STOP and unrealized_r >= float(SWING_BREAK_EVEN_R):
         new_stop = max(new_stop, entry)
         out["flags"].append("break_even_armed")
@@ -11113,15 +11174,20 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
                 new_stop = max(new_stop, trail_stop)
                 out["flags"].append("trailing_stop_armed")
 
+    hold_days = plan_days_held(plan or {})
+    max_hold_days = int((plan or {}).get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0)
+    if max_hold_days > 0 and hold_days >= max_hold_days and unrealized_r >= float(SWING_TIME_EXIT_GRACE_R) and hold_days < (max_hold_days + max(int(SWING_TIME_EXIT_GRACE_DAYS), 0)):
+        out["time_exit_grace"] = True
+        out["flags"].append("time_exit_grace")
+        new_stop = max(new_stop, entry)
+
     if new_stop > current_stop + 1e-9:
         out["updates"]["stop_price"] = round(new_stop, 4)
 
-    hold_days = plan_days_held(plan or {})
-    if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R):
+    if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R) and not out.get("time_exit_grace"):
         out["stall_exit"] = True
         out["flags"].append("stall_exit_ready")
     return out
-
 
 def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta: dict | None = None, auth_payload: dict | None = None) -> dict:
     """Shared entry execution path for scanner + webhook."""
@@ -11554,8 +11620,24 @@ async def worker_exit(req: Request):
         hold_days = plan_days_held(plan)
         plan["days_held"] = hold_days
         max_hold_days = int(plan.get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0)
+
+        if dynamic_exit.get("partial_profit_ready") and not bool(plan.get("partial_profit_taken")):
+            qty_to_close = float(dynamic_exit.get("partial_profit_qty") or 0.0)
+            if qty_to_close > 0:
+                plan["last_exit_attempt_ts"] = now_ts
+                out = close_partial_position(symbol, qty_to_close, reason="partial_profit", source="worker_exit")
+                if out.get("closed") or out.get("dry_run"):
+                    plan["partial_profit_taken"] = True
+                    plan["partial_profit_taken_at"] = now_ny().isoformat()
+                    plan["partial_profit_qty"] = round(qty_to_close, 4)
+                    plan["partial_profit_trigger_r"] = round(float(dynamic_exit.get("stall_r") or 0.0), 4)
+                results.append({"symbol": symbol, "action": "partial_profit" if out.get("closed") else "partial_profit_skipped", "price": px, "qty": qty_to_close, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
+                continue
+
         if STRATEGY_MODE == "swing" and max_hold_days > 0 and hold_days >= max_hold_days:
-            if same_day_exit_blocked(plan, reason="time_exit"):
+            if dynamic_exit.get("time_exit_grace"):
+                results.append({"symbol": symbol, "action": "time_exit_grace", "days_held": hold_days, "price": px, "stop": stop_price, "take": take_price, "dynamic_flags": dynamic_exit.get("flags", [])})
+            elif same_day_exit_blocked(plan, reason="time_exit"):
                 results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": "time_exit", "days_held": hold_days})
             else:
                 plan["last_exit_attempt_ts"] = now_ts
