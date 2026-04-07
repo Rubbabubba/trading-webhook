@@ -783,6 +783,7 @@ SWING_FAST_MA_DAYS = getenv_int_any("SWING_FAST_MA_DAYS", default=10)
 SWING_SLOW_MA_DAYS = getenv_int_any("SWING_SLOW_MA_DAYS", default=20)
 SWING_MIN_PRICE = getenv_float_any("SWING_MIN_PRICE", default=15.0)
 SWING_MIN_AVG_DOLLAR_VOLUME = getenv_float_any("SWING_MIN_AVG_DOLLAR_VOLUME", default=20000000.0)
+SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME = getenv_float_any("SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME", default=30000000.0)
 SWING_MIN_20D_RETURN_PCT = getenv_float_any("SWING_MIN_20D_RETURN_PCT", default=0.03)
 SWING_MAX_CANDIDATES = getenv_int_any("SWING_MAX_CANDIDATES", default=10)
 SWING_MAX_NEW_ENTRIES_PER_DAY = getenv_int_any("SWING_MAX_NEW_ENTRIES_PER_DAY", default=1)
@@ -822,10 +823,10 @@ SWING_BREAKOUT_STRONG_ATR_PCT = getenv_float_any("SWING_BREAKOUT_STRONG_ATR_PCT"
 SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT = getenv_float_any("SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT", default=0.005)
 SWING_TREND_BREAKOUT_MIN_RANK_SCORE = getenv_float_any("SWING_TREND_BREAKOUT_MIN_RANK_SCORE", default=85.0)
 SWING_NEUTRAL_BREAKOUT_MIN_RANK_SCORE = getenv_float_any("SWING_NEUTRAL_BREAKOUT_MIN_RANK_SCORE", default=88.0)
-SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE = getenv_float_any("SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE", default=90.0)
+SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE = getenv_float_any("SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE", default=88.0)
 SWING_TREND_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_TREND_MIN_CLOSE_TO_HIGH_PCT", default=SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT)
 SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_NEUTRAL_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.98)))
-SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.99)))
+SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_CLOSE_TO_HIGH_PCT", default=max(0.0, min(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT, 0.9825)))
 PATCH68_PREVIOUS_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT = 0.01
 SHADOW_REGIME_MAX_CANDIDATES = max(1, getenv_int_any("SHADOW_REGIME_MAX_CANDIDATES", default=3))
 SWING_MAX_GROUP_POSITIONS = getenv_int_any("SWING_MAX_GROUP_POSITIONS", default=1)
@@ -1194,7 +1195,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-120-profitability-recalibration-phase-a"
+PATCH_VERSION = "patch-121-winrate-quality-layer"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -7232,6 +7233,8 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         score += min(20.0, avg_dollar_vol_20 / SWING_MIN_AVG_DOLLAR_VOLUME * 10.0)
     else:
         candidate['rejection_reasons'].append('avg_dollar_volume_below_min')
+    if avg_dollar_vol_20 < float(SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME):
+        candidate['rejection_reasons'].append('low_volume')
     trend_ok = bool(fast_ma and slow_ma and close > fast_ma > slow_ma)
     if trend_ok:
         score += 25
@@ -7299,6 +7302,7 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
             'min_atr_pct': round(float(SWING_BREAKOUT_MIN_ATR_PCT) * 100.0, 3),
             'strong_atr_pct': round(float(SWING_BREAKOUT_STRONG_ATR_PCT) * 100.0, 3),
             'distance_relax_pct': round(float(SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT) * 100.0, 3),
+            'quality_min_avg_dollar_volume': round(float(SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME), 2),
             'min_rank_score': round(float(min_rank_score), 3),
             'require_trend': bool(thresholds.get('require_trend')),
             'require_index_alignment': bool(thresholds.get('require_index_alignment')),
