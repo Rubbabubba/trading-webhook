@@ -1201,7 +1201,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-123-stop-sanity-regression-fix"
+PATCH_VERSION = "patch-124-exit-semantics-cleanup"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -11137,10 +11137,15 @@ def _swing_unrealized_r(plan: dict, px: float) -> float:
 
 
 
-def _sanitize_long_exit_levels(plan: dict, px: float) -> dict:
+
+def _normalize_long_exit_plan(plan: dict, px: float) -> dict:
     """
-    Keep long protective stops from arming above the live price.
-    This preserves profit-locking while preventing immediate false stop triggers.
+    Separate protective stop logic from profit-lock logic for long positions.
+
+    Fields:
+      - stop_price: protective stop (never above entry for longs)
+      - profit_lock_price: managed winner floor (may rise above entry, but must stay below market)
+      - take_price: final full target
     """
     out = {"changed": False, "flags": []}
     if not isinstance(plan, dict):
@@ -11149,54 +11154,109 @@ def _sanitize_long_exit_levels(plan: dict, px: float) -> dict:
     if side != "buy":
         return out
 
+    px = _safe_float(px)
     entry = _safe_float((plan or {}).get("entry_price") or (plan or {}).get("avg_fill_price") or 0.0)
     stop = _safe_float((plan or {}).get("stop_price") or 0.0)
     take = _safe_float((plan or {}).get("take_price") or 0.0)
+    profit_lock = _safe_float((plan or {}).get("profit_lock_price") or 0.0)
     risk = max(_plan_risk_per_share(plan or {}), 0.0)
-    px = _safe_float(px)
 
-    if stop <= 0 or px <= 0:
+    if px <= 0:
         return out
 
     clamp_tick = max(0.01, round(max(risk * 0.05, px * 0.0005), 4))
 
-    if stop >= px - 1e-9:
-        safe_stop = entry if entry > 0 and entry < px else max(min(stop, px - clamp_tick), 0.0)
-        safe_stop = min(safe_stop, px - clamp_tick)
+    # Migrate legacy above-entry stop into explicit profit-lock semantics.
+    if entry > 0 and stop > entry + 1e-9:
+        migrated_profit_lock = stop
+        profit_lock = max(profit_lock, migrated_profit_lock)
+        plan["profit_lock_price"] = round(profit_lock, 4)
+        plan["stop_price"] = round(entry, 4)
+        stop = entry
+        out["changed"] = True
+        out["flags"].append("migrated_above_entry_stop_to_profit_lock")
+
+    # Protective stop for long positions should never exceed entry.
+    if entry > 0 and stop > entry + 1e-9:
+        plan["stop_price"] = round(entry, 4)
+        stop = entry
+        out["changed"] = True
+        out["flags"].append("protective_stop_capped_at_entry")
+
+    # Keep protective stop from arming above the live price.
+    if stop > 0 and stop >= px - 1e-9:
+        safe_stop = min(stop, (entry if entry > 0 else px) , px - clamp_tick)
         if take > 0:
             safe_stop = min(safe_stop, take - 0.01)
-        if safe_stop > 0 and safe_stop < stop - 1e-9:
+        safe_stop = max(safe_stop, 0.0)
+        if safe_stop > 0 and abs(safe_stop - stop) > 1e-9:
             plan["stop_price"] = round(safe_stop, 4)
+            stop = safe_stop
             out["changed"] = True
-            out["flags"].append("stop_clamped_below_market")
+            out["flags"].append("protective_stop_clamped_below_market")
 
-    stop = _safe_float((plan or {}).get("stop_price") or 0.0)
-    if take > 0 and stop >= take - 1e-9:
-        safe_stop = min(max(entry, 0.0), take - 0.01) if entry > 0 else max(take - 0.01, 0.0)
-        if safe_stop > 0 and safe_stop < stop - 1e-9:
-            plan["stop_price"] = round(safe_stop, 4)
+    # Managed profit-lock may rise above entry, but must remain below market and target.
+    if profit_lock > 0 and profit_lock >= px - 1e-9:
+        safe_floor = px - clamp_tick
+        if take > 0:
+            safe_floor = min(safe_floor, take - 0.01)
+        safe_floor = max(safe_floor, entry if entry > 0 else 0.0)
+        if safe_floor > 0 and abs(safe_floor - profit_lock) > 1e-9:
+            plan["profit_lock_price"] = round(safe_floor, 4)
+            profit_lock = safe_floor
             out["changed"] = True
-            out["flags"].append("stop_clamped_below_take")
+            out["flags"].append("profit_lock_clamped_below_market")
+
+    if take > 0 and stop > 0 and stop >= take - 1e-9:
+        safe_stop = min(entry if entry > 0 else take - 0.01, take - 0.01)
+        safe_stop = max(safe_stop, 0.0)
+        if safe_stop > 0 and abs(safe_stop - stop) > 1e-9:
+            plan["stop_price"] = round(safe_stop, 4)
+            stop = safe_stop
+            out["changed"] = True
+            out["flags"].append("protective_stop_clamped_below_take")
+
+    if take > 0 and profit_lock > 0 and profit_lock >= take - 1e-9:
+        safe_floor = max(entry if entry > 0 else 0.0, take - 0.01)
+        safe_floor = min(safe_floor, take - 0.01)
+        if safe_floor > 0 and abs(safe_floor - profit_lock) > 1e-9:
+            plan["profit_lock_price"] = round(safe_floor, 4)
+            out["changed"] = True
+            out["flags"].append("profit_lock_clamped_below_take")
+
     return out
 
 
 def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
-    out = {"updates": {}, "flags": [], "stall_exit": False, "stall_r": 0.0, "partial_profit_ready": False, "partial_profit_qty": 0.0, "time_exit_grace": False}
+    out = {
+        "updates": {},
+        "flags": [],
+        "stall_exit": False,
+        "stall_r": 0.0,
+        "partial_profit_ready": False,
+        "partial_profit_qty": 0.0,
+        "time_exit_grace": False,
+    }
     if STRATEGY_MODE != "swing":
         return out
     side = str((plan or {}).get("side") or "buy").lower()
     if side != "buy":
         return out
+
     entry = _safe_float((plan or {}).get("entry_price") or 0.0)
     current_stop = _safe_float((plan or {}).get("stop_price") or 0.0)
+    current_profit_lock = _safe_float((plan or {}).get("profit_lock_price") or 0.0)
     risk = _plan_risk_per_share(plan or {})
     if entry <= 0 or risk <= 0:
         return out
+
     unrealized_r = _swing_unrealized_r(plan or {}, float(px))
     out["stall_r"] = round(unrealized_r, 4)
 
-    new_stop = current_stop
+    proposed_stop = current_stop
+    proposed_profit_lock = current_profit_lock
     partial_taken = bool((plan or {}).get("partial_profit_taken"))
+
     if SWING_PARTIAL_PROFIT_ENABLED and (not partial_taken) and unrealized_r >= float(SWING_PARTIAL_PROFIT_R):
         qty_now = abs(_safe_float((plan or {}).get("filled_qty") or (plan or {}).get("qty") or 0.0))
         fraction = min(max(float(SWING_PARTIAL_PROFIT_FRACTION), 0.05), 0.95)
@@ -11205,10 +11265,10 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
             out["partial_profit_ready"] = True
             out["partial_profit_qty"] = qty_to_close
             out["flags"].append("partial_profit_ready")
-            new_stop = max(new_stop, entry)
+            proposed_stop = max(proposed_stop, entry)
 
     if SWING_ENABLE_BREAK_EVEN_STOP and unrealized_r >= float(SWING_BREAK_EVEN_R):
-        new_stop = max(new_stop, entry)
+        proposed_stop = max(proposed_stop, entry)
         out["flags"].append("break_even_armed")
 
     if SWING_ENABLE_TRAILING_STOP and unrealized_r >= float(SWING_TRAIL_AFTER_R):
@@ -11218,24 +11278,34 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
             lows = [_safe_float(b.get("low") or 0.0) for b in bars[-lookback:]]
             trail_stop = max(lows) if lows else 0.0
             if trail_stop > 0:
-                new_stop = max(new_stop, trail_stop)
-                out["flags"].append("trailing_stop_armed")
+                if trail_stop > entry:
+                    proposed_profit_lock = max(proposed_profit_lock, trail_stop)
+                    out["flags"].append("profit_lock_armed")
+                else:
+                    proposed_stop = max(proposed_stop, trail_stop)
+                    out["flags"].append("trailing_stop_armed")
 
     hold_days = plan_days_held(plan or {})
     max_hold_days = int((plan or {}).get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0)
     if max_hold_days > 0 and hold_days >= max_hold_days and unrealized_r >= float(SWING_TIME_EXIT_GRACE_R) and hold_days < (max_hold_days + max(int(SWING_TIME_EXIT_GRACE_DAYS), 0)):
         out["time_exit_grace"] = True
         out["flags"].append("time_exit_grace")
-        new_stop = max(new_stop, entry)
+        proposed_stop = max(proposed_stop, entry)
 
     proposed = dict(plan or {})
-    proposed["stop_price"] = round(new_stop, 4)
-    sanity = _sanitize_long_exit_levels(proposed, float(px))
+    proposed["stop_price"] = round(proposed_stop, 4)
+    if proposed_profit_lock > 0:
+        proposed["profit_lock_price"] = round(proposed_profit_lock, 4)
+    sanity = _normalize_long_exit_plan(proposed, float(px))
     if sanity.get("flags"):
         out["flags"].extend([f for f in sanity.get("flags", []) if f not in out["flags"]])
+
     sane_stop = _safe_float(proposed.get("stop_price") or 0.0)
-    if sane_stop > current_stop + 1e-9:
+    sane_profit_lock = _safe_float(proposed.get("profit_lock_price") or 0.0)
+    if sane_stop > current_stop + 1e-9 or (current_stop > 0 and sane_stop < current_stop - 1e-9 and sane_stop <= entry + 1e-9):
         out["updates"]["stop_price"] = round(sane_stop, 4)
+    if sane_profit_lock > current_profit_lock + 1e-9:
+        out["updates"]["profit_lock_price"] = round(sane_profit_lock, 4)
 
     if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R) and not out.get("time_exit_grace"):
         out["stall_exit"] = True
@@ -11662,7 +11732,7 @@ async def worker_exit(req: Request):
                 plan.update(dynamic_exit.get("updates") or {})
                 stop_price = float(plan.get("stop_price"))
                 take_price = float(plan.get("take_price"))
-            level_sanity = _sanitize_long_exit_levels(plan, float(px))
+            level_sanity = _normalize_long_exit_plan(plan, float(px))
             if level_sanity.get("flags"):
                 dynamic_exit.setdefault("flags", [])
                 dynamic_exit["flags"].extend([f for f in level_sanity.get("flags", []) if f not in dynamic_exit.get("flags", [])])
@@ -11670,12 +11740,16 @@ async def worker_exit(req: Request):
                 stop_price = float(plan.get("stop_price"))
                 take_price = float(plan.get("take_price"))
 
+        profit_lock_price = float(plan.get("profit_lock_price") or 0.0)
+
         if entry_side == "buy":
-            hit_stop = px <= stop_price
-            hit_take = px >= take_price
+            hit_stop = stop_price > 0 and px <= stop_price
+            hit_profit_lock = profit_lock_price > 0 and px <= profit_lock_price
+            hit_take = take_price > 0 and px >= take_price
         else:
-            hit_stop = px >= stop_price
-            hit_take = px <= take_price
+            hit_stop = stop_price > 0 and px >= stop_price
+            hit_profit_lock = False
+            hit_take = take_price > 0 and px <= take_price
 
         hold_days = plan_days_held(plan)
         plan["days_held"] = hold_days
@@ -11723,9 +11797,9 @@ async def worker_exit(req: Request):
                 results.append({"symbol": symbol, "action": f"{reason}_failed", "price": px, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
             continue
 
-        if hit_stop or hit_take:
+        if hit_stop or hit_profit_lock or hit_take:
             plan["last_exit_attempt_ts"] = now_ts
-            reason = "stop" if hit_stop else "target"
+            reason = "stop" if hit_stop else ("profit_lock_stop" if hit_profit_lock else "target")
             if same_day_exit_blocked(plan, reason=reason):
                 results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": reason, "days_held": hold_days})
                 continue
@@ -11733,9 +11807,9 @@ async def worker_exit(req: Request):
             if out.get("closed"):
                 plan["active"] = False
                 _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
-                results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
+                results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "profit_lock": profit_lock_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
             else:
-                results.append({"symbol": symbol, "action": f"exit_{reason}_failed", "price": px, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
+                results.append({"symbol": symbol, "action": f"exit_{reason}_failed", "price": px, "days_held": hold_days, "profit_lock": profit_lock_price, "dynamic_flags": dynamic_exit.get("flags", []), **out})
         else:
             results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r")})
 
