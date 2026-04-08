@@ -67,6 +67,7 @@ def main() -> None:
     jitter_sec = max(0, getenv_int("SCAN_JITTER_SEC", 0))
     startup_retries = max(1, getenv_int("SCAN_STARTUP_RETRIES", 3))
     startup_retry_delay_sec = max(1, getenv_int("SCAN_STARTUP_RETRY_DELAY_SEC", 10))
+    sleep_heartbeat_sec = max(15, getenv_int("SCAN_SLEEP_HEARTBEAT_SEC", 60))
     worker_secret = (os.getenv("WORKER_SECRET") or os.getenv("INTERNAL_API_KEY") or "").strip()
     scan_payload: dict = {}
     if worker_secret:
@@ -76,14 +77,14 @@ def main() -> None:
         v = os.getenv(envk)
         if v is not None and v != "":
             scan_payload[k] = v
-    state = {"boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec}
+    state = {"boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec}
     def heartbeat(event: str, status: str = "ok", details: dict | None = None) -> None:
         payload = {"worker_secret": worker_secret, "event": event, "status": status, "details": {**state, **(details or {})}}
         try:
             post_json(heartbeat_url, payload, timeout=min(timeout, 15))
         except Exception as e:
             log(f"heartbeat_error event={event} err={e!r}")
-    log(f"boot url={url} base_url={base_url} interval_sec={interval} timeout_sec={timeout} run_on_start={run_on_start} jitter_sec={jitter_sec} startup_retries={startup_retries} startup_retry_delay_sec={startup_retry_delay_sec} has_worker_secret={bool(worker_secret)} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
+    log(f"boot url={url} base_url={base_url} interval_sec={interval} timeout_sec={timeout} run_on_start={run_on_start} jitter_sec={jitter_sec} startup_retries={startup_retries} startup_retry_delay_sec={startup_retry_delay_sec} sleep_heartbeat_sec={sleep_heartbeat_sec} has_worker_secret={bool(worker_secret)} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
     heartbeat("boot", "ok", {"health_url": health_url})
     try:
         status, body = get_text(health_url, timeout=min(timeout, 15))
@@ -147,7 +148,13 @@ def main() -> None:
         next_run_iso = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() + sleep_for, tz=timezone.utc).isoformat()
         log(f"sleep sec={sleep_for}")
         heartbeat("sleep", "ok", {"sleep_sec": sleep_for, "next_run_estimate_utc": next_run_iso})
-        time.sleep(sleep_for)
+        remaining_sleep = sleep_for
+        while remaining_sleep > 0:
+            chunk = min(remaining_sleep, sleep_heartbeat_sec)
+            time.sleep(chunk)
+            remaining_sleep -= chunk
+            if remaining_sleep > 0:
+                heartbeat("heartbeat", "ok", {"sleep_sec": sleep_for, "sleep_remaining_sec": remaining_sleep, "next_run_estimate_utc": next_run_iso})
 
 if __name__ == "__main__":
     main()
