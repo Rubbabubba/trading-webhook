@@ -734,7 +734,7 @@ SYSTEM_NAME = getenv_any("SYSTEM_NAME", default="trading-webhook")
 ENV_NAME = getenv_any("ENV_NAME", default="prod")
 STRATEGY_MODE = getenv_any("STRATEGY_MODE", default="intraday").strip().lower() or "intraday"
 LIVE_TRADING_ENABLED = env_bool_any("LIVE_TRADING_ENABLED", default="false")
-SYSTEM_RELEASE_STAGE = str(getenv_any("SYSTEM_RELEASE_STAGE", default="paper") or "paper").strip().lower()
+SYSTEM_RELEASE_STAGE = str(getenv_any("SYSTEM_RELEASE_STAGE", "RELEASE_STAGE", default="paper") or "paper").strip().lower()
 RELEASE_GATE_ENFORCED = env_bool("RELEASE_GATE_ENFORCED", True)
 RELEASE_ALLOWED_LIVE_STAGES = {s.strip().lower() for s in str(getenv_any("RELEASE_ALLOWED_LIVE_STAGES", default="live_guarded") or "live_guarded").split(",") if s.strip()}
 RELEASE_STATE_PATH = getenv_any("RELEASE_STATE_PATH", default="/var/data/release_state.json")
@@ -757,7 +757,7 @@ RELEASE_PROMOTION_ARMING_IGNORE_CONDITIONS = {
     if s.strip()
 }
 RELEASE_STATE_HISTORY_LIMIT = int(getenv_any("RELEASE_STATE_HISTORY_LIMIT", default="50"))
-RELEASE_VALID_STAGES = {"paper", "guarded_live_eligible", "live_guarded", "emergency_disabled"}
+RELEASE_VALID_STAGES = {"paper", "guarded_live_eligible", "live_guarded", "live", "emergency_disabled"}
 RELEASE_REQUIRE_REGIME_COMPLETE = env_bool("RELEASE_REQUIRE_REGIME_COMPLETE", True)
 RELEASE_REQUIRE_REGIME_FAVORABLE = env_bool("RELEASE_REQUIRE_REGIME_FAVORABLE", True)
 RELEASE_REQUIRE_RECENT_MARKET_SCAN = env_bool("RELEASE_REQUIRE_RECENT_MARKET_SCAN", True)
@@ -1201,7 +1201,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-126-worker-readiness-and-restore-classification-fix"
+PATCH_VERSION = "patch-127-release-authority-live-stage-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -6063,6 +6063,8 @@ def _normalize_release_stage(stage: object, default: str = "paper") -> str:
     aliases = {
         "eligible": "guarded_live_eligible",
         "guarded": "live_guarded",
+        "prod": "live",
+        "production": "live",
         "disabled": "emergency_disabled",
         "emergency_disable": "emergency_disabled",
         "emergency": "emergency_disabled",
@@ -6101,8 +6103,10 @@ def _sanitize_release_state(payload: dict) -> dict:
     state = _default_release_state()
     if not isinstance(payload, dict):
         return state
-    configured_stage = _normalize_release_stage(payload.get("configured_stage") or SYSTEM_RELEASE_STAGE, default=state["configured_stage"])
-    current_stage = _normalize_release_stage(payload.get("current_stage") or configured_stage, default=configured_stage)
+    configured_stage = _normalize_release_stage(SYSTEM_RELEASE_STAGE, default=state["configured_stage"])
+    payload_configured_stage = _normalize_release_stage(payload.get("configured_stage") or configured_stage, default=configured_stage)
+    payload_current_stage = _normalize_release_stage(payload.get("current_stage") or payload_configured_stage, default=payload_configured_stage)
+    current_stage = configured_stage if configured_stage == "live" else payload_current_stage
     state.update({
         "configured_stage": configured_stage,
         "current_stage": current_stage,
@@ -6110,8 +6114,8 @@ def _sanitize_release_state(payload: dict) -> dict:
         "last_transition_ny": payload.get("last_transition_ny") or state.get("last_transition_ny"),
         "last_transition_reason": str(payload.get("last_transition_reason") or state.get("last_transition_reason") or ""),
         "last_transition_actor": str(payload.get("last_transition_actor") or state.get("last_transition_actor") or "system"),
-        "approval_status": str(payload.get("approval_status") or ("approved" if current_stage == "live_guarded" else "not_required")),
-        "approval_armed": bool(payload.get("approval_armed") or (current_stage == "live_guarded")),
+        "approval_status": str(payload.get("approval_status") or ("approved" if current_stage in {"live_guarded", "live"} else "not_required")),
+        "approval_armed": bool(payload.get("approval_armed") or (current_stage in {"live_guarded", "live"})),
     })
     history = []
     for item in list(payload.get("history") or [])[-max(1, RELEASE_STATE_HISTORY_LIMIT):]:
@@ -6165,9 +6169,10 @@ def persist_release_state(reason: str = "") -> bool:
 
 def _release_transition_allowed(current_stage: str, target_stage: str) -> bool:
     allowed = {
-        "paper": {"paper", "guarded_live_eligible", "live_guarded", "emergency_disabled"},
-        "guarded_live_eligible": {"paper", "guarded_live_eligible", "live_guarded", "emergency_disabled"},
-        "live_guarded": {"paper", "live_guarded", "emergency_disabled"},
+        "paper": {"paper", "guarded_live_eligible", "live_guarded", "live", "emergency_disabled"},
+        "guarded_live_eligible": {"paper", "guarded_live_eligible", "live_guarded", "live", "emergency_disabled"},
+        "live_guarded": {"paper", "live_guarded", "live", "emergency_disabled"},
+        "live": {"paper", "live_guarded", "live", "emergency_disabled"},
         "emergency_disabled": {"paper", "emergency_disabled"},
     }
     return target_stage in allowed.get(current_stage, {"paper"})
@@ -6175,7 +6180,7 @@ def _release_transition_allowed(current_stage: str, target_stage: str) -> bool:
 
 def _manual_promotion_unmet_conditions(target_stage: str, preflight: dict | None = None) -> list[str]:
     target_stage = _normalize_release_stage(target_stage, default="paper")
-    if target_stage not in {"guarded_live_eligible", "live_guarded"}:
+    if target_stage not in {"guarded_live_eligible", "live_guarded", "live"}:
         return list((preflight or {}).get("unmet_conditions") or [])
     base_unmet = [str(x or "").strip().lower() for x in list((preflight or {}).get("unmet_conditions") or []) if str(x or "").strip()]
     if not RELEASE_PROMOTION_MANUAL_ARM_ALLOWED:
@@ -6188,7 +6193,11 @@ def _release_workflow_snapshot(include_gate: bool = True) -> dict:
     configured_stage = _normalize_release_stage(SYSTEM_RELEASE_STAGE, default="paper")
     state = _sanitize_release_state(RELEASE_STATE or {})
     persisted_stage = _normalize_release_stage(state.get("current_stage") or configured_stage, default=configured_stage)
-    effective_stage = persisted_stage if RELEASE_WORKFLOW_ENFORCED else configured_stage
+    if configured_stage == "live":
+        effective_stage = "live"
+        persisted_stage = "live"
+    else:
+        effective_stage = persisted_stage if RELEASE_WORKFLOW_ENFORCED else configured_stage
     history = list(state.get("history") or [])[-max(1, RELEASE_STATE_HISTORY_LIMIT):]
     out = {
         "workflow_enforced": bool(RELEASE_WORKFLOW_ENFORCED),
@@ -6218,6 +6227,7 @@ def _release_workflow_snapshot(include_gate: bool = True) -> dict:
         live_execution_unmet = _normalize_worker_unmet_conditions(live_execution_unmet, worker_status_now)
         eligible_arm_unmet = _manual_promotion_unmet_conditions("guarded_live_eligible", {"unmet_conditions": eligible_execution_unmet})
         live_arm_unmet = _manual_promotion_unmet_conditions("live_guarded", {"unmet_conditions": live_execution_unmet})
+        direct_live_unmet = _manual_promotion_unmet_conditions("live", {"unmet_conditions": live_execution_unmet})
         out["promotion_targets"] = {
             "guarded_live_eligible": {
                 "ready": len(eligible_execution_unmet) == 0,
@@ -6231,8 +6241,14 @@ def _release_workflow_snapshot(include_gate: bool = True) -> dict:
                 "arm_ready": len(live_arm_unmet) == 0,
                 "arm_unmet_conditions": live_arm_unmet,
             },
+            "live": {
+                "ready": len(live_execution_unmet) == 0,
+                "unmet_conditions": live_execution_unmet,
+                "arm_ready": len(direct_live_unmet) == 0,
+                "arm_unmet_conditions": direct_live_unmet,
+            },
         }
-        out["live_activation_armed"] = bool(effective_stage == "live_guarded" and out.get("approval_armed") and LIVE_TRADING_ENABLED and (not DRY_RUN))
+        out["live_activation_armed"] = bool(effective_stage in {"live_guarded", "live"} and (effective_stage == "live" or out.get("approval_armed")) and LIVE_TRADING_ENABLED and (not DRY_RUN))
     return out
 
 
@@ -6369,7 +6385,7 @@ def release_stage_transition(target_stage: str, actor: str = "system", reason: s
     current_stage = _normalize_release_stage(current.get("current_stage") or SYSTEM_RELEASE_STAGE, default="paper")
     if not _release_transition_allowed(current_stage, target_stage):
         raise HTTPException(status_code=400, detail=f"Transition not allowed: {current_stage} -> {target_stage}")
-    if RELEASE_PROMOTION_REQUIRE_READINESS and target_stage in {"guarded_live_eligible", "live_guarded"}:
+    if RELEASE_PROMOTION_REQUIRE_READINESS and target_stage in {"guarded_live_eligible", "live_guarded", "live"}:
         preflight = _release_workflow_snapshot(include_gate=True).get("promotion_targets", {}).get(target_stage, {})
         unmet = _manual_promotion_unmet_conditions(target_stage, preflight)
         if unmet:
@@ -6402,8 +6418,8 @@ def release_stage_transition(target_stage: str, actor: str = "system", reason: s
         "last_transition_ny": now_ny_iso,
         "last_transition_reason": entry["reason"],
         "last_transition_actor": entry["actor"],
-        "approval_status": "approved" if target_stage == "live_guarded" else ("not_required" if target_stage == "paper" else str(current.get("approval_status") or "not_required")),
-        "approval_armed": bool(target_stage == "live_guarded"),
+        "approval_status": "approved" if target_stage in {"live_guarded", "live"} else ("not_required" if target_stage == "paper" else str(current.get("approval_status") or "not_required")),
+        "approval_armed": bool(target_stage in {"live_guarded", "live"}),
         "history": history[-max(1, RELEASE_STATE_HISTORY_LIMIT):],
         "restored_from_state": False,
     })
