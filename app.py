@@ -1201,7 +1201,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-125-dry-run-lifecycle-isolation-restore-classification-cleanup"
+PATCH_VERSION = "patch-126-worker-readiness-and-restore-classification-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4649,7 +4649,11 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
 
 def _restore_snapshot_plan_classification(plan: dict) -> dict:
     plan = dict(plan or {})
-    was_recovered = bool(plan.get("recovered"))
+    signal = str(plan.get("signal") or "").strip().upper()
+    strategy_name = str(plan.get("strategy_name") or "").strip().upper()
+    explicit_class = str(plan.get("startup_restore_classification") or "").strip().lower()
+    looks_recovered = signal == "RECOVERED" or strategy_name == "RECOVERED" or explicit_class == "recovered"
+    was_recovered = bool(plan.get("recovered")) and looks_recovered
     if was_recovered:
         plan["recovered"] = True
         plan["startup_restore_classification"] = "recovered"
@@ -4660,6 +4664,16 @@ def _restore_snapshot_plan_classification(plan: dict) -> dict:
     plan["startup_restored"] = True
     plan["broker_backed"] = True
     return plan
+
+
+def _normalize_worker_unmet_conditions(unmet: list[str], worker_status: dict | None = None) -> list[str]:
+    items = [str(x or "").strip() for x in list(unmet or []) if str(x or "").strip()]
+    ws = dict(worker_status or {})
+    if bool(ws.get("scanner_running")):
+        items = [x for x in items if x != "scanner_worker_not_ready"]
+    if bool(ws.get("exit_worker_running")):
+        items = [x for x in items if x != "exit_worker_not_ready"]
+    return list(dict.fromkeys(items))
 
 def startup_restore_state() -> dict:
     """
@@ -4706,8 +4720,8 @@ def startup_restore_state() -> dict:
                 restored = _restore_snapshot_plan_classification(restored)
                 if restored.get("recovered"):
                     restored["recovered_at"] = now_ny().isoformat()
+                    state["recovered_from_snapshot_count"] += 1
                 TRADE_PLAN[sym] = restored
-                state["recovered_from_snapshot_count"] += 1
 
         rec_actions = reconcile_trade_plans_from_alpaca()
         state["reconcile_actions"] = rec_actions
@@ -6199,6 +6213,9 @@ def _release_workflow_snapshot(include_gate: bool = True) -> dict:
         target_eligible = _build_release_gate_snapshot("guarded_live_eligible", include_stage_check=False)
         eligible_execution_unmet = list(target_eligible.get("unmet_conditions") or [])
         live_execution_unmet = list(target_live.get("unmet_conditions") or []) + (["live_env_not_armed"] if (DRY_RUN or (not LIVE_TRADING_ENABLED)) else [])
+        worker_status_now = _worker_status_snapshot()
+        eligible_execution_unmet = _normalize_worker_unmet_conditions(eligible_execution_unmet, worker_status_now)
+        live_execution_unmet = _normalize_worker_unmet_conditions(live_execution_unmet, worker_status_now)
         eligible_arm_unmet = _manual_promotion_unmet_conditions("guarded_live_eligible", {"unmet_conditions": eligible_execution_unmet})
         live_arm_unmet = _manual_promotion_unmet_conditions("live_guarded", {"unmet_conditions": live_execution_unmet})
         out["promotion_targets"] = {
@@ -6282,6 +6299,7 @@ def _build_release_gate_snapshot(stage: str, include_stage_check: bool = True) -
         unmet.append("stale_active_plans_present")
     if reconcile.get("partial_fill_plan_symbols"):
         unmet.append("partial_fill_aging_present")
+    unmet = _normalize_worker_unmet_conditions(unmet, worker_status)
 
     freshness = freshness_snapshot()
     continuity = {}
@@ -6434,6 +6452,10 @@ def release_gate_status() -> dict:
     stage = _normalize_release_stage(workflow.get("effective_stage") or SYSTEM_RELEASE_STAGE, default="paper")
     status = _build_release_gate_snapshot(stage, include_stage_check=True)
     paper_gate = _paper_proof_gate_snapshot()
+    current_worker_status = _worker_status_snapshot()
+    status["worker_status"] = current_worker_status
+    status["unmet_conditions"] = _normalize_worker_unmet_conditions(status.get("unmet_conditions") or [], current_worker_status)
+    status["go_live_eligible"] = len(status.get("unmet_conditions") or []) == 0
     status.update({
         "system_release_stage": stage,
         "configured_release_stage": workflow.get("configured_stage"),
