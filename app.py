@@ -1201,7 +1201,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-122-exit-quality-layer"
+PATCH_VERSION = "patch-123-stop-sanity-regression-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4317,7 +4317,10 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
             pass
         try:
             if isinstance(TRADE_PLAN.get(symbol), dict):
-                _transition_execution_lifecycle(TRADE_PLAN[symbol], symbol, "close_submitted", reason="exit_dry_run", details={"qty": qty, "source": source})
+                plan_ref = TRADE_PLAN[symbol]
+                plan_ref["last_exit_signal_reason"] = reason or "dry_run"
+                plan_ref["last_exit_signal_source"] = source
+                plan_ref["last_exit_signal_ts"] = now_ny().isoformat()
         except Exception:
             pass
         return payload
@@ -11133,6 +11136,50 @@ def _swing_unrealized_r(plan: dict, px: float) -> float:
 
 
 
+
+def _sanitize_long_exit_levels(plan: dict, px: float) -> dict:
+    """
+    Keep long protective stops from arming above the live price.
+    This preserves profit-locking while preventing immediate false stop triggers.
+    """
+    out = {"changed": False, "flags": []}
+    if not isinstance(plan, dict):
+        return out
+    side = str((plan or {}).get("side") or "buy").lower()
+    if side != "buy":
+        return out
+
+    entry = _safe_float((plan or {}).get("entry_price") or (plan or {}).get("avg_fill_price") or 0.0)
+    stop = _safe_float((plan or {}).get("stop_price") or 0.0)
+    take = _safe_float((plan or {}).get("take_price") or 0.0)
+    risk = max(_plan_risk_per_share(plan or {}), 0.0)
+    px = _safe_float(px)
+
+    if stop <= 0 or px <= 0:
+        return out
+
+    clamp_tick = max(0.01, round(max(risk * 0.05, px * 0.0005), 4))
+
+    if stop >= px - 1e-9:
+        safe_stop = entry if entry > 0 and entry < px else max(min(stop, px - clamp_tick), 0.0)
+        safe_stop = min(safe_stop, px - clamp_tick)
+        if take > 0:
+            safe_stop = min(safe_stop, take - 0.01)
+        if safe_stop > 0 and safe_stop < stop - 1e-9:
+            plan["stop_price"] = round(safe_stop, 4)
+            out["changed"] = True
+            out["flags"].append("stop_clamped_below_market")
+
+    stop = _safe_float((plan or {}).get("stop_price") or 0.0)
+    if take > 0 and stop >= take - 1e-9:
+        safe_stop = min(max(entry, 0.0), take - 0.01) if entry > 0 else max(take - 0.01, 0.0)
+        if safe_stop > 0 and safe_stop < stop - 1e-9:
+            plan["stop_price"] = round(safe_stop, 4)
+            out["changed"] = True
+            out["flags"].append("stop_clamped_below_take")
+    return out
+
+
 def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     out = {"updates": {}, "flags": [], "stall_exit": False, "stall_r": 0.0, "partial_profit_ready": False, "partial_profit_qty": 0.0, "time_exit_grace": False}
     if STRATEGY_MODE != "swing":
@@ -11181,8 +11228,14 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         out["flags"].append("time_exit_grace")
         new_stop = max(new_stop, entry)
 
-    if new_stop > current_stop + 1e-9:
-        out["updates"]["stop_price"] = round(new_stop, 4)
+    proposed = dict(plan or {})
+    proposed["stop_price"] = round(new_stop, 4)
+    sanity = _sanitize_long_exit_levels(proposed, float(px))
+    if sanity.get("flags"):
+        out["flags"].extend([f for f in sanity.get("flags", []) if f not in out["flags"]])
+    sane_stop = _safe_float(proposed.get("stop_price") or 0.0)
+    if sane_stop > current_stop + 1e-9:
+        out["updates"]["stop_price"] = round(sane_stop, 4)
 
     if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R) and not out.get("time_exit_grace"):
         out["stall_exit"] = True
@@ -11607,6 +11660,13 @@ async def worker_exit(req: Request):
             dynamic_exit = _calc_swing_dynamic_levels(symbol, plan, float(px))
             if dynamic_exit.get("updates"):
                 plan.update(dynamic_exit.get("updates") or {})
+                stop_price = float(plan.get("stop_price"))
+                take_price = float(plan.get("take_price"))
+            level_sanity = _sanitize_long_exit_levels(plan, float(px))
+            if level_sanity.get("flags"):
+                dynamic_exit.setdefault("flags", [])
+                dynamic_exit["flags"].extend([f for f in level_sanity.get("flags", []) if f not in dynamic_exit.get("flags", [])])
+            if level_sanity.get("changed"):
                 stop_price = float(plan.get("stop_price"))
                 take_price = float(plan.get("take_price"))
 
