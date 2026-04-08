@@ -784,6 +784,11 @@ SWING_SLOW_MA_DAYS = getenv_int_any("SWING_SLOW_MA_DAYS", default=20)
 SWING_MIN_PRICE = getenv_float_any("SWING_MIN_PRICE", default=15.0)
 SWING_MIN_AVG_DOLLAR_VOLUME = getenv_float_any("SWING_MIN_AVG_DOLLAR_VOLUME", default=20000000.0)
 SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME = getenv_float_any("SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME", default=30000000.0)
+SWING_SELECTION_EXTENSION_PENALTY_WEIGHT = getenv_float_any("SWING_SELECTION_EXTENSION_PENALTY_WEIGHT", default=2.0)
+SWING_SELECTION_RANK_WEIGHT = getenv_float_any("SWING_SELECTION_RANK_WEIGHT", default=1.0)
+SWING_SELECTION_CLOSE_TO_HIGH_WEIGHT = getenv_float_any("SWING_SELECTION_CLOSE_TO_HIGH_WEIGHT", default=0.75)
+SWING_SELECTION_VOLUME_WEIGHT = getenv_float_any("SWING_SELECTION_VOLUME_WEIGHT", default=0.5)
+SWING_SELECTION_CORRELATION_PENALTY_WEIGHT = getenv_float_any("SWING_SELECTION_CORRELATION_PENALTY_WEIGHT", default=1.5)
 SWING_MIN_20D_RETURN_PCT = getenv_float_any("SWING_MIN_20D_RETURN_PCT", default=0.03)
 SWING_MAX_CANDIDATES = getenv_int_any("SWING_MAX_CANDIDATES", default=10)
 SWING_MAX_NEW_ENTRIES_PER_DAY = getenv_int_any("SWING_MAX_NEW_ENTRIES_PER_DAY", default=1)
@@ -1201,7 +1206,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-127-release-authority-live-stage-fix"
+PATCH_VERSION = "patch-129-trade-quality-selection-ordering"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -6910,6 +6915,42 @@ def _atr(highs: list[float], lows: list[float], closes: list[float], length: int
         trs.append(max(hi - lo, abs(hi - prev_close), abs(lo - prev_close)))
     return (sum(trs) / len(trs)) if trs else None
 
+def _candidate_selection_quality_score(item: dict | None) -> float:
+    item = dict(item or {})
+    strategy_name = str(item.get("strategy") or item.get("signal") or "").strip().lower()
+    rank_score = float(_safe_float(item.get("rank_score")))
+    close_to_high_pct = float(_safe_float(item.get("close_to_high_pct")))
+    avg_dollar_volume = float(_safe_float(item.get("avg_dollar_volume_20d")))
+    breakout_distance_pct = float(_safe_float(item.get("breakout_distance_pct")))
+    effective_max_distance_pct = float(_safe_float(item.get("effective_breakout_max_distance_pct")))
+    correlation_group_open_count = float(_safe_float(item.get("correlation_group_open_count")))
+
+    volume_floor = max(float(SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME), 1.0)
+    volume_ratio = avg_dollar_volume / volume_floor
+    volume_bonus = min(max(math.log10(max(volume_ratio, 1.0)), 0.0), 2.0)
+
+    extension_penalty = 0.0
+    if strategy_name == BREAKOUT_STRATEGY_NAME:
+        max_dist = max(effective_max_distance_pct, 1e-9)
+        if breakout_distance_pct > 0:
+            extension_penalty = max(0.0, breakout_distance_pct / max_dist)
+
+    mean_reversion_bonus = 0.0
+    if strategy_name == MEAN_REVERSION_STRATEGY_NAME:
+        dist_to_mean = abs(float(_safe_float(item.get("distance_to_slow_ma_pct"))))
+        max_dist = max(float(_safe_float(((item.get("mode_thresholds") or {}).get("max_dist_to_slow_ma_pct")))), 0.01)
+        mean_reversion_bonus = max(0.0, 1.0 - min(dist_to_mean / max_dist, 1.0))
+
+    score = 0.0
+    score += rank_score * float(SWING_SELECTION_RANK_WEIGHT)
+    score += close_to_high_pct * float(SWING_SELECTION_CLOSE_TO_HIGH_WEIGHT)
+    score += volume_bonus * 10.0 * float(SWING_SELECTION_VOLUME_WEIGHT)
+    score += mean_reversion_bonus * 10.0
+    score -= extension_penalty * 10.0 * float(SWING_SELECTION_EXTENSION_PENALTY_WEIGHT)
+    score -= correlation_group_open_count * 10.0 * float(SWING_SELECTION_CORRELATION_PENALTY_WEIGHT)
+    return round(score, 4)
+
+
 def _breakout_min_rank_score_for_mode(mode: str | None) -> float:
     mode = str(mode or "trend").strip().lower() or "trend"
     if mode == "defensive":
@@ -8913,6 +8954,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             c.setdefault('rejection_reasons', []).append('correlation_group_limit')
         c['correlation_group_id'] = _symbol_group_id(sym)
         c['correlation_group_open_count'] = int(group_count)
+        c['selection_quality_score'] = _candidate_selection_quality_score(c)
         local_symbol_cap = float(symbol_cap)
         if strategy_name == MEAN_REVERSION_STRATEGY_NAME and local_symbol_cap > 0:
             local_symbol_cap = local_symbol_cap * max(0.0, float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER))
@@ -8944,11 +8986,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if SWING_MEAN_REVERSION_ENABLED and regime.get('favorable') is False:
             _finalize_candidate(evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode), sym)
 
-    candidates.sort(key=lambda x: (1 if str(x.get('strategy') or '').strip().lower() == BREAKOUT_STRATEGY_NAME else 0, float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
-    shadow_candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
-    shadow_alignment_candidates.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
+    candidates.sort(key=lambda x: (1 if str(x.get('strategy') or '').strip().lower() == BREAKOUT_STRATEGY_NAME else 0, float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
+    shadow_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
+    shadow_alignment_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     breakout_approved = [c for c in breakout_candidates if c.get('eligible')]
     mean_reversion_approved = [c for c in mean_reversion_candidates if c.get('eligible')]
+    breakout_approved.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
+    mean_reversion_approved.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     approved = breakout_approved if breakout_approved else mean_reversion_approved
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
     if breakout_approved:
@@ -8979,7 +9023,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             if eligible_override:
                 override_candidates.append(row)
         if override_candidates:
-            override_candidates.sort(key=lambda x: float(x.get('rank_score') or 0.0), reverse=True)
+            override_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score') or 0.0)), reverse=True)
             permit, reasons = _early_entry_override_live_permitted(override_candidates[0], regime=regime)
             override_live_permitted = bool(permit)
             override_live_reasons = list(reasons or [])
@@ -8998,6 +9042,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             live_allowed = True
         meta = {
             'rank_score': c.get('rank_score'),
+            'selection_quality_score': c.get('selection_quality_score'),
             'avg_dollar_volume_20d': c.get('avg_dollar_volume_20d'),
             'strategy_name': c.get('strategy'),
             'breakout_level': c.get('breakout_level'),
