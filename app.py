@@ -785,6 +785,8 @@ SWING_MIN_PRICE = getenv_float_any("SWING_MIN_PRICE", default=15.0)
 SWING_MIN_AVG_DOLLAR_VOLUME = getenv_float_any("SWING_MIN_AVG_DOLLAR_VOLUME", default=20000000.0)
 SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME = getenv_float_any("SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME", default=30000000.0)
 SWING_SELECTION_EXTENSION_PENALTY_WEIGHT = getenv_float_any("SWING_SELECTION_EXTENSION_PENALTY_WEIGHT", default=2.0)
+SWING_SELECTION_EXTENSION_HARD_RATIO = getenv_float_any("SWING_SELECTION_EXTENSION_HARD_RATIO", default=1.0)
+SWING_SELECTION_EXTENSION_HARD_PENALTY = getenv_float_any("SWING_SELECTION_EXTENSION_HARD_PENALTY", default=3.0)
 SWING_SELECTION_RANK_WEIGHT = getenv_float_any("SWING_SELECTION_RANK_WEIGHT", default=1.0)
 SWING_SELECTION_CLOSE_TO_HIGH_WEIGHT = getenv_float_any("SWING_SELECTION_CLOSE_TO_HIGH_WEIGHT", default=0.75)
 SWING_SELECTION_VOLUME_WEIGHT = getenv_float_any("SWING_SELECTION_VOLUME_WEIGHT", default=0.5)
@@ -1206,7 +1208,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-129-trade-quality-selection-ordering"
+PATCH_VERSION = "patch-130-extension-discipline-breakout-distance-control"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -6933,7 +6935,10 @@ def _candidate_selection_quality_score(item: dict | None) -> float:
     if strategy_name == BREAKOUT_STRATEGY_NAME:
         max_dist = max(effective_max_distance_pct, 1e-9)
         if breakout_distance_pct > 0:
-            extension_penalty = max(0.0, breakout_distance_pct / max_dist)
+            extension_ratio = max(0.0, breakout_distance_pct / max_dist)
+            extension_penalty = extension_ratio ** 2
+            if extension_ratio > float(SWING_SELECTION_EXTENSION_HARD_RATIO):
+                extension_penalty += (extension_ratio - float(SWING_SELECTION_EXTENSION_HARD_RATIO)) * float(SWING_SELECTION_EXTENSION_HARD_PENALTY)
 
     mean_reversion_bonus = 0.0
     if strategy_name == MEAN_REVERSION_STRATEGY_NAME:
