@@ -1201,7 +1201,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-124-exit-semantics-cleanup"
+PATCH_VERSION = "patch-125-dry-run-lifecycle-isolation-restore-classification-cleanup"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4321,6 +4321,13 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
                 plan_ref["last_exit_signal_reason"] = reason or "dry_run"
                 plan_ref["last_exit_signal_source"] = source
                 plan_ref["last_exit_signal_ts"] = now_ny().isoformat()
+                plan_ref["last_exit_signal_dry_run"] = True
+                if str(plan_ref.get("execution_state") or "").lower() == "close_submitted":
+                    plan_ref["execution_state"] = "filled"
+                    plan_ref["lifecycle_state"] = "filled"
+                    plan_ref["execution_state_reason"] = "dry_run_isolated"
+                    plan_ref["execution_updated_utc"] = datetime.now(timezone.utc).isoformat()
+                    plan_ref["execution_updated_ny"] = now_ny().isoformat()
         except Exception:
             pass
         return payload
@@ -4364,6 +4371,15 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
         record_decision("EXIT", source, symbol, side=close_side, action="dry_run_partial", reason=reason or "partial_dry_run", qty=qty)
         try:
             _record_paper_lifecycle("exit", "dry_run", symbol=symbol, details={"reason": reason or "partial_dry_run", "qty": qty, "source": source, "partial": True})
+        except Exception:
+            pass
+        try:
+            if isinstance(TRADE_PLAN.get(symbol), dict):
+                plan_ref = TRADE_PLAN[symbol]
+                plan_ref["last_exit_signal_reason"] = reason or "partial_dry_run"
+                plan_ref["last_exit_signal_source"] = source
+                plan_ref["last_exit_signal_ts"] = now_ny().isoformat()
+                plan_ref["last_exit_signal_dry_run"] = True
         except Exception:
             pass
         return payload
@@ -4629,6 +4645,22 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
     return actions
 
 
+
+
+def _restore_snapshot_plan_classification(plan: dict) -> dict:
+    plan = dict(plan or {})
+    was_recovered = bool(plan.get("recovered"))
+    if was_recovered:
+        plan["recovered"] = True
+        plan["startup_restore_classification"] = "recovered"
+    else:
+        plan.pop("recovered", None)
+        plan.pop("recovered_at", None)
+        plan["startup_restore_classification"] = "strategy"
+    plan["startup_restored"] = True
+    plan["broker_backed"] = True
+    return plan
+
 def startup_restore_state() -> dict:
     """
     Restore active trade plans from persistent snapshot and broker positions.
@@ -4671,9 +4703,9 @@ def startup_restore_state() -> dict:
                     continue
                 restored = json.loads(json.dumps(plan))
                 restored["active"] = True
-                restored["recovered"] = True
-                restored["recovered_at"] = now_ny().isoformat()
-                restored["startup_restored"] = True
+                restored = _restore_snapshot_plan_classification(restored)
+                if restored.get("recovered"):
+                    restored["recovered_at"] = now_ny().isoformat()
                 TRADE_PLAN[sym] = restored
                 state["recovered_from_snapshot_count"] += 1
 
