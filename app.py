@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-132-scan-exception-release-dry-run-fallback-fix"
+PATCH_VERSION = "patch-133-scan-telemetry-release-fallback-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -3411,7 +3411,6 @@ def _recent_market_scan_status(max_age_sec: int | float | None = None, market_op
         scan = dict(scan_like or {})
         ts_raw = scan.get("ts_utc")
         reason = str(scan.get("reason") or "")
-        summary = dict(scan.get("summary") or {})
         if not ts_raw:
             return {"ok": False, "age_sec": None, "reason": reason, "source": scan.get("_scan_source") or "none", "ts_utc": None}
         try:
@@ -3419,42 +3418,40 @@ def _recent_market_scan_status(max_age_sec: int | float | None = None, market_op
             if scan_ts.tzinfo is None:
                 scan_ts = scan_ts.replace(tzinfo=timezone.utc)
             age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
-            has_summary = bool(
-                summary.get("top_candidates")
-                or summary.get("top_rejection_reasons")
-                or summary.get("rejection_counts")
-                or int(summary.get("candidates_total") or 0) > 0
-                or int(summary.get("eligible_total") or 0) > 0
-                or int(summary.get("selected_total") or 0) > 0
-            )
-            ok = (
-                reason == "scan_completed"
-                and age_sec <= age_limit
-            )
-            if market_open_now and (not ok):
-                ok = (
-                    reason == "current_runtime_preview"
-                    and has_summary
-                    and age_sec <= age_limit
-                )
+            ok = (reason == "scan_completed" and age_sec <= age_limit)
             if (not market_open_now) and (not ok):
-                ok = (
-                    reason == "outside_market_hours"
-                    and age_sec <= age_limit
-                )
-            return {
-                "ok": bool(ok),
-                "age_sec": age_sec,
-                "reason": reason,
-                "source": scan.get("_scan_source") or "last_scan",
-                "ts_utc": scan_ts.astimezone(timezone.utc).isoformat(),
-                "has_summary": has_summary,
-            }
+                ok = (reason == "outside_market_hours" and age_sec <= age_limit)
+            return {"ok": bool(ok), "age_sec": age_sec, "reason": reason, "source": scan.get("_scan_source") or "last_scan", "ts_utc": scan_ts.astimezone(timezone.utc).isoformat()}
         except Exception:
             return {"ok": False, "age_sec": None, "reason": reason, "source": scan.get("_scan_source") or "invalid", "ts_utc": None}
 
+    def _status_from_scanner_telemetry() -> dict:
+        tel = dict(LAST_SCANNER_TELEMETRY or {})
+        ts_raw = tel.get("last_closed_utc") or tel.get("last_success_utc") or tel.get("last_worker_event_utc") or tel.get("last_event_utc")
+        if not ts_raw:
+            return {"ok": False, "age_sec": None, "reason": "scanner_telemetry_missing", "source": "scanner_telemetry", "ts_utc": None}
+        try:
+            scan_ts = datetime.fromisoformat(str(ts_raw))
+            if scan_ts.tzinfo is None:
+                scan_ts = scan_ts.replace(tzinfo=timezone.utc)
+            age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
+            worker_status = _worker_status_snapshot()
+            scanner_running = bool(worker_status.get("scanner_running"))
+            ok = scanner_running and age_sec <= age_limit
+            return {
+                "ok": bool(ok),
+                "age_sec": age_sec,
+                "reason": "scanner_telemetry_fallback",
+                "source": "scanner_telemetry",
+                "ts_utc": scan_ts.astimezone(timezone.utc).isoformat(),
+                "scanner_running": scanner_running,
+            }
+        except Exception:
+            return {"ok": False, "age_sec": None, "reason": "scanner_telemetry_invalid", "source": "scanner_telemetry", "ts_utc": None}
+
     primary = _status_from_scan(dict(LAST_SCAN or {}))
     if primary.get("ok"):
+        primary["fallback_checked"] = False
         return primary
 
     fallback_scan = _latest_completed_scan_record()
@@ -3464,24 +3461,18 @@ def _recent_market_scan_status(max_age_sec: int | float | None = None, market_op
         fallback["fallback_from_last_scan_source"] = primary.get("source")
         return fallback
 
-    runtime_fallback_scan = {}
-    primary_reason = str(primary.get("reason") or "")
-    if market_open_now and primary_reason in {"scan_exception", "worker_exception", "scanner_exception", ""}:
-        try:
-            runtime_fallback_scan = _active_truth_scan(limit=25) or {}
-        except Exception:
-            runtime_fallback_scan = {}
-    runtime_fallback = _status_from_scan(runtime_fallback_scan) if runtime_fallback_scan else {"ok": False, "age_sec": None, "reason": "", "source": "none", "ts_utc": None}
-    if runtime_fallback.get("ok"):
-        runtime_fallback["fallback_from_last_scan_reason"] = primary.get("reason")
-        runtime_fallback["fallback_from_last_scan_source"] = primary.get("source")
-        runtime_fallback["runtime_fallback_used"] = True
-        return runtime_fallback
+    telemetry = _status_from_scanner_telemetry()
+    if market_open_now and telemetry.get("ok"):
+        telemetry["fallback_from_last_scan_reason"] = primary.get("reason")
+        telemetry["fallback_from_last_scan_source"] = primary.get("source")
+        telemetry["fallback_checked"] = bool(fallback_scan)
+        telemetry["fallback_source"] = fallback.get("source")
+        return telemetry
 
     primary["fallback_checked"] = bool(fallback_scan)
     primary["fallback_source"] = fallback.get("source")
-    primary["runtime_fallback_checked"] = bool(runtime_fallback_scan)
-    primary["runtime_fallback_source"] = runtime_fallback.get("source")
+    primary["telemetry_fallback_checked"] = True
+    primary["telemetry_fallback_source"] = telemetry.get("source")
     return primary
 
 
