@@ -3,6 +3,7 @@ import logging
 import hashlib
 import traceback
 import html
+import math
 import time as _time
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -1208,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-130-extension-discipline-breakout-distance-control"
+PATCH_VERSION = "patch-131-runtime-state-scan-stability-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -3400,6 +3401,50 @@ def _latest_completed_scan_record() -> dict:
     return {}
 
 
+def _recent_market_scan_status(max_age_sec: int | float | None = None, market_open_now: bool | None = None) -> dict:
+    age_limit = max(60, int(max_age_sec or RELEASE_MAX_SCAN_AGE_SEC or 60))
+    if market_open_now is None:
+        market_open_now = bool(in_market_hours())
+    now_utc = datetime.now(tz=timezone.utc)
+
+    def _status_from_scan(scan_like: dict | None) -> dict:
+        scan = dict(scan_like or {})
+        ts_raw = scan.get("ts_utc")
+        reason = str(scan.get("reason") or "")
+        if not ts_raw:
+            return {"ok": False, "age_sec": None, "reason": reason, "source": scan.get("_scan_source") or "none", "ts_utc": None}
+        try:
+            scan_ts = datetime.fromisoformat(str(ts_raw))
+            if scan_ts.tzinfo is None:
+                scan_ts = scan_ts.replace(tzinfo=timezone.utc)
+            age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
+            ok = (
+                reason == "scan_completed"
+                and age_sec <= age_limit
+            )
+            if (not market_open_now) and (not ok):
+                ok = (
+                    reason == "outside_market_hours"
+                    and age_sec <= age_limit
+                )
+            return {"ok": bool(ok), "age_sec": age_sec, "reason": reason, "source": scan.get("_scan_source") or "last_scan", "ts_utc": scan_ts.astimezone(timezone.utc).isoformat()}
+        except Exception:
+            return {"ok": False, "age_sec": None, "reason": reason, "source": scan.get("_scan_source") or "invalid", "ts_utc": None}
+
+    primary = _status_from_scan(dict(LAST_SCAN or {}))
+    if primary.get("ok"):
+        return primary
+
+    fallback_scan = _latest_completed_scan_record()
+    fallback = _status_from_scan(fallback_scan) if fallback_scan else {"ok": False, "age_sec": None, "reason": "", "source": "none", "ts_utc": None}
+    if fallback.get("ok"):
+        fallback["fallback_from_last_scan_reason"] = primary.get("reason")
+        fallback["fallback_from_last_scan_source"] = primary.get("source")
+        return fallback
+
+    primary["fallback_checked"] = bool(fallback_scan)
+    primary["fallback_source"] = fallback.get("source")
+    return primary
 
 
 def _scan_summary_from_candidates(candidates: list[dict], symbols: list[str], regime: dict | None = None, global_block_reasons: list[str] | None = None, selected_symbols: list[str] | None = None) -> dict:
@@ -5741,27 +5786,9 @@ def _paper_proof_gate_snapshot() -> dict:
     freshness_entries = dict(freshness.get("entries") or {})
     same_session_proven = all(bool((freshness_entries.get(name) or {}).get("same_session")) for name in ("last_scan", "regime", "paper_lifecycle", "scanner_telemetry"))
 
-    now_utc = datetime.now(tz=timezone.utc)
-    last_scan_age_sec = None
-    recent_market_scan_ok = False
-    if LAST_SCAN.get("ts_utc"):
-        try:
-            scan_ts = datetime.fromisoformat(str(LAST_SCAN.get("ts_utc")))
-            if scan_ts.tzinfo is None:
-                scan_ts = scan_ts.replace(tzinfo=timezone.utc)
-            last_scan_age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
-            last_scan_reason = str(LAST_SCAN.get("reason") or "")
-            recent_market_scan_ok = (
-                last_scan_reason == "scan_completed"
-                and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
-            )
-            if (not bool(session.get("market_open_now"))) and (not recent_market_scan_ok):
-                recent_market_scan_ok = (
-                    last_scan_reason == "outside_market_hours"
-                    and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
-                )
-        except Exception:
-            recent_market_scan_ok = False
+    recent_scan_status = _recent_market_scan_status(RELEASE_MAX_SCAN_AGE_SEC, bool(session.get("market_open_now")))
+    last_scan_age_sec = recent_scan_status.get("age_sec")
+    recent_market_scan_ok = bool(recent_scan_status.get("ok"))
 
     broker_connected = True
     broker_error = ""
@@ -5833,6 +5860,8 @@ def _paper_proof_gate_snapshot() -> dict:
         "effective_release_stage": effective_stage,
         "recent_market_scan_ok": recent_market_scan_ok,
         "last_scan_age_sec": last_scan_age_sec,
+        "recent_market_scan_source": recent_scan_status.get("source"),
+        "recent_market_scan_reason": recent_scan_status.get("reason"),
         "component_ready": component_ready,
         "same_session_proven": same_session_proven,
         "worker_status": worker_status,
@@ -6266,27 +6295,9 @@ def _build_release_gate_snapshot(stage: str, include_stage_check: bool = True) -
     regime = dict(LAST_REGIME_SNAPSHOT or {})
     session = _session_boundary_snapshot()
     market_open_now = bool(session.get("market_open_now"))
-    now_utc = datetime.now(tz=timezone.utc)
-    last_scan_age_sec = None
-    recent_market_scan_ok = False
-    if LAST_SCAN.get("ts_utc"):
-        try:
-            scan_ts = datetime.fromisoformat(str(LAST_SCAN.get("ts_utc")))
-            if scan_ts.tzinfo is None:
-                scan_ts = scan_ts.replace(tzinfo=timezone.utc)
-            last_scan_age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
-            last_scan_reason = str(LAST_SCAN.get("reason") or "")
-            recent_market_scan_ok = (
-                last_scan_reason == "scan_completed"
-                and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
-            )
-            if (not market_open_now) and (not recent_market_scan_ok):
-                recent_market_scan_ok = (
-                    last_scan_reason == "outside_market_hours"
-                    and last_scan_age_sec <= max(60, RELEASE_MAX_SCAN_AGE_SEC)
-                )
-        except Exception:
-            recent_market_scan_ok = False
+    recent_scan_status = _recent_market_scan_status(RELEASE_MAX_SCAN_AGE_SEC, market_open_now)
+    last_scan_age_sec = recent_scan_status.get("age_sec")
+    recent_market_scan_ok = bool(recent_scan_status.get("ok"))
     unmet = []
     if include_stage_check and stage not in RELEASE_ALLOWED_LIVE_STAGES:
         unmet.append("release_stage_not_allowed")
@@ -6363,6 +6374,8 @@ def _build_release_gate_snapshot(stage: str, include_stage_check: bool = True) -
         "go_live_eligible": go_live_eligible,
         "unmet_conditions": unmet,
         "last_scan_age_sec": last_scan_age_sec,
+        "recent_market_scan_source": recent_scan_status.get("source"),
+        "recent_market_scan_reason": recent_scan_status.get("reason"),
         "recent_market_scan_ok": recent_market_scan_ok,
         "regime": {
             "known": bool(regime),
