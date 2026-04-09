@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-134-scan-truth-alignment-observability-fix"
+PATCH_VERSION = "patch-135-dashboard-aligned-last-scan-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -12927,6 +12927,7 @@ def dashboard(request: Request):
     continuity_issues = list(continuity.get('issues') or [])
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
+    aligned_last_scan = dict(freshness.get("aligned_last_scan") or _aligned_last_scan_display(session))
     scanner_summary = _scanner_telemetry_summary()
     worker_snapshot = _worker_status_snapshot()
     scanner_last_success = scanner_summary.get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_closed_utc') or (LAST_SCANNER_TELEMETRY or {}).get('last_success_utc') or 'none'
