@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-133-scan-telemetry-release-fallback-fix"
+PATCH_VERSION = "patch-134-scan-truth-alignment-observability-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -3475,6 +3475,87 @@ def _recent_market_scan_status(max_age_sec: int | float | None = None, market_op
     primary["telemetry_fallback_source"] = telemetry.get("source")
     return primary
 
+
+
+
+def _paper_lifecycle_same_session_activity(session: dict | None = None) -> dict:
+    session = dict(session or _session_boundary_snapshot())
+    today_ny = str(session.get("today_ny") or "")
+    events = []
+    for ev in list(PAPER_LIFECYCLE_HISTORY or []):
+        if isinstance(ev, dict):
+            events.append(ev)
+    if LAST_PAPER_LIFECYCLE and (not events or events[-1] != LAST_PAPER_LIFECYCLE):
+        events.append(dict(LAST_PAPER_LIFECYCLE))
+    count = 0
+    latest_ts_utc = None
+    latest_stage = ""
+    latest_status = ""
+    for ev in events:
+        dt = _safe_iso_to_dt(ev.get("ts_utc"))
+        if not dt:
+            continue
+        if dt.astimezone(NY_TZ).date().isoformat() != today_ny:
+            continue
+        count += 1
+        latest_ts_utc = dt.isoformat()
+        latest_stage = str(ev.get("stage") or "")
+        latest_status = str(ev.get("status") or "")
+    return {
+        "count": int(count),
+        "has_same_session_activity": bool(count > 0),
+        "latest_ts_utc": latest_ts_utc,
+        "latest_stage": latest_stage,
+        "latest_status": latest_status,
+    }
+
+
+def _aligned_last_scan_display(session: dict | None = None) -> dict:
+    session = dict(session or _session_boundary_snapshot())
+    market_open_now = bool(session.get("market_open_now"))
+    current_last_scan = dict(LAST_SCAN or {})
+    recent = _recent_market_scan_status(RELEASE_MAX_SCAN_AGE_SEC, market_open_now)
+    latest_completed = _latest_completed_scan_record()
+    display = {
+        "reason": str(current_last_scan.get("reason") or "none"),
+        "ts_utc": current_last_scan.get("ts_utc"),
+        "source": "last_scan",
+        "fresh": bool((recent or {}).get("ok")) if current_last_scan else False,
+        "fallback_from_last_scan_reason": None,
+        "fallback_from_last_scan_source": None,
+    }
+    if not current_last_scan:
+        if recent.get("ok"):
+            display.update({
+                "reason": str(recent.get("reason") or "recent_scan_fallback"),
+                "ts_utc": recent.get("ts_utc"),
+                "source": str(recent.get("source") or "recent_scan_status"),
+                "fresh": True,
+            })
+        return display
+    reason = str(current_last_scan.get("reason") or "")
+    if reason == "scan_completed":
+        return display
+    if recent.get("ok"):
+        fallback_reason = str(recent.get("reason") or "")
+        if fallback_reason == "scanner_telemetry_fallback":
+            fallback_reason = "scan_completed"
+        display.update({
+            "reason": fallback_reason or reason or "scan_completed",
+            "ts_utc": recent.get("ts_utc") or current_last_scan.get("ts_utc"),
+            "source": str(recent.get("source") or "recent_scan_status"),
+            "fresh": True,
+            "fallback_from_last_scan_reason": reason or None,
+            "fallback_from_last_scan_source": str(current_last_scan.get("_scan_source") or "last_scan"),
+        })
+        if latest_completed:
+            completed_ts = latest_completed.get("ts_utc")
+            if completed_ts:
+                display["last_completed_scan_ts_utc"] = completed_ts
+            completed_reason = str(latest_completed.get("reason") or "")
+            if completed_reason:
+                display["last_completed_scan_reason"] = completed_reason
+    return display
 
 def _scan_summary_from_candidates(candidates: list[dict], symbols: list[str], regime: dict | None = None, global_block_reasons: list[str] | None = None, selected_symbols: list[str] | None = None) -> dict:
     candidates = [dict(c) for c in (candidates or []) if isinstance(c, dict)]
@@ -6487,10 +6568,12 @@ def freshness_snapshot() -> dict:
     regime_source = "memory" if LAST_REGIME_SNAPSHOT else ("restored" if (globals().get("REGIME_STATE_RESTORE") or {}).get("current_restored") else "empty")
     lifecycle_source = "memory" if LAST_PAPER_LIFECYCLE else ("restored" if (globals().get("PAPER_LIFECYCLE_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
     scanner_source = "memory" if LAST_SCANNER_TELEMETRY else ("restored" if (globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}).get("last_event_restored") else "empty")
+    aligned_last_scan = _aligned_last_scan_display(session)
+    lifecycle_activity = _paper_lifecycle_same_session_activity(session)
     entries = {
-        "last_scan": _freshness_entry("last_scan", LAST_SCAN.get("ts_utc"), source=scan_source, max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"reason": LAST_SCAN.get("reason")}),
+        "last_scan": _freshness_entry("last_scan", aligned_last_scan.get("ts_utc") or LAST_SCAN.get("ts_utc"), source=str(aligned_last_scan.get("source") or scan_source), max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"reason": aligned_last_scan.get("reason") or LAST_SCAN.get("reason"), "display_reason": aligned_last_scan.get("reason"), "fallback_from_last_scan_reason": aligned_last_scan.get("fallback_from_last_scan_reason"), "fallback_from_last_scan_source": aligned_last_scan.get("fallback_from_last_scan_source")}),
         "regime": _freshness_entry("regime", (LAST_REGIME_SNAPSHOT or {}).get("ts_utc"), source=regime_source, max_age_sec=max(60, RELEASE_MAX_SCAN_AGE_SEC), require_same_session=True, extra={"favorable": (LAST_REGIME_SNAPSHOT or {}).get("favorable"), "data_complete": (LAST_REGIME_SNAPSHOT or {}).get("data_complete")}),
-        "paper_lifecycle": _freshness_entry("paper_lifecycle", (LAST_PAPER_LIFECYCLE or {}).get("ts_utc"), source=lifecycle_source, require_same_session=True, extra={"stage": (LAST_PAPER_LIFECYCLE or {}).get("stage"), "status_value": (LAST_PAPER_LIFECYCLE or {}).get("status")}),
+        "paper_lifecycle": _freshness_entry("paper_lifecycle", (LAST_PAPER_LIFECYCLE or {}).get("ts_utc"), source=lifecycle_source, require_same_session=True, extra={"stage": (LAST_PAPER_LIFECYCLE or {}).get("stage"), "status_value": (LAST_PAPER_LIFECYCLE or {}).get("status"), "same_session_activity_count": lifecycle_activity.get("count", 0)}),
         "scanner_telemetry": _freshness_entry("scanner_telemetry", scanner_ref, source=scanner_source, max_age_sec=max(READINESS_SCANNER_MAX_AGE_SEC, SCANNER_INTERVAL_SEC + SCANNER_TIMEOUT_SEC + max(10, SCANNER_JITTER_SEC) + 60), extra={"event": (LAST_SCANNER_TELEMETRY or {}).get("event"), "attempts_today": (LAST_SCANNER_TELEMETRY or {}).get("attempts_today")}),
         "exit_heartbeat": _freshness_entry("exit_heartbeat", LAST_EXIT_HEARTBEAT.get("ts_utc"), source="memory" if LAST_EXIT_HEARTBEAT else "empty", max_age_sec=max(READINESS_EXIT_MAX_AGE_SEC, 30)),
     }
@@ -6501,6 +6584,13 @@ def freshness_snapshot() -> dict:
         regime_row["freshness_deferred"] = True
         regime_row["freshness_deferred_reason"] = session.get("market_closed_reason") or "market_closed"
         regime_row["freshness_note"] = "Regime freshness is deferred while the market is closed."
+    lifecycle_row = entries.get("paper_lifecycle") or {}
+    if lifecycle_row.get("status") == "stale" and not lifecycle_activity.get("has_same_session_activity"):
+        lifecycle_row["fresh"] = True
+        lifecycle_row["status"] = "deferred"
+        lifecycle_row["freshness_deferred"] = True
+        lifecycle_row["freshness_deferred_reason"] = "no_same_session_activity_yet"
+        lifecycle_row["freshness_note"] = "Paper lifecycle freshness is deferred until a same-session lifecycle event occurs."
     stale = [name for name, row in entries.items() if row.get("status") == "stale"]
     missing = [name for name, row in entries.items() if row.get("status") == "missing"]
     return {
@@ -6509,6 +6599,8 @@ def freshness_snapshot() -> dict:
         "stale_entries": stale,
         "missing_entries": missing,
         "all_fresh": (not stale and not missing),
+        "aligned_last_scan": aligned_last_scan,
+        "paper_lifecycle_same_session_activity": lifecycle_activity,
     }
 
 
@@ -13110,7 +13202,7 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('effective_release_stage') or release.get('system_release_stage'))}</div><div class="muted">Configured: {_dashboard_fmt(release.get('configured_release_stage') or release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_badge('Workflow enforced', ((release.get('release_workflow') or {}).get('workflow_enforced')))}{_dashboard_warning_badges(['release_stage_config_drift'] if ((release.get('release_workflow') or {}).get('configured_stage_drift')) else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Market hours</div><div class="metric {'good' if session.get('market_open_now') else 'neutral'}">{'OPEN' if session.get('market_open_now') else ('WEEKEND' if session.get('market_closed_reason') == 'weekend' else 'CLOSED')}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(aligned_last_scan.get('reason') or last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(aligned_last_scan.get('ts_utc') or last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', aligned_last_scan.get('source') or 'authoritative')}</div>
     <div class="card"><div class="muted">Workers</div><div class="metric {workers_metric_class}">{html.escape(str(combined_worker_status).upper())}</div><div class="muted">Scanner: {html.escape(str(scanner_display_status).upper())} ({_dashboard_fmt(worker_snapshot.get('scanner_age_sec'))}s)</div><div class="muted">Next run: {_dashboard_fmt(scanner_runtime.get('next_run_estimate_utc'))} / in {_dashboard_fmt(scanner_runtime.get('next_run_in_sec'))}s</div><div class="muted">Late by: {_dashboard_fmt(scanner_runtime.get('lateness_sec'))}s / hint: {html.escape(str(scanner_runtime.get('hint_text') or 'none'))}</div><div class="muted">Exit: {html.escape(str(exit_worker_status).upper())} ({_dashboard_fmt(worker_snapshot.get('exit_worker_age_sec'))}s)</div>{_dashboard_warning_badges([scanner_runtime.get('hint_code')] if scanner_runtime.get('hint_code') not in {'none', ''} else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Scanner telemetry</div><div class="metric {scanner_metric_class}">{_dashboard_fmt(scanner_summary.get('closed_runs_today') or 0)}</div><div class="muted">Closed today / last closed: {_dashboard_fmt(scanner_last_success)}</div><div class="muted">Worker: {html.escape(str(scanner_display_status))} / last source: {html.escape(str(scanner_summary.get('last_request_source_kind') or 'unknown'))}</div><div class="muted">Manual today: {_dashboard_fmt(scanner_summary.get('manual_request_today') or 0)} / External today: {_dashboard_fmt(scanner_summary.get('external_request_today') or 0)}</div><div class="muted">Hint: {html.escape(str(scanner_runtime.get('hint_text') or 'none'))}</div>{_dashboard_warning_badges(scanner_card_warnings)}{_dashboard_warning_badges([scanner_runtime.get('hint_code')] if scanner_runtime.get('hint_code') not in {'none', ''} else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
