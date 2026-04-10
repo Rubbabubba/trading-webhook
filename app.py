@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-138-dashboard-active-positions-binding-fix"
+PATCH_VERSION = "patch-139-dashboard-v2-pnl-layer"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -12603,6 +12603,28 @@ def _dashboard_fmt(v):
     return html.escape(str(v))
 
 
+def _dashboard_money(v):
+    if v is None:
+        return "—"
+    try:
+        fv = float(v)
+    except Exception:
+        return html.escape(str(v))
+    sign = "+" if fv > 0 else ""
+    return f"{sign}${fv:,.2f}"
+
+
+def _dashboard_pct(v):
+    if v is None:
+        return "—"
+    try:
+        fv = float(v)
+    except Exception:
+        return html.escape(str(v))
+    sign = "+" if fv > 0 else ""
+    return f"{sign}{fv:,.2f}%"
+
+
 def _dashboard_json_block(obj) -> str:
     import json
     return html.escape(json.dumps(obj, indent=2, sort_keys=False, default=str))
@@ -12666,12 +12688,44 @@ def _dashboard_active_positions_view(reconcile: dict | None) -> list[dict]:
             continue
         sym = str(symbol or plan.get("symbol") or "").upper()
         symbol_orders = [dict(o) for o in open_orders if str((o or {}).get("symbol") or "").upper() == sym]
+        qty = plan.get("qty") or plan.get("filled_qty") or plan.get("requested_qty")
+        entry_price = plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price")
+        stop_price = plan.get("stop_price")
+        take_price = plan.get("take_price")
+        latest_price = None
+        try:
+            latest_price = float(get_latest_price(sym))
+        except Exception:
+            latest_price = None
+        unrealized_pl = None
+        unrealized_pl_pct = None
+        distance_to_stop_pct = None
+        distance_to_target_pct = None
+        try:
+            qv = float(qty) if qty is not None else None
+            ev = float(entry_price) if entry_price is not None else None
+            if latest_price is not None and qv is not None and ev is not None:
+                unrealized_pl = (latest_price - ev) * qv
+                unrealized_pl_pct = ((latest_price / ev) - 1.0) * 100.0 if ev else None
+            sv = float(stop_price) if stop_price is not None else None
+            tv = float(take_price) if take_price is not None else None
+            if latest_price is not None and sv is not None and latest_price:
+                distance_to_stop_pct = ((latest_price - sv) / latest_price) * 100.0
+            if latest_price is not None and tv is not None and latest_price:
+                distance_to_target_pct = ((tv - latest_price) / latest_price) * 100.0
+        except Exception:
+            pass
         rows.append({
             "symbol": sym,
-            "qty": plan.get("qty") or plan.get("filled_qty") or plan.get("requested_qty"),
-            "entry_price": plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price"),
-            "stop_price": plan.get("stop_price"),
-            "take_price": plan.get("take_price"),
+            "qty": qty,
+            "entry_price": entry_price,
+            "latest_price": latest_price,
+            "unrealized_pl": unrealized_pl,
+            "unrealized_pl_pct": unrealized_pl_pct,
+            "distance_to_stop_pct": distance_to_stop_pct,
+            "distance_to_target_pct": distance_to_target_pct,
+            "stop_price": stop_price,
+            "take_price": take_price,
             "profit_lock_price": plan.get("profit_lock_price"),
             "partial_profit_taken": bool(plan.get("partial_profit_taken")),
             "days_held": plan.get("days_held"),
@@ -12681,6 +12735,33 @@ def _dashboard_active_positions_view(reconcile: dict | None) -> list[dict]:
         })
     rows.sort(key=lambda r: str(r.get("symbol") or ""))
     return rows
+
+
+def _dashboard_pnl_summary(rows: list[dict]) -> dict:
+    total_pl = 0.0
+    total_count = 0
+    winners = 0
+    losers = 0
+    for row in rows or []:
+        v = row.get("unrealized_pl")
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except Exception:
+            continue
+        total_pl += fv
+        total_count += 1
+        if fv > 0:
+            winners += 1
+        elif fv < 0:
+            losers += 1
+    return {
+        "positions_with_price": total_count,
+        "total_unrealized_pl": total_pl if total_count else None,
+        "winners": winners,
+        "losers": losers,
+    }
 
 
 def _dashboard_risk_integrity_view(reconcile: dict | None) -> dict:
@@ -12720,7 +12801,7 @@ def _dashboard_exposure_capacity_view(blockers: dict | None, reconcile: dict | N
 
 def _dashboard_position_rows(rows: list[dict]) -> str:
     if not rows:
-        return '<tr><td colspan="10" class="muted">No active positions.</td></tr>'
+        return '<tr><td colspan="14" class="muted">No active positions.</td></tr>'
     out = []
     for row in rows:
         out.append(
@@ -12728,6 +12809,11 @@ def _dashboard_position_rows(rows: list[dict]) -> str:
             + f"<td>{html.escape(str(row.get('symbol') or ''))}</td>"
             + f"<td>{_dashboard_fmt(row.get('qty'))}</td>"
             + f"<td>{_dashboard_fmt(row.get('entry_price'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('latest_price'))}</td>"
+            + f"<td>{_dashboard_money(row.get('unrealized_pl'))}</td>"
+            + f"<td>{_dashboard_pct(row.get('unrealized_pl_pct'))}</td>"
+            + f"<td>{_dashboard_pct(row.get('distance_to_stop_pct'))}</td>"
+            + f"<td>{_dashboard_pct(row.get('distance_to_target_pct'))}</td>"
             + f"<td>{_dashboard_fmt(row.get('stop_price'))}</td>"
             + f"<td>{_dashboard_fmt(row.get('take_price'))}</td>"
             + f"<td>{_dashboard_fmt(row.get('profit_lock_price'))}</td>"
@@ -13049,6 +13135,7 @@ def dashboard(request: Request):
     reconcile = build_reconcile_snapshot()
     freshness = freshness_snapshot()
     active_positions_view = _dashboard_active_positions_view(reconcile)
+    pnl_summary_view = _dashboard_pnl_summary(active_positions_view)
     risk_integrity_view = _dashboard_risk_integrity_view(reconcile)
     exposure_capacity_view = _dashboard_exposure_capacity_view(blockers, reconcile)
     continuity_issues = list(continuity.get('issues') or [])
@@ -13352,10 +13439,21 @@ def dashboard(request: Request):
     <div class="card">
       <h2>Active Positions</h2>
       <table>
-        <thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Target</th><th>Profit Lock</th><th>Partial</th><th>Days</th><th>Status</th><th>Open orders</th></tr></thead>
+        <thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>U P&amp;L %</th><th>To Stop %</th><th>To Target %</th><th>Stop</th><th>Target</th><th>Profit Lock</th><th>Partial</th><th>Days</th><th>Status</th><th>Open orders</th></tr></thead>
         <tbody>{active_position_rows}</tbody>
       </table>
-      <div class="muted" style="margin-top:10px;">Read-only trade management view sourced from the reconcile snapshot.</div>
+      <div class="muted" style="margin-top:10px;">Read-only trade management view sourced from broker-backed active plans with live price snapshots.</div>
+    </div>
+
+    <div class="card">
+      <h2>P&amp;L Summary</h2>
+      <table>{_dashboard_rows([
+        ('positions_with_price', pnl_summary_view.get('positions_with_price')),
+        ('total_unrealized_pl', _dashboard_money(pnl_summary_view.get('total_unrealized_pl'))),
+        ('winners', pnl_summary_view.get('winners')),
+        ('losers', pnl_summary_view.get('losers')),
+      ])}</table>
+      <div class="muted" style="margin-top:10px;">Broker-first mark-to-market summary for active positions only.</div>
     </div>
 
     <div class="card">
