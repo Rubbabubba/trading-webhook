@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-136-global-stop-enforcement-profit-lock-fix"
+PATCH_VERSION = "patch-137-dashboard-v2-foundation"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -12643,6 +12643,95 @@ def _dashboard_source_badge(label: str, source: str) -> str:
     return f'<span class="badge {cls}">{html.escape(label)}: {html.escape(source)}</span>'
 
 
+def _dashboard_active_positions_view(reconcile: dict | None) -> list[dict]:
+    snap = dict((reconcile or {}).get("latest_snapshot") or {})
+    active_plans = dict(snap.get("active_plans") or {})
+    open_orders = list((reconcile or {}).get("open_orders") or [])
+    rows: list[dict] = []
+    for symbol, plan in active_plans.items():
+        if not isinstance(plan, dict):
+            continue
+        sym = str(symbol or plan.get("symbol") or "").upper()
+        symbol_orders = [dict(o) for o in open_orders if str((o or {}).get("symbol") or "").upper() == sym]
+        rows.append({
+            "symbol": sym,
+            "qty": plan.get("qty"),
+            "entry_price": plan.get("entry_price"),
+            "stop_price": plan.get("stop_price"),
+            "take_price": plan.get("take_price"),
+            "profit_lock_price": plan.get("profit_lock_price"),
+            "partial_profit_taken": bool(plan.get("partial_profit_taken")),
+            "days_held": plan.get("days_held"),
+            "execution_state": plan.get("execution_state") or plan.get("lifecycle_state"),
+            "broker_backed": bool(plan.get("broker_backed")),
+            "open_order_types": ", ".join(str((o or {}).get("type") or "") for o in symbol_orders if str((o or {}).get("type") or "").strip()),
+        })
+    rows.sort(key=lambda r: str(r.get("symbol") or ""))
+    return rows
+
+
+def _dashboard_risk_integrity_view(reconcile: dict | None) -> dict:
+    reconcile = dict(reconcile or {})
+    return {
+        "health_grade": reconcile.get("health_grade") or ((reconcile.get("summary") or {}).get("health_grade")) or "unknown",
+        "issue_total": int(reconcile.get("issue_total") or 0),
+        "active_plan_count": int(reconcile.get("active_plan_count") or 0),
+        "open_order_count": int(reconcile.get("open_order_count") or 0),
+        "broker_positions_count": int(reconcile.get("broker_positions_count") or 0),
+        "missing_from_plans": list(reconcile.get("missing_from_plans") or []),
+        "plans_missing_open_order": list(reconcile.get("plans_missing_open_order") or []),
+        "stale_active_plans": list(reconcile.get("stale_active_plans") or []),
+        "orphan_open_order_symbols": list(reconcile.get("orphan_open_order_symbols") or []),
+        "partial_fill_plan_symbols": list(reconcile.get("partial_fill_plan_symbols") or []),
+        "trading_blocked": bool(reconcile.get("trading_blocked")),
+    }
+
+
+def _dashboard_exposure_capacity_view(blockers: dict | None, reconcile: dict | None) -> dict:
+    blockers = dict(blockers or {})
+    reconcile = dict(reconcile or {})
+    strategy_symbols = list(blockers.get("strategy_symbols") or reconcile.get("active_plan_symbols") or [])
+    return {
+        "current_open_positions": len(strategy_symbols),
+        "max_open_positions": int(MAX_OPEN_POSITIONS),
+        "remaining_new_entries_today": int(blockers.get("remaining_new_entries_today") or 0),
+        "max_new_entries_per_day": int(blockers.get("max_new_entries_per_day") or 0),
+        "portfolio_exposure": blockers.get("portfolio_exposure"),
+        "portfolio_exposure_cap": blockers.get("portfolio_exposure_cap"),
+        "portfolio_cap_block_mode": blockers.get("portfolio_cap_block_mode"),
+        "blocked_by_portfolio_cap": bool(blockers.get("blocked_by_portfolio_cap") or blockers.get("blocked_by_total_portfolio_cap") or blockers.get("blocked_by_strategy_portfolio_cap")),
+        "correlation_groups_count": int(blockers.get("correlation_groups_count") or 0),
+        "strategy_symbols": strategy_symbols,
+    }
+
+
+def _dashboard_position_rows(rows: list[dict]) -> str:
+    if not rows:
+        return '<tr><td colspan="10" class="muted">No active positions.</td></tr>'
+    out = []
+    for row in rows:
+        out.append(
+            "<tr>"
+            + f"<td>{html.escape(str(row.get('symbol') or ''))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('qty'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('entry_price'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('stop_price'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('take_price'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('profit_lock_price'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('partial_profit_taken'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('days_held'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('execution_state'))}</td>"
+            + f"<td>{_dashboard_fmt(row.get('open_order_types'))}</td>"
+            + "</tr>"
+        )
+    return ''.join(out)
+
+
+def _dashboard_list_block(items: list[str] | None) -> str:
+    vals = [str(x).strip() for x in (items or []) if str(x).strip()]
+    return html.escape(chr(10).join(vals or ["none"]))
+
+
 def _dashboard_scanner_runtime_hint(scanner: dict | None, worker_snapshot: dict | None) -> dict:
     scanner = dict(scanner or {})
     worker_snapshot = dict(worker_snapshot or {})
@@ -12946,6 +13035,9 @@ def dashboard(request: Request):
     last_lifecycle = dict(LAST_PAPER_LIFECYCLE or {})
     reconcile = build_reconcile_snapshot()
     freshness = freshness_snapshot()
+    active_positions_view = _dashboard_active_positions_view(reconcile)
+    risk_integrity_view = _dashboard_risk_integrity_view(reconcile)
+    exposure_capacity_view = _dashboard_exposure_capacity_view(blockers, reconcile)
     continuity_issues = list(continuity.get('issues') or [])
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
@@ -13104,6 +13196,15 @@ def dashboard(request: Request):
     )
     if not candidate_rows:
         candidate_rows = '<tr><td colspan="5" class="muted">No recent candidate set available.</td></tr>'
+    active_position_rows = _dashboard_position_rows(active_positions_view)
+    risk_integrity_badges = _dashboard_warning_badges([
+        *( ["missing_from_plans"] if risk_integrity_view.get("missing_from_plans") else [] ),
+        *( ["plans_missing_open_order"] if risk_integrity_view.get("plans_missing_open_order") else [] ),
+        *( ["stale_active_plans"] if risk_integrity_view.get("stale_active_plans") else [] ),
+        *( ["orphan_open_orders"] if risk_integrity_view.get("orphan_open_order_symbols") else [] ),
+        *( ["partial_fill_plans"] if risk_integrity_view.get("partial_fill_plan_symbols") else [] ),
+    ])
+    exposure_capacity_badges = _dashboard_warning_badges([*( ["portfolio_exposure_limit"] if exposure_capacity_view.get("blocked_by_portfolio_cap") else [] )])
 
     rejection_rows = ''.join(
         f'<tr><td>{html.escape(str(reason))}</td><td>{count}</td></tr>'
@@ -13232,6 +13333,54 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Freshness</div><div class="metric {'bad' if (freshness_stale or freshness_missing) else 'good'}">{len(freshness_stale)} stale / {len(freshness_missing)} missing</div><div class="muted">All fresh: {'YES' if freshness.get('all_fresh') else 'NO'}</div>{_dashboard_warning_badges(freshness_stale + freshness_missing)}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Reconcile</div><div class="metric {_dashboard_metric_class(reconcile_grade, good_values={'healthy'}, bad_values={'blocking','critical'}, neutral_values={'degraded'})}">{html.escape(str(reconcile_grade).upper())}</div><div class="muted">Plans / orders / broker positions: {reconcile.get('active_plan_count',0)} / {reconcile.get('open_order_count',0)} / {reconcile.get('broker_positions_count',0)}</div><div class="muted">Issues: {_dashboard_fmt(reconcile.get('issue_total') or 0)} / blocked: {'YES' if reconcile.get('trading_blocked') else 'NO'}</div>{_dashboard_warning_badges(reconcile_issue_codes[:3])}{_dashboard_warning_badges(['action_required'] if reconcile_actions else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / idle: {authoritative_state.get('idle')}</div>{_dashboard_warning_badges(continuity.get('issue_codes') or [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Active Positions</h2>
+      <table>
+        <thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Target</th><th>Profit Lock</th><th>Partial</th><th>Days</th><th>Status</th><th>Open orders</th></tr></thead>
+        <tbody>{active_position_rows}</tbody>
+      </table>
+      <div class="muted" style="margin-top:10px;">Read-only trade management view sourced from the reconcile snapshot.</div>
+    </div>
+
+    <div class="card">
+      <h2>Risk Integrity</h2>
+      <table>{_dashboard_rows([
+        ('health_grade', risk_integrity_view.get('health_grade')),
+        ('issue_total', risk_integrity_view.get('issue_total')),
+        ('active_plan_count', risk_integrity_view.get('active_plan_count')),
+        ('open_order_count', risk_integrity_view.get('open_order_count')),
+        ('broker_positions_count', risk_integrity_view.get('broker_positions_count')),
+        ('trading_blocked', risk_integrity_view.get('trading_blocked')),
+      ])}</table>
+      <h3 style="margin-top:14px;">Structural exceptions</h3>
+      <pre>missing_from_plans: {_dashboard_list_block(risk_integrity_view.get('missing_from_plans'))}
+plans_missing_open_order: {_dashboard_list_block(risk_integrity_view.get('plans_missing_open_order'))}
+stale_active_plans: {_dashboard_list_block(risk_integrity_view.get('stale_active_plans'))}
+orphan_open_order_symbols: {_dashboard_list_block(risk_integrity_view.get('orphan_open_order_symbols'))}
+partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('partial_fill_plan_symbols'))}</pre>
+      {risk_integrity_badges}
+    </div>
+
+    <div class="card">
+      <h2>Exposure &amp; Capacity</h2>
+      <table>{_dashboard_rows([
+        ('current_open_positions', exposure_capacity_view.get('current_open_positions')),
+        ('max_open_positions', exposure_capacity_view.get('max_open_positions')),
+        ('remaining_new_entries_today', exposure_capacity_view.get('remaining_new_entries_today')),
+        ('max_new_entries_per_day', exposure_capacity_view.get('max_new_entries_per_day')),
+        ('portfolio_exposure', exposure_capacity_view.get('portfolio_exposure')),
+        ('portfolio_exposure_cap', exposure_capacity_view.get('portfolio_exposure_cap')),
+        ('portfolio_cap_block_mode', exposure_capacity_view.get('portfolio_cap_block_mode')),
+        ('blocked_by_portfolio_cap', exposure_capacity_view.get('blocked_by_portfolio_cap')),
+        ('correlation_groups_count', exposure_capacity_view.get('correlation_groups_count')),
+      ])}</table>
+      <h3 style="margin-top:14px;">Strategy symbols</h3>
+      <pre>{_dashboard_list_block(exposure_capacity_view.get('strategy_symbols'))}</pre>
+      {exposure_capacity_badges}
+    </div>
   </div>
 
   <div class="section grid">
