@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-135-dashboard-aligned-last-scan-fix"
+PATCH_VERSION = "patch-136-global-stop-enforcement-profit-lock-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -11413,6 +11413,7 @@ def _normalize_long_exit_plan(plan: dict, px: float) -> dict:
     stop = _safe_float((plan or {}).get("stop_price") or 0.0)
     take = _safe_float((plan or {}).get("take_price") or 0.0)
     profit_lock = _safe_float((plan or {}).get("profit_lock_price") or 0.0)
+    initial_stop = _safe_float((plan or {}).get("initial_stop_price") or 0.0)
     risk = max(_plan_risk_per_share(plan or {}), 0.0)
 
     if px <= 0:
@@ -11429,6 +11430,24 @@ def _normalize_long_exit_plan(plan: dict, px: float) -> dict:
         stop = entry
         out["changed"] = True
         out["flags"].append("migrated_above_entry_stop_to_profit_lock")
+
+    # If a winner lock was armed, keep the original protective stop below entry and
+    # express break-even/profit protection through profit_lock_price instead.
+    entry_pinned_stop = entry > 0 and abs(stop - entry) <= 0.011
+    has_initial_protection = initial_stop > 0 and initial_stop < entry - 0.011
+    intentional_winner_lock = bool(
+        profit_lock > 0
+        or (plan or {}).get("partial_profit_taken")
+        or (plan or {}).get("break_even_armed")
+        or (plan or {}).get("time_exit_grace_active")
+    )
+    if entry_pinned_stop and has_initial_protection and intentional_winner_lock:
+        profit_lock = max(profit_lock, entry)
+        plan["profit_lock_price"] = round(profit_lock, 4)
+        plan["stop_price"] = round(initial_stop, 4)
+        stop = initial_stop
+        out["changed"] = True
+        out["flags"].append("migrated_entry_pinned_stop_to_profit_lock")
 
     # Protective stop for long positions should never exceed entry.
     if entry > 0 and stop > entry + 1e-9:
@@ -11519,10 +11538,12 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
             out["partial_profit_ready"] = True
             out["partial_profit_qty"] = qty_to_close
             out["flags"].append("partial_profit_ready")
-            proposed_stop = max(proposed_stop, entry)
+            out["updates"]["break_even_armed"] = True
+            proposed_profit_lock = max(proposed_profit_lock, entry)
 
     if SWING_ENABLE_BREAK_EVEN_STOP and unrealized_r >= float(SWING_BREAK_EVEN_R):
-        proposed_stop = max(proposed_stop, entry)
+        out["updates"]["break_even_armed"] = True
+        proposed_profit_lock = max(proposed_profit_lock, entry)
         out["flags"].append("break_even_armed")
 
     if SWING_ENABLE_TRAILING_STOP and unrealized_r >= float(SWING_TRAIL_AFTER_R):
@@ -11543,8 +11564,9 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     max_hold_days = int((plan or {}).get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0)
     if max_hold_days > 0 and hold_days >= max_hold_days and unrealized_r >= float(SWING_TIME_EXIT_GRACE_R) and hold_days < (max_hold_days + max(int(SWING_TIME_EXIT_GRACE_DAYS), 0)):
         out["time_exit_grace"] = True
+        out["updates"]["time_exit_grace_active"] = True
         out["flags"].append("time_exit_grace")
-        proposed_stop = max(proposed_stop, entry)
+        proposed_profit_lock = max(proposed_profit_lock, entry)
 
     proposed = dict(plan or {})
     proposed["stop_price"] = round(proposed_stop, 4)
