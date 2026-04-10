@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-137-dashboard-v2-foundation"
+PATCH_VERSION = "patch-138-dashboard-active-positions-binding-fix"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -12644,9 +12644,22 @@ def _dashboard_source_badge(label: str, source: str) -> str:
 
 
 def _dashboard_active_positions_view(reconcile: dict | None) -> list[dict]:
-    snap = dict((reconcile or {}).get("latest_snapshot") or {})
+    reconcile = dict(reconcile or {})
+    snap = dict(reconcile.get("latest_snapshot") or {})
     active_plans = dict(snap.get("active_plans") or {})
-    open_orders = list((reconcile or {}).get("open_orders") or [])
+
+    # Dashboard route uses build_reconcile_snapshot(), which does not include
+    # latest_snapshot. Fall back to authoritative in-memory active plans so the
+    # read-only dashboard renders active positions correctly without changing
+    # any trading behavior.
+    if not active_plans:
+        active_plans = {
+            str(sym or "").upper(): dict(plan)
+            for sym, plan in TRADE_PLAN.items()
+            if isinstance(plan, dict) and (plan.get("active") or _plan_is_pending_entry(plan))
+        }
+
+    open_orders = list(reconcile.get("open_orders") or [])
     rows: list[dict] = []
     for symbol, plan in active_plans.items():
         if not isinstance(plan, dict):
@@ -12655,8 +12668,8 @@ def _dashboard_active_positions_view(reconcile: dict | None) -> list[dict]:
         symbol_orders = [dict(o) for o in open_orders if str((o or {}).get("symbol") or "").upper() == sym]
         rows.append({
             "symbol": sym,
-            "qty": plan.get("qty"),
-            "entry_price": plan.get("entry_price"),
+            "qty": plan.get("qty") or plan.get("filled_qty") or plan.get("requested_qty"),
+            "entry_price": plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price"),
             "stop_price": plan.get("stop_price"),
             "take_price": plan.get("take_price"),
             "profit_lock_price": plan.get("profit_lock_price"),
@@ -12664,7 +12677,7 @@ def _dashboard_active_positions_view(reconcile: dict | None) -> list[dict]:
             "days_held": plan.get("days_held"),
             "execution_state": plan.get("execution_state") or plan.get("lifecycle_state"),
             "broker_backed": bool(plan.get("broker_backed")),
-            "open_order_types": ", ".join(str((o or {}).get("type") or "") for o in symbol_orders if str((o or {}).get("type") or "").strip()),
+            "open_order_types": ", ".join(str((o or {}).get("type") or "") for o in symbol_orders if str((o or {}).get("type") or "").strip()) or ("none" if symbol_orders else ""),
         })
     rows.sort(key=lambda r: str(r.get("symbol") or ""))
     return rows
