@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-140-dashboard-entry-funnel-decision-transparency"
+PATCH_VERSION = "patch-139-dashboard-v2-pnl-layer"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -13283,20 +13283,6 @@ def dashboard(request: Request):
     failure_first_pass = list(failure_current.get('first_pass_candidates') or [])
     failure_market_gated = list(failure_current.get('market_gated_candidates') or [])
 
-    selected_symbols = list(scan_summary.get('selected_symbols') or [])
-    selected_strategy = scan_summary.get('selected_strategy')
-    entry_funnel_badges = _dashboard_warning_badges([
-        *( ['portfolio_exposure_limit'] if exposure_capacity_view.get('blocked_by_portfolio_cap') else [] ),
-        *( ['entry_cap_remaining'] if int(blockers.get('remaining_new_entries_today') or 0) <= 0 else [] ),
-        *( ['regime_unfavorable'] if blockers.get('regime_favorable') is False else [] ),
-    ])
-    selected_symbols_text = _dashboard_list_block(selected_symbols)
-    decision_selected_text = selected_symbols_text if selected_symbols else 'none'
-    decision_market_only_text = _dashboard_symbol_reason_lines(failure_market_only, limit=6)
-    decision_soft_only_text = _dashboard_symbol_reason_lines(failure_soft_only, limit=6)
-    decision_near_miss_text = _dashboard_symbol_reason_lines(failure_near_miss, limit=6)
-    decision_first_pass_text = _dashboard_symbol_reason_lines(failure_first_pass, limit=6)
-    decision_market_gated_text = _dashboard_symbol_reason_lines(failure_market_gated, limit=6)
 
     candidate_rows = ''.join(
         '<tr>'
@@ -13505,41 +13491,6 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
       <h3 style="margin-top:14px;">Strategy symbols</h3>
       <pre>{_dashboard_list_block(exposure_capacity_view.get('strategy_symbols'))}</pre>
       {exposure_capacity_badges}
-    </div>
-  </div>
-
-  <div class="section grid">
-    <div class="card">
-      <h2>Entry Funnel</h2>
-      <table>{_dashboard_rows([
-        ('candidates_total', scan_summary.get('candidates_total')),
-        ('eligible_total', scan_summary.get('eligible_total')),
-        ('selected_total', scan_summary.get('selected_total')),
-        ('selected_strategy', selected_strategy),
-        ('remaining_new_entries_today', blockers.get('remaining_new_entries_today')),
-        ('blocked_by_entry_cap', blockers.get('blocked_by_entry_cap')),
-        ('blocked_by_portfolio_cap', exposure_capacity_view.get('blocked_by_portfolio_cap')),
-        ('blocked_by_weak_regime', blockers.get('blocked_by_weak_regime')),
-      ])}</table>
-      <h3 style="margin-top:14px;">Selected symbols</h3>
-      <pre>{selected_symbols_text}</pre>
-      {entry_funnel_badges}
-    </div>
-
-    <div class="card">
-      <h2>Decision Transparency</h2>
-      <h3 style="margin-top:0;">Selected</h3>
-      <pre>{decision_selected_text}</pre>
-      <h3 style="margin-top:14px;">First-pass candidates</h3>
-      <pre>{decision_first_pass_text}</pre>
-      <h3 style="margin-top:14px;">Market-gated candidates</h3>
-      <pre>{decision_market_gated_text}</pre>
-      <h3 style="margin-top:14px;">Market-gate only</h3>
-      <pre>{decision_market_only_text}</pre>
-      <h3 style="margin-top:14px;">Soft-filter only</h3>
-      <pre>{decision_soft_only_text}</pre>
-      <h3 style="margin-top:14px;">Near misses</h3>
-      <pre>{decision_near_miss_text}</pre>
     </div>
   </div>
 
