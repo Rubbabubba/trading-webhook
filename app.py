@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-143-dashboard-performance-trim"
+PATCH_VERSION = "patch-144-scanner-timeout-alignment-dispatch-warning-recovery"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -1792,7 +1792,9 @@ def _classify_scanner_warning_codes(state: dict) -> dict:
     last_dispatch_failure_dt = _safe_parse_iso_utc(state.get("last_dispatch_failure_utc"))
     last_success_dt = _safe_parse_iso_utc(state.get("last_success_utc"))
     last_closed_dt = _safe_parse_iso_utc(state.get("last_closed_utc"))
+    last_open_dt = _safe_parse_iso_utc(state.get("last_open_utc"))
     last_closed_status = str(state.get("last_closed_status") or "").strip().lower()
+    timeout_sec = int(state.get("timeout_sec") or 0)
 
     manual_request_today = int(state.get("manual_request_today") or 0)
     external_request_today = int(state.get("external_request_today") or 0)
@@ -1823,7 +1825,15 @@ def _classify_scanner_warning_codes(state: dict) -> dict:
             and last_success_dt >= last_dispatch_failure_dt
             and last_closed_dt >= last_dispatch_failure_dt
         )
-        if dispatch_recovered:
+        dispatch_late_timeout_after_success = bool(
+            not dispatch_recovered
+            and last_open_dt
+            and last_closed_dt
+            and last_closed_status in {"success", "skipped"}
+            and last_open_dt <= last_closed_dt <= last_dispatch_failure_dt
+            and (last_dispatch_failure_dt - last_closed_dt).total_seconds() <= max(timeout_sec + 30, 120)
+        )
+        if dispatch_recovered or dispatch_late_timeout_after_success:
             _add_unique(recovered, "dispatch_failure_recovered")
         else:
             _add_unique(active, "dispatch_failure")
