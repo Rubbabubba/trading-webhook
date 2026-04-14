@@ -877,6 +877,13 @@ SWING_EARLY_ENTRY_OVERRIDE_MIN_RANGE_PCT = getenv_float_any("SWING_EARLY_ENTRY_O
 SWING_EARLY_ENTRY_OVERRIDE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_EARLY_ENTRY_OVERRIDE_MIN_20D_RETURN_PCT", default=0.0)
 SWING_EARLY_ENTRY_OVERRIDE_MAX_NEW_ENTRIES_PER_DAY = getenv_int_any("SWING_EARLY_ENTRY_OVERRIDE_MAX_NEW_ENTRIES_PER_DAY", default=1)
 EARLY_ENTRY_OVERRIDE_SOURCE = "worker_scan_early_override"
+SWING_ADAPTIVE_CAPACITY_ENABLED = env_bool_any("SWING_ADAPTIVE_CAPACITY_ENABLED", default="true")
+SWING_ADAPTIVE_CAPACITY_MAX_ENTRIES_PER_SCAN = getenv_int_any("SWING_ADAPTIVE_CAPACITY_MAX_ENTRIES_PER_SCAN", default=1)
+SWING_ADAPTIVE_CAPACITY_MIN_SELECTION_SCORE = getenv_float_any("SWING_ADAPTIVE_CAPACITY_MIN_SELECTION_SCORE", default=175.0)
+SWING_ADAPTIVE_CAPACITY_MIN_RANK_SCORE = getenv_float_any("SWING_ADAPTIVE_CAPACITY_MIN_RANK_SCORE", default=100.0)
+SWING_ADAPTIVE_CAPACITY_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any("SWING_ADAPTIVE_CAPACITY_MIN_CLOSE_TO_HIGH_PCT", default=0.98)
+SWING_ADAPTIVE_CAPACITY_MAX_BREAKOUT_GAP_PCT = getenv_float_any("SWING_ADAPTIVE_CAPACITY_MAX_BREAKOUT_GAP_PCT", default=0.01)
+ADAPTIVE_CAPACITY_SOURCE = "worker_scan_adaptive_capacity"
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE", default=0.35)
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R", default=-0.15)
 STRATEGY_PERFORMANCE_STATE_PATH = getenv_any("STRATEGY_PERFORMANCE_STATE_PATH", default="/var/data/strategy_performance_state.json")
@@ -1209,7 +1216,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-145-performance-analytics-layer"
+PATCH_VERSION = "patch-146-adaptive-capacity-utilization"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -7800,6 +7807,73 @@ def _failure_decomp_near_miss(item: dict | None) -> bool:
     return False
 
 
+def _candidate_qualifies_adaptive_capacity(item: dict | None) -> tuple[bool, list[str]]:
+    item = dict(item or {})
+    reasons = [str(r) for r in (item.get("rejection_reasons") or []) if str(r)]
+    out_reasons = []
+    if not SWING_ADAPTIVE_CAPACITY_ENABLED:
+        out_reasons.append("adaptive_capacity_disabled")
+        return False, out_reasons
+    if str(item.get("strategy") or "").strip().lower() != BREAKOUT_STRATEGY_NAME:
+        out_reasons.append("strategy_not_breakout")
+        return False, out_reasons
+    if not reasons:
+        out_reasons.append("already_primary_eligible")
+        return False, out_reasons
+    disallowed = {
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "correlation_group_limit",
+        "portfolio_exposure_limit",
+        "symbol_exposure_limit",
+        "daily_halt_active",
+        "weak_tape",
+        "index_alignment_failed",
+        "regime_not_favorable",
+        "strategy_kill_switch_active",
+        "insufficient_buying_power",
+        "price_below_min",
+        "avg_dollar_volume_below_min",
+        "low_volume",
+        "trend_filter_failed",
+        "return_20d_below_min",
+        "insufficient_daily_bars",
+    }
+    if any(r in disallowed for r in reasons):
+        out_reasons.append("contains_hard_rejection")
+        return False, out_reasons
+    soft_reasons = {"close_not_near_high", "too_far_below_breakout", "rank_score_below_min"}
+    if any(r not in soft_reasons for r in reasons):
+        out_reasons.append("contains_non_soft_rejection")
+        return False, out_reasons
+    if len(reasons) != 1:
+        out_reasons.append("requires_single_soft_rejection")
+        return False, out_reasons
+    rank_score = _safe_float(item.get("rank_score"))
+    selection_quality_score = _safe_float(item.get("selection_quality_score"))
+    close_to_high_pct = _safe_float(item.get("close_to_high_pct"))
+    breakout_distance_pct = _safe_float(item.get("breakout_distance_pct"))
+    if rank_score is None or rank_score < float(SWING_ADAPTIVE_CAPACITY_MIN_RANK_SCORE):
+        out_reasons.append("rank_score_too_low")
+        return False, out_reasons
+    if selection_quality_score is None or selection_quality_score < float(SWING_ADAPTIVE_CAPACITY_MIN_SELECTION_SCORE):
+        out_reasons.append("selection_quality_too_low")
+        return False, out_reasons
+    reason = reasons[0]
+    if reason == "close_not_near_high":
+        if close_to_high_pct is None or close_to_high_pct < float(SWING_ADAPTIVE_CAPACITY_MIN_CLOSE_TO_HIGH_PCT) * 100.0:
+            out_reasons.append("close_to_high_not_close_enough")
+            return False, out_reasons
+    elif reason == "too_far_below_breakout":
+        if breakout_distance_pct is None or breakout_distance_pct < -float(SWING_ADAPTIVE_CAPACITY_MAX_BREAKOUT_GAP_PCT) * 100.0:
+            out_reasons.append("breakout_gap_too_wide")
+            return False, out_reasons
+    elif reason == "rank_score_below_min":
+        pass
+    item["adaptive_capacity_reason"] = reason
+    return True, []
+
+
 CURRENT_BREAKOUT_MAX_DISTANCE_PCT = round(SWING_BREAKOUT_BUFFER_PCT * 100.0, 3)
 CURRENT_CLOSE_TO_HIGH_MIN_PCT = round(SWING_BREAKOUT_MIN_CLOSE_TO_HIGH_PCT * 100.0, 3)
 CURRENT_RETURN_20D_MIN_PCT = round(SWING_MIN_20D_RETURN_PCT * 100.0, 3)
@@ -9143,6 +9217,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     breakout_approved.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     mean_reversion_approved.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     approved = breakout_approved if breakout_approved else mean_reversion_approved
+    adaptive_capacity_candidates = []
+    adaptive_capacity_selected = []
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
     if breakout_approved:
         if regime_mode == 'defensive':
@@ -9154,7 +9230,20 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     same_day_stats = _same_day_entry_stats()
     remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
     max_new_entries = min(max_new_entries, remaining_today)
-    selected = approved[:max_new_entries]
+    if not approved and max_new_entries > 0 and bool(SWING_ADAPTIVE_CAPACITY_ENABLED):
+        for c in breakout_candidates:
+            qualifies, adapt_reasons = _candidate_qualifies_adaptive_capacity(c)
+            if not qualifies:
+                continue
+            row = dict(c)
+            row['adaptive_capacity_candidate'] = True
+            row['adaptive_capacity_reasons'] = list(adapt_reasons)
+            adaptive_capacity_candidates.append(row)
+        adaptive_capacity_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
+        adaptive_capacity_selected = adaptive_capacity_candidates[: max(0, min(int(SWING_ADAPTIVE_CAPACITY_MAX_ENTRIES_PER_SCAN), int(max_new_entries)))]
+        if adaptive_capacity_selected:
+            approved = adaptive_capacity_candidates
+    selected = approved[:max_new_entries] if approved is not adaptive_capacity_candidates else adaptive_capacity_selected
     shadow_selected = shadow_candidates[:max_new_entries]
     shadow_alignment_selected = shadow_alignment_candidates[:max_new_entries]
     override_candidates = []
@@ -9185,6 +9274,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         entry_type = 'standard'
         source_name = 'worker_scan'
         live_allowed = SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run)
+        if c.get('adaptive_capacity_candidate'):
+            entry_type = 'adaptive_capacity'
+            source_name = ADAPTIVE_CAPACITY_SOURCE
         if override_live_permitted and override_symbol and str(c.get('symbol') or '').upper() == override_symbol:
             entry_type = 'early_override'
             source_name = override_source or EARLY_ENTRY_OVERRIDE_SOURCE
@@ -9240,6 +9332,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'symbols': list(scan_symbols),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
+        'adaptive_capacity_candidates': [dict(c) for c in adaptive_capacity_candidates[:5]],
+        'adaptive_capacity_selected': [c.get('symbol') for c in adaptive_capacity_selected],
         'shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
         'shadow_selected': [c.get('symbol') for c in shadow_selected],
         'shadow_alignment_candidates': [dict(c) for c in shadow_alignment_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
@@ -9267,6 +9361,19 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'mean_reversion_eligible_total': len(mean_reversion_approved),
         'selected_strategy': (selected[0].get('strategy') if selected else None),
         'selected_symbols': [c.get('symbol') for c in selected],
+        'adaptive_capacity': {
+            'enabled': bool(SWING_ADAPTIVE_CAPACITY_ENABLED),
+            'candidate_count': len(adaptive_capacity_candidates),
+            'candidate_symbols': [c.get('symbol') for c in adaptive_capacity_candidates],
+            'selected_count': len(adaptive_capacity_selected),
+            'selected_symbols': [c.get('symbol') for c in adaptive_capacity_selected],
+            'source': ADAPTIVE_CAPACITY_SOURCE,
+            'max_entries_per_scan': int(SWING_ADAPTIVE_CAPACITY_MAX_ENTRIES_PER_SCAN),
+            'min_selection_quality_score': float(SWING_ADAPTIVE_CAPACITY_MIN_SELECTION_SCORE),
+            'min_rank_score': float(SWING_ADAPTIVE_CAPACITY_MIN_RANK_SCORE),
+            'min_close_to_high_pct': round(float(SWING_ADAPTIVE_CAPACITY_MIN_CLOSE_TO_HIGH_PCT) * 100.0, 3),
+            'max_breakout_gap_pct': round(float(SWING_ADAPTIVE_CAPACITY_MAX_BREAKOUT_GAP_PCT) * 100.0, 3),
+        },
         'early_entry_override': {
             'enabled': bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED),
             'candidate_count': len(override_candidates),
