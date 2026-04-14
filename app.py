@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-141-dashboard-entry-funnel-helper-scope-fix"
+PATCH_VERSION = "patch-142-dashboard-alerts-exception-center-visual-refresh"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -13306,6 +13306,49 @@ def dashboard(request: Request):
     ])
     exposure_capacity_badges = _dashboard_warning_badges([*( ["portfolio_exposure_limit"] if exposure_capacity_view.get("blocked_by_portfolio_cap") else [] )])
 
+    operator_alert_items: list[dict] = []
+    def _push_operator_alert(level: str, title: str, detail: str) -> None:
+        operator_alert_items.append({"level": str(level or "info"), "title": str(title or ""), "detail": str(detail or "")})
+
+    for warn in dashboard_warnings[:6]:
+        _push_operator_alert("warn", str(warn).replace('_', ' ').title(), "Detected by dashboard health checks.")
+
+    if reconcile_actions:
+        _push_operator_alert("warn", "Reconcile actions available", "; ".join([str(x) for x in reconcile_actions[:3]]))
+
+    for row in active_positions_view:
+        sym = str(row.get("symbol") or "")
+        d_stop = row.get("distance_to_stop_pct")
+        d_target = row.get("distance_to_target_pct")
+        if row.get("stop_price") in (None, "", 0, 0.0):
+            _push_operator_alert("bad", f"{sym} missing stop", "Protective stop is not populated in the active plan.")
+        if isinstance(d_stop, (int, float)) and d_stop <= 1.5:
+            _push_operator_alert("warn", f"{sym} near stop", f"Only {_dashboard_pct(d_stop)} from stop.")
+        if isinstance(d_target, (int, float)) and d_target <= 1.5:
+            _push_operator_alert("good", f"{sym} near target", f"Only {_dashboard_pct(d_target)} from target.")
+        if row.get("profit_lock_price") not in (None, "", 0, 0.0):
+            _push_operator_alert("good", f"{sym} profit lock armed", f"Profit lock at {_dashboard_fmt(row.get('profit_lock_price'))}.")
+        oot = str(row.get("open_order_types") or "").strip()
+        if oot and oot != 'none':
+            _push_operator_alert("info", f"{sym} broker order resting", f"Open broker order types: {oot}.")
+
+    if not operator_alert_items:
+        _push_operator_alert("good", "No operator alerts", "No immediate exceptions detected.")
+
+    exception_rows = ''.join(
+        '<tr>'
+        + f'<td><span class="badge {html.escape(str((item or {}).get("level") or "neutral"))}">{html.escape(str((item or {}).get("level") or "info").upper())}</span></td>'
+        + f'<td>{html.escape(str((item or {}).get("title") or ""))}</td>'
+        + f'<td>{html.escape(str((item or {}).get("detail") or ""))}</td>'
+        + '</tr>'
+        for item in operator_alert_items[:12]
+    )
+
+    operator_alert_summary = ''.join(
+        f'<div class="alert-chip {html.escape(str((item or {}).get("level") or "neutral"))}"><strong>{html.escape(str((item or {}).get("title") or ""))}</strong><span>{html.escape(str((item or {}).get("detail") or ""))}</span></div>'
+        for item in operator_alert_items[:6]
+    )
+
     rejection_rows = ''.join(
         f'<tr><td>{html.escape(str(reason))}</td><td>{count}</td></tr>'
         for reason, count in top_rejections
@@ -13363,34 +13406,63 @@ def dashboard(request: Request):
   <meta http-equiv="refresh" content="30">
   <style>
     :root {{ color-scheme: dark; }}
-    body {{ font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#0b1220; color:#e5e7eb; margin:0; padding:20px; }}
-    .wrap {{ max-width: 1400px; margin:0 auto; }}
-    h1,h2,h3 {{ margin:0 0 10px; }}
-    .sub {{ color:#94a3b8; margin:0 0 18px; }}
-    .grid {{ display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap:16px; }}
-    .card {{ background:#111827; border:1px solid #1f2937; border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,.25); }}
-    .metric {{ font-size:28px; font-weight:700; margin-top:8px; }}
-    .muted {{ color:#94a3b8; }}
-    .good {{ color:#86efac; }}
-    .bad {{ color:#fca5a5; }}
-    .neutral {{ color:#fcd34d; }}
-    .badge {{ display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; font-weight:700; background:#1f2937; margin:4px 6px 0 0; }}
-    .badge.good {{ background:#14532d; color:#bbf7d0; }}
-    .badge.bad {{ background:#7f1d1d; color:#fecaca; }}
-    .badge.neutral {{ background:#78350f; color:#fde68a; }}
+    body {{ font-family: Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:radial-gradient(circle at top left,#17112a 0%,#090b10 28%,#06070b 100%); color:#eef2ff; margin:0; padding:20px; }}
+    .wrap {{ max-width: 1560px; margin:0 auto; }}
+    h1,h2,h3 {{ margin:0 0 10px; letter-spacing:-0.02em; }}
+    h2 {{ font-size:20px; }}
+    .sub {{ color:#9ca3af; margin:0 0 18px; }}
+    .grid {{ display:grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap:18px; }}
+    .kpi-grid {{ display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:16px; }}
+    .alert-grid {{ display:grid; grid-template-columns: 1.15fr .85fr; gap:18px; }}
+    .card {{ background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96)); border:1px solid rgba(139,92,246,.14); border-radius:20px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.04); }}
+    .metric {{ font-size:32px; font-weight:800; margin-top:8px; }}
+    .muted {{ color:#9ca3af; }}
+    .good {{ color:#74e2a7; }}
+    .bad {{ color:#fb7185; }}
+    .neutral {{ color:#f6c86c; }}
+    .badge {{ display:inline-block; padding:5px 10px; border-radius:999px; font-size:11px; font-weight:800; letter-spacing:.02em; background:#1f2937; margin:4px 6px 0 0; border:1px solid rgba(255,255,255,.05); }}
+    .badge.info {{ background:rgba(96,165,250,.14); color:#bfdbfe; border-color:rgba(96,165,250,.18); }}
+    .badge.good {{ background:rgba(16,185,129,.14); color:#bbf7d0; border-color:rgba(16,185,129,.18); }}
+    .badge.bad {{ background:rgba(244,63,94,.14); color:#fecdd3; border-color:rgba(244,63,94,.18); }}
+    .badge.neutral {{ background:rgba(245,158,11,.14); color:#fde68a; border-color:rgba(245,158,11,.18); }}
     table {{ width:100%; border-collapse: collapse; }}
-    th,td {{ text-align:left; padding:8px 10px; border-bottom:1px solid #1f2937; vertical-align:top; }}
-    th {{ color:#93c5fd; width:34%; font-weight:600; }}
-    pre {{ white-space:pre-wrap; word-break:break-word; background:#0f172a; border:1px solid #1f2937; border-radius:10px; padding:12px; overflow:auto; }}
+    th,td {{ text-align:left; padding:9px 10px; border-bottom:1px solid rgba(255,255,255,.06); vertical-align:top; }}
+    th {{ color:#c4b5fd; width:34%; font-weight:700; }}
+    pre {{ white-space:pre-wrap; word-break:break-word; background:rgba(5,8,15,.72); border:1px solid rgba(255,255,255,.06); border-radius:14px; padding:12px; overflow:auto; color:#d1d5db; }}
     .section {{ margin-top:18px; }}
-    .links a {{ color:#93c5fd; text-decoration:none; margin-right:14px; }}
-    .links a:hover {{ text-decoration:underline; }}
+    .links {{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:8px; }}
+    .links a {{ color:#c4b5fd; text-decoration:none; margin-right:0; background:rgba(139,92,246,.08); border:1px solid rgba(139,92,246,.12); padding:7px 11px; border-radius:12px; font-size:13px; }}
+    .hero {{ display:flex; justify-content:space-between; align-items:flex-end; gap:16px; margin-bottom:18px; }}
+    .hero-title {{ font-size:18px; color:#a78bfa; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }}
+    .hero h1 {{ font-size:38px; margin-top:6px; }}
+    .hero-actions {{ display:flex; gap:10px; flex-wrap:wrap; }}
+    .action-pill {{ background:linear-gradient(135deg,rgba(139,92,246,.18),rgba(59,130,246,.12)); border:1px solid rgba(139,92,246,.24); color:#ede9fe; padding:10px 14px; border-radius:14px; font-weight:700; font-size:13px; }}
+    .alert-chip {{ display:flex; flex-direction:column; gap:6px; padding:12px 14px; border-radius:16px; margin-bottom:10px; border:1px solid rgba(255,255,255,.05); background:rgba(255,255,255,.03); }}
+    .alert-chip.good {{ background:rgba(16,185,129,.10); border-color:rgba(16,185,129,.18); }}
+    .alert-chip.warn, .alert-chip.neutral {{ background:rgba(245,158,11,.10); border-color:rgba(245,158,11,.18); }}
+    .alert-chip.bad {{ background:rgba(244,63,94,.10); border-color:rgba(244,63,94,.18); }}
+    .alert-chip.info {{ background:rgba(96,165,250,.10); border-color:rgba(96,165,250,.18); }}
+    .alert-chip strong {{ font-size:14px; }}
+    .alert-chip span {{ color:#d1d5db; font-size:13px; }}
+    .panel-accent {{ border-top:1px solid rgba(139,92,246,.22); padding-top:10px; }}
+    @media (max-width: 980px) {{ .alert-grid {{ grid-template-columns:1fr; }} .hero {{ flex-direction:column; align-items:flex-start; }} }}
+    .links a:hover {{ text-decoration:none; background:rgba(139,92,246,.14); }}
   </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Read-Only Monitoring Dashboard</h1>
-  <p class="sub">Auto-refresh every 30 seconds. This page reads in-memory state only and does not place, modify, or cancel orders.</p>
+  <div class="hero">
+    <div>
+      <div class="hero-title">Operator Console</div>
+      <h1>Dashboard</h1>
+      <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
+    </div>
+    <div class="hero-actions">
+      <div class="action-pill">Patch 142 visual refresh</div>
+      <div class="action-pill">Read-only mode</div>
+      <div class="action-pill">Live state visible</div>
+    </div>
+  </div>
   <div class="links">
     <a href="/diagnostics/swing">swing</a>
     <a href="/diagnostics/candidates">candidates</a>
@@ -13420,9 +13492,21 @@ def dashboard(request: Request):
             <a href="/diagnostics/strategy_performance">strategy_performance</a>
   </div>
 
-  {('<div class="section"><div class="card"><h2>Operator Warnings</h2>' + _dashboard_warning_badges(dashboard_warnings) + '</div></div>') if dashboard_warnings else ''}
+  <div class="section alert-grid">
+    <div class="card">
+      <h2>Operator Alerts</h2>
+      <div class="panel-accent">{operator_alert_summary}</div>
+    </div>
+    <div class="card">
+      <h2>Exception Center</h2>
+      <table>
+        <thead><tr><th>Level</th><th>Alert</th><th>Detail</th></tr></thead>
+        <tbody>{exception_rows}</tbody>
+      </table>
+    </div>
+  </div>
 
-  <div class="section grid">
+  <div class="section kpi-grid">
     <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('effective_release_stage') or release.get('system_release_stage'))}</div><div class="muted">Configured: {_dashboard_fmt(release.get('configured_release_stage') or release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_badge('Workflow enforced', ((release.get('release_workflow') or {}).get('workflow_enforced')))}{_dashboard_warning_badges(['release_stage_config_drift'] if ((release.get('release_workflow') or {}).get('configured_stage_drift')) else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Market hours</div><div class="metric {'good' if session.get('market_open_now') else 'neutral'}">{'OPEN' if session.get('market_open_now') else ('WEEKEND' if session.get('market_closed_reason') == 'weekend' else 'CLOSED')}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
