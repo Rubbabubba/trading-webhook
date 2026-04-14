@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-144-scanner-timeout-alignment-dispatch-warning-recovery"
+PATCH_VERSION = "patch-145-performance-analytics-layer"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -13160,6 +13160,22 @@ def dashboard(request: Request):
     pnl_summary_view = _dashboard_pnl_summary(active_positions_view)
     risk_integrity_view = _dashboard_risk_integrity_view(reconcile)
     exposure_capacity_view = _dashboard_exposure_capacity_view(blockers, reconcile)
+    strategy_perf_state = _recompute_strategy_performance_state()
+    strategy_perf_by_strategy = dict(strategy_perf_state.get('by_strategy') or {})
+    closed_trade_count = int(sum(int((bucket or {}).get('closed_trades') or 0) for bucket in strategy_perf_by_strategy.values()))
+    total_wins = int(sum(int((bucket or {}).get('wins') or 0) for bucket in strategy_perf_by_strategy.values()))
+    total_losses = int(sum(int((bucket or {}).get('losses') or 0) for bucket in strategy_perf_by_strategy.values()))
+    total_flat = int(sum(int((bucket or {}).get('flat') or 0) for bucket in strategy_perf_by_strategy.values()))
+    gross_pnl_total = round(sum(float((bucket or {}).get('gross_pnl') or 0.0) for bucket in strategy_perf_by_strategy.values()), 4)
+    avg_r_total = round((sum(float((bucket or {}).get('avg_r') or 0.0) * int((bucket or {}).get('closed_trades') or 0) for bucket in strategy_perf_by_strategy.values()) / max(1, closed_trade_count)), 4)
+    avg_return_total = round((sum(float((bucket or {}).get('avg_return_pct') or 0.0) * int((bucket or {}).get('closed_trades') or 0) for bucket in strategy_perf_by_strategy.values()) / max(1, closed_trade_count)), 4)
+    overall_win_rate = round((total_wins / max(1, closed_trade_count)), 4)
+    perf_maturity = 'LOW SAMPLE' if closed_trade_count < 30 else ('BUILDING' if closed_trade_count < 75 else 'ESTABLISHED')
+    perf_maturity_class = 'bad' if closed_trade_count < 10 else ('neutral' if closed_trade_count < 30 else 'good')
+    strategy_perf_rows = ''.join(
+        f'<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt((bucket or {}).get("closed_trades"))}</td><td>{_dashboard_fmt((bucket or {}).get("wins"))}</td><td>{_dashboard_fmt((bucket or {}).get("losses"))}</td><td>{_dashboard_pct(float((bucket or {}).get("win_rate") or 0.0) * 100.0)}</td><td>{_dashboard_money((bucket or {}).get("gross_pnl"))}</td><td>{_dashboard_fmt((bucket or {}).get("avg_r"))}R</td></tr>'
+        for name, bucket in sorted(strategy_perf_by_strategy.items())
+    ) or '<tr><td colspan="7" class="muted">No closed trade history available.</td></tr>'
     continuity_issues = list(continuity.get('issues') or [])
     freshness_entries = freshness.get("entries") or {}
     session = freshness.get("session") or {}
@@ -13480,7 +13496,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 143 performance trim</div>
+      <div class="action-pill">Patch 145 analytics layer</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -13597,6 +13613,33 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
       <h3 style="margin-top:14px;">Strategy symbols</h3>
       <pre>{_dashboard_list_block(exposure_capacity_view.get('strategy_symbols'))}</pre>
       {exposure_capacity_badges}
+    </div>
+  </div>
+
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Performance Analytics</h2>
+      <table>{_dashboard_rows([
+        ('closed_trades', closed_trade_count),
+        ('wins', total_wins),
+        ('losses', total_losses),
+        ('flat', total_flat),
+        ('win_rate', _dashboard_pct(overall_win_rate * 100.0)),
+        ('gross_pnl', _dashboard_money(gross_pnl_total)),
+        ('avg_r', f'{_dashboard_fmt(avg_r_total)}R'),
+        ('avg_return_pct', _dashboard_pct(avg_return_total)),
+      ])}</table>
+      <h3 style="margin-top:14px;">Sample maturity</h3>
+      <div class="metric {perf_maturity_class}">{perf_maturity}</div>
+      <div class="muted">Closed trade sample size drives confidence. Under 30 trades is still early.</div>
+    </div>
+    <div class="card">
+      <h2>Strategy Attribution</h2>
+      <table>
+        <thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead>
+        <tbody>{strategy_perf_rows}</tbody>
+      </table>
     </div>
   </div>
 
