@@ -1209,7 +1209,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-142-dashboard-alerts-exception-center-visual-refresh"
+PATCH_VERSION = "patch-143-dashboard-performance-trim"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -12625,9 +12625,21 @@ def _dashboard_pct(v):
     return f"{sign}{fv:,.2f}%"
 
 
-def _dashboard_json_block(obj) -> str:
+def _dashboard_json_block(obj, max_chars: int = 3500) -> str:
     import json
-    return html.escape(json.dumps(obj, indent=2, sort_keys=False, default=str))
+    rendered = json.dumps(obj, indent=2, sort_keys=False, default=str)
+    if len(rendered) <= max_chars:
+        return html.escape(rendered)
+    try:
+        keys = list((obj or {}).keys()) if isinstance(obj, dict) else []
+    except Exception:
+        keys = []
+    preview = rendered[:max_chars].rstrip()
+    meta = f"\n\n... trimmed for dashboard performance ({len(rendered):,} chars total"
+    if keys:
+        meta += f"; top-level keys: {', '.join([str(k) for k in keys[:12]])}"
+    meta += "). Use diagnostics endpoints for full detail."
+    return html.escape(preview + meta)
 
 
 def _dashboard_rows(rows: list[tuple[str, object]]) -> str:
@@ -13458,7 +13470,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 142 visual refresh</div>
+      <div class="action-pill">Patch 143 performance trim</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -13786,19 +13798,20 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
       <pre>{html.escape(_dashboard_symbol_reason_lines(failure_market_only))}</pre>
       <h3 style="margin-top:14px;">Soft-filter only</h3>
       <pre>{html.escape(_dashboard_symbol_reason_lines(failure_soft_only))}</pre>
-      <h3 style="margin-top:14px;">Near miss</h3>
-      <pre>{html.escape(_dashboard_symbol_reason_lines(failure_near_miss))}</pre>
+      
     </div>
   </div>
 
   <div class="section grid">
     <div class="card">
       <h2>Blockers</h2>
-      <pre>{_dashboard_json_block(blockers)}</pre>
+      <div class="muted" style="margin-bottom:10px;">Dashboard preview only. Use the diagnostics links above for full raw detail.</div>
+      <pre>{_dashboard_json_block(blockers, max_chars=2200)}</pre>
     </div>
     <div class="card">
       <h2>Last Lifecycle Event</h2>
-      <pre>{_dashboard_json_block(last_lifecycle)}</pre>
+      <div class="muted" style="margin-bottom:10px;">Recent lifecycle preview trimmed for speed.</div>
+      <pre>{_dashboard_json_block(last_lifecycle, max_chars=1600)}</pre>
     </div>
   </div>
 
