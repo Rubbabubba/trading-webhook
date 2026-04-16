@@ -1216,7 +1216,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-147-diagnostics-performance-split"
+PATCH_VERSION = "patch-148-dashboard-usability-signal-clarity-refresh"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -12714,10 +12714,35 @@ def _dashboard_fmt(v):
     if v is None:
         return "—"
     if isinstance(v, bool):
-        return "true" if v else "false"
+        return "TRUE" if v else "FALSE"
     if isinstance(v, float):
         return f"{v:,.2f}"
     return html.escape(str(v))
+
+
+def _dashboard_signed_html(v, formatter):
+    rendered = formatter(v)
+    try:
+        fv = float(v)
+    except Exception:
+        return rendered
+    if fv > 0:
+        return f'<span class="pos">{rendered}</span>'
+    if fv < 0:
+        return f'<span class="neg">{rendered}</span>'
+    return rendered
+
+
+def _dashboard_scan_status_label(reason):
+    reason = str(reason or "none").strip().lower()
+    mapping = {
+        "scan_completed": "COMPLETE",
+        "outside_market_hours": "CLOSED",
+        "scan_exception": "EXCEPTION",
+        "scan_skipped": "SKIPPED",
+        "none": "NONE",
+    }
+    return mapping.get(reason, html.escape(str(reason).upper()))
 
 
 def _dashboard_money(v):
@@ -12939,8 +12964,8 @@ def _dashboard_position_rows(rows: list[dict]) -> str:
             + f"<td>{_dashboard_fmt(row.get('qty'))}</td>"
             + f"<td>{_dashboard_fmt(row.get('entry_price'))}</td>"
             + f"<td>{_dashboard_fmt(row.get('latest_price'))}</td>"
-            + f"<td>{_dashboard_money(row.get('unrealized_pl'))}</td>"
-            + f"<td>{_dashboard_pct(row.get('unrealized_pl_pct'))}</td>"
+            + f"<td>{_dashboard_signed_html(row.get('unrealized_pl'), _dashboard_money)}</td>"
+            + f"<td>{_dashboard_signed_html(row.get('unrealized_pl_pct'), _dashboard_pct)}</td>"
             + f"<td>{_dashboard_pct(row.get('distance_to_stop_pct'))}</td>"
             + f"<td>{_dashboard_pct(row.get('distance_to_target_pct'))}</td>"
             + f"<td>{_dashboard_fmt(row.get('stop_price'))}</td>"
@@ -13452,33 +13477,50 @@ def dashboard(request: Request):
     exposure_capacity_badges = _dashboard_warning_badges([*( ["portfolio_exposure_limit"] if exposure_capacity_view.get("blocked_by_portfolio_cap") else [] )])
 
     operator_alert_items: list[dict] = []
+    exception_items: list[dict] = []
     def _push_operator_alert(level: str, title: str, detail: str) -> None:
         operator_alert_items.append({"level": str(level or "info"), "title": str(title or ""), "detail": str(detail or "")})
 
+    def _push_exception(level: str, title: str, detail: str) -> None:
+        exception_items.append({"level": str(level or "info"), "title": str(title or ""), "detail": str(detail or "")})
+
     for warn in dashboard_warnings[:6]:
-        _push_operator_alert("warn", str(warn).replace('_', ' ').title(), "Detected by dashboard health checks.")
+        _push_exception("warn", str(warn).replace('_', ' ').title(), "Detected by dashboard health checks.")
 
     if reconcile_actions:
-        _push_operator_alert("warn", "Reconcile actions available", "; ".join([str(x) for x in reconcile_actions[:3]]))
+        _push_exception("warn", "Reconcile actions available", "; ".join([str(x) for x in reconcile_actions[:3]]))
+
+    for code in (continuity.get('issue_codes') or [])[:4]:
+        _push_exception('warn', str(code).replace('_', ' ').title(), 'Continuity monitor reported an issue code.')
+
+    for code in (freshness_stale + freshness_missing)[:4]:
+        _push_exception('warn', str(code).replace('_', ' ').title(), 'Freshness monitor flagged this source.')
+
+    for code in scanner_card_warnings[:4]:
+        _push_exception('warn', str(code).replace('_', ' ').title(), 'Scanner telemetry reported a warning condition.')
 
     for row in active_positions_view:
         sym = str(row.get("symbol") or "")
         d_stop = row.get("distance_to_stop_pct")
         d_target = row.get("distance_to_target_pct")
         if row.get("stop_price") in (None, "", 0, 0.0):
-            _push_operator_alert("bad", f"{sym} missing stop", "Protective stop is not populated in the active plan.")
+            _push_exception("bad", f"{sym} missing stop", "Protective stop is not populated in the active plan.")
         if isinstance(d_stop, (int, float)) and d_stop <= 1.5:
             _push_operator_alert("warn", f"{sym} near stop", f"Only {_dashboard_pct(d_stop)} from stop.")
         if isinstance(d_target, (int, float)) and d_target <= 1.5:
             _push_operator_alert("good", f"{sym} near target", f"Only {_dashboard_pct(d_target)} from target.")
         if row.get("profit_lock_price") not in (None, "", 0, 0.0):
             _push_operator_alert("good", f"{sym} profit lock armed", f"Profit lock at {_dashboard_fmt(row.get('profit_lock_price'))}.")
+        if row.get("partial_profit_taken"):
+            _push_operator_alert("info", f"{sym} partial profit taken", "Runner is still active after partial exit.")
         oot = str(row.get("open_order_types") or "").strip()
         if oot and oot != 'none':
             _push_operator_alert("info", f"{sym} broker order resting", f"Open broker order types: {oot}.")
 
     if not operator_alert_items:
-        _push_operator_alert("good", "No operator alerts", "No immediate exceptions detected.")
+        _push_operator_alert("good", "No operator alerts", "No immediate trade action alerts detected.")
+    if not exception_items:
+        _push_exception('good', 'No system exceptions', 'No current system-level exceptions detected.')
 
     exception_rows = ''.join(
         '<tr>'
@@ -13486,7 +13528,7 @@ def dashboard(request: Request):
         + f'<td>{html.escape(str((item or {}).get("title") or ""))}</td>'
         + f'<td>{html.escape(str((item or {}).get("detail") or ""))}</td>'
         + '</tr>'
-        for item in operator_alert_items[:12]
+        for item in exception_items[:12]
     )
 
     operator_alert_summary = ''.join(
@@ -13562,6 +13604,9 @@ def dashboard(request: Request):
     .card {{ background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96)); border:1px solid rgba(139,92,246,.14); border-radius:20px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.04); }}
     .metric {{ font-size:32px; font-weight:800; margin-top:8px; }}
     .muted {{ color:#9ca3af; }}
+    .pos {{ color:#74e2a7; font-weight:700; }}
+    .neg {{ color:#fb7185; font-weight:700; }}
+    .metric.compact {{ font-size:28px; word-break:break-word; line-height:1.05; }}
     .good {{ color:#74e2a7; }}
     .bad {{ color:#fb7185; }}
     .neutral {{ color:#f6c86c; }}
@@ -13603,7 +13648,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 147 diagnostics split</div>
+      <div class="action-pill">Patch 148 dashboard refresh</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -13652,10 +13697,10 @@ def dashboard(request: Request):
   </div>
 
   <div class="section kpi-grid">
-    <div class="card"><div class="muted">Release stage</div><div class="metric">{_dashboard_fmt(release.get('effective_release_stage') or release.get('system_release_stage'))}</div><div class="muted">Configured: {_dashboard_fmt(release.get('configured_release_stage') or release.get('system_release_stage'))}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_badge('Workflow enforced', ((release.get('release_workflow') or {}).get('workflow_enforced')))}{_dashboard_warning_badges(['release_stage_config_drift'] if ((release.get('release_workflow') or {}).get('configured_stage_drift')) else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Release stage</div><div class="metric">{html.escape(str(release.get('effective_release_stage') or release.get('system_release_stage') or 'UNKNOWN')).upper()}</div><div class="muted">Configured: {html.escape(str(release.get('configured_release_stage') or release.get('system_release_stage') or 'UNKNOWN')).upper()}</div>{_dashboard_badge('Live orders permitted', release.get('live_orders_permitted'))}{_dashboard_badge('Workflow enforced', ((release.get('release_workflow') or {}).get('workflow_enforced')))}{_dashboard_warning_badges(['release_stage_config_drift'] if ((release.get('release_workflow') or {}).get('configured_stage_drift')) else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Market hours</div><div class="metric {'good' if session.get('market_open_now') else 'neutral'}">{'OPEN' if session.get('market_open_now') else ('WEEKEND' if session.get('market_closed_reason') == 'weekend' else 'CLOSED')}</div><div class="muted">Now NY: {_dashboard_fmt(blockers.get('now_ny'))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{_dashboard_fmt(regime.get('favorable'))}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
-    <div class="card"><div class="muted">Last scan</div><div class="metric">{_dashboard_fmt(aligned_last_scan.get('reason') or last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(aligned_last_scan.get('ts_utc') or last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', aligned_last_scan.get('source') or 'authoritative')}</div>
+    <div class="card"><div class="muted">Regime</div><div class="metric {'bad' if regime.get('favorable') is False else 'good' if regime.get('favorable') is True else 'neutral'}">{html.escape(str(regime.get('favorable')).upper()) if regime.get('favorable') is not None else 'UNKNOWN'}</div>{_dashboard_badge('Data complete', regime.get('data_complete'))}{_dashboard_badge('Fresh', (freshness_entries.get('regime') or {}).get('fresh'))}{_dashboard_source_badge('Source', 'authoritative')}</div>
+    <div class="card"><div class="muted">Last scan</div><div class="metric compact">{_dashboard_scan_status_label(aligned_last_scan.get('reason') or last_scan.get('reason') or 'none')}</div><div class="muted">{_dashboard_fmt(aligned_last_scan.get('ts_utc') or last_scan.get('ts_utc'))}</div>{_dashboard_badge('Fresh', (freshness_entries.get('last_scan') or {}).get('fresh'))}{_dashboard_source_badge('Source', aligned_last_scan.get('source') or 'authoritative')}</div>
     <div class="card"><div class="muted">Workers</div><div class="metric {workers_metric_class}">{html.escape(str(combined_worker_status).upper())}</div><div class="muted">Scanner: {html.escape(str(scanner_display_status).upper())} ({_dashboard_fmt(worker_snapshot.get('scanner_age_sec'))}s)</div><div class="muted">Next run: {_dashboard_fmt(scanner_runtime.get('next_run_estimate_utc'))} / in {_dashboard_fmt(scanner_runtime.get('next_run_in_sec'))}s</div><div class="muted">Late by: {_dashboard_fmt(scanner_runtime.get('lateness_sec'))}s / hint: {html.escape(str(scanner_runtime.get('hint_text') or 'none'))}</div><div class="muted">Exit: {html.escape(str(exit_worker_status).upper())} ({_dashboard_fmt(worker_snapshot.get('exit_worker_age_sec'))}s)</div>{_dashboard_warning_badges([scanner_runtime.get('hint_code')] if scanner_runtime.get('hint_code') not in {'none', ''} else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Scanner telemetry</div><div class="metric {scanner_metric_class}">{_dashboard_fmt(scanner_summary.get('closed_runs_today') or 0)}</div><div class="muted">Closed today / last closed: {_dashboard_fmt(scanner_last_success)}</div><div class="muted">Worker: {html.escape(str(scanner_display_status))} / last source: {html.escape(str(scanner_summary.get('last_request_source_kind') or 'unknown'))}</div><div class="muted">Manual today: {_dashboard_fmt(scanner_summary.get('manual_request_today') or 0)} / External today: {_dashboard_fmt(scanner_summary.get('external_request_today') or 0)}</div><div class="muted">Hint: {html.escape(str(scanner_runtime.get('hint_text') or 'none'))}</div>{_dashboard_warning_badges(scanner_card_warnings)}{_dashboard_warning_badges([scanner_runtime.get('hint_code')] if scanner_runtime.get('hint_code') not in {'none', ''} else [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
     <div class="card"><div class="muted">Session date</div><div class="metric">{html.escape(str(session.get('today_ny') or 'unknown'))}</div><div class="muted">Open / close: {html.escape(str(session.get('market_open_ny') or ''))} / {html.escape(str(session.get('market_close_ny') or ''))}</div>{_dashboard_source_badge('Source', 'authoritative')}</div>
@@ -13664,7 +13709,7 @@ def dashboard(request: Request):
     <div class="card"><div class="muted">Continuity</div><div class="metric {'good' if continuity.get('ok') else 'bad'}">{'OK' if continuity.get('ok') else 'ISSUES'}</div><div class="muted">{len(continuity.get('issues') or [])} issues / idle: {authoritative_state.get('idle')}</div>{_dashboard_warning_badges(continuity.get('issue_codes') or [])}{_dashboard_source_badge('Source', 'authoritative')}</div>
   </div>
 
-  <div class="section grid">
+  <div class="section">
     <div class="card">
       <h2>Active Positions</h2>
       <table>
@@ -13673,7 +13718,9 @@ def dashboard(request: Request):
       </table>
       <div class="muted" style="margin-top:10px;">Read-only trade management view sourced from broker-backed active plans with live price snapshots.</div>
     </div>
+  </div>
 
+  <div class="section grid">
     <div class="card">
       <h2>P&amp;L Summary</h2>
       <table>{_dashboard_rows([
