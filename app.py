@@ -1216,7 +1216,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-146-adaptive-capacity-utilization"
+PATCH_VERSION = "patch-147-diagnostics-performance-split"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -13603,7 +13603,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 145 analytics layer</div>
+      <div class="action-pill">Patch 147 diagnostics split</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -13981,14 +13981,16 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
     return HTMLResponse(content=html_doc)
 
 
-@app.get("/diagnostics/swing")
-def diagnostics_swing():
+def _diagnostics_swing_payload(full: bool = False) -> dict:
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
-    return {
+    blockers = _diagnostics_swing_blockers()
+    payload = {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
         'strategy_name': SWING_STRATEGY_NAME,
+        'payload_mode': 'full' if full else 'summary',
+        'full_endpoint': '/diagnostics/swing_full',
         'scanner': {
             'enabled': SCANNER_ENABLED,
             'dry_run': SCANNER_DRY_RUN,
@@ -14005,28 +14007,22 @@ def diagnostics_swing():
             'swing_portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         },
         'regime': dict(LAST_REGIME_SNAPSHOT),
-        'recovery': {
-            'startup_state_restore': dict(globals().get('STARTUP_STATE') or {}),
-            'recovered_active_symbols': [str(sym or '').upper() for sym, plan in (TRADE_PLAN or {}).items() if isinstance(plan, dict) and bool(plan.get('active')) and _plan_is_recovered(plan)],
-        },
-        'persistence': {
-            'scan_state_path': SCAN_STATE_PATH,
-            'regime_state_path': REGIME_STATE_PATH,
-            'paper_lifecycle_state_path': PAPER_LIFECYCLE_STATE_PATH,
-            'scan_state_restore': dict(globals().get('SCAN_STATE_RESTORE') or {}),
-            'regime_state_restore': dict(globals().get('REGIME_STATE_RESTORE') or {}),
-            'paper_lifecycle_state_restore': dict(globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}),
-            'scanner_telemetry_state_path': SCANNER_TELEMETRY_STATE_PATH,
-            'scanner_telemetry_state_restore': dict(globals().get('SCANNER_TELEMETRY_STATE_RESTORE') or {}),
-            'last_scan_state_source': 'memory' if LAST_SCAN else ('restored' if (globals().get('SCAN_STATE_RESTORE') or {}).get('last_scan_restored') else 'empty'),
-            'last_regime_state_source': 'memory' if LAST_REGIME_SNAPSHOT else ('restored' if (globals().get('REGIME_STATE_RESTORE') or {}).get('current_restored') else 'empty'),
-            'last_paper_lifecycle_source': 'memory' if LAST_PAPER_LIFECYCLE else ('restored' if (globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}).get('last_event_restored') else 'empty'),
-            'last_scanner_telemetry_source': 'memory' if LAST_SCANNER_TELEMETRY else ('restored' if (globals().get('SCANNER_TELEMETRY_STATE_RESTORE') or {}).get('last_restored') else 'empty'),
-        },
         'release': release_gate_status(),
         'session': _session_boundary_snapshot(),
         'freshness': freshness_snapshot(),
-        'blockers': _diagnostics_swing_blockers(),
+        'blockers': {
+            'market_open_now': bool((blockers or {}).get('market_open_now')),
+            'blocked_by_market_hours': bool((blockers or {}).get('blocked_by_market_hours')),
+            'blocked_by_weak_regime': bool((blockers or {}).get('blocked_by_weak_regime')),
+            'blocked_by_entry_cap': bool((blockers or {}).get('blocked_by_entry_cap')),
+            'blocked_by_portfolio_cap': bool((blockers or {}).get('blocked_by_portfolio_cap')),
+            'remaining_new_entries_today': int((blockers or {}).get('remaining_new_entries_today') or 0),
+            'portfolio_exposure': (blockers or {}).get('portfolio_exposure'),
+            'portfolio_exposure_cap': (blockers or {}).get('portfolio_exposure_cap'),
+            'strategy_symbols': list((blockers or {}).get('strategy_symbols') or []),
+            'last_scan_ts': (blockers or {}).get('last_scan_ts'),
+            'last_scan_reason': (blockers or {}).get('last_scan_reason'),
+        },
         'scan_history_size': len(SCAN_HISTORY),
         'last_scan': {
             'ts_utc': LAST_SCAN.get('ts_utc'),
@@ -14035,9 +14031,57 @@ def diagnostics_swing():
             'signals': LAST_SCAN.get('signals'),
             'would_trade': LAST_SCAN.get('would_trade'),
             'blocked': LAST_SCAN.get('blocked'),
-            'summary': dict((LAST_SCAN.get('summary') or {})),
+            'summary': {
+                'symbols_total': int(((LAST_SCAN.get('summary') or {}).get('symbols_total') or 0)),
+                'eligible_total': int(((LAST_SCAN.get('summary') or {}).get('eligible_total') or 0)),
+                'selected_total': int(((LAST_SCAN.get('summary') or {}).get('selected_total') or 0)),
+                'selected_symbols': list(((LAST_SCAN.get('summary') or {}).get('selected_symbols') or [])),
+                'top_rejection_reasons': list(((LAST_SCAN.get('summary') or {}).get('top_rejection_reasons') or []))[:5],
+            },
         },
     }
+    if full:
+        payload.update({
+            'recovery': {
+                'startup_state_restore': dict(globals().get('STARTUP_STATE') or {}),
+                'recovered_active_symbols': [str(sym or '').upper() for sym, plan in (TRADE_PLAN or {}).items() if isinstance(plan, dict) and bool(plan.get('active')) and _plan_is_recovered(plan)],
+            },
+            'persistence': {
+                'scan_state_path': SCAN_STATE_PATH,
+                'regime_state_path': REGIME_STATE_PATH,
+                'paper_lifecycle_state_path': PAPER_LIFECYCLE_STATE_PATH,
+                'scan_state_restore': dict(globals().get('SCAN_STATE_RESTORE') or {}),
+                'regime_state_restore': dict(globals().get('REGIME_STATE_RESTORE') or {}),
+                'paper_lifecycle_state_restore': dict(globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}),
+                'scanner_telemetry_state_path': SCANNER_TELEMETRY_STATE_PATH,
+                'scanner_telemetry_state_restore': dict(globals().get('SCANNER_TELEMETRY_STATE_RESTORE') or {}),
+                'last_scan_state_source': 'memory' if LAST_SCAN else ('restored' if (globals().get('SCAN_STATE_RESTORE') or {}).get('last_scan_restored') else 'empty'),
+                'last_regime_state_source': 'memory' if LAST_REGIME_SNAPSHOT else ('restored' if (globals().get('REGIME_STATE_RESTORE') or {}).get('current_restored') else 'empty'),
+                'last_paper_lifecycle_source': 'memory' if LAST_PAPER_LIFECYCLE else ('restored' if (globals().get('PAPER_LIFECYCLE_STATE_RESTORE') or {}).get('last_event_restored') else 'empty'),
+                'last_scanner_telemetry_source': 'memory' if LAST_SCANNER_TELEMETRY else ('restored' if (globals().get('SCANNER_TELEMETRY_STATE_RESTORE') or {}).get('last_restored') else 'empty'),
+            },
+            'blockers': blockers,
+            'last_scan': {
+                'ts_utc': LAST_SCAN.get('ts_utc'),
+                'reason': LAST_SCAN.get('reason'),
+                'scanned': LAST_SCAN.get('scanned'),
+                'signals': LAST_SCAN.get('signals'),
+                'would_trade': LAST_SCAN.get('would_trade'),
+                'blocked': LAST_SCAN.get('blocked'),
+                'summary': dict((LAST_SCAN.get('summary') or {})),
+            },
+        })
+    return payload
+
+
+@app.get("/diagnostics/swing")
+def diagnostics_swing():
+    return _diagnostics_swing_payload(full=False)
+
+
+@app.get("/diagnostics/swing_full")
+def diagnostics_swing_full():
+    return _diagnostics_swing_payload(full=True)
 
 
 @app.get("/diagnostics/regime")
@@ -14175,8 +14219,25 @@ def diagnostics_paper_execution_proof(limit: int = 20):
     _refresh_regime_snapshot_if_needed()
     return _paper_execution_proof_snapshot(limit=limit)
 
-@app.get("/diagnostics/candidates")
-def diagnostics_candidates(limit: int = 25):
+def _candidate_row_compact(item: dict) -> dict:
+    row = dict(item or {})
+    return {
+        'symbol': str(row.get('symbol') or '').upper(),
+        'strategy': row.get('strategy'),
+        'eligible': bool(row.get('eligible')),
+        'rank_score': row.get('rank_score'),
+        'selection_quality_score': row.get('selection_quality_score'),
+        'rejection_reasons': list(row.get('rejection_reasons') or []),
+        'selection_blockers': list(row.get('selection_blockers') or []),
+        'close': row.get('close'),
+        'close_to_high_pct': row.get('close_to_high_pct'),
+        'breakout_distance_pct': row.get('breakout_distance_pct'),
+        'correlation_group_id': row.get('correlation_group_id'),
+        'correlation_group_open_count': row.get('correlation_group_open_count'),
+    }
+
+
+def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict:
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
     lim = max(1, min(int(limit or 25), 200))
@@ -14185,11 +14246,8 @@ def diagnostics_candidates(limit: int = 25):
     preview = _current_runtime_preview_snapshot(limit=lim)
     active_scan = _active_truth_scan(limit=lim)
     active_summary = (active_scan.get('summary') if isinstance(active_scan, dict) else {}) or {}
-    items = list(active_summary.get('top_candidates') or [])
-    items = [dict(item) for item in items[:lim] if isinstance(item, dict)]
+    items = [dict(item) for item in (active_summary.get('top_candidates') or [])[:lim] if isinstance(item, dict)]
     source = active_scan.get('_scan_source') if isinstance(active_scan, dict) else None
-    shadow_items = [dict(item) for item in items if bool((item or {}).get('shadow_regime_candidate'))]
-    shadow_alignment_items = [dict(item) for item in items if bool((item or {}).get('shadow_alignment_only_candidate'))]
     matching_history = _matching_candidate_history(current_runtime, limit=5)
     active_symbols = [str(s).strip().upper() for s in (active_summary.get('symbols') or active_scan.get('symbols') or []) if str(s).strip()]
     eligible_items = [dict(item) for item in items if bool((item or {}).get('eligible'))]
@@ -14202,15 +14260,36 @@ def diagnostics_candidates(limit: int = 25):
         for item in items
         if bool((item or {}).get('selection_blockers'))
     ]
-    return {
+    blockers = _diagnostics_swing_blockers()
+    payload = {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
         'strategy_name': SWING_STRATEGY_NAME,
+        'payload_mode': 'full' if full else 'summary',
+        'full_endpoint': '/diagnostics/candidates_full',
         'truth_source': source,
-        'regime': dict(preview.get('regime') or LAST_REGIME_SNAPSHOT or {}),
-        'blockers': _diagnostics_swing_blockers(),
+        'regime': {
+            'ts_utc': (preview.get('regime') or LAST_REGIME_SNAPSHOT or {}).get('ts_utc'),
+            'favorable': (preview.get('regime') or LAST_REGIME_SNAPSHOT or {}).get('favorable'),
+            'score': (preview.get('regime') or LAST_REGIME_SNAPSHOT or {}).get('score'),
+            'reasons': list(((preview.get('regime') or LAST_REGIME_SNAPSHOT or {}).get('reasons') or [])),
+            'data_complete': (preview.get('regime') or LAST_REGIME_SNAPSHOT or {}).get('data_complete'),
+        },
+        'blockers': {
+            'market_open_now': bool((blockers or {}).get('market_open_now')),
+            'blocked_by_market_hours': bool((blockers or {}).get('blocked_by_market_hours')),
+            'blocked_by_weak_regime': bool((blockers or {}).get('blocked_by_weak_regime')),
+            'blocked_by_entry_cap': bool((blockers or {}).get('blocked_by_entry_cap')),
+            'blocked_by_portfolio_cap': bool((blockers or {}).get('blocked_by_portfolio_cap')),
+            'remaining_new_entries_today': int((blockers or {}).get('remaining_new_entries_today') or 0),
+            'portfolio_exposure': (blockers or {}).get('portfolio_exposure'),
+            'portfolio_exposure_cap': (blockers or {}).get('portfolio_exposure_cap'),
+            'strategy_symbols': list((blockers or {}).get('strategy_symbols') or []),
+            'last_scan_ts': (blockers or {}).get('last_scan_ts'),
+            'last_scan_reason': (blockers or {}).get('last_scan_reason'),
+        },
         'count': len(items),
-        'items': items,
+        'items': [_candidate_row_compact(item) for item in items],
         'source': source,
         'active_scan_ts_utc': active_scan.get('ts_utc') if isinstance(active_scan, dict) else None,
         'active_scan_symbols': active_symbols,
@@ -14220,20 +14299,40 @@ def diagnostics_candidates(limit: int = 25):
         'eligible_symbols': [str((item or {}).get('symbol') or '').upper() for item in eligible_items if str((item or {}).get('symbol') or '').strip()],
         'selected_total': int(active_summary.get('selected_total') or 0),
         'selected_symbols': list(active_summary.get('selected_symbols') or []),
-        'eligible_but_not_selected': [dict(r) for r in (active_summary.get('eligible_but_not_selected') or []) if isinstance(r, dict)],
         'selection_blocked_items': selection_blocked_items[:lim],
-        'shadow_count': len(shadow_items),
-        'shadow_items': shadow_items[:SHADOW_REGIME_MAX_CANDIDATES],
-        'shadow_selected_count': len((matching_history[-1].get('shadow_selected') if matching_history else []) or []),
-        'shadow_selected': list((matching_history[-1].get('shadow_selected') if matching_history else []) or []),
-        'shadow_alignment_count': len(shadow_alignment_items),
-        'shadow_alignment_items': shadow_alignment_items[:SHADOW_REGIME_MAX_CANDIDATES],
-        'shadow_alignment_selected_count': len((matching_history[-1].get('shadow_alignment_selected') if matching_history else []) or []),
-        'shadow_alignment_selected': list((matching_history[-1].get('shadow_alignment_selected') if matching_history else []) or []),
-        'history': matching_history,
-        'history_matches_current_runtime': bool(matching_history),
         'invalid_runtime_symbols': list(runtime_validation.get('invalid_runtime_symbols') or []),
+        'adaptive_capacity': dict((active_summary.get('adaptive_capacity') or {})),
     }
+    if full:
+        shadow_items = [dict(item) for item in items if bool((item or {}).get('shadow_regime_candidate'))]
+        shadow_alignment_items = [dict(item) for item in items if bool((item or {}).get('shadow_alignment_only_candidate'))]
+        payload.update({
+            'regime': dict(preview.get('regime') or LAST_REGIME_SNAPSHOT or {}),
+            'blockers': blockers,
+            'items': items,
+            'eligible_but_not_selected': [dict(r) for r in (active_summary.get('eligible_but_not_selected') or []) if isinstance(r, dict)],
+            'shadow_count': len(shadow_items),
+            'shadow_items': shadow_items[:SHADOW_REGIME_MAX_CANDIDATES],
+            'shadow_selected_count': len((matching_history[-1].get('shadow_selected') if matching_history else []) or []),
+            'shadow_selected': list((matching_history[-1].get('shadow_selected') if matching_history else []) or []),
+            'shadow_alignment_count': len(shadow_alignment_items),
+            'shadow_alignment_items': shadow_alignment_items[:SHADOW_REGIME_MAX_CANDIDATES],
+            'shadow_alignment_selected_count': len((matching_history[-1].get('shadow_alignment_selected') if matching_history else []) or []),
+            'shadow_alignment_selected': list((matching_history[-1].get('shadow_alignment_selected') if matching_history else []) or []),
+            'history': matching_history,
+            'history_matches_current_runtime': bool(matching_history),
+        })
+    return payload
+
+
+@app.get("/diagnostics/candidates")
+def diagnostics_candidates(limit: int = 25):
+    return _diagnostics_candidates_payload(limit=limit, full=False)
+
+
+@app.get("/diagnostics/candidates_full")
+def diagnostics_candidates_full(limit: int = 25):
+    return _diagnostics_candidates_payload(limit=limit, full=True)
 
 
 @app.get("/diagnostics/failure_decomp")
