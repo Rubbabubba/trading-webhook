@@ -1216,7 +1216,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-149-daily-halt-exit-override"
+PATCH_VERSION = "patch-150-truth-alignment-manual-exit-reconcile"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -12110,6 +12110,23 @@ async def worker_exit(req: Request):
             if _plan_is_pending_entry(plan):
                 results.append({"symbol": symbol, "action": "pending_entry_wait", "order_status": plan.get("order_status")})
                 continue
+            if plan.get("active") and not bool(plan.get("manual_exit_reconciled")):
+                exit_px = _safe_float(plan.get("last_price") or 0.0)
+                if exit_px <= 0:
+                    try:
+                        exit_px = _safe_float(get_latest_price(symbol) or 0.0)
+                    except Exception:
+                        exit_px = 0.0
+                closed_trade = _append_strategy_closed_trade(plan, exit_px, reason="manual_exit_reconciled", source="broker_reconcile") if exit_px > 0 else {}
+                plan["manual_exit_reconciled"] = True
+                plan["manual_exit_reconciled_at"] = now_ny().isoformat()
+                plan["manual_exit_price"] = round(exit_px, 4) if exit_px > 0 else None
+                try:
+                    _transition_execution_lifecycle(plan, symbol, "closed", reason="manual_exit_reconciled", details={"exit_price": round(exit_px,4) if exit_px > 0 else None}, allow_illegal=True)
+                except Exception:
+                    pass
+                record_decision("EXIT", "worker_exit", symbol, side=str(plan.get("side") or "buy"), signal=str(plan.get("signal") or ""), action="manual_exit_reconciled", reason="no_open_position", price=(round(exit_px, 4) if exit_px > 0 else None), meta={"closed_trade_recorded": bool(closed_trade)})
+                results.append({"symbol": symbol, "action": "manual_exit_reconciled", "reason": "no_open_position", "exit_price": round(exit_px, 4) if exit_px > 0 else None, "closed_trade_recorded": bool(closed_trade)})
             plan["active"] = False
             results.append({"symbol": symbol, "action": "plan_deactivated", "reason": "no_open_position"})
             continue
@@ -13391,6 +13408,7 @@ def dashboard(request: Request):
     last_entry_event = _latest_lifecycle_event('entry', {'planned', 'submitted', 'filled', 'opened'})
     last_exit_event = _latest_lifecycle_event('exit', {'submitted', 'closed', 'filled', 'completed', 'dry_run'})
     trade_path_proven = bool((lifecycle_counts.get('candidate_selected') or 0) > 0 and (lifecycle_counts.get('entry_events') or 0) > 0 and (lifecycle_counts.get('exit_events') or 0) > 0)
+    historical_trade_path_proven = bool(((release.get('release_workflow') or {}).get('promotion_targets') or {}).get('live', {}).get('ready')) or bool(release.get('go_live_eligible')) or bool(closed_trade_count > 0)
     ready_for_guarded_live = bool(((release.get('release_workflow') or {}).get('promotion_targets') or {}).get('guarded_live_eligible', {}).get('ready'))
     readiness_blockers = list((((release.get('release_workflow') or {}).get('promotion_targets') or {}).get('guarded_live_eligible', {}).get('unmet_conditions')) or (release.get('unmet_conditions') or []))
     readiness_metric_class = 'good' if ready_for_guarded_live else ('neutral' if component_ready else 'bad')
@@ -13415,6 +13433,10 @@ def dashboard(request: Request):
         readiness_assessment_label = 'HEALTHY / DATA NOT TRADABLE'
         readiness_assessment_class = 'neutral'
         readiness_assessment_text = str(readiness.get('data_feed_detail') or 'Components are healthy, but the current quote data is not tradable.')
+    elif system_health_ok and market_tradable_now and not trade_path_proven and historical_trade_path_proven:
+        readiness_assessment_label = 'HEALTHY / NO NEW ENTRY THIS SESSION'
+        readiness_assessment_class = 'neutral'
+        readiness_assessment_text = 'System path is historically proven, but there has not been a fresh end-to-end entry in the current session.'
     elif system_health_ok and market_tradable_now and not trade_path_proven:
         readiness_assessment_label = 'HEALTHY / PATH NOT PROVEN'
         readiness_assessment_class = 'neutral'
@@ -13429,6 +13451,15 @@ def dashboard(request: Request):
     if (not scan_summary) or scan_summary.get('skipped') or scan_summary.get('skip_reason'):
         scan_summary = _dashboard_latest_completed_scan_summary()
     top_candidates = list((scan_summary.get('top_candidates') or []))[:5]
+    current_daily_halt_active = bool(blockers.get('daily_halt_active'))
+    scan_reason_display_note = ''
+    if not current_daily_halt_active:
+        scan_reason_display_note = ' (halt cleared since scan)' if any('daily_halt_active' in list((item or {}).get('rejection_reasons') or []) for item in top_candidates) else ''
+    for item in top_candidates:
+        reasons = [str(r or '').strip() for r in list((item or {}).get('rejection_reasons') or []) if str(r or '').strip()]
+        if (not current_daily_halt_active) and ('daily_halt_active' in reasons):
+            reasons = ['halt_cleared_since_scan' if r == 'daily_halt_active' else r for r in reasons]
+            item['rejection_reasons'] = reasons
     rejection_counts = dict(scan_summary.get('rejection_counts') or {})
     if not rejection_counts:
         for item in (scan_summary.get('top_rejection_reasons') or []):
@@ -13442,6 +13473,8 @@ def dashboard(request: Request):
                 rejection_counts[reason] = int(count)
             except (TypeError, ValueError):
                 continue
+    if not current_daily_halt_active and 'daily_halt_active' in rejection_counts:
+        rejection_counts['halt_cleared_since_scan'] = int(rejection_counts.pop('daily_halt_active') or 0)
     top_rejections = sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
 
     latest_candidate_summary = dict((last_scan.get('summary') or {}))
@@ -13660,7 +13693,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 148 dashboard refresh</div>
+      <div class="action-pill">Patch 150 truth sync</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -13948,6 +13981,7 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
   <div class="section grid">
     <div class="card">
       <h2>Top Candidate Rejections</h2>
+      <div class="muted" style="margin-bottom:10px;">From last scan {html.escape(str(last_scan.get('ts_utc') or last_scan.get('timestamp_utc') or ''))}{html.escape(scan_reason_display_note)}</div>
       <table>
         <thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead>
         <tbody>{candidate_rows}</tbody>
