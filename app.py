@@ -887,6 +887,8 @@ ADAPTIVE_CAPACITY_SOURCE = "worker_scan_adaptive_capacity"
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE", default=0.35)
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R", default=-0.15)
 STRATEGY_PERFORMANCE_STATE_PATH = getenv_any("STRATEGY_PERFORMANCE_STATE_PATH", default="/var/data/strategy_performance_state.json")
+STRATEGY_PERFORMANCE_QUARANTINE_SOURCES = {"broker_truth_sync", "broker_truth_reconcile", "manual_exit_reconciled", "broker_rebuild", "broker_manual_exit", "manual_broker_exit"}
+STRATEGY_PERFORMANCE_QUARANTINE_PATH = getenv_any("STRATEGY_PERFORMANCE_QUARANTINE_PATH", default="/var/data/strategy_performance_state.quarantine.json")
 STRATEGY_PERFORMANCE_HISTORY_LIMIT = getenv_int_any("STRATEGY_PERFORMANCE_HISTORY_LIMIT", default=200)
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
@@ -1216,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-152-broker-truth-source-accounting-completion"
+PATCH_VERSION = "patch-154-performance-state-quarantine-clean-rebuild"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4267,10 +4269,7 @@ def _reconcile_manual_exit_plan(plan: dict | None, symbol: str, source: str = "b
             exit_px = 0.0
     if exit_px <= 0:
         return {"ok": False, "reason": "no_exit_price"}
-    if _strategy_closed_trade_already_recorded(plan, exit_px, tolerance_sec=86400):
-        return {"ok": True, "reason": "already_recorded", "exit_price": round(exit_px, 4), "closed_trade_recorded": False}
-    closed_trade = _append_strategy_closed_trade(plan, exit_px, reason="manual_exit_reconciled", source=source)
-    return {"ok": bool(closed_trade), "reason": "manual_exit_reconciled" if closed_trade else "append_failed", "exit_price": round(exit_px, 4), "closed_trade_recorded": bool(closed_trade), "order_id": str((order or {}).get("id") or "")}
+    return {"ok": True, "reason": "patch154_quarantined", "exit_price": round(exit_px, 4), "closed_trade_recorded": False, "order_id": str((order or {}).get("id") or "")}
 
 
 def _infer_strategy_name_for_symbol(symbol: str) -> str:
@@ -4333,73 +4332,7 @@ def _find_recent_entry_fill_for_symbol(symbol: str, side: str, before_iso: str |
 
 
 def _broker_truth_sync_strategy_performance(force: bool = False) -> dict:
-    global BROKER_TRUTH_SYNC_LAST_TS
-    now_ts = _time.time()
-    if (not force) and BROKER_TRUTH_SYNC_LAST_TS and (now_ts - float(BROKER_TRUTH_SYNC_LAST_TS or 0.0) < float(BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC)):
-        return {'ok': True, 'skipped': True, 'reason': 'rate_limited'}
-    BROKER_TRUTH_SYNC_LAST_TS = now_ts
-    try:
-        open_syms = {str((p or {}).get('symbol') or '').strip().upper() for p in list_open_positions_details_allowed() if str((p or {}).get('symbol') or '').strip()}
-    except Exception:
-        open_syms = set()
-    after_iso = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
-    orders = _alpaca_get_orders_rest(status='all', limit=500, after_iso=after_iso)
-    appended = []
-    seen_exit_order_ids = {str((row or {}).get('source_order_id') or '') for row in list((STRATEGY_PERFORMANCE_STATE or {}).get('closed_trades') or []) if str((row or {}).get('source_order_id') or '')}
-    for order in orders:
-        try:
-            sym = str(_order_attr(order, 'symbol', '') or '').upper()
-            if not sym or sym in open_syms:
-                continue
-            status = str(getattr(_order_attr(order, 'status', None), 'value', _order_attr(order, 'status', '')) or '').lower()
-            side = str(getattr(_order_attr(order, 'side', None), 'value', _order_attr(order, 'side', '')) or '').lower()
-            if status not in {'filled', 'partially_filled'} or side != 'sell':
-                continue
-            exit_order_id = str(_order_attr(order, 'id', '') or '')
-            if exit_order_id and exit_order_id in seen_exit_order_ids:
-                continue
-            exit_px = _safe_float(_order_attr(order, 'filled_avg_price', 0.0) or 0.0)
-            exit_qty = abs(_safe_float(_order_attr(order, 'filled_qty', 0.0) or 0.0))
-            exit_ts = str(_order_attr(order, 'filled_at', '') or _order_attr(order, 'updated_at', '') or _order_attr(order, 'submitted_at', '') or '')
-            if exit_px <= 0 or exit_qty <= 0:
-                continue
-            entry_order = _find_recent_entry_fill_for_symbol(sym, 'buy', before_iso=exit_ts or None)
-            entry_px = _safe_float((entry_order or {}).get('filled_avg_price') or 0.0)
-            entry_qty = abs(_safe_float((entry_order or {}).get('filled_qty') or 0.0))
-            if entry_px <= 0 or entry_qty <= 0:
-                continue
-            plan = {
-                'symbol': sym,
-                'side': 'buy',
-                'signal': _infer_strategy_name_for_symbol(sym),
-                'strategy_name': _infer_strategy_name_for_symbol(sym),
-                'entry_price': entry_px,
-                'avg_fill_price': entry_px,
-                'filled_qty': min(entry_qty, exit_qty),
-                'qty': min(entry_qty, exit_qty),
-                'risk_per_share': max(abs(entry_px * 0.02), 0.01),
-                'submitted_at': str((entry_order or {}).get('submitted_at') or ''),
-                'thesis': {'regime_mode': None},
-            }
-            if _strategy_closed_trade_already_recorded(plan, exit_px, tolerance_sec=30*86400):
-                continue
-            closed_trade = _append_strategy_closed_trade(plan, exit_px, reason='broker_truth_reconcile', source='broker_truth_sync')
-            if closed_trade:
-                closed_trade['source_order_id'] = exit_order_id
-                state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state())
-                closed = list(state.get('closed_trades') or [])
-                if closed:
-                    closed[-1] = dict(closed_trade)
-                    state['closed_trades'] = closed
-                    globals()['STRATEGY_PERFORMANCE_STATE'] = state
-                    _recompute_strategy_performance_state()
-                    persist_strategy_performance_state(reason='broker_truth_sync')
-                appended.append(sym)
-                if exit_order_id:
-                    seen_exit_order_ids.add(exit_order_id)
-        except Exception:
-            continue
-    return {'ok': True, 'appended_symbols': appended, 'appended_count': len(appended)}
+    return {"ok": True, "skipped": True, "reason": "patch154_quarantined"}
 
 
 def _format_order_qty(qty: float) -> str:
@@ -5410,6 +5343,57 @@ def _strategy_performance_default_state() -> dict:
     return {"closed_trades": [], "by_strategy": {}, "kill_switch": {}}
 
 
+def _strategy_trade_row_fingerprint(row: dict | None) -> str:
+    row = dict(row or {})
+    explicit = str(row.get("close_fingerprint") or "").strip()
+    if explicit:
+        return explicit
+    material = "|".join([
+        str(row.get("symbol") or "").upper(),
+        str(row.get("strategy_name") or row.get("signal") or "").strip().lower(),
+        f"{_safe_float(row.get('entry_price') or 0.0):.4f}",
+        f"{_safe_float(row.get('exit_price') or 0.0):.4f}",
+        f"{abs(_safe_float(row.get('qty') or 0.0)):.4f}",
+        str(row.get("reason") or "").strip().lower(),
+        str(row.get("ts_utc") or "").strip(),
+    ])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _sanitize_strategy_performance_state(state: dict | None) -> tuple[dict, dict]:
+    state = dict(state or {})
+    original_closed = list(state.get("closed_trades") or [])
+    kept = []
+    quarantined = []
+    seen = set()
+    for raw in original_closed:
+        row = dict(raw or {})
+        source = str(row.get("source") or "").strip().lower()
+        if source in STRATEGY_PERFORMANCE_QUARANTINE_SOURCES:
+            quarantined.append(row)
+            continue
+        fp = _strategy_trade_row_fingerprint(row)
+        if fp in seen:
+            quarantined.append(row)
+            continue
+        seen.add(fp)
+        row["close_fingerprint"] = fp
+        kept.append(row)
+    sanitized = {
+        "closed_trades": kept[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):],
+        "by_strategy": dict(state.get("by_strategy") or {}),
+        "kill_switch": dict(state.get("kill_switch") or {}),
+    }
+    meta = {
+        "original_count": len(original_closed),
+        "kept_count": len(kept),
+        "quarantined_count": len(quarantined),
+        "changed": len(original_closed) != len(kept),
+        "quarantined_rows": quarantined,
+    }
+    return sanitized, meta
+
+
 def persist_strategy_performance_state(reason: str = ""):
     payload = {"saved_at_utc": datetime.now(timezone.utc).isoformat(), "reason": reason, "state": dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state())}
     return _safe_json_write(STRATEGY_PERFORMANCE_STATE_PATH, payload)
@@ -5417,15 +5401,31 @@ def persist_strategy_performance_state(reason: str = ""):
 
 def restore_strategy_performance_state() -> dict:
     payload = _safe_json_read(STRATEGY_PERFORMANCE_STATE_PATH)
-    restored = {"path": STRATEGY_PERFORMANCE_STATE_PATH, "loaded": False, "closed_trades_restored": 0}
+    restored = {"path": STRATEGY_PERFORMANCE_STATE_PATH, "loaded": False, "closed_trades_restored": 0, "quarantine_applied": False, "quarantined_count": 0, "quarantine_path": STRATEGY_PERFORMANCE_QUARANTINE_PATH}
     state = payload.get("state") if isinstance(payload, dict) else {}
     if not isinstance(state, dict) or not state:
         globals()["STRATEGY_PERFORMANCE_STATE"] = _strategy_performance_default_state()
         return restored
-    closed = list(state.get("closed_trades") or [])[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]
-    globals()["STRATEGY_PERFORMANCE_STATE"] = {"closed_trades": closed, "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {})}
+    sanitized, meta = _sanitize_strategy_performance_state(state)
+    if meta.get("changed"):
+        quarantine_payload = {
+            "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+            "reason": "patch154_quarantine",
+            "prior_payload": payload if isinstance(payload, dict) else {"state": state},
+            "quarantined_rows": meta.get("quarantined_rows") or [],
+        }
+        try:
+            _safe_json_write(STRATEGY_PERFORMANCE_QUARANTINE_PATH, quarantine_payload)
+        except Exception:
+            pass
+        restored["quarantine_applied"] = True
+        restored["quarantined_count"] = int(meta.get("quarantined_count") or 0)
+    globals()["STRATEGY_PERFORMANCE_STATE"] = sanitized
+    _recompute_strategy_performance_state()
+    if meta.get("changed"):
+        persist_strategy_performance_state(reason="patch154_quarantine_rebuild")
     restored["loaded"] = True
-    restored["closed_trades_restored"] = len(closed)
+    restored["closed_trades_restored"] = len(list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []))
     return restored
 
 
@@ -5480,6 +5480,7 @@ def _append_strategy_closed_trade(plan: dict | None, exit_price: float | None, r
     gross_pnl = pnl_per_share * qty
     risk_per_share = abs(entry_price - stop_price) if stop_price > 0 else abs(_safe_float(plan.get("risk_per_share") or 0.0))
     row = {"ts_utc": datetime.now(timezone.utc).isoformat(), "symbol": str(plan.get("symbol") or plan.get("instrument") or "").upper(), "strategy_name": strategy_name, "signal": str(plan.get("signal") or strategy_name), "entry_price": round(entry_price,4), "exit_price": round(exit_px,4), "qty": round(qty,4), "gross_pnl": round(gross_pnl,4), "pnl_r": round((pnl_per_share / risk_per_share) if risk_per_share > 0 else 0.0,4), "return_pct": round((pnl_per_share / entry_price * 100.0) if entry_price > 0 else 0.0,4), "reason": str(reason or ""), "source": str(source or ""), "entry_regime_mode": str(((plan.get("thesis") or {}).get("regime_mode") or "")).strip().lower() or None, "max_hold_days": int(plan.get("max_hold_days") or 0)}
+    row["close_fingerprint"] = _strategy_trade_row_fingerprint(row)
     state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state()); closed = list(state.get("closed_trades") or []); closed.append(row); state["closed_trades"] = closed[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]; globals()["STRATEGY_PERFORMANCE_STATE"] = state; _recompute_strategy_performance_state(); persist_strategy_performance_state(reason=f"closed_trade:{strategy_name}"); return row
 
 
@@ -13546,12 +13547,8 @@ def _dashboard_latest_completed_scan_summary() -> dict:
 
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
-    try:
-        _broker_truth_sync_strategy_performance()
-    except Exception:
-        pass
     state = _recompute_strategy_performance_state()
-    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
+    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "quarantine_path": STRATEGY_PERFORMANCE_QUARANTINE_PATH, "broker_truth_sync_enabled": False, "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
 
 
 @app.get("/diagnostics/execution_spread_policy")
@@ -13955,7 +13952,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 152 broker truth</div>
+      <div class="action-pill">Patch 154 perf quarantine</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
