@@ -1216,10 +1216,12 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-151-realized-pnl-broker-reconciliation"
+PATCH_VERSION = "patch-152-broker-truth-source-accounting-completion"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
+BROKER_TRUTH_SYNC_LAST_TS = 0.0
+BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC = 60.0
 
 
 # =============================
@@ -4269,6 +4271,135 @@ def _reconcile_manual_exit_plan(plan: dict | None, symbol: str, source: str = "b
         return {"ok": True, "reason": "already_recorded", "exit_price": round(exit_px, 4), "closed_trade_recorded": False}
     closed_trade = _append_strategy_closed_trade(plan, exit_px, reason="manual_exit_reconciled", source=source)
     return {"ok": bool(closed_trade), "reason": "manual_exit_reconciled" if closed_trade else "append_failed", "exit_price": round(exit_px, 4), "closed_trade_recorded": bool(closed_trade), "order_id": str((order or {}).get("id") or "")}
+
+
+def _infer_strategy_name_for_symbol(symbol: str) -> str:
+    sym = str(symbol or '').strip().upper()
+    if not sym:
+        return BREAKOUT_STRATEGY_NAME
+    events = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not events or events[-1] != LAST_PAPER_LIFECYCLE):
+        events.append(dict(LAST_PAPER_LIFECYCLE))
+    for ev in reversed(events):
+        if str((ev or {}).get('symbol') or '').strip().upper() != sym:
+            continue
+        details = dict((ev or {}).get('details') or {})
+        signal = str(details.get('signal') or details.get('strategy_name') or details.get('strategy') or '').strip().lower()
+        if signal:
+            return signal
+    return BREAKOUT_STRATEGY_NAME
+
+
+def _find_recent_entry_fill_for_symbol(symbol: str, side: str, before_iso: str | None = None) -> dict:
+    sym = str(symbol or '').upper()
+    want_side = str(side or '').lower()
+    if not sym or want_side not in {'buy', 'sell'}:
+        return {}
+    orders = _alpaca_get_orders_rest(status='all', limit=300, symbols=[sym])
+    best = {}
+    for order in orders:
+        try:
+            osym = str(_order_attr(order, 'symbol', '') or '').upper()
+            if osym != sym:
+                continue
+            ostatus = str(getattr(_order_attr(order, 'status', None), 'value', _order_attr(order, 'status', '')) or '').lower()
+            if ostatus not in {'filled', 'partially_filled'}:
+                continue
+            oside = str(getattr(_order_attr(order, 'side', None), 'value', _order_attr(order, 'side', '')) or '').lower()
+            if oside != want_side:
+                continue
+            filled_at = str(_order_attr(order, 'filled_at', '') or _order_attr(order, 'updated_at', '') or _order_attr(order, 'submitted_at', '') or '')
+            if before_iso and filled_at and filled_at > str(before_iso):
+                continue
+            filled_qty = _safe_float(_order_attr(order, 'filled_qty', 0.0) or 0.0)
+            filled_avg_price = _safe_float(_order_attr(order, 'filled_avg_price', 0.0) or 0.0)
+            if filled_qty <= 0 or filled_avg_price <= 0:
+                continue
+            candidate = {
+                'id': str(_order_attr(order, 'id', '') or ''),
+                'symbol': sym,
+                'side': oside,
+                'status': ostatus,
+                'filled_qty': filled_qty,
+                'filled_avg_price': filled_avg_price,
+                'filled_at': filled_at,
+                'submitted_at': str(_order_attr(order, 'submitted_at', '') or ''),
+            }
+            if not best or str(candidate.get('filled_at') or candidate.get('submitted_at') or '') > str(best.get('filled_at') or best.get('submitted_at') or ''):
+                best = candidate
+        except Exception:
+            continue
+    return best
+
+
+def _broker_truth_sync_strategy_performance(force: bool = False) -> dict:
+    global BROKER_TRUTH_SYNC_LAST_TS
+    now_ts = _time.time()
+    if (not force) and BROKER_TRUTH_SYNC_LAST_TS and (now_ts - float(BROKER_TRUTH_SYNC_LAST_TS or 0.0) < float(BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC)):
+        return {'ok': True, 'skipped': True, 'reason': 'rate_limited'}
+    BROKER_TRUTH_SYNC_LAST_TS = now_ts
+    try:
+        open_syms = {str((p or {}).get('symbol') or '').strip().upper() for p in list_open_positions_details_allowed() if str((p or {}).get('symbol') or '').strip()}
+    except Exception:
+        open_syms = set()
+    after_iso = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    orders = _alpaca_get_orders_rest(status='all', limit=500, after_iso=after_iso)
+    appended = []
+    seen_exit_order_ids = {str((row or {}).get('source_order_id') or '') for row in list((STRATEGY_PERFORMANCE_STATE or {}).get('closed_trades') or []) if str((row or {}).get('source_order_id') or '')}
+    for order in orders:
+        try:
+            sym = str(_order_attr(order, 'symbol', '') or '').upper()
+            if not sym or sym in open_syms:
+                continue
+            status = str(getattr(_order_attr(order, 'status', None), 'value', _order_attr(order, 'status', '')) or '').lower()
+            side = str(getattr(_order_attr(order, 'side', None), 'value', _order_attr(order, 'side', '')) or '').lower()
+            if status not in {'filled', 'partially_filled'} or side != 'sell':
+                continue
+            exit_order_id = str(_order_attr(order, 'id', '') or '')
+            if exit_order_id and exit_order_id in seen_exit_order_ids:
+                continue
+            exit_px = _safe_float(_order_attr(order, 'filled_avg_price', 0.0) or 0.0)
+            exit_qty = abs(_safe_float(_order_attr(order, 'filled_qty', 0.0) or 0.0))
+            exit_ts = str(_order_attr(order, 'filled_at', '') or _order_attr(order, 'updated_at', '') or _order_attr(order, 'submitted_at', '') or '')
+            if exit_px <= 0 or exit_qty <= 0:
+                continue
+            entry_order = _find_recent_entry_fill_for_symbol(sym, 'buy', before_iso=exit_ts or None)
+            entry_px = _safe_float((entry_order or {}).get('filled_avg_price') or 0.0)
+            entry_qty = abs(_safe_float((entry_order or {}).get('filled_qty') or 0.0))
+            if entry_px <= 0 or entry_qty <= 0:
+                continue
+            plan = {
+                'symbol': sym,
+                'side': 'buy',
+                'signal': _infer_strategy_name_for_symbol(sym),
+                'strategy_name': _infer_strategy_name_for_symbol(sym),
+                'entry_price': entry_px,
+                'avg_fill_price': entry_px,
+                'filled_qty': min(entry_qty, exit_qty),
+                'qty': min(entry_qty, exit_qty),
+                'risk_per_share': max(abs(entry_px * 0.02), 0.01),
+                'submitted_at': str((entry_order or {}).get('submitted_at') or ''),
+                'thesis': {'regime_mode': None},
+            }
+            if _strategy_closed_trade_already_recorded(plan, exit_px, tolerance_sec=30*86400):
+                continue
+            closed_trade = _append_strategy_closed_trade(plan, exit_px, reason='broker_truth_reconcile', source='broker_truth_sync')
+            if closed_trade:
+                closed_trade['source_order_id'] = exit_order_id
+                state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state())
+                closed = list(state.get('closed_trades') or [])
+                if closed:
+                    closed[-1] = dict(closed_trade)
+                    state['closed_trades'] = closed
+                    globals()['STRATEGY_PERFORMANCE_STATE'] = state
+                    _recompute_strategy_performance_state()
+                    persist_strategy_performance_state(reason='broker_truth_sync')
+                appended.append(sym)
+                if exit_order_id:
+                    seen_exit_order_ids.add(exit_order_id)
+        except Exception:
+            continue
+    return {'ok': True, 'appended_symbols': appended, 'appended_count': len(appended)}
 
 
 def _format_order_qty(qty: float) -> str:
@@ -13093,8 +13224,10 @@ def _dashboard_exposure_capacity_view(blockers: dict | None, reconcile: dict | N
     blockers = dict(blockers or {})
     reconcile = dict(reconcile or {})
     strategy_symbols = list(blockers.get("strategy_symbols") or reconcile.get("active_plan_symbols") or [])
+    broker_positions_count = int(reconcile.get("broker_positions_count") or 0)
+    current_open_positions = max(len(strategy_symbols), broker_positions_count)
     return {
-        "current_open_positions": len(strategy_symbols),
+        "current_open_positions": current_open_positions,
         "max_open_positions": int(MAX_OPEN_POSITIONS),
         "remaining_new_entries_today": int(blockers.get("remaining_new_entries_today") or 0),
         "max_new_entries_per_day": int(blockers.get("max_new_entries_per_day") or 0),
@@ -13413,6 +13546,10 @@ def _dashboard_latest_completed_scan_summary() -> dict:
 
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
+    try:
+        _broker_truth_sync_strategy_performance()
+    except Exception:
+        pass
     state = _recompute_strategy_performance_state()
     return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
 
@@ -13818,7 +13955,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 150 truth sync</div>
+      <div class="action-pill">Patch 152 broker truth</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
