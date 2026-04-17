@@ -1216,7 +1216,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-150-truth-alignment-manual-exit-reconcile"
+PATCH_VERSION = "patch-151-realized-pnl-broker-reconciliation"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4147,6 +4147,130 @@ def _alpaca_trading_base_url() -> str:
     return "https://paper-api.alpaca.markets" if APCA_PAPER else "https://api.alpaca.markets"
 
 
+def _alpaca_get_orders_rest(status: str = "all", limit: int = 100, symbols: list[str] | None = None, after_iso: str | None = None) -> list[dict]:
+    params = {"status": str(status or "all"), "limit": str(max(1, min(int(limit or 100), 500))), "direction": "desc", "nested": "true"}
+    if symbols:
+        syms = [str(s or "").upper() for s in symbols if str(s or "").upper()]
+        if syms:
+            params["symbols"] = ",".join(syms)
+    if after_iso:
+        params["after"] = str(after_iso)
+    qs = urlencode(params)
+    req = UrlRequest(
+        _alpaca_trading_base_url().rstrip("/") + "/v2/orders?" + qs,
+        headers={
+            "accept": "application/json",
+            "APCA-API-KEY-ID": APCA_KEY,
+            "APCA-API-SECRET-KEY": APCA_SECRET,
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8") if resp else ""
+        data = json.loads(raw) if raw else []
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _find_recent_exit_fill_for_symbol(symbol: str, side: str, after_iso: str | None = None) -> dict:
+    sym = str(symbol or "").upper()
+    want_side = str(side or "").lower()
+    if not sym or want_side not in {"buy", "sell"}:
+        return {}
+    orders = _alpaca_get_orders_rest(status="all", limit=200, symbols=[sym], after_iso=after_iso)
+    best = {}
+    for order in orders:
+        try:
+            osym = str(_order_attr(order, "symbol", "") or "").upper()
+            if osym != sym:
+                continue
+            ostatus = str(getattr(_order_attr(order, "status", None), "value", _order_attr(order, "status", "")) or "").lower()
+            if ostatus not in {"filled", "partially_filled"}:
+                continue
+            oside = str(getattr(_order_attr(order, "side", None), "value", _order_attr(order, "side", "")) or "").lower()
+            if oside != want_side:
+                continue
+            filled_qty = _safe_float(_order_attr(order, "filled_qty", 0.0) or 0.0)
+            filled_avg_price = _safe_float(_order_attr(order, "filled_avg_price", 0.0) or 0.0)
+            if filled_qty <= 0 or filled_avg_price <= 0:
+                continue
+            candidate = {
+                "id": str(_order_attr(order, "id", "") or ""),
+                "symbol": sym,
+                "side": oside,
+                "status": ostatus,
+                "filled_qty": filled_qty,
+                "filled_avg_price": filled_avg_price,
+                "filled_at": str(_order_attr(order, "filled_at", "") or _order_attr(order, "updated_at", "") or _order_attr(order, "submitted_at", "") or ""),
+                "submitted_at": str(_order_attr(order, "submitted_at", "") or ""),
+            }
+            if not best or str(candidate.get("filled_at") or candidate.get("submitted_at") or "") > str(best.get("filled_at") or best.get("submitted_at") or ""):
+                best = candidate
+        except Exception:
+            continue
+    return best
+
+
+def _strategy_closed_trade_already_recorded(plan: dict | None, exit_price: float | None = None, tolerance_sec: int = 600) -> bool:
+    plan = dict(plan or {})
+    symbol = str(plan.get("symbol") or plan.get("instrument") or "").upper()
+    strategy_name = str(plan.get("strategy_name") or plan.get("signal") or "").strip().lower()
+    entry_price = round(_safe_float(plan.get("entry_price") or plan.get("avg_fill_price") or 0.0), 4)
+    qty = round(abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or 0.0)), 4)
+    exit_px = round(_safe_float(exit_price or 0.0), 4)
+    now_utc = datetime.now(timezone.utc)
+    for row in list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []):
+        try:
+            if symbol and str(row.get("symbol") or "").upper() != symbol:
+                continue
+            if strategy_name and str(row.get("strategy_name") or "").strip().lower() != strategy_name:
+                continue
+            if entry_price > 0 and abs(round(_safe_float(row.get("entry_price") or 0.0), 4) - entry_price) > 0.01:
+                continue
+            if qty > 0 and abs(round(abs(_safe_float(row.get("qty") or 0.0)), 4) - qty) > 0.01:
+                continue
+            if exit_px > 0 and abs(round(_safe_float(row.get("exit_price") or 0.0), 4) - exit_px) > 0.05:
+                continue
+            ts_raw = str(row.get("ts_utc") or "")
+            ts = None
+            if ts_raw:
+                try:
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                except Exception:
+                    ts = None
+            if ts is not None and abs((now_utc - ts).total_seconds()) > max(1, int(tolerance_sec or 0)):
+                continue
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _reconcile_manual_exit_plan(plan: dict | None, symbol: str, source: str = "broker_reconcile") -> dict:
+    plan = dict(plan or {})
+    sym = str(symbol or plan.get("symbol") or "").upper()
+    if not sym:
+        return {"ok": False, "reason": "missing_symbol"}
+    entry_side = str(plan.get("side") or "buy").strip().lower() or "buy"
+    exit_side = "sell" if entry_side == "buy" else "buy"
+    after_iso = str(plan.get("submitted_at") or plan.get("opened_at") or plan.get("recovered_at") or "").strip() or None
+    order = _find_recent_exit_fill_for_symbol(sym, exit_side, after_iso=after_iso)
+    exit_px = _safe_float((order or {}).get("filled_avg_price") or 0.0)
+    if exit_px <= 0:
+        try:
+            exit_px = _safe_float(get_latest_price(sym) or 0.0)
+        except Exception:
+            exit_px = 0.0
+    if exit_px <= 0:
+        return {"ok": False, "reason": "no_exit_price"}
+    if _strategy_closed_trade_already_recorded(plan, exit_px, tolerance_sec=86400):
+        return {"ok": True, "reason": "already_recorded", "exit_price": round(exit_px, 4), "closed_trade_recorded": False}
+    closed_trade = _append_strategy_closed_trade(plan, exit_px, reason="manual_exit_reconciled", source=source)
+    return {"ok": bool(closed_trade), "reason": "manual_exit_reconciled" if closed_trade else "append_failed", "exit_price": round(exit_px, 4), "closed_trade_recorded": bool(closed_trade), "order_id": str((order or {}).get("id") or "")}
+
+
 def _format_order_qty(qty: float) -> str:
     q = float(qty)
     if q.is_integer():
@@ -4891,6 +5015,12 @@ def startup_restore_state() -> dict:
                 if sym not in broker_syms:
                     state["stale_snapshot_count"] += 1
                     state["stale_snapshot_symbols"].append(sym)
+                    try:
+                        reconcile_info = _reconcile_manual_exit_plan(plan, sym, source="startup_reconcile")
+                        if reconcile_info.get("closed_trade_recorded"):
+                            state.setdefault("manual_exit_reconciled_symbols", []).append(sym)
+                    except Exception as _manual_exit_err:
+                        state.setdefault("manual_exit_reconcile_errors", []).append({"symbol": sym, "error": str(_manual_exit_err)})
                     continue
                 if TRADE_PLAN.get(sym, {}).get("active"):
                     continue
@@ -12111,13 +12241,8 @@ async def worker_exit(req: Request):
                 results.append({"symbol": symbol, "action": "pending_entry_wait", "order_status": plan.get("order_status")})
                 continue
             if plan.get("active") and not bool(plan.get("manual_exit_reconciled")):
-                exit_px = _safe_float(plan.get("last_price") or 0.0)
-                if exit_px <= 0:
-                    try:
-                        exit_px = _safe_float(get_latest_price(symbol) or 0.0)
-                    except Exception:
-                        exit_px = 0.0
-                closed_trade = _append_strategy_closed_trade(plan, exit_px, reason="manual_exit_reconciled", source="broker_reconcile") if exit_px > 0 else {}
+                reconcile_info = _reconcile_manual_exit_plan(plan, symbol, source="broker_reconcile")
+                exit_px = _safe_float(reconcile_info.get("exit_price") or 0.0)
                 plan["manual_exit_reconciled"] = True
                 plan["manual_exit_reconciled_at"] = now_ny().isoformat()
                 plan["manual_exit_price"] = round(exit_px, 4) if exit_px > 0 else None
@@ -12125,8 +12250,8 @@ async def worker_exit(req: Request):
                     _transition_execution_lifecycle(plan, symbol, "closed", reason="manual_exit_reconciled", details={"exit_price": round(exit_px,4) if exit_px > 0 else None}, allow_illegal=True)
                 except Exception:
                     pass
-                record_decision("EXIT", "worker_exit", symbol, side=str(plan.get("side") or "buy"), signal=str(plan.get("signal") or ""), action="manual_exit_reconciled", reason="no_open_position", price=(round(exit_px, 4) if exit_px > 0 else None), meta={"closed_trade_recorded": bool(closed_trade)})
-                results.append({"symbol": symbol, "action": "manual_exit_reconciled", "reason": "no_open_position", "exit_price": round(exit_px, 4) if exit_px > 0 else None, "closed_trade_recorded": bool(closed_trade)})
+                record_decision("EXIT", "worker_exit", symbol, side=str(plan.get("side") or "buy"), signal=str(plan.get("signal") or ""), action="manual_exit_reconciled", reason="no_open_position", price=(round(exit_px, 4) if exit_px > 0 else None), meta={"closed_trade_recorded": bool(reconcile_info.get("closed_trade_recorded")), "order_id": str(reconcile_info.get("order_id") or "")})
+                results.append({"symbol": symbol, "action": "manual_exit_reconciled", "reason": str(reconcile_info.get("reason") or "no_open_position"), "exit_price": round(exit_px, 4) if exit_px > 0 else None, "closed_trade_recorded": bool(reconcile_info.get("closed_trade_recorded")), "order_id": str(reconcile_info.get("order_id") or "")})
             plan["active"] = False
             results.append({"symbol": symbol, "action": "plan_deactivated", "reason": "no_open_position"})
             continue
