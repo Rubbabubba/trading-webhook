@@ -1218,14 +1218,12 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-155-daily-halt-reset-readiness-counter-cleanup"
+PATCH_VERSION = "patch-154-performance-state-quarantine-clean-rebuild"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 BROKER_TRUTH_SYNC_LAST_TS = 0.0
 BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC = 60.0
-DAILY_HALT_AUTOCLEAR_LAST_TS = 0.0
-DAILY_HALT_AUTOCLEAR_MIN_INTERVAL_SEC = 15.0
 
 
 # =============================
@@ -3147,43 +3145,6 @@ def _ensure_daily_halt_rollover():
         DAILY_HALT_STATE.update({"session": session, "active": False, "triggered_at": None, "reason": ""})
 
 
-def _autoclear_daily_halt_if_safe(force: bool = False) -> bool:
-    global DAILY_HALT_AUTOCLEAR_LAST_TS
-    _ensure_daily_halt_rollover()
-    if not bool(DAILY_HALT_STATE.get("active")):
-        return False
-    now_ts = time.time()
-    if (not force) and (now_ts - float(DAILY_HALT_AUTOCLEAR_LAST_TS or 0.0) < DAILY_HALT_AUTOCLEAR_MIN_INTERVAL_SEC):
-        return False
-    DAILY_HALT_AUTOCLEAR_LAST_TS = now_ts
-    try:
-        if KILL_SWITCH:
-            return False
-        if daily_stop_hit():
-            return False
-        snap = build_reconcile_snapshot()
-        if int(snap.get("broker_positions_count") or 0) > 0:
-            return False
-        if int(snap.get("active_plan_count") or 0) > 0:
-            return False
-        if int(snap.get("open_order_count") or 0) > 0:
-            return False
-        reason = str(DAILY_HALT_STATE.get("reason") or "")
-        DAILY_HALT_STATE.update({
-            "session": _current_session_key(),
-            "active": False,
-            "triggered_at": DAILY_HALT_STATE.get("triggered_at"),
-            "reason": "",
-            "cleared_at": now_ny().isoformat(),
-            "cleared_reason": "auto_cleared_idle_safe_state",
-            "previous_reason": reason,
-        })
-        record_decision("RISK", "risk_guard", action="halt_cleared", reason="auto_cleared_idle_safe_state", meta={"previous_reason": reason})
-        return True
-    except Exception:
-        return False
-
-
 def activate_daily_halt(reason: str = "daily_stop_hit"):
     _ensure_daily_halt_rollover()
     DAILY_HALT_STATE.update({
@@ -3197,7 +3158,6 @@ def activate_daily_halt(reason: str = "daily_stop_hit"):
 
 def daily_halt_active() -> bool:
     _ensure_daily_halt_rollover()
-    _autoclear_daily_halt_if_safe()
     return bool(DAILY_HALT_STATE.get("active"))
 
 
@@ -5532,40 +5492,26 @@ def _strategy_perf_summary(strategy_name: str) -> dict:
     strategy = str(strategy_name or "").strip().lower(); return dict((STRATEGY_PERFORMANCE_STATE or {}).get("by_strategy") or {}).get(strategy) or {}
 
 def _paper_lifecycle_counts() -> dict:
-    session = _session_boundary_snapshot()
-    today_ny = str(session.get("today_ny") or "")
     events = list(PAPER_LIFECYCLE_HISTORY or [])
     if LAST_PAPER_LIFECYCLE and (not events or events[-1] != LAST_PAPER_LIFECYCLE):
         events.append(dict(LAST_PAPER_LIFECYCLE))
-
     counts = {
         "scan_completed": 0,
         "candidate_selected": 0,
         "entry_events": 0,
         "exit_events": 0,
     }
-    selected_symbols: set[str] = set()
-    entry_symbols: set[str] = set()
-    exit_symbols: set[str] = set()
-
     for ev in events:
-        ev = ev or {}
-        stage = str(ev.get("stage") or "").strip().lower()
-        status = str(ev.get("status") or "").strip().lower()
-        sym = str(ev.get("symbol") or "").strip().upper()
-        dt = _safe_iso_to_dt(ev.get("ts_utc"))
-        same_session = bool(dt and dt.astimezone(NY_TZ).date().isoformat() == today_ny)
-        if stage == "scan" and status == "completed" and same_session:
+        stage = str((ev or {}).get("stage") or "").strip().lower()
+        status = str((ev or {}).get("status") or "").strip().lower()
+        if stage == "scan" and status == "completed":
             counts["scan_completed"] += 1
-        if not same_session:
-            continue
-        if stage == "candidate" and status == "selected" and sym:
-            selected_symbols.add(sym)
-        if stage == "entry" and status in {"submitted", "filled", "opened", "completed"} and sym:
-            entry_symbols.add(sym)
-        if stage == "exit" and status in {"submitted", "closed", "filled", "completed", "dry_run"} and sym:
-            exit_symbols.add(sym)
-
+        if stage == "candidate" and status == "selected":
+            counts["candidate_selected"] += 1
+        if stage == "entry" and status in {"planned", "submitted", "filled", "opened"}:
+            counts["entry_events"] += 1
+        if stage == "exit" and status in {"armed", "submitted", "closed", "filled", "completed", "dry_run"}:
+            counts["exit_events"] += 1
     synthetic_exit_symbols = []
     for symbol, plan in list((TRADE_PLAN or {}).items()):
         if not isinstance(plan, dict) or not plan.get("active"):
@@ -5578,14 +5524,20 @@ def _paper_lifecycle_counts() -> dict:
             continue
         if plan.get("stop_price") is None and plan.get("take_price") is None:
             continue
-        if str(symbol).strip().upper() not in exit_symbols:
+        has_exit_event = False
+        for ev in reversed(events):
+            if str((ev or {}).get("symbol") or "").strip().upper() != str(symbol or "").strip().upper():
+                continue
+            if str((ev or {}).get("stage") or "").strip().lower() != "exit":
+                continue
+            if str((ev or {}).get("status") or "").strip().lower() in {"armed", "submitted", "closed", "filled", "completed", "dry_run"}:
+                has_exit_event = True
+                break
+        if not has_exit_event:
             synthetic_exit_symbols.append(str(symbol).strip().upper())
-
-    counts["candidate_selected"] = len(selected_symbols)
-    counts["entry_events"] = len(entry_symbols)
     counts["synthetic_exit_events"] = len(synthetic_exit_symbols)
     counts["synthetic_exit_symbols"] = synthetic_exit_symbols
-    counts["exit_events"] = len(exit_symbols) + len(synthetic_exit_symbols)
+    counts["exit_events"] += len(synthetic_exit_symbols)
     counts["history_count"] = len(events)
     return counts
 
