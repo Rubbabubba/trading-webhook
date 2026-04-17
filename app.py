@@ -1216,7 +1216,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-148-dashboard-usability-signal-clarity-refresh"
+PATCH_VERSION = "patch-149-daily-halt-exit-override"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -4487,7 +4487,7 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
     qty = abs(qty_signed)
     close_side = "sell" if qty_signed > 0 else "buy"
 
-    if not is_live_trading_permitted(source):
+    if not is_live_exit_permitted(source, reason=reason):
         payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED}
         record_decision("EXIT", source, symbol, side=close_side, action="dry_run", reason=reason or "dry_run", qty=qty)
         try:
@@ -4545,7 +4545,7 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
     qty = min(available_qty, requested_qty)
     close_side = "sell" if qty_signed > 0 else "buy"
 
-    if not is_live_trading_permitted(source):
+    if not is_live_exit_permitted(source, reason=reason):
         payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED, "partial": True}
         record_decision("EXIT", source, symbol, side=close_side, action="dry_run_partial", reason=reason or "partial_dry_run", qty=qty)
         try:
@@ -6656,6 +6656,18 @@ def is_live_trading_permitted(source: str = "") -> bool:
     if source == "worker_scan" and (not SCANNER_ALLOW_LIVE):
         return False
     if RELEASE_GATE_ENFORCED and (not release_gate_status().get("live_orders_permitted")):
+        return False
+    return True
+
+
+def is_live_exit_permitted(source: str = "", reason: str = "") -> bool:
+    if DRY_RUN or (not LIVE_TRADING_ENABLED):
+        return False
+    gate = release_gate_status() if RELEASE_GATE_ENFORCED else {}
+    if RELEASE_GATE_ENFORCED and (not gate.get("live_orders_permitted")):
+        unmet = {str(x).strip().lower() for x in (gate.get("unmet_conditions") or []) if str(x).strip()}
+        if unmet and unmet.issubset({"daily_halt_active"}):
+            return True
         return False
     return True
 
