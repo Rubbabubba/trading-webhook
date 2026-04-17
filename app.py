@@ -354,7 +354,7 @@ def get_latest_quote_snapshot(symbol: str) -> dict:
             break
         if attempt < max_attempts:
             try:
-                time.sleep(retry_sleep_sec)
+                _time.sleep(retry_sleep_sec)
             except Exception:
                 pass
 
@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-154-performance-state-quarantine-clean-rebuild"
+PATCH_VERSION = "patch-156-dashboard-hotfix-namespace-sweep"
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -12732,7 +12732,7 @@ def diagnostics_gatekeeper(request: Request, symbol: str = "SPY"):
         has_position = False
     active_plan = bool((TRADE_PLAN.get(sym) or {}).get("active"))
     lock_until = float(SYMBOL_LOCKS.get(sym, 0) or 0)
-    now_ts = time.time()
+    now_ts = _time.time()
     symbol_locked = lock_until > now_ts
     spread_ok = True
     if ENTRY_REQUIRE_QUOTE:
