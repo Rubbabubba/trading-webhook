@@ -354,7 +354,7 @@ def get_latest_quote_snapshot(symbol: str) -> dict:
             break
         if attempt < max_attempts:
             try:
-                _time.sleep(retry_sleep_sec)
+                time.sleep(retry_sleep_sec)
             except Exception:
                 pass
 
@@ -1218,7 +1218,10 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-156-dashboard-hotfix-namespace-sweep"
+PATCH_VERSION = "patch-157-opening-window-freshness-alignment"
+OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
+OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
+
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
@@ -2766,8 +2769,9 @@ def _backfill_runtime_state_views():
 
 
 def _refresh_regime_snapshot_if_needed(force: bool = False) -> dict:
+    session = _session_boundary_snapshot()
     current = dict(LAST_REGIME_SNAPSHOT or {})
-    should_refresh = bool(force or (not current) or (current.get("data_complete") is False))
+    should_refresh = bool(force or _regime_snapshot_needs_refresh(session))
     if not should_refresh:
         return current
     try:
@@ -3458,14 +3462,22 @@ def _recent_market_scan_status(max_age_sec: int | float | None = None, market_op
             age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
             worker_status = _worker_status_snapshot()
             scanner_running = bool(worker_status.get("scanner_running"))
-            ok = scanner_running and age_sec <= age_limit
+            current_scan = dict(LAST_SCAN or {})
+            current_reason = str(current_scan.get("reason") or "")
+            current_dt = _safe_iso_to_dt(current_scan.get("ts_utc")) if current_scan.get("ts_utc") else None
+            current_same_session = False
+            if current_dt is not None:
+                current_same_session = current_dt.astimezone(NY_TZ).date().isoformat() == now_ny().date().isoformat()
+            opening_window_pending = bool(market_open_now) and current_reason == "outside_market_hours" and current_same_session
+            ok = scanner_running and age_sec <= age_limit and not opening_window_pending
             return {
                 "ok": bool(ok),
                 "age_sec": age_sec,
-                "reason": "scanner_telemetry_fallback",
+                "reason": "opening_window_scan_pending" if opening_window_pending else "scanner_telemetry_fallback",
                 "source": "scanner_telemetry",
                 "ts_utc": scan_ts.astimezone(timezone.utc).isoformat(),
                 "scanner_running": scanner_running,
+                "opening_window_pending": opening_window_pending,
             }
         except Exception:
             return {"ok": False, "age_sec": None, "reason": "scanner_telemetry_invalid", "source": "scanner_telemetry", "ts_utc": None}
@@ -3556,6 +3568,16 @@ def _aligned_last_scan_display(session: dict | None = None) -> dict:
         return display
     reason = str(current_last_scan.get("reason") or "")
     if reason == "scan_completed":
+        return display
+    if recent.get("reason") == "opening_window_scan_pending":
+        display.update({
+            "reason": "opening_window_scan_pending",
+            "ts_utc": current_last_scan.get("ts_utc"),
+            "source": "last_scan",
+            "fresh": False,
+            "fallback_from_last_scan_reason": reason or None,
+            "fallback_from_last_scan_source": str(current_last_scan.get("_scan_source") or "last_scan"),
+        })
         return display
     if recent.get("ok"):
         fallback_reason = str(recent.get("reason") or "")
@@ -6153,6 +6175,12 @@ def _session_boundary_snapshot() -> dict:
     close_local = datetime.combine(now_local.date(), MARKET_CLOSE, tzinfo=NY_TZ)
     market_day = _is_regular_market_day(now_local)
     market_closed_reason = "weekend" if not market_day else ""
+    opening_window_minutes = max(1, int(OPENING_WINDOW_REFRESH_MINUTES or 15))
+    opening_window_sec = opening_window_minutes * 60
+    seconds_since_open = None
+    if market_day and now_local >= open_local:
+        seconds_since_open = max(0.0, (now_local - open_local).total_seconds())
+    opening_window_active = bool(in_market_hours()) and seconds_since_open is not None and seconds_since_open <= opening_window_sec
     return {
         "today_ny": today_ny,
         "now_ny": now_local.isoformat(),
@@ -6163,9 +6191,32 @@ def _session_boundary_snapshot() -> dict:
         "market_day": bool(market_day),
         "market_closed_reason": market_closed_reason,
         "market_open_now": bool(in_market_hours()),
+        "seconds_since_open": seconds_since_open,
+        "opening_window_active": opening_window_active,
+        "opening_window_minutes": opening_window_minutes,
     }
 
 
+def _regime_snapshot_needs_refresh(session: dict | None = None) -> bool:
+    session = dict(session or _session_boundary_snapshot())
+    current = dict(LAST_REGIME_SNAPSHOT or {})
+    if not current:
+        return True
+    if current.get("data_complete") is False:
+        return True
+    ts_raw = current.get("ts_utc")
+    dt = _safe_iso_to_dt(ts_raw) if ts_raw else None
+    same_session = False
+    age_sec = None
+    if dt:
+        dt_ny = dt.astimezone(NY_TZ)
+        same_session = dt_ny.date().isoformat() == str(session.get("today_ny"))
+        age_sec = max(0.0, (datetime.now(tz=timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    if bool(session.get("market_open_now")) and not same_session:
+        return True
+    if bool(session.get("opening_window_active")) and age_sec is not None and age_sec > max(60, int(OPENING_WINDOW_REGIME_MAX_AGE_SEC or 600)):
+        return True
+    return False
 
 
 def _paper_proof_gate_snapshot() -> dict:
@@ -6842,6 +6893,8 @@ def release_stage_transition(target_stage: str, actor: str = "system", reason: s
 
 def freshness_snapshot() -> dict:
     session = _session_boundary_snapshot()
+    if _regime_snapshot_needs_refresh(session):
+        _refresh_regime_snapshot_if_needed(force=True)
     scanner_ref = (LAST_SCANNER_TELEMETRY or {}).get("last_worker_event_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_success_utc") or (LAST_SCANNER_TELEMETRY or {}).get("last_event_utc")
     scan_source = "memory" if LAST_SCAN else ("restored" if (globals().get("SCAN_STATE_RESTORE") or {}).get("last_scan_restored") else "empty")
     regime_source = "memory" if LAST_REGIME_SNAPSHOT else ("restored" if (globals().get("REGIME_STATE_RESTORE") or {}).get("current_restored") else "empty")
@@ -12732,7 +12785,7 @@ def diagnostics_gatekeeper(request: Request, symbol: str = "SPY"):
         has_position = False
     active_plan = bool((TRADE_PLAN.get(sym) or {}).get("active"))
     lock_until = float(SYMBOL_LOCKS.get(sym, 0) or 0)
-    now_ts = _time.time()
+    now_ts = time.time()
     symbol_locked = lock_until > now_ts
     spread_ok = True
     if ENTRY_REQUIRE_QUOTE:
@@ -13566,7 +13619,7 @@ def diagnostics_regime_b(request: Request):
 def dashboard(request: Request):
     require_admin_if_configured(request)
     _ensure_runtime_state_loaded()
-    _refresh_regime_snapshot_if_needed()
+    _refresh_regime_snapshot_if_needed(force=_regime_snapshot_needs_refresh())
 
     release = release_gate_status()
     continuity = continuity_snapshot(normalize_current=True)
@@ -13952,7 +14005,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 154 perf quarantine</div>
+      <div class="action-pill">Patch 157 open freshness</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
