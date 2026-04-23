@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-160-candidate-sizing-truth-alignment"
+PATCH_VERSION = "patch-161-strategy-sleeve-transparency"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -9827,6 +9827,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'unmanaged_portfolio_exposure': round(open_unmanaged, 2),
         'portfolio_exposure_cap': round(portfolio_cap, 2),
         'portfolio_exposure_remaining': round(max(0.0, portfolio_cap - open_strategy), 2) if portfolio_cap > 0 else None,
+        'total_portfolio_exposure_remaining': round(max(0.0, portfolio_cap - open_total), 2) if portfolio_cap > 0 else None,
+        'strategy_sleeve_cap': round(portfolio_cap, 2),
+        'strategy_sleeve_remaining': round(max(0.0, portfolio_cap - open_strategy), 2) if portfolio_cap > 0 else None,
         'symbol_exposure_cap': round(symbol_cap, 2),
         'portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         'remaining_new_entries_today': int(remaining_today),
@@ -13133,6 +13136,9 @@ def _diagnostics_swing_blockers() -> dict:
         'unmanaged_portfolio_exposure': round(open_unmanaged, 2),
         'portfolio_exposure_cap': round(portfolio_cap, 2),
         'portfolio_exposure_remaining': round(max(0.0, portfolio_cap - open_strategy), 2) if portfolio_cap > 0 else None,
+        'total_portfolio_exposure_remaining': round(max(0.0, portfolio_cap - open_total), 2) if portfolio_cap > 0 else None,
+        'strategy_sleeve_cap': round(portfolio_cap, 2),
+        'strategy_sleeve_remaining': round(max(0.0, portfolio_cap - open_strategy), 2) if portfolio_cap > 0 else None,
         'portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         'blocked_by_portfolio_cap': over_portfolio_cap,
         'blocked_by_total_portfolio_cap': blocked_total_cap,
@@ -13442,6 +13448,7 @@ def _dashboard_candidate_reason_text(item: dict | None) -> str:
     if over_amount is None:
         over_amount = projection.get('over_amount')
     basis = str(item.get('portfolio_exposure_limit_basis') or projection.get('blocking_basis') or '').strip()
+    sizing_truth = dict(item.get('sizing_truth') or {})
     rendered = []
     for reason in reasons:
         if reason == 'portfolio_exposure_limit':
@@ -13453,12 +13460,33 @@ def _dashboard_candidate_reason_text(item: dict | None) -> str:
                 pass
             if basis:
                 suffix.append(f'basis={basis}')
-            sizing_truth = dict(item.get('sizing_truth') or {})
             try:
                 raw_qty = sizing_truth.get('raw_estimated_qty')
                 eff_qty = sizing_truth.get('effective_estimated_qty')
                 if raw_qty is not None and eff_qty is not None and float(raw_qty) > float(eff_qty):
                     suffix.append(f'qty={float(eff_qty):.2f}/{float(raw_qty):.2f}')
+            except Exception:
+                pass
+            try:
+                eff_notional = sizing_truth.get('effective_projected_notional')
+                if eff_notional is not None:
+                    suffix.append(f'proj=${float(eff_notional):.2f}')
+            except Exception:
+                pass
+            try:
+                rem = sizing_truth.get('portfolio_remaining')
+                if rem is None:
+                    rem = projection.get('remaining_capacity')
+                if rem is not None:
+                    label = 'sleeve_rem' if basis in {'strategy', 'both'} else 'cap_rem'
+                    suffix.append(f'{label}=${float(rem):.2f}')
+            except Exception:
+                pass
+            try:
+                raw_notional = sizing_truth.get('raw_projected_notional')
+                eff_notional = sizing_truth.get('effective_projected_notional')
+                if raw_notional is not None and eff_notional is not None and float(raw_notional) > float(eff_notional):
+                    suffix.append(f'raw_proj=${float(raw_notional):.2f}')
             except Exception:
                 pass
             if suffix:
@@ -14162,7 +14190,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 160 sizing truth</div>
+      <div class="action-pill">Patch 161 sleeve transparency</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -14273,8 +14301,14 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
         ('remaining_new_entries_today', exposure_capacity_view.get('remaining_new_entries_today')),
         ('max_new_entries_per_day', exposure_capacity_view.get('max_new_entries_per_day')),
         ('portfolio_exposure', exposure_capacity_view.get('portfolio_exposure')),
+        ('strategy_portfolio_exposure', exposure_capacity_view.get('strategy_portfolio_exposure')),
+        ('recovered_portfolio_exposure', exposure_capacity_view.get('recovered_portfolio_exposure')),
+        ('unmanaged_portfolio_exposure', exposure_capacity_view.get('unmanaged_portfolio_exposure')),
         ('portfolio_exposure_cap', exposure_capacity_view.get('portfolio_exposure_cap')),
         ('portfolio_exposure_remaining', exposure_capacity_view.get('portfolio_exposure_remaining')),
+        ('total_portfolio_exposure_remaining', exposure_capacity_view.get('total_portfolio_exposure_remaining')),
+        ('strategy_sleeve_cap', exposure_capacity_view.get('strategy_sleeve_cap')),
+        ('strategy_sleeve_remaining', exposure_capacity_view.get('strategy_sleeve_remaining')),
         ('portfolio_cap_block_mode', exposure_capacity_view.get('portfolio_cap_block_mode')),
         ('blocked_by_portfolio_cap', exposure_capacity_view.get('blocked_by_portfolio_cap')),
         ('correlation_groups_count', exposure_capacity_view.get('correlation_groups_count')),
