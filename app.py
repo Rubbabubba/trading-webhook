@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-159-candidate-rejection-truth-exception-fallback"
+PATCH_VERSION = "patch-160-candidate-sizing-truth-alignment"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7509,6 +7509,73 @@ def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
     b = _current_portfolio_exposure_breakdown()
     return float(b.get('total') or 0.0), dict(b.get('by_symbol') or {})
 
+
+def _portfolio_cap_remaining_by_mode(exposure: dict | None, portfolio_cap: float) -> tuple[float | None, str]:
+    exposure = dict(exposure or {})
+    portfolio_cap = float(portfolio_cap or 0.0)
+    if portfolio_cap <= 0:
+        return None, 'none'
+    open_total = float(exposure.get('total') or 0.0)
+    open_strategy = float(exposure.get('strategy_managed') or 0.0)
+    mode = str(SWING_PORTFOLIO_CAP_BLOCK_MODE or 'none').strip().lower()
+    if mode == 'total':
+        return max(0.0, portfolio_cap - open_total), 'total'
+    if mode == 'strategy':
+        return max(0.0, portfolio_cap - open_strategy), 'strategy'
+    if mode == 'both':
+        return max(0.0, min(portfolio_cap - open_total, portfolio_cap - open_strategy)), 'both'
+    return None, mode or 'none'
+
+
+def _cap_adjust_candidate_qty(close: float, estimated_qty: float, open_symbol_notional: float, symbol_cap: float, exposure: dict | None, portfolio_cap: float) -> dict:
+    close = float(close or 0.0)
+    estimated_qty = max(0.0, float(estimated_qty or 0.0))
+    open_symbol_notional = max(0.0, float(open_symbol_notional or 0.0))
+    symbol_cap = max(0.0, float(symbol_cap or 0.0))
+    remaining_portfolio, basis = _portfolio_cap_remaining_by_mode(exposure, portfolio_cap)
+    symbol_remaining = max(0.0, symbol_cap - open_symbol_notional) if symbol_cap > 0 else None
+    if close <= 0 or estimated_qty <= 0:
+        return {
+            'raw_estimated_qty': round(estimated_qty, 4),
+            'effective_estimated_qty': 0.0,
+            'raw_projected_notional': 0.0,
+            'effective_projected_notional': 0.0,
+            'portfolio_remaining': round(float(remaining_portfolio), 4) if remaining_portfolio is not None else None,
+            'symbol_remaining': round(float(symbol_remaining), 4) if symbol_remaining is not None else None,
+            'portfolio_basis': basis,
+            'portfolio_qty_cap': None,
+            'symbol_qty_cap': None,
+            'qty_clipped_to_portfolio_cap': False,
+            'qty_clipped_to_symbol_cap': False,
+        }
+    raw_projected_notional = estimated_qty * close
+    portfolio_qty_cap = (remaining_portfolio / close) if remaining_portfolio is not None else None
+    symbol_qty_cap = (symbol_remaining / close) if symbol_remaining is not None else None
+    effective_qty = estimated_qty
+    clipped_portfolio = False
+    clipped_symbol = False
+    if portfolio_qty_cap is not None and effective_qty > portfolio_qty_cap:
+        effective_qty = portfolio_qty_cap
+        clipped_portfolio = True
+    if symbol_qty_cap is not None and effective_qty > symbol_qty_cap:
+        effective_qty = symbol_qty_cap
+        clipped_symbol = True
+    effective_qty = max(0.0, round(effective_qty, 2))
+    return {
+        'raw_estimated_qty': round(estimated_qty, 4),
+        'effective_estimated_qty': round(effective_qty, 4),
+        'raw_projected_notional': round(raw_projected_notional, 4),
+        'effective_projected_notional': round(effective_qty * close, 4),
+        'portfolio_remaining': round(float(remaining_portfolio), 4) if remaining_portfolio is not None else None,
+        'symbol_remaining': round(float(symbol_remaining), 4) if symbol_remaining is not None else None,
+        'portfolio_basis': basis,
+        'portfolio_qty_cap': round(float(portfolio_qty_cap), 4) if portfolio_qty_cap is not None else None,
+        'symbol_qty_cap': round(float(symbol_qty_cap), 4) if symbol_qty_cap is not None else None,
+        'qty_clipped_to_portfolio_cap': bool(clipped_portfolio),
+        'qty_clipped_to_symbol_cap': bool(clipped_symbol),
+    }
+
+
 def _same_day_entry_stats() -> dict:
     today = now_ny().date()
     counted = 0
@@ -9508,6 +9575,20 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         local_symbol_cap = float(symbol_cap)
         if strategy_name == MEAN_REVERSION_STRATEGY_NAME and local_symbol_cap > 0:
             local_symbol_cap = local_symbol_cap * max(0.0, float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER))
+        cap_truth = _cap_adjust_candidate_qty(
+            _safe_float(c.get('close')),
+            _safe_float(c.get('estimated_qty')),
+            float(open_by_symbol.get(sym, 0.0) or 0.0),
+            local_symbol_cap,
+            exposure,
+            portfolio_cap,
+        )
+        c['sizing_truth'] = dict(cap_truth)
+        c['raw_estimated_qty'] = cap_truth.get('raw_estimated_qty')
+        effective_est_qty = float(cap_truth.get('effective_estimated_qty') or 0.0)
+        if effective_est_qty > 0 and effective_est_qty < float(c.get('estimated_qty') or 0.0):
+            c['estimated_qty'] = round(effective_est_qty, 2)
+        projected_notional = float(cap_truth.get('effective_projected_notional') or 0.0)
         if c.get('eligible') and local_symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > local_symbol_cap:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
@@ -11372,7 +11453,21 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         c = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode)
         qty_signed, _ = get_position(sym)
         group_count = _open_group_position_count(sym)
-        projected_notional = _safe_float(c.get('estimated_qty')) * _safe_float(c.get('close'))
+        local_symbol_cap = float(symbol_cap)
+        cap_truth = _cap_adjust_candidate_qty(
+            _safe_float(c.get('close')),
+            _safe_float(c.get('estimated_qty')),
+            float(open_by_symbol.get(sym, 0.0) or 0.0),
+            local_symbol_cap,
+            exposure,
+            portfolio_cap,
+        )
+        c['sizing_truth'] = dict(cap_truth)
+        c['raw_estimated_qty'] = cap_truth.get('raw_estimated_qty')
+        effective_est_qty = float(cap_truth.get('effective_estimated_qty') or 0.0)
+        if effective_est_qty > 0 and effective_est_qty < float(c.get('estimated_qty') or 0.0):
+            c['estimated_qty'] = round(effective_est_qty, 2)
+        projected_notional = float(cap_truth.get('effective_projected_notional') or 0.0)
         selection_blockers = []
         if _has_pending_entry_plan(sym):
             c['eligible'] = False
@@ -11392,7 +11487,7 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('correlation_group_limit')
             selection_blockers.append('correlation_group_limit')
-        if c.get('eligible') and symbol_cap > 0 and projected_notional + float(open_by_symbol.get(sym, 0.0) or 0.0) > symbol_cap:
+        if c.get('eligible') and local_symbol_cap > 0 and projected_notional + float(open_by_symbol.get(sym, 0.0) or 0.0) > local_symbol_cap:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
             selection_blockers.append('symbol_exposure_limit')
@@ -13358,6 +13453,14 @@ def _dashboard_candidate_reason_text(item: dict | None) -> str:
                 pass
             if basis:
                 suffix.append(f'basis={basis}')
+            sizing_truth = dict(item.get('sizing_truth') or {})
+            try:
+                raw_qty = sizing_truth.get('raw_estimated_qty')
+                eff_qty = sizing_truth.get('effective_estimated_qty')
+                if raw_qty is not None and eff_qty is not None and float(raw_qty) > float(eff_qty):
+                    suffix.append(f'qty={float(eff_qty):.2f}/{float(raw_qty):.2f}')
+            except Exception:
+                pass
             if suffix:
                 rendered.append(f"portfolio_exposure_limit ({'; '.join(suffix)})")
             else:
@@ -14059,7 +14162,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 159 rejection truth</div>
+      <div class="action-pill">Patch 160 sizing truth</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
