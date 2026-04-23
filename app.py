@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-161-strategy-sleeve-transparency"
+PATCH_VERSION = "patch-162-sleeve-field-binding-final-cap-truth"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -13393,14 +13393,55 @@ def _dashboard_exposure_capacity_view(blockers: dict | None, reconcile: dict | N
     strategy_symbols = list(blockers.get("strategy_symbols") or reconcile.get("active_plan_symbols") or [])
     broker_positions_count = int(reconcile.get("broker_positions_count") or 0)
     current_open_positions = max(len(strategy_symbols), broker_positions_count)
+
+    portfolio_exposure = blockers.get("portfolio_exposure")
+    strategy_exposure = blockers.get("strategy_portfolio_exposure")
+    recovered_exposure = blockers.get("recovered_portfolio_exposure")
+    unmanaged_exposure = blockers.get("unmanaged_portfolio_exposure")
+    portfolio_cap = blockers.get("portfolio_exposure_cap")
+    strategy_sleeve_cap = blockers.get("strategy_sleeve_cap")
+
+    if strategy_exposure is None:
+        strategy_exposure = portfolio_exposure
+    if recovered_exposure is None:
+        recovered_exposure = 0.0 if portfolio_exposure is not None else None
+    if unmanaged_exposure is None:
+        unmanaged_exposure = 0.0 if portfolio_exposure is not None else None
+    if strategy_sleeve_cap is None:
+        strategy_sleeve_cap = portfolio_cap
+
+    total_remaining = blockers.get("total_portfolio_exposure_remaining")
+    if total_remaining is None and portfolio_cap is not None and portfolio_exposure is not None:
+        try:
+            total_remaining = round(max(0.0, float(portfolio_cap) - float(portfolio_exposure)), 2)
+        except Exception:
+            total_remaining = None
+
+    strategy_remaining = blockers.get("strategy_sleeve_remaining")
+    if strategy_remaining is None and strategy_sleeve_cap is not None and strategy_exposure is not None:
+        try:
+            strategy_remaining = round(max(0.0, float(strategy_sleeve_cap) - float(strategy_exposure)), 2)
+        except Exception:
+            strategy_remaining = None
+
+    exposure_remaining = blockers.get("portfolio_exposure_remaining")
+    if exposure_remaining is None:
+        exposure_remaining = strategy_remaining if strategy_remaining is not None else total_remaining
+
     return {
         "current_open_positions": current_open_positions,
         "max_open_positions": int(MAX_OPEN_POSITIONS),
         "remaining_new_entries_today": int(blockers.get("remaining_new_entries_today") or 0),
         "max_new_entries_per_day": int(blockers.get("max_new_entries_per_day") or 0),
-        "portfolio_exposure": blockers.get("portfolio_exposure"),
-        "portfolio_exposure_cap": blockers.get("portfolio_exposure_cap"),
-        "portfolio_exposure_remaining": blockers.get("portfolio_exposure_remaining"),
+        "portfolio_exposure": portfolio_exposure,
+        "strategy_portfolio_exposure": strategy_exposure,
+        "recovered_portfolio_exposure": recovered_exposure,
+        "unmanaged_portfolio_exposure": unmanaged_exposure,
+        "portfolio_exposure_cap": portfolio_cap,
+        "portfolio_exposure_remaining": exposure_remaining,
+        "total_portfolio_exposure_remaining": total_remaining,
+        "strategy_sleeve_cap": strategy_sleeve_cap,
+        "strategy_sleeve_remaining": strategy_remaining,
         "portfolio_cap_block_mode": blockers.get("portfolio_cap_block_mode"),
         "blocked_by_portfolio_cap": bool(blockers.get("blocked_by_portfolio_cap") or blockers.get("blocked_by_total_portfolio_cap") or blockers.get("blocked_by_strategy_portfolio_cap")),
         "correlation_groups_count": int(blockers.get("correlation_groups_count") or 0),
@@ -14190,7 +14231,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 161 sleeve transparency</div>
+      <div class="action-pill">Patch 162 final cap truth</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
