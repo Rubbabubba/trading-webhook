@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-157-opening-window-freshness-alignment"
+PATCH_VERSION = "patch-158-portfolio-exposure-truth-alignment"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -9511,9 +9511,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if c.get('eligible') and local_symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > local_symbol_cap:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
-        if c.get('eligible') and portfolio_cap > 0 and open_total + projected_notional > portfolio_cap:
+        exposure_projection = _portfolio_exposure_projection(projected_notional, exposure=exposure, portfolio_cap=portfolio_cap)
+        c['portfolio_exposure_projection'] = dict(exposure_projection)
+        if c.get('eligible') and exposure_projection.get('blocked'):
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('portfolio_exposure_limit')
+            c['portfolio_exposure_limit_basis'] = exposure_projection.get('blocking_basis')
+            c['portfolio_exposure_limit_over_amount'] = exposure_projection.get('over_amount')
         c.update(_classify_shadow_candidate(c))
         if c.get('shadow_regime_candidate'):
             shadow_candidates.append(c)
@@ -9741,6 +9745,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'recovered_portfolio_exposure': round(open_recovered, 2),
         'unmanaged_portfolio_exposure': round(open_unmanaged, 2),
         'portfolio_exposure_cap': round(portfolio_cap, 2),
+        'portfolio_exposure_remaining': round(max(0.0, portfolio_cap - open_strategy), 2) if portfolio_cap > 0 else None,
         'symbol_exposure_cap': round(symbol_cap, 2),
         'portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         'remaining_new_entries_today': int(remaining_today),
@@ -11391,9 +11396,14 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
             selection_blockers.append('symbol_exposure_limit')
-        if c.get('eligible') and portfolio_cap > 0 and open_total + projected_notional > portfolio_cap:
+        exposure_projection = _portfolio_exposure_projection(projected_notional, exposure=exposure, portfolio_cap=portfolio_cap)
+        c['portfolio_exposure_projection'] = dict(exposure_projection)
+        if c.get('eligible') and exposure_projection.get('blocked'):
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('portfolio_exposure_limit')
+            c['portfolio_exposure_limit_basis'] = exposure_projection.get('blocking_basis')
+            c['portfolio_exposure_limit_over_amount'] = exposure_projection.get('over_amount')
+            selection_blockers.append('portfolio_exposure_limit')
             selection_blockers.append('portfolio_exposure_limit')
         c['selection_blockers'] = list(dict.fromkeys([str(r) for r in selection_blockers if str(r)]))
         rows.append(c)
@@ -11430,6 +11440,7 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         "portfolio_exposure": round(open_total, 2),
         "strategy_portfolio_exposure": round(open_strategy, 2),
         "portfolio_exposure_cap": round(portfolio_cap, 2),
+        "portfolio_exposure_remaining": round(max(0.0, portfolio_cap - open_strategy), 2) if portfolio_cap > 0 else None,
         "symbol_exposure_cap": round(symbol_cap, 2),
         "top_candidates": rows[:limit],
         "eligible_but_not_selected": eligible_but_not_selected[:limit],
@@ -13026,6 +13037,7 @@ def _diagnostics_swing_blockers() -> dict:
         'recovered_portfolio_exposure': round(open_recovered, 2),
         'unmanaged_portfolio_exposure': round(open_unmanaged, 2),
         'portfolio_exposure_cap': round(portfolio_cap, 2),
+        'portfolio_exposure_remaining': round(max(0.0, portfolio_cap - open_strategy), 2) if portfolio_cap > 0 else None,
         'portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         'blocked_by_portfolio_cap': over_portfolio_cap,
         'blocked_by_total_portfolio_cap': blocked_total_cap,
@@ -14117,6 +14129,7 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
         ('max_new_entries_per_day', exposure_capacity_view.get('max_new_entries_per_day')),
         ('portfolio_exposure', exposure_capacity_view.get('portfolio_exposure')),
         ('portfolio_exposure_cap', exposure_capacity_view.get('portfolio_exposure_cap')),
+        ('portfolio_exposure_remaining', exposure_capacity_view.get('portfolio_exposure_remaining')),
         ('portfolio_cap_block_mode', exposure_capacity_view.get('portfolio_cap_block_mode')),
         ('blocked_by_portfolio_cap', exposure_capacity_view.get('blocked_by_portfolio_cap')),
         ('correlation_groups_count', exposure_capacity_view.get('correlation_groups_count')),
