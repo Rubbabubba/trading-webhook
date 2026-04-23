@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-162-sleeve-field-binding-final-cap-truth"
+PATCH_VERSION = "patch-163-candidate-notional-truth"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -13481,20 +13481,73 @@ def _dashboard_list_block(items: list[str] | None) -> str:
     return html.escape(chr(10).join(vals or ["none"]))
 
 
-def _dashboard_candidate_reason_text(item: dict | None) -> str:
+def _dashboard_candidate_notional_truth(item: dict | None, blockers: dict | None = None) -> dict:
     item = dict(item or {})
-    reasons = [str(r or '').strip() for r in (item.get('rejection_reasons') or []) if str(r or '').strip()]
+    blockers = dict(blockers or {})
     projection = dict(item.get('portfolio_exposure_projection') or {})
+    sizing_truth = dict(item.get('sizing_truth') or {})
+
+    raw_qty = sizing_truth.get('raw_estimated_qty')
+    eff_qty = sizing_truth.get('effective_estimated_qty')
+    if eff_qty is None:
+        eff_qty = item.get('estimated_qty')
+    if raw_qty is None:
+        raw_qty = item.get('raw_estimated_qty')
+    if raw_qty is None:
+        raw_qty = eff_qty
+
+    close = _safe_float(item.get('close'))
+    raw_notional = sizing_truth.get('raw_projected_notional')
+    eff_notional = sizing_truth.get('effective_projected_notional')
+    if eff_notional is None and close is not None and eff_qty is not None:
+        try:
+            eff_notional = float(close) * float(eff_qty)
+        except Exception:
+            eff_notional = None
+    if raw_notional is None and close is not None and raw_qty is not None:
+        try:
+            raw_notional = float(close) * float(raw_qty)
+        except Exception:
+            raw_notional = None
+
+    basis = str(item.get('portfolio_exposure_limit_basis') or projection.get('blocking_basis') or '').strip()
     over_amount = item.get('portfolio_exposure_limit_over_amount')
     if over_amount is None:
         over_amount = projection.get('over_amount')
-    basis = str(item.get('portfolio_exposure_limit_basis') or projection.get('blocking_basis') or '').strip()
-    sizing_truth = dict(item.get('sizing_truth') or {})
+
+    portfolio_remaining = sizing_truth.get('portfolio_remaining')
+    if portfolio_remaining is None:
+        portfolio_remaining = projection.get('remaining_capacity')
+    if portfolio_remaining is None:
+        portfolio_remaining = blockers.get('portfolio_exposure_remaining')
+
+    strategy_remaining = blockers.get('strategy_sleeve_remaining')
+    if strategy_remaining is None and basis in {'strategy', 'both'}:
+        strategy_remaining = blockers.get('portfolio_exposure_remaining')
+
+    return {
+        'basis': basis,
+        'raw_qty': raw_qty,
+        'effective_qty': eff_qty,
+        'raw_notional': raw_notional,
+        'effective_notional': eff_notional,
+        'over_amount': over_amount,
+        'portfolio_remaining': portfolio_remaining,
+        'strategy_remaining': strategy_remaining,
+    }
+
+
+def _dashboard_candidate_reason_text(item: dict | None, blockers: dict | None = None) -> str:
+    item = dict(item or {})
+    reasons = [str(r or '').strip() for r in (item.get('rejection_reasons') or []) if str(r or '').strip()]
+    truth = _dashboard_candidate_notional_truth(item, blockers)
+    basis = str(truth.get('basis') or '').strip()
     rendered = []
     for reason in reasons:
         if reason == 'portfolio_exposure_limit':
             suffix = []
             try:
+                over_amount = truth.get('over_amount')
                 if over_amount is not None:
                     suffix.append(f'+${float(over_amount):.2f} over')
             except Exception:
@@ -13502,30 +13555,28 @@ def _dashboard_candidate_reason_text(item: dict | None) -> str:
             if basis:
                 suffix.append(f'basis={basis}')
             try:
-                raw_qty = sizing_truth.get('raw_estimated_qty')
-                eff_qty = sizing_truth.get('effective_estimated_qty')
+                raw_qty = truth.get('raw_qty')
+                eff_qty = truth.get('effective_qty')
                 if raw_qty is not None and eff_qty is not None and float(raw_qty) > float(eff_qty):
                     suffix.append(f'qty={float(eff_qty):.2f}/{float(raw_qty):.2f}')
             except Exception:
                 pass
             try:
-                eff_notional = sizing_truth.get('effective_projected_notional')
+                eff_notional = truth.get('effective_notional')
                 if eff_notional is not None:
                     suffix.append(f'proj=${float(eff_notional):.2f}')
             except Exception:
                 pass
             try:
-                rem = sizing_truth.get('portfolio_remaining')
-                if rem is None:
-                    rem = projection.get('remaining_capacity')
+                rem = truth.get('strategy_remaining') if basis in {'strategy', 'both'} else truth.get('portfolio_remaining')
                 if rem is not None:
                     label = 'sleeve_rem' if basis in {'strategy', 'both'} else 'cap_rem'
                     suffix.append(f'{label}=${float(rem):.2f}')
             except Exception:
                 pass
             try:
-                raw_notional = sizing_truth.get('raw_projected_notional')
-                eff_notional = sizing_truth.get('effective_projected_notional')
+                raw_notional = truth.get('raw_notional')
+                eff_notional = truth.get('effective_notional')
                 if raw_notional is not None and eff_notional is not None and float(raw_notional) > float(eff_notional):
                     suffix.append(f'raw_proj=${float(raw_notional):.2f}')
             except Exception:
@@ -14043,12 +14094,14 @@ def dashboard(request: Request):
         f'<td>{_dashboard_fmt(item.get("rank_score"))}</td>'
         f'<td>{_dashboard_fmt(item.get("close"))}</td>'
         f'<td>{_dashboard_fmt(item.get("breakout_distance_pct"))}</td>'
-        f'<td>{html.escape(_dashboard_candidate_reason_text(item))}</td>'
+        f'<td>{_dashboard_fmt(_dashboard_candidate_notional_truth(item, blockers).get("effective_qty"))}</td>'
+        f'<td>{_dashboard_money(_dashboard_candidate_notional_truth(item, blockers).get("effective_notional"))}</td>'
+        f'<td>{html.escape(_dashboard_candidate_reason_text(item, blockers))}</td>'
         '</tr>'
         for item in top_candidates
     )
     if not candidate_rows:
-        candidate_rows = '<tr><td colspan="5" class="muted">No recent candidate set available.</td></tr>'
+        candidate_rows = '<tr><td colspan="7" class="muted">No recent candidate set available.</td></tr>'
     active_position_rows = _dashboard_position_rows(active_positions_view)
     risk_integrity_badges = _dashboard_warning_badges([
         *( ["missing_from_plans"] if risk_integrity_view.get("missing_from_plans") else [] ),
@@ -14231,7 +14284,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 162 final cap truth</div>
+      <div class="action-pill">Patch 163 notional truth</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -14528,7 +14581,7 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
       <h2>Top Candidate Rejections</h2>
       <div class="muted" style="margin-bottom:10px;">From last scan {html.escape(str(last_scan.get('ts_utc') or last_scan.get('timestamp_utc') or ''))}{html.escape(scan_reason_display_note)}</div>
       <table>
-        <thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead>
+        <thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Est Qty</th><th>Proj Notional</th><th>Reasons</th></tr></thead>
         <tbody>{candidate_rows}</tbody>
       </table>
     </div>
