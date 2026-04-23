@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-163-candidate-notional-truth"
+PATCH_VERSION = "patch-164-cap-comparator-fix"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7527,6 +7527,30 @@ def _portfolio_cap_remaining_by_mode(exposure: dict | None, portfolio_cap: float
     return None, mode or 'none'
 
 
+def _portfolio_exposure_projection(projected_notional: float, exposure: dict | None = None, portfolio_cap: float = 0.0) -> dict:
+    projected_notional = max(0.0, float(projected_notional or 0.0))
+    exposure = dict(exposure or {})
+    remaining_capacity, basis = _portfolio_cap_remaining_by_mode(exposure, portfolio_cap)
+    if remaining_capacity is None:
+        return {
+            'blocked': False,
+            'blocking_basis': basis,
+            'remaining_capacity': None,
+            'over_amount': 0.0,
+            'projected_notional': round(projected_notional, 4),
+        }
+    remaining_capacity = max(0.0, float(remaining_capacity or 0.0))
+    blocked = projected_notional > (remaining_capacity + 1e-9)
+    over_amount = max(0.0, projected_notional - remaining_capacity)
+    return {
+        'blocked': bool(blocked),
+        'blocking_basis': basis,
+        'remaining_capacity': round(remaining_capacity, 4),
+        'over_amount': round(over_amount, 4),
+        'projected_notional': round(projected_notional, 4),
+    }
+
+
 def _cap_adjust_candidate_qty(close: float, estimated_qty: float, open_symbol_notional: float, symbol_cap: float, exposure: dict | None, portfolio_cap: float) -> dict:
     close = float(close or 0.0)
     estimated_qty = max(0.0, float(estimated_qty or 0.0))
@@ -11501,7 +11525,6 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             c.setdefault('rejection_reasons', []).append('portfolio_exposure_limit')
             c['portfolio_exposure_limit_basis'] = exposure_projection.get('blocking_basis')
             c['portfolio_exposure_limit_over_amount'] = exposure_projection.get('over_amount')
-            selection_blockers.append('portfolio_exposure_limit')
             selection_blockers.append('portfolio_exposure_limit')
         c['selection_blockers'] = list(dict.fromkeys([str(r) for r in selection_blockers if str(r)]))
         rows.append(c)
