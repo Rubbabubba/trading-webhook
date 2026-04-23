@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-158-portfolio-exposure-truth-alignment"
+PATCH_VERSION = "patch-159-candidate-rejection-truth-exception-fallback"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -13299,6 +13299,7 @@ def _dashboard_exposure_capacity_view(blockers: dict | None, reconcile: dict | N
         "max_new_entries_per_day": int(blockers.get("max_new_entries_per_day") or 0),
         "portfolio_exposure": blockers.get("portfolio_exposure"),
         "portfolio_exposure_cap": blockers.get("portfolio_exposure_cap"),
+        "portfolio_exposure_remaining": blockers.get("portfolio_exposure_remaining"),
         "portfolio_cap_block_mode": blockers.get("portfolio_cap_block_mode"),
         "blocked_by_portfolio_cap": bool(blockers.get("blocked_by_portfolio_cap") or blockers.get("blocked_by_total_portfolio_cap") or blockers.get("blocked_by_strategy_portfolio_cap")),
         "correlation_groups_count": int(blockers.get("correlation_groups_count") or 0),
@@ -13336,6 +13337,47 @@ def _dashboard_position_rows(rows: list[dict]) -> str:
 def _dashboard_list_block(items: list[str] | None) -> str:
     vals = [str(x).strip() for x in (items or []) if str(x).strip()]
     return html.escape(chr(10).join(vals or ["none"]))
+
+
+def _dashboard_candidate_reason_text(item: dict | None) -> str:
+    item = dict(item or {})
+    reasons = [str(r or '').strip() for r in (item.get('rejection_reasons') or []) if str(r or '').strip()]
+    projection = dict(item.get('portfolio_exposure_projection') or {})
+    over_amount = item.get('portfolio_exposure_limit_over_amount')
+    if over_amount is None:
+        over_amount = projection.get('over_amount')
+    basis = str(item.get('portfolio_exposure_limit_basis') or projection.get('blocking_basis') or '').strip()
+    rendered = []
+    for reason in reasons:
+        if reason == 'portfolio_exposure_limit':
+            suffix = []
+            try:
+                if over_amount is not None:
+                    suffix.append(f'+${float(over_amount):.2f} over')
+            except Exception:
+                pass
+            if basis:
+                suffix.append(f'basis={basis}')
+            if suffix:
+                rendered.append(f"portfolio_exposure_limit ({'; '.join(suffix)})")
+            else:
+                rendered.append(reason)
+        else:
+            rendered.append(reason)
+    return ', '.join(rendered)
+
+
+def _dashboard_effective_scan_summary(last_scan: dict | None) -> tuple[dict, str]:
+    last_scan = dict(last_scan or {})
+    summary = dict(last_scan.get('summary') or {})
+    reason = str(last_scan.get('reason') or '').strip()
+    if summary and not summary.get('skipped') and not summary.get('skip_reason') and (summary.get('top_candidates') or summary.get('top_rejection_reasons') or summary.get('rejection_counts')):
+        return summary, ''
+    fallback = _dashboard_latest_completed_scan_summary()
+    if fallback:
+        note = ' (fallback latest completed scan)' if reason in {'scan_exception', 'dispatch_failure'} else ' (fallback latest completed scan)'
+        return fallback, note
+    return {}, ''
 
 
 def _dashboard_scanner_runtime_hint(scanner: dict | None, worker_snapshot: dict | None) -> dict:
@@ -13771,14 +13813,14 @@ def dashboard(request: Request):
         readiness_assessment_text = 'Component health is not sufficient for promotion.'
 
 
-    scan_summary = dict(last_scan.get('summary') or {})
-    if (not scan_summary) or scan_summary.get('skipped') or scan_summary.get('skip_reason'):
-        scan_summary = _dashboard_latest_completed_scan_summary()
+    scan_summary, scan_reason_display_note = _dashboard_effective_scan_summary(last_scan)
     top_candidates = list((scan_summary.get('top_candidates') or []))[:5]
     current_daily_halt_active = bool(blockers.get('daily_halt_active'))
-    scan_reason_display_note = ''
-    if not current_daily_halt_active:
-        scan_reason_display_note = ' (halt cleared since scan)' if any('daily_halt_active' in list((item or {}).get('rejection_reasons') or []) for item in top_candidates) else ''
+    if not current_daily_halt_active and any('daily_halt_active' in list((item or {}).get('rejection_reasons') or []) for item in top_candidates):
+        if scan_reason_display_note:
+            scan_reason_display_note = scan_reason_display_note[:-1] + '; halt cleared since scan)' if scan_reason_display_note.endswith(')') else f'{scan_reason_display_note}; halt cleared since scan'
+        else:
+            scan_reason_display_note = ' (halt cleared since scan)'
     for item in top_candidates:
         reasons = [str(r or '').strip() for r in list((item or {}).get('rejection_reasons') or []) if str(r or '').strip()]
         if (not current_daily_halt_active) and ('daily_halt_active' in reasons):
@@ -13801,7 +13843,7 @@ def dashboard(request: Request):
         rejection_counts['halt_cleared_since_scan'] = int(rejection_counts.pop('daily_halt_active') or 0)
     top_rejections = sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
 
-    latest_candidate_summary = dict((last_scan.get('summary') or {}))
+    latest_candidate_summary = dict(scan_summary or {})
     shadow_selected_symbols = list(latest_candidate_summary.get('shadow_selected_symbols') or latest_candidate_summary.get('shadow_selected') or [])
     shadow_alignment_selected_symbols = list(latest_candidate_summary.get('shadow_alignment_selected_symbols') or [])
     shadow_candidate_total = int(latest_candidate_summary.get('shadow_candidates_total') or 0)
@@ -13809,7 +13851,7 @@ def dashboard(request: Request):
     shadow_relaxed_text = 'Would become selected only if all market-gate blockers were ignored.' if shadow_selected_symbols else 'No current market-gate-only candidates would be selected.'
     shadow_alignment_text = 'Would become selected if index alignment were softened only.' if shadow_alignment_selected_symbols else 'No index-alignment-only candidates would be selected.'
     failure_decomp = _failure_decomposition_snapshot()
-    failure_current = dict((failure_decomp.get('current') or {}))
+    failure_current = _build_failure_decomposition(scan_summary) if scan_summary else dict((failure_decomp.get('current') or {}))
     failure_top_rejections = failure_current.get('rejection_counts') or {}
     failure_top_singles = failure_current.get('single_failure_counts') or {}
     failure_top_pairs = failure_current.get('pair_failure_counts') or {}
@@ -13829,7 +13871,7 @@ def dashboard(request: Request):
         f'<td>{_dashboard_fmt(item.get("rank_score"))}</td>'
         f'<td>{_dashboard_fmt(item.get("close"))}</td>'
         f'<td>{_dashboard_fmt(item.get("breakout_distance_pct"))}</td>'
-        f'<td>{html.escape(", ".join(item.get("rejection_reasons") or []))}</td>'
+        f'<td>{html.escape(_dashboard_candidate_reason_text(item))}</td>'
         '</tr>'
         for item in top_candidates
     )
@@ -14017,7 +14059,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 157 open freshness</div>
+      <div class="action-pill">Patch 159 rejection truth</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
