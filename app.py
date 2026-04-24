@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-165-single-source-cap-gate"
+PATCH_VERSION = "patch-166-exit-override-entry-dispatch-truth"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -6976,12 +6976,21 @@ def is_live_trading_permitted(source: str = "") -> bool:
 
 
 def is_live_exit_permitted(source: str = "", reason: str = "") -> bool:
+    """Permit protective exits when only entry-admission gates are stale.
+
+    Patch 166 separates exits from entry freshness. A missing recent market
+    scan can block new entries, but it must not strand an open position after a
+    stop/target/profit-lock/time-exit condition fires. Hard controls still
+    block exits: explicit DRY_RUN, disabled live trading, market closed, or any
+    non-exit-safe release-gate blocker.
+    """
     if DRY_RUN or (not LIVE_TRADING_ENABLED):
         return False
     gate = release_gate_status() if RELEASE_GATE_ENFORCED else {}
     if RELEASE_GATE_ENFORCED and (not gate.get("live_orders_permitted")):
         unmet = {str(x).strip().lower() for x in (gate.get("unmet_conditions") or []) if str(x).strip()}
-        if unmet and unmet.issubset({"daily_halt_active"}):
+        exit_safe_unmet = {"daily_halt_active", "recent_market_scan_missing"}
+        if unmet and unmet.issubset(exit_safe_unmet):
             return True
         return False
     return True
@@ -14007,6 +14016,93 @@ def diagnostics_regime_b(request: Request):
     return {"ok": True, "enabled": bool(SWING_MEAN_REVERSION_ENABLED), "strategy_name": MEAN_REVERSION_STRATEGY_NAME, "only_when_regime_unfavorable": bool(SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE), "kill_switch_active": bool(kill_active), "kill_switch_reasons": list(kill_reasons), "kill_switch_state": dict((state.get("kill_switch") or {}).get(MEAN_REVERSION_STRATEGY_NAME) or {}), "performance": mr_perf, "latest_scan_summary": {"mean_reversion_candidates_total": int(summary.get("mean_reversion_candidates_total") or 0), "mean_reversion_eligible_total": int(summary.get("mean_reversion_eligible_total") or 0), "selected_strategy": summary.get("selected_strategy"), "top_mean_reversion_candidates": list(summary.get("top_mean_reversion_candidates") or []), "regime": dict(summary.get("regime") or {})}, "config": {"target_pct": float(SWING_MEAN_REVERSION_TARGET_PCT), "stop_pct": float(SWING_MEAN_REVERSION_STOP_PCT), "max_hold_days": int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), "risk_multiplier": float(SWING_MEAN_REVERSION_RISK_MULTIPLIER), "symbol_exposure_multiplier": float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER), "weak_tape_max_new_entries": int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES)}}
 
 
+
+def _dashboard_entry_dispatch_truth(limit: int = 8) -> dict:
+    """Read-only dashboard truth for scanner entry dispatch attempts."""
+    latest_scan = dict(SCAN_HISTORY[-1]) if SCAN_HISTORY else {}
+    would_submit = list(latest_scan.get("would_submit") or []) if latest_scan else []
+    rows: list[dict] = []
+    for row in would_submit[-max(1, min(int(limit or 8), 25)):]:
+        if not isinstance(row, dict):
+            continue
+        order_obj = row.get("order") if isinstance(row.get("order"), dict) else {}
+        state = row.get("submit_state") or ("submitted" if row.get("submitted") else ("dry_run" if row.get("dry_run") else ("rejected" if row.get("rejected") else ("ignored" if row.get("ignored") else "unknown"))))
+        rows.append({
+            "ts_utc": latest_scan.get("ts_utc"),
+            "source": row.get("source") or row.get("effective_submit_source") or row.get("selected_source") or "worker_scan",
+            "symbol": row.get("symbol"),
+            "signal": row.get("signal"),
+            "rank_score": row.get("rank_score"),
+            "submit_state": state,
+            "submit_reason": row.get("submit_reason") or row.get("reason") or "",
+            "submit_attempted": row.get("submit_attempted") if "submit_attempted" in row else bool(row.get("submitted")),
+            "order_id": row.get("order_id") or order_obj.get("order_id") or "",
+            "dry_run": bool(row.get("dry_run")),
+            "submitted": bool(row.get("submitted")),
+            "rejected": bool(row.get("rejected")),
+            "ignored": bool(row.get("ignored")),
+        })
+    if not rows:
+        recent = []
+        for row in list(DECISIONS or [])[-150:]:
+            if not isinstance(row, dict):
+                continue
+            event = str(row.get("event") or "").upper()
+            action = str(row.get("action") or "").lower()
+            if event in {"ENTRY", "SCAN"} and ("submit" in action or action in {"candidate_selected", "rejected", "dry_run_plan_created", "order_submitted", "ignored"}):
+                recent.append(row)
+        for row in recent[-max(1, min(int(limit or 8), 25)):]:
+            action = str(row.get("action") or "")
+            rows.append({
+                "ts_utc": row.get("ts_utc") or row.get("ts"),
+                "source": row.get("source"),
+                "symbol": row.get("symbol"),
+                "signal": row.get("signal"),
+                "rank_score": row.get("rank_score"),
+                "submit_state": action,
+                "submit_reason": row.get("reason"),
+                "submit_attempted": bool(row.get("attempted")) or action.lower() in {"order_submitted", "paper_submit_submitted"},
+                "order_id": row.get("order_id"),
+                "dry_run": "dry_run" in action.lower(),
+                "submitted": "submitted" in action.lower(),
+                "rejected": "rejected" in action.lower(),
+                "ignored": "ignored" in action.lower(),
+            })
+    latest_selected = next((dict(r) for r in reversed(DECISIONS or []) if str((r or {}).get("event") or "").upper() == "SCAN" and str((r or {}).get("action") or "") == "candidate_selected"), {})
+    latest_entry = next((dict(r) for r in reversed(DECISIONS or []) if str((r or {}).get("event") or "").upper() == "ENTRY"), {})
+    return {
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "candidate_slots": latest_scan.get("candidate_slots"),
+        "ignored_ranked_out": list(latest_scan.get("ignored_ranked_out") or [])[:8],
+        "rows": rows,
+        "latest_selected_decision": latest_selected,
+        "latest_entry_decision": latest_entry,
+    }
+
+
+def _dashboard_entry_dispatch_rows(dispatch: dict | None) -> str:
+    rows = list((dispatch or {}).get("rows") or [])
+    if not rows:
+        return '<tr><td colspan="8" class="muted">No recent entry dispatch attempts captured.</td></tr>'
+    out = []
+    for row in rows[-8:]:
+        state = str((row or {}).get("submit_state") or "")
+        state_l = state.lower()
+        state_class = "good" if state_l in {"submitted", "order_submitted", "paper_submit_submitted"} else ("bad" if state_l in {"blocked", "rejected", "error"} or "reject" in state_l or "error" in state_l else "neutral")
+        out.append(
+            '<tr>'
+            + f'<td>{html.escape(str((row or {}).get("symbol") or ""))}</td>'
+            + f'<td>{html.escape(str((row or {}).get("signal") or ""))}</td>'
+            + f'<td>{_dashboard_fmt((row or {}).get("rank_score"))}</td>'
+            + f'<td><span class="badge {state_class}">{html.escape(state or "unknown")}</span></td>'
+            + f'<td>{html.escape(str((row or {}).get("submit_reason") or ""))}</td>'
+            + f'<td>{_dashboard_fmt((row or {}).get("submit_attempted"))}</td>'
+            + f'<td>{html.escape(str((row or {}).get("order_id") or ""))}</td>'
+            + f'<td>{html.escape(str((row or {}).get("source") or ""))}</td>'
+            + '</tr>'
+        )
+    return ''.join(out)
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     require_admin_if_configured(request)
@@ -14072,6 +14168,8 @@ def dashboard(request: Request):
     scanner_diag = diagnostics_scanner()
     scanner_runtime = _dashboard_scanner_runtime_hint(scanner_diag, worker_snapshot)
     scanner_attempts = _dashboard_scanner_attempt_summary(scanner_diag)
+    entry_dispatch_truth = _dashboard_entry_dispatch_truth(limit=8)
+    entry_dispatch_rows = _dashboard_entry_dispatch_rows(entry_dispatch_truth)
     scanner_display_status = str(scanner_runtime.get('display_status') or scanner_worker_status)
     exit_worker_status = str(worker_snapshot.get('exit_worker_status') or ('up' if worker_snapshot.get('exit_worker_running') else 'unknown')).strip().lower()
     combined_worker_status = scanner_display_status
@@ -14400,7 +14498,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 165 cap gate</div>
+      <div class="action-pill">Patch 166 exit + dispatch truth</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -14707,6 +14805,31 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
         <thead><tr><th>Reason</th><th>Count</th></tr></thead>
         <tbody>{rejection_rows}</tbody>
       </table>
+    </div>
+  </div>
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Entry Dispatch Truth</h2>
+      <div class="muted" style="margin-bottom:10px;">Shows whether selected candidates attempted submission and what the submit path returned. Read-only; no retries from dashboard.</div>
+      <table>
+        <thead><tr><th>Symbol</th><th>Signal</th><th>Rank</th><th>State</th><th>Reason</th><th>Attempted</th><th>Order</th><th>Source</th></tr></thead>
+        <tbody>{entry_dispatch_rows}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Latest Selection Trace</h2>
+      <table>{_dashboard_rows([
+        ('latest_scan_ts_utc', (entry_dispatch_truth or {}).get('latest_scan_ts_utc')),
+        ('candidate_slots', (entry_dispatch_truth or {}).get('candidate_slots')),
+        ('latest_selected_symbol', ((entry_dispatch_truth or {}).get('latest_selected_decision') or {}).get('symbol')),
+        ('latest_selected_reason', ((entry_dispatch_truth or {}).get('latest_selected_decision') or {}).get('reason')),
+        ('latest_entry_symbol', ((entry_dispatch_truth or {}).get('latest_entry_decision') or {}).get('symbol')),
+        ('latest_entry_action', ((entry_dispatch_truth or {}).get('latest_entry_decision') or {}).get('action')),
+        ('latest_entry_reason', ((entry_dispatch_truth or {}).get('latest_entry_decision') or {}).get('reason')),
+      ])}</table>
+      <h3 style="margin-top:14px;">Ranked-out candidates</h3>
+      <pre>{_dashboard_json_block((entry_dispatch_truth or {}).get('ignored_ranked_out') or [], max_chars=1200)}</pre>
     </div>
   </div>
 
