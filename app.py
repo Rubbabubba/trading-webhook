@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-164-cap-comparator-fix"
+PATCH_VERSION = "patch-165-single-source-cap-gate"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7550,6 +7550,68 @@ def _portfolio_exposure_projection(projected_notional: float, exposure: dict | N
         'projected_notional': round(projected_notional, 4),
     }
 
+def _dedupe_candidate_reasons(reasons: list | None) -> list[str]:
+    seen = set()
+    out = []
+    for reason in (reasons or []):
+        r = str(reason or '').strip()
+        if not r or r in seen:
+            continue
+        seen.add(r)
+        out.append(r)
+    return out
+
+
+def _canonical_portfolio_cap_gate(candidate: dict, projected_notional: float, exposure: dict | None, portfolio_cap: float, selection_blockers: list | None = None, restore_eligibility: bool = True) -> dict:
+    """Single source of truth for portfolio-cap admission.
+
+    A candidate is blocked by portfolio exposure only when the candidate's projected
+    notional is greater than the remaining capacity for the configured cap mode.
+    This helper also removes stale legacy portfolio_exposure_limit reasons before
+    applying the canonical decision.
+    """
+    c = candidate if isinstance(candidate, dict) else {}
+    projected_notional = max(0.0, float(projected_notional or 0.0))
+
+    existing_reasons = _dedupe_candidate_reasons(c.get('rejection_reasons') or [])
+    had_legacy_cap_reason = 'portfolio_exposure_limit' in existing_reasons
+    reasons = [r for r in existing_reasons if r != 'portfolio_exposure_limit']
+    c['rejection_reasons'] = reasons
+
+    if selection_blockers is not None:
+        selection_blockers[:] = [str(r) for r in selection_blockers if str(r) != 'portfolio_exposure_limit']
+
+    projection = _portfolio_exposure_projection(projected_notional, exposure=exposure, portfolio_cap=portfolio_cap)
+    c['portfolio_exposure_projection'] = dict(projection)
+    c['portfolio_cap_gate'] = {
+        'source': 'canonical_helper',
+        'decision': 'block' if projection.get('blocked') else 'allow',
+        'compared_projected_notional': projection.get('projected_notional'),
+        'compared_remaining_capacity': projection.get('remaining_capacity'),
+        'blocking_basis': projection.get('blocking_basis'),
+        'over_amount': projection.get('over_amount'),
+    }
+
+    if projection.get('blocked'):
+        c['eligible'] = False
+        reasons = _dedupe_candidate_reasons(list(c.get('rejection_reasons') or []) + ['portfolio_exposure_limit'])
+        c['rejection_reasons'] = reasons
+        c['portfolio_exposure_limit_basis'] = projection.get('blocking_basis')
+        c['portfolio_exposure_limit_over_amount'] = projection.get('over_amount')
+        if selection_blockers is not None:
+            selection_blockers.append('portfolio_exposure_limit')
+    else:
+        c['portfolio_exposure_limit_basis'] = projection.get('blocking_basis')
+        c['portfolio_exposure_limit_over_amount'] = 0.0
+        if restore_eligibility and had_legacy_cap_reason:
+            qty = float(c.get('estimated_qty') or 0.0)
+            min_qty = max(float(MIN_AFFORDABLE_QTY), float(MIN_QTY))
+            if not c.get('rejection_reasons') and qty >= min_qty:
+                c['eligible'] = True
+
+    c['rejection_reasons'] = _dedupe_candidate_reasons(c.get('rejection_reasons') or [])
+    return dict(projection)
+
 
 def _cap_adjust_candidate_qty(close: float, estimated_qty: float, open_symbol_notional: float, symbol_cap: float, exposure: dict | None, portfolio_cap: float) -> dict:
     close = float(close or 0.0)
@@ -9616,13 +9678,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if c.get('eligible') and local_symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > local_symbol_cap:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
-        exposure_projection = _portfolio_exposure_projection(projected_notional, exposure=exposure, portfolio_cap=portfolio_cap)
-        c['portfolio_exposure_projection'] = dict(exposure_projection)
-        if c.get('eligible') and exposure_projection.get('blocked'):
-            c['eligible'] = False
-            c.setdefault('rejection_reasons', []).append('portfolio_exposure_limit')
-            c['portfolio_exposure_limit_basis'] = exposure_projection.get('blocking_basis')
-            c['portfolio_exposure_limit_over_amount'] = exposure_projection.get('over_amount')
+        _canonical_portfolio_cap_gate(c, projected_notional, exposure, portfolio_cap, restore_eligibility=True)
         c.update(_classify_shadow_candidate(c))
         if c.get('shadow_regime_candidate'):
             shadow_candidates.append(c)
@@ -11518,14 +11574,7 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
             selection_blockers.append('symbol_exposure_limit')
-        exposure_projection = _portfolio_exposure_projection(projected_notional, exposure=exposure, portfolio_cap=portfolio_cap)
-        c['portfolio_exposure_projection'] = dict(exposure_projection)
-        if c.get('eligible') and exposure_projection.get('blocked'):
-            c['eligible'] = False
-            c.setdefault('rejection_reasons', []).append('portfolio_exposure_limit')
-            c['portfolio_exposure_limit_basis'] = exposure_projection.get('blocking_basis')
-            c['portfolio_exposure_limit_over_amount'] = exposure_projection.get('over_amount')
-            selection_blockers.append('portfolio_exposure_limit')
+        _canonical_portfolio_cap_gate(c, projected_notional, exposure, portfolio_cap, selection_blockers=selection_blockers, restore_eligibility=True)
         c['selection_blockers'] = list(dict.fromkeys([str(r) for r in selection_blockers if str(r)]))
         rows.append(c)
 
@@ -13613,6 +13662,49 @@ def _dashboard_candidate_reason_text(item: dict | None, blockers: dict | None = 
     return ', '.join(rendered)
 
 
+
+def _dashboard_exposure_payload_from_blockers(blockers: dict | None) -> tuple[dict, float]:
+    blockers = dict(blockers or {})
+    exposure = {
+        'total': float(blockers.get('portfolio_exposure') or 0.0),
+        'strategy_managed': float(blockers.get('strategy_portfolio_exposure') or blockers.get('portfolio_exposure') or 0.0),
+        'recovered': float(blockers.get('recovered_portfolio_exposure') or 0.0),
+        'unmanaged': float(blockers.get('unmanaged_portfolio_exposure') or 0.0),
+    }
+    return exposure, float(blockers.get('portfolio_exposure_cap') or 0.0)
+
+
+def _dashboard_canonicalize_candidate_cap(item: dict | None, blockers: dict | None = None) -> dict:
+    row = dict(item or {})
+    truth = _dashboard_candidate_notional_truth(row, blockers)
+    projected = truth.get('effective_notional')
+    if projected is None:
+        return row
+    exposure, portfolio_cap = _dashboard_exposure_payload_from_blockers(blockers)
+    try:
+        _canonical_portfolio_cap_gate(row, float(projected or 0.0), exposure, portfolio_cap, restore_eligibility=True)
+    except Exception:
+        return row
+    return row
+
+
+def _dashboard_sanitize_scan_summary_cap(summary: dict | None, blockers: dict | None = None) -> dict:
+    out = dict(summary or {})
+    for key in ('top_candidates', 'candidates', 'items'):
+        rows = out.get(key)
+        if isinstance(rows, list):
+            out[key] = [_dashboard_canonicalize_candidate_cap(r, blockers) if isinstance(r, dict) else r for r in rows]
+    rows = out.get('top_candidates') or out.get('candidates') or out.get('items') or []
+    counts = Counter()
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        for reason in _dedupe_candidate_reasons(r.get('rejection_reasons') or []):
+            counts[reason] += 1
+    if counts:
+        out['rejection_counts'] = dict(counts.most_common())
+        out['top_rejection_reasons'] = [{'reason': k, 'count': v} for k, v in counts.most_common()]
+    return out
 def _dashboard_effective_scan_summary(last_scan: dict | None) -> tuple[dict, str]:
     last_scan = dict(last_scan or {})
     summary = dict(last_scan.get('summary') or {})
@@ -14060,6 +14152,7 @@ def dashboard(request: Request):
 
 
     scan_summary, scan_reason_display_note = _dashboard_effective_scan_summary(last_scan)
+    scan_summary = _dashboard_sanitize_scan_summary_cap(scan_summary, blockers)
     top_candidates = list((scan_summary.get('top_candidates') or []))[:5]
     current_daily_halt_active = bool(blockers.get('daily_halt_active'))
     if not current_daily_halt_active and any('daily_halt_active' in list((item or {}).get('rejection_reasons') or []) for item in top_candidates):
@@ -14307,7 +14400,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 163 notional truth</div>
+      <div class="action-pill">Patch 165 cap gate</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
