@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-167-daily-halt-cause-today-pnl-truth"
+PATCH_VERSION = "patch-166-exit-override-entry-dispatch-truth"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -6962,16 +6962,6 @@ def release_gate_status() -> dict:
         status["unmet_conditions"] = unmet
         status["go_live_eligible"] = False
         status["live_orders_permitted"] = False
-    halt_truth = daily_halt_truth_snapshot()
-    pnl_truth = dict(halt_truth.get("today_pnl_truth") or {})
-    status.update({
-        "daily_halt_reason": halt_truth.get("inferred_halt_reason"),
-        "daily_halt_truth": halt_truth,
-        "today_pnl_truth": pnl_truth,
-        "today_realized_pnl": pnl_truth.get("today_realized_pnl"),
-        "today_unrealized_pnl": pnl_truth.get("today_unrealized_pnl"),
-        "today_net_pnl": pnl_truth.get("today_net_pnl"),
-    })
     return status
 
 
@@ -7194,114 +7184,6 @@ def daily_stop_hit() -> bool:
     if pnl is None:
         return False
     return pnl <= -abs(DAILY_STOP_DOLLARS)
-
-
-def _today_unrealized_pnl_truth() -> dict:
-    total = 0.0
-    symbols = []
-    error = ""
-    try:
-        positions = trading_client.get_all_positions()
-        for p in positions:
-            try:
-                sym = str(getattr(p, "symbol", "") or "").upper()
-                if sym not in ALLOWED_SYMBOLS:
-                    continue
-                qty = _safe_float(getattr(p, "qty", 0.0) or 0.0)
-                if abs(qty) <= 0:
-                    continue
-                upl = _safe_float(getattr(p, "unrealized_pl", 0.0) or 0.0)
-                total += upl
-                symbols.append({"symbol": sym, "qty": qty, "unrealized_pl": round(upl, 4)})
-            except Exception:
-                continue
-    except Exception as e:
-        error = str(e)
-    return {"ok": not bool(error), "unrealized_pnl": round(total, 4), "symbols": symbols, "error": error}
-
-
-def today_pnl_truth_snapshot() -> dict:
-    """Broker-first current-day P&L truth used for operator visibility only."""
-    acct_error = ""
-    equity = None
-    last_equity = None
-    net_today = None
-    try:
-        acct = trading_client.get_account()
-        equity = _safe_float(getattr(acct, "equity", None))
-        last_equity = _safe_float(getattr(acct, "last_equity", None))
-        if equity > 0 and last_equity > 0:
-            net_today = round(equity - last_equity, 4)
-    except Exception as e:
-        acct_error = str(e)
-    unreal = _today_unrealized_pnl_truth()
-    unrealized = _safe_float(unreal.get("unrealized_pnl") or 0.0)
-    realized = round(net_today - unrealized, 4) if net_today is not None else None
-    today_ny = _current_session_key()
-    perf_rows = []
-    perf_today_gross = 0.0
-    for row in list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []):
-        try:
-            ts = str(row.get("ts_utc") or "")
-            if not ts:
-                continue
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(NY_TZ)
-            if dt.date().isoformat() != today_ny:
-                continue
-            pnl = _safe_float(row.get("gross_pnl") or 0.0)
-            perf_today_gross += pnl
-            perf_rows.append({"symbol": row.get("symbol"), "gross_pnl": round(pnl, 4), "ts_utc": ts})
-        except Exception:
-            continue
-    return {
-        "ok": acct_error == "",
-        "source": "broker_account_equity_change" if acct_error == "" else "unavailable",
-        "today_ny": today_ny,
-        "equity": round(equity, 4) if equity is not None else None,
-        "last_equity": round(last_equity, 4) if last_equity is not None else None,
-        "today_net_pnl": net_today,
-        "today_unrealized_pnl": round(unrealized, 4),
-        "today_realized_pnl": realized,
-        "strategy_perf_today_gross_pnl": round(perf_today_gross, 4),
-        "strategy_perf_today_closed_count": len(perf_rows),
-        "strategy_perf_today_rows": perf_rows[-20:],
-        "open_position_unrealized_rows": unreal.get("symbols") or [],
-        "error": acct_error or unreal.get("error") or "",
-    }
-
-
-def daily_halt_truth_snapshot() -> dict:
-    _ensure_daily_halt_rollover()
-    pnl_truth = today_pnl_truth_snapshot()
-    halt = dict(DAILY_HALT_STATE or {})
-    net = pnl_truth.get("today_net_pnl")
-    reason = str(halt.get("reason") or "").strip() or ("daily_stop_hit" if daily_stop_hit() else "")
-    inferred = reason or "none"
-    threshold = None
-    threshold_name = ""
-    if net is not None:
-        if DAILY_STOP_DOLLARS > 0 and net <= -abs(float(DAILY_STOP_DOLLARS)):
-            inferred = "daily_stop_dollars_hit"
-            threshold = -abs(float(DAILY_STOP_DOLLARS))
-            threshold_name = "DAILY_STOP_DOLLARS"
-        elif DAILY_LOSS_LIMIT > 0 and net <= -abs(float(DAILY_LOSS_LIMIT)):
-            inferred = "daily_loss_limit_hit"
-            threshold = -abs(float(DAILY_LOSS_LIMIT))
-            threshold_name = "DAILY_LOSS_LIMIT"
-        elif bool(halt.get("active")) and reason:
-            inferred = reason
-    return {
-        "ok": True,
-        "daily_halt_active": daily_halt_active(),
-        "daily_halt_state": halt,
-        "configured_daily_stop_dollars": float(DAILY_STOP_DOLLARS),
-        "configured_daily_loss_limit": float(DAILY_LOSS_LIMIT),
-        "auto_flatten_on_daily_stop": bool(AUTO_FLATTEN_ON_DAILY_STOP),
-        "inferred_halt_reason": inferred,
-        "trigger_threshold_name": threshold_name,
-        "trigger_threshold_value": threshold,
-        "today_pnl_truth": pnl_truth,
-    }
 
 
 def risk_limits_ok() -> bool:
@@ -11893,8 +11775,6 @@ def diagnostics_readiness(request: Request):
     same_session_proven = all(bool((freshness_entries.get(name) or {}).get('same_session')) for name in ('last_scan', 'regime', 'paper_lifecycle', 'scanner_telemetry'))
 
     release = release_gate_status()
-    daily_halt_truth = dict(release.get('daily_halt_truth') or daily_halt_truth_snapshot())
-    today_pnl_truth = dict(release.get('today_pnl_truth') or daily_halt_truth.get('today_pnl_truth') or today_pnl_truth_snapshot())
     workflow = dict(release.get('release_workflow') or {})
     promotion_targets = dict(workflow.get('promotion_targets') or {})
     guarded_live_ready = bool((promotion_targets.get('guarded_live_eligible') or {}).get('ready'))
@@ -14119,12 +13999,6 @@ def _dashboard_latest_completed_scan_summary() -> dict:
     return {}
 
 
-@app.get("/diagnostics/daily_halt_truth")
-def diagnostics_daily_halt_truth(request: Request):
-    require_admin_if_configured(request)
-    return daily_halt_truth_snapshot()
-
-
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
     state = _recompute_strategy_performance_state()
@@ -14756,40 +14630,6 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
 
   <div class="section grid">
     <div class="card">
-      <h2>Daily Halt Truth</h2>
-      <table>{_dashboard_rows([
-        ('daily_halt_active', daily_halt_truth.get('daily_halt_active')),
-        ('inferred_halt_reason', daily_halt_truth.get('inferred_halt_reason')),
-        ('halt_state_reason', (daily_halt_truth.get('daily_halt_state') or {}).get('reason')),
-        ('halt_triggered_at', (daily_halt_truth.get('daily_halt_state') or {}).get('triggered_at')),
-        ('trigger_threshold_name', daily_halt_truth.get('trigger_threshold_name')),
-        ('trigger_threshold_value', daily_halt_truth.get('trigger_threshold_value')),
-        ('configured_daily_stop_dollars', daily_halt_truth.get('configured_daily_stop_dollars')),
-        ('configured_daily_loss_limit', daily_halt_truth.get('configured_daily_loss_limit')),
-        ('auto_flatten_on_daily_stop', daily_halt_truth.get('auto_flatten_on_daily_stop')),
-      ])}</table>
-      <div class="muted" style="margin-top:10px;">Read-only explanation of the current daily halt state and its likely trigger.</div>
-    </div>
-    <div class="card">
-      <h2>Today P&amp;L Truth</h2>
-      <table>{_dashboard_rows([
-        ('accounting_source', today_pnl_truth.get('source')),
-        ('today_net_pnl', _dashboard_money(today_pnl_truth.get('today_net_pnl'))),
-        ('today_realized_pnl', _dashboard_money(today_pnl_truth.get('today_realized_pnl'))),
-        ('today_unrealized_pnl', _dashboard_money(today_pnl_truth.get('today_unrealized_pnl'))),
-        ('equity', _dashboard_money(today_pnl_truth.get('equity'))),
-        ('last_equity', _dashboard_money(today_pnl_truth.get('last_equity'))),
-        ('strategy_perf_today_closed_count', today_pnl_truth.get('strategy_perf_today_closed_count')),
-        ('strategy_perf_today_gross_pnl', _dashboard_money(today_pnl_truth.get('strategy_perf_today_gross_pnl'))),
-      ])}</table>
-      <h3 style="margin-top:14px;">Today recorded trades</h3>
-      <pre>{html.escape(json.dumps(today_pnl_truth.get('strategy_perf_today_rows') or [], indent=2)[:3000])}</pre>
-      <div class="muted" style="margin-top:10px;">Broker account equity change is used for the halt check; strategy performance rows are shown separately so gaps are obvious.</div>
-    </div>
-  </div>
-
-  <div class="section grid">
-    <div class="card">
       <h2>Performance Analytics</h2>
       <table>{_dashboard_rows([
         ('closed_trades', closed_trade_count),
@@ -15224,12 +15064,6 @@ def diagnostics_release(request: Request):
         "scanner_allow_live": SCANNER_ALLOW_LIVE,
         "kill_switch": KILL_SWITCH,
         "daily_halt_active": daily_halt_active(),
-        "daily_halt_reason": (status.get("daily_halt_truth") or {}).get("inferred_halt_reason"),
-        "daily_halt_truth": status.get("daily_halt_truth"),
-        "today_pnl_truth": status.get("today_pnl_truth"),
-        "today_realized_pnl": status.get("today_realized_pnl"),
-        "today_unrealized_pnl": status.get("today_unrealized_pnl"),
-        "today_net_pnl": status.get("today_net_pnl"),
         "requirements": {
             "release_require_regime_complete": RELEASE_REQUIRE_REGIME_COMPLETE,
             "release_require_regime_favorable": RELEASE_REQUIRE_REGIME_FAVORABLE,
