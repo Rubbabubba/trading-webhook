@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-167B-daily-halt-truth-nameerror-hotfix"
+PATCH_VERSION = "patch-168-today-realized-pnl-broker-truth-sync"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7234,8 +7234,77 @@ def _today_realized_pnl_from_strategy_state() -> dict:
         return {"ok": False, "source": "strategy_performance_state", "error": str(exc), "today_realized_pnl": 0.0, "closed_trades_today": 0, "rows": []}
     return {"ok": True, "source": "strategy_performance_state", "today_realized_pnl": round(gross, 4), "closed_trades_today": len(rows), "wins_today": wins, "losses_today": losses, "flat_today": flat, "rows": rows[-20:]}
 
+def _ny_date_from_iso(ts: str) -> str:
+    try:
+        if not ts:
+            return ""
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(NY).date().isoformat()
+    except Exception:
+        return ""
+
+def _filled_order_row(order: dict) -> dict | None:
+    try:
+        status = str(getattr(_order_attr(order, "status", None), "value", _order_attr(order, "status", "")) or "").lower()
+        if status not in {"filled", "partially_filled"}:
+            return None
+        symbol = str(_order_attr(order, "symbol", "") or "").upper()
+        side = str(getattr(_order_attr(order, "side", None), "value", _order_attr(order, "side", "")) or "").lower()
+        qty = abs(_safe_float(_order_attr(order, "filled_qty", 0.0) or 0.0))
+        price = _safe_float(_order_attr(order, "filled_avg_price", 0.0) or 0.0)
+        ts = str(_order_attr(order, "filled_at", "") or _order_attr(order, "updated_at", "") or _order_attr(order, "submitted_at", "") or "")
+        if not symbol or side not in {"buy", "sell"} or qty <= 0 or price <= 0:
+            return None
+        return {"id": str(_order_attr(order, "id", "") or ""), "symbol": symbol, "side": side, "filled_qty": qty, "filled_avg_price": price, "filled_at": ts, "submitted_at": str(_order_attr(order, "submitted_at", "") or "")}
+    except Exception:
+        return None
+
+def _today_realized_pnl_from_broker_orders() -> dict:
+    session = _session_boundary_snapshot()
+    today = str((session or {}).get("today_ny") or "")
+    try:
+        orders = _alpaca_get_orders_rest(status="all", limit=500)
+        filled = []
+        for order in orders:
+            row = _filled_order_row(order)
+            if row:
+                filled.append(row)
+        today_exits = [r for r in filled if r.get("side") == "sell" and _ny_date_from_iso(str(r.get("filled_at") or r.get("submitted_at") or "")) == today]
+        rows = []
+        wins = losses = flat = 0
+        gross = 0.0
+        for exit_row in sorted(today_exits, key=lambda r: str(r.get("filled_at") or r.get("submitted_at") or "")):
+            sym = str(exit_row.get("symbol") or "").upper()
+            exit_ts = str(exit_row.get("filled_at") or exit_row.get("submitted_at") or "")
+            entry = _find_recent_entry_fill_for_symbol(sym, "buy", before_iso=exit_ts)
+            entry_px = _safe_float((entry or {}).get("filled_avg_price"), 0.0)
+            exit_px = _safe_float(exit_row.get("filled_avg_price"), 0.0)
+            qty = abs(_safe_float(exit_row.get("filled_qty"), 0.0))
+            pnl = 0.0
+            calc_ok = False
+            if entry_px > 0 and exit_px > 0 and qty > 0:
+                pnl = (exit_px - entry_px) * qty
+                calc_ok = True
+                gross += pnl
+                if pnl > 0:
+                    wins += 1
+                elif pnl < 0:
+                    losses += 1
+                else:
+                    flat += 1
+            rows.append({"symbol": sym, "ts_utc": exit_ts, "qty": round(qty, 4), "entry_price": round(entry_px, 4) if entry_px > 0 else None, "exit_price": round(exit_px, 4) if exit_px > 0 else None, "gross_pnl": round(pnl, 4), "calc_ok": calc_ok, "exit_order_id": str(exit_row.get("id") or ""), "entry_order_id": str((entry or {}).get("id") or ""), "source": "alpaca_orders"})
+        return {"ok": True, "source": "alpaca_orders", "broker_truth_sync_enabled": True, "today_realized_pnl": round(gross, 4), "closed_trades_today": len([r for r in rows if r.get("calc_ok")]), "broker_exit_fills_today": len(today_exits), "wins_today": wins, "losses_today": losses, "flat_today": flat, "rows": rows[-20:]}
+    except Exception as exc:
+        return {"ok": False, "source": "alpaca_orders", "broker_truth_sync_enabled": True, "error": str(exc), "today_realized_pnl": 0.0, "closed_trades_today": 0, "broker_exit_fills_today": 0, "rows": []}
+
 def today_pnl_truth_snapshot() -> dict:
-    realized = _today_realized_pnl_from_strategy_state()
+    broker_realized = _today_realized_pnl_from_broker_orders()
+    strategy_realized = _today_realized_pnl_from_strategy_state()
+    realized = broker_realized if broker_realized.get("ok") else strategy_realized
+    if broker_realized.get("ok") and int(broker_realized.get("closed_trades_today") or 0) == 0 and int(strategy_realized.get("closed_trades_today") or 0) > 0:
+        realized = strategy_realized
     unrealized = 0.0
     unrealized_error = ""
     try:
@@ -7244,7 +7313,7 @@ def today_pnl_truth_snapshot() -> dict:
     except Exception as exc:
         unrealized_error = str(exc)
     realized_value = _safe_float(realized.get("today_realized_pnl"), 0.0)
-    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "sample_rows": list(realized.get("rows") or []), "error": str(realized.get("error") or "")}
+    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "error": str(realized.get("error") or "")}
 
 def daily_halt_truth_snapshot() -> dict:
     try:
@@ -14090,7 +14159,7 @@ def _dashboard_latest_completed_scan_summary() -> dict:
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
     state = _recompute_strategy_performance_state()
-    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "quarantine_path": STRATEGY_PERFORMANCE_QUARANTINE_PATH, "broker_truth_sync_enabled": False, "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
+    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "quarantine_path": STRATEGY_PERFORMANCE_QUARANTINE_PATH, "broker_truth_sync_enabled": True, "today_pnl_truth": today_pnl_truth_snapshot(), "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
 
 
 @app.get("/diagnostics/execution_spread_policy")
@@ -14588,7 +14657,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 167B halt truth hotfix</div>
+      <div class="action-pill">Patch 168 broker P&amp;L truth</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -14738,6 +14807,7 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
         <tr><th>today_unrealized_pnl</th><td>{_dashboard_money(today_pnl_truth.get('today_unrealized_pnl'))}</td></tr>
         <tr><th>today_net_pnl</th><td>{_dashboard_money(today_pnl_truth.get('today_net_pnl'))}</td></tr>
         <tr><th>closed_trades_today</th><td>{_dashboard_fmt(today_pnl_truth.get('closed_trades_today'))}</td></tr>
+        <tr><th>broker_exit_fills_today</th><td>{_dashboard_fmt(today_pnl_truth.get('broker_exit_fills_today'))}</td></tr>
         <tr><th>wins_today / losses_today / flat_today</th><td>{_dashboard_fmt(today_pnl_truth.get('wins_today'))} / {_dashboard_fmt(today_pnl_truth.get('losses_today'))} / {_dashboard_fmt(today_pnl_truth.get('flat_today'))}</td></tr>
       </table>
       <div class="muted" style="margin-top:10px;">Diagnostic estimate only. It does not place, cancel, or retry orders.</div>
