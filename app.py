@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-166-exit-override-entry-dispatch-truth"
+PATCH_VERSION = "patch-167B-daily-halt-truth-nameerror-hotfix"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -6835,6 +6835,12 @@ def _build_release_gate_snapshot(stage: str, include_stage_check: bool = True) -
             "broker_positions_count": int(reconcile.get("broker_positions_count") or 0),
         },
         "continuity": continuity,
+        "daily_halt_truth": daily_halt_truth_snapshot(),
+        "daily_halt_reason": daily_halt_truth_snapshot().get("daily_halt_reason"),
+        "today_pnl_truth": today_pnl_truth_snapshot(),
+        "today_realized_pnl": today_pnl_truth_snapshot().get("today_realized_pnl"),
+        "today_unrealized_pnl": today_pnl_truth_snapshot().get("today_unrealized_pnl"),
+        "today_net_pnl": today_pnl_truth_snapshot().get("today_net_pnl"),
     }
 
 
@@ -7184,6 +7190,88 @@ def daily_stop_hit() -> bool:
     if pnl is None:
         return False
     return pnl <= -abs(DAILY_STOP_DOLLARS)
+
+
+# Patch 167B: fail-safe daily halt / today P&L truth helpers.
+def _configured_daily_loss_limit_safe() -> float:
+    return float(getenv_float_any("DAILY_LOSS_LIMIT", default=0.0) or 0.0)
+
+def _configured_daily_stop_dollars_safe() -> float:
+    try:
+        return float(globals().get("DAILY_STOP_DOLLARS", getenv_float_any("DAILY_STOP_DOLLARS", default=0.0)) or 0.0)
+    except Exception:
+        return float(getenv_float_any("DAILY_STOP_DOLLARS", default=0.0) or 0.0)
+
+def _today_realized_pnl_from_strategy_state() -> dict:
+    session = _session_boundary_snapshot()
+    today = str((session or {}).get("today_ny") or "")
+    rows = []
+    gross = 0.0
+    wins = losses = flat = 0
+    try:
+        for row in list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []):
+            if not isinstance(row, dict):
+                continue
+            ts = str(row.get("ts_utc") or "")
+            ts_ny = ""
+            try:
+                if ts:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    ts_ny = dt.astimezone(NY).date().isoformat()
+            except Exception:
+                ts_ny = ""
+            if today and ts_ny != today:
+                continue
+            pnl = _safe_float(row.get("gross_pnl"), 0.0)
+            gross += pnl
+            if pnl > 0: wins += 1
+            elif pnl < 0: losses += 1
+            else: flat += 1
+            rows.append({"symbol": str(row.get("symbol") or "").upper(), "strategy_name": str(row.get("strategy_name") or row.get("signal") or ""), "ts_utc": ts, "gross_pnl": round(pnl, 4), "reason": str(row.get("reason") or ""), "source": str(row.get("source") or "")})
+    except Exception as exc:
+        return {"ok": False, "source": "strategy_performance_state", "error": str(exc), "today_realized_pnl": 0.0, "closed_trades_today": 0, "rows": []}
+    return {"ok": True, "source": "strategy_performance_state", "today_realized_pnl": round(gross, 4), "closed_trades_today": len(rows), "wins_today": wins, "losses_today": losses, "flat_today": flat, "rows": rows[-20:]}
+
+def today_pnl_truth_snapshot() -> dict:
+    realized = _today_realized_pnl_from_strategy_state()
+    unrealized = 0.0
+    unrealized_error = ""
+    try:
+        for pos in list_open_positions_allowed():
+            unrealized += _safe_float((pos or {}).get("unrealized_pl"), 0.0)
+    except Exception as exc:
+        unrealized_error = str(exc)
+    realized_value = _safe_float(realized.get("today_realized_pnl"), 0.0)
+    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "sample_rows": list(realized.get("rows") or []), "error": str(realized.get("error") or "")}
+
+def daily_halt_truth_snapshot() -> dict:
+    try:
+        configured_daily_loss_limit = _configured_daily_loss_limit_safe()
+        configured_daily_stop_dollars = _configured_daily_stop_dollars_safe()
+        pnl_truth = today_pnl_truth_snapshot()
+        acct_daily_pnl = daily_pnl()
+        halt_active = bool(daily_halt_active())
+        trigger = "none"
+        trigger_detail = "No daily halt is active."
+        if halt_active:
+            net_today = _safe_float(pnl_truth.get("today_net_pnl"), 0.0)
+            if configured_daily_stop_dollars > 0 and acct_daily_pnl is not None and float(acct_daily_pnl) <= -abs(configured_daily_stop_dollars):
+                trigger = "daily_stop_dollars"
+                trigger_detail = f"Account equity daily P&L {float(acct_daily_pnl):.2f} is at/below -{abs(configured_daily_stop_dollars):.2f}."
+            elif configured_daily_loss_limit > 0 and net_today <= -abs(configured_daily_loss_limit):
+                trigger = "daily_loss_limit"
+                trigger_detail = f"Today net P&L estimate {net_today:.2f} is at/below -{abs(configured_daily_loss_limit):.2f}."
+            elif configured_daily_stop_dollars > 0 and net_today <= -abs(configured_daily_stop_dollars):
+                trigger = "daily_stop_dollars_estimate"
+                trigger_detail = f"Today net P&L estimate {net_today:.2f} is at/below -{abs(configured_daily_stop_dollars):.2f}."
+            else:
+                trigger = "manual_or_persisted_halt"
+                trigger_detail = "Daily halt is active, but configured P&L thresholds were not proven by available diagnostics."
+        return {"ok": True, "daily_halt_active": halt_active, "daily_halt_reason": trigger, "daily_halt_detail": trigger_detail, "configured_daily_loss_limit": configured_daily_loss_limit, "configured_daily_stop_dollars": configured_daily_stop_dollars, "account_daily_pnl": round(float(acct_daily_pnl), 4) if acct_daily_pnl is not None else None, "today_pnl_truth": pnl_truth}
+    except Exception as exc:
+        return {"ok": False, "daily_halt_active": bool(daily_halt_active()) if "daily_halt_active" in globals() else False, "daily_halt_reason": "halt_truth_unavailable", "daily_halt_detail": f"Daily halt truth failed safely: {exc}", "configured_daily_loss_limit": _configured_daily_loss_limit_safe(), "configured_daily_stop_dollars": _configured_daily_stop_dollars_safe(), "today_pnl_truth": {"ok": False, "error": str(exc), "today_realized_pnl": 0.0, "today_unrealized_pnl": 0.0, "today_net_pnl": 0.0}}
 
 
 def risk_limits_ok() -> bool:
@@ -14110,6 +14198,8 @@ def dashboard(request: Request):
     _refresh_regime_snapshot_if_needed(force=_regime_snapshot_needs_refresh())
 
     release = release_gate_status()
+    daily_halt_truth = dict(release.get("daily_halt_truth") or daily_halt_truth_snapshot())
+    today_pnl_truth = dict(release.get("today_pnl_truth") or today_pnl_truth_snapshot())
     continuity = continuity_snapshot(normalize_current=True)
     blockers = _diagnostics_swing_blockers()
     regime = dict(LAST_REGIME_SNAPSHOT or {})
@@ -14498,7 +14588,7 @@ def dashboard(request: Request):
       <p class="sub">Auto-refresh every 30 seconds. Read-only visibility for live system health, trade management, alerts, and decision transparency.</p>
     </div>
     <div class="hero-actions">
-      <div class="action-pill">Patch 166 exit + dispatch truth</div>
+      <div class="action-pill">Patch 167B halt truth hotfix</div>
       <div class="action-pill">Read-only mode</div>
       <div class="action-pill">Live state visible</div>
     </div>
@@ -14627,6 +14717,32 @@ partial_fill_plan_symbols: {_dashboard_list_block(risk_integrity_view.get('parti
     </div>
   </div>
 
+
+  <div class="section grid">
+    <div class="card">
+      <h2>Daily Halt Truth</h2>
+      <table>
+        <tr><th>daily_halt_active</th><td>{_dashboard_fmt(daily_halt_truth.get('daily_halt_active'))}</td></tr>
+        <tr><th>daily_halt_reason</th><td>{html.escape(str(daily_halt_truth.get('daily_halt_reason') or ''))}</td></tr>
+        <tr><th>daily_halt_detail</th><td>{html.escape(str(daily_halt_truth.get('daily_halt_detail') or ''))}</td></tr>
+        <tr><th>configured_daily_loss_limit</th><td>{_dashboard_money(daily_halt_truth.get('configured_daily_loss_limit'))}</td></tr>
+        <tr><th>configured_daily_stop_dollars</th><td>{_dashboard_money(daily_halt_truth.get('configured_daily_stop_dollars'))}</td></tr>
+        <tr><th>account_daily_pnl</th><td>{_dashboard_money(daily_halt_truth.get('account_daily_pnl'))}</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Today P&amp;L Truth</h2>
+      <table>
+        <tr><th>accounting_source</th><td>{html.escape(str(today_pnl_truth.get('accounting_source') or ''))}</td></tr>
+        <tr><th>today_realized_pnl</th><td>{_dashboard_money(today_pnl_truth.get('today_realized_pnl'))}</td></tr>
+        <tr><th>today_unrealized_pnl</th><td>{_dashboard_money(today_pnl_truth.get('today_unrealized_pnl'))}</td></tr>
+        <tr><th>today_net_pnl</th><td>{_dashboard_money(today_pnl_truth.get('today_net_pnl'))}</td></tr>
+        <tr><th>closed_trades_today</th><td>{_dashboard_fmt(today_pnl_truth.get('closed_trades_today'))}</td></tr>
+        <tr><th>wins_today / losses_today / flat_today</th><td>{_dashboard_fmt(today_pnl_truth.get('wins_today'))} / {_dashboard_fmt(today_pnl_truth.get('losses_today'))} / {_dashboard_fmt(today_pnl_truth.get('flat_today'))}</td></tr>
+      </table>
+      <div class="muted" style="margin-top:10px;">Diagnostic estimate only. It does not place, cancel, or retry orders.</div>
+    </div>
+  </div>
 
   <div class="section grid">
     <div class="card">
