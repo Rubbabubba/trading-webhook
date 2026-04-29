@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-169D-dashboard-format-keyerror-clean-hotfix"
+PATCH_VERSION = "patch-170-active-positions-table-truth-bind"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -14278,17 +14278,30 @@ def dashboard(request: Request):
     daily_halt_truth = dict(release.get("daily_halt_truth") or _safe_call(daily_halt_truth_snapshot, {}))
     today_pnl_truth = dict(release.get("today_pnl_truth") or _safe_call(today_pnl_truth_snapshot, {}))
     latest_snapshot = reconcile.get("latest_snapshot") or {}
-    active_plans = latest_snapshot.get("active_plans") or {}
-    positions = latest_snapshot.get("positions") or []
-    pos_by_symbol = {str((x or {}).get("symbol") or "").upper(): (x or {}) for x in positions if isinstance(x, dict)}
+    raw_active_plans = latest_snapshot.get("active_plans") or {}
+    raw_positions = latest_snapshot.get("positions") or []
+
+    # Patch 170: dashboard table must bind to the same broker/reconcile truth used
+    # by the active position count. Prefer broker-backed positions, then enrich
+    # rows with matching active plan metadata when available. This is display-only.
+    active_plans = raw_active_plans if isinstance(raw_active_plans, dict) else {}
+    positions = raw_positions if isinstance(raw_positions, list) else []
+    pos_by_symbol = {str((x or {}).get("symbol") or "").upper(): (x or {}) for x in positions if isinstance(x, dict) and str((x or {}).get("symbol") or "").strip()}
+    plan_by_symbol = {str(sym or "").upper(): plan for sym, plan in active_plans.items() if isinstance(plan, dict)}
+    broker_symbols = [str(sym or "").upper() for sym in list(reconcile.get("broker_symbols") or []) if str(sym or "").strip()]
+    active_plan_symbols = [str(sym or "").upper() for sym in list(reconcile.get("active_plan_symbols") or []) if str(sym or "").strip()]
+    row_symbols = sorted(set(broker_symbols) | set(pos_by_symbol.keys()) | set(active_plan_symbols) | set(plan_by_symbol.keys()))
 
     active_rows_list = []
-    for sym, plan in sorted(active_plans.items()):
-        if not isinstance(plan, dict) or not plan.get("active"):
+    for sym in row_symbols:
+        plan = plan_by_symbol.get(sym, {}) if isinstance(plan_by_symbol.get(sym, {}), dict) else {}
+        ps = pos_by_symbol.get(sym, {}) if isinstance(pos_by_symbol.get(sym, {}), dict) else {}
+        if sym not in broker_symbols and sym not in pos_by_symbol and plan and not plan.get("active"):
             continue
-        ps = pos_by_symbol.get(str(sym).upper(), {})
-        qty = plan.get("qty") or ps.get("qty") or plan.get("filled_qty")
-        entry = plan.get("entry_price") or plan.get("avg_fill_price") or ps.get("avg_entry_price")
+        qty = ps.get("qty") or plan.get("qty") or plan.get("filled_qty")
+        entry = ps.get("avg_entry_price") or plan.get("entry_price") or plan.get("avg_fill_price")
+        signal = plan.get("signal") or plan.get("strategy_name") or ("broker_position" if ps else "")
+        status = plan.get("order_status") or plan.get("execution_state") or plan.get("lifecycle_state") or ("broker_position" if ps else "")
         active_rows_list.append(
             "<tr>"
             f"<td>{html.escape(str(sym))}</td>"
@@ -14296,8 +14309,8 @@ def dashboard(request: Request):
             f"<td>{_dashboard_fmt(entry)}</td>"
             f"<td>{_dashboard_fmt(plan.get('stop_price'))}</td>"
             f"<td>{_dashboard_fmt(plan.get('take_price'))}</td>"
-            f"<td>{html.escape(str(plan.get('signal') or plan.get('strategy_name') or ''))}</td>"
-            f"<td>{html.escape(str(plan.get('order_status') or plan.get('execution_state') or ''))}</td>"
+            f"<td>{html.escape(str(signal or ''))}</td>"
+            f"<td>{html.escape(str(status or ''))}</td>"
             "</tr>"
         )
     active_rows = ''.join(active_rows_list) or '<tr><td colspan="7" class="muted">No active positions.</td></tr>'
