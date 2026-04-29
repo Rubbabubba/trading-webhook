@@ -14,7 +14,7 @@ from itertools import combinations
 from pathlib import Path
 from difflib import get_close_matches
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 
@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-168-today-realized-pnl-broker-truth-sync"
+PATCH_VERSION = "patch-169A-worker-endpoint-threadpool-stability"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -12705,14 +12705,13 @@ async def webhook(req: Request):
 
 
 @app.post("/worker/exit")
-async def worker_exit(req: Request):
+def worker_exit(req: Request, body: dict = Body(default_factory=dict)):
+    # Patch 169A: keep heavy broker/price work off the async event loop.
+    # FastAPI runs sync endpoints in a worker thread, preserving API responsiveness
+    # while the exit cycle protects active positions.
     cleanup_caches()
     update_exit_heartbeat(status="started")
-
-    body = {}
-    try:
-        body = await req.json()
-    except Exception:
+    if not isinstance(body, dict):
         body = {}
 
     # Optional worker auth
@@ -15957,18 +15956,20 @@ def diagnostics_universe_recommendation(limit: int = 10, target_size: int | None
 
 
 @app.post("/worker/scan_entries")
-async def worker_scan_entries(req: Request):
-    """Server-side scanner entry evaluation (Phase 1C). Default is shadow-mode (no orders)."""
+def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
+    """Server-side scanner entry evaluation.
+
+    Patch 169A: this endpoint is intentionally sync so FastAPI executes the
+    expensive scan/broker/data work in a worker thread instead of blocking the
+    main async event loop and starving dashboard/diagnostic APIs.
+    """
     cleanup_caches()
     scan_started = _time.perf_counter()
 
     def _elapsed_ms() -> int:
         return int(max(0.0, (_time.perf_counter() - scan_started) * 1000.0))
 
-    body = {}
-    try:
-        body = await req.json()
-    except Exception:
+    if not isinstance(body, dict):
         body = {}
 
     # Optional worker auth

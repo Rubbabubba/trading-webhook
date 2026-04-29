@@ -47,7 +47,7 @@ def main():
     if WORKER_SECRET:
         payload["worker_secret"] = WORKER_SECRET
 
-    log(f"[worker] starting {WORKER_MODE} loop: url={url} interval={INTERVAL_SEC}s secret={'set' if WORKER_SECRET else 'not_set'} strategy_mode={os.getenv("STRATEGY_MODE", "intraday")}")
+    log(f"[worker] starting {WORKER_MODE} loop: url={url} interval={INTERVAL_SEC}s secret={'set' if WORKER_SECRET else 'not_set'} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
 
     while True:
         start = time.time()
