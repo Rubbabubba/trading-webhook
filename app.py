@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-169A-worker-endpoint-threadpool-stability"
+PATCH_VERSION = "patch-169B-api-event-loop-rescue"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -12705,13 +12705,12 @@ async def webhook(req: Request):
 
 
 @app.post("/worker/exit")
-def worker_exit(req: Request, body: dict = Body(default_factory=dict)):
-    # Patch 169A: keep heavy broker/price work off the async event loop.
-    # FastAPI runs sync endpoints in a worker thread, preserving API responsiveness
-    # while the exit cycle protects active positions.
+def worker_exit(body: dict = Body(default_factory=dict)):
+    """Synchronous worker endpoint so heavy Alpaca/exit work runs in FastAPI threadpool, not on the event loop."""
     cleanup_caches()
     update_exit_heartbeat(status="started")
-    if not isinstance(body, dict):
+
+    if body is None:
         body = {}
 
     # Optional worker auth
@@ -15957,19 +15956,14 @@ def diagnostics_universe_recommendation(limit: int = 10, target_size: int | None
 
 @app.post("/worker/scan_entries")
 def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
-    """Server-side scanner entry evaluation.
-
-    Patch 169A: this endpoint is intentionally sync so FastAPI executes the
-    expensive scan/broker/data work in a worker thread instead of blocking the
-    main async event loop and starving dashboard/diagnostic APIs.
-    """
+    """Server-side scanner entry evaluation. Sync route keeps heavy scan work off the event loop."""
     cleanup_caches()
     scan_started = _time.perf_counter()
 
     def _elapsed_ms() -> int:
         return int(max(0.0, (_time.perf_counter() - scan_started) * 1000.0))
 
-    if not isinstance(body, dict):
+    if body is None:
         body = {}
 
     # Optional worker auth

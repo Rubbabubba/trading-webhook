@@ -14,6 +14,9 @@ WORKER_MODE = os.getenv("WORKER_MODE", "exit").strip().lower()
 # Interval (seconds)
 INTERVAL_SEC = int(os.getenv("EXIT_INTERVAL_SEC" if WORKER_MODE=="exit" else "SCAN_INTERVAL_SEC", "30" if WORKER_MODE=="exit" else "3600"))
 
+# HTTP request timeout. Exit management can take >15s during broker latency; keep configurable.
+WORKER_HTTP_TIMEOUT_SEC = int(os.getenv("WORKER_HTTP_TIMEOUT_SEC", "45"))
+
 # Endpoint path
 EXIT_PATH = os.getenv("EXIT_PATH", "/worker/exit")
 SCAN_PATH = os.getenv("SCAN_PATH", "/worker/scan_entries")
@@ -25,7 +28,7 @@ def _target_path() -> str:
 def log(msg: str):
     print(msg, flush=True)
 
-def post_json(url: str, payload: dict, timeout: int = 15) -> tuple[int, str]:
+def post_json(url: str, payload: dict, timeout: int = WORKER_HTTP_TIMEOUT_SEC) -> tuple[int, str]:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -47,7 +50,7 @@ def main():
     if WORKER_SECRET:
         payload["worker_secret"] = WORKER_SECRET
 
-    log(f"[worker] starting {WORKER_MODE} loop: url={url} interval={INTERVAL_SEC}s secret={'set' if WORKER_SECRET else 'not_set'} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
+    log(f"[worker] starting {WORKER_MODE} loop: url={url} interval={INTERVAL_SEC}s timeout={WORKER_HTTP_TIMEOUT_SEC}s secret={'set' if WORKER_SECRET else 'not_set'} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
 
     while True:
         start = time.time()
