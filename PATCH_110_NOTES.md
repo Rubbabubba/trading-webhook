@@ -1,1 +1,0 @@
-Patch 110: Use a separate freshness threshold for recent 1-minute bar fallback so stale IEX latest quotes can promote to a fresh bar-based snapshot during live scans. Adds bar fallback attempt diagnostics.
