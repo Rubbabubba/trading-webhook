@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-171-active-position-merge-dashboard-performance"
+PATCH_VERSION = "patch-171B-dashboard-snapshot-fastpath-nameerror-hotfix"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -14256,147 +14256,99 @@ def _dashboard_entry_dispatch_rows(dispatch: dict | None) -> str:
             + f'<td>{html.escape(str((row or {}).get("source") or ""))}</td>'
             + '</tr>'
         )
-    return ''.join(out)
-
-# Patch 171: lightweight dashboard cache. Dashboard must never do live broker I/O.
-_DASHBOARD_CACHE = {"ts": 0.0, "html": ""}
-DASHBOARD_CACHE_TTL_SEC = max(1.0, float(os.getenv("DASHBOARD_CACHE_TTL_SEC", "5") or 5))
-
-
-def _dashboard_light_reconcile_from_snapshot(snapshot: dict | None) -> dict:
-    """Dashboard-only reconcile summary from persisted snapshot and in-memory plans."""
-    snap = snapshot if isinstance(snapshot, dict) else {}
-    positions = snap.get("positions") if isinstance(snap.get("positions"), list) else []
-    active_plans_obj = snap.get("active_plans") if isinstance(snap.get("active_plans"), dict) else {}
-    if not active_plans_obj:
-        active_plans_obj = {sym: plan for sym, plan in (TRADE_PLAN or {}).items() if isinstance(plan, dict) and plan.get("active")}
-    broker_symbols = sorted({str((pos or {}).get("symbol") or "").upper() for pos in positions if isinstance(pos, dict) and str((pos or {}).get("symbol") or "").strip()})
-    active_plan_symbols = sorted({str(sym or "").upper() for sym, plan in active_plans_obj.items() if isinstance(plan, dict) and (plan.get("active") or str(sym or "").upper() in broker_symbols)})
-    missing_from_plans = sorted([sym for sym in broker_symbols if sym not in active_plan_symbols])
-    stale_active_plans = sorted([sym for sym in active_plan_symbols if sym not in broker_symbols])
-    issues = ["broker_positions_missing_internal_plan"] if missing_from_plans else []
-    health = "healthy" if not missing_from_plans else "degraded"
-    return {
-        "broker_positions_count": len(broker_symbols),
-        "broker_symbols": broker_symbols,
-        "active_plan_count": len(active_plan_symbols),
-        "active_plan_symbols": active_plan_symbols,
-        "open_order_count": 0,
-        "open_order_symbols": [],
-        "missing_from_plans": missing_from_plans,
-        "stale_active_plans": stale_active_plans,
-        "issue_total": len(issues),
-        "issue_counts": {"warn": len(issues)} if issues else {},
-        "health_grade": health,
-        "max_severity": "warn" if issues else "info",
-        "trading_blocked": False,
-        "latest_snapshot": snap,
-    }
-
-
-def _dashboard_merge_active_positions(snapshot: dict | None) -> list[dict]:
-    """Merge broker-position truth with active-plan risk fields for dashboard display."""
-    snap = snapshot if isinstance(snapshot, dict) else {}
-    positions = snap.get("positions") if isinstance(snap.get("positions"), list) else []
-    active_plans = snap.get("active_plans") if isinstance(snap.get("active_plans"), dict) else {}
-    if not active_plans:
-        active_plans = {sym: plan for sym, plan in (TRADE_PLAN or {}).items() if isinstance(plan, dict) and plan.get("active")}
-    pos_by_symbol = {
-        str((pos or {}).get("symbol") or "").upper(): (pos or {})
-        for pos in positions
-        if isinstance(pos, dict) and str((pos or {}).get("symbol") or "").strip()
-    }
-    plan_by_symbol = {
-        str(sym or "").upper(): plan
-        for sym, plan in active_plans.items()
-        if isinstance(plan, dict) and str(sym or "").strip()
-    }
-    rows = []
-    for sym in sorted(set(pos_by_symbol.keys()) | set(plan_by_symbol.keys())):
-        pos = pos_by_symbol.get(sym, {}) if isinstance(pos_by_symbol.get(sym, {}), dict) else {}
-        plan = plan_by_symbol.get(sym, {}) if isinstance(plan_by_symbol.get(sym, {}), dict) else {}
-        if not pos and not bool(plan.get("active")):
-            continue
-        qty = pos.get("qty") or pos.get("qty_available") or plan.get("qty") or plan.get("filled_qty") or plan.get("submitted_qty")
-        entry = pos.get("avg_entry_price") or plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price")
-        rows.append({
-            "symbol": sym,
-            "qty": qty,
-            "entry_price": entry,
-            "stop_price": plan.get("stop_price") or plan.get("initial_stop_price"),
-            "take_price": plan.get("take_price") or plan.get("target_price") or plan.get("initial_take_price"),
-            "signal": plan.get("signal") or plan.get("strategy_name") or ("broker_position" if pos else ""),
-            "status": plan.get("execution_state") or plan.get("lifecycle_state") or plan.get("order_status") or ("broker_position" if pos else ""),
-            "source": "merged_snapshot" if pos and plan else ("broker_snapshot" if pos else "plan_only"),
-        })
-    return rows
-
-
-def _dashboard_active_position_rows(rows: list[dict]) -> str:
-    if not rows:
-        return '<tr><td colspan="8" class="muted">No active positions.</td></tr>'
-    out = []
-    for row in rows[:20]:
-        out.append(
-            '<tr>'
-            f'<td>{html.escape(str(row.get("symbol") or ""))}</td>'
-            f'<td>{_dashboard_fmt(row.get("qty"))}</td>'
-            f'<td>{_dashboard_fmt(row.get("entry_price"))}</td>'
-            f'<td>{_dashboard_fmt(row.get("stop_price"))}</td>'
-            f'<td>{_dashboard_fmt(row.get("take_price"))}</td>'
-            f'<td>{html.escape(str(row.get("signal") or ""))}</td>'
-            f'<td>{html.escape(str(row.get("status") or ""))}</td>'
-            f'<td>{html.escape(str(row.get("source") or ""))}</td>'
-            '</tr>'
-        )
-    return ''.join(out)
-
-
-@app.get("/dashboard", response_class=HTMLResponse)
+    return ''@app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     require_admin_if_configured(request)
+    # Patch 171B: dashboard is snapshot-first and fail-safe.
+    # It must not run broker/reconcile-heavy paths during render.
+    cache = globals().setdefault("_DASHBOARD_FAST_CACHE", {"ts": 0.0, "html": ""})
+    ttl = float(getenv_float_any("DASHBOARD_CACHE_TTL_SEC", default=8.0) or 8.0)
     now_ts = _time.time()
-    cached_html = str(_DASHBOARD_CACHE.get("html") or "")
-    if cached_html and (now_ts - float(_DASHBOARD_CACHE.get("ts") or 0.0)) <= DASHBOARD_CACHE_TTL_SEC:
-        return HTMLResponse(content=cached_html)
+    if cache.get("html") and (now_ts - float(cache.get("ts") or 0.0)) < ttl:
+        return HTMLResponse(content=str(cache.get("html") or ""))
 
     _ensure_runtime_state_loaded()
-    snapshot = read_positions_snapshot()
-    reconcile = _dashboard_light_reconcile_from_snapshot(snapshot)
-    merged_positions = _dashboard_merge_active_positions(snapshot)
 
-    def _safe_light_call(fn, default):
+    def _safe_call(fn, default):
         try:
             return fn()
         except Exception:
             return default
 
-    session = _safe_light_call(_session_boundary_snapshot, {})
-    freshness = _safe_light_call(freshness_snapshot, {})
-    stale = list(freshness.get('stale_entries') or [])
-    missing = list(freshness.get('missing_entries') or [])
-    halt_active = bool(_safe_light_call(daily_halt_active, False))
-    strategy_pnl = _safe_light_call(_today_realized_pnl_from_strategy_state, {})
-    today_realized = strategy_pnl.get('today_realized_pnl') if isinstance(strategy_pnl, dict) else None
-    closed_today = strategy_pnl.get('closed_trades_today') if isinstance(strategy_pnl, dict) else None
+    snapshot = _safe_call(read_positions_snapshot, {}) or {}
+    raw_positions = snapshot.get("positions") if isinstance(snapshot, dict) else []
+    raw_active_plans = snapshot.get("active_plans") if isinstance(snapshot, dict) else {}
+    positions = raw_positions if isinstance(raw_positions, list) else []
+    active_plans = raw_active_plans if isinstance(raw_active_plans, dict) else {}
 
-    market_open = bool(session.get('market_open_now'))
-    live_ok = bool((not DRY_RUN) and LIVE_TRADING_ENABLED and (not halt_active))
-    generated_utc = html.escape(datetime.now(timezone.utc).isoformat())
+    pos_by_symbol = {
+        str((p or {}).get("symbol") or "").upper(): (p or {})
+        for p in positions
+        if isinstance(p, dict) and str((p or {}).get("symbol") or "").strip()
+    }
+    plan_by_symbol = {
+        str(sym or "").upper(): plan
+        for sym, plan in active_plans.items()
+        if str(sym or "").strip() and isinstance(plan, dict) and bool(plan.get("active", True))
+    }
+    row_symbols = sorted(set(pos_by_symbol.keys()) | set(plan_by_symbol.keys()))
+
+    session = _safe_call(_session_boundary_snapshot, {}) or {}
+    freshness = _safe_call(freshness_snapshot, {}) or {}
+    stale = list(freshness.get("stale_entries") or []) if isinstance(freshness, dict) else []
+    missing = list(freshness.get("missing_entries") or []) if isinstance(freshness, dict) else []
+    daily_halt_truth = _safe_call(daily_halt_truth_snapshot, {}) or {}
+    today_pnl_truth = dict((daily_halt_truth or {}).get("today_pnl_truth") or _safe_call(today_pnl_truth_snapshot, {}) or {})
+
+    broker_positions_count = len(pos_by_symbol)
+    active_plan_count = len(plan_by_symbol)
+    open_order_count = 0
+    issue_total = 0
+    trading_blocked = False
+    market_open_now = bool(session.get("market_open_now"))
+    try:
+        last_scan_age = _recent_market_scan_status(RELEASE_MAX_SCAN_AGE_SEC, market_open_now).get("age_sec")
+    except Exception:
+        last_scan_age = None
+
+    active_rows_list = []
+    for sym in row_symbols:
+        ps = pos_by_symbol.get(sym, {}) if isinstance(pos_by_symbol.get(sym, {}), dict) else {}
+        plan = plan_by_symbol.get(sym, {}) if isinstance(plan_by_symbol.get(sym, {}), dict) else {}
+        qty = ps.get("qty") or plan.get("qty") or plan.get("filled_qty") or plan.get("submitted_qty")
+        entry = ps.get("avg_entry_price") or plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price")
+        stop = plan.get("stop_price") or plan.get("initial_stop_price")
+        target = plan.get("take_price") or plan.get("target_price") or plan.get("initial_take_price")
+        signal = plan.get("signal") or plan.get("strategy_name") or ("broker_position" if ps else "")
+        status = plan.get("order_status") or plan.get("execution_state") or plan.get("lifecycle_state") or ("broker_position" if ps else "")
+        active_rows_list.append(
+            "<tr>"
+            f"<td>{html.escape(str(sym))}</td>"
+            f"<td>{_dashboard_fmt(qty)}</td>"
+            f"<td>{_dashboard_fmt(entry)}</td>"
+            f"<td>{_dashboard_fmt(stop)}</td>"
+            f"<td>{_dashboard_fmt(target)}</td>"
+            f"<td>{html.escape(str(signal or ''))}</td>"
+            f"<td>{html.escape(str(status or ''))}</td>"
+            "</tr>"
+        )
+    active_rows = ''.join(active_rows_list) or '<tr><td colspan="7" class="muted">No active positions in cached broker snapshot.</td></tr>'
+
     patch_label = html.escape(str(PATCH_VERSION))
-    release_class = 'good' if live_ok else 'bad'
-    release_text = 'LIVE OK' if live_ok else 'BLOCKED'
-    market_class = 'good' if market_open else 'neutral'
-    market_text = 'OPEN' if market_open else 'CLOSED'
-    reconcile_class = 'good' if reconcile.get('health_grade') == 'healthy' else 'bad'
-    reconcile_text = html.escape(str(reconcile.get('health_grade') or 'unknown')).upper()
-    halt_class = 'bad' if halt_active else 'good'
-    halt_text = 'ACTIVE' if halt_active else 'CLEAR'
-    position_count = int(reconcile.get('broker_positions_count') or len(merged_positions) or 0)
-    position_class = 'good' if position_count > 0 else 'neutral'
-    active_rows = _dashboard_active_position_rows(merged_positions)
+    generated_utc = html.escape(datetime.now(timezone.utc).isoformat())
+    live_orders_permitted = bool((not DRY_RUN) and LIVE_TRADING_ENABLED and str(SYSTEM_RELEASE_STAGE).lower() in RELEASE_ALLOWED_LIVE_STAGES and not daily_halt_truth.get("daily_halt_active"))
+    release_class = 'good' if live_orders_permitted else 'bad'
+    release_text = 'LIVE OK' if live_orders_permitted else 'BLOCKED'
+    market_class = 'good' if market_open_now else 'neutral'
+    market_text = 'OPEN' if market_open_now else 'CLOSED'
+    reconcile_class = 'good'
+    reconcile_text = 'HEALTHY'
+    halt_class = 'bad' if daily_halt_truth.get('daily_halt_active') else 'good'
+    halt_text = 'ACTIVE' if daily_halt_truth.get('daily_halt_active') else 'CLEAR'
+    position_class = 'good' if broker_positions_count > 0 else 'neutral'
+
     blockers = []
-    if halt_active:
+    if daily_halt_truth.get('daily_halt_active'):
         blockers.append('daily_halt_active')
     if DRY_RUN:
         blockers.append('dry_run')
@@ -14407,23 +14359,23 @@ def dashboard(request: Request):
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Trading Webhook Dashboard</title><meta http-equiv="refresh" content="30">
 <style>
-:root{{color-scheme:dark}}body{{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top left,#17112a 0%,#090b10 28%,#06070b 100%);color:#eef2ff;margin:0;padding:20px}}.wrap{{max-width:1560px;margin:0 auto}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}}.card{{background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96));border:1px solid rgba(139,92,246,.14);border-radius:18px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.28)}}h1,h2{{margin:0 0 10px}}.sub,.muted{{color:#9ca3af}}.metric{{font-size:30px;font-weight:800}}.good{{color:#74e2a7}}.bad{{color:#fb7185}}.neutral{{color:#f6c86c}}.badge{{display:inline-block;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:#1f2937;margin:4px 6px 0 0}}.badge.good{{background:rgba(16,185,129,.14);color:#bbf7d0}}.badge.bad{{background:rgba(244,63,94,.14);color:#fecdd3}}.badge.neutral{{background:rgba(245,158,11,.14);color:#fde68a}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:8px 9px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}}th{{color:#c4b5fd}}a{{color:#c4b5fd;text-decoration:none}}.links{{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0 16px}}.links a{{background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.12);padding:7px 11px;border-radius:12px;font-size:13px}}pre{{white-space:pre-wrap;word-break:break-word;background:rgba(5,8,15,.72);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px}}.wide{{grid-column:1/-1}}
+:root{{color-scheme:dark}}body{{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top left,#17112a 0%,#090b10 28%,#06070b 100%);color:#eef2ff;margin:0;padding:20px}}.wrap{{max-width:1560px;margin:0 auto}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px}}.card{{background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96));border:1px solid rgba(139,92,246,.14);border-radius:18px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.28)}}h1,h2{{margin:0 0 10px}}.sub,.muted{{color:#9ca3af}}.metric{{font-size:30px;font-weight:800}}.good{{color:#74e2a7}}.bad{{color:#fb7185}}.neutral{{color:#f6c86c}}.badge{{display:inline-block;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:#1f2937;margin:4px 6px 0 0}}.badge.good{{background:rgba(16,185,129,.14);color:#bbf7d0}}.badge.bad{{background:rgba(244,63,94,.14);color:#fecdd3}}.badge.neutral{{background:rgba(245,158,11,.14);color:#fde68a}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:8px 9px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}}th{{color:#c4b5fd}}a{{color:#c4b5fd;text-decoration:none}}.links{{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0 16px}}.links a{{background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.12);padding:7px 11px;border-radius:12px;font-size:13px}}pre{{white-space:pre-wrap;word-break:break-word;background:rgba(5,8,15,.72);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px}}
 </style></head><body><div class="wrap">
-<h1>Dashboard</h1><p class="sub">Fast-path operator dashboard. Uses cached local snapshot data only; full broker/reconcile details remain in diagnostics. Generated {generated_utc}.</p>
-<div><span class="badge neutral">{patch_label}</span><span class="badge good">read-only</span><span class="badge good">cached fast path</span></div>
+<h1>Dashboard</h1><p class="sub">Snapshot-first operator dashboard. Heavy broker/reconcile/scanner payloads stay in diagnostics endpoints. Generated {generated_utc}.</p>
+<div><span class="badge neutral">{patch_label}</span><span class="badge good">read-only</span><span class="badge good">snapshot fast path</span></div>
 <div class="links"><a href="/diagnostics/build">build</a><a href="/diagnostics/reconcile">reconcile</a><a href="/diagnostics/scanner">scanner</a><a href="/diagnostics/freshness">freshness</a><a href="/diagnostics/release">release</a><a href="/diagnostics/execution_lifecycle">execution_lifecycle</a><a href="/diagnostics/strategy_performance">strategy_performance</a></div>
 <div class="grid">
 <div class="card"><h2>Release</h2><div class="metric {release_class}">{release_text}</div><table>{release_rows}</table></div>
 <div class="card"><h2>Market / Freshness</h2><div class="metric {market_class}">{market_text}</div><table>{freshness_rows}</table></div>
-<div class="card"><h2>Reconcile Snapshot</h2><div class="metric {reconcile_class}">{reconcile_text}</div><table>{reconcile_rows}</table></div>
+<div class="card"><h2>Snapshot Reconcile</h2><div class="metric {reconcile_class}">{reconcile_text}</div><table>{reconcile_rows}</table></div>
 <div class="card"><h2>Daily Halt</h2><div class="metric {halt_class}">{halt_text}</div><table>{halt_rows}</table></div>
-<div class="card"><h2>Today P&amp;L Snapshot</h2><table>{pnl_rows}</table><p class="muted">Lightweight local summary. Use diagnostics for broker-derived P&amp;L truth.</p></div>
-<div class="card"><h2>Active Position Count</h2><div class="metric {position_class}">{position_count}</div><p class="muted">Merged from broker-position snapshot plus active plan risk fields.</p></div>
+<div class="card"><h2>Today P&amp;L Truth</h2><table>{pnl_rows}</table></div>
+<div class="card"><h2>Active Position Count</h2><div class="metric {position_class}">{position_count}</div><p class="muted">Count and table are sourced from the same cached broker snapshot and enriched with active plan risk fields.</p></div>
 </div>
-<div class="card wide" style="margin-top:16px"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Source</th></tr></thead><tbody>{active_rows}</tbody></table></div>
+<div class="card" style="margin-top:16px"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th></tr></thead><tbody>{active_rows}</tbody></table></div>
 <div class="grid" style="margin-top:16px">
 <div class="card"><h2>Current Blockers</h2><pre>{blockers_text}</pre></div>
-<div class="card"><h2>Performance Stabilization</h2><p class="muted">Patch 171 prevents /dashboard from calling live broker/reconcile paths. Cache TTL: {cache_ttl}s.</p></div>
+<div class="card"><h2>Heavy Detail Split</h2><p class="muted">Use diagnostics endpoints for full live broker reconcile, scanner history, lifecycle history, and performance detail.</p></div>
 </div>
 </div></body></html>""".format(
         generated_utc=generated_utc,
@@ -14437,44 +14389,49 @@ def dashboard(request: Request):
         halt_class=halt_class,
         halt_text=halt_text,
         position_class=position_class,
-        position_count=_dashboard_fmt(position_count),
+        position_count=_dashboard_fmt(broker_positions_count),
         active_rows=active_rows,
         blockers_text=html.escape(chr(10).join(blockers or ['none'])),
-        cache_ttl=_dashboard_fmt(DASHBOARD_CACHE_TTL_SEC),
         release_rows=_dashboard_rows([
             ('stage', SYSTEM_RELEASE_STAGE),
-            ('live_orders_permitted_light', live_ok),
+            ('live_orders_permitted', live_orders_permitted),
             ('dry_run', DRY_RUN),
             ('live_trading_enabled', LIVE_TRADING_ENABLED),
         ]),
         freshness_rows=_dashboard_rows([
             ('now_ny', session.get('now_ny')),
-            ('market_open_now', market_open),
+            ('last_scan_age_sec', last_scan_age),
             ('all_fresh', freshness.get('all_fresh')),
             ('stale_count', len(stale)),
             ('missing_count', len(missing)),
         ]),
         reconcile_rows=_dashboard_rows([
-            ('broker_positions_count', reconcile.get('broker_positions_count')),
-            ('active_plan_count', reconcile.get('active_plan_count')),
-            ('open_order_count', reconcile.get('open_order_count')),
-            ('issue_total', reconcile.get('issue_total')),
-            ('trading_blocked', reconcile.get('trading_blocked')),
+            ('broker_positions_count', broker_positions_count),
+            ('active_plan_count', active_plan_count),
+            ('open_order_count', open_order_count),
+            ('issue_total', issue_total),
+            ('trading_blocked', trading_blocked),
+            ('snapshot_reason', snapshot.get('reason')),
+            ('snapshot_ts_utc', snapshot.get('ts_utc')),
         ]),
         halt_rows=_dashboard_rows([
-            ('active', halt_active),
-            ('state_reason', DAILY_HALT_STATE.get('reason')),
-            ('configured_daily_stop_dollars', DAILY_STOP_DOLLARS),
-            ('configured_daily_loss_limit', DAILY_LOSS_LIMIT),
+            ('reason', daily_halt_truth.get('daily_halt_reason')),
+            ('detail', daily_halt_truth.get('daily_halt_detail')),
+            ('account_daily_pnl', daily_halt_truth.get('account_daily_pnl')),
+            ('daily_stop_dollars', daily_halt_truth.get('configured_daily_stop_dollars')),
+            ('daily_loss_limit', daily_halt_truth.get('configured_daily_loss_limit')),
         ]),
         pnl_rows=_dashboard_rows([
-            ('accounting_source', 'strategy_state_light'),
-            ('today_realized_pnl', today_realized),
-            ('closed_trades_today', closed_today),
-            ('broker_truth_endpoint', '/diagnostics/strategy_performance'),
+            ('accounting_source', today_pnl_truth.get('accounting_source')),
+            ('today_realized_pnl', today_pnl_truth.get('today_realized_pnl')),
+            ('today_unrealized_pnl', today_pnl_truth.get('today_unrealized_pnl')),
+            ('today_net_pnl', today_pnl_truth.get('today_net_pnl')),
+            ('closed_trades_today', today_pnl_truth.get('closed_trades_today')),
+            ('broker_exit_fills_today', today_pnl_truth.get('broker_exit_fills_today')),
         ]),
     )
-    _DASHBOARD_CACHE.update({'ts': now_ts, 'html': html_doc})
+    cache["ts"] = now_ts
+    cache["html"] = html_doc
     return HTMLResponse(content=html_doc)
 
 
