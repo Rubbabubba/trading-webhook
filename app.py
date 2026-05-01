@@ -14332,7 +14332,8 @@ def dashboard(request: Request):
     regime_state = _sd(_read_json(globals().get("REGIME_STATE_PATH") or os.getenv("REGIME_STATE_PATH") or "/var/data/regime_state.json", {}))
     scanner_state = _sd(_read_json(globals().get("SCANNER_TELEMETRY_STATE_PATH") or os.getenv("SCANNER_TELEMETRY_STATE_PATH") or "/var/data/scanner_telemetry_state.json", {}))
     lifecycle_state = _sd(_read_json(globals().get("PAPER_LIFECYCLE_STATE_PATH") or os.getenv("PAPER_LIFECYCLE_STATE_PATH") or "/var/data/paper_lifecycle_state.json", {}))
-    perf_state = _sd(_read_json(globals().get("STRATEGY_PERFORMANCE_STATE_PATH") or os.getenv("STRATEGY_PERFORMANCE_STATE_PATH") or "/var/data/strategy_performance_state.json", {}))
+    perf_payload = _sd(_read_json(globals().get("STRATEGY_PERFORMANCE_STATE_PATH") or os.getenv("STRATEGY_PERFORMANCE_STATE_PATH") or "/var/data/strategy_performance_state.json", {}))
+    perf_state = _sd(perf_payload.get("state") if isinstance(perf_payload, dict) else {}) or perf_payload
 
     positions = _sl(snap.get("positions"))
     active_plans = _sd(snap.get("active_plans")) or _sd(globals().get("TRADE_PLAN") or {})
