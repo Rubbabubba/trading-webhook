@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-172-rich-dashboard-snapshot-restore"
+PATCH_VERSION = "patch-174.1-rejection-panel-dedupe-and-unblock-summary"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -14508,14 +14508,30 @@ def dashboard(request: Request):
     rejection_totals_html = "".join(f"<tr><td>{html.escape(str(r))}</td><td>{c}</td></tr>" for r, c in sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]) or '<tr><td colspan="2" class="muted">No rejection totals available.</td></tr>'
 
     rejection_window_html = "".join(f"<tr><td>{html.escape(str(r))}</td><td>{c}</td></tr>" for r, c in sorted(rejection_window_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:12]) or '<tr><td colspan="2" class="muted">No rejection reasons found in recent scan history.</td></tr>'
-    relaxed_preview = would_enter_if_correlation_relaxed[:10]
+    # Deduplicate correlation-only blocked rows by symbol to avoid noisy repeats across scans.
+    relaxed_best_by_symbol = {}
+    for row in would_enter_if_correlation_relaxed:
+        sym = _up(_sd(row).get("symbol"))
+        if not sym:
+            continue
+        rank = _flt(_sd(row).get("rank_score"))
+        prev = relaxed_best_by_symbol.get(sym)
+        prev_rank = _flt(_sd(prev).get("rank_score")) if prev else float("-inf")
+        if prev is None or rank > prev_rank:
+            relaxed_best_by_symbol[sym] = row
+    relaxed_unique = sorted(relaxed_best_by_symbol.values(), key=lambda r: _flt(_sd(r).get("rank_score")), reverse=True)
+    relaxed_preview = relaxed_unique[:10]
+    raw_relaxed_count = len(would_enter_if_correlation_relaxed)
+    unique_relaxed_count = len(relaxed_unique)
+    relaxed_unblock_rate = round((100.0 * unique_relaxed_count / max(1, len(recent_scan_history[-rejection_scan_window:]))) if recent_scan_history else 0.0, 2)
+
     relaxed_only_html = "".join(
         f"<tr><td>{html.escape(str(_sd(row).get('symbol') or ''))}</td><td>{_dashboard_fmt(_sd(row).get('rank_score'))}</td><td>{_dashboard_fmt(_sd(row).get('close'))}</td><td>{html.escape(', '.join(_sl(_sd(row).get('reasons'))[:2]))}</td></tr>"
         for row in relaxed_preview
     ) or '<tr><td colspan="4" class="muted">No candidates blocked only by correlation gates in the recent window.</td></tr>'
 
     lifecycle_rows = "".join(f"<tr><td>{html.escape(str(_sd(r).get('ts_utc') or ''))}</td><td>{html.escape(_up(_sd(r).get('symbol')))}</td><td>{html.escape(str(_sd(r).get('event') or _sd(r).get('to_state') or _sd(r).get('state') or ''))}</td><td>{html.escape(str(_sd(r).get('reason') or ''))}</td></tr>" for r in lifecycle_history) or '<tr><td colspan="4" class="muted">No recent lifecycle events in persisted state.</td></tr>'
-
+    
     scanner_status = scanner_summary.get("worker_status") or scanner_last.get("worker_status") or scanner_last.get("status") or "unknown"
     scanner_in_flight = scanner_summary.get("in_flight_run") if scanner_summary.get("in_flight_run") is not None else scanner_last.get("in_flight_run")
     health_grade = snap.get("health_grade") or snap_summary.get("health_grade") or "healthy"
