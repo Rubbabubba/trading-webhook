@@ -41,6 +41,12 @@ def get_text(url: str, timeout: int, user_agent: str = "equities-scanner/1.0") -
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status, resp.read().decode("utf-8", errors="replace")
 
+
+
+def is_timeout_error(err: Exception) -> bool:
+    text = repr(err).lower()
+    return "timed out" in text or "timeout" in text
+    
 def getenv_bool(name: str, default: bool) -> bool:
     v = os.getenv(name)
     if v is None or v == "":
@@ -139,8 +145,11 @@ def main() -> None:
                     state["consecutive_failures"] += 1
                     state["last_failure_utc"] = ts_utc()
                     state["last_error"] = repr(e)
-                    log(f"scan_error loop={loop_n} attempt={attempt}/{retries} reason={reason} err={e!r}")
-                    heartbeat("scan_dispatch_error", "exception", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e)})
+                    timeout_failure = is_timeout_error(e)
+                    failure_status = "timeout_failure" if timeout_failure else "exception"
+                    log(f"scan_error loop={loop_n} attempt={attempt}/{retries} reason={reason} status={failure_status} err={e!r}")
+                    heartbeat("scan_dispatch_error", failure_status, {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e), "timeout_failure": timeout_failure})
+                    heartbeat("scan_fail", failure_status, {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e), "timeout_failure": timeout_failure})
                 if attempt < retries:
                     time.sleep(startup_retry_delay_sec)
         first = False
