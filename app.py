@@ -14471,6 +14471,30 @@ def dashboard(request: Request):
     ) or '<tr><td colspan="7" class="muted">No closed trade history available.</td></tr>'
 
     candidates = _sl(latest_scan.get("candidates") or latest_scan.get("last_swing_candidates") or scan_state.get("last_swing_candidates")) or _sl(scan_summary.get("top_candidates"))
+    recent_scan_history = _sl(scan_state.get("scan_history"))
+    rejection_scan_window = max(1, min(25, int(os.getenv("DASHBOARD_REJECTION_SCAN_WINDOW", "8") or 8)))
+    correlation_gate_codes = {"correlation_group_limit", "correlation_sector_limit", "correlation_limit"}
+
+    rejection_window_counts = {}
+    would_enter_if_correlation_relaxed = []
+    for scan in recent_scan_history[-rejection_scan_window:]:
+        scan_candidates = _sl(_sd(scan).get("candidates") or _sd(scan).get("last_swing_candidates") or _sd(_sd(scan).get("summary")).get("top_candidates"))
+        for item in scan_candidates:
+            row = _sd(item)
+            reasons = [str(x) for x in _sl(row.get("rejection_reasons") or row.get("reasons")) if str(x).strip()]
+            if not reasons:
+                continue
+            for reason in reasons:
+                rejection_window_counts[reason] = rejection_window_counts.get(reason, 0) + 1
+            non_corr = [r for r in reasons if r not in correlation_gate_codes]
+            if not non_corr:
+                would_enter_if_correlation_relaxed.append({
+                    "symbol": _up(row.get("symbol")),
+                    "rank_score": _flt(row.get("rank_score")),
+                    "close": _first(row, "close", "last", "price"),
+                    "reasons": reasons,
+                })
+                
     rejection_counts = {}
     rejection_rows = []
     for item in candidates[:15]:
@@ -14482,6 +14506,13 @@ def dashboard(request: Request):
             rejection_rows.append(f"<tr><td>{html.escape(_up(row.get('symbol')))}</td><td>{_dashboard_fmt(row.get('rank_score'))}</td><td>{_dashboard_fmt(row.get('close'))}</td><td>{_dashboard_fmt(row.get('breakout_distance_pct'))}</td><td>{html.escape(', '.join(reasons[:3]))}</td></tr>")
     top_rejection_html = "".join(rejection_rows) or '<tr><td colspan="5" class="muted">No current candidate rejections in persisted scan state.</td></tr>'
     rejection_totals_html = "".join(f"<tr><td>{html.escape(str(r))}</td><td>{c}</td></tr>" for r, c in sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]) or '<tr><td colspan="2" class="muted">No rejection totals available.</td></tr>'
+
+    rejection_window_html = "".join(f"<tr><td>{html.escape(str(r))}</td><td>{c}</td></tr>" for r, c in sorted(rejection_window_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:12]) or '<tr><td colspan="2" class="muted">No rejection reasons found in recent scan history.</td></tr>'
+    relaxed_preview = would_enter_if_correlation_relaxed[:10]
+    relaxed_only_html = "".join(
+        f"<tr><td>{html.escape(str(_sd(row).get('symbol') or ''))}</td><td>{_dashboard_fmt(_sd(row).get('rank_score'))}</td><td>{_dashboard_fmt(_sd(row).get('close'))}</td><td>{html.escape(', '.join(_sl(_sd(row).get('reasons'))[:2]))}</td></tr>"
+        for row in relaxed_preview
+    ) or '<tr><td colspan="4" class="muted">No candidates blocked only by correlation gates in the recent window.</td></tr>'
 
     lifecycle_rows = "".join(f"<tr><td>{html.escape(str(_sd(r).get('ts_utc') or ''))}</td><td>{html.escape(_up(_sd(r).get('symbol')))}</td><td>{html.escape(str(_sd(r).get('event') or _sd(r).get('to_state') or _sd(r).get('state') or ''))}</td><td>{html.escape(str(_sd(r).get('reason') or ''))}</td></tr>" for r in lifecycle_history) or '<tr><td colspan="4" class="muted">No recent lifecycle events in persisted state.</td></tr>'
 
@@ -14528,6 +14559,7 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R')])}</table><h3 style="margin-top:14px;">Sample maturity</h3><div class="metric {maturity_class}">{maturity}</div></div><div class="card"><h2>Strategy Attribution</h2><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('component_ready', not bool(blockers)),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {'good' if not blockers else 'neutral'}">{'READY' if not blockers else 'CHECK BLOCKERS'}</div></div><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_running', str(scanner_status).lower() in {'up','ok'}),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table></div><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Would-have-entered (if only correlation relaxed)</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{relaxed_only_html}</tbody></table><div class="muted" style="margin-top:10px;">Preview capped at 10 rows from recent scan history window.</div></div></div>
 <div class="section grid"><div class="card"><h2>Recent Lifecycle / Dispatch</h2><table><thead><tr><th>UTC</th><th>Symbol</th><th>State/Event</th><th>Reason</th></tr></thead><tbody>{lifecycle_rows}</tbody></table></div><div class="card"><h2>Current Blockers</h2><pre>{blockers_text}</pre><h2 style="margin-top:16px;">Heavy Detail Split</h2><p class="muted">Full raw candidate payloads, blocker JSON, scanner history, lifecycle history, and live reconcile remain available from diagnostics endpoints instead of embedded here.</p></div></div>
 </div></body></html>'''
     return HTMLResponse(content=html_doc)
