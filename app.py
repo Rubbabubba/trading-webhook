@@ -14345,6 +14345,39 @@ def dashboard(request: Request):
     lifecycle_history = _sl(lifecycle_state.get("history"))[-8:]
     perf_by_strategy = _sd(perf_state.get("by_strategy"))
 
+    closed_trade_rows = _sl(perf_state.get("closed_trades") or perf_state.get("closed_positions") or perf_state.get("trades_closed"))
+
+    def _snapshot_value(v, fallback="snapshot unavailable"):
+        return v if v not in (None, "") else fallback
+
+    def _strategy_name_from_row(row: dict) -> str:
+        return str(row.get("strategy_name") or row.get("strategy") or row.get("signal") or row.get("entry_signal") or "unknown").strip() or "unknown"
+
+    def _aggregate_strategy_from_closed(rows: list[dict]) -> dict:
+        out = {}
+        for item in rows:
+            row = _sd(item)
+            name = _strategy_name_from_row(row)
+            bucket = out.setdefault(name, {"closed_trades": 0, "wins": 0, "losses": 0, "flat": 0, "gross_pnl": 0.0, "_r_sum": 0.0, "_r_count": 0})
+            bucket["closed_trades"] += 1
+            pnl = _first(row, "realized_pnl", "pnl", "gross_pnl", "profit_loss")
+            pnl_f = _flt(pnl) if pnl not in (None, "") else 0.0
+            bucket["gross_pnl"] += pnl_f
+            if pnl_f > 0: bucket["wins"] += 1
+            elif pnl_f < 0: bucket["losses"] += 1
+            else: bucket["flat"] += 1
+            r_val = _first(row, "r", "r_multiple", "realized_r")
+            if r_val not in (None, ""):
+                bucket["_r_sum"] += _flt(r_val)
+                bucket["_r_count"] += 1
+        for b in out.values():
+            ct = max(1, int(b.get("closed_trades") or 0))
+            b["win_rate"] = float(b.get("wins") or 0) / float(ct)
+            rc = int(b.get("_r_count") or 0)
+            b["avg_r"] = (float(b.get("_r_sum") or 0.0) / float(rc)) if rc > 0 else 0.0
+        return out
+
+
     pos_by_symbol = {}
     for p in positions:
         if isinstance(p, dict):
@@ -14410,8 +14443,8 @@ def dashboard(request: Request):
         f"<td>{html.escape(str(r['symbol']))}</td>"
         f"<td>{_dashboard_fmt(r['qty'])}</td>"
         f"<td>{_dashboard_fmt(r['entry'])}</td>"
-        f"<td>{_dashboard_fmt(r['last'])}</td>"
-        f"<td>{_money(r['upl'])}</td>"
+        f"<td>{_dashboard_fmt(_snapshot_value(r['last']))}</td>"
+        f"<td>{_money(r['upl']) if r['upl'] not in (None, '') else 'snapshot unavailable'}</td>"
         f"<td>{_dashboard_fmt(r['stop'])}</td>"
         f"<td>{_dashboard_fmt(r['target'])}</td>"
         f"<td>{html.escape(str(r['signal'] or ''))}</td>"
@@ -14420,19 +14453,20 @@ def dashboard(request: Request):
         "</tr>" for r in merged
     ) or '<tr><td colspan="10" class="muted">No active positions in latest snapshot.</td></tr>'
 
-    closed_trades = int(sum(int(_sd(b).get("closed_trades") or 0) for b in perf_by_strategy.values()))
-    wins = int(sum(int(_sd(b).get("wins") or 0) for b in perf_by_strategy.values()))
-    losses = int(sum(int(_sd(b).get("losses") or 0) for b in perf_by_strategy.values()))
-    flat = int(sum(int(_sd(b).get("flat") or 0) for b in perf_by_strategy.values()))
-    gross_pnl = round(sum(_flt(_sd(b).get("gross_pnl")) for b in perf_by_strategy.values()), 4)
-    avg_r = round(sum(_flt(_sd(b).get("avg_r")) * int(_sd(b).get("closed_trades") or 0) for b in perf_by_strategy.values()) / max(1, closed_trades), 4)
+    strategy_perf = perf_by_strategy if perf_by_strategy else _aggregate_strategy_from_closed(closed_trade_rows)
+    closed_trades = int(sum(int(_sd(b).get("closed_trades") or 0) for b in strategy_perf.values()))
+    wins = int(sum(int(_sd(b).get("wins") or 0) for b in strategy_perf.values()))
+    losses = int(sum(int(_sd(b).get("losses") or 0) for b in strategy_perf.values()))
+    flat = int(sum(int(_sd(b).get("flat") or 0) for b in strategy_perf.values()))
+    gross_pnl = round(sum(_flt(_sd(b).get("gross_pnl")) for b in strategy_perf.values()), 4)
+    avg_r = round(sum(_flt(_sd(b).get("avg_r")) * int(_sd(b).get("closed_trades") or 0) for b in strategy_perf.values()) / max(1, closed_trades), 4)
     win_rate = wins / max(1, closed_trades)
     maturity = "LOW SAMPLE" if closed_trades < 30 else ("BUILDING" if closed_trades < 75 else "ESTABLISHED")
     maturity_class = "bad" if closed_trades < 10 else ("neutral" if closed_trades < 30 else "good")
 
     strategy_rows = "".join(
         f"<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt(_sd(bucket).get('closed_trades'))}</td><td>{_dashboard_fmt(_sd(bucket).get('wins'))}</td><td>{_dashboard_fmt(_sd(bucket).get('losses'))}</td><td>{_pct(_flt(_sd(bucket).get('win_rate')) * 100.0)}</td><td>{_money(_sd(bucket).get('gross_pnl'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_r'))}R</td></tr>"
-        for name, bucket in sorted(perf_by_strategy.items())
+        for name, bucket in sorted(strategy_perf.items())
     ) or '<tr><td colspan="7" class="muted">No closed trade history available.</td></tr>'
 
     candidates = _sl(latest_scan.get("candidates") or latest_scan.get("last_swing_candidates") or scan_state.get("last_swing_candidates")) or _sl(scan_summary.get("top_candidates"))
@@ -14448,7 +14482,7 @@ def dashboard(request: Request):
     top_rejection_html = "".join(rejection_rows) or '<tr><td colspan="5" class="muted">No current candidate rejections in persisted scan state.</td></tr>'
     rejection_totals_html = "".join(f"<tr><td>{html.escape(str(r))}</td><td>{c}</td></tr>" for r, c in sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]) or '<tr><td colspan="2" class="muted">No rejection totals available.</td></tr>'
 
-    lifecycle_rows = "".join(f"<tr><td>{html.escape(str(_sd(r).get('ts_utc') or ''))}</td><td>{html.escape(_up(_sd(r).get('symbol')))}</td><td>{html.escape(str(_sd(r).get('to_state') or _sd(r).get('event') or ''))}</td><td>{html.escape(str(_sd(r).get('reason') or ''))}</td></tr>" for r in lifecycle_history) or '<tr><td colspan="4" class="muted">No recent lifecycle events in persisted state.</td></tr>'
+    lifecycle_rows = "".join(f"<tr><td>{html.escape(str(_sd(r).get('ts_utc') or ''))}</td><td>{html.escape(_up(_sd(r).get('symbol')))}</td><td>{html.escape(str(_sd(r).get('event') or _sd(r).get('to_state') or _sd(r).get('state') or ''))}</td><td>{html.escape(str(_sd(r).get('reason') or ''))}</td></tr>" for r in lifecycle_history) or '<tr><td colspan="4" class="muted">No recent lifecycle events in persisted state.</td></tr>'
 
     scanner_status = scanner_summary.get("worker_status") or scanner_last.get("worker_status") or scanner_last.get("status") or "unknown"
     scanner_in_flight = scanner_summary.get("in_flight_run") if scanner_summary.get("in_flight_run") is not None else scanner_last.get("in_flight_run")
@@ -14479,16 +14513,17 @@ def dashboard(request: Request):
     patch_label = html.escape(str(globals().get("PATCH_VERSION", "unknown")))
     snapshot_ts = snap.get("ts_utc") or snap.get("ts_ny") or ""
     last_scan_ts = latest_scan.get("ts_utc") or latest_scan.get("last_closed_utc") or scanner_summary.get("last_closed_utc") or scanner_last.get("last_closed_utc") or ""
+    structural_exceptions_text = "\n".join(["missing_from_plans: none", "plans_missing_open_order: none", "stale_active_plans: none", "orphan_open_order_symbols: none", "partial_fill_plan_symbols: none"])
 
     html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Webhook Dashboard</title><meta http-equiv="refresh" content="30"><style>
 :root{{color-scheme:dark}}body{{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top left,#17112a 0%,#090b10 28%,#06070b 100%);color:#eef2ff;margin:0;padding:20px}}.wrap{{max-width:1560px;margin:0 auto}}h1,h2,h3{{margin:0 0 10px;letter-spacing:-.02em}}h1{{font-size:38px}}h2{{font-size:20px}}.sub,.muted{{color:#9ca3af}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}}.kpi-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}}.alert-grid{{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}}.card{{background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96));border:1px solid rgba(139,92,246,.14);border-radius:20px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.04)}}.metric{{font-size:32px;font-weight:800;margin-top:8px}}.good{{color:#74e2a7}}.bad{{color:#fb7185}}.neutral{{color:#f6c86c}}.badge{{display:inline-block;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:#1f2937;margin:4px 6px 0 0;border:1px solid rgba(255,255,255,.05)}}.badge.good{{background:rgba(16,185,129,.14);color:#bbf7d0}}.badge.bad{{background:rgba(244,63,94,.14);color:#fecdd3}}.badge.neutral{{background:rgba(245,158,11,.14);color:#fde68a}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}}th{{color:#c4b5fd;font-weight:700}}pre{{white-space:pre-wrap;word-break:break-word;background:rgba(5,8,15,.72);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:12px;overflow:auto;color:#d1d5db}}.section{{margin-top:18px}}.links{{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}}.links a{{color:#c4b5fd;text-decoration:none;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.12);padding:7px 11px;border-radius:12px;font-size:13px}}.hero{{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:18px}}.hero-title{{font-size:18px;color:#a78bfa;font-weight:700;text-transform:uppercase;letter-spacing:.08em}}.hero-actions{{display:flex;gap:10px;flex-wrap:wrap}}.action-pill{{background:linear-gradient(135deg,rgba(139,92,246,.18),rgba(59,130,246,.12));border:1px solid rgba(139,92,246,.24);color:#ede9fe;padding:10px 14px;border-radius:14px;font-weight:700;font-size:13px}}.alert-chip{{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:16px;margin-bottom:10px;border:1px solid rgba(255,255,255,.05);background:rgba(255,255,255,.03)}}.alert-chip.good{{background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.18)}}.alert-chip.warn,.alert-chip.neutral{{background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.18)}}.alert-chip.bad{{background:rgba(244,63,94,.10);border-color:rgba(244,63,94,.18)}}@media(max-width:980px){{.alert-grid{{grid-template-columns:1fr}}.hero{{flex-direction:column;align-items:flex-start}}}}
-</style></head><body><div class="wrap"><div class="hero"><div><div class="hero-title">Operator Console</div><h1>Dashboard</h1><p class="sub">Rich snapshot dashboard restored. No broker, reconcile, scan, or exit work is executed during render. Generated {html.escape(generated_utc)}.</p></div><div class="hero-actions"><div class="action-pill">Patch 172 snapshot-rich UI</div><div class="action-pill">Read-only</div><div class="action-pill">Fast path</div></div></div>
+</style></head><body><div class="wrap"><div class="hero"><div><div class="hero-title">Operator Console</div><h1>Dashboard</h1><p class="sub">Rich snapshot dashboard restored. No broker, reconcile, scan, or exit work is executed during render. Generated {html.escape(generated_utc)}.</p></div><div class="hero-actions"><div class="action-pill">Patch 173 snapshot-complete UI</div><div class="action-pill">Read-only</div><div class="action-pill">Fast path</div></div></div>
 <div class="links"><a href="/diagnostics/build">build</a><a href="/diagnostics/reconcile">reconcile</a><a href="/diagnostics/scanner">scanner</a><a href="/diagnostics/freshness">freshness</a><a href="/diagnostics/release">release</a><a href="/diagnostics/execution_lifecycle">execution_lifecycle</a><a href="/diagnostics/strategy_performance">strategy_performance</a><a href="/diagnostics/candidates">candidates</a><a href="/diagnostics/swing">swing</a></div><div><span class="badge neutral">{patch_label}</span><span class="badge good">snapshot only</span><span class="badge good">no live calls</span></div>
 <div class="section alert-grid"><div class="card"><h2>Operator Alerts</h2><div class="alert-chip {'bad' if blockers else 'good'}"><strong>{'Blockers present' if blockers else 'No current blockers'}</strong><span>{html.escape(', '.join(blockers) if blockers else 'System has no dashboard-visible blockers.')}</span></div><div class="alert-chip {worker_class}"><strong>Worker status</strong><span>Scanner: {html.escape(str(scanner_status))}; in-flight: {html.escape(str(scanner_in_flight))}</span></div></div><div class="card"><h2>Exception Center</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('trading_blocked', trading_blocked),('snapshot_reason', snap.get('reason') or '')])}</table></div></div>
 <div class="section kpi-grid"><div class="card"><div class="muted">Release stage</div><div class="metric {live_class}">{live_text}</div><table>{_rows([('stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('dry_run', dry_run),('kill_switch', kill_switch)])}</table></div><div class="card"><div class="muted">Market hours</div><div class="metric {market_class}">{market_text}</div><table>{_rows([('now_ny', now_ny_text),('snapshot_ts', snapshot_ts),('last_scan_ts', last_scan_ts)])}</table></div><div class="card"><div class="muted">Regime</div><div class="metric {regime_class}">{_dashboard_fmt(regime_favorable).upper()}</div><table>{_rows([('index_symbol', regime_current.get('index_symbol')),('score', regime_current.get('score')),('breadth', regime_current.get('breadth')),('data_complete', regime_current.get('data_complete'))])}</table></div><div class="card"><div class="muted">Workers</div><div class="metric {worker_class}">{html.escape(str(scanner_status).upper())}</div><table>{_rows([('in_flight_run', scanner_in_flight),('last_event', scanner_last.get('event') or scanner_summary.get('last_event')),('last_closed_utc', scanner_summary.get('last_closed_utc') or scanner_last.get('last_closed_utc'))])}</table></div><div class="card"><div class="muted">Reconcile</div><div class="metric {reconcile_class}">{html.escape(str(health_grade).upper())}</div><table>{_rows([('broker_positions_count', len(pos_by_symbol)),('active_plan_count', len(active_plan_symbols)),('open_order_count', snap.get('open_order_count', 0)),('issue_total', issue_total)])}</table></div><div class="card"><div class="muted">Active Position Count</div><div class="metric good">{_dashboard_fmt(len(merged))}</div><table>{_rows([('symbols', ', '.join([r['symbol'] for r in merged])),('snapshot_source', 'positions_snapshot.json')])}</table></div></div>
 <div class="section card"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Days</th></tr></thead><tbody>{active_rows}</tbody></table><div class="muted" style="margin-top:10px;">Merged from broker-backed snapshot positions plus active plan risk fields. No live quote calls during dashboard render.</div></div>
-<div class="section grid"><div class="card"><h2>P&amp;L Summary</h2><table>{_rows([('positions_with_snapshot', len(merged)),('total_unrealized_pl_snapshot', round(total_unrealized, 2)),('winners', winners),('losers', losers)])}</table></div><div class="card"><h2>Risk Integrity</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('active_plan_count', len(active_plan_symbols)),('broker_positions_count', len(pos_by_symbol)),('trading_blocked', trading_blocked)])}</table><h3 style="margin-top:14px;">Structural exceptions</h3><pre>{html.escape('missing_from_plans: none\nplans_missing_open_order: none\nstale_active_plans: none\norphan_open_order_symbols: none\npartial_fill_plan_symbols: none')}</pre></div><div class="card"><h2>Exposure &amp; Capacity</h2><table>{_rows([('current_open_positions', len(merged)),('max_open_positions', globals().get('MAX_OPEN_POSITIONS')),('portfolio_exposure_snapshot', snap.get('portfolio_exposure') or ''),('portfolio_cap_mode', os.getenv('SWING_PORTFOLIO_CAP_BLOCK_MODE',''))])}</table><h3 style="margin-top:14px;">Strategy symbols</h3><pre>{html.escape(chr(10).join([r['symbol'] for r in merged]) or 'none')}</pre></div></div>
-<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or 'none'),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', 'persisted_strategy_state'),('today_realized_pnl', perf_state.get('today_realized_pnl','')),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', perf_state.get('closed_trades_today','')),('broker_exit_fills_today', perf_state.get('broker_exit_fills_today',''))])}</table></div></div>
+<div class="section grid"><div class="card"><h2>P&amp;L Summary</h2><table>{_rows([('positions_with_snapshot', len(merged)),('total_unrealized_pl_snapshot', round(total_unrealized, 2)),('winners', winners),('losers', losers)])}</table></div><div class="card"><h2>Risk Integrity</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('active_plan_count', len(active_plan_symbols)),('broker_positions_count', len(pos_by_symbol)),('trading_blocked', trading_blocked)])}</table><h3 style="margin-top:14px;">Structural exceptions</h3><pre>{html.escape(structural_exceptions_text)}</pre></div><div class="card"><h2>Exposure &amp; Capacity</h2><table>{_rows([('current_open_positions', len(merged)),('max_open_positions', globals().get('MAX_OPEN_POSITIONS')),('portfolio_exposure_snapshot', snap.get('portfolio_exposure') or ''),('portfolio_cap_mode', os.getenv('SWING_PORTFOLIO_CAP_BLOCK_MODE',''))])}</table><h3 style="margin-top:14px;">Strategy symbols</h3><pre>{html.escape(chr(10).join([r['symbol'] for r in merged]) or 'none')}</pre></div></div>
+<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or 'none'),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', 'alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data')),('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data')),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data')),('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data'))])}</table></div></div>
 <div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R')])}</table><h3 style="margin-top:14px;">Sample maturity</h3><div class="metric {maturity_class}">{maturity}</div></div><div class="card"><h2>Strategy Attribution</h2><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('component_ready', not bool(blockers)),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {'good' if not blockers else 'neutral'}">{'READY' if not blockers else 'CHECK BLOCKERS'}</div></div><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_running', str(scanner_status).lower() in {'up','ok'}),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table></div><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
