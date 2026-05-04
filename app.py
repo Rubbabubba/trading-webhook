@@ -15457,6 +15457,15 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
 
     def _elapsed_ms() -> int:
         return int(max(0.0, (_time.perf_counter() - scan_started) * 1000.0))
+        
+     timing_ms = {"reconcile": 0, "bars_fetch": 0, "rank_candidates": 0, "latest_prices": 0, "eval_loop": 0, "submit_loop": 0, "persist": 0, "total": 0}
+    _stage_t0 = {"value": 0.0}
+
+    def _stage_start():
+        _stage_t0["value"] = _time.perf_counter()
+
+    def _stage_end(name: str):
+        timing_ms[name] = int(max(0.0, (_time.perf_counter() - _stage_t0["value"]) * 1000.0))    
 
     if body is None:
         body = {}
@@ -15537,6 +15546,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     "blocked": 0,
                     "duration_ms": _elapsed_ms(),
                     "summary": scan_summary,
+                    "timing_ms": dict(timing_ms),
                     "results": [],
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
@@ -15624,7 +15634,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
 
 # Reconcile first: never place entries against stale internal state.
+        _stage_start()
         reconcile_actions = reconcile_trade_plans_from_alpaca()
+        _stage_end("reconcile")
 
         if STRATEGY_MODE == "swing":
             swing_resp = run_swing_daily_scan(effective_dry_run, _set_last_scan, _elapsed_ms, reconcile_actions=reconcile_actions)
@@ -15661,9 +15673,13 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         max_workers = max(1, min(max_workers, len(syms) or 1))
 
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
+        _stage_start()
         bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
+         _stage_end("bars_fetch")
 
+        _stage_start()
         candidate_info = rank_scan_candidates(syms, bars_map)
+        _stage_end("rank_candidates")
         if candidate_info:
             filtered_candidate_info = list(candidate_info)
             if SCANNER_UNIVERSE_PROVIDER == "dynamic":
@@ -15722,7 +15738,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 "top": [{"symbol": s, "score": sc} for s, sc in scores[: min(10, len(scores))]],
             }
         # Batch latest prices once per scan (fallback when bars are missing)
+         _stage_start()
         latest_prices_map = get_latest_prices(syms)
+        _stage_end("latest_prices")
 
         def _eval_one(sym: str) -> dict:
                 local_results: list[dict] = []
@@ -15927,6 +15945,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     })
                 return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
+        _stage_start()
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futures = [ex.submit(_eval_one, sym) for sym in syms]
                 for fut in as_completed(futures):
@@ -15934,6 +15953,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     results.extend(out.get("results", []))
                     signals.extend(out.get("signals", []))
                     blocked += int(out.get("blocked", 0))
+        _stage_end("eval_loop")            
 
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
 
@@ -16103,6 +16123,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 record_decision("SCAN", "worker_scan", symbol=skipped.get("symbol", ""), side=skipped.get("side", ""), signal=skipped.get("signal", ""), action="ignored", reason="lower_rank_than_top_slots", meta={"rank_score": float(skipped.get("rank_score", skipped.get("score", 0.0)) or 0.0), "candidate_slots": candidate_slots})
                 ignored_ranked_out.append({"symbol": skipped.get("symbol"), "signal": skipped.get("signal"), "rank_score": float(skipped.get("rank_score", skipped.get("score", 0.0)) or 0.0), "reason": "lower_rank_than_top_slots"})
 
+            _stage_start()
             for plan in allowed_submits:
                 sym = plan.get("symbol")
                 side = plan.get("side") or "buy"
@@ -16153,6 +16174,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     scan_reason=requested_reason or "scheduled",
                 )
                 would_submit.append({**payload, **resp, "submit_state": submit_meta.get("state"), "submit_reason": submit_meta.get("reason"), "submit_attempted": bool(submit_meta.get("attempted"))})
+            _stage_end("submit_loop")    
 
         # Store diagnostics for Postman/curl inspection.
         try:
@@ -16175,9 +16197,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 })
                 if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
                     del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
+                _stage_start()
                 persist_scan_runtime_state(reason="worker_scan_entries")
+                _stage_end("persist")
                 try:
-                    _record_scanner_telemetry("scan_ok", "success", details={"status": 200, "symbols_scanned": len(syms), "signals": len(signals), "blocked": blocked, "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled", **source_meta})
+                    timing_ms["total"] = duration_ms
+                    _record_scanner_telemetry("scan_ok", "success", details={"status": 200, "symbols_scanned": len(syms), "signals": len(signals), "blocked": blocked, "duration_ms": duration_ms, "timing_ms": dict(timing_ms), "scan_reason": requested_reason or "scheduled", **source_meta})
                 except Exception:
                     pass
         except Exception:
