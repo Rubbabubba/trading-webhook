@@ -15738,7 +15738,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 "top": [{"symbol": s, "score": sc} for s, sc in scores[: min(10, len(scores))]],
             }
         # Batch latest prices once per scan (fallback when bars are missing)
-         _stage_start()
+        _stage_start()
         latest_prices_map = get_latest_prices(syms)
         _stage_end("latest_prices")
 
