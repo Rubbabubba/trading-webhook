@@ -15458,7 +15458,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
     def _elapsed_ms() -> int:
         return int(max(0.0, (_time.perf_counter() - scan_started) * 1000.0))
         
-     timing_ms = {"reconcile": 0, "bars_fetch": 0, "rank_candidates": 0, "latest_prices": 0, "eval_loop": 0, "submit_loop": 0, "persist": 0, "total": 0}
+    timing_ms = {"reconcile": 0, "bars_fetch": 0, "rank_candidates": 0, "latest_prices": 0, "eval_loop": 0, "submit_loop": 0, "persist": 0, "total": 0}
     _stage_t0 = {"value": 0.0}
 
     def _stage_start():
