@@ -15,7 +15,7 @@ WORKER_MODE = os.getenv("WORKER_MODE", "exit").strip().lower()
 INTERVAL_SEC = int(os.getenv("EXIT_INTERVAL_SEC" if WORKER_MODE=="exit" else "SCAN_INTERVAL_SEC", "30" if WORKER_MODE=="exit" else "3600"))
 
 # HTTP request timeout. Exit management can take >15s during broker latency; keep configurable.
-WORKER_HTTP_TIMEOUT_SEC = int(os.getenv("WORKER_HTTP_TIMEOUT_SEC", "45"))
+WORKER_HTTP_TIMEOUT_SEC = int(os.getenv("WORKER_HTTP_TIMEOUT_SEC", "75"))
 
 # Endpoint path
 EXIT_PATH = os.getenv("EXIT_PATH", "/worker/exit")
@@ -56,15 +56,19 @@ def main():
         start = time.time()
         try:
             code, body = post_json(url, payload)
-            log(f"[worker] {code} {body[:500]}")
+            elapsed_ms = int(max(0.0, (time.time() - start) * 1000.0))
+            log(f"[worker] {code} elapsedMs={elapsed_ms} {body[:500]}")
         except urllib.error.HTTPError as e:
+            elapsed_ms = int(max(0.0, (time.time() - start) * 1000.0))
             try:
                 body = e.read().decode("utf-8", errors="replace")
             except Exception:
                 body = str(e)
-            log(f"[worker] HTTPError {e.code}: {body[:500]}")
+            log(f"[worker] HTTPError {e.code} elapsedMs={elapsed_ms}: {body[:500]}")
         except Exception as e:
-            log(f"[worker] ERROR: {e}")
+            elapsed_ms = int(max(0.0, (time.time() - start) * 1000.0))
+            timeout_hint = " timeout" if "timed out" in str(e).lower() else ""
+            log(f"[worker] ERROR{timeout_hint} elapsedMs={elapsed_ms}: {e}")
 
         # maintain cadence
         elapsed = time.time() - start
