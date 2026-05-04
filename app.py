@@ -15675,7 +15675,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
         _stage_start()
         bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
-         _stage_end("bars_fetch")
+        _stage_end("bars_fetch")
 
         _stage_start()
         candidate_info = rank_scan_candidates(syms, bars_map)
