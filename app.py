@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-174.6-dashboard-layout-and-snapshot-marks"
+PATCH_VERSION = "patch-175-read-only-trade-quality-analytics"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -14184,10 +14184,266 @@ def _dashboard_latest_completed_scan_summary() -> dict:
     return {}
 
 
+
+PATCH_175_FOCUS_REJECTION_REASONS = {
+    "too_far_below_breakout",
+    "close_not_near_high",
+    "rank_score_below_min",
+    "rank_below_threshold",
+    "portfolio_exposure_limit",
+    "daily_halt_active",
+}
+
+
+def _p175_float(value, default: float | None = None) -> float | None:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _p175_first(row: dict | None, *keys):
+    row = row if isinstance(row, dict) else {}
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _p175_parse_dt(value):
+    try:
+        return _safe_parse_iso_utc(value)
+    except Exception:
+        try:
+            if not value:
+                return None
+            text = str(value).strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+
+def _p175_closed_trade_pnl(row: dict | None) -> float:
+    value = _p175_first(row, "gross_pnl", "realized_pnl", "pnl", "profit_loss", "net_pnl")
+    return float(_p175_float(value, 0.0) or 0.0)
+
+
+def _p175_closed_trade_r(row: dict | None) -> float | None:
+    return _p175_float(_p175_first(row, "pnl_r", "r", "r_multiple", "realized_r"), None)
+
+
+def _p175_rank_score(row: dict | None) -> float | None:
+    row = row if isinstance(row, dict) else {}
+    thesis = row.get("thesis") if isinstance(row.get("thesis"), dict) else {}
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    return _p175_float(_p175_first(row, "rank_score", "entry_rank_score", "score", "selection_quality_score") or _p175_first(thesis, "rank_score", "entry_rank_score") or _p175_first(meta, "rank_score", "entry_rank_score"), None)
+
+
+def _p175_rank_bucket(row: dict | None) -> str:
+    score = _p175_rank_score(row)
+    if score is None:
+        return "unknown"
+    if score < 40:
+        return "<40"
+    if score < 50:
+        return "40-49.99"
+    if score < 60:
+        return "50-59.99"
+    if score < 70:
+        return "60-69.99"
+    if score < 80:
+        return "70-79.99"
+    return "80+"
+
+
+def _p175_holding_days(row: dict | None) -> float | None:
+    row = row if isinstance(row, dict) else {}
+    direct = _p175_float(_p175_first(row, "holding_days", "hold_days", "days_held", "holding_period_days"), None)
+    if direct is not None:
+        return direct
+    hours = _p175_float(_p175_first(row, "holding_hours", "hold_hours", "holding_period_hours"), None)
+    if hours is not None:
+        return hours / 24.0
+    entry_dt = _p175_parse_dt(_p175_first(row, "entry_ts_utc", "entry_utc", "entry_time", "entry_timestamp", "opened_at_utc"))
+    exit_dt = _p175_parse_dt(_p175_first(row, "ts_utc", "exit_ts_utc", "exit_utc", "closed_at_utc", "exit_time"))
+    if entry_dt and exit_dt and exit_dt >= entry_dt:
+        return (exit_dt - entry_dt).total_seconds() / 86400.0
+    return None
+
+
+def _p175_holding_bucket(row: dict | None) -> str:
+    days = _p175_holding_days(row)
+    if days is None:
+        return "unknown"
+    if days < 1:
+        return "intraday"
+    if days < 2:
+        return "1 day"
+    if days < 4:
+        return "2-3 days"
+    if days < 8:
+        return "4-7 days"
+    if days < 15:
+        return "8-14 days"
+    return "15+ days"
+
+
+def _p175_bucket_summary(rows: list[dict], key_fn) -> dict:
+    out: dict[str, dict] = {}
+    for raw in rows or []:
+        row = raw if isinstance(raw, dict) else {}
+        key = str(key_fn(row) or "unknown")
+        bucket = out.setdefault(key, {"closed_trades": 0, "wins": 0, "losses": 0, "flat": 0, "gross_pnl": 0.0, "avg_r": None, "_r_sum": 0.0, "_r_count": 0})
+        pnl = _p175_closed_trade_pnl(row)
+        bucket["closed_trades"] += 1
+        bucket["gross_pnl"] += pnl
+        if pnl > 0:
+            bucket["wins"] += 1
+        elif pnl < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
+        r_value = _p175_closed_trade_r(row)
+        if r_value is not None:
+            bucket["_r_sum"] += r_value
+            bucket["_r_count"] += 1
+    for bucket in out.values():
+        count = max(1, int(bucket.get("closed_trades") or 0))
+        bucket["gross_pnl"] = round(float(bucket.get("gross_pnl") or 0.0), 4)
+        bucket["win_rate"] = round(float(bucket.get("wins") or 0) / count, 4)
+        r_count = int(bucket.pop("_r_count") or 0)
+        r_sum = float(bucket.pop("_r_sum") or 0.0)
+        bucket["avg_r"] = round(r_sum / r_count, 4) if r_count else None
+    return dict(sorted(out.items(), key=lambda kv: (kv[0] == "unknown", kv[0])))
+
+
+def _p175_trade_quality_analytics(
+    *,
+    perf_state: dict | None = None,
+    position_snapshot: dict | None = None,
+    scan_state: dict | None = None,
+    recent_scan_limit: int = 25,
+) -> dict:
+    perf_state = perf_state if isinstance(perf_state, dict) else dict(STRATEGY_PERFORMANCE_STATE or {})
+    position_snapshot = position_snapshot if isinstance(position_snapshot, dict) else _safe_json_read(POSITION_SNAPSHOT_PATH)
+    scan_state = scan_state if isinstance(scan_state, dict) else _safe_json_read(SCAN_STATE_PATH)
+    closed_rows = [dict(r) for r in list(perf_state.get("closed_trades") or []) if isinstance(r, dict)]
+
+    def symbol_key(row):
+        return str(row.get("symbol") or "unknown").upper() or "unknown"
+
+    def strategy_key(row):
+        return str(row.get("strategy_name") or row.get("strategy") or row.get("signal") or row.get("entry_signal") or "unknown").strip().lower() or "unknown"
+
+    def exit_key(row):
+        return str(row.get("exit_reason") or row.get("reason") or row.get("close_reason") or "unknown").strip().lower() or "unknown"
+
+    positions = [dict(p) for p in list(position_snapshot.get("positions") or []) if isinstance(p, dict)]
+    plans = position_snapshot.get("active_plans") if isinstance(position_snapshot.get("active_plans"), dict) else {}
+    open_rows = []
+    total_notional = total_risk = total_unrealized = 0.0
+    symbols = sorted({str((p or {}).get("symbol") or "").upper() for p in positions if str((p or {}).get("symbol") or "").strip()} | {str(s or "").upper() for s, plan in plans.items() if isinstance(plan, dict) and plan.get("active")})
+    for sym in symbols:
+        pos = next((p for p in positions if str(p.get("symbol") or "").upper() == sym), {})
+        plan = plans.get(sym) if isinstance(plans.get(sym), dict) else {}
+        qty = abs(float(_p175_float(_p175_first(pos, "qty") or _p175_first(plan, "filled_qty", "qty", "requested_qty"), 0.0) or 0.0))
+        entry = float(_p175_float(_p175_first(pos, "avg_entry_price") or _p175_first(plan, "entry_price", "avg_fill_price"), 0.0) or 0.0)
+        last = float(_p175_float(_p175_first(pos, "current_price", "last_price", "latest_price", "market_price") or _p175_first(plan, "last_price", "current_price"), entry) or 0.0)
+        stop = float(_p175_float(_p175_first(plan, "stop_price", "initial_stop_price"), 0.0) or 0.0)
+        side = str(_p175_first(plan, "side") or "buy").lower()
+        notional = qty * (last or entry)
+        risk = qty * abs((entry - stop) if side != "sell" else (stop - entry)) if entry > 0 and stop > 0 else 0.0
+        unreal = _p175_float(_p175_first(pos, "unrealized_pl", "unrealized_intraday_pl"), None)
+        if unreal is None and qty > 0 and entry > 0 and last > 0:
+            unreal = (last - entry) * qty if side != "sell" else (entry - last) * qty
+        unreal = float(unreal or 0.0)
+        total_notional += notional
+        total_risk += risk
+        total_unrealized += unreal
+        open_rows.append({"symbol": sym, "qty": qty, "entry_price": entry or None, "last_price": last or None, "stop_price": stop or None, "notional": round(notional, 2), "risk_to_stop": round(risk, 2), "unrealized_pl": round(unreal, 2), "rank_score": _p175_rank_score(plan), "strategy": strategy_key(plan)})
+
+    scan_history = list(scan_state.get("scan_history") or [])[-max(1, min(int(recent_scan_limit or 25), 100)):]
+    reason_buckets: dict[str, dict] = {}
+    for scan in scan_history:
+        scan_row = scan if isinstance(scan, dict) else {}
+        candidates = list(scan_row.get("candidates") or scan_row.get("results") or scan_row.get("last_swing_candidates") or ((scan_row.get("summary") or {}) if isinstance(scan_row.get("summary"), dict) else {}).get("top_candidates") or [])
+        scan_ts = scan_row.get("ts_utc") or scan_row.get("last_closed_utc")
+        for item in candidates:
+            row = item if isinstance(item, dict) else {}
+            reasons = [str(r).strip() for r in list(row.get("rejection_reasons") or row.get("reasons") or row.get("selection_blockers") or []) if str(r).strip()]
+            for reason in reasons:
+                bucket = reason_buckets.setdefault(reason, {"count": 0, "symbols": {}, "avg_rank_score": None, "_rank_sum": 0.0, "_rank_count": 0, "latest_examples": []})
+                bucket["count"] += 1
+                sym = str(row.get("symbol") or "").upper()
+                if sym:
+                    bucket["symbols"][sym] = int(bucket["symbols"].get(sym) or 0) + 1
+                score = _p175_rank_score(row)
+                if score is not None:
+                    bucket["_rank_sum"] += score
+                    bucket["_rank_count"] += 1
+                if reason in PATCH_175_FOCUS_REJECTION_REASONS and len(bucket["latest_examples"]) < 8:
+                    bucket["latest_examples"].append({"ts_utc": scan_ts, "symbol": sym, "rank_score": score, "close": row.get("close") or row.get("price"), "breakout_distance_pct": row.get("breakout_distance_pct"), "close_to_high_pct": row.get("close_to_high_pct")})
+    for reason, bucket in reason_buckets.items():
+        rc = int(bucket.pop("_rank_count") or 0)
+        rs = float(bucket.pop("_rank_sum") or 0.0)
+        bucket["avg_rank_score"] = round(rs / rc, 4) if rc else None
+        bucket["unique_symbols"] = len(bucket.get("symbols") or {})
+        bucket["top_symbols"] = [{"symbol": sym, "count": count} for sym, count in sorted((bucket.pop("symbols") or {}).items(), key=lambda kv: (-kv[1], kv[0]))[:8]]
+    focus = {reason: reason_buckets.get(reason, {"count": 0, "unique_symbols": 0, "avg_rank_score": None, "top_symbols": [], "latest_examples": []}) for reason in sorted(PATCH_175_FOCUS_REJECTION_REASONS)}
+
+    return {
+        "ok": True,
+        "patch": "175",
+        "read_only": True,
+        "closed_trade_count": len(closed_rows),
+        "missing_field_counts": {
+            "rank_score": sum(1 for r in closed_rows if _p175_rank_score(r) is None),
+            "holding_period": sum(1 for r in closed_rows if _p175_holding_days(r) is None),
+            "exit_reason": sum(1 for r in closed_rows if not _p175_first(r, "exit_reason", "reason", "close_reason")),
+            "strategy": sum(1 for r in closed_rows if not _p175_first(r, "strategy_name", "strategy", "signal", "entry_signal")),
+        },
+        "closed_trades_by_rank_bucket": _p175_bucket_summary(closed_rows, _p175_rank_bucket),
+        "closed_trades_by_symbol": _p175_bucket_summary(closed_rows, symbol_key),
+        "closed_trades_by_holding_period": _p175_bucket_summary(closed_rows, _p175_holding_bucket),
+        "closed_trades_by_strategy": _p175_bucket_summary(closed_rows, strategy_key),
+        "closed_trades_by_exit_reason": _p175_bucket_summary(closed_rows, exit_key),
+        "open_book_risk": {
+            "open_positions": len(open_rows),
+            "max_open_positions": int(MAX_OPEN_POSITIONS),
+            "total_notional": round(total_notional, 2),
+            "total_risk_to_stop": round(total_risk, 2),
+            "total_unrealized_pl": round(total_unrealized, 2),
+            "portfolio_exposure_cap_pct": float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT),
+            "symbol_exposure_cap_pct": float(SWING_MAX_SYMBOL_EXPOSURE_PCT),
+            "rows": open_rows,
+        },
+        "rejected_setup_follow_through": {
+            "recent_scan_count": len(scan_history),
+            "focus_reasons": focus,
+            "all_reasons": dict(sorted(reason_buckets.items(), key=lambda kv: (-int(kv[1].get("count") or 0), kv[0]))),
+            "note": "Read-only summary of persisted rejected setup rows. True post-rejection forward returns require future bar snapshots not present in older scan rows.",
+        },
+    }
+    
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
     state = _recompute_strategy_performance_state()
-    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "quarantine_path": STRATEGY_PERFORMANCE_QUARANTINE_PATH, "broker_truth_sync_enabled": True, "today_pnl_truth": today_pnl_truth_snapshot(), "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
+    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "quarantine_path": STRATEGY_PERFORMANCE_QUARANTINE_PATH, "broker_truth_sync_enabled": True, "today_pnl_truth": today_pnl_truth_snapshot(), "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "trade_quality_analytics": _p175_trade_quality_analytics(perf_state=state), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
+
+
+@app.get("/diagnostics/trade_quality")
+def diagnostics_trade_quality(request: Request, recent_scan_limit: int = 25):
+    require_admin_if_configured(request)
+    state = _recompute_strategy_performance_state()
+    return _p175_trade_quality_analytics(perf_state=state, recent_scan_limit=recent_scan_limit)
 
 
 @app.get("/diagnostics/execution_spread_policy")
@@ -14503,6 +14759,26 @@ def dashboard(request: Request):
         for name, bucket in sorted(strategy_perf.items())
     ) or '<tr><td colspan="7" class="muted">No closed trade history available.</td></tr>'
 
+    trade_quality = _p175_trade_quality_analytics(perf_state=perf_state, position_snapshot=snap, scan_state=scan_state)
+
+    def _quality_bucket_rows(bucket_map, limit=8):
+        rows = []
+        for name, bucket in list(_sd(bucket_map).items())[:limit]:
+            b = _sd(bucket)
+            rows.append(f"<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt(b.get('closed_trades'))}</td><td>{_dashboard_fmt(b.get('wins'))}</td><td>{_dashboard_fmt(b.get('losses'))}</td><td>{_pct(_flt(b.get('win_rate')) * 100.0)}</td><td>{_money(b.get('gross_pnl'))}</td><td>{_dashboard_fmt(b.get('avg_r')) if b.get('avg_r') is not None else '—'}</td></tr>")
+        return ''.join(rows) or '<tr><td colspan="7" class="muted">No closed trade history available for this breakdown.</td></tr>'
+
+    rank_bucket_rows = _quality_bucket_rows(trade_quality.get('closed_trades_by_rank_bucket'))
+    symbol_bucket_rows = _quality_bucket_rows(trade_quality.get('closed_trades_by_symbol'), limit=12)
+    holding_bucket_rows = _quality_bucket_rows(trade_quality.get('closed_trades_by_holding_period'))
+    exit_reason_rows = _quality_bucket_rows(trade_quality.get('closed_trades_by_exit_reason'))
+    open_book = _sd(trade_quality.get('open_book_risk'))
+    focus_rejections = _sd(_sd(trade_quality.get('rejected_setup_follow_through')).get('focus_reasons'))
+    focus_rejection_rows = ''.join(
+        f"<tr><td>{html.escape(str(reason))}</td><td>{_dashboard_fmt(_sd(bucket).get('count'))}</td><td>{_dashboard_fmt(_sd(bucket).get('unique_symbols'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_rank_score'))}</td><td>{html.escape(', '.join([str(_sd(s).get('symbol')) for s in _sl(_sd(bucket).get('top_symbols'))[:4] if _sd(s).get('symbol')]) or '—')}</td></tr>"
+        for reason, bucket in focus_rejections.items()
+    ) or '<tr><td colspan="5" class="muted">No focused rejection analytics available.</td></tr>'
+    
     candidates = _sl(latest_scan.get("candidates") or latest_scan.get("last_swing_candidates") or scan_state.get("last_swing_candidates")) or _sl(scan_summary.get("top_candidates"))
     recent_scan_history = _sl(scan_state.get("scan_history"))
     rejection_scan_window = max(1, min(25, int(os.getenv("DASHBOARD_REJECTION_SCAN_WINDOW", "8") or 8)))
@@ -14628,6 +14904,25 @@ def dashboard(request: Request):
     halt_class = "bad" if daily_halt_active_value else "good"
     regime_class = "good" if regime_favorable else "neutral"
     worker_class = "good" if str(scanner_status).lower() in {"up", "ok"} and not scanner_in_flight else "neutral"
+    scanner_healthy = str(scanner_status).lower() in {"up", "ok"}
+    halt_reason_text = str(daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or '').lower()
+    halt_loss_control = daily_halt_active_value and any(token in halt_reason_text for token in ("daily_stop", "daily_stop_hit", "daily_loss", "loss", "pnl", "stop_hit"))
+    if halt_loss_control:
+        halt_interpretation = "LOSS CONTROL HALT"
+        halt_detail = "Daily halt appears intentional after loss-control thresholds; scanner/release blocks are expected until the next reset."
+        halt_panel_class = "neutral"
+    elif daily_halt_active_value:
+        halt_interpretation = "HALT ACTIVE - VERIFY TRIGGER"
+        halt_detail = "Daily halt is active, but persisted dashboard state does not prove a loss-control trigger; inspect diagnostics before tuning behavior."
+        halt_panel_class = "bad"
+    elif not scanner_healthy or trading_blocked:
+        halt_interpretation = "CHECK SYSTEM COMPONENTS"
+        halt_detail = "No daily halt is proven; blockers may indicate scanner, release gate, reconcile, or worker issues."
+        halt_panel_class = "bad"
+    else:
+        halt_interpretation = "NO DAILY HALT"
+        halt_detail = "No daily halt is active in current dashboard-visible state."
+        halt_panel_class = "good"
     patch_label = html.escape(str(globals().get("PATCH_VERSION", "unknown")))
     snapshot_ts = snap.get("ts_utc") or snap.get("ts_ny") or ""
     last_scan_ts = latest_scan.get("ts_utc") or latest_scan.get("last_closed_utc") or scanner_summary.get("last_closed_utc") or scanner_last.get("last_closed_utc") or ""
@@ -14635,15 +14930,18 @@ def dashboard(request: Request):
 
     html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Webhook Dashboard</title><meta http-equiv="refresh" content="30"><style>
 :root{{color-scheme:dark}}body{{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top left,#17112a 0%,#090b10 28%,#06070b 100%);color:#eef2ff;margin:0;padding:20px}}.wrap{{max-width:1560px;margin:0 auto}}h1,h2,h3{{margin:0 0 10px;letter-spacing:-.02em}}h1{{font-size:38px}}h2{{font-size:20px}}.sub,.muted{{color:#9ca3af}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}}.kpi-grid{{display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:16px}}.alert-grid{{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}}.card{{background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96));border:1px solid rgba(139,92,246,.14);border-radius:20px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.04);overflow:hidden}}.metric{{font-size:32px;font-weight:800;margin-top:8px}}.good{{color:#74e2a7}}.bad{{color:#fb7185}}.neutral{{color:#f6c86c}}.badge{{display:inline-block;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:#1f2937;margin:4px 6px 0 0;border:1px solid rgba(255,255,255,.05)}}.badge.good{{background:rgba(16,185,129,.14);color:#bbf7d0}}.badge.bad{{background:rgba(244,63,94,.14);color:#fecdd3}}.badge.neutral{{background:rgba(245,158,11,.14);color:#fde68a}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}}th{{color:#c4b5fd;font-weight:700}}pre{{white-space:pre-wrap;word-break:break-word;background:rgba(5,8,15,.72);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:12px;overflow:auto;color:#d1d5db}}.section{{margin-top:18px}}.links{{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}}.links a{{color:#c4b5fd;text-decoration:none;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.12);padding:7px 11px;border-radius:12px;font-size:13px}}.hero{{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:18px}}.hero-title{{font-size:18px;color:#a78bfa;font-weight:700;text-transform:uppercase;letter-spacing:.08em}}.hero-actions{{display:flex;gap:10px;flex-wrap:wrap}}.action-pill{{background:linear-gradient(135deg,rgba(139,92,246,.18),rgba(59,130,246,.12));border:1px solid rgba(139,92,246,.24);color:#ede9fe;padding:10px 14px;border-radius:14px;font-weight:700;font-size:13px}}.alert-chip{{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:16px;margin-bottom:10px;border:1px solid rgba(255,255,255,.05);background:rgba(255,255,255,.03)}}.alert-chip.good{{background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.18)}}.alert-chip.warn,.alert-chip.neutral{{background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.18)}}.alert-chip.bad{{background:rgba(244,63,94,.10);border-color:rgba(244,63,94,.18)}}@media(max-width:980px){{.alert-grid{{grid-template-columns:1fr}}.kpi-grid{{grid-template-columns:1fr}}.hero{{flex-direction:column;align-items:flex-start}}}}
-</style></head><body><div class="wrap"><div class="hero"><div><div class="hero-title">Operator Console</div><h1>Dashboard</h1><p class="sub">Rich snapshot dashboard restored. No broker, reconcile, scan, or exit work is executed during render. Generated {html.escape(generated_utc)}.</p></div><div class="hero-actions"><div class="action-pill">Patch 173 snapshot-complete UI</div><div class="action-pill">Read-only</div><div class="action-pill">Fast path</div></div></div>
+</style></head><body><div class="wrap"><div class="hero"><div><div class="hero-title">Operator Console</div><h1>Dashboard</h1><p class="sub">Rich snapshot dashboard restored. No broker, reconcile, scan, or exit work is executed during render. Generated {html.escape(generated_utc)}.</p></div><div class="hero-actions"><div class="action-pill">Patch 175 analytics UI</div><div class="action-pill">Read-only</div><div class="action-pill">Fast path</div></div></div>
 <div class="links"><a href="/diagnostics/build">build</a><a href="/diagnostics/reconcile">reconcile</a><a href="/diagnostics/scanner">scanner</a><a href="/diagnostics/freshness">freshness</a><a href="/diagnostics/release">release</a><a href="/diagnostics/execution_lifecycle">execution_lifecycle</a><a href="/diagnostics/strategy_performance">strategy_performance</a><a href="/diagnostics/candidates">candidates</a><a href="/diagnostics/swing">swing</a></div><div><span class="badge neutral">{patch_label}</span><span class="badge good">snapshot only</span><span class="badge good">no live calls</span></div>
 <div class="section alert-grid"><div class="card"><h2>Operator Alerts</h2><div class="alert-chip {'bad' if blockers else 'good'}"><strong>{'Blockers present' if blockers else 'No current blockers'}</strong><span>{html.escape(', '.join(blockers) if blockers else 'System has no dashboard-visible blockers.')}</span></div><div class="alert-chip {worker_class}"><strong>Worker status</strong><span>Scanner: {html.escape(str(scanner_status))}; in-flight: {html.escape(str(scanner_in_flight))}</span></div></div><div class="card"><h2>Exception Center</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('trading_blocked', trading_blocked),('snapshot_reason', snap.get('reason') or '')])}</table></div></div>
 <div class="section kpi-grid"><div class="card"><div class="muted">Release stage</div><div class="metric {live_class}">{live_text}</div><table>{_rows([('stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('dry_run', dry_run),('kill_switch', kill_switch)])}</table></div><div class="card"><div class="muted">Market hours</div><div class="metric {market_class}">{market_text}</div><table>{_rows([('now_ny', now_ny_text),('snapshot_ts', snapshot_ts),('last_scan_ts', last_scan_ts)])}</table></div><div class="card"><div class="muted">Regime</div><div class="metric {regime_class}">{_dashboard_fmt(regime_favorable).upper()}</div><table>{_rows([('index_symbol', regime_current.get('index_symbol')),('score', regime_current.get('score')),('breadth', regime_current.get('breadth')),('data_complete', regime_current.get('data_complete'))])}</table></div></div>
 <div class="section kpi-grid"><div class="card"><div class="muted">Workers</div><div class="metric {worker_class}">{html.escape(str(scanner_status).upper())}</div><table>{_rows([('in_flight_run', scanner_in_flight),('last_event', scanner_last.get('event') or scanner_summary.get('last_event')),('last_closed_utc', scanner_summary.get('last_closed_utc') or scanner_last.get('last_closed_utc'))])}</table></div><div class="card"><div class="muted">Reconcile</div><div class="metric {reconcile_class}">{html.escape(str(health_grade).upper())}</div><table>{_rows([('broker_positions_count', len(pos_by_symbol)),('active_plan_count', len(active_plan_symbols)),('open_order_count', snap.get('open_order_count', 0)),('issue_total', issue_total)])}</table></div><div class="card"><div class="muted">Active Position Count</div><div class="metric good">{_dashboard_fmt(len(merged))}</div><table>{_rows([('symbols', ', '.join([r['symbol'] for r in merged])),('snapshot_source', 'positions_snapshot.json')])}</table></div></div>
 <div class="section card"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Days</th></tr></thead><tbody>{active_rows}</tbody></table><div class="muted" style="margin-top:10px;">Merged from broker-backed snapshot positions plus active plan risk fields. No live quote calls during dashboard render.</div></div>
 <div class="section grid"><div class="card"><h2>P&amp;L Summary</h2><table>{_rows([('positions_with_snapshot', len(merged)),('total_unrealized_pl_snapshot', round(total_unrealized, 2)),('winners', winners),('losers', losers)])}</table></div><div class="card"><h2>Risk Integrity</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('active_plan_count', len(active_plan_symbols)),('broker_positions_count', len(pos_by_symbol)),('trading_blocked', trading_blocked)])}</table><h3 style="margin-top:14px;">Structural exceptions</h3><pre>{html.escape(structural_exceptions_text)}</pre></div><div class="card"><h2>Exposure &amp; Capacity</h2><table>{_rows([('current_open_positions', len(merged)),('max_open_positions', globals().get('MAX_OPEN_POSITIONS')),('portfolio_exposure_snapshot', snap.get('portfolio_exposure') or ''),('portfolio_cap_mode', os.getenv('SWING_PORTFOLIO_CAP_BLOCK_MODE',''))])}</table><h3 style="margin-top:14px;">Strategy symbols</h3><pre>{html.escape(chr(10).join([r['symbol'] for r in merged]) or 'none')}</pre></div></div>
-<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or 'none'),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', 'alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data')),('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data')),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data')),('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data'))])}</table></div></div>
-<div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R')])}</table><h3 style="margin-top:14px;">Sample maturity</h3><div class="metric {maturity_class}">{maturity}</div></div><div class="card"><h2>Strategy Attribution</h2><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><div class="metric {halt_panel_class}">{html.escape(halt_interpretation)}</div><p class="muted">{html.escape(halt_detail)}</p><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or 'none'),('scanner_healthy', scanner_healthy),('release_or_reconcile_blocked', trading_blocked),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', 'alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data')),('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data')),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data')),('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data'))])}</table></div></div>
+<div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R')])}</table><h3 style="margin-top:14px;">Sample maturity</h3><div class="metric {maturity_class}">{maturity}</div></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
+<div class="section grid"><div class="card"><h2>Closed Trades by Rank Bucket</h2><table><thead><tr><th>Rank</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{rank_bucket_rows}</tbody></table></div><div class="card"><h2>Closed Trades by Holding Period</h2><table><thead><tr><th>Hold</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{holding_bucket_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Closed Trades by Symbol</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{symbol_bucket_rows}</tbody></table></div><div class="card"><h2>Strategy / Exit Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table><h3 style="margin-top:14px;">Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{exit_reason_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>Avg rank</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Post-rejection forward returns are only shown when persisted scan rows contain the needed future snapshot fields; older rows are summarized without assuming missing data.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
 <div class="section grid"><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('component_ready', not bool(blockers)),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {'good' if not blockers else 'neutral'}">{'READY' if not blockers else 'CHECK BLOCKERS'}</div></div><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_running', str(scanner_status).lower() in {'up','ok'}),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table></div><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
