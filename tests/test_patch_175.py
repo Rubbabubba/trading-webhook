@@ -33,10 +33,17 @@ def test_patch_175_trade_quality_handles_missing_fields_and_buckets():
             {
                 "ts_utc": "2026-05-15T14:00:00Z",
                 "candidates": [
-                    {"symbol": "CRM", "rank_score": 75, "rejection_reasons": ["too_far_below_breakout"]},
-                    {"symbol": "NET", "rank_score": 35, "rejection_reasons": ["rank_score_below_min", "daily_halt_active"]},
+                    {"symbol": "CRM", "rank_score": 75, "close": 100.0, "rejection_reasons": ["too_far_below_breakout"]},
+                    {"symbol": "NET", "rank_score": 35, "close": 50.0, "rejection_reasons": ["rank_score_below_min", "daily_halt_active"]},
                 ],
-            }
+            },
+            {
+                "ts_utc": "2026-05-15T14:05:00Z",
+                "candidates": [
+                    {"symbol": "CRM", "rank_score": 76, "close": 103.0, "rejection_reasons": []},
+                    {"symbol": "NET", "rank_score": 36, "close": 49.0, "rejection_reasons": []},
+                ],
+            },
         ]
     }
     snap = {
@@ -57,6 +64,14 @@ def test_patch_175_trade_quality_handles_missing_fields_and_buckets():
     assert focus["too_far_below_breakout"]["count"] == 1
     assert focus["rank_score_below_min"]["count"] == 1
     assert focus["daily_halt_active"]["count"] == 1
+    assert focus["too_far_below_breakout"]["follow_through_count"] == 1
+    assert focus["too_far_below_breakout"]["avg_best_follow_through_pct"] == 3.0
+    assert focus["rank_score_below_min"]["avg_last_follow_through_pct"] == -2.0
+
+
+def test_patch_175_rank_score_reads_current_plan_thesis_key():
+    row = {"thesis": {"candidate_rank_score": 72.5}}
+    assert app._p175_rank_score(row) == 72.5
 
 
 def test_patch_175_strategy_performance_endpoint_includes_trade_quality():
