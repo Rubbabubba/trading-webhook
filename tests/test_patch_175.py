@@ -74,6 +74,16 @@ def test_patch_175_rank_score_reads_current_plan_thesis_key():
     assert app._p175_rank_score(row) == 72.5
 
 
+def test_patch_175_rank_score_and_holding_days_support_legacy_fields():
+    row = {
+        "rank_meta": {"rank_score": 66.2},
+        "opened_at": "2026-05-10T14:00:00+00:00",
+        "closed_at": "2026-05-12T14:00:00+00:00",
+    }
+    assert app._p175_rank_score(row) == 66.2
+    assert app._p175_holding_bucket(row) == "2-3 days"
+
+
 def test_patch_175_strategy_performance_endpoint_includes_trade_quality():
     state = {"closed_trades": [{"symbol": "CRM", "strategy_name": "x", "gross_pnl": 1, "rank_score": 70}], "by_strategy": {}, "kill_switch": {}}
     out = app._p175_trade_quality_analytics(perf_state=state, position_snapshot={}, scan_state={})
