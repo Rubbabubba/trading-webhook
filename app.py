@@ -14256,10 +14256,24 @@ def _p175_rank_score(row: dict | None) -> float | None:
     row = row if isinstance(row, dict) else {}
     thesis = row.get("thesis") if isinstance(row.get("thesis"), dict) else {}
     meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    rank_meta = row.get("rank_meta") if isinstance(row.get("rank_meta"), dict) else {}
+    thesis_meta = row.get("thesis_meta") if isinstance(row.get("thesis_meta"), dict) else {}
+    selection_meta = row.get("selection_meta") if isinstance(row.get("selection_meta"), dict) else {}
+    for source in (row, thesis, meta, rank_meta, thesis_meta, selection_meta):
+        score = _p175_first(
+            source,
+            "rank_score",
+            "entry_rank_score",
+            "candidate_rank_score",
+            "raw_score",
+            "score",
+            "selection_quality_score",
+        )
+        parsed = _p175_float(score, None)
+        if parsed is not None:
+            return parsed
     return _p175_float(
-        _p175_first(row, "rank_score", "entry_rank_score", "score", "selection_quality_score")
-        or _p175_first(thesis, "rank_score", "entry_rank_score", "candidate_rank_score", "selection_quality_score")
-        or _p175_first(meta, "rank_score", "entry_rank_score", "candidate_rank_score", "selection_quality_score"),
+        _p175_first(row, "rank_score", "entry_rank_score", "score", "selection_quality_score"),
         None,
     )
 
@@ -14289,8 +14303,8 @@ def _p175_holding_days(row: dict | None) -> float | None:
     hours = _p175_float(_p175_first(row, "holding_hours", "hold_hours", "holding_period_hours"), None)
     if hours is not None:
         return hours / 24.0
-    entry_dt = _p175_parse_dt(_p175_first(row, "entry_ts_utc", "entry_utc", "entry_time", "entry_timestamp", "opened_at_utc"))
-    exit_dt = _p175_parse_dt(_p175_first(row, "ts_utc", "exit_ts_utc", "exit_utc", "closed_at_utc", "exit_time"))
+    entry_dt = _p175_parse_dt(_p175_first(row, "entry_ts_utc", "entry_utc", "entry_time", "entry_timestamp", "opened_at_utc", "opened_at", "submitted_at", "created_at"))
+    exit_dt = _p175_parse_dt(_p175_first(row, "ts_utc", "exit_ts_utc", "exit_utc", "closed_at_utc", "exit_time", "closed_at", "updated_at"))
     if entry_dt and exit_dt and exit_dt >= entry_dt:
         return (exit_dt - entry_dt).total_seconds() / 86400.0
     return None
