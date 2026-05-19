@@ -5377,9 +5377,16 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "risk_per_share": round(risk_per_share, 4),
         "max_hold_days": int(meta.get("max_hold_days") or SWING_MAX_HOLD_DAYS),
         "strategy_name": str(meta.get("strategy_name") or meta.get("strategy") or signal or "").strip(),
+        "rank_score": meta.get("rank_score"),
+        "selection_quality_score": meta.get("selection_quality_score"),
+        "entry_type": meta.get("entry_type"),
+        "regime_mode": meta.get("regime_mode"),
     }
     plan["thesis"] = {
         "candidate_rank_score": meta.get("rank_score"),
+        "selection_quality_score": meta.get("selection_quality_score"),
+        "entry_type": meta.get("entry_type"),
+        "regime_mode": meta.get("regime_mode"),
         "breakout_level": meta.get("breakout_level"),
         "breakout_ref": meta.get("breakout_ref"),
         "breakout_lookback_days": meta.get("breakout_lookback_days") or SWING_BREAKOUT_LOOKBACK_DAYS,
@@ -5523,6 +5530,7 @@ def _recompute_strategy_performance_state() -> dict:
 
 def _append_strategy_closed_trade(plan: dict | None, exit_price: float | None, reason: str = "", source: str = "") -> dict:
     plan = dict(plan or {})
+    thesis = plan.get("thesis") if isinstance(plan.get("thesis"), dict) else {}
     strategy_name = str(plan.get("strategy_name") or plan.get("signal") or "").strip().lower()
     if not strategy_name: return {}
     entry_price = _safe_float(plan.get("entry_price") or plan.get("avg_fill_price")); stop_price = _safe_float(plan.get("initial_stop_price") or plan.get("stop_price")); qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or 0.0)); exit_px = _safe_float(exit_price)
@@ -5531,7 +5539,11 @@ def _append_strategy_closed_trade(plan: dict | None, exit_price: float | None, r
     pnl_per_share = (exit_px - entry_price) if side == "buy" else (entry_price - exit_px)
     gross_pnl = pnl_per_share * qty
     risk_per_share = abs(entry_price - stop_price) if stop_price > 0 else abs(_safe_float(plan.get("risk_per_share") or 0.0))
-    row = {"ts_utc": datetime.now(timezone.utc).isoformat(), "symbol": str(plan.get("symbol") or plan.get("instrument") or "").upper(), "strategy_name": strategy_name, "signal": str(plan.get("signal") or strategy_name), "entry_price": round(entry_price,4), "exit_price": round(exit_px,4), "qty": round(qty,4), "gross_pnl": round(gross_pnl,4), "pnl_r": round((pnl_per_share / risk_per_share) if risk_per_share > 0 else 0.0,4), "return_pct": round((pnl_per_share / entry_price * 100.0) if entry_price > 0 else 0.0,4), "reason": str(reason or ""), "source": str(source or ""), "entry_regime_mode": str(((plan.get("thesis") or {}).get("regime_mode") or "")).strip().lower() or None, "max_hold_days": int(plan.get("max_hold_days") or 0)}
+    exit_dt = datetime.now(timezone.utc)
+    entry_dt = _p175_parse_dt(plan.get("opened_at") or plan.get("submitted_at") or plan.get("created_at"))
+    holding_hours = round((exit_dt - entry_dt).total_seconds() / 3600.0, 4) if entry_dt and exit_dt >= entry_dt else None
+    rank_score = _p175_rank_score(plan)
+    row = {"ts_utc": exit_dt.isoformat(), "symbol": str(plan.get("symbol") or plan.get("instrument") or "").upper(), "strategy_name": strategy_name, "signal": str(plan.get("signal") or strategy_name), "entry_price": round(entry_price,4), "exit_price": round(exit_px,4), "qty": round(qty,4), "gross_pnl": round(gross_pnl,4), "pnl_r": round((pnl_per_share / risk_per_share) if risk_per_share > 0 else 0.0,4), "return_pct": round((pnl_per_share / entry_price * 100.0) if entry_price > 0 else 0.0,4), "reason": str(reason or ""), "exit_reason": str(reason or ""), "source": str(source or ""), "entry_regime_mode": str((thesis.get("regime_mode") or plan.get("regime_mode") or "")).strip().lower() or None, "max_hold_days": int(plan.get("max_hold_days") or 0), "rank_score": rank_score, "selection_quality_score": _p175_first(plan, "selection_quality_score") or thesis.get("selection_quality_score"), "entry_ts_utc": entry_dt.isoformat() if entry_dt else None, "holding_hours": holding_hours, "holding_days": round(holding_hours / 24.0, 4) if holding_hours is not None else None, "entry_type": plan.get("entry_type") or thesis.get("entry_type"), "breakout_level": thesis.get("breakout_level")}
     row["close_fingerprint"] = _strategy_trade_row_fingerprint(row)
     state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state()); closed = list(state.get("closed_trades") or []); closed.append(row); state["closed_trades"] = closed[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]; globals()["STRATEGY_PERFORMANCE_STATE"] = state; _recompute_strategy_performance_state(); persist_strategy_performance_state(reason=f"closed_trade:{strategy_name}"); return row
 
@@ -14244,7 +14256,12 @@ def _p175_rank_score(row: dict | None) -> float | None:
     row = row if isinstance(row, dict) else {}
     thesis = row.get("thesis") if isinstance(row.get("thesis"), dict) else {}
     meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
-    return _p175_float(_p175_first(row, "rank_score", "entry_rank_score", "score", "selection_quality_score") or _p175_first(thesis, "rank_score", "entry_rank_score") or _p175_first(meta, "rank_score", "entry_rank_score"), None)
+    return _p175_float(
+        _p175_first(row, "rank_score", "entry_rank_score", "score", "selection_quality_score")
+        or _p175_first(thesis, "rank_score", "entry_rank_score", "candidate_rank_score", "selection_quality_score")
+        or _p175_first(meta, "rank_score", "entry_rank_score", "candidate_rank_score", "selection_quality_score"),
+        None,
+    )
 
 
 def _p175_rank_bucket(row: dict | None) -> str:
@@ -14295,6 +14312,48 @@ def _p175_holding_bucket(row: dict | None) -> str:
         return "8-14 days"
     return "15+ days"
 
+
+
+
+def _p175_scan_ts(scan: dict | None):
+    scan = scan if isinstance(scan, dict) else {}
+    return _p175_first(scan, "ts_utc", "last_closed_utc", "saved_at_utc", "generated_utc")
+
+
+def _p175_scan_candidates(scan: dict | None) -> list[dict]:
+    scan = scan if isinstance(scan, dict) else {}
+    summary = scan.get("summary") if isinstance(scan.get("summary"), dict) else {}
+    rows = scan.get("candidates") or scan.get("results") or scan.get("last_swing_candidates") or summary.get("top_candidates") or []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _p175_rejection_follow_through(scan_history: list[dict], start_idx: int, symbol: str, base_close: float | None) -> dict:
+    if not symbol or not base_close or base_close <= 0:
+        return {"observations": 0}
+    returns = []
+    examples = []
+    for future_scan in scan_history[start_idx + 1:]:
+        ts = _p175_scan_ts(future_scan)
+        for future_row in _p175_scan_candidates(future_scan):
+            if str(future_row.get("symbol") or "").upper() != symbol:
+                continue
+            future_close = _p175_float(_p175_first(future_row, "close", "price", "last"), None)
+            if future_close is None or future_close <= 0:
+                continue
+            move_pct = ((future_close - base_close) / base_close) * 100.0
+            returns.append(move_pct)
+            if len(examples) < 3:
+                examples.append({"ts_utc": ts, "close": round(future_close, 4), "move_pct": round(move_pct, 4)})
+    if not returns:
+        return {"observations": 0}
+    return {
+        "observations": len(returns),
+        "best_follow_through_pct": round(max(returns), 4),
+        "worst_follow_through_pct": round(min(returns), 4),
+        "last_follow_through_pct": round(returns[-1], 4),
+        "positive_follow_through": bool(max(returns) > 0),
+        "examples": examples,
+    }
 
 def _p175_bucket_summary(rows: list[dict], key_fn) -> dict:
     out: dict[str, dict] = {}
@@ -14370,34 +14429,79 @@ def _p175_trade_quality_analytics(
         total_unrealized += unreal
         open_rows.append({"symbol": sym, "qty": qty, "entry_price": entry or None, "last_price": last or None, "stop_price": stop or None, "notional": round(notional, 2), "risk_to_stop": round(risk, 2), "unrealized_pl": round(unreal, 2), "rank_score": _p175_rank_score(plan), "strategy": strategy_key(plan)})
 
-    scan_history = list(scan_state.get("scan_history") or [])[-max(1, min(int(recent_scan_limit or 25), 100)):]
+    scan_history = [dict(scan) for scan in list(scan_state.get("scan_history") or [])[-max(1, min(int(recent_scan_limit or 25), 100)):] if isinstance(scan, dict)]
     reason_buckets: dict[str, dict] = {}
-    for scan in scan_history:
-        scan_row = scan if isinstance(scan, dict) else {}
-        candidates = list(scan_row.get("candidates") or scan_row.get("results") or scan_row.get("last_swing_candidates") or ((scan_row.get("summary") or {}) if isinstance(scan_row.get("summary"), dict) else {}).get("top_candidates") or [])
-        scan_ts = scan_row.get("ts_utc") or scan_row.get("last_closed_utc")
-        for item in candidates:
-            row = item if isinstance(item, dict) else {}
+    for scan_idx, scan_row in enumerate(scan_history):
+        candidates = _p175_scan_candidates(scan_row)
+        scan_ts = _p175_scan_ts(scan_row)
+        for row in candidates:
             reasons = [str(r).strip() for r in list(row.get("rejection_reasons") or row.get("reasons") or row.get("selection_blockers") or []) if str(r).strip()]
+            sym = str(row.get("symbol") or "").upper()
+            score = _p175_rank_score(row)
+            close = _p175_float(_p175_first(row, "close", "price", "last"), None)
+            follow = _p175_rejection_follow_through(scan_history, scan_idx, sym, close)
             for reason in reasons:
-                bucket = reason_buckets.setdefault(reason, {"count": 0, "symbols": {}, "avg_rank_score": None, "_rank_sum": 0.0, "_rank_count": 0, "latest_examples": []})
+                bucket = reason_buckets.setdefault(reason, {
+                    "count": 0,
+                    "symbols": {},
+                    "avg_rank_score": None,
+                    "_rank_sum": 0.0,
+                    "_rank_count": 0,
+                    "follow_through_count": 0,
+                    "positive_follow_through_count": 0,
+                    "_best_follow_sum": 0.0,
+                    "_last_follow_sum": 0.0,
+                    "latest_examples": [],
+                })
                 bucket["count"] += 1
-                sym = str(row.get("symbol") or "").upper()
                 if sym:
                     bucket["symbols"][sym] = int(bucket["symbols"].get(sym) or 0) + 1
-                score = _p175_rank_score(row)
                 if score is not None:
                     bucket["_rank_sum"] += score
                     bucket["_rank_count"] += 1
+                if int(follow.get("observations") or 0) > 0:
+                    bucket["follow_through_count"] += 1
+                    bucket["_best_follow_sum"] += float(follow.get("best_follow_through_pct") or 0.0)
+                    bucket["_last_follow_sum"] += float(follow.get("last_follow_through_pct") or 0.0)
+                    if bool(follow.get("positive_follow_through")):
+                        bucket["positive_follow_through_count"] += 1
                 if reason in PATCH_175_FOCUS_REJECTION_REASONS and len(bucket["latest_examples"]) < 8:
-                    bucket["latest_examples"].append({"ts_utc": scan_ts, "symbol": sym, "rank_score": score, "close": row.get("close") or row.get("price"), "breakout_distance_pct": row.get("breakout_distance_pct"), "close_to_high_pct": row.get("close_to_high_pct")})
+                    bucket["latest_examples"].append({
+                        "ts_utc": scan_ts,
+                        "symbol": sym,
+                        "rank_score": score,
+                        "close": close,
+                        "breakout_distance_pct": row.get("breakout_distance_pct"),
+                        "close_to_high_pct": row.get("close_to_high_pct"),
+                        "follow_through": follow,
+                    })
     for reason, bucket in reason_buckets.items():
         rc = int(bucket.pop("_rank_count") or 0)
         rs = float(bucket.pop("_rank_sum") or 0.0)
+        follow_count = int(bucket.get("follow_through_count") or 0)
+        positive_count = int(bucket.get("positive_follow_through_count") or 0)
+        best_sum = float(bucket.pop("_best_follow_sum") or 0.0)
+        last_sum = float(bucket.pop("_last_follow_sum") or 0.0)
         bucket["avg_rank_score"] = round(rs / rc, 4) if rc else None
+        bucket["avg_best_follow_through_pct"] = round(best_sum / follow_count, 4) if follow_count else None
+        bucket["avg_last_follow_through_pct"] = round(last_sum / follow_count, 4) if follow_count else None
+        bucket["positive_follow_through_rate"] = round(positive_count / follow_count, 4) if follow_count else None
         bucket["unique_symbols"] = len(bucket.get("symbols") or {})
         bucket["top_symbols"] = [{"symbol": sym, "count": count} for sym, count in sorted((bucket.pop("symbols") or {}).items(), key=lambda kv: (-kv[1], kv[0]))[:8]]
-    focus = {reason: reason_buckets.get(reason, {"count": 0, "unique_symbols": 0, "avg_rank_score": None, "top_symbols": [], "latest_examples": []}) for reason in sorted(PATCH_175_FOCUS_REJECTION_REASONS)}
+    focus = {
+        reason: reason_buckets.get(reason, {
+            "count": 0,
+            "unique_symbols": 0,
+            "avg_rank_score": None,
+            "follow_through_count": 0,
+            "avg_best_follow_through_pct": None,
+            "avg_last_follow_through_pct": None,
+            "positive_follow_through_rate": None,
+            "top_symbols": [],
+            "latest_examples": [],
+        })
+        for reason in sorted(PATCH_175_FOCUS_REJECTION_REASONS)
+    }
 
     return {
         "ok": True,
@@ -14429,7 +14533,7 @@ def _p175_trade_quality_analytics(
             "recent_scan_count": len(scan_history),
             "focus_reasons": focus,
             "all_reasons": dict(sorted(reason_buckets.items(), key=lambda kv: (-int(kv[1].get("count") or 0), kv[0]))),
-            "note": "Read-only summary of persisted rejected setup rows. True post-rejection forward returns require future bar snapshots not present in older scan rows.",
+            "note": "Read-only summary of persisted rejected setup rows. Follow-through uses later persisted scan closes for the same symbol when available; older rows without later closes remain counted without invented returns.",
         },
     }
     
@@ -14775,9 +14879,9 @@ def dashboard(request: Request):
     open_book = _sd(trade_quality.get('open_book_risk'))
     focus_rejections = _sd(_sd(trade_quality.get('rejected_setup_follow_through')).get('focus_reasons'))
     focus_rejection_rows = ''.join(
-        f"<tr><td>{html.escape(str(reason))}</td><td>{_dashboard_fmt(_sd(bucket).get('count'))}</td><td>{_dashboard_fmt(_sd(bucket).get('unique_symbols'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_rank_score'))}</td><td>{html.escape(', '.join([str(_sd(s).get('symbol')) for s in _sl(_sd(bucket).get('top_symbols'))[:4] if _sd(s).get('symbol')]) or '—')}</td></tr>"
+        f"<tr><td>{html.escape(str(reason))}</td><td>{_dashboard_fmt(_sd(bucket).get('count'))}</td><td>{_dashboard_fmt(_sd(bucket).get('unique_symbols'))}</td><td>{_dashboard_fmt(_sd(bucket).get('follow_through_count'))}</td><td>{_pct(_flt(_sd(bucket).get('avg_best_follow_through_pct'))) if _sd(bucket).get('avg_best_follow_through_pct') is not None else '—'}</td><td>{_pct(_flt(_sd(bucket).get('avg_last_follow_through_pct'))) if _sd(bucket).get('avg_last_follow_through_pct') is not None else '—'}</td><td>{_pct(_flt(_sd(bucket).get('positive_follow_through_rate')) * 100.0) if _sd(bucket).get('positive_follow_through_rate') is not None else '—'}</td><td>{html.escape(', '.join([str(_sd(s).get('symbol')) for s in _sl(_sd(bucket).get('top_symbols'))[:4] if _sd(s).get('symbol')]) or '—')}</td></tr>"
         for reason, bucket in focus_rejections.items()
-    ) or '<tr><td colspan="5" class="muted">No focused rejection analytics available.</td></tr>'
+    ) or '<tr><td colspan="8" class="muted">No focused rejection analytics available.</td></tr>'
     
     candidates = _sl(latest_scan.get("candidates") or latest_scan.get("last_swing_candidates") or scan_state.get("last_swing_candidates")) or _sl(scan_summary.get("top_candidates"))
     recent_scan_history = _sl(scan_state.get("scan_history"))
@@ -14941,7 +15045,7 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R')])}</table><h3 style="margin-top:14px;">Sample maturity</h3><div class="metric {maturity_class}">{maturity}</div></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
 <div class="section grid"><div class="card"><h2>Closed Trades by Rank Bucket</h2><table><thead><tr><th>Rank</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{rank_bucket_rows}</tbody></table></div><div class="card"><h2>Closed Trades by Holding Period</h2><table><thead><tr><th>Hold</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{holding_bucket_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Closed Trades by Symbol</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{symbol_bucket_rows}</tbody></table></div><div class="card"><h2>Strategy / Exit Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table><h3 style="margin-top:14px;">Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{exit_reason_rows}</tbody></table></div></div>
-<div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>Avg rank</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Post-rejection forward returns are only shown when persisted scan rows contain the needed future snapshot fields; older rows are summarized without assuming missing data.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
+<div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>With later scans</th><th>Avg best move</th><th>Avg last move</th><th>Positive rate</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Follow-through is computed only from later persisted scan closes for the same symbol. Rows without future closes are counted but do not invent returns.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
 <div class="section grid"><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('component_ready', not bool(blockers)),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {'good' if not blockers else 'neutral'}">{'READY' if not blockers else 'CHECK BLOCKERS'}</div></div><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_running', str(scanner_status).lower() in {'up','ok'}),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table></div><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
