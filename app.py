@@ -14227,20 +14227,28 @@ def _p175_first(row: dict | None, *keys):
 
 def _p175_parse_dt(value):
     try:
-        return _safe_parse_iso_utc(value)
+        parsed = _safe_parse_iso_utc(value)
+        if parsed is not None:
+            return parsed
     except Exception:
-        try:
-            if not value:
-                return None
-            text = str(value).strip()
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            dt = datetime.fromisoformat(text)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
-        except Exception:
+        pass
+    try:
+        if not value:
             return None
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 1e12:
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
 
 
 def _p175_closed_trade_pnl(row: dict | None) -> float:
@@ -14297,14 +14305,24 @@ def _p175_rank_bucket(row: dict | None) -> str:
 
 def _p175_holding_days(row: dict | None) -> float | None:
     row = row if isinstance(row, dict) else {}
+    entry = row.get("entry") if isinstance(row.get("entry"), dict) else {}
+    exit_data = row.get("exit") if isinstance(row.get("exit"), dict) else {}
     direct = _p175_float(_p175_first(row, "holding_days", "hold_days", "days_held", "holding_period_days"), None)
     if direct is not None:
         return direct
     hours = _p175_float(_p175_first(row, "holding_hours", "hold_hours", "holding_period_hours"), None)
     if hours is not None:
         return hours / 24.0
-    entry_dt = _p175_parse_dt(_p175_first(row, "entry_ts_utc", "entry_utc", "entry_time", "entry_timestamp", "opened_at_utc", "opened_at", "submitted_at", "created_at"))
-    exit_dt = _p175_parse_dt(_p175_first(row, "ts_utc", "exit_ts_utc", "exit_utc", "closed_at_utc", "exit_time", "closed_at", "updated_at"))
+    entry_dt = _p175_parse_dt(
+        _p175_first(
+            row, "entry_ts_utc", "entry_utc", "entry_time", "entry_timestamp", "opened_at_utc", "opened_at", "submitted_at", "created_at"
+        ) or _p175_first(entry, "ts_utc", "timestamp", "time", "submitted_at", "filled_at", "opened_at")
+    )
+    exit_dt = _p175_parse_dt(
+        _p175_first(
+            row, "ts_utc", "exit_ts_utc", "exit_utc", "closed_at_utc", "exit_time", "closed_at", "updated_at"
+        ) or _p175_first(exit_data, "ts_utc", "timestamp", "time", "closed_at", "filled_at")
+    )
     if entry_dt and exit_dt and exit_dt >= entry_dt:
         return (exit_dt - entry_dt).total_seconds() / 86400.0
     return None
