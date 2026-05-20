@@ -92,6 +92,11 @@ def test_patch_175_holding_days_supports_nested_and_epoch_fields():
     assert app._p175_holding_bucket(row) == "2-3 days"
 
 
+def test_patch_175_rank_score_supports_legacy_rank_and_score_meta_fields():
+    assert app._p175_rank_score({"rank": 71.8}) == 71.8
+    assert app._p175_rank_score({"score_meta": {"components": {"rank": 64.5}}}) == 64.5
+
+
 def test_patch_175_strategy_performance_endpoint_includes_trade_quality():
     state = {"closed_trades": [{"symbol": "CRM", "strategy_name": "x", "gross_pnl": 1, "rank_score": 70}], "by_strategy": {}, "kill_switch": {}}
     out = app._p175_trade_quality_analytics(perf_state=state, position_snapshot={}, scan_state={})
