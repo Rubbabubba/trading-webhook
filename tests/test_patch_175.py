@@ -95,6 +95,15 @@ def test_patch_175_holding_days_supports_nested_and_epoch_fields():
 def test_patch_175_rank_score_supports_legacy_rank_and_score_meta_fields():
     assert app._p175_rank_score({"rank": 71.8}) == 71.8
     assert app._p175_rank_score({"score_meta": {"components": {"rank": 64.5}}}) == 64.5
+    assert app._p175_rank_score({"thesis": "{\"candidate_rank_score\": 58.4}"}) == 58.4
+
+
+def test_patch_175_holding_days_supports_json_and_epoch_string_fields():
+    row = {
+        "entry": "{\"timestamp\": \"1715349600\"}",
+        "exit": "{\"timestamp\": \"1715522400000\"}",
+    }
+    assert app._p175_holding_bucket(row) == "2-3 days"
 
 
 def test_patch_175_strategy_performance_endpoint_includes_trade_quality():
