@@ -14225,6 +14225,21 @@ def _p175_first(row: dict | None, *keys):
     return None
 
 
+def _p175_obj(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return {}
+    return {}
+
+
 def _p175_parse_dt(value):
     try:
         parsed = _safe_parse_iso_utc(value)
@@ -14241,6 +14256,11 @@ def _p175_parse_dt(value):
                 ts = ts / 1000.0
             return datetime.fromtimestamp(ts, tz=timezone.utc)
         text = str(value).strip()
+        if text.isdigit():
+            ts = float(text)
+            if ts > 1e12:
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
         dt = datetime.fromisoformat(text)
@@ -14262,12 +14282,12 @@ def _p175_closed_trade_r(row: dict | None) -> float | None:
 
 def _p175_rank_score(row: dict | None) -> float | None:
     row = row if isinstance(row, dict) else {}
-    thesis = row.get("thesis") if isinstance(row.get("thesis"), dict) else {}
-    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
-    rank_meta = row.get("rank_meta") if isinstance(row.get("rank_meta"), dict) else {}
-    thesis_meta = row.get("thesis_meta") if isinstance(row.get("thesis_meta"), dict) else {}
-    selection_meta = row.get("selection_meta") if isinstance(row.get("selection_meta"), dict) else {}
-    score_meta = row.get("score_meta") if isinstance(row.get("score_meta"), dict) else {}
+    thesis = _p175_obj(row.get("thesis"))
+    meta = _p175_obj(row.get("meta"))
+    rank_meta = _p175_obj(row.get("rank_meta"))
+    thesis_meta = _p175_obj(row.get("thesis_meta"))
+    selection_meta = _p175_obj(row.get("selection_meta"))
+    score_meta = _p175_obj(row.get("score_meta"))
     for source in (row, thesis, meta, rank_meta, thesis_meta, selection_meta):
         score = _p175_first(
             source,
@@ -14314,8 +14334,8 @@ def _p175_rank_bucket(row: dict | None) -> str:
 
 def _p175_holding_days(row: dict | None) -> float | None:
     row = row if isinstance(row, dict) else {}
-    entry = row.get("entry") if isinstance(row.get("entry"), dict) else {}
-    exit_data = row.get("exit") if isinstance(row.get("exit"), dict) else {}
+    entry = _p175_obj(row.get("entry"))
+    exit_data = _p175_obj(row.get("exit"))
     direct = _p175_float(_p175_first(row, "holding_days", "hold_days", "days_held", "holding_period_days"), None)
     if direct is not None:
         return direct
