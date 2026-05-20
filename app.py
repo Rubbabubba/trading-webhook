@@ -14267,12 +14267,16 @@ def _p175_rank_score(row: dict | None) -> float | None:
     rank_meta = row.get("rank_meta") if isinstance(row.get("rank_meta"), dict) else {}
     thesis_meta = row.get("thesis_meta") if isinstance(row.get("thesis_meta"), dict) else {}
     selection_meta = row.get("selection_meta") if isinstance(row.get("selection_meta"), dict) else {}
+    score_meta = row.get("score_meta") if isinstance(row.get("score_meta"), dict) else {}
     for source in (row, thesis, meta, rank_meta, thesis_meta, selection_meta):
         score = _p175_first(
             source,
             "rank_score",
+            "rank",
             "entry_rank_score",
             "candidate_rank_score",
+            "signal_rank_score",
+            "signal_rank",
             "raw_score",
             "score",
             "selection_quality_score",
@@ -14280,8 +14284,13 @@ def _p175_rank_score(row: dict | None) -> float | None:
         parsed = _p175_float(score, None)
         if parsed is not None:
             return parsed
+    comps = score_meta.get("components") if isinstance(score_meta.get("components"), dict) else {}
+    for source in (score_meta, comps):
+        parsed = _p175_float(_p175_first(source, "rank_score", "rank", "raw_score", "score"), None)
+        if parsed is not None:
+            return parsed
     return _p175_float(
-        _p175_first(row, "rank_score", "entry_rank_score", "score", "selection_quality_score"),
+        _p175_first(row, "rank_score", "rank", "entry_rank_score", "score", "selection_quality_score"),
         None,
     )
 
