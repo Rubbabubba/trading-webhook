@@ -5466,7 +5466,12 @@ def restore_strategy_performance_state() -> dict:
         globals()["STRATEGY_PERFORMANCE_STATE"] = _strategy_performance_default_state()
         return restored
     sanitized, meta = _sanitize_strategy_performance_state(state)
-    sanitized, enrich_meta = _p175_enrich_closed_trades_state(sanitized)
+    enrich_meta = {"rows_seen": len(list(sanitized.get("closed_trades") or [])), "rows_changed": 0, "changed": False, "deferred": False}
+    enrich_fn = globals().get("_p175_enrich_closed_trades_state")
+    if callable(enrich_fn):
+        sanitized, enrich_meta = enrich_fn(sanitized)
+    else:
+        enrich_meta["deferred"] = True
     if meta.get("changed"):
         quarantine_payload = {
             "saved_at_utc": datetime.now(timezone.utc).isoformat(),
