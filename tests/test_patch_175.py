@@ -112,3 +112,11 @@ def test_patch_175_strategy_performance_endpoint_includes_trade_quality():
     assert "closed_trades_by_symbol" in out
     assert "open_book_risk" in out
     assert "rejected_setup_follow_through" in out
+
+
+def test_patch_175_enrich_closed_trade_row_backfills_rank_and_holding():
+    row = {"candidate_rank_score": "77.25", "holding_period": "2.5"}
+    out, changed = app._p175_enrich_closed_trade_row(row)
+    assert changed is True
+    assert app._p175_rank_score(out) == 77.25
+    assert out["holding_days"] == 2.5
