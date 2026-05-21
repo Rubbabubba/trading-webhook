@@ -5466,6 +5466,7 @@ def restore_strategy_performance_state() -> dict:
         globals()["STRATEGY_PERFORMANCE_STATE"] = _strategy_performance_default_state()
         return restored
     sanitized, meta = _sanitize_strategy_performance_state(state)
+    sanitized, enrich_meta = _p175_enrich_closed_trades_state(sanitized)
     if meta.get("changed"):
         quarantine_payload = {
             "saved_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -5481,10 +5482,11 @@ def restore_strategy_performance_state() -> dict:
         restored["quarantined_count"] = int(meta.get("quarantined_count") or 0)
     globals()["STRATEGY_PERFORMANCE_STATE"] = sanitized
     _recompute_strategy_performance_state()
-    if meta.get("changed"):
-        persist_strategy_performance_state(reason="patch154_quarantine_rebuild")
+    if meta.get("changed") or enrich_meta.get("changed"):
+        persist_strategy_performance_state(reason="patch175_historical_enrichment_rebuild")
     restored["loaded"] = True
     restored["closed_trades_restored"] = len(list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []))
+    restored["patch175_enrichment"] = enrich_meta
     return restored
 
 
@@ -14372,6 +14374,35 @@ def _p175_holding_bucket(row: dict | None) -> str:
     if days < 15:
         return "8-14 days"
     return "15+ days"
+
+
+def _p175_enrich_closed_trade_row(row: dict | None) -> tuple[dict, bool]:
+    out = dict(row or {})
+    changed = False
+    if _p175_rank_score(out) is None:
+        inferred_rank = _p175_float(_p175_first(out, "candidate_rank_score", "signal_rank", "signal_rank_score"), None)
+        if inferred_rank is not None:
+            out["rank_score"] = inferred_rank
+            changed = True
+    if _p175_holding_days(out) is None:
+        inferred_holding = _p175_float(_p175_first(out, "holding_period", "hold_period"), None)
+        if inferred_holding is not None:
+            out["holding_days"] = float(inferred_holding)
+            changed = True
+    return out, changed
+
+
+def _p175_enrich_closed_trades_state(state: dict | None) -> tuple[dict, dict]:
+    state = dict(state or {})
+    closed = list(state.get("closed_trades") or [])
+    out = []
+    changed_count = 0
+    for row in closed:
+        enriched, changed = _p175_enrich_closed_trade_row(row if isinstance(row, dict) else {})
+        out.append(enriched)
+        changed_count += int(bool(changed))
+    state["closed_trades"] = out
+    return state, {"rows_seen": len(closed), "rows_changed": changed_count, "changed": bool(changed_count)}
 
 
 
