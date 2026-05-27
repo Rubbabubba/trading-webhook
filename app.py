@@ -15377,6 +15377,30 @@ def diagnostics_paper_lifecycle(limit: int = 20):
 def diagnostics_pipeline_guardrails(limit: int = 20):
     _ensure_runtime_state_loaded()
     return _pipeline_guardrail_snapshot(limit=limit)
+    
+
+@app.get("/diagnostics/intraday_launch_readiness")
+def diagnostics_intraday_launch_readiness(request: Request):
+    require_admin_if_configured(request)
+    checks = [
+        {"name": "live_trading_enabled", "ok": bool(LIVE_TRADING_ENABLED), "value": bool(LIVE_TRADING_ENABLED), "note": "Must be true to place live intraday orders."},
+        {"name": "only_market_hours", "ok": bool(ONLY_MARKET_HOURS), "value": bool(ONLY_MARKET_HOURS), "note": "Recommended true for intraday launch discipline."},
+        {"name": "dry_run", "ok": not bool(DRY_RUN), "value": bool(DRY_RUN), "note": "Must be false to execute real orders."},
+        {"name": "max_open_positions", "ok": int(MAX_OPEN_POSITIONS) >= 7, "value": int(MAX_OPEN_POSITIONS), "note": "Capacity floor check for launch-day opportunity set."},
+        {"name": "entry_require_fresh_quote", "ok": bool(ENTRY_REQUIRE_FRESH_QUOTE), "value": bool(ENTRY_REQUIRE_FRESH_QUOTE), "note": "Should remain enabled for fast intraday fills."},
+        {"name": "swing_allow_same_day_exit", "ok": bool(SWING_ALLOW_SAME_DAY_EXIT), "value": bool(SWING_ALLOW_SAME_DAY_EXIT), "note": "Set true if the same strategy stack is expected to permit same-day exits."},
+    ]
+    blockers = [c.get("name") for c in checks if not c.get("ok")]
+    return {
+        "ok": True,
+        "effective_date_utc": "2026-06-04",
+        "framework": "finra_intraday_margin",
+        "score_passed": len(checks) - len(blockers),
+        "score_total": len(checks),
+        "ready": not blockers,
+        "blockers": blockers,
+        "checks": checks,
+    }
 
 @app.get("/diagnostics/execution_lifecycle")
 def diagnostics_execution_lifecycle(limit: int = 100):

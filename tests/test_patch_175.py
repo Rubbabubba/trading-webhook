@@ -120,3 +120,11 @@ def test_patch_175_enrich_closed_trade_row_backfills_rank_and_holding():
     assert changed is True
     assert app._p175_rank_score(out) == 77.25
     assert out["holding_days"] == 2.5
+
+
+def test_intraday_launch_readiness_shape():
+    req = app.Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/diagnostics/intraday_launch_readiness"})
+    out = app.diagnostics_intraday_launch_readiness(req)
+    assert out["framework"] == "finra_intraday_margin"
+    assert out["effective_date_utc"] == "2026-06-04"
+    assert isinstance(out["checks"], list) and len(out["checks"]) >= 5
