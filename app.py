@@ -5495,6 +5495,22 @@ def restore_strategy_performance_state() -> dict:
     return restored
 
 
+def _patch175_enrich_state_if_needed(state: dict | None) -> tuple[dict, dict]:
+    state = dict(state or _strategy_performance_default_state())
+    enrich_fn = globals().get("_p175_enrich_closed_trades_state")
+    meta = {"rows_seen": len(list(state.get("closed_trades") or [])), "rows_changed": 0, "changed": False, "deferred": False}
+    if not callable(enrich_fn):
+        meta["deferred"] = True
+        return state, meta
+    enriched_state, meta = enrich_fn(state)
+    if meta.get("changed"):
+        globals()["STRATEGY_PERFORMANCE_STATE"] = enriched_state
+        _recompute_strategy_performance_state()
+        persist_strategy_performance_state(reason="patch175_late_enrichment_rebuild")
+        return dict(globals().get("STRATEGY_PERFORMANCE_STATE") or enriched_state), meta
+    return enriched_state, meta
+    
+
 def _recompute_strategy_performance_state() -> dict:
     state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state())
     closed = list(state.get("closed_trades") or [])[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]
@@ -14637,13 +14653,15 @@ def _p175_trade_quality_analytics(
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
     state = _recompute_strategy_performance_state()
-    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "quarantine_path": STRATEGY_PERFORMANCE_QUARANTINE_PATH, "broker_truth_sync_enabled": True, "today_pnl_truth": today_pnl_truth_snapshot(), "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "trade_quality_analytics": _p175_trade_quality_analytics(perf_state=state), "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
+    state, enrich_meta = _patch175_enrich_state_if_needed(state)
+    return {"ok": True, "state_path": STRATEGY_PERFORMANCE_STATE_PATH, "quarantine_path": STRATEGY_PERFORMANCE_QUARANTINE_PATH, "broker_truth_sync_enabled": True, "today_pnl_truth": today_pnl_truth_snapshot(), "closed_trade_count": len(list(state.get("closed_trades") or [])), "by_strategy": dict(state.get("by_strategy") or {}), "trade_quality_analytics": _p175_trade_quality_analytics(perf_state=state), "patch175_enrichment": enrich_meta, "kill_switch": dict(state.get("kill_switch") or {}), "mean_reversion_enabled": bool(SWING_MEAN_REVERSION_ENABLED), "mean_reversion_strategy_name": MEAN_REVERSION_STRATEGY_NAME}
 
 
 @app.get("/diagnostics/trade_quality")
 def diagnostics_trade_quality(request: Request, recent_scan_limit: int = 25):
     require_admin_if_configured(request)
     state = _recompute_strategy_performance_state()
+    state, _ = _patch175_enrich_state_if_needed(state)
     return _p175_trade_quality_analytics(perf_state=state, recent_scan_limit=recent_scan_limit)
 
 

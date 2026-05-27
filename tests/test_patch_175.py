@@ -114,6 +114,13 @@ def test_patch_175_strategy_performance_endpoint_includes_trade_quality():
     assert "rejected_setup_follow_through" in out
 
 
+def test_patch_175_late_enrichment_helper_noop_when_already_complete():
+    state = {"closed_trades": [{"symbol": "CRM", "rank_score": 80.0, "holding_days": 2.0}], "by_strategy": {}, "kill_switch": {}}
+    out, meta = app._patch175_enrich_state_if_needed(state)
+    assert out["closed_trades"][0]["rank_score"] == 80.0
+    assert meta["rows_seen"] == 1
+
+
 def test_patch_175_enrich_closed_trade_row_backfills_rank_and_holding():
     row = {"candidate_rank_score": "77.25", "holding_period": "2.5"}
     out, changed = app._p175_enrich_closed_trade_row(row)
