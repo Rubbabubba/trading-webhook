@@ -146,8 +146,14 @@ def test_intraday_daily_limit_overrides_for_intraday_mode():
         app.STRATEGY_MODE = "intraday"
         os.environ["INTRADAY_DAILY_STOP_DOLLARS"] = "275"
         os.environ["INTRADAY_DAILY_LOSS_LIMIT"] = "325"
+        os.environ["INTRADAY_MAX_OPEN_POSITIONS"] = "11"
+        os.environ["INTRADAY_MAX_PORTFOLIO_EXPOSURE_PCT"] = "0.97"
+        os.environ["INTRADAY_MAX_SYMBOL_EXPOSURE_PCT"] = "0.41"
         assert app._configured_daily_stop_dollars_safe() == 275.0
         assert app._configured_daily_loss_limit_safe() == 325.0
+        assert app._effective_max_open_positions() == 11
+        assert app._effective_portfolio_exposure_cap_pct() == 0.97
+        assert app._effective_symbol_exposure_cap_pct() == 0.41
     finally:
         app.STRATEGY_MODE = prev_mode
         if prev_stop is None:
@@ -158,3 +164,6 @@ def test_intraday_daily_limit_overrides_for_intraday_mode():
             os.environ.pop("INTRADAY_DAILY_LOSS_LIMIT", None)
         else:
             os.environ["INTRADAY_DAILY_LOSS_LIMIT"] = prev_loss
+        os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        os.environ.pop("INTRADAY_MAX_PORTFOLIO_EXPOSURE_PCT", None)
+        os.environ.pop("INTRADAY_MAX_SYMBOL_EXPOSURE_PCT", None)

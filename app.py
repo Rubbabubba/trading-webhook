@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-175-read-only-trade-quality-analytics"
+PATCH_VERSION = "patch-177-intraday-capacity-overrides-and-readiness"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7218,20 +7218,22 @@ def compute_signal_rank(signal_name: str, vp_diag: dict | None = None) -> tuple[
     return float(rank), {"family": family, "raw_score": raw_score, "rank_score": float(rank), "components": components}
 
 def candidate_slots_available(extra_buffer: int = 0) -> int:
+    max_positions = _effective_max_open_positions()
     try:
-        remaining = int(MAX_OPEN_POSITIONS) - count_open_positions_allowed() - max(int(extra_buffer), 0)
+        remaining = int(max_positions) - count_open_positions_allowed() - max(int(extra_buffer), 0)
         return max(0, remaining)
     except Exception:
-        return max(0, int(MAX_OPEN_POSITIONS))
+        return max(0, int(max_positions))
 
 def count_open_positions_allowed() -> int:
     return len(list_open_positions_allowed())
 
 
 def max_open_positions_reached(extra_buffer: int = 0) -> bool:
-    if MAX_OPEN_POSITIONS <= 0:
+    max_positions = _effective_max_open_positions()
+    if max_positions <= 0:
         return False
-    return count_open_positions_allowed() + max(int(extra_buffer), 0) >= MAX_OPEN_POSITIONS
+    return count_open_positions_allowed() + max(int(extra_buffer), 0) >= max_positions
 
 
 def daily_pnl() -> float | None:
@@ -7271,6 +7273,27 @@ def _configured_daily_stop_dollars_safe() -> float:
     except Exception:
         base = float(getenv_float_any("DAILY_STOP_DOLLARS", default=0.0) or 0.0)
     intraday = float(getenv_float_any("INTRADAY_DAILY_STOP_DOLLARS", default=0.0) or 0.0)
+    mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
+    return intraday if mode == "intraday" and intraday > 0 else base
+
+
+def _effective_max_open_positions() -> int:
+    base = int(globals().get("MAX_OPEN_POSITIONS", getenv_int_any("SWING_MAX_OPEN_POSITIONS", "MAX_OPEN_POSITIONS", default=2)) or 0)
+    intraday = int(getenv_int_any("INTRADAY_MAX_OPEN_POSITIONS", default=0) or 0)
+    mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
+    return intraday if mode == "intraday" and intraday > 0 else base
+
+
+def _effective_portfolio_exposure_cap_pct() -> float:
+    base = float(globals().get("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", getenv_float_any("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", default=0.90)) or 0.0)
+    intraday = float(getenv_float_any("INTRADAY_MAX_PORTFOLIO_EXPOSURE_PCT", default=0.0) or 0.0)
+    mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
+    return intraday if mode == "intraday" and intraday > 0 else base
+
+
+def _effective_symbol_exposure_cap_pct() -> float:
+    base = float(globals().get("SWING_MAX_SYMBOL_EXPOSURE_PCT", getenv_float_any("SWING_MAX_SYMBOL_EXPOSURE_PCT", default=0.35)) or 0.0)
+    intraday = float(getenv_float_any("INTRADAY_MAX_SYMBOL_EXPOSURE_PCT", default=0.0) or 0.0)
     mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
     return intraday if mode == "intraday" and intraday > 0 else base
 
@@ -15409,15 +15432,20 @@ def diagnostics_intraday_launch_readiness(request: Request):
     require_admin_if_configured(request)
     effective_daily_stop = _configured_daily_stop_dollars_safe()
     effective_daily_loss_limit = _configured_daily_loss_limit_safe()
+    effective_max_positions = _effective_max_open_positions()
+    effective_portfolio_cap = _effective_portfolio_exposure_cap_pct()
+    effective_symbol_cap = _effective_symbol_exposure_cap_pct()
     checks = [
         {"name": "live_trading_enabled", "ok": bool(LIVE_TRADING_ENABLED), "value": bool(LIVE_TRADING_ENABLED), "note": "Must be true to place live intraday orders."},
         {"name": "only_market_hours", "ok": bool(ONLY_MARKET_HOURS), "value": bool(ONLY_MARKET_HOURS), "note": "Recommended true for intraday launch discipline."},
         {"name": "dry_run", "ok": not bool(DRY_RUN), "value": bool(DRY_RUN), "note": "Must be false to execute real orders."},
-        {"name": "max_open_positions", "ok": int(MAX_OPEN_POSITIONS) >= 7, "value": int(MAX_OPEN_POSITIONS), "note": "Capacity floor check for launch-day opportunity set."},
+        {"name": "max_open_positions", "ok": int(effective_max_positions) >= 7, "value": int(effective_max_positions), "note": "Capacity floor check for launch-day opportunity set."},
         {"name": "entry_require_fresh_quote", "ok": bool(ENTRY_REQUIRE_FRESH_QUOTE), "value": bool(ENTRY_REQUIRE_FRESH_QUOTE), "note": "Should remain enabled for fast intraday fills."},
         {"name": "swing_allow_same_day_exit", "ok": bool(SWING_ALLOW_SAME_DAY_EXIT), "value": bool(SWING_ALLOW_SAME_DAY_EXIT), "note": "Set true if the same strategy stack is expected to permit same-day exits."},
         {"name": "effective_daily_stop_dollars", "ok": float(effective_daily_stop) >= 150.0, "value": float(effective_daily_stop), "note": "Raise this if you want to avoid early daily-stop blocking for intraday scaling."},
         {"name": "effective_daily_loss_limit", "ok": float(effective_daily_loss_limit) >= 150.0, "value": float(effective_daily_loss_limit), "note": "Raise this if you want to avoid conservative daily-loss gating for intraday scaling."},
+        {"name": "effective_portfolio_exposure_cap_pct", "ok": float(effective_portfolio_cap) >= 0.90, "value": float(effective_portfolio_cap), "note": "Increase cautiously if you want more intraday capital deployment."},
+        {"name": "effective_symbol_exposure_cap_pct", "ok": float(effective_symbol_cap) >= 0.35, "value": float(effective_symbol_cap), "note": "Increase cautiously if you want bigger single-name intraday sizing."},
     ]
     blockers = [c.get("name") for c in checks if not c.get("ok")]
     return {
