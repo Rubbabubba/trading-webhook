@@ -7249,23 +7249,30 @@ def daily_pnl() -> float | None:
 
 
 def daily_stop_hit() -> bool:
-    if DAILY_STOP_DOLLARS <= 0:
+    stop_dollars = _configured_daily_stop_dollars_safe()
+    if stop_dollars <= 0:
         return False
     pnl = daily_pnl()
     if pnl is None:
         return False
-    return pnl <= -abs(DAILY_STOP_DOLLARS)
+    return pnl <= -abs(stop_dollars)
 
 
 # Patch 167B: fail-safe daily halt / today P&L truth helpers.
 def _configured_daily_loss_limit_safe() -> float:
-    return float(getenv_float_any("DAILY_LOSS_LIMIT", default=0.0) or 0.0)
+    base = float(getenv_float_any("DAILY_LOSS_LIMIT", default=0.0) or 0.0)
+    intraday = float(getenv_float_any("INTRADAY_DAILY_LOSS_LIMIT", default=0.0) or 0.0)
+    mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
+    return intraday if mode == "intraday" and intraday > 0 else base
 
 def _configured_daily_stop_dollars_safe() -> float:
     try:
-        return float(globals().get("DAILY_STOP_DOLLARS", getenv_float_any("DAILY_STOP_DOLLARS", default=0.0)) or 0.0)
+        base = float(globals().get("DAILY_STOP_DOLLARS", getenv_float_any("DAILY_STOP_DOLLARS", default=0.0)) or 0.0)
     except Exception:
-        return float(getenv_float_any("DAILY_STOP_DOLLARS", default=0.0) or 0.0)
+        base = float(getenv_float_any("DAILY_STOP_DOLLARS", default=0.0) or 0.0)
+    intraday = float(getenv_float_any("INTRADAY_DAILY_STOP_DOLLARS", default=0.0) or 0.0)
+    mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
+    return intraday if mode == "intraday" and intraday > 0 else base
 
 def _today_realized_pnl_from_strategy_state() -> dict:
     session = _session_boundary_snapshot()
@@ -15400,6 +15407,8 @@ def diagnostics_pipeline_guardrails(limit: int = 20):
 @app.get("/diagnostics/intraday_launch_readiness")
 def diagnostics_intraday_launch_readiness(request: Request):
     require_admin_if_configured(request)
+    effective_daily_stop = _configured_daily_stop_dollars_safe()
+    effective_daily_loss_limit = _configured_daily_loss_limit_safe()
     checks = [
         {"name": "live_trading_enabled", "ok": bool(LIVE_TRADING_ENABLED), "value": bool(LIVE_TRADING_ENABLED), "note": "Must be true to place live intraday orders."},
         {"name": "only_market_hours", "ok": bool(ONLY_MARKET_HOURS), "value": bool(ONLY_MARKET_HOURS), "note": "Recommended true for intraday launch discipline."},
@@ -15407,12 +15416,15 @@ def diagnostics_intraday_launch_readiness(request: Request):
         {"name": "max_open_positions", "ok": int(MAX_OPEN_POSITIONS) >= 7, "value": int(MAX_OPEN_POSITIONS), "note": "Capacity floor check for launch-day opportunity set."},
         {"name": "entry_require_fresh_quote", "ok": bool(ENTRY_REQUIRE_FRESH_QUOTE), "value": bool(ENTRY_REQUIRE_FRESH_QUOTE), "note": "Should remain enabled for fast intraday fills."},
         {"name": "swing_allow_same_day_exit", "ok": bool(SWING_ALLOW_SAME_DAY_EXIT), "value": bool(SWING_ALLOW_SAME_DAY_EXIT), "note": "Set true if the same strategy stack is expected to permit same-day exits."},
+        {"name": "effective_daily_stop_dollars", "ok": float(effective_daily_stop) >= 150.0, "value": float(effective_daily_stop), "note": "Raise this if you want to avoid early daily-stop blocking for intraday scaling."},
+        {"name": "effective_daily_loss_limit", "ok": float(effective_daily_loss_limit) >= 150.0, "value": float(effective_daily_loss_limit), "note": "Raise this if you want to avoid conservative daily-loss gating for intraday scaling."},
     ]
     blockers = [c.get("name") for c in checks if not c.get("ok")]
     return {
         "ok": True,
         "effective_date_utc": "2026-06-04",
         "framework": "finra_intraday_margin",
+        "strategy_mode": str(globals().get("STRATEGY_MODE") or ""),
         "score_passed": len(checks) - len(blockers),
         "score_total": len(checks),
         "ready": not blockers,

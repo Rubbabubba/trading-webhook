@@ -135,3 +135,26 @@ def test_intraday_launch_readiness_shape():
     assert out["framework"] == "finra_intraday_margin"
     assert out["effective_date_utc"] == "2026-06-04"
     assert isinstance(out["checks"], list) and len(out["checks"]) >= 5
+    assert "strategy_mode" in out
+
+
+def test_intraday_daily_limit_overrides_for_intraday_mode():
+    prev_mode = app.STRATEGY_MODE
+    prev_stop = os.environ.get("INTRADAY_DAILY_STOP_DOLLARS")
+    prev_loss = os.environ.get("INTRADAY_DAILY_LOSS_LIMIT")
+    try:
+        app.STRATEGY_MODE = "intraday"
+        os.environ["INTRADAY_DAILY_STOP_DOLLARS"] = "275"
+        os.environ["INTRADAY_DAILY_LOSS_LIMIT"] = "325"
+        assert app._configured_daily_stop_dollars_safe() == 275.0
+        assert app._configured_daily_loss_limit_safe() == 325.0
+    finally:
+        app.STRATEGY_MODE = prev_mode
+        if prev_stop is None:
+            os.environ.pop("INTRADAY_DAILY_STOP_DOLLARS", None)
+        else:
+            os.environ["INTRADAY_DAILY_STOP_DOLLARS"] = prev_stop
+        if prev_loss is None:
+            os.environ.pop("INTRADAY_DAILY_LOSS_LIMIT", None)
+        else:
+            os.environ["INTRADAY_DAILY_LOSS_LIMIT"] = prev_loss
