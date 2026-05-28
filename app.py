@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-178-dashboard-intraday-launch-visibility"
+PATCH_VERSION = "patch-179-intraday-projection-readiness"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7296,6 +7296,54 @@ def _effective_symbol_exposure_cap_pct() -> float:
     intraday = float(getenv_float_any("INTRADAY_MAX_SYMBOL_EXPOSURE_PCT", default=0.0) or 0.0)
     mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
     return intraday if mode == "intraday" and intraday > 0 else base
+
+
+def _intraday_launch_projection() -> dict:
+    mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
+    base_max_positions = int(globals().get("MAX_OPEN_POSITIONS", getenv_int_any("SWING_MAX_OPEN_POSITIONS", "MAX_OPEN_POSITIONS", default=2)) or 0)
+    intraday_max_positions = int(getenv_int_any("INTRADAY_MAX_OPEN_POSITIONS", default=0) or 0)
+    base_daily_stop = float(globals().get("DAILY_STOP_DOLLARS", getenv_float_any("DAILY_STOP_DOLLARS", default=0.0)) or 0.0)
+    intraday_daily_stop = float(getenv_float_any("INTRADAY_DAILY_STOP_DOLLARS", default=0.0) or 0.0)
+    base_daily_loss = float(getenv_float_any("DAILY_LOSS_LIMIT", default=0.0) or 0.0)
+    intraday_daily_loss = float(getenv_float_any("INTRADAY_DAILY_LOSS_LIMIT", default=0.0) or 0.0)
+    base_portfolio_cap = float(globals().get("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", getenv_float_any("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", default=0.90)) or 0.0)
+    intraday_portfolio_cap = float(getenv_float_any("INTRADAY_MAX_PORTFOLIO_EXPOSURE_PCT", default=0.0) or 0.0)
+    base_symbol_cap = float(globals().get("SWING_MAX_SYMBOL_EXPOSURE_PCT", getenv_float_any("SWING_MAX_SYMBOL_EXPOSURE_PCT", default=0.35)) or 0.0)
+    intraday_symbol_cap = float(getenv_float_any("INTRADAY_MAX_SYMBOL_EXPOSURE_PCT", default=0.0) or 0.0)
+    projected_max_positions = intraday_max_positions if intraday_max_positions > 0 else base_max_positions
+    projected_daily_stop = intraday_daily_stop if intraday_daily_stop > 0 else base_daily_stop
+    projected_daily_loss = intraday_daily_loss if intraday_daily_loss > 0 else base_daily_loss
+    projected_portfolio_cap = intraday_portfolio_cap if intraday_portfolio_cap > 0 else base_portfolio_cap
+    projected_symbol_cap = intraday_symbol_cap if intraday_symbol_cap > 0 else base_symbol_cap
+    open_count = count_open_positions_allowed()
+    return {
+        "strategy_mode": mode,
+        "mode_switch_required": mode != "intraday",
+        "current_open_positions": open_count,
+        "active": {
+            "max_open_positions": _effective_max_open_positions(),
+            "open_slots_available": candidate_slots_available(),
+            "daily_stop_dollars": _configured_daily_stop_dollars_safe(),
+            "daily_loss_limit": _configured_daily_loss_limit_safe(),
+            "portfolio_exposure_cap_pct": _effective_portfolio_exposure_cap_pct(),
+            "symbol_exposure_cap_pct": _effective_symbol_exposure_cap_pct(),
+        },
+        "configured_intraday_overrides": {
+            "max_open_positions": intraday_max_positions,
+            "daily_stop_dollars": intraday_daily_stop,
+            "daily_loss_limit": intraday_daily_loss,
+            "portfolio_exposure_cap_pct": intraday_portfolio_cap,
+            "symbol_exposure_cap_pct": intraday_symbol_cap,
+        },
+        "projected_intraday": {
+            "max_open_positions": projected_max_positions,
+            "open_slots_available": max(0, int(projected_max_positions) - int(open_count)),
+            "daily_stop_dollars": projected_daily_stop,
+            "daily_loss_limit": projected_daily_loss,
+            "portfolio_exposure_cap_pct": projected_portfolio_cap,
+            "symbol_exposure_cap_pct": projected_symbol_cap,
+        },
+    }
 
 def _today_realized_pnl_from_strategy_state() -> dict:
     session = _session_boundary_snapshot()
@@ -15176,7 +15224,10 @@ def dashboard(request: Request):
     snapshot_ts = snap.get("ts_utc") or snap.get("ts_ny") or ""
     last_scan_ts = latest_scan.get("ts_utc") or latest_scan.get("last_closed_utc") or scanner_summary.get("last_closed_utc") or scanner_last.get("last_closed_utc") or ""
     structural_exceptions_text = "\n".join(["missing_from_plans: none", "plans_missing_open_order: none", "stale_active_plans: none", "orphan_open_order_symbols: none", "partial_fill_plan_symbols: none"])
-
+    intraday_projection = _intraday_launch_projection()
+    intraday_active = _sd(intraday_projection.get('active'))
+    intraday_projected = _sd(intraday_projection.get('projected_intraday'))
+    
     html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Webhook Dashboard</title><meta http-equiv="refresh" content="30"><style>
 :root{{color-scheme:dark}}body{{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top left,#17112a 0%,#090b10 28%,#06070b 100%);color:#eef2ff;margin:0;padding:20px}}.wrap{{max-width:1560px;margin:0 auto}}h1,h2,h3{{margin:0 0 10px;letter-spacing:-.02em}}h1{{font-size:38px}}h2{{font-size:20px}}.sub,.muted{{color:#9ca3af}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}}.kpi-grid{{display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:16px}}.alert-grid{{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}}.card{{background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96));border:1px solid rgba(139,92,246,.14);border-radius:20px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.04);overflow:hidden}}.metric{{font-size:32px;font-weight:800;margin-top:8px}}.good{{color:#74e2a7}}.bad{{color:#fb7185}}.neutral{{color:#f6c86c}}.badge{{display:inline-block;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:#1f2937;margin:4px 6px 0 0;border:1px solid rgba(255,255,255,.05)}}.badge.good{{background:rgba(16,185,129,.14);color:#bbf7d0}}.badge.bad{{background:rgba(244,63,94,.14);color:#fecdd3}}.badge.neutral{{background:rgba(245,158,11,.14);color:#fde68a}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}}th{{color:#c4b5fd;font-weight:700}}pre{{white-space:pre-wrap;word-break:break-word;background:rgba(5,8,15,.72);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:12px;overflow:auto;color:#d1d5db}}.section{{margin-top:18px}}.links{{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}}.links a{{color:#c4b5fd;text-decoration:none;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.12);padding:7px 11px;border-radius:12px;font-size:13px}}.hero{{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:18px}}.hero-title{{font-size:18px;color:#a78bfa;font-weight:700;text-transform:uppercase;letter-spacing:.08em}}.hero-actions{{display:flex;gap:10px;flex-wrap:wrap}}.action-pill{{background:linear-gradient(135deg,rgba(139,92,246,.18),rgba(59,130,246,.12));border:1px solid rgba(139,92,246,.24);color:#ede9fe;padding:10px 14px;border-radius:14px;font-weight:700;font-size:13px}}.alert-chip{{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:16px;margin-bottom:10px;border:1px solid rgba(255,255,255,.05);background:rgba(255,255,255,.03)}}.alert-chip.good{{background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.18)}}.alert-chip.warn,.alert-chip.neutral{{background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.18)}}.alert-chip.bad{{background:rgba(244,63,94,.10);border-color:rgba(244,63,94,.18)}}@media(max-width:980px){{.alert-grid{{grid-template-columns:1fr}}.kpi-grid{{grid-template-columns:1fr}}.hero{{flex-direction:column;align-items:flex-start}}}}
 </style></head><body><div class="wrap"><div class="hero"><div><div class="hero-title">Operator Console</div><h1>Dashboard</h1><p class="sub">Rich snapshot dashboard restored. No broker, reconcile, scan, or exit work is executed during render. Generated {html.escape(generated_utc)}.</p></div><div class="hero-actions"><div class="action-pill">Patch 178 intraday prep</div><div class="action-pill">Read-only</div><div class="action-pill">Fast path</div></div></div>
@@ -15191,7 +15242,8 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Closed Trades by Rank Bucket</h2><table><thead><tr><th>Rank</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{rank_bucket_rows}</tbody></table></div><div class="card"><h2>Closed Trades by Holding Period</h2><table><thead><tr><th>Hold</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{holding_bucket_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Closed Trades by Symbol</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{symbol_bucket_rows}</tbody></table></div><div class="card"><h2>Strategy / Exit Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table><h3 style="margin-top:14px;">Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{exit_reason_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>With later scans</th><th>Avg best move</th><th>Avg last move</th><th>Positive rate</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Follow-through is computed only from later persisted scan closes for the same symbol. Rows without future closes are counted but do not invent returns.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
-<div class="section grid"><div class="card"><h2>Intraday Launch Readiness</h2><table>{_rows([('strategy_mode', globals().get('STRATEGY_MODE')),('effective_max_open_positions', _effective_max_open_positions()),('open_slots_available', candidate_slots_available()),('effective_daily_stop_dollars', _configured_daily_stop_dollars_safe()),('effective_daily_loss_limit', _configured_daily_loss_limit_safe()),('effective_portfolio_cap_pct', _pct(_effective_portfolio_exposure_cap_pct())),('effective_symbol_cap_pct', _pct(_effective_symbol_exposure_cap_pct())),('june4_framework', 'finra_intraday_margin')])}</table><p class="muted">Use /diagnostics/intraday_launch_readiness for the full blocker checklist before enabling intraday mode.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('component_ready', not bool(blockers)),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {'good' if not blockers else 'neutral'}">{'READY' if not blockers else 'CHECK BLOCKERS'}</div></div></div><div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_running', str(scanner_status).lower() in {'up','ok'}),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
+<div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('component_ready', not bool(blockers)),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {'good' if not blockers else 'neutral'}">{'READY' if not blockers else 'CHECK BLOCKERS'}</div></div></div>
+<div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_running', str(scanner_status).lower() in {'up','ok'}),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table></div><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
 <div class="section grid"><div class="card"><h2>Recent Lifecycle / Dispatch</h2><table><thead><tr><th>UTC</th><th>Symbol</th><th>State/Event</th><th>Reason</th></tr></thead><tbody>{lifecycle_rows}</tbody></table></div><div class="card"><h2>Current Blockers</h2><pre>{blockers_text}</pre><h2 style="margin-top:16px;">Heavy Detail Split</h2><p class="muted">Full raw candidate payloads, blocker JSON, scanner history, lifecycle history, and live reconcile remain available from diagnostics endpoints instead of embedded here.</p></div></div>
@@ -15430,11 +15482,13 @@ def diagnostics_pipeline_guardrails(limit: int = 20):
 @app.get("/diagnostics/intraday_launch_readiness")
 def diagnostics_intraday_launch_readiness(request: Request):
     require_admin_if_configured(request)
-    effective_daily_stop = _configured_daily_stop_dollars_safe()
-    effective_daily_loss_limit = _configured_daily_loss_limit_safe()
-    effective_max_positions = _effective_max_open_positions()
-    effective_portfolio_cap = _effective_portfolio_exposure_cap_pct()
-    effective_symbol_cap = _effective_symbol_exposure_cap_pct()
+    projection = _intraday_launch_projection()
+    projected = dict(projection.get("projected_intraday") or {})
+    effective_daily_stop = projected.get("daily_stop_dollars")
+    effective_daily_loss_limit = projected.get("daily_loss_limit")
+    effective_max_positions = projected.get("max_open_positions")
+    effective_portfolio_cap = projected.get("portfolio_exposure_cap_pct")
+    effective_symbol_cap = projected.get("symbol_exposure_cap_pct")
     checks = [
         {"name": "live_trading_enabled", "ok": bool(LIVE_TRADING_ENABLED), "value": bool(LIVE_TRADING_ENABLED), "note": "Must be true to place live intraday orders."},
         {"name": "only_market_hours", "ok": bool(ONLY_MARKET_HOURS), "value": bool(ONLY_MARKET_HOURS), "note": "Recommended true for intraday launch discipline."},
@@ -15453,6 +15507,7 @@ def diagnostics_intraday_launch_readiness(request: Request):
         "effective_date_utc": "2026-06-04",
         "framework": "finra_intraday_margin",
         "strategy_mode": str(globals().get("STRATEGY_MODE") or ""),
+        "projection": projection,
         "score_passed": len(checks) - len(blockers),
         "score_total": len(checks),
         "ready": not blockers,

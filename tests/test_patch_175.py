@@ -136,6 +136,7 @@ def test_intraday_launch_readiness_shape():
     assert out["effective_date_utc"] == "2026-06-04"
     assert isinstance(out["checks"], list) and len(out["checks"]) >= 5
     assert "strategy_mode" in out
+    assert "projection" in out
 
 
 def test_intraday_daily_limit_overrides_for_intraday_mode():
@@ -167,3 +168,18 @@ def test_intraday_daily_limit_overrides_for_intraday_mode():
         os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
         os.environ.pop("INTRADAY_MAX_PORTFOLIO_EXPOSURE_PCT", None)
         os.environ.pop("INTRADAY_MAX_SYMBOL_EXPOSURE_PCT", None)
+
+def test_intraday_launch_projection_works_before_mode_switch():
+    prev_mode = app.STRATEGY_MODE
+    try:
+        app.STRATEGY_MODE = "swing"
+        os.environ["INTRADAY_MAX_OPEN_POSITIONS"] = "12"
+        os.environ["INTRADAY_DAILY_STOP_DOLLARS"] = "450"
+        projection = app._intraday_launch_projection()
+        assert projection["mode_switch_required"] is True
+        assert projection["projected_intraday"]["max_open_positions"] == 12
+        assert projection["projected_intraday"]["daily_stop_dollars"] == 450.0
+    finally:
+        app.STRATEGY_MODE = prev_mode
+        os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        os.environ.pop("INTRADAY_DAILY_STOP_DOLLARS", None)
