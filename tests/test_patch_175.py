@@ -183,3 +183,29 @@ def test_intraday_launch_projection_works_before_mode_switch():
         app.STRATEGY_MODE = prev_mode
         os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
         os.environ.pop("INTRADAY_DAILY_STOP_DOLLARS", None)
+
+
+def test_intraday_launch_projection_flags_missing_capacity_override():
+    prev_mode = app.STRATEGY_MODE
+    prev_max = app.MAX_OPEN_POSITIONS
+    prev_intraday = os.environ.get("INTRADAY_MAX_OPEN_POSITIONS")
+    try:
+        app.STRATEGY_MODE = "swing"
+        app.MAX_OPEN_POSITIONS = 7
+        os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        projection = app._intraday_launch_projection()
+        assert "intraday_max_open_positions_not_above_base" in projection["blockers"]
+        assert "set_INTRADAY_MAX_OPEN_POSITIONS_above_current_base" in projection["next_actions"]
+    finally:
+        app.STRATEGY_MODE = prev_mode
+        app.MAX_OPEN_POSITIONS = prev_max
+        if prev_intraday is not None:
+            os.environ["INTRADAY_MAX_OPEN_POSITIONS"] = prev_intraday
+
+
+def test_intraday_launch_readiness_includes_capacity_checks():
+    req = app.Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/diagnostics/intraday_launch_readiness"})
+    out = app.diagnostics_intraday_launch_readiness(req)
+    names = {row.get("name") for row in out["checks"]}
+    assert "projected_open_slots_available" in names
+    assert "intraday_capacity_override_above_base" in names
