@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-183-intraday-launch-action-plan"
+PATCH_VERSION = "patch-184-intraday-capacity-recommendation"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7311,6 +7311,7 @@ def _intraday_launch_projection() -> dict:
     mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
     base_max_positions = int(globals().get("MAX_OPEN_POSITIONS", getenv_int_any("SWING_MAX_OPEN_POSITIONS", "MAX_OPEN_POSITIONS", default=2)) or 0)
     intraday_max_positions = int(getenv_int_any("INTRADAY_MAX_OPEN_POSITIONS", default=0) or 0)
+    min_launch_open_slots = max(1, int(getenv_int_any("INTRADAY_LAUNCH_MIN_OPEN_SLOTS", default=3) or 3))
     base_daily_stop = float(globals().get("DAILY_STOP_DOLLARS", getenv_float_any("DAILY_STOP_DOLLARS", default=0.0)) or 0.0)
     intraday_daily_stop = float(getenv_float_any("INTRADAY_DAILY_STOP_DOLLARS", default=0.0) or 0.0)
     base_daily_loss = float(getenv_float_any("DAILY_LOSS_LIMIT", default=0.0) or 0.0)
@@ -7326,6 +7327,12 @@ def _intraday_launch_projection() -> dict:
     projected_symbol_cap = intraday_symbol_cap if intraday_symbol_cap > 0 else base_symbol_cap
     open_count = count_open_positions_allowed()
     projected_open_slots = max(0, int(projected_max_positions) - int(open_count))
+    recommended_intraday_max_positions = max(
+        int(projected_max_positions),
+        int(base_max_positions) + int(min_launch_open_slots),
+        int(open_count) + int(min_launch_open_slots),
+    )
+    open_slots_gap_to_min = max(0, int(min_launch_open_slots) - int(projected_open_slots))
     next_actions = []
     blockers = []
     if mode != "intraday":
@@ -7333,9 +7340,14 @@ def _intraday_launch_projection() -> dict:
     if intraday_max_positions <= base_max_positions:
         blockers.append("intraday_max_open_positions_not_above_base")
         next_actions.append("set_INTRADAY_MAX_OPEN_POSITIONS_above_current_base")
+        next_actions.append(f"set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_{recommended_intraday_max_positions}")
     if projected_open_slots <= 0:
         blockers.append("projected_intraday_open_slots_zero")
         next_actions.append("raise_INTRADAY_MAX_OPEN_POSITIONS_or_free_existing_slots")
+    if projected_open_slots < min_launch_open_slots:
+        blockers.append("projected_intraday_open_slots_below_launch_min")
+        if f"set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_{recommended_intraday_max_positions}" not in next_actions:
+            next_actions.append(f"set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_{recommended_intraday_max_positions}")
     if intraday_daily_stop <= base_daily_stop:
         next_actions.append("consider_raising_INTRADAY_DAILY_STOP_DOLLARS")
     if intraday_daily_loss <= base_daily_loss:
@@ -7348,6 +7360,8 @@ def _intraday_launch_projection() -> dict:
         "strategy_mode": mode,
         "mode_switch_required": mode != "intraday",
         "current_open_positions": open_count,
+        "launch_min_open_slots": min_launch_open_slots,
+        "recommended_intraday_max_open_positions": recommended_intraday_max_positions,
         "blockers": blockers,
         "next_actions": next_actions,
         "active": {
@@ -7368,6 +7382,7 @@ def _intraday_launch_projection() -> dict:
         "projected_intraday": {
             "max_open_positions": projected_max_positions,
             "open_slots_available": projected_open_slots,
+            "open_slots_gap_to_min": open_slots_gap_to_min,
             "daily_stop_dollars": projected_daily_stop,
             "daily_loss_limit": projected_daily_loss,
             "portfolio_exposure_cap_pct": projected_portfolio_cap,
@@ -15275,7 +15290,7 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Closed Trades by Rank Bucket</h2><table><thead><tr><th>Rank</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{rank_bucket_rows}</tbody></table></div><div class="card"><h2>Closed Trades by Holding Period</h2><table><thead><tr><th>Hold</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{holding_bucket_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Closed Trades by Symbol</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{symbol_bucket_rows}</tbody></table></div><div class="card"><h2>Strategy / Exit Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table><h3 style="margin-top:14px;">Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{exit_reason_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>With later scans</th><th>Avg best move</th><th>Avg last move</th><th>Positive rate</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Follow-through is computed only from later persisted scan closes for the same symbol. Rows without future closes are counted but do not invent returns.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
-<div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_capacity_ready', not bool(_sl(intraday_projection.get('blockers')))),('projection_blockers', intraday_projection_blockers_text),('next_actions', intraday_projection_next_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('component_ready', not bool(blockers)),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {'good' if not blockers else 'neutral'}">{'READY' if not blockers else 'CHECK BLOCKERS'}</div></div></div>
+<div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_capacity_ready', not bool(_sl(intraday_projection.get('blockers')))),('projection_blockers', intraday_projection_blockers_text),('next_actions', intraday_projection_next_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('component_ready', not bool(blockers)),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {'good' if not blockers else 'neutral'}">{'READY' if not blockers else 'CHECK BLOCKERS'}</div></div></div>
 <div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_running', str(scanner_status).lower() in {'up','ok'}),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table></div><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
@@ -15528,6 +15543,7 @@ def diagnostics_intraday_launch_readiness(request: Request):
         {"name": "dry_run", "ok": not bool(DRY_RUN), "value": bool(DRY_RUN), "note": "Must be false to execute real orders."},
         {"name": "max_open_positions", "ok": int(effective_max_positions) >= 7, "value": int(effective_max_positions), "note": "Capacity floor check for launch-day opportunity set."},
         {"name": "projected_open_slots_available", "ok": int(projected.get("open_slots_available") or 0) > 0, "value": int(projected.get("open_slots_available") or 0), "note": "Launch should have at least one projected slot; current dashboard is full at 7/7."},
+        {"name": "projected_open_slots_meet_launch_min", "ok": int(projected.get("open_slots_available") or 0) >= int(projection.get("launch_min_open_slots") or 1), "value": {"projected_open_slots": int(projected.get("open_slots_available") or 0), "launch_min_open_slots": int(projection.get("launch_min_open_slots") or 1), "recommended_intraday_max_open_positions": int(projection.get("recommended_intraday_max_open_positions") or 0)}, "note": "Set INTRADAY_MAX_OPEN_POSITIONS to the recommendation before launch so intraday has spare capacity."},
         {"name": "intraday_capacity_override_above_base", "ok": "intraday_max_open_positions_not_above_base" not in set(projection.get("blockers") or []), "value": projection.get("configured_intraday_overrides", {}).get("max_open_positions"), "note": "Set INTRADAY_MAX_OPEN_POSITIONS above base if you want more intraday entries."},
         {"name": "entry_require_fresh_quote", "ok": bool(ENTRY_REQUIRE_FRESH_QUOTE), "value": bool(ENTRY_REQUIRE_FRESH_QUOTE), "note": "Should remain enabled for fast intraday fills."},
         {"name": "swing_allow_same_day_exit", "ok": bool(SWING_ALLOW_SAME_DAY_EXIT), "value": bool(SWING_ALLOW_SAME_DAY_EXIT), "note": "Set true if the same strategy stack is expected to permit same-day exits."},

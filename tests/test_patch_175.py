@@ -189,18 +189,34 @@ def test_intraday_launch_projection_flags_missing_capacity_override():
     prev_mode = app.STRATEGY_MODE
     prev_max = app.MAX_OPEN_POSITIONS
     prev_intraday = os.environ.get("INTRADAY_MAX_OPEN_POSITIONS")
+    prev_min_slots = os.environ.get("INTRADAY_LAUNCH_MIN_OPEN_SLOTS")
+    prev_count_open = app.count_open_positions_allowed
     try:
         app.STRATEGY_MODE = "swing"
         app.MAX_OPEN_POSITIONS = 7
+        app.count_open_positions_allowed = lambda: 7
         os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        os.environ.pop("INTRADAY_LAUNCH_MIN_OPEN_SLOTS", None)
         projection = app._intraday_launch_projection()
         assert "intraday_max_open_positions_not_above_base" in projection["blockers"]
+        assert "projected_intraday_open_slots_below_launch_min" in projection["blockers"]
+        assert projection["launch_min_open_slots"] == 3
+        assert projection["recommended_intraday_max_open_positions"] == 10
+        assert projection["projected_intraday"]["open_slots_gap_to_min"] == 3
         assert "set_INTRADAY_MAX_OPEN_POSITIONS_above_current_base" in projection["next_actions"]
+        assert "set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_10" in projection["next_actions"]
     finally:
         app.STRATEGY_MODE = prev_mode
         app.MAX_OPEN_POSITIONS = prev_max
-        if prev_intraday is not None:
+        app.count_open_positions_allowed = prev_count_open
+        if prev_intraday is None:
+            os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        else:
             os.environ["INTRADAY_MAX_OPEN_POSITIONS"] = prev_intraday
+        if prev_min_slots is None:
+            os.environ.pop("INTRADAY_LAUNCH_MIN_OPEN_SLOTS", None)
+        else:
+            os.environ["INTRADAY_LAUNCH_MIN_OPEN_SLOTS"] = prev_min_slots
 
 
 def test_intraday_launch_readiness_includes_capacity_checks():
@@ -208,6 +224,7 @@ def test_intraday_launch_readiness_includes_capacity_checks():
     out = app.diagnostics_intraday_launch_readiness(req)
     names = {row.get("name") for row in out["checks"]}
     assert "projected_open_slots_available" in names
+    assert "projected_open_slots_meet_launch_min" in names
     assert "intraday_capacity_override_above_base" in names
 
 
