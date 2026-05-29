@@ -268,7 +268,11 @@ def test_intraday_launch_projection_returns_copy_ready_env_checklist():
         projection = app._intraday_launch_projection()
         assert projection["recommended_env"]["STRATEGY_MODE"] == "intraday"
         assert projection["recommended_env"]["INTRADAY_MAX_OPEN_POSITIONS"] == "10"
+        assert projection["recommended_env"]["INTRADAY_DAILY_STOP_DOLLARS"] == "300.00"
+        assert projection["recommended_env"]["INTRADAY_DAILY_LOSS_LIMIT"] == "400.00"
         assert projection["recommended_intraday_open_slots"] == 3
+        assert projection["recommended_intraday_daily_stop_dollars"] == 300.0
+        assert projection["recommended_intraday_daily_loss_limit"] == 400.0
     finally:
         app.STRATEGY_MODE = prev_mode
         app.MAX_OPEN_POSITIONS = prev_max
