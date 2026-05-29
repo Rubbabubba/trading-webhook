@@ -231,3 +231,10 @@ def test_intraday_launch_readiness_includes_capacity_checks():
 def test_patch_display_label_derives_from_patch_version():
     assert app.patch_display_label("patch-181-dashboard-patch-label-sync") == "Patch 181 dashboard patch label sync"
     assert app.patch_display_label("custom-build") == "custom-build"
+
+
+def test_dashboard_scanner_ready_treats_inflight_received_as_ready():
+    assert app._dashboard_scanner_ready("ok", False) is True
+    assert app._dashboard_scanner_ready("received", True) is True
+    assert app._dashboard_scanner_ready("received", False) is False
+    assert app._dashboard_scanner_ready("down", True) is False
