@@ -15417,8 +15417,8 @@ def diagnostics_regime(limit: int = 20):
 
 
 
-def diagnostics_defensive_policy(limit: int = 10):
 @app.get("/diagnostics/defensive_policy")
+def diagnostics_defensive_policy(limit: int = 10):
     _ensure_runtime_state_loaded()
     return _defensive_policy_snapshot(limit=limit)
 
