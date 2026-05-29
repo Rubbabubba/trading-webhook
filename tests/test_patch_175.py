@@ -209,3 +209,8 @@ def test_intraday_launch_readiness_includes_capacity_checks():
     names = {row.get("name") for row in out["checks"]}
     assert "projected_open_slots_available" in names
     assert "intraday_capacity_override_above_base" in names
+
+
+def test_patch_display_label_derives_from_patch_version():
+    assert app.patch_display_label("patch-181-dashboard-patch-label-sync") == "Patch 181 dashboard patch label sync"
+    assert app.patch_display_label("custom-build") == "custom-build"
