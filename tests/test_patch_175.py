@@ -238,3 +238,18 @@ def test_dashboard_scanner_ready_treats_inflight_received_as_ready():
     assert app._dashboard_scanner_ready("received", True) is True
     assert app._dashboard_scanner_ready("received", False) is False
     assert app._dashboard_scanner_ready("down", True) is False
+
+
+def test_dashboard_readiness_assessment_distinguishes_launch_setup():
+    ready = app._dashboard_readiness_assessment([], True, [])
+    assert ready["status"] == "READY"
+    assert ready["intraday_launch_ready"] is True
+
+    setup = app._dashboard_readiness_assessment([], True, ["projected_intraday_open_slots_zero"])
+    assert setup["status"] == "LAUNCH SETUP NEEDED"
+    assert setup["system_ready"] is True
+    assert setup["intraday_launch_ready"] is False
+
+    blocked = app._dashboard_readiness_assessment(["dry_run"], True, [])
+    assert blocked["status"] == "CHECK BLOCKERS"
+    assert blocked["system_ready"] is False
