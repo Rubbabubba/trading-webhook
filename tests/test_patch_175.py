@@ -253,3 +253,27 @@ def test_dashboard_readiness_assessment_distinguishes_launch_setup():
     blocked = app._dashboard_readiness_assessment(["dry_run"], True, [])
     assert blocked["status"] == "CHECK BLOCKERS"
     assert blocked["system_ready"] is False
+
+
+def test_intraday_launch_projection_returns_copy_ready_env_checklist():
+    prev_mode = app.STRATEGY_MODE
+    prev_max = app.MAX_OPEN_POSITIONS
+    prev_intraday = os.environ.get("INTRADAY_MAX_OPEN_POSITIONS")
+    prev_count_open = app.count_open_positions_allowed
+    try:
+        app.STRATEGY_MODE = "swing"
+        app.MAX_OPEN_POSITIONS = 7
+        app.count_open_positions_allowed = lambda: 7
+        os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        projection = app._intraday_launch_projection()
+        assert projection["recommended_env"]["STRATEGY_MODE"] == "intraday"
+        assert projection["recommended_env"]["INTRADAY_MAX_OPEN_POSITIONS"] == "10"
+        assert projection["recommended_intraday_open_slots"] == 3
+    finally:
+        app.STRATEGY_MODE = prev_mode
+        app.MAX_OPEN_POSITIONS = prev_max
+        app.count_open_positions_allowed = prev_count_open
+        if prev_intraday is None:
+            os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        else:
+            os.environ["INTRADAY_MAX_OPEN_POSITIONS"] = prev_intraday
