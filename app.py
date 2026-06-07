@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-191-intraday-readiness-gates"
+PATCH_VERSION = "patch-192-capacity-slot-gate-refinement"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7385,7 +7385,8 @@ def _intraday_launch_projection() -> dict:
     if mode != "intraday":
         next_actions.append("set_STRATEGY_MODE_intraday_for_launch")
     if intraday_max_positions <= base_max_positions:
-        blockers.append("intraday_max_open_positions_not_above_base")
+        if projected_open_slots < min_launch_open_slots:
+            blockers.append("intraday_max_open_positions_not_above_base")
         next_actions.append("set_INTRADAY_MAX_OPEN_POSITIONS_above_current_base")
         next_actions.append(f"set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_{recommended_intraday_max_positions}")
     if projected_open_slots <= 0:
@@ -15613,7 +15614,7 @@ def diagnostics_intraday_launch_readiness(request: Request):
         {"name": "max_open_positions", "ok": int(effective_max_positions) >= 7, "value": int(effective_max_positions), "note": "Capacity floor check for launch-day opportunity set."},
         {"name": "projected_open_slots_available", "ok": int(projected.get("open_slots_available") or 0) > 0, "value": int(projected.get("open_slots_available") or 0), "note": "Launch should have at least one projected slot; current dashboard is full at 7/7."},
         {"name": "projected_open_slots_meet_launch_min", "ok": int(projected.get("open_slots_available") or 0) >= int(projection.get("launch_min_open_slots") or 1), "value": {"projected_open_slots": int(projected.get("open_slots_available") or 0), "launch_min_open_slots": int(projection.get("launch_min_open_slots") or 1), "recommended_intraday_max_open_positions": int(projection.get("recommended_intraday_max_open_positions") or 0)}, "note": "Set INTRADAY_MAX_OPEN_POSITIONS to the recommendation before launch so intraday has spare capacity."},
-        {"name": "intraday_capacity_override_above_base", "ok": "intraday_max_open_positions_not_above_base" not in set(projection.get("blockers") or []), "value": projection.get("configured_intraday_overrides", {}).get("max_open_positions"), "note": "Set INTRADAY_MAX_OPEN_POSITIONS above base if you want more intraday entries."},
+        {"name": "intraday_capacity_override_above_base", "ok": "intraday_max_open_positions_not_above_base" not in set(projection.get("blockers") or []), "value": projection.get("configured_intraday_overrides", {}).get("max_open_positions"), "note": "Set INTRADAY_MAX_OPEN_POSITIONS above base for extra scale; this is blocking only when projected slots are below the launch minimum."},
         {"name": "entry_require_fresh_quote", "ok": bool(ENTRY_REQUIRE_FRESH_QUOTE), "value": bool(ENTRY_REQUIRE_FRESH_QUOTE), "note": "Should remain enabled for fast intraday fills."},
         {"name": "swing_allow_same_day_exit", "ok": bool(SWING_ALLOW_SAME_DAY_EXIT), "value": bool(SWING_ALLOW_SAME_DAY_EXIT), "note": "Set true if the same strategy stack is expected to permit same-day exits."},
         {"name": "effective_daily_stop_dollars", "ok": float(effective_daily_stop) >= 150.0, "value": float(effective_daily_stop), "note": "Raise this if you want to avoid early daily-stop blocking for intraday scaling."},

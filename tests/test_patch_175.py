@@ -292,3 +292,29 @@ def test_dashboard_readiness_assessment_counts_market_and_regime_launch_gates():
     assert out["system_ready"] is True
     assert out["intraday_launch_ready"] is False
     assert out["launch_blocker_count"] == 3
+
+
+def test_intraday_projection_does_not_block_capacity_when_slots_meet_minimum():
+    prev_mode = app.STRATEGY_MODE
+    prev_max = app.MAX_OPEN_POSITIONS
+    prev_intraday = os.environ.get("INTRADAY_MAX_OPEN_POSITIONS")
+    prev_count_open = app.count_open_positions_allowed
+    try:
+        app.STRATEGY_MODE = "swing"
+        app.MAX_OPEN_POSITIONS = 7
+        app.count_open_positions_allowed = lambda: 3
+        os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        projection = app._intraday_launch_projection()
+        assert projection["projected_intraday"]["open_slots_available"] == 4
+        assert projection["projected_intraday"]["open_slots_gap_to_min"] == 0
+        assert "intraday_max_open_positions_not_above_base" not in projection["blockers"]
+        assert "projected_intraday_open_slots_below_launch_min" not in projection["blockers"]
+        assert "set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_10" in projection["next_actions"]
+    finally:
+        app.STRATEGY_MODE = prev_mode
+        app.MAX_OPEN_POSITIONS = prev_max
+        app.count_open_positions_allowed = prev_count_open
+        if prev_intraday is None:
+            os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
+        else:
+            os.environ["INTRADAY_MAX_OPEN_POSITIONS"] = prev_intraday
