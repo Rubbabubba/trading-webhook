@@ -281,3 +281,11 @@ def test_intraday_launch_projection_returns_copy_ready_env_checklist():
             os.environ.pop("INTRADAY_MAX_OPEN_POSITIONS", None)
         else:
             os.environ["INTRADAY_MAX_OPEN_POSITIONS"] = prev_intraday
+
+
+def test_dashboard_readiness_assessment_counts_market_and_regime_launch_gates():
+    out = app._dashboard_readiness_assessment([], True, ["intraday_max_open_positions_not_above_base", "market_not_tradable_now", "regime_not_favorable"])
+    assert out["status"] == "LAUNCH SETUP NEEDED"
+    assert out["system_ready"] is True
+    assert out["intraday_launch_ready"] is False
+    assert out["launch_blocker_count"] == 3
