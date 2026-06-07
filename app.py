@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-190-launch-gate-readiness"
+PATCH_VERSION = "patch-191-intraday-readiness-gates"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -15598,9 +15598,17 @@ def diagnostics_intraday_launch_readiness(request: Request):
     effective_max_positions = projected.get("max_open_positions")
     effective_portfolio_cap = projected.get("portfolio_exposure_cap_pct")
     effective_symbol_cap = projected.get("symbol_exposure_cap_pct")
+    try:
+        market_tradable_now = bool(in_market_hours())
+    except Exception:
+        market_tradable_now = False
+    regime_snapshot = dict(LAST_REGIME_SNAPSHOT or {})
+    regime_favorable = bool(regime_snapshot.get("favorable"))
     checks = [
         {"name": "live_trading_enabled", "ok": bool(LIVE_TRADING_ENABLED), "value": bool(LIVE_TRADING_ENABLED), "note": "Must be true to place live intraday orders."},
         {"name": "only_market_hours", "ok": bool(ONLY_MARKET_HOURS), "value": bool(ONLY_MARKET_HOURS), "note": "Recommended true for intraday launch discipline."},
+        {"name": "market_tradable_now", "ok": market_tradable_now, "value": market_tradable_now, "note": "Intraday launch should wait until the market is tradable."},
+        {"name": "regime_favorable", "ok": regime_favorable, "value": {"favorable": regime_snapshot.get("favorable"), "score": regime_snapshot.get("score"), "breadth": regime_snapshot.get("breadth"), "data_complete": regime_snapshot.get("data_complete")}, "note": "Intraday launch should wait for a favorable regime unless the operator intentionally overrides regime gating."},
         {"name": "dry_run", "ok": not bool(DRY_RUN), "value": bool(DRY_RUN), "note": "Must be false to execute real orders."},
         {"name": "max_open_positions", "ok": int(effective_max_positions) >= 7, "value": int(effective_max_positions), "note": "Capacity floor check for launch-day opportunity set."},
         {"name": "projected_open_slots_available", "ok": int(projected.get("open_slots_available") or 0) > 0, "value": int(projected.get("open_slots_available") or 0), "note": "Launch should have at least one projected slot; current dashboard is full at 7/7."},
@@ -15620,6 +15628,7 @@ def diagnostics_intraday_launch_readiness(request: Request):
         "framework": "finra_intraday_margin",
         "strategy_mode": str(globals().get("STRATEGY_MODE") or ""),
         "projection": projection,
+        "launch_gate_status": {"market_tradable_now": market_tradable_now, "regime_favorable": regime_favorable},
         "score_passed": len(checks) - len(blockers),
         "score_total": len(checks),
         "ready": not blockers,

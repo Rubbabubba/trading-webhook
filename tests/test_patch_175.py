@@ -223,9 +223,12 @@ def test_intraday_launch_readiness_includes_capacity_checks():
     req = app.Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/diagnostics/intraday_launch_readiness"})
     out = app.diagnostics_intraday_launch_readiness(req)
     names = {row.get("name") for row in out["checks"]}
+    assert "market_tradable_now" in names
+    assert "regime_favorable" in names
     assert "projected_open_slots_available" in names
     assert "projected_open_slots_meet_launch_min" in names
     assert "intraday_capacity_override_above_base" in names
+    assert "launch_gate_status" in out
 
 
 def test_patch_display_label_derives_from_patch_version():
