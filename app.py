@@ -1218,7 +1218,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-193-launch-action-clarity"
+PATCH_VERSION = "patch-194-clean-intraday-launch-action-plan"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -1268,6 +1268,19 @@ def _dashboard_readiness_assessment(blockers: object, scanner_ready: object, lau
     }
 
 
+def _unique_nonempty_actions(*groups: object) -> list[str]:
+    actions: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        items = group if isinstance(group, (list, tuple, set)) else ([group] if group else [])
+        for item in items:
+            action = str(item or "").strip()
+            if action and action not in seen:
+                seen.add(action)
+                actions.append(action)
+    return actions
+
+
 def _intraday_launch_gate_actions(launch_blockers: object) -> list[str]:
     blocker_list = list(launch_blockers or []) if isinstance(launch_blockers, (list, tuple, set)) else ([launch_blockers] if launch_blockers else [])
     blockers = {str(item or "").strip() for item in blocker_list if str(item or "").strip()}
@@ -1281,6 +1294,20 @@ def _intraday_launch_gate_actions(launch_blockers: object) -> list[str]:
     if {"projected_intraday_open_slots_zero", "projected_open_slots_available"} & blockers:
         actions.append("free_slots_or_raise_intraday_max")
     return actions
+    
+    
+def _intraday_launch_action_plan(
+    gate_actions: object = None,
+    required_actions: object = None,
+    optional_scaling_actions: object = None,
+    recommended_env: object = None,
+) -> dict:
+    env = dict(recommended_env or {}) if isinstance(recommended_env, dict) else {}
+    return {
+        "required_now": _unique_nonempty_actions(gate_actions, required_actions),
+        "optional_scaling": _unique_nonempty_actions(optional_scaling_actions),
+        "recommended_env": env,
+    }
 EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 BROKER_TRUTH_SYNC_LAST_TS = 0.0
 BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC = 60.0
@@ -7436,6 +7463,11 @@ def _intraday_launch_projection() -> dict:
         "recommended_intraday_daily_stop_dollars": recommended_intraday_daily_stop,
         "recommended_intraday_daily_loss_limit": recommended_intraday_daily_loss,
         "recommended_env": recommended_env,
+        "launch_action_plan": _intraday_launch_action_plan(
+            required_actions=next_actions,
+            optional_scaling_actions=optional_actions,
+            recommended_env=recommended_env,
+        ),
         "blockers": blockers,
         "next_actions": next_actions,
         "optional_actions": optional_actions,
@@ -15357,11 +15389,18 @@ def dashboard(request: Request):
     if not regime_favorable:
         intraday_launch_gate_blockers.append("regime_not_favorable")
     intraday_launch_gate_blockers_text = ', '.join(intraday_launch_gate_blockers) or 'none'
-    intraday_launch_gate_actions_text = ', '.join(_intraday_launch_gate_actions(intraday_launch_gate_blockers)) or 'none'
-    intraday_projection_next_actions_text = ', '.join(_sl(intraday_projection.get('next_actions'))[:5]) or 'none'
-    intraday_projection_optional_actions_text = ', '.join(_sl(intraday_projection.get('optional_actions'))[:5]) or 'none'
+    intraday_launch_gate_actions = _intraday_launch_gate_actions(intraday_launch_gate_blockers)
+    intraday_launch_action_plan = _intraday_launch_action_plan(
+        gate_actions=intraday_launch_gate_actions,
+        required_actions=intraday_projection.get('next_actions'),
+        optional_scaling_actions=intraday_projection.get('optional_actions'),
+        recommended_env=intraday_projection.get('recommended_env'),
+    )
+    intraday_launch_gate_actions_text = ', '.join(intraday_launch_gate_actions) or 'none'
+    intraday_projection_next_actions_text = ', '.join(_sl(intraday_launch_action_plan.get('required_now'))[:6]) or 'none'
+    intraday_projection_optional_actions_text = ', '.join(_sl(intraday_launch_action_plan.get('optional_scaling'))[:6]) or 'none'
     intraday_projection_capacity_ready = not bool(intraday_projection_blockers)
-    intraday_launch_env_text = "\n".join(f"{k}={v}" for k, v in _sd(intraday_projection.get('recommended_env')).items()) or "none"
+    intraday_launch_env_text = "\n".join(f"{k}={v}" for k, v in _sd(intraday_launch_action_plan.get('recommended_env')).items()) or "none"
     readiness_assessment = _dashboard_readiness_assessment(blockers, scanner_ready, intraday_launch_gate_blockers)
     
     html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Webhook Dashboard</title><meta http-equiv="refresh" content="30"><style>
@@ -15648,19 +15687,40 @@ def diagnostics_intraday_launch_readiness(request: Request):
         {"name": "effective_portfolio_exposure_cap_pct", "ok": float(effective_portfolio_cap) >= 0.90, "value": float(effective_portfolio_cap), "note": "Increase cautiously if you want more intraday capital deployment."},
         {"name": "effective_symbol_exposure_cap_pct", "ok": float(effective_symbol_cap) >= 0.35, "value": float(effective_symbol_cap), "note": "Increase cautiously if you want bigger single-name intraday sizing."},
     ]
-    blockers = [c.get("name") for c in checks if not c.get("ok")]
+    required_check_names = {
+        "live_trading_enabled",
+        "market_tradable_now",
+        "regime_favorable",
+        "dry_run",
+        "projected_open_slots_available",
+        "projected_open_slots_meet_launch_min",
+    }
+    for check in checks:
+        check["required_for_launch"] = check.get("name") in required_check_names
+    blockers = [c.get("name") for c in checks if c.get("required_for_launch") and not c.get("ok")]
+    recommended_followups = [c.get("name") for c in checks if not c.get("required_for_launch") and not c.get("ok")]
+    launch_gate_actions = _intraday_launch_gate_actions(blockers)
+    launch_action_plan = _intraday_launch_action_plan(
+        gate_actions=launch_gate_actions,
+        required_actions=projection.get("next_actions"),
+        optional_scaling_actions=projection.get("optional_actions"),
+        recommended_env=projection.get("recommended_env"),
+    )
     return {
         "ok": True,
+        "patch_version": PATCH_VERSION,
         "effective_date_utc": "2026-06-04",
         "framework": "finra_intraday_margin",
         "strategy_mode": str(globals().get("STRATEGY_MODE") or ""),
         "projection": projection,
         "launch_gate_status": {"market_tradable_now": market_tradable_now, "regime_favorable": regime_favorable},
-        "launch_gate_actions": _intraday_launch_gate_actions(blockers),
+        "launch_gate_actions": launch_gate_actions,
+        "launch_action_plan": launch_action_plan,
         "score_passed": len(checks) - len(blockers),
         "score_total": len(checks),
-        "ready": not blockers,
-        "blockers": blockers,
+        "ready": not blockers and not projection.get("blockers"),
+        "blockers": _unique_nonempty_actions(blockers, projection.get("blockers")),
+        "recommended_followups": recommended_followups,
         "checks": checks,
     }
 
