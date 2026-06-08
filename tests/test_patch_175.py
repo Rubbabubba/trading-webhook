@@ -229,6 +229,7 @@ def test_intraday_launch_readiness_includes_capacity_checks():
     assert "projected_open_slots_meet_launch_min" in names
     assert "intraday_capacity_override_above_base" in names
     assert "launch_gate_status" in out
+    assert "launch_gate_actions" in out
 
 
 def test_patch_display_label_derives_from_patch_version():
@@ -257,6 +258,17 @@ def test_dashboard_readiness_assessment_distinguishes_launch_setup():
     assert blocked["status"] == "CHECK BLOCKERS"
     assert blocked["system_ready"] is False
 
+
+
+def test_intraday_launch_gate_actions_map_dashboard_and_diagnostic_blockers():
+    assert app._intraday_launch_gate_actions(["market_not_tradable_now", "regime_not_favorable"]) == [
+        "wait_for_market_open",
+        "wait_for_regime_favorable",
+    ]
+    assert app._intraday_launch_gate_actions(["projected_open_slots_meet_launch_min", "projected_open_slots_available"]) == [
+        "apply_intraday_capacity_env",
+        "free_slots_or_raise_intraday_max",
+    ]
 
 def test_intraday_launch_projection_returns_copy_ready_env_checklist():
     prev_mode = app.STRATEGY_MODE
@@ -309,7 +321,8 @@ def test_intraday_projection_does_not_block_capacity_when_slots_meet_minimum():
         assert projection["projected_intraday"]["open_slots_gap_to_min"] == 0
         assert "intraday_max_open_positions_not_above_base" not in projection["blockers"]
         assert "projected_intraday_open_slots_below_launch_min" not in projection["blockers"]
-        assert "set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_10" in projection["next_actions"]
+        assert "set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_10" in projection["optional_actions"]
+        assert "set_INTRADAY_MAX_OPEN_POSITIONS_to_at_least_10" not in projection["next_actions"]
     finally:
         app.STRATEGY_MODE = prev_mode
         app.MAX_OPEN_POSITIONS = prev_max
