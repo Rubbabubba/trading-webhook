@@ -61,6 +61,7 @@ from typing import Optional
 import re
 import json
 import uuid
+import gc
 from urllib.request import Request as UrlRequest, urlopen
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
@@ -941,7 +942,7 @@ ALERT_INCLUDE_DETAILS = env_bool("ALERT_INCLUDE_DETAILS", True)
 # =============================
 # Scanner (Phase 1C - shadow mode default)
 # =============================
-SCANNER_ENABLED = env_bool_any("SWING_SCANNER_ENABLED", "SCANNER_ENABLED", default="false")
+SCANNER_ENABLED = env_bool_any("SCANNER_ENABLED", "SWING_SCANNER_ENABLED", default="false")
 SCANNER_DRY_RUN = env_bool_any("SCANNER_DRY_RUN", default="true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
 PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
@@ -968,6 +969,8 @@ COHORT_EVIDENCE_STATE_RESTORE: dict = {}
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
 SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
+SCANNER_FETCH_CHUNK_SIZE = max(1, int(getenv_any("SCANNER_FETCH_CHUNK_SIZE", default="5") or 5))
+SCANNER_MAX_1M_BARS_PER_SYMBOL = max(0, int(getenv_any("SCANNER_MAX_1M_BARS_PER_SYMBOL", default="1500") or 0))
 # Volatility ranking (Option A)
 SCANNER_VOL_RANK_ENABLE = env_bool("SCANNER_VOL_RANK_ENABLE", False)
 # Canonical name: SCANNER_VOL_RANK_TOP_N
@@ -1193,6 +1196,8 @@ def _count_forced_trades_today_ny() -> int:
 # In-memory scan history to help debug the equities scanner.
 # This is intentionally small and ephemeral (in-memory only).
 SCAN_HISTORY_SIZE = int(os.getenv("SCAN_HISTORY_SIZE", "50"))
+SCAN_HISTORY_STORE_FULL_RESULTS = env_bool_any("SCAN_HISTORY_STORE_FULL_RESULTS", default="false")
+SCAN_HISTORY_RESULT_LIMIT = max(0, int(getenv_any("SCAN_HISTORY_RESULT_LIMIT", default="25") or 25))
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 
 # Guards in-memory shared state when scan evaluation runs concurrently
@@ -1218,7 +1223,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-194-clean-intraday-launch-action-plan"
+PATCH_VERSION = "patch-195-intraday-scanner-memory-guardrails"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -10859,6 +10864,73 @@ def fetch_1m_bars_multi(
     return out
 
 
+
+
+def _chunked(items: list, size: int) -> list[list]:
+    chunk_size = max(1, int(size or 1))
+    return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+
+def fetch_1m_bars_multi_guarded(symbols: list[str], lookback_days: int = 1) -> dict[str, list[dict]]:
+    """Memory-guarded 1m bar fetch for scanner runs.
+
+    The Alpaca SDK can materialize a large dataframe for multi-symbol minute bars.
+    Fetching in chunks and trimming per-symbol rows keeps peak memory lower while
+    preserving broad scanner coverage.
+    """
+    syms = _dedupe_keep_order([str(s or "").strip().upper() for s in (symbols or []) if str(s or "").strip()])
+    if not syms:
+        return {}
+    limit = int(SCANNER_MAX_1M_BARS_PER_SYMBOL or 0) or None
+    out: dict[str, list[dict]] = {s: [] for s in syms}
+    for chunk in _chunked(syms, SCANNER_FETCH_CHUNK_SIZE):
+        chunk_rows = fetch_1m_bars_multi(chunk, lookback_days=lookback_days, limit_per_symbol=limit)
+        for sym in chunk:
+            rows = list((chunk_rows or {}).get(sym) or [])
+            if limit and len(rows) > limit:
+                rows = rows[-limit:]
+            out[sym] = rows
+        del chunk_rows
+        gc.collect()
+    return out
+
+
+def _compact_scan_result(row: dict | None) -> dict:
+    item = dict(row or {})
+    compact = {
+        "symbol": item.get("symbol"),
+        "action": item.get("action"),
+        "reason": item.get("reason"),
+        "side": item.get("side"),
+        "signal": item.get("signal"),
+        "price": item.get("price"),
+        "rank_score": item.get("rank_score"),
+        "score": item.get("score"),
+    }
+    no_signal = item.get("no_signal") if isinstance(item.get("no_signal"), dict) else {}
+    if no_signal:
+        compact["no_signal"] = {"primary": no_signal.get("primary")}
+    diagnostics = item.get("diagnostics") if isinstance(item.get("diagnostics"), dict) else {}
+    vp = diagnostics.get("vwap_pullback") if isinstance(diagnostics.get("vwap_pullback"), dict) else {}
+    if vp:
+        compact["vwap_pullback"] = {
+            "reason": vp.get("reason"),
+            "score": vp.get("score"),
+            "dist_to_vwap_pct": vp.get("dist_to_vwap_pct"),
+            "fallback_ready": bool((vp.get("trend_components") or {}).get("fallback_ready")) if isinstance(vp.get("trend_components"), dict) else None,
+        }
+    return {k: v for k, v in compact.items() if v is not None}
+
+
+def _scan_history_results_for_storage(rows: list[dict]) -> list[dict]:
+    items = [dict(r or {}) for r in (rows or []) if isinstance(r, dict)]
+    if SCAN_HISTORY_STORE_FULL_RESULTS:
+        return items[: max(0, int(SCAN_HISTORY_RESULT_LIMIT or 0))] if SCAN_HISTORY_RESULT_LIMIT else items
+    limit = max(0, int(SCAN_HISTORY_RESULT_LIMIT or 0))
+    if limit:
+        items = items[:limit]
+    return [_compact_scan_result(r) for r in items]
+    
 def _volatility_score(bars_1m: list[dict], bars_n: int, metric: str) -> float:
     """Compute a simple volatility score for ranking symbols."""
     if not bars_1m:
@@ -14392,6 +14464,16 @@ def diagnostics_scanner():
             "scanner_status": _worker_status_snapshot().get("scanner_status"),
             "scanner_age_sec": _worker_status_snapshot().get("scanner_age_sec"),
         },
+        "memory_profile": {
+            "scanner_max_symbols_per_cycle": int(SCANNER_MAX_SYMBOLS_PER_CYCLE),
+            "scanner_candidate_limit": int(SCANNER_CANDIDATE_LIMIT),
+            "scanner_lookback_days": int(SCANNER_LOOKBACK_DAYS),
+            "scanner_fetch_chunk_size": int(SCANNER_FETCH_CHUNK_SIZE),
+            "scanner_max_1m_bars_per_symbol": int(SCANNER_MAX_1M_BARS_PER_SYMBOL),
+            "scan_eval_concurrency": int(getenv_int("SCAN_EVAL_CONCURRENCY", 8)),
+            "scan_history_store_full_results": bool(SCAN_HISTORY_STORE_FULL_RESULTS),
+            "scan_history_result_limit": int(SCAN_HISTORY_RESULT_LIMIT),
+        },
         "worker": _worker_status_snapshot(),
     }
 
@@ -16580,12 +16662,22 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
 
         # Batch-fetch bars once per scan so we can compute entry signals + diagnostics.
         _stage_start()
-        bars_map = fetch_1m_bars_multi(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
+        bars_map = fetch_1m_bars_multi_guarded(syms, lookback_days=SCANNER_LOOKBACK_DAYS)
         _stage_end("bars_fetch")
 
         _stage_start()
         candidate_info = rank_scan_candidates(syms, bars_map)
         _stage_end("rank_candidates")
+        scanner_memory_profile = {
+            "lookback_days": int(SCANNER_LOOKBACK_DAYS),
+            "initial_symbols": len(syms),
+            "fetch_chunk_size": int(SCANNER_FETCH_CHUNK_SIZE),
+            "max_1m_bars_per_symbol": int(SCANNER_MAX_1M_BARS_PER_SYMBOL),
+            "bar_rows_after_fetch": int(sum(len(v or []) for v in bars_map.values())),
+            "scan_eval_concurrency": int(max_workers),
+            "store_full_scan_results": bool(SCAN_HISTORY_STORE_FULL_RESULTS),
+            "scan_history_result_limit": int(SCAN_HISTORY_RESULT_LIMIT),
+        }
         if candidate_info:
             filtered_candidate_info = list(candidate_info)
             if SCANNER_UNIVERSE_PROVIDER == "dynamic":
@@ -16605,6 +16697,13 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             if SCANNER_UNIVERSE_PROVIDER == "dynamic" and SCANNER_DYNAMIC_KEEP_ANCHORS:
                 anchors = [s for s in SCANNER_ANCHOR_SYMBOLS if s in bars_map]
                 syms = _dedupe_keep_order(syms + anchors)[: max(selected_n, len(syms))]
+            bars_map = {sym: list(bars_map.get(sym) or []) for sym in syms}
+            scanner_memory_profile["selected_symbols"] = len(syms)
+            scanner_memory_profile["bar_rows_after_candidate_trim"] = int(sum(len(v or []) for v in bars_map.values()))
+            gc.collect()
+        else:
+            scanner_memory_profile["selected_symbols"] = len(syms)
+            scanner_memory_profile["bar_rows_after_candidate_trim"] = scanner_memory_profile["bar_rows_after_fetch"]
 
         vol_rank_info = {
             "enabled": True,
@@ -16983,6 +17082,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "near_miss_symbols": near_miss_symbols[: min(10, len(near_miss_symbols))],
             "top_pre_ranked_candidates": pre_ranked_candidates[: min(10, len(pre_ranked_candidates))],
             "top_candidates": vol_rank_info.get("top", []) if isinstance(vol_rank_info, dict) else [],
+            "scanner_memory_profile": dict(scanner_memory_profile),
             "top_signals": [
                 {"symbol": s.get("symbol"), "signal": s.get("signal"), "score": s.get("score"), "price": s.get("price")}
                 for s in signals[: min(5, len(signals))]
@@ -17096,7 +17196,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     "blocked": blocked,
                     "duration_ms": duration_ms,
                     "summary": scan_summary,
-                    "results": results,
+                    "results": _scan_history_results_for_storage(results),
+                    "results_compacted": not bool(SCAN_HISTORY_STORE_FULL_RESULTS),
+                    "raw_results_count": len(results),
                     "candidate_slots": candidate_slots,
                     "ignored_ranked_out": ignored_ranked_out,
                     "would_submit": would_submit,

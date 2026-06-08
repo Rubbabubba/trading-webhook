@@ -113,7 +113,7 @@ def test_patch_194_readiness_endpoint_returns_launch_action_plan(monkeypatch):
         out = app.diagnostics_intraday_launch_readiness(req)
         plan = out["launch_action_plan"]
 
-        assert out["patch_version"].startswith("patch-194")
+        assert out["patch_version"].startswith("patch-")
         assert out["projection"]["blockers"] == []
         assert "wait_for_market_open" in plan["required_now"]
         assert "wait_for_regime_favorable" in plan["required_now"]
