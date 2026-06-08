@@ -1094,6 +1094,14 @@ VWAP_PB_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH = env_bool("VWAP_PB_ENTRY_CONFIRM_ABOV
 VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT = float(os.getenv("VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT", "0.0002"))
 VWAP_PB_MICRO_CONFIRM_MODE = str(os.getenv("VWAP_PB_MICRO_CONFIRM_MODE", "soft2") or "soft2").strip().lower()
 VWAP_PB_SOFT_CONFIRM_MIN_PASSES = int(os.getenv("VWAP_PB_SOFT_CONFIRM_MIN_PASSES", "2"))
+INTRADAY_VWAP_RECLAIM_ENABLE = env_bool("INTRADAY_VWAP_RECLAIM_ENABLE", "true")
+INTRADAY_VWAP_RECLAIM_MIN_1M_BARS = int(os.getenv("INTRADAY_VWAP_RECLAIM_MIN_1M_BARS", "25"))
+INTRADAY_VWAP_RECLAIM_MIN_5M_BARS = int(os.getenv("INTRADAY_VWAP_RECLAIM_MIN_5M_BARS", "5"))
+INTRADAY_VWAP_RECLAIM_TOUCH_BAND_PCT = float(os.getenv("INTRADAY_VWAP_RECLAIM_TOUCH_BAND_PCT", "0.0040"))
+INTRADAY_VWAP_RECLAIM_MAX_EXTENSION_PCT = float(os.getenv("INTRADAY_VWAP_RECLAIM_MAX_EXTENSION_PCT", "0.0100"))
+INTRADAY_VWAP_RECLAIM_MIN_RECENT_VOL_RATIO = float(os.getenv("INTRADAY_VWAP_RECLAIM_MIN_RECENT_VOL_RATIO", "0.90"))
+INTRADAY_VWAP_RECLAIM_MIN_DAY_RANGE_PCT = float(os.getenv("INTRADAY_VWAP_RECLAIM_MIN_DAY_RANGE_PCT", "0.0040"))
+INTRADAY_VWAP_RECLAIM_SCORE_MIN = float(os.getenv("INTRADAY_VWAP_RECLAIM_SCORE_MIN", "68"))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default=("daily_breakout" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "vwap_pullback")).strip().lower()
@@ -1223,7 +1231,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-195-intraday-scanner-memory-guardrails"
+PATCH_VERSION = "patch-196-intraday-vwap-reclaim-candidates"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -10919,6 +10927,14 @@ def _compact_scan_result(row: dict | None) -> dict:
             "dist_to_vwap_pct": vp.get("dist_to_vwap_pct"),
             "fallback_ready": bool((vp.get("trend_components") or {}).get("fallback_ready")) if isinstance(vp.get("trend_components"), dict) else None,
         }
+    reclaim = diagnostics.get("intraday_vwap_reclaim") if isinstance(diagnostics.get("intraday_vwap_reclaim"), dict) else {}
+    if reclaim:
+        compact["intraday_vwap_reclaim"] = {
+            "reason": reclaim.get("reason"),
+            "score": reclaim.get("score"),
+            "dist_to_vwap_pct": reclaim.get("dist_to_vwap_pct"),
+            "reclaimed_vwap": reclaim.get("reclaimed_vwap"),
+        }
     return {k: v for k, v in compact.items() if v is not None}
 
 
@@ -11580,6 +11596,202 @@ def eval_vwap_pullback_signal_with_diag(bars_5m_or_today: list[dict]) -> tuple[s
     return ("BUY" if diag.get("triggered") else None, diag)
 
 
+
+
+def _intraday_vwap_reclaim_setup(bars_today: list[dict]) -> dict:
+    """Dedicated intraday VWAP reclaim candidate path.
+
+    This is intentionally separate from the swing/daily breakout filters.  It only
+    runs in STRATEGY_MODE=intraday and evaluates same-session 1m/5m structure so
+    intraday entries can be found even when daily breakout candidates are not
+    near a daily high.
+    """
+    enabled = bool(INTRADAY_VWAP_RECLAIM_ENABLE and str(STRATEGY_MODE or "").strip().lower() == "intraday")
+    out: dict = {
+        "enabled": enabled,
+        "eligible": True,
+        "strategy": "intraday_vwap_reclaim",
+        "candidate_path": "intraday_vwap_reclaim",
+    }
+    if not enabled:
+        out["eligible"] = False
+        out["reason"] = "strategy_mode_not_intraday" if str(STRATEGY_MODE or "").strip().lower() != "intraday" else "disabled"
+        return out
+
+    rows = _bars_for_today_regular_session(bars_today)
+    out["bars_1m"] = len(rows)
+    min_1m = max(10, int(INTRADAY_VWAP_RECLAIM_MIN_1M_BARS or 0))
+    out["min_bars_1m"] = min_1m
+    if len(rows) < min_1m:
+        out["eligible"] = False
+        out["reason"] = "insufficient_1m_bars"
+        return out
+
+    bars_5m = resample_5m(rows)
+    out["bars_5m"] = len(bars_5m)
+    min_5m = max(3, int(INTRADAY_VWAP_RECLAIM_MIN_5M_BARS or 0))
+    out["min_bars_5m"] = min_5m
+    if len(bars_5m) < min_5m:
+        out["eligible"] = False
+        out["reason"] = "insufficient_5m_bars"
+        return out
+
+    closes_1m = [float(b.get("close") or 0.0) for b in rows]
+    highs_1m = [float(b.get("high", b.get("close") or 0.0) or 0.0) for b in rows]
+    lows_1m = [float(b.get("low", b.get("close") or 0.0) or 0.0) for b in rows]
+    opens_1m = [float(b.get("open", b.get("close") or 0.0) or 0.0) for b in rows]
+    volumes_1m = [float(b.get("volume") or 0.0) for b in rows]
+    price = closes_1m[-1]
+    prev_close = closes_1m[-2]
+
+    vwaps: list[float] = []
+    pv = 0.0
+    vv = 0.0
+    for h, l, c, v in zip(highs_1m, lows_1m, closes_1m, volumes_1m):
+        tp = (h + l + c) / 3.0
+        pv += tp * v
+        vv += v
+        vwaps.append((pv / vv) if vv > 0 else c)
+    vwap = vwaps[-1]
+    prev_vwap = vwaps[-2] if len(vwaps) >= 2 else vwap
+
+    closes_5m = [float(b.get("close") or 0.0) for b in bars_5m]
+    ema_fast = ema_series(closes_5m, max(3, int(VWAP_PB_EMA_FAST or 9)))
+    ema_slow = ema_series(closes_5m, max(5, int(VWAP_PB_EMA_SLOW or 20)))
+    ema_fast_now = ema_fast[-1] if ema_fast else price
+    ema_slow_now = ema_slow[-1] if ema_slow else price
+
+    touch_lookback = max(3, min(8, len(lows_1m)))
+    touch_band = float(INTRADAY_VWAP_RECLAIM_TOUCH_BAND_PCT)
+    recent_low = min(lows_1m[-touch_lookback:])
+    touched = bool(recent_low <= vwap * (1.0 + touch_band))
+    price_above_vwap = bool(price >= vwap)
+    crossed_vwap = bool(prev_close <= prev_vwap * (1.0 + touch_band * 0.50) and price >= vwap)
+    reclaimed_vwap = bool(price_above_vwap and (crossed_vwap or touched))
+
+    extension_pct = ((price - vwap) / max(vwap, 1e-9)) if vwap else 0.0
+    dist_to_vwap_pct = extension_pct
+    extension_ok = bool(0.0 <= extension_pct <= float(INTRADAY_VWAP_RECLAIM_MAX_EXTENSION_PCT))
+
+    slope_back = max(1, min(5, len(vwaps) - 1))
+    vwap_slope = (vwaps[-1] / max(vwaps[-1 - slope_back], 1e-9) - 1.0) if len(vwaps) > slope_back else 0.0
+    trend_ok = bool(price >= ema_fast_now * 0.997 and ema_fast_now >= ema_slow_now * 0.997 and vwap_slope >= -0.0010)
+
+    recent_vol = _mean(volumes_1m[-5:]) if len(volumes_1m) >= 5 else _mean(volumes_1m)
+    baseline_vol = _mean(volumes_1m[-20:-5]) if len(volumes_1m) >= 20 else _mean(volumes_1m[:-5])
+    recent_1m_vol_ratio = recent_vol / max(baseline_vol, 1.0) if baseline_vol > 0 else 1.0
+    micro_vol_ok = bool(recent_1m_vol_ratio >= float(INTRADAY_VWAP_RECLAIM_MIN_RECENT_VOL_RATIO))
+    relvol_ok = micro_vol_ok
+
+    last_1m_green = bool(closes_1m[-1] >= opens_1m[-1])
+    higher_low_ok = bool(lows_1m[-1] >= lows_1m[-2]) if len(lows_1m) >= 2 else True
+    entry_confirm_ok = bool(closes_1m[-1] >= highs_1m[-2] * (1.0 + float(VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT))) if len(highs_1m) >= 2 else True
+    micro_pass_count = sum(1 for ok in (last_1m_green, higher_low_ok, entry_confirm_ok) if ok)
+    micro_confirm_ok = bool(micro_pass_count >= 2)
+
+    day_high = max(highs_1m) if highs_1m else price
+    day_low = min(lows_1m) if lows_1m else price
+    day_range_pct = ((day_high - day_low) / max(price, 1e-9)) if price else 0.0
+    day_range_ok = bool(day_range_pct >= float(INTRADAY_VWAP_RECLAIM_MIN_DAY_RANGE_PCT))
+    atr_ok = day_range_ok
+
+    score = 0.0
+    if trend_ok: score += 18.0
+    if price_above_vwap: score += 12.0
+    if touched: score += 14.0
+    if crossed_vwap: score += 10.0
+    if reclaimed_vwap: score += 14.0
+    if extension_ok: score += 8.0
+    if vwap_slope >= -0.0005: score += 6.0
+    if micro_vol_ok: score += 8.0
+    if day_range_ok: score += 6.0
+    score += float(micro_pass_count) * 4.0
+    score += max(0.0, min(recent_1m_vol_ratio, 2.0)) * 4.0
+    score += max(0.0, 6.0 - abs(dist_to_vwap_pct) * 800.0)
+
+    component_reasons = []
+    if not trend_ok: component_reasons.append("intraday_trend_fail")
+    if not price_above_vwap: component_reasons.append("price_below_vwap")
+    if not touched: component_reasons.append("vwap_touch_missing")
+    if not reclaimed_vwap: component_reasons.append("vwap_reclaim_missing")
+    if not extension_ok: component_reasons.append("too_extended_from_vwap")
+    if not micro_vol_ok: component_reasons.append("recent_1m_volume_fail")
+    if not day_range_ok: component_reasons.append("day_range_too_small")
+    if not micro_confirm_ok: component_reasons.append("micro_confirm_fail")
+
+    triggered = bool(
+        trend_ok
+        and price_above_vwap
+        and touched
+        and reclaimed_vwap
+        and extension_ok
+        and micro_vol_ok
+        and day_range_ok
+        and micro_confirm_ok
+        and score >= float(INTRADAY_VWAP_RECLAIM_SCORE_MIN)
+    )
+    reason = "ok" if triggered else ("score_too_low" if score < float(INTRADAY_VWAP_RECLAIM_SCORE_MIN) else (component_reasons[0] if component_reasons else "no_reclaim"))
+    stop_price = max(0.01, min(recent_low, vwap * (1.0 - 0.0025)))
+    risk_per_share = max(price - stop_price, price * 0.0025)
+    target_price = price + (risk_per_share * float(SWING_TARGET_R_MULT or 1.8))
+    out.update({
+        "reason": reason,
+        "triggered": triggered,
+        "price": round(price, 4),
+        "prev_close": round(prev_close, 4),
+        "vwap": round(vwap, 4),
+        "ema_fast": round(ema_fast_now, 4),
+        "ema_slow": round(ema_slow_now, 4),
+        "vwap_slope": round(vwap_slope, 6),
+        "touched": bool(touched),
+        "crossed_vwap": bool(crossed_vwap),
+        "regained_vwap": bool(reclaimed_vwap),
+        "reclaimed_vwap": bool(reclaimed_vwap),
+        "trend_ok": bool(trend_ok),
+        "price_above_vwap": bool(price_above_vwap),
+        "extension_ok": bool(extension_ok),
+        "dist_to_vwap_pct": round(dist_to_vwap_pct * 100.0, 3),
+        "recent_1m_vol_ratio": round(recent_1m_vol_ratio, 3),
+        "relvol_ok": bool(relvol_ok),
+        "micro_vol_ok": bool(micro_vol_ok),
+        "last_1m_green": bool(last_1m_green),
+        "higher_low_ok": bool(higher_low_ok),
+        "entry_confirm_ok": bool(entry_confirm_ok),
+        "day_range_pct": round(day_range_pct * 100.0, 3),
+        "day_range_ok": bool(day_range_ok),
+        "atr_ok": bool(atr_ok),
+        "score": round(score, 3),
+        "score_min": float(INTRADAY_VWAP_RECLAIM_SCORE_MIN),
+        "component_reasons": component_reasons,
+        "blocker_split": {
+            "macro": [r for r in component_reasons if r not in {"recent_1m_volume_fail", "micro_confirm_fail"}],
+            "micro": [r for r in component_reasons if r in {"recent_1m_volume_fail", "micro_confirm_fail"}],
+            "fallback": [],
+        },
+        "near_miss": {
+            "near": bool(not triggered and score >= max(0.0, float(INTRADAY_VWAP_RECLAIM_SCORE_MIN) - 8.0)),
+            "score": round(score, 3),
+            "dist_to_level_pct": round(((vwap - price) / max(vwap, 1e-9)) * 100.0, 3) if vwap else None,
+        },
+        "mode_thresholds": {
+            "touch_band_pct": round(touch_band * 100.0, 3),
+            "max_extension_pct": round(float(INTRADAY_VWAP_RECLAIM_MAX_EXTENSION_PCT) * 100.0, 3),
+            "min_recent_1m_vol_ratio": float(INTRADAY_VWAP_RECLAIM_MIN_RECENT_VOL_RATIO),
+            "min_day_range_pct": round(float(INTRADAY_VWAP_RECLAIM_MIN_DAY_RANGE_PCT) * 100.0, 3),
+            "score_min": float(INTRADAY_VWAP_RECLAIM_SCORE_MIN),
+        },
+        "stop_price": round(stop_price, 4),
+        "target_price": round(target_price, 4),
+        "risk_per_share": round(risk_per_share, 4),
+    })
+    return out
+
+
+def eval_intraday_vwap_reclaim_signal_with_diag(bars_today: list[dict]) -> tuple[str | None, dict]:
+    diag = _intraday_vwap_reclaim_setup(bars_today)
+    return ("BUY" if diag.get("triggered") else None, diag)
+    
+    
 def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
     if not bars_today:
         return None
@@ -11674,6 +11886,14 @@ def _no_signal_from_vwap_pb(diag: dict) -> str:
     return "no_signal"
 
 
+def _no_signal_from_intraday_vwap_reclaim(diag: dict) -> str:
+    if not diag.get("enabled"):
+        return _strategy_reason_disabled()
+    if diag.get("eligible") is False:
+        return diag.get("reason") or "not_eligible"
+    return diag.get("reason") or "no_reclaim"
+    
+    
 def _no_signal_from_hf5(diag: dict) -> str:
     # Higher-frequency ORB/VWAP/EMA strategy
     if not diag.get("enabled"):
@@ -11697,18 +11917,24 @@ def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
     pw = diag.get("pwr") or {}
     hf = diag.get("hf5") or {}
     vp = diag.get("vwap_pullback") or {}
+    intraday_reclaim = diag.get("intraday_vwap_reclaim") or {}
 
     mb_reason = _no_signal_from_midbox(mb)
     pw_reason = _no_signal_from_pwr(pw)
     vp_reason = _no_signal_from_vwap_pb(vp)
+    intraday_reclaim_reason = _no_signal_from_intraday_vwap_reclaim(intraday_reclaim)
     hf_reason = "no_signal"
 
     details["midbox"] = {"enabled": bool(mb.get("enabled")), "eligible": mb.get("eligible"), "reason": mb_reason}
     details["pwr"] = {"enabled": bool(pw.get("enabled")), "eligible": pw.get("eligible"), "reason": pw_reason}
     details["vwap_pullback"] = {"enabled": bool(vp.get("enabled")), "eligible": vp.get("eligible"), "reason": vp_reason}
+    details["intraday_vwap_reclaim"] = {"enabled": bool(intraday_reclaim.get("enabled")), "eligible": intraday_reclaim.get("eligible"), "reason": intraday_reclaim_reason}
     details["hf5"] = {"enabled": bool(hf.get("enabled")), "eligible": hf.get("eligible"), "reason": hf_reason}
 
-    enabled = [s for s in ("midbox","pwr","vwap_pullback") if details[s]["enabled"]]
+    strategy_order = ("midbox", "pwr", "vwap_pullback", "intraday_vwap_reclaim")
+    if str(STRATEGY_MODE or "").strip().lower() == "intraday" and SCANNER_PRIMARY_STRATEGY in ("vwap", "vwap_pullback", "vwap_pullback_only"):
+        strategy_order = ("intraday_vwap_reclaim", "vwap_pullback", "midbox", "pwr")
+    enabled = [s for s in strategy_order if details[s]["enabled"]]
     if not enabled:
         return "no_strategy_enabled", details
 
@@ -14474,6 +14700,14 @@ def diagnostics_scanner():
             "scan_history_store_full_results": bool(SCAN_HISTORY_STORE_FULL_RESULTS),
             "scan_history_result_limit": int(SCAN_HISTORY_RESULT_LIMIT),
         },
+        "intraday_candidate_path": {
+            "strategy_mode": STRATEGY_MODE,
+            "scanner_primary_strategy": SCANNER_PRIMARY_STRATEGY,
+            "intraday_vwap_reclaim_enabled": bool(INTRADAY_VWAP_RECLAIM_ENABLE),
+            "intraday_vwap_reclaim_score_min": float(INTRADAY_VWAP_RECLAIM_SCORE_MIN),
+            "intraday_vwap_reclaim_min_1m_bars": int(INTRADAY_VWAP_RECLAIM_MIN_1M_BARS),
+            "intraday_vwap_reclaim_min_5m_bars": int(INTRADAY_VWAP_RECLAIM_MIN_5M_BARS),
+        },
         "worker": _worker_status_snapshot(),
     }
 
@@ -16780,6 +17014,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                         'midbox': {'enabled': bool(SCANNER_ENABLE_MIDBOX and (not use_vwap_only))},
                         'pwr': {'enabled': bool(SCANNER_ENABLE_PWR and (not use_vwap_only)), 'session': PWR_SESSION},
                         'vwap_pullback': {'enabled': bool(SCANNER_ENABLE_VWAP_PB)},
+                        'intraday_vwap_reclaim': {'enabled': bool(INTRADAY_VWAP_RECLAIM_ENABLE and STRATEGY_MODE == "intraday")},
                     }
 
                     # Market-hours context (NY)
@@ -16796,7 +17031,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     _hard_market_closed = bool(ONLY_MARKET_HOURS) and (not _in_mkt)
                     if _hard_market_closed:
                         # Hard gate: do not allow signals outside market hours.
-                        for _k in ('midbox', 'pwr', 'vwap_pullback'):
+                        for _k in ('midbox', 'pwr', 'vwap_pullback', 'intraday_vwap_reclaim'):
                             if diag.get(_k, {}).get('enabled'):
                                 diag[_k].update({'eligible': False, 'reason': 'outside_market_hours'})
                     price = float(bars_today[-1]["close"]) if bars_today else (latest_prices_map.get(sym) or get_latest_price(sym))
@@ -16819,6 +17054,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                             diag["pwr"].update(_scan_diag_pwr(bars_today))
                         if SCANNER_ENABLE_VWAP_PB and (not _hard_market_closed) and diag.get('vwap_pullback', {}).get('eligible', True):
                             diag["vwap_pullback"].update(_scan_diag_vwap_pb(bars_today))
+                        if INTRADAY_VWAP_RECLAIM_ENABLE and STRATEGY_MODE == "intraday" and (not _hard_market_closed) and diag.get('intraday_vwap_reclaim', {}).get('eligible', True):
+                            diag["intraday_vwap_reclaim"].update(_intraday_vwap_reclaim_setup(bars_today))
 
                     action = "hold"
                     reason = "no_signal"
@@ -16855,6 +17092,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                                     signal_name = "VWAP_PULLBACK_FALLBACK"
                             elif vp == "SELL":
                                 signal_name, side = ("VWAP_PULLBACK", "sell")
+                            if not signal_name and INTRADAY_VWAP_RECLAIM_ENABLE and STRATEGY_MODE == "intraday" and (not _hard_market_closed) and diag.get('intraday_vwap_reclaim', {}).get('eligible', True):
+                                reclaim, reclaim_diag = eval_intraday_vwap_reclaim_signal_with_diag(bars_today)
+                                if isinstance(reclaim_diag, dict):
+                                    diag["intraday_vwap_reclaim"].update(reclaim_diag)
+                                if reclaim == "BUY":
+                                    signal_name, side = ("INTRADAY_VWAP_RECLAIM", "buy")
                         else:
                             hf_sig = None
                             if SCANNER_ENABLE_HF:
@@ -16897,9 +17140,10 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                                 preview_plan["preview_only"] = True
                             except Exception as e:
                                 diag["trade_plan_error"] = str(e)
-                            vp_diag_for_rank = diag.get("vwap_pullback", {}) if isinstance(diag.get("vwap_pullback"), dict) else {}
-                            rank_score, rank_meta = compute_signal_rank(signal_name, vp_diag_for_rank)
-                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "score": float(vp_diag_for_rank.get("score", 0.0)), "rank_score": rank_score, "signal_family": rank_meta.get("family"), "rank_meta": rank_meta, "plan_preview": preview_plan})
+                            signal_diag = diag.get("intraday_vwap_reclaim", {}) if str(signal_name or "").upper() == "INTRADAY_VWAP_RECLAIM" else diag.get("vwap_pullback", {})
+                            signal_diag = signal_diag if isinstance(signal_diag, dict) else {}
+                            rank_score, rank_meta = compute_signal_rank(signal_name, signal_diag)
+                            local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "score": float(signal_diag.get("score", 0.0)), "rank_score": rank_score, "signal_family": rank_meta.get("family"), "rank_meta": rank_meta, "plan_preview": preview_plan})
 
                     stop_out = plan.get("stop_price") if plan else None
                     take_out = plan.get("take_price") if plan else None
@@ -16997,6 +17241,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "midbox": Counter(),
             "pwr": Counter(),
             "vwap_pullback": Counter(),
+            "intraday_vwap_reclaim": Counter(),
         }
         for r in results:
             ns = (r.get("no_signal") or {}).get("details") or {}
@@ -17027,12 +17272,20 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         for r in results:
             try:
                 vp = (((r.get("diagnostics") or {}).get("vwap_pullback")) or {})
+                reclaim = (((r.get("diagnostics") or {}).get("intraday_vwap_reclaim")) or {})
                 for reason in (vp.get("component_reasons") or []):
                     component_counts[str(reason)] += 1
+                for reason in (reclaim.get("component_reasons") or []):
+                    component_counts[str(reason)] += 1
                 split = vp.get("blocker_split") or {}
+                reclaim_split = reclaim.get("blocker_split") or {}
                 for reason in (split.get("macro") or []):
                     macro_counts[str(reason)] += 1
+                for reason in (reclaim_split.get("macro") or []):
+                    macro_counts[str(reason)] += 1
                 for reason in (split.get("micro") or []):
+                    micro_counts[str(reason)] += 1
+                for reason in (reclaim_split.get("micro") or []):
                     micro_counts[str(reason)] += 1
                 for reason in (split.get("fallback") or []):
                     fallback_counts[str(reason)] += 1
@@ -17046,6 +17299,17 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     "dist_to_vwap_pct": vp.get("dist_to_vwap_pct"),
                     "fallback_ready": bool((vp.get("trend_components") or {}).get("fallback_ready")),
                 })
+                if reclaim:
+                    reclaim_rank_score, reclaim_rank_meta = compute_signal_rank("INTRADAY_VWAP_RECLAIM", reclaim)
+                    pre_ranked_candidates.append({
+                        "symbol": r.get("symbol"),
+                        "reason": reclaim.get("reason"),
+                        "signal_family": reclaim_rank_meta.get("family"),
+                        "raw_score": reclaim_rank_meta.get("raw_score"),
+                        "rank_score": reclaim_rank_meta.get("rank_score"),
+                        "dist_to_vwap_pct": reclaim.get("dist_to_vwap_pct"),
+                        "candidate_path": "intraday_vwap_reclaim",
+                    })
                 nm = vp.get("near_miss") or {}
                 if bool(nm.get("near")):
                     near_miss_symbols.append({
@@ -17053,6 +17317,15 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                         "score": vp.get("score"),
                         "dist_to_vwap_pct": vp.get("dist_to_vwap_pct"),
                         "reason": vp.get("reason"),
+                    })
+                reclaim_nm = reclaim.get("near_miss") or {}
+                if bool(reclaim_nm.get("near")):
+                    near_miss_symbols.append({
+                        "symbol": r.get("symbol"),
+                        "score": reclaim.get("score"),
+                        "dist_to_vwap_pct": reclaim.get("dist_to_vwap_pct"),
+                        "reason": reclaim.get("reason"),
+                        "candidate_path": "intraday_vwap_reclaim",
                     })
                 tc = vp.get("trend_components") or {}
                 if bool(tc.get("fallback_ready")):
