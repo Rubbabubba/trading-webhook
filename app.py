@@ -700,6 +700,8 @@ MARKET_CLOSE = time(16, 0)
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
+EOD_FLATTEN_VERIFY_ENABLE = env_bool("EOD_FLATTEN_VERIFY_ENABLE", True)
+EOD_FLATTEN_AFTER_MARKET_SUBMIT_ENABLE = env_bool("EOD_FLATTEN_AFTER_MARKET_SUBMIT_ENABLE", False)
 EXIT_COOLDOWN_SEC = int(os.getenv("EXIT_COOLDOWN_SEC", "20"))
 
 # Idempotency
@@ -1178,6 +1180,7 @@ ALERT_DEDUP: dict[str, float] = {}
 REJECTION_HISTORY: list[dict] = []
 DAILY_HALT_STATE: dict = {"session": None, "active": False, "triggered_at": None, "reason": ""}
 LAST_EXIT_HEARTBEAT: dict = {}
+LAST_EOD_FLATTEN_STATUS: dict = {}
 LAST_ALERT_HEARTBEAT: dict = {}
 LAST_SCANNER_TELEMETRY: dict = {}
 SCANNER_TELEMETRY_HISTORY: list[dict] = []
@@ -1244,7 +1247,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-198-intraday-vwap-continuation"
+PATCH_VERSION = "patch-199-eod-flatten-residual-reconcile"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -4506,6 +4509,11 @@ def _alpaca_submit_order_rest(symbol: str, side: str, qty: float, client_order_i
     return data
 
 
+
+def _order_id_from_submit_response(order) -> str:
+    return str(_order_attr(order, "id", "") or _order_attr(order, "order_id", "") or "")
+    
+    
 def submit_market_order(symbol: str, side: str, qty: float):
     client_order_id = f"scan-{str(uuid.uuid4())[:8]}-{str(symbol).lower()}"
     sdk_error = None
@@ -4832,11 +4840,12 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
         return payload
 
     order = submit_market_order(symbol, close_side, qty)
-    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": str(order.id)}
-    record_decision("EXIT", source, symbol, side=close_side, action="order_submitted", reason=reason or "exit", qty=qty, order_id=str(order.id))
-    persist_positions_snapshot(reason="close_position_submitted", extra={"symbol": symbol, "order_id": str(order.id), "exit_reason": reason, "source": source})
+    order_id = _order_id_from_submit_response(order)
+    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id}
+    record_decision("EXIT", source, symbol, side=close_side, action="order_submitted", reason=reason or "exit", qty=qty, order_id=order_id)
+    persist_positions_snapshot(reason="close_position_submitted", extra={"symbol": symbol, "order_id": order_id, "exit_reason": reason, "source": source})
     try:
-        _record_paper_lifecycle("exit", "submitted", symbol=symbol, details={"reason": reason or "exit", "qty": qty, "source": source, "order_id": str(order.id)})
+        _record_paper_lifecycle("exit", "submitted", symbol=symbol, details={"reason": reason or "exit", "qty": qty, "source": source, "order_id": order_id})
     except Exception:
         pass
     try:
@@ -12292,6 +12301,7 @@ def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
     details["pwr"] = {"enabled": bool(pw.get("enabled")), "eligible": pw.get("eligible"), "reason": pw_reason}
     details["vwap_pullback"] = {"enabled": bool(vp.get("enabled")), "eligible": vp.get("eligible"), "reason": vp_reason}
     details["intraday_vwap_reclaim"] = {"enabled": bool(intraday_reclaim.get("enabled")), "eligible": intraday_reclaim.get("eligible"), "reason": intraday_reclaim_reason}
+    details["intraday_vwap_continuation"] = {"enabled": bool(intraday_continuation.get("enabled")), "eligible": intraday_continuation.get("eligible"), "reason": intraday_continuation_reason}
     details["hf5"] = {"enabled": bool(hf.get("enabled")), "eligible": hf.get("eligible"), "reason": hf_reason}
 
     strategy_order = ("midbox", "pwr", "vwap_pullback", "intraday_vwap_reclaim", "intraday_vwap_continuation")
@@ -13667,6 +13677,160 @@ async def webhook(req: Request):
     return out
 
 
+def _eod_flatten_due(ts_ny: datetime | None = None) -> bool:
+    if not str(EOD_FLATTEN_TIME or "").strip():
+        return False
+    if str(globals().get("STRATEGY_MODE") or "").strip().lower() == "swing":
+        return False
+    now = ts_ny or now_ny()
+    eod_t = parse_hhmm(EOD_FLATTEN_TIME)
+    return bool(now.time() >= eod_t)
+
+
+def _position_symbols(rows: list[dict]) -> list[str]:
+    return sorted({str((r or {}).get("symbol") or "").upper() for r in list(rows or []) if str((r or {}).get("symbol") or "").upper()})
+
+
+def _open_close_order_symbols(open_orders: list[dict], position_rows: list[dict]) -> list[str]:
+    pos_side: dict[str, str] = {}
+    for row in list(position_rows or []):
+        sym = str((row or {}).get("symbol") or "").upper()
+        if not sym:
+            continue
+        qty = _safe_float((row or {}).get("qty") or 0.0)
+        pos_side[sym] = "sell" if qty > 0 else "buy"
+    out = []
+    for order in list(open_orders or []):
+        sym = str((order or {}).get("symbol") or "").upper()
+        side = str((order or {}).get("side") or "").lower()
+        if sym and side and pos_side.get(sym) == side:
+            out.append(sym)
+    return sorted(set(out))
+
+
+def _eod_flatten_status_snapshot(live: bool = True) -> dict:
+    now = now_ny()
+    positions = list_open_positions_allowed() if live else []
+    open_orders = list_open_orders_safe() if live else []
+    position_symbols = _position_symbols(positions)
+    pending_close_symbols = _open_close_order_symbols(open_orders, positions)
+    active_plan_symbols = sorted([
+        str(sym or "").upper()
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if isinstance(plan, dict) and bool(plan.get("active"))
+    ])
+    last = dict(LAST_EOD_FLATTEN_STATUS or {})
+    residual_symbols = position_symbols
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "ts_ny": now.isoformat(),
+        "market_open": bool(in_market_hours()),
+        "eod_flatten_time_ny": EOD_FLATTEN_TIME,
+        "eod_due": bool(_eod_flatten_due(now)),
+        "strategy_mode": STRATEGY_MODE,
+        "positions_count": len(position_symbols),
+        "position_symbols": position_symbols,
+        "open_order_count": len(open_orders),
+        "pending_close_order_symbols": pending_close_symbols,
+        "active_plan_symbols": active_plan_symbols,
+        "active_plan_count": len(active_plan_symbols),
+        "residual_symbols": residual_symbols,
+        "residual_count": len(residual_symbols),
+        "fully_flat": len(residual_symbols) == 0,
+        "after_market_submit_enabled": bool(EOD_FLATTEN_AFTER_MARKET_SUBMIT_ENABLE),
+        "verification_enabled": bool(EOD_FLATTEN_VERIFY_ENABLE),
+        "last_eod_flatten": last,
+        "recommended_action": (
+            "none" if not residual_symbols else
+            "verify_pending_close_orders" if pending_close_symbols else
+            "manual_close_or_wait_next_regular_session"
+        ),
+    }
+
+
+def _record_eod_flatten_status(status: dict) -> dict:
+    LAST_EOD_FLATTEN_STATUS.clear()
+    LAST_EOD_FLATTEN_STATUS.update(dict(status or {}))
+    return LAST_EOD_FLATTEN_STATUS
+
+
+def _run_eod_flatten_cycle(reconcile_actions: list[dict] | None = None, reason: str = "eod_flatten") -> dict:
+    now = now_ny()
+    before_positions = list_open_positions_allowed()
+    before_symbols = _position_symbols(before_positions)
+    open_orders_before = list_open_orders_safe()
+    pending_close_before = _open_close_order_symbols(open_orders_before, before_positions)
+    can_submit_closes = bool((not ONLY_MARKET_HOURS) or in_market_hours() or EOD_FLATTEN_AFTER_MARKET_SUBMIT_ENABLE)
+    results: list[dict] = []
+    errors: list[dict] = []
+    skipped: list[dict] = []
+
+    if can_submit_closes:
+        for p in list(before_positions or []):
+            sym = str((p or {}).get("symbol") or "").upper()
+            if not sym:
+                continue
+            try:
+                out = close_position(sym, reason=reason, source="worker_exit")
+                if isinstance(TRADE_PLAN.get(sym), dict):
+                    TRADE_PLAN[sym]["eod_flatten_requested"] = True
+                    TRADE_PLAN[sym]["eod_flatten_requested_at"] = now.isoformat()
+                    TRADE_PLAN[sym]["last_exit_signal_reason"] = reason
+                    TRADE_PLAN[sym]["last_exit_signal_source"] = "worker_exit"
+                results.append({"symbol": sym, "action": "flatten_eod", **dict(out or {})})
+            except Exception as e:
+                err = {"symbol": sym, "action": "flatten_eod_error", "error": str(e)}
+                errors.append(err)
+                results.append(err)
+                record_decision("EXIT", "worker_exit", sym, action="error", reason=f"{reason}_submit_failed:{e}")
+    else:
+        for sym in before_symbols:
+            skipped.append({"symbol": sym, "action": "flatten_eod_skipped", "reason": "outside_market_hours_after_eod"})
+
+    after_positions = list_open_positions_allowed() if EOD_FLATTEN_VERIFY_ENABLE else before_positions
+    after_symbols = _position_symbols(after_positions)
+    open_orders_after = list_open_orders_safe()
+    pending_close_after = _open_close_order_symbols(open_orders_after, after_positions)
+    submitted_symbols = sorted({str(r.get("symbol") or "").upper() for r in results if r.get("closed") or r.get("order_id")})
+    confirmed_closed_symbols = sorted(set(before_symbols) - set(after_symbols))
+    status = {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "eod_flatten",
+        "ts_ny": now.isoformat(),
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "market_open": bool(in_market_hours()),
+        "eod_flatten_time_ny": EOD_FLATTEN_TIME,
+        "can_submit_closes": can_submit_closes,
+        "attempted_symbols": before_symbols if can_submit_closes else [],
+        "skipped_symbols": before_symbols if not can_submit_closes else [],
+        "submitted_symbols": submitted_symbols,
+        "confirmed_closed_symbols": confirmed_closed_symbols,
+        "still_open_symbols": after_symbols,
+        "pending_close_order_symbols_before": pending_close_before,
+        "pending_close_order_symbols": pending_close_after,
+        "results": results + skipped,
+        "close_order_errors": errors,
+        "fully_flat": len(after_symbols) == 0,
+        "residual_count": len(after_symbols),
+        "reconcile": list(reconcile_actions or []),
+        "recommended_action": (
+            "none" if len(after_symbols) == 0 else
+            "verify_pending_close_orders" if pending_close_after else
+            "manual_close_or_wait_next_regular_session"
+        ),
+    }
+    _record_eod_flatten_status(status)
+    update_exit_heartbeat(status=("eod_flatten_flat" if status["fully_flat"] else "eod_flatten_residual"), results=len(results), residual_count=len(after_symbols), still_open_symbols=after_symbols)
+    try:
+        persist_positions_snapshot(reason="eod_flatten_verified" if status["fully_flat"] else "eod_flatten_residual", extra={"eod_flatten": status})
+    except Exception:
+        pass
+    return status
+    
+    
 @app.post("/worker/exit")
 def worker_exit(body: dict = Body(default_factory=dict)):
     """Synchronous worker endpoint so heavy Alpaca/exit work runs in FastAPI threadpool, not on the event loop."""
@@ -13693,27 +13857,22 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         update_exit_heartbeat(status="daily_stop_hit", results=len(out))
         return {"ok": True, "mode": "daily_stop_hit", "daily_halt": DAILY_HALT_STATE, "ts_ny": now_ny().isoformat(), "results": out}
 
-    if ONLY_MARKET_HOURS and not in_market_hours():
-        return {"ok": True, "skipped": True, "reason": "outside_market_hours"}
-
-    # Reconcile internal plans from Alpaca positions (protects positions across restarts)
+    # Reconcile internal plans from Alpaca positions (protects positions across restarts).
+    # This must run before EOD flatten so broker-only residual positions are visible.
     reconcile_actions = reconcile_trade_plans_from_alpaca()
 
     now = now_ny()
-    now_t = now.time()
     results = []
 
-    # EOD flatten is intraday-only. Swing mode intentionally disables clock-based flattening.
-    if EOD_FLATTEN_TIME:
-        eod_t = parse_hhmm(EOD_FLATTEN_TIME)
-        if now_t >= eod_t:
-            for p in list_open_positions_allowed():
-                sym = p["symbol"]
-                out = close_position(sym, reason="eod_flatten", source="worker_exit")
-                if sym in TRADE_PLAN:
-                    TRADE_PLAN[sym]["active"] = False
-                results.append({"symbol": sym, "action": "flatten_eod", **out})
-            return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results, "mode": "eod_flatten"}
+    # EOD flatten is intraday-only. It intentionally runs before the outside-market-hours
+    # skip so residual positions can still be detected and reported after 16:00 ET.
+    if _eod_flatten_due(now):
+        return _run_eod_flatten_cycle(reconcile_actions=reconcile_actions, reason="eod_flatten")
+
+    if ONLY_MARKET_HOURS and not in_market_hours():
+        status = _eod_flatten_status_snapshot(live=True)
+        update_exit_heartbeat(status="outside_market_hours", residual_count=status.get("residual_count"), still_open_symbols=status.get("residual_symbols"))
+        return {"ok": True, "skipped": True, "reason": "outside_market_hours", "eod_flatten_status": status}
 
     # Manage active plans with stop/take
     for symbol, plan in list(TRADE_PLAN.items()):
@@ -16107,6 +16266,13 @@ def dashboard(request: Request):
     intraday_projection_capacity_ready = not bool(intraday_projection_blockers)
     intraday_launch_env_text = "\n".join(f"{k}={v}" for k, v in _sd(intraday_launch_action_plan.get('recommended_env')).items()) or "none"
     intraday_signal_debug = _intraday_signal_debug_from_scan(latest_scan)
+    eod_flatten_status = _sd(snap.get("extra")).get("eod_flatten") if isinstance(_sd(snap.get("extra")).get("eod_flatten"), dict) else _sd(globals().get("LAST_EOD_FLATTEN_STATUS"))
+    eod_flatten_status = _sd(eod_flatten_status)
+    if not eod_flatten_status:
+        eod_flatten_status = {"fully_flat": len(merged) == 0, "still_open_symbols": [r.get("symbol") for r in merged], "residual_count": len(merged), "recommended_action": "none" if len(merged) == 0 else "manual_close_or_wait_next_regular_session"}
+    eod_residual_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("still_open_symbols") or eod_flatten_status.get("residual_symbols")) if str(s).strip()) or "none"
+    eod_submitted_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("submitted_symbols")) if str(s).strip()) or "none"
+    eod_pending_close_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("pending_close_order_symbols")) if str(s).strip()) or "none"
     reclaim_debug = _sd(intraday_signal_debug.get('intraday_vwap_reclaim'))
     continuation_debug = _sd(intraday_signal_debug.get('intraday_vwap_continuation'))
     reclaim_breakdown_rows = _sl(reclaim_debug.get('breakdown'))
@@ -16133,6 +16299,7 @@ def dashboard(request: Request):
 <div class="section card"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Days</th></tr></thead><tbody>{active_rows}</tbody></table><div class="muted" style="margin-top:10px;">Merged from broker-backed snapshot positions plus active plan risk fields. No live quote calls during dashboard render.</div></div>
 <div class="section grid"><div class="card"><h2>P&amp;L Summary</h2><table>{_rows([('positions_with_snapshot', len(merged)),('total_unrealized_pl_snapshot', round(total_unrealized, 2)),('winners', winners),('losers', losers)])}</table></div><div class="card"><h2>Risk Integrity</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('active_plan_count', len(active_plan_symbols)),('broker_positions_count', len(pos_by_symbol)),('trading_blocked', trading_blocked)])}</table><h3 style="margin-top:14px;">Structural exceptions</h3><pre>{html.escape(structural_exceptions_text)}</pre></div><div class="card"><h2>Exposure &amp; Capacity</h2><table>{_rows([('current_open_positions', len(merged)),('effective_max_open_positions', _effective_max_open_positions()),('base_max_open_positions', globals().get('MAX_OPEN_POSITIONS')),('portfolio_exposure_snapshot', snap.get('portfolio_exposure') or ''),('effective_portfolio_cap_pct', _pct(_effective_portfolio_exposure_cap_pct())),('effective_symbol_cap_pct', _pct(_effective_symbol_exposure_cap_pct())),('portfolio_cap_mode', os.getenv('SWING_PORTFOLIO_CAP_BLOCK_MODE',''))])}</table><h3 style="margin-top:14px;">Strategy symbols</h3><pre>{html.escape(chr(10).join([r['symbol'] for r in merged]) or 'none')}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><div class="metric {halt_panel_class}">{html.escape(halt_interpretation)}</div><p class="muted">{html.escape(halt_detail)}</p><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or 'none'),('scanner_dashboard_ready', scanner_ready),('scanner_raw_healthy', scanner_healthy),('scanner_status', scanner_status),('scanner_in_flight', scanner_in_flight),('release_or_reconcile_blocked', trading_blocked),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', 'alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data')),('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data')),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data')),('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data'))])}</table></div></div>
+<div class="section grid"><div class="card"><h2>EOD Flatten Status</h2><table>{_rows([('last_eod_attempt', eod_flatten_status.get('ts_ny') or 'none'),('eod_flatten_time_ny', eod_flatten_status.get('eod_flatten_time_ny') or EOD_FLATTEN_TIME),('fully_flat', eod_flatten_status.get('fully_flat')),('attempted_count', len(_sl(eod_flatten_status.get('attempted_symbols')))),('submitted_count', len(_sl(eod_flatten_status.get('submitted_symbols')))),('confirmed_closed_count', len(_sl(eod_flatten_status.get('confirmed_closed_symbols')))),('residual_count', eod_flatten_status.get('residual_count')),('residual_symbols', eod_residual_symbols_text),('pending_close_order_symbols', eod_pending_close_symbols_text),('recommended_action', eod_flatten_status.get('recommended_action'))])}</table><p class="muted">Submitted symbols: {html.escape(eod_submitted_symbols_text)}. Full details: /diagnostics/eod_flatten_status.</p></div></div>
 <div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R')])}</table><h3 style="margin-top:14px;">Sample maturity</h3><div class="metric {maturity_class}">{maturity}</div></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
 <div class="section grid"><div class="card"><h2>Closed Trades by Rank Bucket</h2><table><thead><tr><th>Rank</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{rank_bucket_rows}</tbody></table></div><div class="card"><h2>Closed Trades by Holding Period</h2><table><thead><tr><th>Hold</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{holding_bucket_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Closed Trades by Symbol</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{symbol_bucket_rows}</tbody></table></div><div class="card"><h2>Strategy / Exit Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table><h3 style="margin-top:14px;">Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{exit_reason_rows}</tbody></table></div></div>
@@ -17065,6 +17232,10 @@ def diagnostics_universe_shadow(limit: int = 10):
 @app.get("/diagnostics/worker_exit_status")
 def diagnostics_worker_exit_status(limit: int = 20):
     return _worker_exit_status_snapshot(limit=limit)
+
+@app.get("/diagnostics/eod_flatten_status")
+def diagnostics_eod_flatten_status():
+    return _eod_flatten_status_snapshot(live=True)
 
 @app.get("/diagnostics/policy_shadow")
 def diagnostics_policy_shadow(limit: int = 10):
