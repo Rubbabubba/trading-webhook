@@ -1231,7 +1231,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-196-intraday-vwap-reclaim-candidates"
+PATCH_VERSION = "patch-197-intraday-signal-truth-debug"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -10903,6 +10903,132 @@ def fetch_1m_bars_multi_guarded(symbols: list[str], lookback_days: int = 1) -> d
     return out
 
 
+def _latest_scan_item() -> dict:
+    if SCAN_HISTORY:
+        current = next((it for it in reversed(SCAN_HISTORY) if str((it or {}).get("boot_id") or "") == SYSTEM_BOOT_ID), None)
+        if isinstance(current, dict):
+            return dict(current)
+        if isinstance(SCAN_HISTORY[-1], dict):
+            return dict(SCAN_HISTORY[-1])
+    if isinstance(LAST_SCAN, dict) and LAST_SCAN:
+        return dict(LAST_SCAN)
+    return {}
+
+
+def _scan_summary_payload(scan: dict | None) -> dict:
+    if not isinstance(scan, dict):
+        return {}
+    summary = scan.get("summary")
+    return dict(summary) if isinstance(summary, dict) else {}
+
+
+def _scan_result_items(scan: dict | None) -> list[dict]:
+    if not isinstance(scan, dict):
+        return []
+    rows = scan.get("results")
+    if not isinstance(rows, list):
+        return []
+    return [dict(r) for r in rows if isinstance(r, dict)]
+
+
+def _current_position_symbols_from_snapshot(snapshot: dict | None = None) -> set[str]:
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    out: set[str] = set()
+    for row in snap.get("positions") or []:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        qty = _safe_float(row.get("qty") or row.get("quantity") or row.get("filled_qty"), 0.0)
+        if qty != 0:
+            out.add(sym)
+    return out
+
+
+def _current_active_plan_symbols_from_snapshot(snapshot: dict | None = None) -> set[str]:
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    plans = snap.get("active_plans") if isinstance(snap.get("active_plans"), dict) else {}
+    out: set[str] = set()
+    for sym, plan in plans.items():
+        if not isinstance(plan, dict) or not bool(plan.get("active")):
+            continue
+        usym = str(sym or plan.get("symbol") or "").strip().upper()
+        if usym:
+            out.add(usym)
+    return out
+
+
+def _dashboard_rejection_truth_status(symbol: str, reasons: list[str], *, current_positions: set[str], current_active_plans: set[str]) -> dict:
+    sym = str(symbol or "").strip().upper()
+    reason_set = {str(r or "").strip() for r in (reasons or []) if str(r or "").strip()}
+    current_position = bool(sym and sym in current_positions)
+    current_plan = bool(sym and sym in current_active_plans)
+    stale_reasons = []
+    if "position_already_open" in reason_set and not current_position:
+        stale_reasons.append("position_already_open")
+    if "plan_or_pending_entry_exists" in reason_set and not current_plan:
+        stale_reasons.append("plan_or_pending_entry_exists")
+    status = "current"
+    if stale_reasons and len(stale_reasons) == len(reason_set & {"position_already_open", "plan_or_pending_entry_exists"}):
+        status = "historical_book_state"
+    elif stale_reasons:
+        status = "mixed_historical_book_state"
+    return {
+        "symbol": sym,
+        "current_position": current_position,
+        "current_active_plan": current_plan,
+        "stale_book_reasons": stale_reasons,
+        "status": status,
+    }
+
+
+def _intraday_signal_debug_from_scan(scan: dict | None) -> dict:
+    scan_item = dict(scan or {}) if isinstance(scan, dict) else _latest_scan_item()
+    summary = _scan_summary_payload(scan_item)
+    results = _scan_result_items(scan_item)
+    ignored = scan_item.get("ignored_ranked_out") if isinstance(scan_item.get("ignored_ranked_out"), list) else []
+    would_submit = scan_item.get("would_submit") if isinstance(scan_item.get("would_submit"), list) else []
+    top_pre_ranked = summary.get("top_pre_ranked_candidates") if isinstance(summary.get("top_pre_ranked_candidates"), list) else []
+    top_signals = summary.get("top_signals") if isinstance(summary.get("top_signals"), list) else []
+    strategy_breakdown = summary.get("strategy_breakdown") if isinstance(summary.get("strategy_breakdown"), dict) else {}
+    reclaim_breakdown = strategy_breakdown.get("intraday_vwap_reclaim") if isinstance(strategy_breakdown.get("intraday_vwap_reclaim"), list) else []
+    action = "waiting_for_reclaim_signal"
+    if top_signals:
+        action = "signal_seen_check_submit_path"
+    if ignored:
+        action = "signal_rank_or_slot_filtered"
+    if would_submit:
+        action = "submit_attempted"
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "strategy_mode": STRATEGY_MODE,
+        "scan_ts_utc": scan_item.get("ts_utc") or LAST_SCAN.get("ts_utc"),
+        "current_boot_scan_available": bool(str(scan_item.get("boot_id") or "") == SYSTEM_BOOT_ID),
+        "scanned": scan_item.get("scanned") or summary.get("scanned") or len(scan_item.get("symbols") or []),
+        "signals": scan_item.get("signals") if scan_item.get("signals") is not None else len(top_signals),
+        "would_trade": scan_item.get("would_trade"),
+        "candidate_slots": scan_item.get("candidate_slots"),
+        "raw_results_count": scan_item.get("raw_results_count") if scan_item.get("raw_results_count") is not None else len(results),
+        "results_compacted": bool(scan_item.get("results_compacted")) if scan_item else None,
+        "actionable_state": action,
+        "intraday_vwap_reclaim": {
+            "enabled": bool(INTRADAY_VWAP_RECLAIM_ENABLE and str(STRATEGY_MODE or "").strip().lower() == "intraday"),
+            "score_min": float(INTRADAY_VWAP_RECLAIM_SCORE_MIN),
+            "breakdown": reclaim_breakdown,
+        },
+        "top_component_blockers": list(summary.get("top_component_blockers") or [])[:8],
+        "top_macro_blockers": list(summary.get("top_macro_blockers") or [])[:8],
+        "top_micro_blockers": list(summary.get("top_micro_blockers") or [])[:8],
+        "near_miss_symbols": list(summary.get("near_miss_symbols") or [])[:8],
+        "top_pre_ranked_candidates": list(top_pre_ranked)[:8],
+        "top_signals": list(top_signals)[:8],
+        "ignored_ranked_out": [dict(r) for r in ignored[:8] if isinstance(r, dict)],
+        "would_submit": [dict(r) for r in would_submit[:8] if isinstance(r, dict)],
+    }
+
+
 def _compact_scan_result(row: dict | None) -> dict:
     item = dict(row or {})
     compact = {
@@ -12693,6 +12819,12 @@ def diagnostics_scans_latest(request: Request, symbol: str = ""):
     """Compatibility alias for clients expecting /diagnostics/scans/latest."""
     require_admin_if_configured(request)
     return diagnostics_last_scan(request=request, symbol=symbol)
+
+
+@app.get("/diagnostics/intraday_signal_debug")
+def diagnostics_intraday_signal_debug(request: Request):
+    require_admin_if_configured(request)
+    return _intraday_signal_debug_from_scan(_latest_scan_item())
 
 
 
@@ -15546,6 +15678,8 @@ def dashboard(request: Request):
     
     candidates = _sl(latest_scan.get("candidates") or latest_scan.get("last_swing_candidates") or scan_state.get("last_swing_candidates")) or _sl(scan_summary.get("top_candidates"))
     recent_scan_history = _sl(scan_state.get("scan_history"))
+    current_position_symbols = _current_position_symbols_from_snapshot(snap)
+    current_active_plan_symbols = _current_active_plan_symbols_from_snapshot(snap)
     rejection_scan_window = max(1, min(25, int(os.getenv("DASHBOARD_REJECTION_SCAN_WINDOW", "8") or 8)))
     correlation_gate_codes = {"correlation_group_limit", "correlation_sector_limit", "correlation_limit"}
 
@@ -15571,15 +15705,26 @@ def dashboard(request: Request):
                 
     rejection_counts = {}
     rejection_rows = []
+    stale_book_rejection_rows = []
     for item in candidates[:15]:
         row = _sd(item)
-        reasons = [str(x) for x in _sl(row.get("rejection_reasons") or row.get("reasons"))]
-        for reason in reasons:
+        reasons = [str(x) for x in _sl(row.get("rejection_reasons") or row.get("reasons")) if str(x).strip()]
+        truth = _dashboard_rejection_truth_status(_up(row.get("symbol")), reasons, current_positions=current_position_symbols, current_active_plans=current_active_plan_symbols)
+        visible_reasons = list(reasons)
+        if truth.get("stale_book_reasons"):
+            stale_book_rejection_rows.append({"symbol": truth.get("symbol"), "reasons": list(truth.get("stale_book_reasons") or []), "status": truth.get("status")})
+            visible_reasons = [r for r in visible_reasons if r not in set(truth.get("stale_book_reasons") or [])]
+            if not visible_reasons:
+                visible_reasons = [f"historical_book_state:{','.join(truth.get('stale_book_reasons') or [])}"]
+        for reason in visible_reasons:
             rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
-        if reasons and len(rejection_rows) < 5:
-            rejection_rows.append(f"<tr><td>{html.escape(_up(row.get('symbol')))}</td><td>{_dashboard_fmt(row.get('rank_score'))}</td><td>{_dashboard_fmt(row.get('close'))}</td><td>{_dashboard_fmt(row.get('breakout_distance_pct'))}</td><td>{html.escape(', '.join(reasons[:3]))}</td></tr>")
+        if visible_reasons and len(rejection_rows) < 5:
+            rejection_rows.append(f"<tr><td>{html.escape(_up(row.get('symbol')))}</td><td>{_dashboard_fmt(row.get('rank_score'))}</td><td>{_dashboard_fmt(row.get('close'))}</td><td>{_dashboard_fmt(row.get('breakout_distance_pct'))}</td><td>{html.escape(', '.join(visible_reasons[:3]))}</td></tr>")
     top_rejection_html = "".join(rejection_rows) or '<tr><td colspan="5" class="muted">No current candidate rejections in persisted scan state.</td></tr>'
     rejection_totals_html = "".join(f"<tr><td>{html.escape(str(r))}</td><td>{c}</td></tr>" for r, c in sorted(rejection_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]) or '<tr><td colspan="2" class="muted">No rejection totals available.</td></tr>'
+    stale_book_rejection_note = "none"
+    if stale_book_rejection_rows:
+        stale_book_rejection_note = "; ".join(f"{r.get('symbol')}: {', '.join(r.get('reasons') or [])}" for r in stale_book_rejection_rows[:5])
 
     rejection_window_html = "".join(f"<tr><td>{html.escape(str(r))}</td><td>{c}</td></tr>" for r, c in sorted(rejection_window_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:12]) or '<tr><td colspan="2" class="muted">No rejection reasons found in recent scan history.</td></tr>'
     # Deduplicate correlation-only blocked rows by symbol to avoid noisy repeats across scans.
@@ -15717,6 +15862,18 @@ def dashboard(request: Request):
     intraday_projection_optional_actions_text = ', '.join(_sl(intraday_launch_action_plan.get('optional_scaling'))[:6]) or 'none'
     intraday_projection_capacity_ready = not bool(intraday_projection_blockers)
     intraday_launch_env_text = "\n".join(f"{k}={v}" for k, v in _sd(intraday_launch_action_plan.get('recommended_env')).items()) or "none"
+    intraday_signal_debug = _intraday_signal_debug_from_scan(latest_scan)
+    reclaim_debug = _sd(intraday_signal_debug.get('intraday_vwap_reclaim'))
+    reclaim_breakdown_rows = _sl(reclaim_debug.get('breakdown'))
+    reclaim_breakdown_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in reclaim_breakdown_rows[:5]) or "none"
+    component_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_component_blockers'))[:5]) or "none"
+    macro_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_macro_blockers'))[:5]) or "none"
+    micro_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_micro_blockers'))[:5]) or "none"
+    near_miss_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('reason')}:{_sd(r).get('score')}" for r in _sl(intraday_signal_debug.get('near_miss_symbols'))[:5]) or "none"
+    top_pre_ranked_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('candidate_path') or _sd(r).get('signal_family')}:{_sd(r).get('reason')}:{_sd(r).get('rank_score')}" for r in _sl(intraday_signal_debug.get('top_pre_ranked_candidates'))[:5]) or "none"
+    top_signal_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_sd(r).get('score')}" for r in _sl(intraday_signal_debug.get('top_signals'))[:5]) or "none"
+    ignored_rank_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('reason')}:{_sd(r).get('rank_score')}" for r in _sl(intraday_signal_debug.get('ignored_ranked_out'))[:5]) or "none"
+    would_submit_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('submit_state') or _sd(r).get('reason') or _sd(r).get('ok')}" for r in _sl(intraday_signal_debug.get('would_submit'))[:5]) or "none"
     readiness_assessment = _dashboard_readiness_assessment(blockers, scanner_ready, intraday_launch_gate_blockers)
     
     html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Webhook Dashboard</title><meta http-equiv="refresh" content="30"><style>
@@ -15735,7 +15892,8 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>With later scans</th><th>Avg best move</th><th>Avg last move</th><th>Positive rate</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Follow-through is computed only from later persisted scan closes for the same symbol. Rows without future closes are counted but do not invent returns.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
 <div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_ready_now', readiness_assessment.get('intraday_launch_ready')),('projection_capacity_ready', intraday_projection_capacity_ready),('projection_blockers', intraday_projection_blockers_text),('launch_gate_actions', intraday_launch_gate_actions_text),('required_actions', intraday_projection_next_actions_text),('optional_scaling_actions', intraday_projection_optional_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('recommended_intraday_open_slots', intraday_projection.get('recommended_intraday_open_slots')),('recommended_intraday_daily_stop', intraday_projection.get('recommended_intraday_daily_stop_dollars')),('recommended_intraday_daily_loss', intraday_projection.get('recommended_intraday_daily_loss_limit')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><h3 style="margin-top:14px;">Launch env checklist</h3><pre>{html.escape(intraday_launch_env_text)}</pre><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('scanner_ready', scanner_ready),('component_ready', readiness_assessment.get('system_ready')),('intraday_launch_ready', readiness_assessment.get('intraday_launch_ready')),('intraday_launch_blockers', readiness_assessment.get('launch_blocker_count')),('launch_gate_blockers', intraday_launch_gate_blockers_text),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {html.escape(str(readiness_assessment.get('class') or 'neutral'))}">{html.escape(str(readiness_assessment.get('status') or 'CHECK BLOCKERS'))}</div></div></div>
 <div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_ready', scanner_ready),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
-<div class="section grid"><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table></div><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Intraday Signal Debug</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('candidate_slots', intraday_signal_debug.get('candidate_slots')),('raw_results_count', intraday_signal_debug.get('raw_results_count')),('reclaim_enabled', reclaim_debug.get('enabled')),('reclaim_score_min', reclaim_debug.get('score_min')),('reclaim_breakdown', reclaim_breakdown_text),('component_blockers', component_blocker_text),('macro_blockers', macro_blocker_text),('micro_blockers', micro_blocker_text),('near_misses', near_miss_text),('top_pre_ranked', top_pre_ranked_text),('top_signals', top_signal_text),('rank_filtered', ignored_rank_text),('submit_attempts', would_submit_text)])}</table><p class="muted">This panel reads the latest persisted scanner summary. It separates real intraday reclaim blockers from historical daily/swing rejection rows.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Book-state reasons are cross-checked against the current snapshot. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
+<div class="section grid"><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
 <div class="section grid"><div class="card"><h2>Recent Lifecycle / Dispatch</h2><table><thead><tr><th>UTC</th><th>Symbol</th><th>State/Event</th><th>Reason</th></tr></thead><tbody>{lifecycle_rows}</tbody></table></div><div class="card"><h2>Current Blockers</h2><pre>{blockers_text}</pre><h2 style="margin-top:16px;">Heavy Detail Split</h2><p class="muted">Full raw candidate payloads, blocker JSON, scanner history, lifecycle history, and live reconcile remain available from diagnostics endpoints instead of embedded here.</p></div></div>
 </div></body></html>'''
