@@ -994,6 +994,8 @@ SIGNAL_RANKING_ENABLED = env_bool("SIGNAL_RANKING_ENABLED", True)
 SCANNER_RANK_MIN_SCORE = float(getenv_any("SCANNER_RANK_MIN_SCORE", default="115"))
 SCANNER_FALLBACK_MIN_RANK_SCORE = float(getenv_any("SCANNER_FALLBACK_MIN_RANK_SCORE", default="125"))
 SCANNER_FALLBACK_MIN_RAW_SCORE = float(getenv_any("SCANNER_FALLBACK_MIN_RAW_SCORE", default="120"))
+INTRADAY_VWAP_RECLAIM_MIN_RANK_SCORE = float(getenv_any("INTRADAY_VWAP_RECLAIM_MIN_RANK_SCORE", default="80"))
+INTRADAY_VWAP_CONTINUATION_MIN_RANK_SCORE = float(getenv_any("INTRADAY_VWAP_CONTINUATION_MIN_RANK_SCORE", default="80"))
 SIGNAL_RANK_PRIMARY_BONUS = float(getenv_any("SIGNAL_RANK_PRIMARY_BONUS", default="8"))
 SIGNAL_RANK_FALLBACK_PENALTY = float(getenv_any("SIGNAL_RANK_FALLBACK_PENALTY", default="12"))
 SIGNAL_RANK_TOUCH_BONUS = float(getenv_any("SIGNAL_RANK_TOUCH_BONUS", default="4"))
@@ -1102,6 +1104,17 @@ INTRADAY_VWAP_RECLAIM_MAX_EXTENSION_PCT = float(os.getenv("INTRADAY_VWAP_RECLAIM
 INTRADAY_VWAP_RECLAIM_MIN_RECENT_VOL_RATIO = float(os.getenv("INTRADAY_VWAP_RECLAIM_MIN_RECENT_VOL_RATIO", "0.90"))
 INTRADAY_VWAP_RECLAIM_MIN_DAY_RANGE_PCT = float(os.getenv("INTRADAY_VWAP_RECLAIM_MIN_DAY_RANGE_PCT", "0.0040"))
 INTRADAY_VWAP_RECLAIM_SCORE_MIN = float(os.getenv("INTRADAY_VWAP_RECLAIM_SCORE_MIN", "68"))
+INTRADAY_VWAP_CONTINUATION_ENABLE = env_bool("INTRADAY_VWAP_CONTINUATION_ENABLE", "true")
+INTRADAY_VWAP_CONTINUATION_MIN_1M_BARS = int(os.getenv("INTRADAY_VWAP_CONTINUATION_MIN_1M_BARS", "25"))
+INTRADAY_VWAP_CONTINUATION_MIN_5M_BARS = int(os.getenv("INTRADAY_VWAP_CONTINUATION_MIN_5M_BARS", "5"))
+INTRADAY_VWAP_CONTINUATION_SCORE_MIN = float(os.getenv("INTRADAY_VWAP_CONTINUATION_SCORE_MIN", "62"))
+INTRADAY_VWAP_CONTINUATION_MAX_EXTENSION_PCT = float(os.getenv("INTRADAY_VWAP_CONTINUATION_MAX_EXTENSION_PCT", "0.012"))
+INTRADAY_VWAP_CONTINUATION_MIN_RECENT_VOL_RATIO = float(os.getenv("INTRADAY_VWAP_CONTINUATION_MIN_RECENT_VOL_RATIO", "0.75"))
+INTRADAY_VWAP_CONTINUATION_MIN_DAY_RANGE_PCT = float(os.getenv("INTRADAY_VWAP_CONTINUATION_MIN_DAY_RANGE_PCT", "0.003"))
+INTRADAY_VWAP_CONTINUATION_ALLOW_NEGATIVE_VWAP_SLOPE_PCT = float(os.getenv("INTRADAY_VWAP_CONTINUATION_ALLOW_NEGATIVE_VWAP_SLOPE_PCT", "-0.0005"))
+INTRADAY_VWAP_CONTINUATION_REQUIRE_GREEN_LAST_1M = env_bool("INTRADAY_VWAP_CONTINUATION_REQUIRE_GREEN_LAST_1M", "false")
+INTRADAY_VWAP_CONTINUATION_REQUIRE_HIGHER_LOW = env_bool("INTRADAY_VWAP_CONTINUATION_REQUIRE_HIGHER_LOW", "true")
+INTRADAY_VWAP_CONTINUATION_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH = env_bool("INTRADAY_VWAP_CONTINUATION_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH", "false")
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default=("daily_breakout" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "vwap_pullback")).strip().lower()
@@ -1231,7 +1244,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-197-intraday-signal-truth-debug"
+PATCH_VERSION = "patch-198-intraday-vwap-continuation"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7273,6 +7286,15 @@ def release_symbol_lock(symbol: str):
 def soften_symbol_lock(symbol: str, lock_sec: int = 5):
     with STATE_LOCK:
         SYMBOL_LOCKS[symbol] = utc_ts() + max(int(lock_sec), 1)
+        
+
+def _scanner_min_rank_for_signal(signal_name: str, family: str = "primary") -> float:
+    sig = str(signal_name or "").upper()
+    if sig == "INTRADAY_VWAP_RECLAIM":
+        return float(INTRADAY_VWAP_RECLAIM_MIN_RANK_SCORE)
+    if sig == "INTRADAY_VWAP_CONTINUATION":
+        return float(INTRADAY_VWAP_CONTINUATION_MIN_RANK_SCORE)
+    return float(SCANNER_FALLBACK_MIN_RANK_SCORE if str(family or "") == "fallback" else SCANNER_RANK_MIN_SCORE)
 
 
 def compute_signal_rank(signal_name: str, vp_diag: dict | None = None) -> tuple[float, dict]:
@@ -11018,6 +11040,12 @@ def _intraday_signal_debug_from_scan(scan: dict | None) -> dict:
             "score_min": float(INTRADAY_VWAP_RECLAIM_SCORE_MIN),
             "breakdown": reclaim_breakdown,
         },
+        "intraday_vwap_continuation": {
+            "enabled": bool(INTRADAY_VWAP_CONTINUATION_ENABLE and str(STRATEGY_MODE or "").strip().lower() == "intraday"),
+            "score_min": float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN),
+            "min_rank_score": float(INTRADAY_VWAP_CONTINUATION_MIN_RANK_SCORE),
+            "breakdown": strategy_breakdown.get("intraday_vwap_continuation") if isinstance(strategy_breakdown.get("intraday_vwap_continuation"), list) else [],
+        },
         "top_component_blockers": list(summary.get("top_component_blockers") or [])[:8],
         "top_macro_blockers": list(summary.get("top_macro_blockers") or [])[:8],
         "top_micro_blockers": list(summary.get("top_micro_blockers") or [])[:8],
@@ -11060,6 +11088,14 @@ def _compact_scan_result(row: dict | None) -> dict:
             "score": reclaim.get("score"),
             "dist_to_vwap_pct": reclaim.get("dist_to_vwap_pct"),
             "reclaimed_vwap": reclaim.get("reclaimed_vwap"),
+        }
+    continuation = diagnostics.get("intraday_vwap_continuation") if isinstance(diagnostics.get("intraday_vwap_continuation"), dict) else {}
+    if continuation:
+        compact["intraday_vwap_continuation"] = {
+            "reason": continuation.get("reason"),
+            "score": continuation.get("score"),
+            "dist_to_vwap_pct": continuation.get("dist_to_vwap_pct"),
+            "continuation": continuation.get("continuation"),
         }
     return {k: v for k, v in compact.items() if v is not None}
 
@@ -11916,6 +11952,197 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict]) -> dict:
 def eval_intraday_vwap_reclaim_signal_with_diag(bars_today: list[dict]) -> tuple[str | None, dict]:
     diag = _intraday_vwap_reclaim_setup(bars_today)
     return ("BUY" if diag.get("triggered") else None, diag)
+
+
+def _intraday_vwap_continuation_setup(bars_today: list[dict]) -> dict:
+    """Intraday VWAP trend-continuation path.
+
+    This is separate from VWAP reclaim: it can select symbols that are already
+    above VWAP with acceptable trend, volume, extension, and micro structure.
+    """
+    enabled = bool(INTRADAY_VWAP_CONTINUATION_ENABLE and str(STRATEGY_MODE or "").strip().lower() == "intraday")
+    out: dict = {
+        "enabled": enabled,
+        "eligible": True,
+        "strategy": "intraday_vwap_continuation",
+        "candidate_path": "intraday_vwap_continuation",
+    }
+    if not enabled:
+        out["eligible"] = False
+        out["reason"] = "strategy_mode_not_intraday" if str(STRATEGY_MODE or "").strip().lower() != "intraday" else "disabled"
+        return out
+
+    rows = _bars_for_today_regular_session(bars_today)
+    out["bars_1m"] = len(rows)
+    min_1m = max(10, int(INTRADAY_VWAP_CONTINUATION_MIN_1M_BARS or 0))
+    out["min_bars_1m"] = min_1m
+    if len(rows) < min_1m:
+        out["eligible"] = False
+        out["reason"] = "insufficient_1m_bars"
+        return out
+
+    bars_5m = resample_5m(rows)
+    out["bars_5m"] = len(bars_5m)
+    min_5m = max(3, int(INTRADAY_VWAP_CONTINUATION_MIN_5M_BARS or 0))
+    out["min_bars_5m"] = min_5m
+    if len(bars_5m) < min_5m:
+        out["eligible"] = False
+        out["reason"] = "insufficient_5m_bars"
+        return out
+
+    closes_1m = [float(b.get("close") or 0.0) for b in rows]
+    highs_1m = [float(b.get("high", b.get("close") or 0.0) or 0.0) for b in rows]
+    lows_1m = [float(b.get("low", b.get("close") or 0.0) or 0.0) for b in rows]
+    opens_1m = [float(b.get("open", b.get("close") or 0.0) or 0.0) for b in rows]
+    volumes_1m = [float(b.get("volume") or 0.0) for b in rows]
+    price = closes_1m[-1]
+
+    vwaps: list[float] = []
+    pv = 0.0
+    vv = 0.0
+    for h, l, c, v in zip(highs_1m, lows_1m, closes_1m, volumes_1m):
+        tp = (h + l + c) / 3.0
+        pv += tp * v
+        vv += v
+        vwaps.append((pv / vv) if vv > 0 else c)
+    vwap = vwaps[-1]
+
+    closes_5m = [float(b.get("close") or 0.0) for b in bars_5m]
+    ema_fast = ema_series(closes_5m, max(3, int(VWAP_PB_EMA_FAST or 9)))
+    ema_slow = ema_series(closes_5m, max(5, int(VWAP_PB_EMA_SLOW or 20)))
+    ema_fast_now = ema_fast[-1] if ema_fast else price
+    ema_slow_now = ema_slow[-1] if ema_slow else price
+
+    slope_back = max(1, min(5, len(vwaps) - 1))
+    vwap_slope = (vwaps[-1] / max(vwaps[-1 - slope_back], 1e-9) - 1.0) if len(vwaps) > slope_back else 0.0
+    dist_to_vwap_pct = ((price - vwap) / max(vwap, 1e-9)) if vwap else 0.0
+    price_above_vwap = bool(price >= vwap)
+    price_above_fast = bool(price >= ema_fast_now * 0.998)
+    ema_stack_ok = bool(ema_fast_now >= ema_slow_now * 0.998)
+    slope_ok = bool(vwap_slope >= float(INTRADAY_VWAP_CONTINUATION_ALLOW_NEGATIVE_VWAP_SLOPE_PCT))
+    extension_ok = bool(0.0 <= dist_to_vwap_pct <= float(INTRADAY_VWAP_CONTINUATION_MAX_EXTENSION_PCT))
+    trend_ok = bool(price_above_vwap and price_above_fast and ema_stack_ok and slope_ok)
+
+    recent_vol = _mean(volumes_1m[-5:]) if len(volumes_1m) >= 5 else _mean(volumes_1m)
+    baseline_vol = _mean(volumes_1m[-20:-5]) if len(volumes_1m) >= 20 else _mean(volumes_1m[:-5])
+    recent_1m_vol_ratio = recent_vol / max(baseline_vol, 1.0) if baseline_vol > 0 else 1.0
+    micro_vol_ok = bool(recent_1m_vol_ratio >= float(INTRADAY_VWAP_CONTINUATION_MIN_RECENT_VOL_RATIO))
+    relvol_ok = micro_vol_ok
+
+    last_1m_green = bool(closes_1m[-1] >= opens_1m[-1])
+    higher_low_ok = bool(lows_1m[-1] >= lows_1m[-2]) if len(lows_1m) >= 2 else True
+    entry_confirm_ok = bool(closes_1m[-1] >= highs_1m[-2] * (1.0 + float(VWAP_PB_ENTRY_CONFIRM_BUFFER_PCT))) if len(highs_1m) >= 2 else True
+    micro_conditions = []
+    if INTRADAY_VWAP_CONTINUATION_REQUIRE_GREEN_LAST_1M:
+        micro_conditions.append(last_1m_green)
+    if INTRADAY_VWAP_CONTINUATION_REQUIRE_HIGHER_LOW:
+        micro_conditions.append(higher_low_ok)
+    if INTRADAY_VWAP_CONTINUATION_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH:
+        micro_conditions.append(entry_confirm_ok)
+    micro_confirm_ok = all(micro_conditions) if micro_conditions else True
+
+    day_high = max(highs_1m) if highs_1m else price
+    day_low = min(lows_1m) if lows_1m else price
+    day_range_pct = ((day_high - day_low) / max(price, 1e-9)) if price else 0.0
+    day_range_ok = bool(day_range_pct >= float(INTRADAY_VWAP_CONTINUATION_MIN_DAY_RANGE_PCT))
+    atr_ok = day_range_ok
+
+    score = 0.0
+    if trend_ok: score += 20.0
+    if price_above_vwap: score += 12.0
+    if price_above_fast: score += 10.0
+    if ema_stack_ok: score += 10.0
+    if slope_ok: score += 8.0
+    if extension_ok: score += 10.0
+    if micro_vol_ok: score += 8.0
+    if day_range_ok: score += 6.0
+    if last_1m_green: score += 4.0
+    if higher_low_ok: score += 4.0
+    if entry_confirm_ok: score += 4.0
+    score += max(0.0, min(recent_1m_vol_ratio, 2.0)) * 4.0
+    score += max(0.0, 6.0 - abs(dist_to_vwap_pct) * 600.0)
+
+    component_reasons = []
+    if not price_above_vwap: component_reasons.append("price_below_vwap")
+    if not price_above_fast: component_reasons.append("price_below_ema_fast")
+    if not ema_stack_ok: component_reasons.append("ema_stack_fail")
+    if not slope_ok: component_reasons.append("slope_fail")
+    if not extension_ok: component_reasons.append("too_extended_from_vwap")
+    if not micro_vol_ok: component_reasons.append("recent_1m_volume_fail")
+    if not day_range_ok: component_reasons.append("day_range_too_small")
+    if not micro_confirm_ok: component_reasons.append("micro_confirm_fail")
+    if not trend_ok and "intraday_trend_fail" not in component_reasons:
+        component_reasons.append("intraday_trend_fail")
+
+    triggered = bool(
+        trend_ok
+        and extension_ok
+        and micro_vol_ok
+        and day_range_ok
+        and micro_confirm_ok
+        and score >= float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN)
+    )
+    reason = "ok" if triggered else ("score_too_low" if score < float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN) else (component_reasons[0] if component_reasons else "no_continuation"))
+    recent_low = min(lows_1m[-max(3, min(8, len(lows_1m))):])
+    stop_price = max(0.01, min(recent_low, vwap * (1.0 - 0.0025)))
+    risk_per_share = max(price - stop_price, price * 0.0025)
+    target_price = price + (risk_per_share * float(SWING_TARGET_R_MULT or 1.8))
+    out.update({
+        "reason": reason,
+        "triggered": triggered,
+        "price": round(price, 4),
+        "vwap": round(vwap, 4),
+        "ema_fast": round(ema_fast_now, 4),
+        "ema_slow": round(ema_slow_now, 4),
+        "vwap_slope": round(vwap_slope, 6),
+        "touched": bool(price_above_vwap),
+        "continuation": True,
+        "trend_ok": bool(trend_ok),
+        "price_above_vwap": bool(price_above_vwap),
+        "price_above_fast": bool(price_above_fast),
+        "ema_stack_ok": bool(ema_stack_ok),
+        "slope_ok": bool(slope_ok),
+        "extension_ok": bool(extension_ok),
+        "dist_to_vwap_pct": round(dist_to_vwap_pct * 100.0, 3),
+        "recent_1m_vol_ratio": round(recent_1m_vol_ratio, 3),
+        "relvol_ok": bool(relvol_ok),
+        "micro_vol_ok": bool(micro_vol_ok),
+        "last_1m_green": bool(last_1m_green),
+        "higher_low_ok": bool(higher_low_ok),
+        "entry_confirm_ok": bool(entry_confirm_ok),
+        "micro_confirm_ok": bool(micro_confirm_ok),
+        "day_range_pct": round(day_range_pct * 100.0, 3),
+        "day_range_ok": bool(day_range_ok),
+        "atr_ok": bool(atr_ok),
+        "score": round(score, 3),
+        "score_min": float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN),
+        "component_reasons": component_reasons,
+        "blocker_split": {
+            "macro": [r for r in component_reasons if r not in {"recent_1m_volume_fail", "micro_confirm_fail"}],
+            "micro": [r for r in component_reasons if r in {"recent_1m_volume_fail", "micro_confirm_fail"}],
+            "fallback": [],
+        },
+        "near_miss": {
+            "near": bool(not triggered and score >= max(0.0, float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN) - 8.0)),
+            "score": round(score, 3),
+            "dist_to_level_pct": round(dist_to_vwap_pct * 100.0, 3),
+        },
+        "mode_thresholds": {
+            "max_extension_pct": round(float(INTRADAY_VWAP_CONTINUATION_MAX_EXTENSION_PCT) * 100.0, 3),
+            "min_recent_1m_vol_ratio": float(INTRADAY_VWAP_CONTINUATION_MIN_RECENT_VOL_RATIO),
+            "min_day_range_pct": round(float(INTRADAY_VWAP_CONTINUATION_MIN_DAY_RANGE_PCT) * 100.0, 3),
+            "score_min": float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN),
+        },
+        "stop_price": round(stop_price, 4),
+        "target_price": round(target_price, 4),
+        "risk_per_share": round(risk_per_share, 4),
+    })
+    return out
+
+
+def eval_intraday_vwap_continuation_signal_with_diag(bars_today: list[dict]) -> tuple[str | None, dict]:
+    diag = _intraday_vwap_continuation_setup(bars_today)
+    return ("BUY" if diag.get("triggered") else None, diag)
     
     
 def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
@@ -12018,6 +12245,14 @@ def _no_signal_from_intraday_vwap_reclaim(diag: dict) -> str:
     if diag.get("eligible") is False:
         return diag.get("reason") or "not_eligible"
     return diag.get("reason") or "no_reclaim"
+
+
+def _no_signal_from_intraday_vwap_continuation(diag: dict) -> str:
+    if not diag.get("enabled"):
+        return _strategy_reason_disabled()
+    if diag.get("eligible") is False:
+        return diag.get("reason") or "not_eligible"
+    return diag.get("reason") or "no_continuation"
     
     
 def _no_signal_from_hf5(diag: dict) -> str:
@@ -12044,11 +12279,13 @@ def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
     hf = diag.get("hf5") or {}
     vp = diag.get("vwap_pullback") or {}
     intraday_reclaim = diag.get("intraday_vwap_reclaim") or {}
+    intraday_continuation = diag.get("intraday_vwap_continuation") or {}
 
     mb_reason = _no_signal_from_midbox(mb)
     pw_reason = _no_signal_from_pwr(pw)
     vp_reason = _no_signal_from_vwap_pb(vp)
     intraday_reclaim_reason = _no_signal_from_intraday_vwap_reclaim(intraday_reclaim)
+    intraday_continuation_reason = _no_signal_from_intraday_vwap_continuation(intraday_continuation)
     hf_reason = "no_signal"
 
     details["midbox"] = {"enabled": bool(mb.get("enabled")), "eligible": mb.get("eligible"), "reason": mb_reason}
@@ -12057,9 +12294,9 @@ def _derive_no_signal_details(diag: dict) -> tuple[str, dict]:
     details["intraday_vwap_reclaim"] = {"enabled": bool(intraday_reclaim.get("enabled")), "eligible": intraday_reclaim.get("eligible"), "reason": intraday_reclaim_reason}
     details["hf5"] = {"enabled": bool(hf.get("enabled")), "eligible": hf.get("eligible"), "reason": hf_reason}
 
-    strategy_order = ("midbox", "pwr", "vwap_pullback", "intraday_vwap_reclaim")
+    strategy_order = ("midbox", "pwr", "vwap_pullback", "intraday_vwap_reclaim", "intraday_vwap_continuation")
     if str(STRATEGY_MODE or "").strip().lower() == "intraday" and SCANNER_PRIMARY_STRATEGY in ("vwap", "vwap_pullback", "vwap_pullback_only"):
-        strategy_order = ("intraday_vwap_reclaim", "vwap_pullback", "midbox", "pwr")
+        strategy_order = ("intraday_vwap_reclaim", "intraday_vwap_continuation", "vwap_pullback", "midbox", "pwr")
     enabled = [s for s in strategy_order if details[s]["enabled"]]
     if not enabled:
         return "no_strategy_enabled", details
@@ -12825,6 +13062,7 @@ def diagnostics_scans_latest(request: Request, symbol: str = ""):
 def diagnostics_intraday_signal_debug(request: Request):
     require_admin_if_configured(request)
     return _intraday_signal_debug_from_scan(_latest_scan_item())
+
 
 
 
@@ -14839,6 +15077,12 @@ def diagnostics_scanner():
             "intraday_vwap_reclaim_score_min": float(INTRADAY_VWAP_RECLAIM_SCORE_MIN),
             "intraday_vwap_reclaim_min_1m_bars": int(INTRADAY_VWAP_RECLAIM_MIN_1M_BARS),
             "intraday_vwap_reclaim_min_5m_bars": int(INTRADAY_VWAP_RECLAIM_MIN_5M_BARS),
+            "intraday_vwap_continuation_enabled": bool(INTRADAY_VWAP_CONTINUATION_ENABLE),
+            "intraday_vwap_continuation_score_min": float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN),
+            "intraday_vwap_continuation_min_recent_vol_ratio": float(INTRADAY_VWAP_CONTINUATION_MIN_RECENT_VOL_RATIO),
+            "intraday_vwap_continuation_max_extension_pct": float(INTRADAY_VWAP_CONTINUATION_MAX_EXTENSION_PCT),
+            "intraday_vwap_reclaim_min_rank_score": float(INTRADAY_VWAP_RECLAIM_MIN_RANK_SCORE),
+            "intraday_vwap_continuation_min_rank_score": float(INTRADAY_VWAP_CONTINUATION_MIN_RANK_SCORE),
         },
         "worker": _worker_status_snapshot(),
     }
@@ -15864,8 +16108,11 @@ def dashboard(request: Request):
     intraday_launch_env_text = "\n".join(f"{k}={v}" for k, v in _sd(intraday_launch_action_plan.get('recommended_env')).items()) or "none"
     intraday_signal_debug = _intraday_signal_debug_from_scan(latest_scan)
     reclaim_debug = _sd(intraday_signal_debug.get('intraday_vwap_reclaim'))
+    continuation_debug = _sd(intraday_signal_debug.get('intraday_vwap_continuation'))
     reclaim_breakdown_rows = _sl(reclaim_debug.get('breakdown'))
+    continuation_breakdown_rows = _sl(continuation_debug.get('breakdown'))
     reclaim_breakdown_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in reclaim_breakdown_rows[:5]) or "none"
+    continuation_breakdown_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in continuation_breakdown_rows[:5]) or "none"
     component_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_component_blockers'))[:5]) or "none"
     macro_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_macro_blockers'))[:5]) or "none"
     micro_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_micro_blockers'))[:5]) or "none"
@@ -15892,7 +16139,7 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>With later scans</th><th>Avg best move</th><th>Avg last move</th><th>Positive rate</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Follow-through is computed only from later persisted scan closes for the same symbol. Rows without future closes are counted but do not invent returns.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
 <div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_ready_now', readiness_assessment.get('intraday_launch_ready')),('projection_capacity_ready', intraday_projection_capacity_ready),('projection_blockers', intraday_projection_blockers_text),('launch_gate_actions', intraday_launch_gate_actions_text),('required_actions', intraday_projection_next_actions_text),('optional_scaling_actions', intraday_projection_optional_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('recommended_intraday_open_slots', intraday_projection.get('recommended_intraday_open_slots')),('recommended_intraday_daily_stop', intraday_projection.get('recommended_intraday_daily_stop_dollars')),('recommended_intraday_daily_loss', intraday_projection.get('recommended_intraday_daily_loss_limit')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><h3 style="margin-top:14px;">Launch env checklist</h3><pre>{html.escape(intraday_launch_env_text)}</pre><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('scanner_ready', scanner_ready),('component_ready', readiness_assessment.get('system_ready')),('intraday_launch_ready', readiness_assessment.get('intraday_launch_ready')),('intraday_launch_blockers', readiness_assessment.get('launch_blocker_count')),('launch_gate_blockers', intraday_launch_gate_blockers_text),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {html.escape(str(readiness_assessment.get('class') or 'neutral'))}">{html.escape(str(readiness_assessment.get('status') or 'CHECK BLOCKERS'))}</div></div></div>
 <div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_ready', scanner_ready),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
-<div class="section grid"><div class="card"><h2>Intraday Signal Debug</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('candidate_slots', intraday_signal_debug.get('candidate_slots')),('raw_results_count', intraday_signal_debug.get('raw_results_count')),('reclaim_enabled', reclaim_debug.get('enabled')),('reclaim_score_min', reclaim_debug.get('score_min')),('reclaim_breakdown', reclaim_breakdown_text),('component_blockers', component_blocker_text),('macro_blockers', macro_blocker_text),('micro_blockers', micro_blocker_text),('near_misses', near_miss_text),('top_pre_ranked', top_pre_ranked_text),('top_signals', top_signal_text),('rank_filtered', ignored_rank_text),('submit_attempts', would_submit_text)])}</table><p class="muted">This panel reads the latest persisted scanner summary. It separates real intraday reclaim blockers from historical daily/swing rejection rows.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Book-state reasons are cross-checked against the current snapshot. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
+<div class="section grid"><div class="card"><h2>Intraday Signal Debug</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('candidate_slots', intraday_signal_debug.get('candidate_slots')),('raw_results_count', intraday_signal_debug.get('raw_results_count')),('reclaim_enabled', reclaim_debug.get('enabled')),('reclaim_score_min', reclaim_debug.get('score_min')),('reclaim_breakdown', reclaim_breakdown_text),('continuation_enabled', continuation_debug.get('enabled')),('continuation_score_min', continuation_debug.get('score_min')),('continuation_min_rank', continuation_debug.get('min_rank_score')),('continuation_breakdown', continuation_breakdown_text),('component_blockers', component_blocker_text),('macro_blockers', macro_blocker_text),('micro_blockers', micro_blocker_text),('near_misses', near_miss_text),('top_pre_ranked', top_pre_ranked_text),('top_signals', top_signal_text),('rank_filtered', ignored_rank_text),('submit_attempts', would_submit_text)])}</table><p class="muted">This panel reads the latest persisted scanner summary. It separates real intraday reclaim blockers from historical daily/swing rejection rows.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Book-state reasons are cross-checked against the current snapshot. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
 <div class="section grid"><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
 <div class="section grid"><div class="card"><h2>Recent Lifecycle / Dispatch</h2><table><thead><tr><th>UTC</th><th>Symbol</th><th>State/Event</th><th>Reason</th></tr></thead><tbody>{lifecycle_rows}</tbody></table></div><div class="card"><h2>Current Blockers</h2><pre>{blockers_text}</pre><h2 style="margin-top:16px;">Heavy Detail Split</h2><p class="muted">Full raw candidate payloads, blocker JSON, scanner history, lifecycle history, and live reconcile remain available from diagnostics endpoints instead of embedded here.</p></div></div>
@@ -17173,6 +17420,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                         'pwr': {'enabled': bool(SCANNER_ENABLE_PWR and (not use_vwap_only)), 'session': PWR_SESSION},
                         'vwap_pullback': {'enabled': bool(SCANNER_ENABLE_VWAP_PB)},
                         'intraday_vwap_reclaim': {'enabled': bool(INTRADAY_VWAP_RECLAIM_ENABLE and STRATEGY_MODE == "intraday")},
+                        'intraday_vwap_continuation': {'enabled': bool(INTRADAY_VWAP_CONTINUATION_ENABLE and STRATEGY_MODE == "intraday")},
                     }
 
                     # Market-hours context (NY)
@@ -17189,7 +17437,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     _hard_market_closed = bool(ONLY_MARKET_HOURS) and (not _in_mkt)
                     if _hard_market_closed:
                         # Hard gate: do not allow signals outside market hours.
-                        for _k in ('midbox', 'pwr', 'vwap_pullback', 'intraday_vwap_reclaim'):
+                        for _k in ('midbox', 'pwr', 'vwap_pullback', 'intraday_vwap_reclaim', 'intraday_vwap_continuation'):
                             if diag.get(_k, {}).get('enabled'):
                                 diag[_k].update({'eligible': False, 'reason': 'outside_market_hours'})
                     price = float(bars_today[-1]["close"]) if bars_today else (latest_prices_map.get(sym) or get_latest_price(sym))
@@ -17214,6 +17462,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                             diag["vwap_pullback"].update(_scan_diag_vwap_pb(bars_today))
                         if INTRADAY_VWAP_RECLAIM_ENABLE and STRATEGY_MODE == "intraday" and (not _hard_market_closed) and diag.get('intraday_vwap_reclaim', {}).get('eligible', True):
                             diag["intraday_vwap_reclaim"].update(_intraday_vwap_reclaim_setup(bars_today))
+                        if INTRADAY_VWAP_CONTINUATION_ENABLE and STRATEGY_MODE == "intraday" and (not _hard_market_closed) and diag.get('intraday_vwap_continuation', {}).get('eligible', True):
+                            diag["intraday_vwap_continuation"].update(_intraday_vwap_continuation_setup(bars_today))
 
                     action = "hold"
                     reason = "no_signal"
@@ -17256,6 +17506,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                                     diag["intraday_vwap_reclaim"].update(reclaim_diag)
                                 if reclaim == "BUY":
                                     signal_name, side = ("INTRADAY_VWAP_RECLAIM", "buy")
+                            if not signal_name and INTRADAY_VWAP_CONTINUATION_ENABLE and STRATEGY_MODE == "intraday" and (not _hard_market_closed) and diag.get('intraday_vwap_continuation', {}).get('eligible', True):
+                                continuation, continuation_diag = eval_intraday_vwap_continuation_signal_with_diag(bars_today)
+                                if isinstance(continuation_diag, dict):
+                                    diag["intraday_vwap_continuation"].update(continuation_diag)
+                                if continuation == "BUY":
+                                    signal_name, side = ("INTRADAY_VWAP_CONTINUATION", "buy")
                         else:
                             hf_sig = None
                             if SCANNER_ENABLE_HF:
@@ -17298,7 +17554,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                                 preview_plan["preview_only"] = True
                             except Exception as e:
                                 diag["trade_plan_error"] = str(e)
-                            signal_diag = diag.get("intraday_vwap_reclaim", {}) if str(signal_name or "").upper() == "INTRADAY_VWAP_RECLAIM" else diag.get("vwap_pullback", {})
+                            if str(signal_name or "").upper() == "INTRADAY_VWAP_RECLAIM":
+                                signal_diag = diag.get("intraday_vwap_reclaim", {})
+                            elif str(signal_name or "").upper() == "INTRADAY_VWAP_CONTINUATION":
+                                signal_diag = diag.get("intraday_vwap_continuation", {})
+                            else:
+                                signal_diag = diag.get("vwap_pullback", {})
                             signal_diag = signal_diag if isinstance(signal_diag, dict) else {}
                             rank_score, rank_meta = compute_signal_rank(signal_name, signal_diag)
                             local_signals.append({"symbol": sym, "action": action, "side": side, "price": price, "signal": signal_name, "score": float(signal_diag.get("score", 0.0)), "rank_score": rank_score, "signal_family": rank_meta.get("family"), "rank_meta": rank_meta, "plan_preview": preview_plan})
@@ -17400,6 +17661,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "pwr": Counter(),
             "vwap_pullback": Counter(),
             "intraday_vwap_reclaim": Counter(),
+            "intraday_vwap_continuation": Counter(),
         }
         for r in results:
             ns = (r.get("no_signal") or {}).get("details") or {}
@@ -17431,19 +17693,27 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             try:
                 vp = (((r.get("diagnostics") or {}).get("vwap_pullback")) or {})
                 reclaim = (((r.get("diagnostics") or {}).get("intraday_vwap_reclaim")) or {})
+                continuation = (((r.get("diagnostics") or {}).get("intraday_vwap_continuation")) or {})
                 for reason in (vp.get("component_reasons") or []):
                     component_counts[str(reason)] += 1
                 for reason in (reclaim.get("component_reasons") or []):
                     component_counts[str(reason)] += 1
+                for reason in (continuation.get("component_reasons") or []):
+                    component_counts[str(reason)] += 1
                 split = vp.get("blocker_split") or {}
                 reclaim_split = reclaim.get("blocker_split") or {}
+                continuation_split = continuation.get("blocker_split") or {}
                 for reason in (split.get("macro") or []):
                     macro_counts[str(reason)] += 1
                 for reason in (reclaim_split.get("macro") or []):
                     macro_counts[str(reason)] += 1
+                for reason in (continuation_split.get("macro") or []):
+                    macro_counts[str(reason)] += 1
                 for reason in (split.get("micro") or []):
                     micro_counts[str(reason)] += 1
                 for reason in (reclaim_split.get("micro") or []):
+                    micro_counts[str(reason)] += 1
+                for reason in (continuation_split.get("micro") or []):
                     micro_counts[str(reason)] += 1
                 for reason in (split.get("fallback") or []):
                     fallback_counts[str(reason)] += 1
@@ -17468,6 +17738,17 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                         "dist_to_vwap_pct": reclaim.get("dist_to_vwap_pct"),
                         "candidate_path": "intraday_vwap_reclaim",
                     })
+                if continuation:
+                    continuation_rank_score, continuation_rank_meta = compute_signal_rank("INTRADAY_VWAP_CONTINUATION", continuation)
+                    pre_ranked_candidates.append({
+                        "symbol": r.get("symbol"),
+                        "reason": continuation.get("reason"),
+                        "signal_family": continuation_rank_meta.get("family"),
+                        "raw_score": continuation_rank_meta.get("raw_score"),
+                        "rank_score": continuation_rank_meta.get("rank_score"),
+                        "dist_to_vwap_pct": continuation.get("dist_to_vwap_pct"),
+                        "candidate_path": "intraday_vwap_continuation",
+                    })
                 nm = vp.get("near_miss") or {}
                 if bool(nm.get("near")):
                     near_miss_symbols.append({
@@ -17484,6 +17765,15 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                         "dist_to_vwap_pct": reclaim.get("dist_to_vwap_pct"),
                         "reason": reclaim.get("reason"),
                         "candidate_path": "intraday_vwap_reclaim",
+                    })
+                continuation_nm = continuation.get("near_miss") or {}
+                if bool(continuation_nm.get("near")):
+                    near_miss_symbols.append({
+                        "symbol": r.get("symbol"),
+                        "score": continuation.get("score"),
+                        "dist_to_vwap_pct": continuation.get("dist_to_vwap_pct"),
+                        "reason": continuation.get("reason"),
+                        "candidate_path": "intraday_vwap_continuation",
                     })
                 tc = vp.get("trend_components") or {}
                 if bool(tc.get("fallback_ready")):
@@ -17544,7 +17834,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 rank_score = float(plan.get("rank_score", plan.get("score", 0.0)) or 0.0)
                 raw_score = float(plan.get("score", 0.0) or 0.0)
                 family = str(plan.get("signal_family") or "primary")
-                min_rank = SCANNER_FALLBACK_MIN_RANK_SCORE if family == "fallback" else SCANNER_RANK_MIN_SCORE
+                min_rank = _scanner_min_rank_for_signal(plan.get("signal", ""), family)
                 if SIGNAL_RANKING_ENABLED and rank_score < float(min_rank):
                     record_decision("SCAN", "worker_scan", symbol=plan.get("symbol", ""), side=plan.get("side", ""), signal=plan.get("signal", ""), action="ignored", reason="rank_below_threshold", meta={"rank_score": rank_score, "min_rank": float(min_rank), "signal_family": family})
                     ignored_ranked_out.append({"symbol": plan.get("symbol"), "signal": plan.get("signal"), "rank_score": rank_score, "reason": "rank_below_threshold"})
