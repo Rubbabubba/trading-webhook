@@ -947,6 +947,7 @@ ALERT_INCLUDE_DETAILS = env_bool("ALERT_INCLUDE_DETAILS", True)
 SCANNER_ENABLED = env_bool_any("SCANNER_ENABLED", "SWING_SCANNER_ENABLED", default="false")
 SCANNER_DRY_RUN = env_bool_any("SCANNER_DRY_RUN", default="true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
+NEW_ENTRIES_ENABLED = env_bool_any("NEW_ENTRIES_ENABLED", "ENTRIES_ENABLED", default="true")
 PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
 
 # --- Trades-Today forcing (emergency mode) ---
@@ -1117,6 +1118,11 @@ INTRADAY_VWAP_CONTINUATION_ALLOW_NEGATIVE_VWAP_SLOPE_PCT = float(os.getenv("INTR
 INTRADAY_VWAP_CONTINUATION_REQUIRE_GREEN_LAST_1M = env_bool("INTRADAY_VWAP_CONTINUATION_REQUIRE_GREEN_LAST_1M", "false")
 INTRADAY_VWAP_CONTINUATION_REQUIRE_HIGHER_LOW = env_bool("INTRADAY_VWAP_CONTINUATION_REQUIRE_HIGHER_LOW", "true")
 INTRADAY_VWAP_CONTINUATION_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH = env_bool("INTRADAY_VWAP_CONTINUATION_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH", "false")
+INTRADAY_SHADOW_EVALUATION_ENABLE = env_bool("INTRADAY_SHADOW_EVALUATION_ENABLE", "true")
+INTRADAY_SHADOW_MAX_SYMBOLS = int(getenv_any("INTRADAY_SHADOW_MAX_SYMBOLS", default="10"))
+INTRADAY_SHADOW_FORCE_ENABLED_PATHS = env_bool("INTRADAY_SHADOW_FORCE_ENABLED_PATHS", "true")
+SWING_SLEEVE_MAX_OPEN_POSITIONS = int(getenv_any("SWING_SLEEVE_MAX_OPEN_POSITIONS", default=str(MAX_OPEN_POSITIONS)))
+INTRADAY_SLEEVE_MAX_OPEN_POSITIONS = int(getenv_any("INTRADAY_SLEEVE_MAX_OPEN_POSITIONS", default=getenv_any("INTRADAY_MAX_OPEN_POSITIONS", default="7")))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default=("daily_breakout" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "vwap_pullback")).strip().lower()
@@ -1247,7 +1253,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-199-eod-flatten-residual-reconcile"
+PATCH_VERSION = "patch-200-swing-rollback-intraday-shadow"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -1323,8 +1329,8 @@ def _intraday_launch_gate_actions(launch_blockers: object) -> list[str]:
     if {"projected_intraday_open_slots_zero", "projected_open_slots_available"} & blockers:
         actions.append("free_slots_or_raise_intraday_max")
     return actions
-    
-    
+
+
 def _intraday_launch_action_plan(
     gate_actions: object = None,
     required_actions: object = None,
@@ -7158,6 +7164,8 @@ def release_gate_status() -> dict:
 def is_live_trading_permitted(source: str = "") -> bool:
     if DRY_RUN or (not LIVE_TRADING_ENABLED):
         return False
+    if source == "worker_scan" and (not NEW_ENTRIES_ENABLED):
+        return False
     if source == "worker_scan" and (not SCANNER_ALLOW_LIVE):
         return False
     if RELEASE_GATE_ENFORCED and (not release_gate_status().get("live_orders_permitted")):
@@ -7197,6 +7205,8 @@ def is_paper_execution_permitted(source: str = "") -> bool:
     if not APCA_PAPER:
         return False
     if not SCANNER_ALLOW_LIVE:
+        return False
+    if not NEW_ENTRIES_ENABLED:
         return False
     return True
 
@@ -10424,6 +10434,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'strategy_symbols': list(exposure.get('strategy_symbols') or []),
         'unmanaged_symbols': list(exposure.get('unmanaged_symbols') or []),
     }
+    shadow_symbols = [str(c.get('symbol') or '').upper() for c in (selected or []) if str(c.get('symbol') or '').strip()]
+    if len(shadow_symbols) < max(1, int(INTRADAY_SHADOW_MAX_SYMBOLS or 1)):
+        shadow_symbols.extend([str(c.get('symbol') or '').upper() for c in candidates if str(c.get('symbol') or '').strip() and str(c.get('symbol') or '').upper() not in shadow_symbols])
+    shadow_symbols = _dedupe_keep_order(shadow_symbols)[: max(1, int(INTRADAY_SHADOW_MAX_SYMBOLS or 1))]
+    intraday_shadow = {"enabled": bool(INTRADAY_SHADOW_EVALUATION_ENABLE), "status": "not_run"}
+    if bool(INTRADAY_SHADOW_EVALUATION_ENABLE):
+        try:
+            intraday_shadow = _run_intraday_shadow_scan(shadow_symbols, lookback_days=SCANNER_LOOKBACK_DAYS)
+        except Exception as exc:
+            intraday_shadow = {"enabled": True, "status": "error", "error": str(exc), "symbols_requested": shadow_symbols}
+            logger.exception("INTRADAY_SHADOW_SCAN_FAILED")
+    summary['intraday_shadow'] = intraday_shadow
     try:
         _append_cohort_evidence_event(CANDIDATE_HISTORY[-1] if CANDIDATE_HISTORY else {})
         persist_cohort_evidence_state(reason="worker_scan_entries")
@@ -11769,7 +11791,7 @@ def eval_vwap_pullback_signal_with_diag(bars_5m_or_today: list[dict]) -> tuple[s
 
 
 
-def _intraday_vwap_reclaim_setup(bars_today: list[dict]) -> dict:
+def _intraday_vwap_reclaim_setup(bars_today: list[dict], force_enable: bool = False) -> dict:
     """Dedicated intraday VWAP reclaim candidate path.
 
     This is intentionally separate from the swing/daily breakout filters.  It only
@@ -11777,7 +11799,7 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict]) -> dict:
     intraday entries can be found even when daily breakout candidates are not
     near a daily high.
     """
-    enabled = bool(INTRADAY_VWAP_RECLAIM_ENABLE and str(STRATEGY_MODE or "").strip().lower() == "intraday")
+    enabled = bool((INTRADAY_VWAP_RECLAIM_ENABLE or force_enable) and (force_enable or str(STRATEGY_MODE or "").strip().lower() == "intraday"))
     out: dict = {
         "enabled": enabled,
         "eligible": True,
@@ -11786,7 +11808,7 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict]) -> dict:
     }
     if not enabled:
         out["eligible"] = False
-        out["reason"] = "strategy_mode_not_intraday" if str(STRATEGY_MODE or "").strip().lower() != "intraday" else "disabled"
+        out["reason"] = "strategy_mode_not_intraday" if str(STRATEGY_MODE or "").strip().lower() != "intraday" and not force_enable else "disabled"
         return out
 
     rows = _bars_for_today_regular_session(bars_today)
@@ -11958,18 +11980,18 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict]) -> dict:
     return out
 
 
-def eval_intraday_vwap_reclaim_signal_with_diag(bars_today: list[dict]) -> tuple[str | None, dict]:
-    diag = _intraday_vwap_reclaim_setup(bars_today)
+def eval_intraday_vwap_reclaim_signal_with_diag(bars_today: list[dict], force_enable: bool = False) -> tuple[str | None, dict]:
+    diag = _intraday_vwap_reclaim_setup(bars_today, force_enable=force_enable)
     return ("BUY" if diag.get("triggered") else None, diag)
 
 
-def _intraday_vwap_continuation_setup(bars_today: list[dict]) -> dict:
+def _intraday_vwap_continuation_setup(bars_today: list[dict], force_enable: bool = False) -> dict:
     """Intraday VWAP trend-continuation path.
 
     This is separate from VWAP reclaim: it can select symbols that are already
     above VWAP with acceptable trend, volume, extension, and micro structure.
     """
-    enabled = bool(INTRADAY_VWAP_CONTINUATION_ENABLE and str(STRATEGY_MODE or "").strip().lower() == "intraday")
+    enabled = bool((INTRADAY_VWAP_CONTINUATION_ENABLE or force_enable) and (force_enable or str(STRATEGY_MODE or "").strip().lower() == "intraday"))
     out: dict = {
         "enabled": enabled,
         "eligible": True,
@@ -11978,7 +12000,7 @@ def _intraday_vwap_continuation_setup(bars_today: list[dict]) -> dict:
     }
     if not enabled:
         out["eligible"] = False
-        out["reason"] = "strategy_mode_not_intraday" if str(STRATEGY_MODE or "").strip().lower() != "intraday" else "disabled"
+        out["reason"] = "strategy_mode_not_intraday" if str(STRATEGY_MODE or "").strip().lower() != "intraday" and not force_enable else "disabled"
         return out
 
     rows = _bars_for_today_regular_session(bars_today)
@@ -12149,9 +12171,123 @@ def _intraday_vwap_continuation_setup(bars_today: list[dict]) -> dict:
     return out
 
 
-def eval_intraday_vwap_continuation_signal_with_diag(bars_today: list[dict]) -> tuple[str | None, dict]:
-    diag = _intraday_vwap_continuation_setup(bars_today)
+def eval_intraday_vwap_continuation_signal_with_diag(bars_today: list[dict], force_enable: bool = False) -> tuple[str | None, dict]:
+    diag = _intraday_vwap_continuation_setup(bars_today, force_enable=force_enable)
     return ("BUY" if diag.get("triggered") else None, diag)
+
+
+
+def _hybrid_capacity_plan() -> dict:
+    """Report separate sleeve targets for a future swing+intraday hybrid mode.
+
+    Patch 200 does not enable hybrid trading.  It makes the target sleeve sizes
+    explicit so intraday can be proved in shadow while swing remains live.
+    """
+    swing_cap = max(0, int(SWING_SLEEVE_MAX_OPEN_POSITIONS or 0))
+    intraday_cap = max(0, int(INTRADAY_SLEEVE_MAX_OPEN_POSITIONS or 0))
+    current_total = int(count_open_positions_allowed())
+    return {
+        "enabled": False,
+        "mode": "shadow_only_until_hybrid_patch",
+        "strategy_mode": STRATEGY_MODE,
+        "swing_sleeve_max_open_positions": swing_cap,
+        "intraday_sleeve_max_open_positions": intraday_cap,
+        "combined_target_open_positions": swing_cap + intraday_cap,
+        "current_open_positions": current_total,
+        "note": "Hybrid accounting is advisory only in Patch 200; live enforcement still uses the active strategy mode.",
+    }
+
+
+def _intraday_shadow_config() -> dict:
+    return {
+        "enabled": bool(INTRADAY_SHADOW_EVALUATION_ENABLE),
+        "force_enabled_paths": bool(INTRADAY_SHADOW_FORCE_ENABLED_PATHS),
+        "max_symbols": int(INTRADAY_SHADOW_MAX_SYMBOLS),
+        "reclaim_enabled": bool(INTRADAY_VWAP_RECLAIM_ENABLE),
+        "continuation_enabled": bool(INTRADAY_VWAP_CONTINUATION_ENABLE),
+        "reclaim_score_min": float(INTRADAY_VWAP_RECLAIM_SCORE_MIN),
+        "continuation_score_min": float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN),
+        "reclaim_min_rank_score": float(INTRADAY_VWAP_RECLAIM_MIN_RANK_SCORE),
+        "continuation_min_rank_score": float(INTRADAY_VWAP_CONTINUATION_MIN_RANK_SCORE),
+    }
+
+
+def _evaluate_intraday_shadow_symbol(symbol: str, bars_today: list[dict]) -> dict:
+    """Evaluate intraday paths without creating plans or submitting orders."""
+    sym = str(symbol or "").strip().upper()
+    force = bool(INTRADAY_SHADOW_FORCE_ENABLED_PATHS)
+    reclaim_sig, reclaim_diag = eval_intraday_vwap_reclaim_signal_with_diag(bars_today, force_enable=force)
+    continuation_sig, continuation_diag = eval_intraday_vwap_continuation_signal_with_diag(bars_today, force_enable=force)
+    candidates: list[dict] = []
+    if reclaim_sig == "BUY":
+        rank, rank_meta = compute_signal_rank("INTRADAY_VWAP_RECLAIM", reclaim_diag)
+        candidates.append({
+            "symbol": sym,
+            "signal": "INTRADAY_VWAP_RECLAIM",
+            "side": "buy",
+            "score": float(reclaim_diag.get("score", 0.0) or 0.0),
+            "rank_score": float(rank),
+            "rank_meta": rank_meta,
+            "would_pass_rank": float(rank) >= float(INTRADAY_VWAP_RECLAIM_MIN_RANK_SCORE),
+        })
+    if continuation_sig == "BUY":
+        rank, rank_meta = compute_signal_rank("INTRADAY_VWAP_CONTINUATION", continuation_diag)
+        candidates.append({
+            "symbol": sym,
+            "signal": "INTRADAY_VWAP_CONTINUATION",
+            "side": "buy",
+            "score": float(continuation_diag.get("score", 0.0) or 0.0),
+            "rank_score": float(rank),
+            "rank_meta": rank_meta,
+            "would_pass_rank": float(rank) >= float(INTRADAY_VWAP_CONTINUATION_MIN_RANK_SCORE),
+        })
+    candidates.sort(key=lambda r: float(r.get("rank_score") or 0.0), reverse=True)
+    return {
+        "symbol": sym,
+        "bars_1m": len(bars_today or []),
+        "diagnostics": {
+            "intraday_vwap_reclaim": reclaim_diag,
+            "intraday_vwap_continuation": continuation_diag,
+        },
+        "signals": candidates,
+        "top_signal": candidates[0] if candidates else None,
+    }
+
+
+def _run_intraday_shadow_scan(symbols: list[str], *, lookback_days: int | None = None) -> dict:
+    """Run intraday signal evaluation in shadow mode while another strategy is live."""
+    cfg = _intraday_shadow_config()
+    if not cfg["enabled"]:
+        return {"enabled": False, "status": "disabled", "config": cfg, "signals": 0, "would_trade": 0, "results": []}
+    if ONLY_MARKET_HOURS and not in_market_hours():
+        return {"enabled": True, "status": "skipped_outside_market_hours", "config": cfg, "signals": 0, "would_trade": 0, "results": []}
+    max_symbols = max(1, int(cfg["max_symbols"] or 1))
+    syms = _dedupe_keep_order([str(s or "").strip().upper() for s in (symbols or []) if str(s or "").strip()])[:max_symbols]
+    if not syms:
+        return {"enabled": True, "status": "no_symbols", "config": cfg, "signals": 0, "would_trade": 0, "results": []}
+    bars_map = fetch_1m_bars_multi_guarded(syms, lookback_days=int(lookback_days or SCANNER_LOOKBACK_DAYS))
+    results = []
+    signals = []
+    for sym in syms:
+        bars_today = _bars_for_today_session(bars_map.get(sym) or [])
+        row = _evaluate_intraday_shadow_symbol(sym, bars_today)
+        results.append(row)
+        signals.extend([dict(sig) for sig in row.get("signals") or [] if isinstance(sig, dict)])
+    signals.sort(key=lambda r: float(r.get("rank_score") or 0.0), reverse=True)
+    would_trade = [s for s in signals if bool(s.get("would_pass_rank"))]
+    return {
+        "enabled": True,
+        "status": "completed",
+        "strategy_mode": STRATEGY_MODE,
+        "live_submission": False,
+        "symbols_scanned": len(syms),
+        "signals": len(signals),
+        "would_trade": len(would_trade),
+        "config": cfg,
+        "top_signals": signals[:8],
+        "results": results[:max_symbols],
+        "hybrid_capacity_plan": _hybrid_capacity_plan(),
+    }
     
     
 def eval_power_hour_signal(bars_today: list[dict]) -> tuple[str, str] | None:
@@ -13075,7 +13211,6 @@ def diagnostics_intraday_signal_debug(request: Request):
 
 
 
-
 @app.post("/kill")
 async def kill_on(request: Request):
     global KILL_SWITCH
@@ -13393,6 +13528,10 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             return {"ok": True, "closed": True, "reason": "shorts_disabled_closed_long", "symbol": symbol, "signal": signal, **out}
         return {"ok": True, "ignored": True, "reason": "shorts_disabled", "symbol": symbol, "signal": signal}
 
+    if not NEW_ENTRIES_ENABLED:
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="new_entries_disabled", meta=meta)
+        return {"ok": True, "ignored": True, "reason": "new_entries_disabled", "symbol": symbol, "signal": signal}
+    
     if source == "webhook" and ENABLE_IDEMPOTENCY:
         dk = dedup_key(auth_payload)
         last = DEDUP_CACHE.get(dk, 0)
@@ -13675,6 +13814,7 @@ async def webhook(req: Request):
 
     out = execute_entry_signal(symbol=symbol, side=side, signal=signal, source="webhook", auth_payload=data)
     return out
+
 
 
 def _eod_flatten_due(ts_ny: datetime | None = None) -> bool:
@@ -15242,10 +15382,56 @@ def diagnostics_scanner():
             "intraday_vwap_continuation_max_extension_pct": float(INTRADAY_VWAP_CONTINUATION_MAX_EXTENSION_PCT),
             "intraday_vwap_reclaim_min_rank_score": float(INTRADAY_VWAP_RECLAIM_MIN_RANK_SCORE),
             "intraday_vwap_continuation_min_rank_score": float(INTRADAY_VWAP_CONTINUATION_MIN_RANK_SCORE),
+            "intraday_shadow_evaluation_enabled": bool(INTRADAY_SHADOW_EVALUATION_ENABLE),
+            "intraday_shadow_force_enabled_paths": bool(INTRADAY_SHADOW_FORCE_ENABLED_PATHS),
+            "intraday_shadow_max_symbols": int(INTRADAY_SHADOW_MAX_SYMBOLS),
         },
+        "entry_controls": {
+            "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "scanner_dry_run": bool(SCANNER_DRY_RUN),
+            "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+            "effective_entry_dry_run": bool(effective_entry_dry_run("worker_scan")),
+            "exits_still_permitted": bool(is_live_exit_permitted("worker_exit")),
+        },
+        "hybrid_capacity_plan": _hybrid_capacity_plan(),
+        "latest_intraday_shadow": dict((_scan_summary_payload(_latest_scan_item()).get("intraday_shadow") or {})) if isinstance(_scan_summary_payload(_latest_scan_item()).get("intraday_shadow"), dict) else {},
         "worker": _worker_status_snapshot(),
     }
 
+
+@app.get("/diagnostics/intraday_shadow")
+def diagnostics_intraday_shadow(request: Request):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+    latest = _latest_scan_item()
+    summary = _scan_summary_payload(latest)
+    latest_shadow = summary.get("intraday_shadow") if isinstance(summary.get("intraday_shadow"), dict) else {}
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "strategy_mode": STRATEGY_MODE,
+        "entry_controls": {
+            "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "scanner_dry_run": bool(SCANNER_DRY_RUN),
+            "effective_entry_dry_run": bool(effective_entry_dry_run("worker_scan")),
+            "exits_still_permitted": bool(is_live_exit_permitted("worker_exit")),
+        },
+        "config": _intraday_shadow_config(),
+        "latest_shadow": latest_shadow,
+        "hybrid_capacity_plan": _hybrid_capacity_plan(),
+        "proof_plan": {
+            "phase": "swing_live_intraday_shadow",
+            "live_intraday_submission": False,
+            "promote_when": [
+                "shadow_signals_have_positive_forward_returns",
+                "eod_flatten_residuals_are_zero_for_multiple_sessions",
+                "separate_sleeve_limits_are_implemented",
+            ],
+        },
+    }
+    
 @app.get("/diagnostics/freshness")
 def diagnostics_freshness(request: Request):
     require_admin_if_configured(request)
@@ -16273,6 +16459,10 @@ def dashboard(request: Request):
     eod_residual_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("still_open_symbols") or eod_flatten_status.get("residual_symbols")) if str(s).strip()) or "none"
     eod_submitted_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("submitted_symbols")) if str(s).strip()) or "none"
     eod_pending_close_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("pending_close_order_symbols")) if str(s).strip()) or "none"
+    latest_intraday_shadow = _sd(scan_summary.get("intraday_shadow"))
+    hybrid_capacity = _hybrid_capacity_plan()
+    intraday_shadow_top_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_dashboard_fmt(_sd(r).get('rank_score'))}" for r in _sl(latest_intraday_shadow.get('top_signals'))[:5]) or "none"
+    entry_control_status = "enabled" if NEW_ENTRIES_ENABLED else "exits_only"
     reclaim_debug = _sd(intraday_signal_debug.get('intraday_vwap_reclaim'))
     continuation_debug = _sd(intraday_signal_debug.get('intraday_vwap_continuation'))
     reclaim_breakdown_rows = _sl(reclaim_debug.get('breakdown'))
@@ -16306,6 +16496,7 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>With later scans</th><th>Avg best move</th><th>Avg last move</th><th>Positive rate</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Follow-through is computed only from later persisted scan closes for the same symbol. Rows without future closes are counted but do not invent returns.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
 <div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_ready_now', readiness_assessment.get('intraday_launch_ready')),('projection_capacity_ready', intraday_projection_capacity_ready),('projection_blockers', intraday_projection_blockers_text),('launch_gate_actions', intraday_launch_gate_actions_text),('required_actions', intraday_projection_next_actions_text),('optional_scaling_actions', intraday_projection_optional_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('recommended_intraday_open_slots', intraday_projection.get('recommended_intraday_open_slots')),('recommended_intraday_daily_stop', intraday_projection.get('recommended_intraday_daily_stop_dollars')),('recommended_intraday_daily_loss', intraday_projection.get('recommended_intraday_daily_loss_limit')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><h3 style="margin-top:14px;">Launch env checklist</h3><pre>{html.escape(intraday_launch_env_text)}</pre><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('scanner_ready', scanner_ready),('component_ready', readiness_assessment.get('system_ready')),('intraday_launch_ready', readiness_assessment.get('intraday_launch_ready')),('intraday_launch_blockers', readiness_assessment.get('launch_blocker_count')),('launch_gate_blockers', intraday_launch_gate_blockers_text),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {html.escape(str(readiness_assessment.get('class') or 'neutral'))}">{html.escape(str(readiness_assessment.get('status') or 'CHECK BLOCKERS'))}</div></div></div>
 <div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_ready', scanner_ready),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
+<div class="section grid"><div class="card"><h2>Swing Rollback / Entry Controls</h2><table>{_rows([('strategy_mode', STRATEGY_MODE),('new_entries_enabled', NEW_ENTRIES_ENABLED),('entry_control_status', entry_control_status),('scanner_allow_live', SCANNER_ALLOW_LIVE),('scanner_dry_run', SCANNER_DRY_RUN),('effective_entry_dry_run', effective_entry_dry_run('worker_scan')),('exits_still_permitted', is_live_exit_permitted('worker_exit')),('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_shadow_target', hybrid_capacity.get('intraday_sleeve_max_open_positions'))])}</table><p class="muted">Use NEW_ENTRIES_ENABLED=false for exits-only rollback without disabling worker exits. Hybrid sleeve counts are advisory until a future hybrid execution patch.</p></div><div class="card"><h2>Intraday Shadow Proof</h2><table>{_rows([('shadow_enabled', latest_intraday_shadow.get('enabled', INTRADAY_SHADOW_EVALUATION_ENABLE)),('shadow_status', latest_intraday_shadow.get('status', 'waiting_for_swing_scan')),('shadow_symbols_scanned', latest_intraday_shadow.get('symbols_scanned')),('shadow_signals', latest_intraday_shadow.get('signals')),('shadow_would_trade', latest_intraday_shadow.get('would_trade')),('live_submission', latest_intraday_shadow.get('live_submission', False)),('top_shadow_signals', intraday_shadow_top_text)])}</table><p class="muted">This proves intraday candidates while STRATEGY_MODE=swing. Shadow results never submit orders.</p></div></div>
 <div class="section grid"><div class="card"><h2>Intraday Signal Debug</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('candidate_slots', intraday_signal_debug.get('candidate_slots')),('raw_results_count', intraday_signal_debug.get('raw_results_count')),('reclaim_enabled', reclaim_debug.get('enabled')),('reclaim_score_min', reclaim_debug.get('score_min')),('reclaim_breakdown', reclaim_breakdown_text),('continuation_enabled', continuation_debug.get('enabled')),('continuation_score_min', continuation_debug.get('score_min')),('continuation_min_rank', continuation_debug.get('min_rank_score')),('continuation_breakdown', continuation_breakdown_text),('component_blockers', component_blocker_text),('macro_blockers', macro_blocker_text),('micro_blockers', micro_blocker_text),('near_misses', near_miss_text),('top_pre_ranked', top_pre_ranked_text),('top_signals', top_signal_text),('rank_filtered', ignored_rank_text),('submit_attempts', would_submit_text)])}</table><p class="muted">This panel reads the latest persisted scanner summary. It separates real intraday reclaim blockers from historical daily/swing rejection rows.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Book-state reasons are cross-checked against the current snapshot. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
 <div class="section grid"><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
@@ -16327,10 +16518,14 @@ def _diagnostics_swing_payload(full: bool = False) -> dict:
             'enabled': SCANNER_ENABLED,
             'dry_run': SCANNER_DRY_RUN,
             'allow_live': SCANNER_ALLOW_LIVE,
+            'new_entries_enabled': NEW_ENTRIES_ENABLED,
+            'effective_entry_dry_run': effective_entry_dry_run('worker_scan'),
             'live_trading_enabled': LIVE_TRADING_ENABLED,
         },
         'risk': {
             'swing_max_open_positions': MAX_OPEN_POSITIONS,
+            'swing_sleeve_max_open_positions': SWING_SLEEVE_MAX_OPEN_POSITIONS,
+            'intraday_sleeve_max_open_positions': INTRADAY_SLEEVE_MAX_OPEN_POSITIONS,
             'swing_risk_per_trade_dollars': RISK_DOLLARS,
             'swing_max_hold_days': SWING_MAX_HOLD_DAYS,
             'swing_max_portfolio_exposure_pct': SWING_MAX_PORTFOLIO_EXPOSURE_PCT,
@@ -16355,6 +16550,8 @@ def _diagnostics_swing_payload(full: bool = False) -> dict:
             'last_scan_ts': (blockers or {}).get('last_scan_ts'),
             'last_scan_reason': (blockers or {}).get('last_scan_reason'),
         },
+        'intraday_shadow': dict(_scan_summary_payload(_latest_scan_item()).get('intraday_shadow') or {}),
+        'hybrid_capacity_plan': _hybrid_capacity_plan(),
         'scan_history_size': len(SCAN_HISTORY),
         'last_scan': {
             'ts_utc': LAST_SCAN.get('ts_utc'),
