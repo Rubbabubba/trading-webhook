@@ -1259,7 +1259,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-201-hybrid-proof-ledger-sleeve-readiness"
+PATCH_VERSION = "patch-202-dashboard-snapshot-fast-path"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -5308,11 +5308,13 @@ def startup_restore_state() -> dict:
     paper_restore = restore_paper_lifecycle_state()
     cohort_restore = restore_cohort_evidence_state()
     strategy_perf_restore = restore_strategy_performance_state()
+    hybrid_proof_restore = restore_hybrid_proof_ledger_state()
     state["scan_state_restore"] = scan_restore
     state["regime_state_restore"] = regime_restore
     state["paper_lifecycle_state_restore"] = paper_restore
     state["cohort_evidence_state_restore"] = cohort_restore
     state["strategy_performance_state_restore"] = strategy_perf_restore
+    state["hybrid_proof_ledger_state_restore"] = hybrid_proof_restore
     state["release_state_restore"] = restore_release_state()
     STARTUP_STATE = state
     return state
@@ -7447,7 +7449,7 @@ def _effective_symbol_exposure_cap_pct() -> float:
     return intraday if mode == "intraday" and intraday > 0 else base
 
 
-def _intraday_launch_projection() -> dict:
+def _intraday_launch_projection(open_count_override: int | None = None) -> dict:
     mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="")).strip().lower()
     base_max_positions = int(globals().get("MAX_OPEN_POSITIONS", getenv_int_any("SWING_MAX_OPEN_POSITIONS", "MAX_OPEN_POSITIONS", default=2)) or 0)
     intraday_max_positions = int(getenv_int_any("INTRADAY_MAX_OPEN_POSITIONS", default=0) or 0)
@@ -7471,7 +7473,7 @@ def _intraday_launch_projection() -> dict:
     daily_loss_floor = max(float(base_daily_loss), float(getenv_float_any("INTRADAY_LAUNCH_BASE_DAILY_LOSS_LIMIT", default=200.0) or 200.0))
     recommended_intraday_daily_stop = round(max(float(projected_daily_stop), daily_stop_floor * daily_stop_multiplier), 2)
     recommended_intraday_daily_loss = round(max(float(projected_daily_loss), daily_loss_floor * daily_loss_multiplier), 2)
-    open_count = count_open_positions_allowed()
+    open_count = int(open_count_override) if open_count_override is not None else count_open_positions_allowed()
     projected_open_slots = max(0, int(projected_max_positions) - int(open_count))
     recommended_intraday_max_positions = max(
         int(projected_max_positions),
@@ -10447,8 +10449,6 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     }
     shadow_symbols = [str(c.get('symbol') or '').upper() for c in (selected or []) if str(c.get('symbol') or '').strip()]
     if len(shadow_symbols) < max(1, int(INTRADAY_SHADOW_MAX_SYMBOLS or 1)):
-        shadow_symbols = [str(c.get('symbol') or '').upper() for c in (selected or []) if str(c.get('symbol') or '').strip()]
-    if len(shadow_symbols) < max(1, int(INTRADAY_SHADOW_MAX_SYMBOLS or 1)):
         shadow_symbols.extend([str(c.get('symbol') or '').upper() for c in candidates if str(c.get('symbol') or '').strip() and str(c.get('symbol') or '').upper() not in shadow_symbols])
     shadow_symbols = _dedupe_keep_order(shadow_symbols)[: max(1, int(INTRADAY_SHADOW_MAX_SYMBOLS or 1))]
     intraday_shadow = {"enabled": bool(INTRADAY_SHADOW_EVALUATION_ENABLE), "status": "not_run"}
@@ -12190,15 +12190,16 @@ def eval_intraday_vwap_continuation_signal_with_diag(bars_today: list[dict], for
 
 
 
-def _hybrid_capacity_plan() -> dict:
+def _hybrid_capacity_plan(current_open_positions: int | None = None) -> dict:
     """Report separate sleeve targets for a future swing+intraday hybrid mode.
 
-    Patch 201 still keeps hybrid execution disabled.  It makes sleeve targets
+    Patch 202 still keeps hybrid execution disabled.  It makes sleeve targets
     explicit while intraday candidates are proved in a persistent shadow ledger.
+    Pass dashboard snapshot counts to avoid broker calls during dashboard render.
     """
     swing_cap = max(0, int(SWING_SLEEVE_MAX_OPEN_POSITIONS or 0))
     intraday_cap = max(0, int(INTRADAY_SLEEVE_MAX_OPEN_POSITIONS or 0))
-    current_total = int(count_open_positions_allowed())
+    current_total = int(current_open_positions) if current_open_positions is not None else int(count_open_positions_allowed())
     return {
         "enabled": False,
         "mode": "shadow_only_until_hybrid_execution_patch",
@@ -12208,7 +12209,7 @@ def _hybrid_capacity_plan() -> dict:
         "combined_target_open_positions": swing_cap + intraday_cap,
         "current_open_positions": current_total,
         "sleeves_configured": swing_cap > 0 and intraday_cap > 0,
-        "note": "Hybrid accounting is advisory only in Patch 201; live enforcement still uses the active strategy mode.",
+        "note": "Hybrid accounting is advisory only in Patch 202; live enforcement still uses the active strategy mode.",
     }
 
 
@@ -12332,7 +12333,7 @@ def _record_intraday_shadow_proof(shadow: dict, bars_map: dict, scan_ts_utc: str
     return {"updated": updated, "appended": appended, "ledger_size": len(HYBRID_PROOF_LEDGER)}
 
 
-def _hybrid_proof_metrics() -> dict:
+def _hybrid_proof_metrics(capacity_plan: dict | None = None) -> dict:
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
     returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in rows]
     r_values = [_safe_float(r.get("latest_r") or 0.0) for r in rows]
@@ -12341,7 +12342,7 @@ def _hybrid_proof_metrics() -> dict:
     observed_eod_flat_sessions = 1 if eod_flat_ok and LAST_EOD_FLATTEN_STATUS else 0
     required_eod_flat_sessions = max(0, int(HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS or 0))
     eod_flat_sessions_ready = observed_eod_flat_sessions >= required_eod_flat_sessions
-    capacity = _hybrid_capacity_plan()
+    capacity = dict(capacity_plan or _hybrid_capacity_plan())
     avg_r = round(sum(r_values) / len(r_values), 4) if r_values else 0.0
     proof_ready = len(rows) >= int(HYBRID_PROOF_MIN_SHADOW_TRADES) and avg_r >= float(HYBRID_PROOF_MIN_AVG_R) and eod_flat_sessions_ready and bool(capacity.get("sleeves_configured"))
     return {
@@ -16619,7 +16620,7 @@ def dashboard(request: Request):
     snapshot_ts = snap.get("ts_utc") or snap.get("ts_ny") or ""
     last_scan_ts = latest_scan.get("ts_utc") or latest_scan.get("last_closed_utc") or scanner_summary.get("last_closed_utc") or scanner_last.get("last_closed_utc") or ""
     structural_exceptions_text = "\n".join(["missing_from_plans: none", "plans_missing_open_order: none", "stale_active_plans: none", "orphan_open_order_symbols: none", "partial_fill_plan_symbols: none"])
-    intraday_projection = _intraday_launch_projection()
+    intraday_projection = _intraday_launch_projection(open_count_override=len(merged))
     intraday_active = _sd(intraday_projection.get('active'))
     intraday_projected = _sd(intraday_projection.get('projected_intraday'))
     intraday_projection_blockers = _sl(intraday_projection.get('blockers'))
@@ -16651,9 +16652,9 @@ def dashboard(request: Request):
     eod_submitted_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("submitted_symbols")) if str(s).strip()) or "none"
     eod_pending_close_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("pending_close_order_symbols")) if str(s).strip()) or "none"
     latest_intraday_shadow = _sd(scan_summary.get("intraday_shadow"))
-    hybrid_capacity = _hybrid_capacity_plan()
+    hybrid_capacity = _hybrid_capacity_plan(current_open_positions=len(merged))
     intraday_shadow_top_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_dashboard_fmt(_sd(r).get('rank_score'))}" for r in _sl(latest_intraday_shadow.get('top_signals'))[:5]) or "none"
-    hybrid_proof_metrics = _hybrid_proof_metrics()
+    hybrid_proof_metrics = _hybrid_proof_metrics(capacity_plan=hybrid_capacity)
     hybrid_proof_recent_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_dashboard_fmt(_sd(r).get('latest_r'))}R" for r in _sl(HYBRID_PROOF_LEDGER)[-5:]) or "none"
     entry_control_status = "enabled" if NEW_ENTRIES_ENABLED else "exits_only"
     reclaim_debug = _sd(intraday_signal_debug.get('intraday_vwap_reclaim'))
@@ -16690,7 +16691,7 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_ready_now', readiness_assessment.get('intraday_launch_ready')),('projection_capacity_ready', intraday_projection_capacity_ready),('projection_blockers', intraday_projection_blockers_text),('launch_gate_actions', intraday_launch_gate_actions_text),('required_actions', intraday_projection_next_actions_text),('optional_scaling_actions', intraday_projection_optional_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('recommended_intraday_open_slots', intraday_projection.get('recommended_intraday_open_slots')),('recommended_intraday_daily_stop', intraday_projection.get('recommended_intraday_daily_stop_dollars')),('recommended_intraday_daily_loss', intraday_projection.get('recommended_intraday_daily_loss_limit')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><h3 style="margin-top:14px;">Launch env checklist</h3><pre>{html.escape(intraday_launch_env_text)}</pre><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('scanner_ready', scanner_ready),('component_ready', readiness_assessment.get('system_ready')),('intraday_launch_ready', readiness_assessment.get('intraday_launch_ready')),('intraday_launch_blockers', readiness_assessment.get('launch_blocker_count')),('launch_gate_blockers', intraday_launch_gate_blockers_text),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {html.escape(str(readiness_assessment.get('class') or 'neutral'))}">{html.escape(str(readiness_assessment.get('status') or 'CHECK BLOCKERS'))}</div></div></div>
 <div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_ready', scanner_ready),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Swing Rollback / Entry Controls</h2><table>{_rows([('strategy_mode', STRATEGY_MODE),('new_entries_enabled', NEW_ENTRIES_ENABLED),('entry_control_status', entry_control_status),('scanner_allow_live', SCANNER_ALLOW_LIVE),('scanner_dry_run', SCANNER_DRY_RUN),('effective_entry_dry_run', effective_entry_dry_run('worker_scan')),('exits_still_permitted', is_live_exit_permitted('worker_exit')),('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_shadow_target', hybrid_capacity.get('intraday_sleeve_max_open_positions'))])}</table><p class="muted">Use NEW_ENTRIES_ENABLED=false for exits-only rollback without disabling worker exits. Hybrid sleeve counts are advisory until a future hybrid execution patch.</p></div><div class="card"><h2>Intraday Shadow Proof</h2><table>{_rows([('shadow_enabled', latest_intraday_shadow.get('enabled', INTRADAY_SHADOW_EVALUATION_ENABLE)),('shadow_status', latest_intraday_shadow.get('status', 'waiting_for_swing_scan')),('shadow_symbols_scanned', latest_intraday_shadow.get('symbols_scanned')),('shadow_signals', latest_intraday_shadow.get('signals')),('shadow_would_trade', latest_intraday_shadow.get('would_trade')),('live_submission', latest_intraday_shadow.get('live_submission', False)),('top_shadow_signals', intraday_shadow_top_text)])}</table><p class="muted">This proves intraday candidates while STRATEGY_MODE=swing. Shadow results never submit orders.</p></div></div>
-<div class="section grid"><div class="card"><h2>Hybrid Proof Ledger</h2><table>{_rows([('ledger_count', hybrid_proof_metrics.get('ledger_count')),('positive_rate', _pct(hybrid_proof_metrics.get('positive_rate'))),('avg_r', hybrid_proof_metrics.get('avg_r')),('best_r', hybrid_proof_metrics.get('best_r')),('worst_r', hybrid_proof_metrics.get('worst_r')),('proof_ready_for_paper', hybrid_proof_metrics.get('proof_ready_for_paper')),('recommended_action', hybrid_proof_metrics.get('recommended_action')),('recent_shadow_rows', hybrid_proof_recent_text)])}</table><p class="muted">Persistent shadow-only ledger for proving intraday before hybrid live/paper promotion. Full details: /diagnostics/hybrid_proof.</p></div><div class="card"><h2>Hybrid Sleeve Readiness</h2><table>{_rows([('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_max_positions', hybrid_capacity.get('intraday_sleeve_max_open_positions')),('combined_target_open_positions', hybrid_capacity.get('combined_target_open_positions')),('sleeves_configured', hybrid_capacity.get('sleeves_configured')),('eod_flat_ok', hybrid_proof_metrics.get('eod_flat_ok')),('min_shadow_trades', hybrid_proof_metrics.get('min_shadow_trades')),('min_avg_r', hybrid_proof_metrics.get('min_avg_r'))])}</table><p class="muted">Patch 201 remains shadow-only for intraday; sleeve readiness does not enable hybrid live orders.</p></div></div>
+<div class="section grid"><div class="card"><h2>Hybrid Proof Ledger</h2><table>{_rows([('ledger_count', hybrid_proof_metrics.get('ledger_count')),('positive_rate', _pct(_flt(hybrid_proof_metrics.get('positive_rate')) * 100.0)),('avg_r', hybrid_proof_metrics.get('avg_r')),('best_r', hybrid_proof_metrics.get('best_r')),('worst_r', hybrid_proof_metrics.get('worst_r')),('proof_ready_for_paper', hybrid_proof_metrics.get('proof_ready_for_paper')),('recommended_action', hybrid_proof_metrics.get('recommended_action')),('recent_shadow_rows', hybrid_proof_recent_text)])}</table><p class="muted">Persistent shadow-only ledger for proving intraday before hybrid live/paper promotion. Full details: /diagnostics/hybrid_proof.</p></div><div class="card"><h2>Hybrid Sleeve Readiness</h2><table>{_rows([('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_max_positions', hybrid_capacity.get('intraday_sleeve_max_open_positions')),('combined_target_open_positions', hybrid_capacity.get('combined_target_open_positions')),('sleeves_configured', hybrid_capacity.get('sleeves_configured')),('eod_flat_ok', hybrid_proof_metrics.get('eod_flat_ok')),('min_shadow_trades', hybrid_proof_metrics.get('min_shadow_trades')),('min_avg_r', hybrid_proof_metrics.get('min_avg_r'))])}</table><p class="muted">Patch 202 remains shadow-only for intraday; sleeve readiness does not enable hybrid live orders.</p></div></div>
     <div class="section grid"><div class="card"><h2>Intraday Signal Debug</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('candidate_slots', intraday_signal_debug.get('candidate_slots')),('raw_results_count', intraday_signal_debug.get('raw_results_count')),('reclaim_enabled', reclaim_debug.get('enabled')),('reclaim_score_min', reclaim_debug.get('score_min')),('reclaim_breakdown', reclaim_breakdown_text),('continuation_enabled', continuation_debug.get('enabled')),('continuation_score_min', continuation_debug.get('score_min')),('continuation_min_rank', continuation_debug.get('min_rank_score')),('continuation_breakdown', continuation_breakdown_text),('component_blockers', component_blocker_text),('macro_blockers', macro_blocker_text),('micro_blockers', micro_blocker_text),('near_misses', near_miss_text),('top_pre_ranked', top_pre_ranked_text),('top_signals', top_signal_text),('rank_filtered', ignored_rank_text),('submit_attempts', would_submit_text)])}</table><p class="muted">This panel reads the latest persisted scanner summary. It separates real intraday reclaim blockers from historical daily/swing rejection rows.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Book-state reasons are cross-checked against the current snapshot. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
 <div class="section grid"><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
