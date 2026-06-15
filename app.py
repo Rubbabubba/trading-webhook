@@ -1259,7 +1259,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-202-dashboard-snapshot-fast-path"
+PATCH_VERSION = "patch-203-scanner-status-dashboard-freshness"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -1276,13 +1276,99 @@ def patch_display_label(patch_version: str | None = None) -> str:
     return f"Patch {match.group(1)}{(' ' + suffix) if suffix else ''}"
 
 
-def _dashboard_scanner_ready(scanner_status: object, scanner_in_flight: object = False) -> bool:
+def _dashboard_scanner_status_view(
+    scanner_status: object,
+    scanner_in_flight: object = False,
+    last_event: object = None,
+) -> dict:
+    """Normalize scanner telemetry vocabulary for dashboard health.
+
+    Render/worker telemetry uses both long-lived worker states (``ok``/``up``)
+    and scan result states (``success``/``scan_ok``).  The dashboard should not
+    show a component warning when the latest scanner event completed
+    successfully but the persisted status string is ``success``.
+    """
     status = str(scanner_status or "").strip().lower()
-    if status in {"up", "ok", "healthy"}:
-        return True
-    if status in {"down", "stale", "error", "failed", "fail"}:
-        return False
-    return bool(scanner_in_flight)
+    event = str(last_event or "").strip().lower()
+    in_flight = bool(scanner_in_flight)
+    healthy_statuses = {
+        "up",
+        "ok",
+        "healthy",
+        "success",
+        "scan_ok",
+        "completed",
+        "complete",
+        "closed",
+        "done",
+        "ready",
+    }
+    healthy_events = {
+        "scan_ok",
+        "success",
+        "completed",
+        "scan_completed",
+        "heartbeat",
+        "scanner_heartbeat",
+    }
+    unhealthy_statuses = {
+        "down",
+        "stale",
+        "error",
+        "failed",
+        "fail",
+        "scan_error",
+        "exception",
+        "timeout",
+    }
+    unhealthy_events = {"scan_error", "error", "failed", "timeout", "exception"}
+    if status in unhealthy_statuses or event in unhealthy_events:
+        health = "unhealthy"
+        ready = False
+    elif status in healthy_statuses or event in healthy_events:
+        health = "healthy"
+        ready = True
+    elif in_flight or status in {"received", "running", "in_flight", "started", "scan_start"} or event in {"scan_start", "received"}:
+        health = "in_flight"
+        ready = True
+    else:
+        health = "unknown"
+        ready = False
+    return {
+        "status": status or "unknown",
+        "last_event": event or "",
+        "in_flight": in_flight,
+        "health": health,
+        "healthy": health in {"healthy", "in_flight"},
+        "ready": ready,
+    }
+
+
+def _dashboard_scanner_ready(scanner_status: object, scanner_in_flight: object = False, last_event: object = None) -> bool:
+    return bool(_dashboard_scanner_status_view(scanner_status, scanner_in_flight, last_event).get("ready"))
+
+
+def _dashboard_snapshot_age_view(snapshot_ts: object, generated_utc: object = None, *, stale_after_sec: int = 120) -> dict:
+    """Return a dashboard-only freshness view without live broker calls."""
+    generated_dt = _ts_parse_or_none(generated_utc) or datetime.now(timezone.utc)
+    snapshot_dt = _ts_parse_or_none(snapshot_ts)
+    if not snapshot_dt:
+        return {
+            "snapshot_ts": str(snapshot_ts or ""),
+            "age_sec": None,
+            "fresh": False,
+            "status": "snapshot_missing",
+            "note": "No persisted position snapshot timestamp is available; dashboard may lag broker truth until the worker writes a snapshot.",
+        }
+    age_sec = max(0, int((generated_dt.astimezone(timezone.utc) - snapshot_dt.astimezone(timezone.utc)).total_seconds()))
+    fresh = age_sec <= int(stale_after_sec)
+    return {
+        "snapshot_ts": snapshot_dt.astimezone(timezone.utc).isoformat(),
+        "age_sec": age_sec,
+        "fresh": fresh,
+        "status": "fresh" if fresh else "stale",
+        "note": "Snapshot is current enough for the read-only dashboard." if fresh else "Dashboard is read-only and may be behind Alpaca until the exit/reconcile worker refreshes positions_snapshot.json.",
+    }
 
 
 def _dashboard_readiness_assessment(blockers: object, scanner_ready: object, launch_blockers: object = None) -> dict:
@@ -12193,7 +12279,7 @@ def eval_intraday_vwap_continuation_signal_with_diag(bars_today: list[dict], for
 def _hybrid_capacity_plan(current_open_positions: int | None = None) -> dict:
     """Report separate sleeve targets for a future swing+intraday hybrid mode.
 
-    Patch 202 still keeps hybrid execution disabled.  It makes sleeve targets
+    Hybrid execution is still disabled.  This makes sleeve targets
     explicit while intraday candidates are proved in a persistent shadow ledger.
     Pass dashboard snapshot counts to avoid broker calls during dashboard render.
     """
@@ -12209,7 +12295,7 @@ def _hybrid_capacity_plan(current_open_positions: int | None = None) -> dict:
         "combined_target_open_positions": swing_cap + intraday_cap,
         "current_open_positions": current_total,
         "sleeves_configured": swing_cap > 0 and intraday_cap > 0,
-        "note": "Hybrid accounting is advisory only in Patch 202; live enforcement still uses the active strategy mode.",
+        "note": "Hybrid accounting is advisory only; live enforcement still uses the active strategy mode.",
     }
 
 
@@ -16461,7 +16547,9 @@ def dashboard(request: Request):
     recent_scan_history = _sl(scan_state.get("scan_history"))
     current_position_symbols = _current_position_symbols_from_snapshot(snap)
     current_active_plan_symbols = _current_active_plan_symbols_from_snapshot(snap)
-    rejection_scan_window = max(1, min(25, int(os.getenv("DASHBOARD_REJECTION_SCAN_WINDOW", "8") or 8)))
+    dashboard_history_limit = max(1, min(50, int(os.getenv("DASHBOARD_SCAN_HISTORY_LIMIT", "12") or 12)))
+    recent_scan_history = recent_scan_history[-dashboard_history_limit:]
+    rejection_scan_window = max(1, min(dashboard_history_limit, int(os.getenv("DASHBOARD_REJECTION_SCAN_WINDOW", "8") or 8)))
     correlation_gate_codes = {"correlation_group_limit", "correlation_sector_limit", "correlation_limit"}
 
     rejection_window_counts = {}
@@ -16570,6 +16658,7 @@ def dashboard(request: Request):
     lifecycle_rows = "".join(f"<tr><td>{html.escape(str(_sd(r).get('ts_utc') or ''))}</td><td>{html.escape(_up(_sd(r).get('symbol')))}</td><td>{html.escape(str(_sd(r).get('event') or _sd(r).get('to_state') or _sd(r).get('state') or ''))}</td><td>{html.escape(str(_sd(r).get('reason') or ''))}</td></tr>" for r in lifecycle_history) or '<tr><td colspan="4" class="muted">No recent lifecycle events in persisted state.</td></tr>'
     
     scanner_status = scanner_summary.get("worker_status") or scanner_last.get("worker_status") or scanner_last.get("status") or "unknown"
+    scanner_last_event = scanner_last.get("event") or scanner_summary.get("last_event") or scanner_summary.get("event")
     scanner_in_flight = scanner_summary.get("in_flight_run") if scanner_summary.get("in_flight_run") is not None else scanner_last.get("in_flight_run")
     health_grade = snap.get("health_grade") or snap_summary.get("health_grade") or "healthy"
     issue_total = snap.get("issue_total") if snap.get("issue_total") is not None else snap_summary.get("issue_total", 0)
@@ -16594,8 +16683,10 @@ def dashboard(request: Request):
     reconcile_class = "good" if str(health_grade).lower() == "healthy" and not trading_blocked else "bad"
     halt_class = "bad" if daily_halt_active_value else "good"
     regime_class = "good" if regime_favorable else "neutral"
-    scanner_healthy = str(scanner_status).lower() in {"up", "ok"}
-    scanner_ready = _dashboard_scanner_ready(scanner_status, scanner_in_flight)
+    scanner_status_view = _dashboard_scanner_status_view(scanner_status, scanner_in_flight, scanner_last_event)
+    scanner_healthy = bool(scanner_status_view.get("healthy"))
+    scanner_ready = bool(scanner_status_view.get("ready"))
+    scanner_display_status = str(scanner_status_view.get("health") or scanner_status or "unknown")
     worker_class = "good" if scanner_healthy and not scanner_in_flight else ("neutral" if scanner_ready else "bad")
     halt_reason_text = str(daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or '').lower()
     halt_loss_control = daily_halt_active_value and any(token in halt_reason_text for token in ("daily_stop", "daily_stop_hit", "daily_loss", "loss", "pnl", "stop_hit"))
@@ -16618,6 +16709,9 @@ def dashboard(request: Request):
     patch_label = html.escape(str(globals().get("PATCH_VERSION", "unknown")))
     patch_action_label = html.escape(patch_display_label())
     snapshot_ts = snap.get("ts_utc") or snap.get("ts_ny") or ""
+    snapshot_age_view = _dashboard_snapshot_age_view(snapshot_ts, generated_utc, stale_after_sec=int(os.getenv("DASHBOARD_SNAPSHOT_STALE_SEC", "120") or 120))
+    snapshot_badge_class = "good" if snapshot_age_view.get("fresh") else "neutral"
+    snapshot_alert_class = "good" if snapshot_age_view.get("fresh") else "neutral"
     last_scan_ts = latest_scan.get("ts_utc") or latest_scan.get("last_closed_utc") or scanner_summary.get("last_closed_utc") or scanner_last.get("last_closed_utc") or ""
     structural_exceptions_text = "\n".join(["missing_from_plans: none", "plans_missing_open_order: none", "stale_active_plans: none", "orphan_open_order_symbols: none", "partial_fill_plan_symbols: none"])
     intraday_projection = _intraday_launch_projection(open_count_override=len(merged))
@@ -16675,14 +16769,14 @@ def dashboard(request: Request):
     
     html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Webhook Dashboard</title><meta http-equiv="refresh" content="30"><style>
 :root{{color-scheme:dark}}body{{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top left,#17112a 0%,#090b10 28%,#06070b 100%);color:#eef2ff;margin:0;padding:20px}}.wrap{{max-width:1560px;margin:0 auto}}h1,h2,h3{{margin:0 0 10px;letter-spacing:-.02em}}h1{{font-size:38px}}h2{{font-size:20px}}.sub,.muted{{color:#9ca3af}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}}.kpi-grid{{display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:16px}}.alert-grid{{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}}.card{{background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96));border:1px solid rgba(139,92,246,.14);border-radius:20px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.04);overflow:hidden}}.metric{{font-size:32px;font-weight:800;margin-top:8px}}.good{{color:#74e2a7}}.bad{{color:#fb7185}}.neutral{{color:#f6c86c}}.badge{{display:inline-block;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:#1f2937;margin:4px 6px 0 0;border:1px solid rgba(255,255,255,.05)}}.badge.good{{background:rgba(16,185,129,.14);color:#bbf7d0}}.badge.bad{{background:rgba(244,63,94,.14);color:#fecdd3}}.badge.neutral{{background:rgba(245,158,11,.14);color:#fde68a}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}}th{{color:#c4b5fd;font-weight:700}}pre{{white-space:pre-wrap;word-break:break-word;background:rgba(5,8,15,.72);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:12px;overflow:auto;color:#d1d5db}}.section{{margin-top:18px}}.links{{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}}.links a{{color:#c4b5fd;text-decoration:none;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.12);padding:7px 11px;border-radius:12px;font-size:13px}}.hero{{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:18px}}.hero-title{{font-size:18px;color:#a78bfa;font-weight:700;text-transform:uppercase;letter-spacing:.08em}}.hero-actions{{display:flex;gap:10px;flex-wrap:wrap}}.action-pill{{background:linear-gradient(135deg,rgba(139,92,246,.18),rgba(59,130,246,.12));border:1px solid rgba(139,92,246,.24);color:#ede9fe;padding:10px 14px;border-radius:14px;font-weight:700;font-size:13px}}.alert-chip{{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:16px;margin-bottom:10px;border:1px solid rgba(255,255,255,.05);background:rgba(255,255,255,.03)}}.alert-chip.good{{background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.18)}}.alert-chip.warn,.alert-chip.neutral{{background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.18)}}.alert-chip.bad{{background:rgba(244,63,94,.10);border-color:rgba(244,63,94,.18)}}@media(max-width:980px){{.alert-grid{{grid-template-columns:1fr}}.kpi-grid{{grid-template-columns:1fr}}.hero{{flex-direction:column;align-items:flex-start}}}}
-</style></head><body><div class="wrap"><div class="hero"><div><div class="hero-title">Operator Console</div><h1>Dashboard</h1><p class="sub">Rich snapshot dashboard restored. No broker, reconcile, scan, or exit work is executed during render. Generated {html.escape(generated_utc)}.</p></div><div class="hero-actions"><div class="action-pill">{patch_action_label}</div><div class="action-pill">Read-only</div><div class="action-pill">Fast path</div></div></div>
-<div class="links"><a href="/diagnostics/build">build</a><a href="/diagnostics/reconcile">reconcile</a><a href="/diagnostics/scanner">scanner</a><a href="/diagnostics/freshness">freshness</a><a href="/diagnostics/release">release</a><a href="/diagnostics/execution_lifecycle">execution_lifecycle</a><a href="/diagnostics/strategy_performance">strategy_performance</a><a href="/diagnostics/intraday_launch_readiness">intraday_launch</a><a href="/diagnostics/candidates">candidates</a><a href="/diagnostics/swing">swing</a></div><div><span class="badge neutral">{patch_label}</span><span class="badge good">snapshot only</span><span class="badge good">no live calls</span></div>
-<div class="section alert-grid"><div class="card"><h2>Operator Alerts</h2><div class="alert-chip {'bad' if blockers else 'good'}"><strong>{'Blockers present' if blockers else 'No current blockers'}</strong><span>{html.escape(', '.join(blockers) if blockers else 'System has no dashboard-visible blockers.')}</span></div><div class="alert-chip {worker_class}"><strong>Worker status</strong><span>Scanner: {html.escape(str(scanner_status))}; in-flight: {html.escape(str(scanner_in_flight))}</span></div></div><div class="card"><h2>Exception Center</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('trading_blocked', trading_blocked),('snapshot_reason', snap.get('reason') or '')])}</table></div></div>
+	</style></head><body><div class="wrap"><div class="hero"><div><div class="hero-title">Operator Console</div><h1>Dashboard</h1><p class="sub">Rich snapshot dashboard restored. No broker, reconcile, scan, or exit work is executed during render. Generated {html.escape(generated_utc)}.</p></div><div class="hero-actions"><div class="action-pill">{patch_action_label}</div><div class="action-pill">Read-only</div><div class="action-pill">Fast path</div></div></div>
+	<div class="links"><a href="/diagnostics/build">build</a><a href="/diagnostics/reconcile">reconcile</a><a href="/diagnostics/scanner">scanner</a><a href="/diagnostics/freshness">freshness</a><a href="/diagnostics/release">release</a><a href="/diagnostics/execution_lifecycle">execution_lifecycle</a><a href="/diagnostics/strategy_performance">strategy_performance</a><a href="/diagnostics/intraday_launch_readiness">intraday_launch</a><a href="/diagnostics/candidates">candidates</a><a href="/diagnostics/swing">swing</a></div><div><span class="badge neutral">{patch_label}</span><span class="badge good">snapshot only</span><span class="badge good">no live calls</span><span class="badge {snapshot_badge_class}">snapshot {html.escape(str(snapshot_age_view.get('status')))}</span></div>
+	<div class="section alert-grid"><div class="card"><h2>Operator Alerts</h2><div class="alert-chip {'bad' if blockers else 'good'}"><strong>{'Blockers present' if blockers else 'No current blockers'}</strong><span>{html.escape(', '.join(blockers) if blockers else 'System has no dashboard-visible blockers.')}</span></div><div class="alert-chip {worker_class}"><strong>Worker status</strong><span>Scanner: {html.escape(str(scanner_status))} → {html.escape(scanner_display_status)}; event: {html.escape(str(scanner_last_event or 'none'))}; in-flight: {html.escape(str(scanner_in_flight))}</span></div><div class="alert-chip {snapshot_alert_class}"><strong>Snapshot freshness</strong><span>{html.escape(str(snapshot_age_view.get('note')))} Age: {html.escape(str(snapshot_age_view.get('age_sec')))} sec.</span></div></div><div class="card"><h2>Exception Center</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('trading_blocked', trading_blocked),('snapshot_reason', snap.get('reason') or ''),('snapshot_age_sec', snapshot_age_view.get('age_sec')),('snapshot_fresh', snapshot_age_view.get('fresh'))])}</table></div></div>
 <div class="section kpi-grid"><div class="card"><div class="muted">Release stage</div><div class="metric {live_class}">{live_text}</div><table>{_rows([('stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('dry_run', dry_run),('kill_switch', kill_switch)])}</table></div><div class="card"><div class="muted">Market hours</div><div class="metric {market_class}">{market_text}</div><table>{_rows([('now_ny', now_ny_text),('snapshot_ts', snapshot_ts),('last_scan_ts', last_scan_ts)])}</table></div><div class="card"><div class="muted">Regime</div><div class="metric {regime_class}">{_dashboard_fmt(regime_favorable).upper()}</div><table>{_rows([('index_symbol', regime_current.get('index_symbol')),('score', regime_current.get('score')),('breadth', regime_current.get('breadth')),('data_complete', regime_current.get('data_complete'))])}</table></div></div>
-<div class="section kpi-grid"><div class="card"><div class="muted">Workers</div><div class="metric {worker_class}">{html.escape(str(scanner_status).upper())}</div><table>{_rows([('in_flight_run', scanner_in_flight),('last_event', scanner_last.get('event') or scanner_summary.get('last_event')),('last_closed_utc', scanner_summary.get('last_closed_utc') or scanner_last.get('last_closed_utc'))])}</table></div><div class="card"><div class="muted">Reconcile</div><div class="metric {reconcile_class}">{html.escape(str(health_grade).upper())}</div><table>{_rows([('broker_positions_count', len(pos_by_symbol)),('active_plan_count', len(active_plan_symbols)),('open_order_count', snap.get('open_order_count', 0)),('issue_total', issue_total)])}</table></div><div class="card"><div class="muted">Active Position Count</div><div class="metric good">{_dashboard_fmt(len(merged))}</div><table>{_rows([('symbols', ', '.join([r['symbol'] for r in merged])),('snapshot_source', 'positions_snapshot.json')])}</table></div></div>
+    <div class="section kpi-grid"><div class="card"><div class="muted">Workers</div><div class="metric {worker_class}">{html.escape(scanner_display_status.upper())}</div><table>{_rows([('raw_scanner_status', scanner_status),('normalized_health', scanner_status_view.get('health')),('in_flight_run', scanner_in_flight),('last_event', scanner_last_event),('last_closed_utc', scanner_summary.get('last_closed_utc') or scanner_last.get('last_closed_utc'))])}</table></div><div class="card"><div class="muted">Reconcile</div><div class="metric {reconcile_class}">{html.escape(str(health_grade).upper())}</div><table>{_rows([('broker_positions_count', len(pos_by_symbol)),('active_plan_count', len(active_plan_symbols)),('open_order_count', snap.get('open_order_count', 0)),('issue_total', issue_total)])}</table></div><div class="card"><div class="muted">Active Position Count</div><div class="metric good">{_dashboard_fmt(len(merged))}</div><table>{_rows([('symbols', ', '.join([r['symbol'] for r in merged])),('snapshot_source', 'positions_snapshot.json'),('snapshot_age_sec', snapshot_age_view.get('age_sec'))])}</table></div></div>
 <div class="section card"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Days</th></tr></thead><tbody>{active_rows}</tbody></table><div class="muted" style="margin-top:10px;">Merged from broker-backed snapshot positions plus active plan risk fields. No live quote calls during dashboard render.</div></div>
 <div class="section grid"><div class="card"><h2>P&amp;L Summary</h2><table>{_rows([('positions_with_snapshot', len(merged)),('total_unrealized_pl_snapshot', round(total_unrealized, 2)),('winners', winners),('losers', losers)])}</table></div><div class="card"><h2>Risk Integrity</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('active_plan_count', len(active_plan_symbols)),('broker_positions_count', len(pos_by_symbol)),('trading_blocked', trading_blocked)])}</table><h3 style="margin-top:14px;">Structural exceptions</h3><pre>{html.escape(structural_exceptions_text)}</pre></div><div class="card"><h2>Exposure &amp; Capacity</h2><table>{_rows([('current_open_positions', len(merged)),('effective_max_open_positions', _effective_max_open_positions()),('base_max_open_positions', globals().get('MAX_OPEN_POSITIONS')),('portfolio_exposure_snapshot', snap.get('portfolio_exposure') or ''),('effective_portfolio_cap_pct', _pct(_effective_portfolio_exposure_cap_pct())),('effective_symbol_cap_pct', _pct(_effective_symbol_exposure_cap_pct())),('portfolio_cap_mode', os.getenv('SWING_PORTFOLIO_CAP_BLOCK_MODE',''))])}</table><h3 style="margin-top:14px;">Strategy symbols</h3><pre>{html.escape(chr(10).join([r['symbol'] for r in merged]) or 'none')}</pre></div></div>
-<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><div class="metric {halt_panel_class}">{html.escape(halt_interpretation)}</div><p class="muted">{html.escape(halt_detail)}</p><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or 'none'),('scanner_dashboard_ready', scanner_ready),('scanner_raw_healthy', scanner_healthy),('scanner_status', scanner_status),('scanner_in_flight', scanner_in_flight),('release_or_reconcile_blocked', trading_blocked),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', 'alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data')),('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data')),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data')),('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data'))])}</table></div></div>
+    <div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><div class="metric {halt_panel_class}">{html.escape(halt_interpretation)}</div><p class="muted">{html.escape(halt_detail)}</p><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or 'none'),('scanner_dashboard_ready', scanner_ready),('scanner_raw_healthy', scanner_healthy),('scanner_status', scanner_status),('scanner_status_normalized', scanner_status_view.get('health')),('scanner_last_event', scanner_last_event),('scanner_in_flight', scanner_in_flight),('release_or_reconcile_blocked', trading_blocked),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', 'alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data')),('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data')),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data')),('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data'))])}</table></div></div>
 <div class="section grid"><div class="card"><h2>EOD Flatten Status</h2><table>{_rows([('last_eod_attempt', eod_flatten_status.get('ts_ny') or 'none'),('eod_flatten_time_ny', eod_flatten_status.get('eod_flatten_time_ny') or EOD_FLATTEN_TIME),('fully_flat', eod_flatten_status.get('fully_flat')),('attempted_count', len(_sl(eod_flatten_status.get('attempted_symbols')))),('submitted_count', len(_sl(eod_flatten_status.get('submitted_symbols')))),('confirmed_closed_count', len(_sl(eod_flatten_status.get('confirmed_closed_symbols')))),('residual_count', eod_flatten_status.get('residual_count')),('residual_symbols', eod_residual_symbols_text),('pending_close_order_symbols', eod_pending_close_symbols_text),('recommended_action', eod_flatten_status.get('recommended_action'))])}</table><p class="muted">Submitted symbols: {html.escape(eod_submitted_symbols_text)}. Full details: /diagnostics/eod_flatten_status.</p></div></div>
 <div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R')])}</table><h3 style="margin-top:14px;">Sample maturity</h3><div class="metric {maturity_class}">{maturity}</div></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
 <div class="section grid"><div class="card"><h2>Closed Trades by Rank Bucket</h2><table><thead><tr><th>Rank</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{rank_bucket_rows}</tbody></table></div><div class="card"><h2>Closed Trades by Holding Period</h2><table><thead><tr><th>Hold</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{holding_bucket_rows}</tbody></table></div></div>
@@ -16691,13 +16785,19 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_ready_now', readiness_assessment.get('intraday_launch_ready')),('projection_capacity_ready', intraday_projection_capacity_ready),('projection_blockers', intraday_projection_blockers_text),('launch_gate_actions', intraday_launch_gate_actions_text),('required_actions', intraday_projection_next_actions_text),('optional_scaling_actions', intraday_projection_optional_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('recommended_intraday_open_slots', intraday_projection.get('recommended_intraday_open_slots')),('recommended_intraday_daily_stop', intraday_projection.get('recommended_intraday_daily_stop_dollars')),('recommended_intraday_daily_loss', intraday_projection.get('recommended_intraday_daily_loss_limit')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><h3 style="margin-top:14px;">Launch env checklist</h3><pre>{html.escape(intraday_launch_env_text)}</pre><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('scanner_ready', scanner_ready),('component_ready', readiness_assessment.get('system_ready')),('intraday_launch_ready', readiness_assessment.get('intraday_launch_ready')),('intraday_launch_blockers', readiness_assessment.get('launch_blocker_count')),('launch_gate_blockers', intraday_launch_gate_blockers_text),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {html.escape(str(readiness_assessment.get('class') or 'neutral'))}">{html.escape(str(readiness_assessment.get('status') or 'CHECK BLOCKERS'))}</div></div></div>
 <div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_ready', scanner_ready),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
 <div class="section grid"><div class="card"><h2>Swing Rollback / Entry Controls</h2><table>{_rows([('strategy_mode', STRATEGY_MODE),('new_entries_enabled', NEW_ENTRIES_ENABLED),('entry_control_status', entry_control_status),('scanner_allow_live', SCANNER_ALLOW_LIVE),('scanner_dry_run', SCANNER_DRY_RUN),('effective_entry_dry_run', effective_entry_dry_run('worker_scan')),('exits_still_permitted', is_live_exit_permitted('worker_exit')),('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_shadow_target', hybrid_capacity.get('intraday_sleeve_max_open_positions'))])}</table><p class="muted">Use NEW_ENTRIES_ENABLED=false for exits-only rollback without disabling worker exits. Hybrid sleeve counts are advisory until a future hybrid execution patch.</p></div><div class="card"><h2>Intraday Shadow Proof</h2><table>{_rows([('shadow_enabled', latest_intraday_shadow.get('enabled', INTRADAY_SHADOW_EVALUATION_ENABLE)),('shadow_status', latest_intraday_shadow.get('status', 'waiting_for_swing_scan')),('shadow_symbols_scanned', latest_intraday_shadow.get('symbols_scanned')),('shadow_signals', latest_intraday_shadow.get('signals')),('shadow_would_trade', latest_intraday_shadow.get('would_trade')),('live_submission', latest_intraday_shadow.get('live_submission', False)),('top_shadow_signals', intraday_shadow_top_text)])}</table><p class="muted">This proves intraday candidates while STRATEGY_MODE=swing. Shadow results never submit orders.</p></div></div>
-<div class="section grid"><div class="card"><h2>Hybrid Proof Ledger</h2><table>{_rows([('ledger_count', hybrid_proof_metrics.get('ledger_count')),('positive_rate', _pct(_flt(hybrid_proof_metrics.get('positive_rate')) * 100.0)),('avg_r', hybrid_proof_metrics.get('avg_r')),('best_r', hybrid_proof_metrics.get('best_r')),('worst_r', hybrid_proof_metrics.get('worst_r')),('proof_ready_for_paper', hybrid_proof_metrics.get('proof_ready_for_paper')),('recommended_action', hybrid_proof_metrics.get('recommended_action')),('recent_shadow_rows', hybrid_proof_recent_text)])}</table><p class="muted">Persistent shadow-only ledger for proving intraday before hybrid live/paper promotion. Full details: /diagnostics/hybrid_proof.</p></div><div class="card"><h2>Hybrid Sleeve Readiness</h2><table>{_rows([('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_max_positions', hybrid_capacity.get('intraday_sleeve_max_open_positions')),('combined_target_open_positions', hybrid_capacity.get('combined_target_open_positions')),('sleeves_configured', hybrid_capacity.get('sleeves_configured')),('eod_flat_ok', hybrid_proof_metrics.get('eod_flat_ok')),('min_shadow_trades', hybrid_proof_metrics.get('min_shadow_trades')),('min_avg_r', hybrid_proof_metrics.get('min_avg_r'))])}</table><p class="muted">Patch 202 remains shadow-only for intraday; sleeve readiness does not enable hybrid live orders.</p></div></div>
+<div class="section grid"><div class="card"><h2>Hybrid Proof Ledger</h2><table>{_rows([('ledger_count', hybrid_proof_metrics.get('ledger_count')),('positive_rate', _pct(_flt(hybrid_proof_metrics.get('positive_rate')) * 100.0)),('avg_r', hybrid_proof_metrics.get('avg_r')),('best_r', hybrid_proof_metrics.get('best_r')),('worst_r', hybrid_proof_metrics.get('worst_r')),('proof_ready_for_paper', hybrid_proof_metrics.get('proof_ready_for_paper')),('recommended_action', hybrid_proof_metrics.get('recommended_action')),('recent_shadow_rows', hybrid_proof_recent_text)])}</table><p class="muted">Persistent shadow-only ledger for proving intraday before hybrid live/paper promotion. Full details: /diagnostics/hybrid_proof.</p></div><div class="card"><h2>Hybrid Sleeve Readiness</h2><table>{_rows([('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_max_positions', hybrid_capacity.get('intraday_sleeve_max_open_positions')),('combined_target_open_positions', hybrid_capacity.get('combined_target_open_positions')),('sleeves_configured', hybrid_capacity.get('sleeves_configured')),('eod_flat_ok', hybrid_proof_metrics.get('eod_flat_ok')),('min_shadow_trades', hybrid_proof_metrics.get('min_shadow_trades')),('min_avg_r', hybrid_proof_metrics.get('min_avg_r'))])}</table><p class="muted">Intraday remains shadow-only; sleeve readiness does not enable hybrid live orders.</p></div></div>
     <div class="section grid"><div class="card"><h2>Intraday Signal Debug</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('candidate_slots', intraday_signal_debug.get('candidate_slots')),('raw_results_count', intraday_signal_debug.get('raw_results_count')),('reclaim_enabled', reclaim_debug.get('enabled')),('reclaim_score_min', reclaim_debug.get('score_min')),('reclaim_breakdown', reclaim_breakdown_text),('continuation_enabled', continuation_debug.get('enabled')),('continuation_score_min', continuation_debug.get('score_min')),('continuation_min_rank', continuation_debug.get('min_rank_score')),('continuation_breakdown', continuation_breakdown_text),('component_blockers', component_blocker_text),('macro_blockers', macro_blocker_text),('micro_blockers', micro_blocker_text),('near_misses', near_miss_text),('top_pre_ranked', top_pre_ranked_text),('top_signals', top_signal_text),('rank_filtered', ignored_rank_text),('submit_attempts', would_submit_text)])}</table><p class="muted">This panel reads the latest persisted scanner summary. It separates real intraday reclaim blockers from historical daily/swing rejection rows.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Book-state reasons are cross-checked against the current snapshot. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
 <div class="section grid"><div class="card"><h2>Rejection Totals</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_totals_html}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected by Reason (last {rejection_scan_window} scans)</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{rejection_window_html}</tbody></table></div><div class="card"><h2>Correlation Relaxation Impact</h2><table>{_rows([('raw_rows_in_window', len(correlation_only_rows)),('unique_symbols_blocked', len(correlation_unique)),('dominant_recent_blocker', dominant_recent_blocker)])}</table><table style="margin-top:10px;"><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Blocking reasons</th></tr></thead><tbody>{correlation_preview_html}</tbody></table><div class="muted" style="margin-top:10px;">This panel is expected to show zero when candidates are blocked by existing/pending positions instead of correlation.</div></div></div>
 <div class="section grid"><div class="card"><h2>Recent Lifecycle / Dispatch</h2><table><thead><tr><th>UTC</th><th>Symbol</th><th>State/Event</th><th>Reason</th></tr></thead><tbody>{lifecycle_rows}</tbody></table></div><div class="card"><h2>Current Blockers</h2><pre>{blockers_text}</pre><h2 style="margin-top:16px;">Heavy Detail Split</h2><p class="muted">Full raw candidate payloads, blocker JSON, scanner history, lifecycle history, and live reconcile remain available from diagnostics endpoints instead of embedded here.</p></div></div>
 </div></body></html>'''
-    return HTMLResponse(content=html_doc)
+    return HTMLResponse(
+        content=html_doc,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 def _diagnostics_swing_payload(full: bool = False) -> dict:
     _ensure_runtime_state_loaded()

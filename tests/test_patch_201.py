@@ -14,7 +14,7 @@ import app
 
 
 def _shadow_bars(start_price=100.0):
-    session = datetime(2026, 6, 11, 10, 0, tzinfo=app.NY_TZ)
+    session = datetime.combine(app.now_ny().date(), datetime(2026, 6, 11, 10, 0).time(), tzinfo=app.NY_TZ)
     bars = []
     for i in range(34):
         base = start_price + i * 0.05
