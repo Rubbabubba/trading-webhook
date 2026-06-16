@@ -734,6 +734,9 @@ HYBRID_PROOF_LEDGER_LIMIT = int(getenv_any("HYBRID_PROOF_LEDGER_LIMIT", default=
 HYBRID_PROOF_MIN_SHADOW_TRADES = int(getenv_any("HYBRID_PROOF_MIN_SHADOW_TRADES", default="20"))
 HYBRID_PROOF_MIN_AVG_R = float(getenv_any("HYBRID_PROOF_MIN_AVG_R", default="0.10"))
 HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS = int(getenv_any("HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS", default="3"))
+HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER = env_bool("HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER", False)
+HYBRID_PROOF_EOD_GATE_MODE = str(getenv_any("HYBRID_PROOF_EOD_GATE_MODE", default="intraday_only") or "intraday_only").strip().lower()
+HYBRID_MODE = str(getenv_any("HYBRID_MODE", default="shadow") or "shadow").strip().lower()
 PAPER_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("PAPER_LIFECYCLE_HISTORY_LIMIT", default="500"))
 SCANNER_TELEMETRY_HISTORY_LIMIT = int(getenv_any("SCANNER_TELEMETRY_HISTORY_LIMIT", default="500"))
 REGIME_BREADTH_RETURN_LOOKBACK_DAYS = int(getenv_any("REGIME_BREADTH_RETURN_LOOKBACK_DAYS", default="20"))
@@ -1126,6 +1129,11 @@ INTRADAY_VWAP_CONTINUATION_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH = env_bool("INTRADA
 INTRADAY_SHADOW_EVALUATION_ENABLE = env_bool("INTRADAY_SHADOW_EVALUATION_ENABLE", "true")
 INTRADAY_SHADOW_MAX_SYMBOLS = int(getenv_any("INTRADAY_SHADOW_MAX_SYMBOLS", default="10"))
 INTRADAY_SHADOW_FORCE_ENABLED_PATHS = env_bool("INTRADAY_SHADOW_FORCE_ENABLED_PATHS", "true")
+SWING_LIVE_ENABLED = env_bool("SWING_LIVE_ENABLED", "true")
+INTRADAY_LIVE_ENABLED = env_bool("INTRADAY_LIVE_ENABLED", "false")
+INTRADAY_PAPER_ENABLED = env_bool("INTRADAY_PAPER_ENABLED", "true" if HYBRID_MODE == "paper" else "false")
+INTRADAY_PAPER_MAX_POSITIONS = int(getenv_any("INTRADAY_PAPER_MAX_POSITIONS", default="2"))
+INTRADAY_PAPER_REQUIRE_PROOF_READY = env_bool("INTRADAY_PAPER_REQUIRE_PROOF_READY", "true")
 SWING_SLEEVE_MAX_OPEN_POSITIONS = int(getenv_any("SWING_SLEEVE_MAX_OPEN_POSITIONS", default=str(MAX_OPEN_POSITIONS)))
 INTRADAY_SLEEVE_MAX_OPEN_POSITIONS = int(getenv_any("INTRADAY_SLEEVE_MAX_OPEN_POSITIONS", default=getenv_any("INTRADAY_MAX_OPEN_POSITIONS", default="7")))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
@@ -1259,7 +1267,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-205-dashboard-timing-swing-capacity-advisory"
+PATCH_VERSION = "patch-206-hybrid-paper-pilot-sleeve-proof"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -12289,16 +12297,24 @@ def _hybrid_capacity_plan(current_open_positions: int | None = None) -> dict:
     swing_cap = max(0, int(SWING_SLEEVE_MAX_OPEN_POSITIONS or 0))
     intraday_cap = max(0, int(INTRADAY_SLEEVE_MAX_OPEN_POSITIONS or 0))
     current_total = int(current_open_positions) if current_open_positions is not None else int(count_open_positions_allowed())
+    paper_enabled = bool(INTRADAY_PAPER_ENABLED or HYBRID_MODE == "paper")
+    live_requested = bool(INTRADAY_LIVE_ENABLED and HYBRID_MODE == "live")
+    paper_slots = max(0, min(int(INTRADAY_PAPER_MAX_POSITIONS or 0), intraday_cap))
     return {
-        "enabled": False,
-        "mode": "shadow_only_until_hybrid_execution_patch",
+        "enabled": paper_enabled or live_requested,
+        "mode": HYBRID_MODE,
         "strategy_mode": STRATEGY_MODE,
+        "swing_live_enabled": bool(SWING_LIVE_ENABLED),
+        "intraday_paper_enabled": paper_enabled,
+        "intraday_live_enabled": live_requested,
+        "intraday_live_orders_permitted": False,
         "swing_sleeve_max_open_positions": swing_cap,
         "intraday_sleeve_max_open_positions": intraday_cap,
+        "intraday_paper_max_positions": paper_slots,
         "combined_target_open_positions": swing_cap + intraday_cap,
         "current_open_positions": current_total,
         "sleeves_configured": swing_cap > 0 and intraday_cap > 0,
-        "note": "Hybrid accounting is advisory only; live enforcement still uses the active strategy mode.",
+        "note": "Hybrid paper mode is simulated only; intraday live orders remain disabled until a future live-hybrid execution patch.",
     }
 
 
@@ -12422,18 +12438,95 @@ def _record_intraday_shadow_proof(shadow: dict, bars_map: dict, scan_ts_utc: str
     return {"updated": updated, "appended": appended, "ledger_size": len(HYBRID_PROOF_LEDGER)}
 
 
+def _intraday_live_position_symbols_from_snapshot() -> set[str]:
+    """Best-effort set of currently open symbols that look intraday-managed.
+
+    Swing mode can intentionally hold positions overnight.  Hybrid proof should
+    not treat those swing holdings as failed intraday EOD flatten residuals.
+    """
+    intraday_tokens = ("INTRADAY", "VWAP", "PULLBACK")
+    out: set[str] = set()
+    try:
+        snap = _safe_json_read(POSITION_SNAPSHOT_PATH) or {}
+        positions = snap.get("positions") if isinstance(snap, dict) else []
+        if not isinstance(positions, list):
+            positions = []
+    except Exception:
+        positions = []
+    for item in positions:
+        if not isinstance(item, dict):
+            continue
+        sym = str(item.get("symbol") or "").strip().upper()
+        signal = str(item.get("signal") or item.get("strategy") or item.get("strategy_name") or "").upper()
+        if sym and any(tok in signal for tok in intraday_tokens):
+            out.add(sym)
+    try:
+        for sym, plan in (TRADE_PLAN or {}).items():
+            if not isinstance(plan, dict):
+                continue
+            if not (plan.get("active") or _plan_is_pending_entry(plan)):
+                continue
+            usym = str(sym or plan.get("symbol") or "").strip().upper()
+            signal = str(plan.get("signal") or plan.get("strategy") or plan.get("strategy_name") or "").upper()
+            if usym and any(tok in signal for tok in intraday_tokens):
+                out.add(usym)
+    except Exception:
+        pass
+    return out
+
+
+def _hybrid_eod_readiness_view() -> dict:
+    """Return sleeve-aware EOD readiness for hybrid proof gates."""
+    raw = dict(LAST_EOD_FLATTEN_STATUS or {})
+    raw_residuals = raw.get("residual_symbols")
+    if isinstance(raw_residuals, (list, tuple, set)):
+        residual_iter = raw_residuals
+    elif raw_residuals:
+        residual_iter = [raw_residuals]
+    else:
+        residual_iter = []
+    residuals = {str(s or "").strip().upper() for s in residual_iter if str(s or "").strip()}
+    intraday_live_symbols = _intraday_live_position_symbols_from_snapshot()
+    if HYBRID_PROOF_EOD_GATE_MODE in {"off", "disabled", "none"}:
+        ok = True
+        mode_note = "eod_gate_disabled"
+    elif HYBRID_PROOF_EOD_GATE_MODE in {"intraday_only", "sleeve", "sleeve_aware"}:
+        unresolved = residuals.intersection(intraday_live_symbols) if intraday_live_symbols else set()
+        ok = not unresolved
+        mode_note = "swing_positions_ignored"
+    else:
+        unresolved = residuals
+        ok = bool(raw.get("fully_flat", True)) and int(raw.get("residual_count") or 0) == 0
+        mode_note = "all_positions_required_flat"
+    return {
+        "mode": HYBRID_PROOF_EOD_GATE_MODE,
+        "ok": bool(ok),
+        "raw_fully_flat": raw.get("fully_flat"),
+        "raw_residual_count": int(raw.get("residual_count") or 0),
+        "raw_residual_symbols": sorted(residuals),
+        "intraday_live_symbols": sorted(intraday_live_symbols),
+        "unresolved_intraday_residual_symbols": sorted(unresolved if 'unresolved' in locals() else set()),
+        "note": mode_note,
+    }
+
+
 def _hybrid_proof_metrics(capacity_plan: dict | None = None) -> dict:
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
     returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in rows]
     r_values = [_safe_float(r.get("latest_r") or 0.0) for r in rows]
     positive = sum(1 for v in returns if v > 0)
-    eod_flat_ok = bool((LAST_EOD_FLATTEN_STATUS or {}).get("fully_flat", True)) and int((LAST_EOD_FLATTEN_STATUS or {}).get("residual_count") or 0) == 0
+    eod_view = _hybrid_eod_readiness_view()
+    eod_flat_ok = bool(eod_view.get("ok"))
     observed_eod_flat_sessions = 1 if eod_flat_ok and LAST_EOD_FLATTEN_STATUS else 0
     required_eod_flat_sessions = max(0, int(HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS or 0))
     eod_flat_sessions_ready = observed_eod_flat_sessions >= required_eod_flat_sessions
     capacity = dict(capacity_plan or _hybrid_capacity_plan())
     avg_r = round(sum(r_values) / len(r_values), 4) if r_values else 0.0
-    proof_ready = len(rows) >= int(HYBRID_PROOF_MIN_SHADOW_TRADES) and avg_r >= float(HYBRID_PROOF_MIN_AVG_R) and eod_flat_sessions_ready and bool(capacity.get("sleeves_configured"))
+    sample_ready = len(rows) >= int(HYBRID_PROOF_MIN_SHADOW_TRADES)
+    avg_r_ready = avg_r >= float(HYBRID_PROOF_MIN_AVG_R)
+    sleeves_ready = bool(capacity.get("sleeves_configured"))
+    proof_ready_for_paper = bool(sample_ready and avg_r_ready and sleeves_ready and (eod_flat_sessions_ready or not HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER))
+    proof_ready_for_live = bool(proof_ready_for_paper and eod_flat_sessions_ready and eod_flat_ok)
     return {
         "state_path": HYBRID_PROOF_LEDGER_STATE_PATH,
         "ledger_count": len(rows),
@@ -12445,14 +12538,49 @@ def _hybrid_proof_metrics(capacity_plan: dict | None = None) -> dict:
         "best_r": round(max(r_values), 4) if r_values else 0.0,
         "worst_r": round(min(r_values), 4) if r_values else 0.0,
         "min_shadow_trades": int(HYBRID_PROOF_MIN_SHADOW_TRADES),
+        "sample_ready": sample_ready,
         "min_avg_r": float(HYBRID_PROOF_MIN_AVG_R),
+        "avg_r_ready": avg_r_ready,
         "eod_flat_ok": eod_flat_ok,
+        "eod_readiness": eod_view,
         "observed_eod_flat_sessions": observed_eod_flat_sessions,
         "required_eod_flat_sessions": required_eod_flat_sessions,
+        "require_eod_for_paper": bool(HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER),
         "eod_flat_sessions_ready": eod_flat_sessions_ready,
-        "sleeves_configured": bool(capacity.get("sleeves_configured")),
-        "proof_ready_for_paper": proof_ready,
-        "recommended_action": "continue_shadow_collection" if not proof_ready else "review_for_intraday_paper_pilot",
+        "sleeves_configured": sleeves_ready,
+        "proof_ready_for_paper": proof_ready_for_paper,
+        "proof_ready_for_live": proof_ready_for_live,
+        "recommended_action": "continue_shadow_collection" if not proof_ready_for_paper else ("paper_pilot_enabled" if capacity.get("intraday_paper_enabled") else "review_for_intraday_paper_pilot"),
+    }
+
+
+def _hybrid_paper_pilot_plan(would_trade: list[dict], metrics: dict, capacity_plan: dict) -> dict:
+    """Plan hypothetical intraday paper entries without changing broker/plans."""
+    paper_enabled = bool(capacity_plan.get("intraday_paper_enabled"))
+    proof_ready = bool(metrics.get("proof_ready_for_paper"))
+    if INTRADAY_PAPER_REQUIRE_PROOF_READY and not proof_ready:
+        eligible = False
+        reason = "proof_not_ready_for_paper"
+    elif not paper_enabled:
+        eligible = False
+        reason = "paper_pilot_disabled"
+    else:
+        eligible = True
+        reason = "paper_pilot_ready"
+    max_positions = max(0, int(capacity_plan.get("intraday_paper_max_positions") or 0))
+    selected = [dict(r) for r in (would_trade or [])[:max_positions]] if eligible else []
+    for row in selected:
+        row["paper_only"] = True
+        row["live_submission"] = False
+    return {
+        "enabled": paper_enabled,
+        "eligible": bool(eligible),
+        "reason": reason,
+        "requires_proof_ready": bool(INTRADAY_PAPER_REQUIRE_PROOF_READY),
+        "max_positions": max_positions,
+        "planned_count": len(selected),
+        "planned_entries": selected,
+        "live_submission": False,
     }
 
 
@@ -12534,21 +12662,27 @@ def _run_intraday_shadow_scan(symbols: list[str], *, lookback_days: int | None =
     signals.sort(key=lambda r: float(r.get("rank_score") or 0.0), reverse=True)
     would_trade = [s for s in signals if bool(s.get("would_pass_rank"))]
     scan_ts_utc = datetime.now(timezone.utc).isoformat()
+    capacity_plan = _hybrid_capacity_plan()
+    proof_metrics = _hybrid_proof_metrics(capacity_plan=capacity_plan)
+    paper_pilot = _hybrid_paper_pilot_plan(would_trade, proof_metrics, capacity_plan)
     shadow_payload = {
         "enabled": True,
         "status": "completed",
         "strategy_mode": STRATEGY_MODE,
         "live_submission": False,
+        "hybrid_mode": HYBRID_MODE,
         "symbols_scanned": len(syms),
         "signals": len(signals),
         "would_trade": len(would_trade),
         "config": cfg,
         "top_signals": signals[:8],
         "results": results[:max_symbols],
-        "hybrid_capacity_plan": _hybrid_capacity_plan(),
+        "hybrid_capacity_plan": capacity_plan,
+        "paper_pilot": paper_pilot,
     }
     shadow_payload["proof_ledger_update"] = _record_intraday_shadow_proof(shadow_payload, bars_map, scan_ts_utc)
-    shadow_payload["proof_metrics"] = _hybrid_proof_metrics()
+    shadow_payload["proof_metrics"] = _hybrid_proof_metrics(capacity_plan=capacity_plan)
+    shadow_payload["paper_pilot"] = _hybrid_paper_pilot_plan(would_trade, shadow_payload["proof_metrics"], capacity_plan)
     return shadow_payload
     
     
@@ -15653,6 +15787,10 @@ def diagnostics_scanner():
             "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
             "scanner_dry_run": bool(SCANNER_DRY_RUN),
             "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+            "swing_live_enabled": bool(SWING_LIVE_ENABLED),
+            "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+            "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED and HYBRID_MODE == "live"),
+            "hybrid_mode": HYBRID_MODE,
             "effective_entry_dry_run": bool(effective_entry_dry_run("worker_scan")),
             "exits_still_permitted": bool(is_live_exit_permitted("worker_exit")),
         },
@@ -15678,6 +15816,10 @@ def diagnostics_intraday_shadow(request: Request):
             "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
             "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
             "scanner_dry_run": bool(SCANNER_DRY_RUN),
+            "swing_live_enabled": bool(SWING_LIVE_ENABLED),
+            "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+            "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED and HYBRID_MODE == "live"),
+            "hybrid_mode": HYBRID_MODE,
             "effective_entry_dry_run": bool(effective_entry_dry_run("worker_scan")),
             "exits_still_permitted": bool(is_live_exit_permitted("worker_exit")),
         },
@@ -15687,12 +15829,13 @@ def diagnostics_intraday_shadow(request: Request):
         "proof_metrics": _hybrid_proof_metrics(),
         "proof_ledger_recent": list(HYBRID_PROOF_LEDGER[-25:]),
         "proof_plan": {
-            "phase": "swing_live_intraday_shadow",
+            "phase": "swing_live_intraday_paper" if bool(INTRADAY_PAPER_ENABLED) or HYBRID_MODE == "paper" else "swing_live_intraday_shadow",
             "live_intraday_submission": False,
+            "paper_intraday_submission": bool(INTRADAY_PAPER_ENABLED) or HYBRID_MODE == "paper",
             "promote_when": [
                 "shadow_signals_have_positive_forward_returns",
-                "eod_flatten_residuals_are_zero_for_multiple_sessions",
-                "separate_sleeve_limits_are_implemented",
+                "paper_pilot_entries_stay_positive_after_forward_checks",
+                "intraday_eod_flatten_is_clean_without_counting_swing_overnight_positions",
             ],
         },
     }
@@ -15708,6 +15851,13 @@ def diagnostics_hybrid_proof(request: Request, limit: int = 50):
         "strategy_mode": STRATEGY_MODE,
         "hybrid_capacity_plan": _hybrid_capacity_plan(),
         "proof_metrics": _hybrid_proof_metrics(),
+        "hybrid_mode": HYBRID_MODE,
+        "paper_pilot_config": {
+            "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+            "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED and HYBRID_MODE == "live"),
+            "paper_max_positions": int(INTRADAY_PAPER_MAX_POSITIONS),
+            "paper_requires_proof_ready": bool(INTRADAY_PAPER_REQUIRE_PROOF_READY),
+        },
         "ledger_count": len(HYBRID_PROOF_LEDGER),
         "ledger": list(HYBRID_PROOF_LEDGER[-lim:]),
     }
@@ -16886,8 +17036,8 @@ def dashboard(request: Request):
 {performance_detail_html}
 <div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_ready_now', readiness_assessment.get('intraday_launch_ready')),('projection_capacity_ready', intraday_projection_capacity_ready),('projection_blockers', intraday_projection_blockers_text),('launch_gate_actions', intraday_launch_gate_actions_text),('required_actions', intraday_projection_next_actions_text),('optional_scaling_actions', intraday_projection_optional_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('recommended_intraday_open_slots', intraday_projection.get('recommended_intraday_open_slots')),('recommended_intraday_daily_stop', intraday_projection.get('recommended_intraday_daily_stop_dollars')),('recommended_intraday_daily_loss', intraday_projection.get('recommended_intraday_daily_loss_limit')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><h3 style="margin-top:14px;">Launch env checklist</h3><pre>{html.escape(intraday_launch_env_text)}</pre><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('scanner_ready', scanner_ready),('component_ready', readiness_assessment.get('system_ready')),('intraday_launch_ready', readiness_assessment.get('intraday_launch_ready')),('intraday_launch_blockers', readiness_assessment.get('launch_blocker_count')),('launch_gate_blockers', intraday_launch_gate_blockers_text),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {html.escape(str(readiness_assessment.get('class') or 'neutral'))}">{html.escape(str(readiness_assessment.get('status') or 'CHECK BLOCKERS'))}</div></div></div>
 <div class="section grid"><div class="card"><h2>Guarded Live Path</h2><table>{_rows([('release_stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('scanner_ready', scanner_ready),('risk_limits_ok', not daily_halt_active_value)])}</table><h3 style="margin-top:14px;">Current blockers</h3><pre>{blockers_text}</pre></div></div>
-<div class="section grid"><div class="card"><h2>Swing Rollback / Entry Controls</h2><table>{_rows([('strategy_mode', STRATEGY_MODE),('new_entries_enabled', NEW_ENTRIES_ENABLED),('entry_control_status', entry_control_status),('scanner_allow_live', SCANNER_ALLOW_LIVE),('scanner_dry_run', SCANNER_DRY_RUN),('effective_entry_dry_run', effective_entry_dry_run('worker_scan')),('exits_still_permitted', is_live_exit_permitted('worker_exit')),('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_shadow_target', hybrid_capacity.get('intraday_sleeve_max_open_positions'))])}</table><p class="muted">Use NEW_ENTRIES_ENABLED=false for exits-only rollback without disabling worker exits. Hybrid sleeve counts are advisory until a future hybrid execution patch.</p></div><div class="card"><h2>Intraday Shadow Proof</h2><table>{_rows([('shadow_enabled', latest_intraday_shadow.get('enabled', INTRADAY_SHADOW_EVALUATION_ENABLE)),('shadow_status', latest_intraday_shadow.get('status', 'waiting_for_swing_scan')),('shadow_symbols_scanned', latest_intraday_shadow.get('symbols_scanned')),('shadow_signals', latest_intraday_shadow.get('signals')),('shadow_would_trade', latest_intraday_shadow.get('would_trade')),('live_submission', latest_intraday_shadow.get('live_submission', False)),('top_shadow_signals', intraday_shadow_top_text)])}</table><p class="muted">This proves intraday candidates while STRATEGY_MODE=swing. Shadow results never submit orders.</p></div></div>
-<div class="section grid"><div class="card"><h2>Hybrid Proof Ledger</h2><table>{_rows([('ledger_count', hybrid_proof_metrics.get('ledger_count')),('positive_rate', _pct(_flt(hybrid_proof_metrics.get('positive_rate')) * 100.0)),('avg_r', hybrid_proof_metrics.get('avg_r')),('best_r', hybrid_proof_metrics.get('best_r')),('worst_r', hybrid_proof_metrics.get('worst_r')),('proof_ready_for_paper', hybrid_proof_metrics.get('proof_ready_for_paper')),('recommended_action', hybrid_proof_metrics.get('recommended_action')),('recent_shadow_rows', hybrid_proof_recent_text)])}</table><p class="muted">Persistent shadow-only ledger for proving intraday before hybrid live/paper promotion. Full details: /diagnostics/hybrid_proof.</p></div><div class="card"><h2>Hybrid Sleeve Readiness</h2><table>{_rows([('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_max_positions', hybrid_capacity.get('intraday_sleeve_max_open_positions')),('combined_target_open_positions', hybrid_capacity.get('combined_target_open_positions')),('sleeves_configured', hybrid_capacity.get('sleeves_configured')),('eod_flat_ok', hybrid_proof_metrics.get('eod_flat_ok')),('min_shadow_trades', hybrid_proof_metrics.get('min_shadow_trades')),('min_avg_r', hybrid_proof_metrics.get('min_avg_r'))])}</table><p class="muted">Intraday remains shadow-only; sleeve readiness does not enable hybrid live orders.</p></div></div>
+<div class="section grid"><div class="card"><h2>Swing Rollback / Entry Controls</h2><table>{_rows([('strategy_mode', STRATEGY_MODE),('hybrid_mode', HYBRID_MODE),('new_entries_enabled', NEW_ENTRIES_ENABLED),('entry_control_status', entry_control_status),('swing_live_enabled', SWING_LIVE_ENABLED),('intraday_paper_enabled', hybrid_capacity.get('intraday_paper_enabled')),('intraday_live_enabled', hybrid_capacity.get('intraday_live_enabled')),('scanner_allow_live', SCANNER_ALLOW_LIVE),('scanner_dry_run', SCANNER_DRY_RUN),('effective_entry_dry_run', effective_entry_dry_run('worker_scan')),('exits_still_permitted', is_live_exit_permitted('worker_exit')),('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_shadow_target', hybrid_capacity.get('intraday_sleeve_max_open_positions'))])}</table><p class="muted">Use NEW_ENTRIES_ENABLED=false for exits-only rollback without disabling worker exits. Intraday paper is simulated only; live intraday orders remain disabled.</p></div><div class="card"><h2>Intraday Shadow Proof / Paper Pilot</h2><table>{_rows([('shadow_enabled', latest_intraday_shadow.get('enabled', INTRADAY_SHADOW_EVALUATION_ENABLE)),('shadow_status', latest_intraday_shadow.get('status', 'waiting_for_swing_scan')),('shadow_symbols_scanned', latest_intraday_shadow.get('symbols_scanned')),('shadow_signals', latest_intraday_shadow.get('signals')),('shadow_would_trade', latest_intraday_shadow.get('would_trade')),('paper_pilot_eligible', _sd(latest_intraday_shadow.get('paper_pilot')).get('eligible')),('paper_pilot_planned', _sd(latest_intraday_shadow.get('paper_pilot')).get('planned_count')),('live_submission', latest_intraday_shadow.get('live_submission', False)),('top_shadow_signals', intraday_shadow_top_text)])}</table><p class="muted">This proves intraday candidates while STRATEGY_MODE=swing. Paper entries are simulated; shadow/paper results never submit broker orders.</p></div></div>
+<div class="section grid"><div class="card"><h2>Hybrid Proof Ledger</h2><table>{_rows([('ledger_count', hybrid_proof_metrics.get('ledger_count')),('positive_rate', _pct(_flt(hybrid_proof_metrics.get('positive_rate')) * 100.0)),('avg_r', hybrid_proof_metrics.get('avg_r')),('best_r', hybrid_proof_metrics.get('best_r')),('worst_r', hybrid_proof_metrics.get('worst_r')),('sample_ready', hybrid_proof_metrics.get('sample_ready')),('avg_r_ready', hybrid_proof_metrics.get('avg_r_ready')),('proof_ready_for_paper', hybrid_proof_metrics.get('proof_ready_for_paper')),('proof_ready_for_live', hybrid_proof_metrics.get('proof_ready_for_live')),('recommended_action', hybrid_proof_metrics.get('recommended_action')),('recent_shadow_rows', hybrid_proof_recent_text)])}</table><p class="muted">Persistent shadow/paper ledger for proving intraday before hybrid live promotion. Full details: /diagnostics/hybrid_proof.</p></div><div class="card"><h2>Hybrid Sleeve Readiness</h2><table>{_rows([('swing_sleeve_max_positions', hybrid_capacity.get('swing_sleeve_max_open_positions')),('intraday_sleeve_max_positions', hybrid_capacity.get('intraday_sleeve_max_open_positions')),('intraday_paper_max_positions', hybrid_capacity.get('intraday_paper_max_positions')),('combined_target_open_positions', hybrid_capacity.get('combined_target_open_positions')),('sleeves_configured', hybrid_capacity.get('sleeves_configured')),('eod_flat_ok', hybrid_proof_metrics.get('eod_flat_ok')),('eod_gate_mode', _sd(hybrid_proof_metrics.get('eod_readiness')).get('mode')),('eod_gate_note', _sd(hybrid_proof_metrics.get('eod_readiness')).get('note')),('intraday_residuals', ', '.join(_sl(_sd(hybrid_proof_metrics.get('eod_readiness')).get('unresolved_intraday_residual_symbols'))) or 'none'),('min_shadow_trades', hybrid_proof_metrics.get('min_shadow_trades')),('min_avg_r', hybrid_proof_metrics.get('min_avg_r'))])}</table><p class="muted">Swing overnight holdings are ignored by the default sleeve-aware intraday EOD proof gate.</p></div></div>
 {diagnostic_detail_html}
 <div class="section grid"><div class="card"><h2>Recent Lifecycle / Dispatch</h2><table><thead><tr><th>UTC</th><th>Symbol</th><th>State/Event</th><th>Reason</th></tr></thead><tbody>{lifecycle_rows}</tbody></table></div><div class="card"><h2>Current Blockers</h2><pre>{blockers_text}</pre><h2 style="margin-top:16px;">Heavy Detail Split</h2><p class="muted">Full raw candidate payloads, blocker JSON, scanner history, lifecycle history, and live reconcile remain available from diagnostics endpoints instead of embedded here.</p></div></div>
 </div></body></html>'''
