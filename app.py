@@ -901,6 +901,17 @@ STRATEGY_PERFORMANCE_STATE_PATH = getenv_any("STRATEGY_PERFORMANCE_STATE_PATH", 
 STRATEGY_PERFORMANCE_QUARANTINE_SOURCES = {"broker_truth_sync", "broker_truth_reconcile", "manual_exit_reconciled", "broker_rebuild", "broker_manual_exit", "manual_broker_exit"}
 STRATEGY_PERFORMANCE_QUARANTINE_PATH = getenv_any("STRATEGY_PERFORMANCE_QUARANTINE_PATH", default="/var/data/strategy_performance_state.quarantine.json")
 STRATEGY_PERFORMANCE_HISTORY_LIMIT = getenv_int_any("STRATEGY_PERFORMANCE_HISTORY_LIMIT", default=200)
+
+SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET = getenv_int_any("SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET", default=3)
+SWING_PERFORMANCE_PROMOTE_MIN_TRADES = getenv_int_any("SWING_PERFORMANCE_PROMOTE_MIN_TRADES", default=5)
+SWING_PERFORMANCE_PROMOTE_MIN_AVG_R = getenv_float_any("SWING_PERFORMANCE_PROMOTE_MIN_AVG_R", default=0.75)
+SWING_PERFORMANCE_REDUCE_MAX_AVG_R = getenv_float_any("SWING_PERFORMANCE_REDUCE_MAX_AVG_R", default=0.15)
+SWING_PERFORMANCE_QUARANTINE_MAX_AVG_R = getenv_float_any("SWING_PERFORMANCE_QUARANTINE_MAX_AVG_R", default=-0.10)
+SWING_PERFORMANCE_RISK_SCALE_MIN_TRADES = getenv_int_any("SWING_PERFORMANCE_RISK_SCALE_MIN_TRADES", default=75)
+SWING_PERFORMANCE_RISK_MIN_WIN_RATE = getenv_float_any("SWING_PERFORMANCE_RISK_MIN_WIN_RATE", default=0.55)
+SWING_PERFORMANCE_RISK_40_MIN_AVG_R = getenv_float_any("SWING_PERFORMANCE_RISK_40_MIN_AVG_R", default=0.75)
+SWING_PERFORMANCE_RISK_50_MIN_AVG_R = getenv_float_any("SWING_PERFORMANCE_RISK_50_MIN_AVG_R", default=1.00)
+SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R = getenv_float_any("SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R", default=-2.0)
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
 
@@ -1267,7 +1278,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-206-hybrid-paper-pilot-sleeve-proof"
+PATCH_VERSION = "patch-207-swing-performance-attribution"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -16348,6 +16359,168 @@ def _p175_trade_quality_analytics(
         },
     }
     
+
+def _p207_closed_trade_strategy(row: dict | None) -> str:
+    row = row if isinstance(row, dict) else {}
+    return str(_p175_first(row, "strategy_name", "strategy", "signal", "entry_signal") or "unknown").strip().lower() or "unknown"
+
+
+def _p207_closed_trade_entry_type(row: dict | None) -> str:
+    row = row if isinstance(row, dict) else {}
+    source = str(_p175_first(row, "entry_type", "selected_source", "source", "submit_source") or "standard").strip().lower() or "standard"
+    if "early" in source:
+        return "early_override"
+    if "adaptive" in source:
+        return "adaptive"
+    if source in {"worker_scan", "scanner", "standard", "daily_breakout", "daily_mean_reversion"}:
+        return "standard"
+    return source
+
+
+def _p207_closed_trade_exit_reason(row: dict | None) -> str:
+    return str(_p175_first(row if isinstance(row, dict) else {}, "exit_reason", "reason", "close_reason", "exit_type") or "unknown").strip().lower() or "unknown"
+
+
+def _p207_bucket_summary(rows: list[dict], key_fn) -> list[dict]:
+    buckets: dict[str, dict] = {}
+    for raw in rows or []:
+        row = raw if isinstance(raw, dict) else {}
+        name = str(key_fn(row) or "unknown") or "unknown"
+        bucket = buckets.setdefault(name, {"name": name, "closed_trades": 0, "wins": 0, "losses": 0, "flat": 0, "gross_pnl": 0.0, "best_r": None, "worst_r": None, "_r_sum": 0.0, "_r_count": 0})
+        pnl = _p175_closed_trade_pnl(row)
+        r_value = _p175_closed_trade_r(row)
+        bucket["closed_trades"] += 1
+        bucket["gross_pnl"] += pnl
+        if pnl > 0:
+            bucket["wins"] += 1
+        elif pnl < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
+        if r_value is not None:
+            rv = float(r_value)
+            bucket["_r_sum"] += rv
+            bucket["_r_count"] += 1
+            bucket["best_r"] = rv if bucket.get("best_r") is None else max(float(bucket["best_r"]), rv)
+            bucket["worst_r"] = rv if bucket.get("worst_r") is None else min(float(bucket["worst_r"]), rv)
+    out = []
+    for bucket in buckets.values():
+        count = max(1, int(bucket.get("closed_trades") or 0))
+        r_count = int(bucket.pop("_r_count") or 0)
+        r_sum = float(bucket.pop("_r_sum") or 0.0)
+        bucket["gross_pnl"] = round(float(bucket.get("gross_pnl") or 0.0), 4)
+        bucket["win_rate"] = round(float(bucket.get("wins") or 0) / count, 4)
+        bucket["avg_r"] = round(r_sum / r_count, 4) if r_count else None
+        if bucket.get("best_r") is not None:
+            bucket["best_r"] = round(float(bucket["best_r"]), 4)
+        if bucket.get("worst_r") is not None:
+            bucket["worst_r"] = round(float(bucket["worst_r"]), 4)
+        out.append(bucket)
+    return sorted(out, key=lambda b: (float(b.get("gross_pnl") or 0.0), float(b.get("avg_r") or -999.0), int(b.get("closed_trades") or 0)), reverse=True)
+
+
+def _p207_bucket_action(bucket: dict) -> dict:
+    trades = int((bucket or {}).get("closed_trades") or 0)
+    avg_r = _p175_float((bucket or {}).get("avg_r"), None)
+    win_rate = _p175_float((bucket or {}).get("win_rate"), 0.0) or 0.0
+    gross = float((bucket or {}).get("gross_pnl") or 0.0)
+    if trades < max(1, int(SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET or 1)):
+        return {"action": "monitor", "reason": "sample_below_min", "min_trades": int(SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET or 0)}
+    if avg_r is not None and avg_r <= float(SWING_PERFORMANCE_QUARANTINE_MAX_AVG_R):
+        return {"action": "quarantine", "reason": "avg_r_below_quarantine_threshold"}
+    if gross < 0 or (avg_r is not None and avg_r <= float(SWING_PERFORMANCE_REDUCE_MAX_AVG_R)):
+        return {"action": "reduce", "reason": "negative_or_weak_edge"}
+    if trades >= max(1, int(SWING_PERFORMANCE_PROMOTE_MIN_TRADES or 1)) and avg_r is not None and avg_r >= float(SWING_PERFORMANCE_PROMOTE_MIN_AVG_R) and win_rate >= 0.50:
+        return {"action": "promote", "reason": "positive_edge_established"}
+    return {"action": "monitor", "reason": "edge_not_decisive"}
+
+
+def _p207_risk_scaling_readiness(rows: list[dict], totals: dict | None = None) -> dict:
+    totals = totals if isinstance(totals, dict) else {}
+    trades = int(totals.get("closed_trades") or len(rows or []))
+    wins = int(totals.get("wins") or sum(1 for r in rows or [] if _p175_closed_trade_pnl(r) > 0))
+    win_rate = float(totals.get("win_rate") if totals.get("win_rate") is not None else (wins / max(1, trades)))
+    r_values = [float(v) for v in (_p175_closed_trade_r(r) for r in rows or []) if v is not None]
+    avg_r = float(totals.get("avg_r") if totals.get("avg_r") is not None else (sum(r_values) / max(1, len(r_values))))
+    worst_r = min(r_values) if r_values else None
+    blockers = []
+    if trades < int(SWING_PERFORMANCE_RISK_SCALE_MIN_TRADES):
+        blockers.append("sample_below_risk_scale_min")
+    if win_rate < float(SWING_PERFORMANCE_RISK_MIN_WIN_RATE):
+        blockers.append("win_rate_below_risk_scale_min")
+    if avg_r < float(SWING_PERFORMANCE_RISK_40_MIN_AVG_R):
+        blockers.append("avg_r_below_40_risk_min")
+    if worst_r is not None and worst_r < float(SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R):
+        blockers.append("worst_r_too_deep")
+    ready_40 = not blockers
+    ready_50 = bool(ready_40 and avg_r >= float(SWING_PERFORMANCE_RISK_50_MIN_AVG_R) and win_rate >= 0.58)
+    return {
+        "current_risk_dollars": round(float(RISK_DOLLARS or 0.0), 2),
+        "ready_for_40_risk": bool(ready_40),
+        "ready_for_50_risk": bool(ready_50),
+        "recommended_risk_dollars": 50 if ready_50 else (40 if ready_40 else round(float(RISK_DOLLARS or 0.0), 2)),
+        "closed_trades": trades,
+        "win_rate": round(win_rate, 4),
+        "avg_r": round(avg_r, 4),
+        "worst_r": round(worst_r, 4) if worst_r is not None else None,
+        "blockers": blockers,
+        "assessment": "ready_for_50" if ready_50 else ("ready_for_40" if ready_40 else "not_ready"),
+    }
+
+
+def _swing_performance_attribution(perf_state: dict | None = None) -> dict:
+    state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
+    state, _ = _patch175_enrich_state_if_needed(state)
+    rows = [dict(r) for r in list((state or {}).get("closed_trades") or []) if isinstance(r, dict)]
+    totals_list = _p207_bucket_summary(rows, lambda _r: "all")
+    totals = totals_list[0] if totals_list else {"name": "all", "closed_trades": 0, "wins": 0, "losses": 0, "flat": 0, "gross_pnl": 0.0, "win_rate": 0.0, "avg_r": 0.0}
+    by_symbol = _p207_bucket_summary(rows, lambda r: str(r.get("symbol") or "unknown").upper() or "unknown")
+    by_strategy = _p207_bucket_summary(rows, _p207_closed_trade_strategy)
+    by_entry_type = _p207_bucket_summary(rows, _p207_closed_trade_entry_type)
+    by_exit_reason = _p207_bucket_summary(rows, _p207_closed_trade_exit_reason)
+    by_holding_period = _p207_bucket_summary(rows, _p175_holding_bucket)
+    recommendation_sources = {
+        "symbols": by_symbol,
+        "strategies": by_strategy,
+        "entry_types": by_entry_type,
+        "exit_reasons": by_exit_reason,
+        "holding_periods": by_holding_period,
+    }
+    recommendations = {"promote": [], "reduce": [], "quarantine": [], "monitor": []}
+    for category, buckets in recommendation_sources.items():
+        for bucket in buckets:
+            action = _p207_bucket_action(bucket)
+            row = {"category": category, "name": bucket.get("name"), "closed_trades": bucket.get("closed_trades"), "gross_pnl": bucket.get("gross_pnl"), "avg_r": bucket.get("avg_r"), "win_rate": bucket.get("win_rate"), "reason": action.get("reason")}
+            recommendations.setdefault(str(action.get("action") or "monitor"), []).append(row)
+    for key in recommendations:
+        recommendations[key] = sorted(recommendations[key], key=lambda r: (float(r.get("avg_r") or -999), float(r.get("gross_pnl") or 0)), reverse=(key == "promote"))[:12]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "totals": totals,
+        "by_symbol": by_symbol,
+        "by_strategy": by_strategy,
+        "by_entry_type": by_entry_type,
+        "by_exit_reason": by_exit_reason,
+        "by_holding_period": by_holding_period,
+        "recommendations": recommendations,
+        "risk_scaling": _p207_risk_scaling_readiness(rows, totals),
+        "config": {
+            "min_trades_per_bucket": int(SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET or 0),
+            "promote_min_trades": int(SWING_PERFORMANCE_PROMOTE_MIN_TRADES or 0),
+            "promote_min_avg_r": float(SWING_PERFORMANCE_PROMOTE_MIN_AVG_R),
+            "risk_scale_min_trades": int(SWING_PERFORMANCE_RISK_SCALE_MIN_TRADES or 0),
+            "risk_40_min_avg_r": float(SWING_PERFORMANCE_RISK_40_MIN_AVG_R),
+            "risk_50_min_avg_r": float(SWING_PERFORMANCE_RISK_50_MIN_AVG_R),
+        },
+    }
+
+
+@app.get("/diagnostics/swing_performance_attribution")
+def diagnostics_swing_performance_attribution(request: Request):
+    require_admin_if_configured(request)
+    return _swing_performance_attribution()
+    
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
     state = _recompute_strategy_performance_state()
@@ -16734,6 +16907,29 @@ def dashboard(request: Request):
         win_rate=win_rate,
         avg_r=avg_r,
     )
+    swing_attribution = _swing_performance_attribution(perf_state=perf_state)
+    swing_risk_scaling = _sd(swing_attribution.get("risk_scaling"))
+
+    def _p207_rows(bucket_rows, limit=6):
+        out = []
+        for bucket in _sl(bucket_rows)[:limit]:
+            b = _sd(bucket)
+            out.append(f"<tr><td>{html.escape(str(b.get('name') or 'unknown'))}</td><td>{_dashboard_fmt(b.get('closed_trades'))}</td><td>{_pct(_flt(b.get('win_rate')) * 100.0)}</td><td>{_money(b.get('gross_pnl'))}</td><td>{_dashboard_fmt(b.get('avg_r')) if b.get('avg_r') is not None else '—'}R</td></tr>")
+        return ''.join(out) or '<tr><td colspan="5" class="muted">No closed trade attribution available.</td></tr>'
+
+    def _p207_reco_text(kind):
+        rows = _sl(_sd(swing_attribution.get('recommendations')).get(kind))
+        return ', '.join(f"{_sd(r).get('category')}:{_sd(r).get('name')}({_dashboard_fmt(_sd(r).get('avg_r'))}R)" for r in rows[:5]) or 'none'
+
+    p207_symbol_rows = _p207_rows(swing_attribution.get('by_symbol'), limit=8)
+    p207_strategy_rows = _p207_rows(swing_attribution.get('by_strategy'), limit=6)
+    p207_entry_rows = _p207_rows(swing_attribution.get('by_entry_type'), limit=6)
+    p207_exit_rows = _p207_rows(swing_attribution.get('by_exit_reason'), limit=6)
+    p207_holding_rows = _p207_rows(swing_attribution.get('by_holding_period'), limit=6)
+    p207_promote_text = _p207_reco_text('promote')
+    p207_reduce_text = _p207_reco_text('reduce')
+    p207_quarantine_text = _p207_reco_text('quarantine')
+    p207_risk_blockers_text = ', '.join(str(x) for x in _sl(swing_risk_scaling.get('blockers'))) or 'none'
 
     strategy_rows = "".join(
         f"<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt(_sd(bucket).get('closed_trades'))}</td><td>{_dashboard_fmt(_sd(bucket).get('wins'))}</td><td>{_dashboard_fmt(_sd(bucket).get('losses'))}</td><td>{_pct(_flt(_sd(bucket).get('win_rate')) * 100.0)}</td><td>{_money(_sd(bucket).get('gross_pnl'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_r'))}R</td></tr>"
@@ -17001,9 +17197,14 @@ def dashboard(request: Request):
     ignored_rank_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('reason')}:{_sd(r).get('rank_score')}" for r in _sl(intraday_signal_debug.get('ignored_ranked_out'))[:5]) or "none"
     would_submit_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('submit_state') or _sd(r).get('reason') or _sd(r).get('ok')}" for r in _sl(intraday_signal_debug.get('would_submit'))[:5]) or "none"
     readiness_assessment = _dashboard_readiness_assessment(blockers, scanner_ready, intraday_launch_gate_blockers)
+    swing_profit_acceleration_html = f'''
+<div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('promote', p207_promote_text),('reduce', p207_reduce_text),('quarantine', p207_quarantine_text)])}</table><p class="muted">Read-only attribution turns win rate, P&amp;L, and avg R into promote / reduce / quarantine tuning decisions. Full JSON: <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a>.</p></div><div class="card"><h2>Top Symbol Attribution</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_symbol_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Strategy / Entry Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_strategy_rows}</tbody></table><h3 style="margin-top:14px;">Entry type</h3><table><thead><tr><th>Entry</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_entry_rows}</tbody></table></div><div class="card"><h2>Exit / Holding Attribution</h2><h3>Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_exit_rows}</tbody></table><h3 style="margin-top:14px;">Holding period</h3><table><thead><tr><th>Hold</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_holding_rows}</tbody></table></div></div>
+'''
     if dashboard_full:
         performance_detail_html = f'''
 <div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R')])}</table><h3 style="margin-top:14px;">Sample maturity</h3><div class="metric {maturity_class}">{maturity}</div></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
+{swing_profit_acceleration_html}
 <div class="section grid"><div class="card"><h2>Closed Trades by Rank Bucket</h2><table><thead><tr><th>Rank</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{rank_bucket_rows}</tbody></table></div><div class="card"><h2>Closed Trades by Holding Period</h2><table><thead><tr><th>Hold</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{holding_bucket_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Closed Trades by Symbol</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{symbol_bucket_rows}</tbody></table></div><div class="card"><h2>Strategy / Exit Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{strategy_rows}</tbody></table><h3 style="margin-top:14px;">Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{exit_reason_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Rejected Setup Follow-through Focus</h2><table><thead><tr><th>Reason</th><th>Count</th><th>Symbols</th><th>With later scans</th><th>Avg best move</th><th>Avg last move</th><th>Positive rate</th><th>Top symbols</th></tr></thead><tbody>{focus_rejection_rows}</tbody></table><p class="muted">Follow-through is computed only from later persisted scan closes for the same symbol. Rows without future closes are counted but do not invent returns.</p></div><div class="card"><h2>Missing Historical Fields</h2><table>{_rows(list(_sd(trade_quality.get('missing_field_counts')).items()))}</table></div></div>
@@ -17018,6 +17219,7 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R'),('sample_maturity', maturity)])}</table><p class="muted">Heavy rank, symbol, holding-period, exit-attribution, and follow-through analytics are skipped on the summary dashboard. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for the full diagnostic view.</p></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
 '''
         diagnostic_detail_html = f'''
+{swing_profit_acceleration_html}
 <div class="section grid"><div class="card"><h2>Signal / Rejection Summary</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('top_reclaim_blockers', reclaim_breakdown_text),('top_continuation_blockers', continuation_breakdown_text),('dominant_recent_blocker', dominant_recent_blocker),('rejection_window', rejection_scan_window)])}</table><p class="muted">Detailed intraday signal debug, top rejection rows, rejection totals, and correlation relaxation are skipped in summary mode. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for full diagnostics.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Summary mode shows current top persisted rows only. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
 '''
     server_render_ms = round((_time.perf_counter() - dashboard_started) * 1000.0, 1)
