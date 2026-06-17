@@ -28,7 +28,7 @@ def _rows():
 def test_swing_performance_attribution_buckets_and_recommendations(monkeypatch):
     state = {"closed_trades": _rows(), "by_strategy": {}, "kill_switch": {}}
     payload = app._swing_performance_attribution(perf_state=state)
-    assert payload["patch_version"].startswith("patch-207")
+    assert payload["patch_version"].startswith("patch-")
     assert payload["totals"]["closed_trades"] == 8
     symbols = {row["name"]: row for row in payload["by_symbol"]}
     assert symbols["AAPL"]["gross_pnl"] == 180

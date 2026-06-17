@@ -912,6 +912,11 @@ SWING_PERFORMANCE_RISK_MIN_WIN_RATE = getenv_float_any("SWING_PERFORMANCE_RISK_M
 SWING_PERFORMANCE_RISK_40_MIN_AVG_R = getenv_float_any("SWING_PERFORMANCE_RISK_40_MIN_AVG_R", default=0.75)
 SWING_PERFORMANCE_RISK_50_MIN_AVG_R = getenv_float_any("SWING_PERFORMANCE_RISK_50_MIN_AVG_R", default=1.00)
 SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R = getenv_float_any("SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R", default=-2.0)
+
+SWING_QUARANTINE_SYMBOLS = {s.strip().upper() for s in str(getenv_any("SWING_QUARANTINE_SYMBOLS", default="") or "").split(",") if s.strip()}
+SWING_QUARANTINE_STRATEGIES = {s.strip().lower() for s in str(getenv_any("SWING_QUARANTINE_STRATEGIES", default="") or "").split(",") if s.strip()}
+SWING_QUARANTINE_ENTRY_TYPES = {s.strip().lower() for s in str(getenv_any("SWING_QUARANTINE_ENTRY_TYPES", default="") or "").split(",") if s.strip()}
+SWING_QUARANTINE_ENFORCE = env_bool_any("SWING_QUARANTINE_ENFORCE", default="false")
 JOURNAL_BOOTSTRAP_LIMIT = int(getenv_any("JOURNAL_BOOTSTRAP_LIMIT", default="500"))
 ORDER_DIAGNOSTIC_LOOKBACK = int(getenv_any("ORDER_DIAGNOSTIC_LOOKBACK", default="50"))
 
@@ -1278,7 +1283,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-207-swing-performance-attribution"
+PATCH_VERSION = "patch-208-swing-attribution-drilldown-quarantine"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -10409,6 +10414,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             entry_type = 'early_override'
             source_name = override_source or EARLY_ENTRY_OVERRIDE_SOURCE
             live_allowed = True
+        quarantine_decision = _swing_quarantine_decision(c.get('symbol'), c.get('strategy'), entry_type)
+        if quarantine_decision.get('blocked'):
+            record_decision("SCAN", "worker_scan", symbol=c.get('symbol', ''), side='buy', signal=c.get('signal') or 'daily_breakout', action='ignored', reason='swing_quarantine_enforced', meta=quarantine_decision)
+            would_submit.append({'symbol': c.get('symbol'), 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), 'entry_type': entry_type, 'ignored': True, 'reason': 'swing_quarantine_enforced', 'quarantine': quarantine_decision})
+            continue    
         meta = {
             'rank_score': c.get('rank_score'),
             'selection_quality_score': c.get('selection_quality_score'),
@@ -10432,6 +10442,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'early_entry_override_enabled': bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED),
             'early_entry_override_triggered': bool(entry_type == 'early_override'),
             'early_entry_override_reasons': list(override_live_reasons if entry_type == 'early_override' else (_candidate_qualifies_early_entry_override(c, regime=regime)[1] if SWING_EARLY_ENTRY_OVERRIDE_ENABLED else [])),
+            'swing_quarantine': quarantine_decision,
         }
         if live_allowed:
             resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta, source=source_name)
@@ -16381,6 +16392,78 @@ def _p207_closed_trade_exit_reason(row: dict | None) -> str:
     return str(_p175_first(row if isinstance(row, dict) else {}, "exit_reason", "reason", "close_reason", "exit_type") or "unknown").strip().lower() or "unknown"
 
 
+
+def _p208_trade_drilldown_row(row: dict | None) -> dict:
+    row = row if isinstance(row, dict) else {}
+    return {
+        "symbol": str(row.get("symbol") or "unknown").upper() or "unknown",
+        "strategy": _p207_closed_trade_strategy(row),
+        "entry_type": _p207_closed_trade_entry_type(row),
+        "exit_reason": _p207_closed_trade_exit_reason(row),
+        "holding_days": _p175_holding_days(row),
+        "regime_mode": str(_p175_first(row, "entry_regime_mode", "regime_mode", "regime") or "unknown").strip().lower() or "unknown",
+        "rank_score": _p175_rank_score(row),
+        "gross_pnl": round(_p175_closed_trade_pnl(row), 4),
+        "pnl_r": _p175_closed_trade_r(row),
+        "ts_utc": _p175_first(row, "ts_utc", "exit_ts_utc", "closed_at", "updated_at"),
+    }
+
+
+def _p208_worst_trade_contributors(rows: list[dict], limit: int = 10) -> list[dict]:
+    drilldown = [_p208_trade_drilldown_row(r) for r in rows or []]
+    drilldown = [r for r in drilldown if r.get("pnl_r") is not None]
+    return sorted(drilldown, key=lambda r: (float(r.get("pnl_r") or 0.0), float(r.get("gross_pnl") or 0.0)))[: max(1, int(limit or 10))]
+
+
+def _p208_risk_blocker_explanation(rows: list[dict], risk_scaling: dict | None = None) -> dict:
+    risk_scaling = risk_scaling if isinstance(risk_scaling, dict) else {}
+    threshold = float(SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R)
+    worst_rows = _p208_worst_trade_contributors(rows, limit=10)
+    offenders = [r for r in worst_rows if r.get("pnl_r") is not None and float(r.get("pnl_r") or 0.0) < threshold]
+    primary = offenders[0] if offenders else (worst_rows[0] if worst_rows else {})
+    if offenders:
+        next_fix = "inspect_worst_r_trade_and_tighten_bucket_or_quarantine"
+    elif "avg_r_below_40_risk_min" in list(risk_scaling.get("blockers") or []):
+        next_fix = "improve_avg_r_before_scaling_risk"
+    elif "win_rate_below_risk_scale_min" in list(risk_scaling.get("blockers") or []):
+        next_fix = "improve_win_rate_before_scaling_risk"
+    elif "sample_below_risk_scale_min" in list(risk_scaling.get("blockers") or []):
+        next_fix = "collect_more_closed_trades_before_scaling_risk"
+    else:
+        next_fix = "risk_scaling_clear_or_no_specific_blocker"
+    return {
+        "worst_r_too_deep": bool(offenders),
+        "worst_r_threshold": threshold,
+        "offending_trades": offenders,
+        "worst_trade": primary,
+        "worst_r_symbol": primary.get("symbol"),
+        "worst_r_exit_reason": primary.get("exit_reason"),
+        "worst_r_strategy": primary.get("strategy"),
+        "risk_scale_next_required_fix": next_fix,
+    }
+
+
+def _swing_quarantine_decision(symbol: str = "", strategy: str = "", entry_type: str = "") -> dict:
+    sym = str(symbol or "").strip().upper()
+    strat = str(strategy or "").strip().lower()
+    etype = str(entry_type or "").strip().lower()
+    reasons = []
+    if sym and sym in SWING_QUARANTINE_SYMBOLS:
+        reasons.append("symbol_quarantined")
+    if strat and strat in SWING_QUARANTINE_STRATEGIES:
+        reasons.append("strategy_quarantined")
+    if etype and etype in SWING_QUARANTINE_ENTRY_TYPES:
+        reasons.append("entry_type_quarantined")
+    return {
+        "blocked": bool(SWING_QUARANTINE_ENFORCE and reasons),
+        "matched": bool(reasons),
+        "enforced": bool(SWING_QUARANTINE_ENFORCE),
+        "reasons": reasons,
+        "symbol": sym,
+        "strategy": strat,
+        "entry_type": etype,
+    }
+
 def _p207_bucket_summary(rows: list[dict], key_fn) -> list[dict]:
     buckets: dict[str, dict] = {}
     for raw in rows or []:
@@ -16494,6 +16577,8 @@ def _swing_performance_attribution(perf_state: dict | None = None) -> dict:
             recommendations.setdefault(str(action.get("action") or "monitor"), []).append(row)
     for key in recommendations:
         recommendations[key] = sorted(recommendations[key], key=lambda r: (float(r.get("avg_r") or -999), float(r.get("gross_pnl") or 0)), reverse=(key == "promote"))[:12]
+    risk_scaling = _p207_risk_scaling_readiness(rows, totals)
+    risk_blocker_explanation = _p208_risk_blocker_explanation(rows, risk_scaling)
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -16504,7 +16589,16 @@ def _swing_performance_attribution(perf_state: dict | None = None) -> dict:
         "by_exit_reason": by_exit_reason,
         "by_holding_period": by_holding_period,
         "recommendations": recommendations,
-        "risk_scaling": _p207_risk_scaling_readiness(rows, totals),
+        "worst_trade_contributors": _p208_worst_trade_contributors(rows, limit=10),
+        "risk_blocker_explanation": risk_blocker_explanation,
+        "risk_scaling": risk_scaling,
+        "quarantine_controls": {
+            "symbols": sorted(SWING_QUARANTINE_SYMBOLS),
+            "strategies": sorted(SWING_QUARANTINE_STRATEGIES),
+            "entry_types": sorted(SWING_QUARANTINE_ENTRY_TYPES),
+            "enforced": bool(SWING_QUARANTINE_ENFORCE),
+            "read_only_until_enforced": not bool(SWING_QUARANTINE_ENFORCE),
+        },
         "config": {
             "min_trades_per_bucket": int(SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET or 0),
             "promote_min_trades": int(SWING_PERFORMANCE_PROMOTE_MIN_TRADES or 0),
@@ -16520,7 +16614,7 @@ def _swing_performance_attribution(perf_state: dict | None = None) -> dict:
 def diagnostics_swing_performance_attribution(request: Request):
     require_admin_if_configured(request)
     return _swing_performance_attribution()
-    
+
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
     state = _recompute_strategy_performance_state()
@@ -16930,6 +17024,12 @@ def dashboard(request: Request):
     p207_reduce_text = _p207_reco_text('reduce')
     p207_quarantine_text = _p207_reco_text('quarantine')
     p207_risk_blockers_text = ', '.join(str(x) for x in _sl(swing_risk_scaling.get('blockers'))) or 'none'
+    p208_risk_explanation = _sd(swing_attribution.get('risk_blocker_explanation'))
+    p208_worst_trade_rows = ''.join(
+        f"<tr><td>{html.escape(str(_sd(r).get('symbol') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('pnl_r'))}R</td><td>{_money(_sd(r).get('gross_pnl'))}</td><td>{html.escape(str(_sd(r).get('strategy') or ''))}</td><td>{html.escape(str(_sd(r).get('entry_type') or ''))}</td><td>{html.escape(str(_sd(r).get('exit_reason') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('holding_days'))}</td><td>{html.escape(str(_sd(r).get('regime_mode') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('rank_score'))}</td></tr>"
+        for r in _sl(swing_attribution.get('worst_trade_contributors'))[:10]
+    ) or '<tr><td colspan="9" class="muted">No closed trade R data available.</td></tr>'
+    p208_quarantine_controls = _sd(swing_attribution.get('quarantine_controls'))
 
     strategy_rows = "".join(
         f"<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt(_sd(bucket).get('closed_trades'))}</td><td>{_dashboard_fmt(_sd(bucket).get('wins'))}</td><td>{_dashboard_fmt(_sd(bucket).get('losses'))}</td><td>{_pct(_flt(_sd(bucket).get('win_rate')) * 100.0)}</td><td>{_money(_sd(bucket).get('gross_pnl'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_r'))}R</td></tr>"
@@ -17198,7 +17298,8 @@ def dashboard(request: Request):
     would_submit_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('submit_state') or _sd(r).get('reason') or _sd(r).get('ok')}" for r in _sl(intraday_signal_debug.get('would_submit'))[:5]) or "none"
     readiness_assessment = _dashboard_readiness_assessment(blockers, scanner_ready, intraday_launch_gate_blockers)
     swing_profit_acceleration_html = f'''
-<div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('promote', p207_promote_text),('reduce', p207_reduce_text),('quarantine', p207_quarantine_text)])}</table><p class="muted">Read-only attribution turns win rate, P&amp;L, and avg R into promote / reduce / quarantine tuning decisions. Full JSON: <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a>.</p></div><div class="card"><h2>Top Symbol Attribution</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_symbol_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('worst_r_symbol', p208_risk_explanation.get('worst_r_symbol')),('worst_r_exit_reason', p208_risk_explanation.get('worst_r_exit_reason')),('worst_r_strategy', p208_risk_explanation.get('worst_r_strategy')),('risk_scale_next_required_fix', p208_risk_explanation.get('risk_scale_next_required_fix')),('quarantine_enforced', p208_quarantine_controls.get('enforced')),('promote', p207_promote_text),('reduce', p207_reduce_text),('quarantine', p207_quarantine_text)])}</table><p class="muted">Read-only attribution turns win rate, P&amp;L, and avg R into promote / reduce / quarantine tuning decisions. Full JSON: <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a>.</p></div><div class="card"><h2>Top Symbol Attribution</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_symbol_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Worst Trade Contributors</h2><table><thead><tr><th>Symbol</th><th>R</th><th>P&amp;L</th><th>Strategy</th><th>Entry</th><th>Exit</th><th>Hold days</th><th>Regime</th><th>Rank</th></tr></thead><tbody>{p208_worst_trade_rows}</tbody></table><p class="muted">These are the worst closed trades by R and explain blockers like worst_r_too_deep.</p></div><div class="card"><h2>Quarantine Controls</h2><table>{_rows([('SWING_QUARANTINE_SYMBOLS', ', '.join(_sl(p208_quarantine_controls.get('symbols'))) or 'none'),('SWING_QUARANTINE_STRATEGIES', ', '.join(_sl(p208_quarantine_controls.get('strategies'))) or 'none'),('SWING_QUARANTINE_ENTRY_TYPES', ', '.join(_sl(p208_quarantine_controls.get('entry_types'))) or 'none'),('SWING_QUARANTINE_ENFORCE', p208_quarantine_controls.get('enforced')),('mode', 'enforced' if p208_quarantine_controls.get('enforced') else 'read_only')])}</table><p class="muted">Quarantine lists are advisory unless SWING_QUARANTINE_ENFORCE=true.</p></div></div>
 <div class="section grid"><div class="card"><h2>Strategy / Entry Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_strategy_rows}</tbody></table><h3 style="margin-top:14px;">Entry type</h3><table><thead><tr><th>Entry</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_entry_rows}</tbody></table></div><div class="card"><h2>Exit / Holding Attribution</h2><h3>Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_exit_rows}</tbody></table><h3 style="margin-top:14px;">Holding period</h3><table><thead><tr><th>Hold</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_holding_rows}</tbody></table></div></div>
 '''
     if dashboard_full:
