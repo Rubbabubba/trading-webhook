@@ -1285,7 +1285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-210-swing-profit-acceleration-simulator"
+PATCH_VERSION = "patch-211-stall-exit-drilldown-simulator"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -16639,6 +16639,86 @@ def _swing_profit_acceleration_simulator(perf_state: dict | None = None) -> dict
     }
 
 
+def _p211_is_stall_exit(row: dict | None) -> bool:
+    return _p207_closed_trade_exit_reason(row) == "stall_exit"
+
+
+def _p211_simulate_stall_tightening(all_rows: list[dict], stall_rows: list[dict], name: str, removed_rows: list[dict], rationale: str, env_hint: str) -> dict:
+    removed_ids = {id(r) for r in removed_rows}
+    kept = [r for r in all_rows if id(r) not in removed_ids]
+    baseline = _p210_rows_summary(all_rows)
+    after = _p210_rows_summary(kept)
+    removed = _p210_rows_summary(removed_rows)
+    base_totals = _p210_safe_dict(baseline.get("totals"))
+    after_totals = _p210_safe_dict(after.get("totals"))
+    after_risk = _p210_safe_dict(after.get("risk_scaling"))
+    return {
+        "name": name,
+        "rationale": rationale,
+        "env_hint": env_hint,
+        "trades_removed": len(removed_rows),
+        "stall_trades_removed": len([r for r in removed_rows if _p211_is_stall_exit(r)]),
+        "removed_gross_pnl": round(float(_p210_safe_dict(removed.get("totals")).get("gross_pnl") or 0.0), 4),
+        "removed_avg_r": _p210_safe_dict(removed.get("totals")).get("avg_r"),
+        "simulated_gross_pnl": round(float(after_totals.get("gross_pnl") or 0.0), 4),
+        "gross_pnl_delta": round(float(after_totals.get("gross_pnl") or 0.0) - float(base_totals.get("gross_pnl") or 0.0), 4),
+        "simulated_avg_r": after_totals.get("avg_r"),
+        "avg_r_delta": round(float(after_totals.get("avg_r") or 0.0) - float(base_totals.get("avg_r") or 0.0), 4),
+        "simulated_worst_r": after_totals.get("worst_r"),
+        "ready_for_40_risk_after": bool(after_risk.get("ready_for_40_risk")),
+        "ready_for_50_risk_after": bool(after_risk.get("ready_for_50_risk")),
+        "risk_blockers_after": list(after_risk.get("blockers") or []),
+    }
+
+
+def _swing_stall_exit_drilldown(perf_state: dict | None = None) -> dict:
+    state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
+    state, _ = _patch175_enrich_state_if_needed(state)
+    rows = [dict(r) for r in list((state or {}).get("closed_trades") or []) if isinstance(r, dict)]
+    stall_rows = [r for r in rows if _p211_is_stall_exit(r)]
+    baseline = _p210_rows_summary(rows)
+    stall_summary = _p210_rows_summary(stall_rows)
+    current_stall_days = int(SWING_STALL_EXIT_DAYS or 0)
+    current_stall_min_r = float(SWING_STALL_MIN_R or 0.0)
+
+    negative_stalls = [r for r in stall_rows if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) < 0)]
+    deep_stalls = [r for r in stall_rows if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) <= -1.0)]
+    slow_stalls = [r for r in stall_rows if ((_p175_holding_days(r) or 0.0) >= max(1, current_stall_days + 1))]
+    low_rank_stalls = [r for r in stall_rows if (_p175_rank_score(r) is not None and float(_p175_rank_score(r) or 0.0) < 80.0)]
+    weak_regime_stalls = [r for r in stall_rows if str(_p175_first(r, "entry_regime_mode", "regime_mode", "regime") or "unknown").strip().lower() not in {"trend", "favorable", "bull", "strong"}]
+
+    simulations = [
+        _p211_simulate_stall_tightening(rows, stall_rows, "raise_stall_min_r_filter_negative_stalls", negative_stalls, "Do not let stalled trades remain open once they are below 0R at the stall check.", "consider_raising_SWING_STALL_MIN_R"),
+        _p211_simulate_stall_tightening(rows, stall_rows, "earlier_break_even_for_deep_stalls", deep_stalls, "Focus on stall exits that became worse than -1R; these are the tail-risk stall failures.", "consider_lowering_SWING_BREAK_EVEN_R_or_tightening_stops"),
+        _p211_simulate_stall_tightening(rows, stall_rows, "reduce_stall_exit_days_for_slow_stalls", slow_stalls, "Model exiting slow stalled trades before they remain open beyond the current stall window.", "consider_lowering_SWING_STALL_EXIT_DAYS"),
+        _p211_simulate_stall_tightening(rows, stall_rows, "require_rank_80_for_stall_prone_entries", low_rank_stalls, "Model avoiding stall-prone entries with rank score below 80.", "consider_raising_rank_floor_for_stall_prone_setups"),
+        _p211_simulate_stall_tightening(rows, stall_rows, "avoid_weak_regime_stall_setups", weak_regime_stalls, "Model avoiding stall-prone entries outside favorable/trend regimes.", "consider_tightening_regime_filter_for_stall_prone_setups"),
+    ]
+    simulations = [s for s in simulations if int(s.get("trades_removed") or 0) > 0]
+    simulations = sorted(simulations, key=lambda r: (float(r.get("gross_pnl_delta") or 0.0), float(r.get("avg_r_delta") or 0.0), bool(r.get("ready_for_40_risk_after"))), reverse=True)
+    best = simulations[0] if simulations else {}
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_drilldown",
+        "baseline": baseline,
+        "stall_exit_summary": stall_summary.get("totals"),
+        "by_symbol": _p207_bucket_summary(stall_rows, lambda r: str(r.get("symbol") or "unknown").upper() or "unknown"),
+        "by_holding_period": _p207_bucket_summary(stall_rows, _p175_holding_bucket),
+        "by_regime_mode": _p207_bucket_summary(stall_rows, lambda r: str(_p175_first(r, "entry_regime_mode", "regime_mode", "regime") or "unknown").strip().lower() or "unknown"),
+        "by_rank_bucket": _p207_bucket_summary(stall_rows, _p175_rank_bucket),
+        "by_strategy": _p207_bucket_summary(stall_rows, _p207_closed_trade_strategy),
+        "worst_stall_trades": _p208_worst_trade_contributors(stall_rows, limit=10),
+        "exit_tightening_simulations": simulations,
+        "recommended_exit_tuning": best,
+        "config": {
+            "current_SWING_STALL_EXIT_DAYS": current_stall_days,
+            "current_SWING_STALL_MIN_R": current_stall_min_r,
+            "read_only": True,
+        },
+    }
+
+
 def _p207_bucket_summary(rows: list[dict], key_fn) -> list[dict]:
     buckets: dict[str, dict] = {}
     for raw in rows or []:
@@ -16795,6 +16875,12 @@ def diagnostics_swing_performance_attribution(request: Request):
 def diagnostics_swing_tuning_simulator(request: Request):
     require_admin_if_configured(request)
     return _swing_profit_acceleration_simulator()
+
+
+@app.get("/diagnostics/swing_stall_exit_drilldown")
+def diagnostics_swing_stall_exit_drilldown(request: Request):
+    require_admin_if_configured(request)
+    return _swing_stall_exit_drilldown()
 
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
@@ -17220,6 +17306,14 @@ def dashboard(request: Request):
         f"<tr><td>{html.escape(str(_sd(r).get('category') or ''))}</td><td>{html.escape(str(_sd(r).get('name') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('trades_removed'))}</td><td>{_money(_sd(r).get('gross_pnl_delta'))}</td><td>{_dashboard_fmt(_sd(r).get('avg_r_delta'))}R</td><td>{_dashboard_fmt(_sd(r).get('simulated_worst_r'))}R</td><td>{_dashboard_fmt(_sd(r).get('ready_for_40_risk_after'))}</td></tr>"
         for r in _sl(swing_tuning_sim.get('scenarios'))[:6]
     ) or '<tr><td colspan="7" class="muted">No tuning simulation scenarios available yet.</td></tr>'
+    stall_drilldown = _swing_stall_exit_drilldown(perf_state=perf_state)
+    stall_summary = _sd(stall_drilldown.get('stall_exit_summary'))
+    p211_best = _sd(stall_drilldown.get('recommended_exit_tuning'))
+    p211_symbol_text = ', '.join(f"{_sd(r).get('name')}({_dashboard_fmt(_sd(r).get('avg_r'))}R)" for r in _sl(stall_drilldown.get('by_symbol'))[:5]) or 'none'
+    p211_sim_rows = ''.join(
+        f"<tr><td>{html.escape(str(_sd(r).get('name') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('trades_removed'))}</td><td>{_money(_sd(r).get('gross_pnl_delta'))}</td><td>{_dashboard_fmt(_sd(r).get('avg_r_delta'))}R</td><td>{_dashboard_fmt(_sd(r).get('simulated_worst_r'))}R</td><td>{html.escape(str(_sd(r).get('env_hint') or ''))}</td></tr>"
+        for r in _sl(stall_drilldown.get('exit_tightening_simulations'))[:5]
+    ) or '<tr><td colspan="6" class="muted">No stall-exit tightening simulations available.</td></tr>'
 
     strategy_rows = "".join(
         f"<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt(_sd(bucket).get('closed_trades'))}</td><td>{_dashboard_fmt(_sd(bucket).get('wins'))}</td><td>{_dashboard_fmt(_sd(bucket).get('losses'))}</td><td>{_pct(_flt(_sd(bucket).get('win_rate')) * 100.0)}</td><td>{_money(_sd(bucket).get('gross_pnl'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_r'))}R</td></tr>"
@@ -17490,6 +17584,7 @@ def dashboard(request: Request):
     swing_profit_acceleration_html = f'''
 <div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('worst_r_symbol', p208_risk_explanation.get('worst_r_symbol')),('worst_r_exit_reason', p208_risk_explanation.get('worst_r_exit_reason')),('worst_r_strategy', p208_risk_explanation.get('worst_r_strategy')),('risk_scale_next_required_fix', p208_risk_explanation.get('risk_scale_next_required_fix')),('quarantine_enforced', p208_quarantine_controls.get('enforced')),('promote', p207_promote_text),('reduce', p207_reduce_text),('quarantine', p207_quarantine_text)])}</table><p class="muted">Read-only attribution turns win rate, P&amp;L, and avg R into promote / reduce / quarantine tuning decisions. Full JSON: <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a>.</p></div><div class="card"><h2>Top Symbol Attribution</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_symbol_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Swing Tuning Simulator</h2><table>{_rows([('mode', swing_tuning_sim.get('mode')),('best_category', p210_best.get('category')),('best_name', p210_best.get('name')),('best_trades_removed', p210_best.get('trades_removed')),('best_gross_pnl_delta', _money(p210_best.get('gross_pnl_delta'))),('best_avg_r_delta', f"{_dashboard_fmt(p210_best.get('avg_r_delta'))}R"),('best_worst_r_after', f"{_dashboard_fmt(p210_best.get('simulated_worst_r'))}R"),('best_ready_for_40_after', p210_best.get('ready_for_40_risk_after')),('recommended_action', swing_tuning_sim.get('recommended_action'))])}</table><p class="muted">Read-only what-if simulator. It removes weak buckets from historical closed trades to estimate whether tuning would improve avg R, worst R, and risk-scaling readiness. Full JSON: <a href="/diagnostics/swing_tuning_simulator">/diagnostics/swing_tuning_simulator</a>.</p></div><div class="card"><h2>Top Tuning Scenarios</h2><table><thead><tr><th>Category</th><th>Name</th><th>Removed</th><th>P&amp;L Δ</th><th>Avg R Δ</th><th>Worst R After</th><th>Ready $40</th></tr></thead><tbody>{p210_scenario_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Stall Exit Drilldown</h2><table>{_rows([('stall_exit_count', stall_summary.get('closed_trades')),('stall_exit_gross_pnl', _money(stall_summary.get('gross_pnl'))),('stall_exit_avg_r', f"{_dashboard_fmt(stall_summary.get('avg_r'))}R"),('stall_exit_worst_r', f"{_dashboard_fmt(stall_summary.get('worst_r'))}R"),('top_stall_symbols', p211_symbol_text),('recommended_exit_tuning', p211_best.get('name')),('recommended_env_hint', p211_best.get('env_hint'))])}</table><p class="muted">Read-only stall-exit attribution and exit-tightening simulator. Full JSON: <a href="/diagnostics/swing_stall_exit_drilldown">/diagnostics/swing_stall_exit_drilldown</a>.</p></div><div class="card"><h2>Exit Tightening Simulations</h2><table><thead><tr><th>Scenario</th><th>Removed</th><th>P&amp;L Δ</th><th>Avg R Δ</th><th>Worst R After</th><th>Env hint</th></tr></thead><tbody>{p211_sim_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Worst Trade Contributors</h2><table><thead><tr><th>Symbol</th><th>R</th><th>P&amp;L</th><th>Strategy</th><th>Entry</th><th>Exit</th><th>Hold days</th><th>Regime</th><th>Rank</th></tr></thead><tbody>{p208_worst_trade_rows}</tbody></table><p class="muted">These are the worst closed trades by R and explain blockers like worst_r_too_deep.</p></div><div class="card"><h2>Quarantine Controls</h2><table>{_rows([('SWING_QUARANTINE_SYMBOLS', ', '.join(_sl(p208_quarantine_controls.get('symbols'))) or 'none'),('SWING_QUARANTINE_STRATEGIES', ', '.join(_sl(p208_quarantine_controls.get('strategies'))) or 'none'),('SWING_QUARANTINE_ENTRY_TYPES', ', '.join(_sl(p208_quarantine_controls.get('entry_types'))) or 'none'),('SWING_QUARANTINE_ENFORCE', p208_quarantine_controls.get('enforced')),('mode', 'enforced' if p208_quarantine_controls.get('enforced') else 'read_only')])}</table><p class="muted">Quarantine lists are advisory unless SWING_QUARANTINE_ENFORCE=true.</p></div></div>
 <div class="section grid"><div class="card"><h2>Strategy / Entry Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_strategy_rows}</tbody></table><h3 style="margin-top:14px;">Entry type</h3><table><thead><tr><th>Entry</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_entry_rows}</tbody></table></div><div class="card"><h2>Exit / Holding Attribution</h2><h3>Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_exit_rows}</tbody></table><h3 style="margin-top:14px;">Holding period</h3><table><thead><tr><th>Hold</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_holding_rows}</tbody></table></div></div>
 '''
