@@ -912,6 +912,8 @@ SWING_PERFORMANCE_RISK_MIN_WIN_RATE = getenv_float_any("SWING_PERFORMANCE_RISK_M
 SWING_PERFORMANCE_RISK_40_MIN_AVG_R = getenv_float_any("SWING_PERFORMANCE_RISK_40_MIN_AVG_R", default=0.75)
 SWING_PERFORMANCE_RISK_50_MIN_AVG_R = getenv_float_any("SWING_PERFORMANCE_RISK_50_MIN_AVG_R", default=1.00)
 SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R = getenv_float_any("SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R", default=-2.0)
+SWING_TUNING_SIM_MAX_CANDIDATES = getenv_int_any("SWING_TUNING_SIM_MAX_CANDIDATES", default=12)
+SWING_TUNING_SIM_MIN_REMOVED_TRADES = getenv_int_any("SWING_TUNING_SIM_MIN_REMOVED_TRADES", default=1)
 
 SWING_QUARANTINE_SYMBOLS = {s.strip().upper() for s in str(getenv_any("SWING_QUARANTINE_SYMBOLS", default="") or "").split(",") if s.strip()}
 SWING_QUARANTINE_STRATEGIES = {s.strip().lower() for s in str(getenv_any("SWING_QUARANTINE_STRATEGIES", default="") or "").split(",") if s.strip()}
@@ -1283,7 +1285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-209-after-hours-snapshot-refresh"
+PATCH_VERSION = "patch-210-swing-profit-acceleration-simulator"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -16490,6 +16492,153 @@ def _swing_quarantine_decision(symbol: str = "", strategy: str = "", entry_type:
         "entry_type": etype,
     }
 
+def _p210_safe_dict(v: object) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
+def _p210_safe_list(v: object) -> list:
+    return list(v) if isinstance(v, list) else []
+
+
+def _p210_trade_bucket_value(row: dict | None, category: str) -> str:
+    row = row if isinstance(row, dict) else {}
+    category = str(category or "").strip().lower()
+    if category == "symbols":
+        return str(row.get("symbol") or "unknown").strip().upper() or "unknown"
+    if category == "strategies":
+        return _p207_closed_trade_strategy(row)
+    if category == "entry_types":
+        return _p207_closed_trade_entry_type(row)
+    if category == "exit_reasons":
+        return _p207_closed_trade_exit_reason(row)
+    if category == "holding_periods":
+        return _p175_holding_bucket(row)
+    if category == "regime_modes":
+        return str(_p175_first(row, "entry_regime_mode", "regime_mode", "regime") or "unknown").strip().lower() or "unknown"
+    return "unknown"
+
+
+def _p210_rows_summary(rows: list[dict]) -> dict:
+    totals_list = _p207_bucket_summary(rows, lambda _r: "all")
+    totals = totals_list[0] if totals_list else {"name": "all", "closed_trades": 0, "wins": 0, "losses": 0, "flat": 0, "gross_pnl": 0.0, "win_rate": 0.0, "avg_r": 0.0, "worst_r": None, "best_r": None}
+    risk = _p207_risk_scaling_readiness(rows, totals)
+    return {"totals": totals, "risk_scaling": risk}
+
+
+def _p210_candidate_keys(rows: list[dict], attribution: dict | None = None) -> list[dict]:
+    attribution = attribution if isinstance(attribution, dict) else {}
+    candidates: dict[tuple[str, str], dict] = {}
+
+    def add(category: str, name: object, source: str):
+        cat = str(category or "").strip().lower()
+        val = str(name or "").strip()
+        if not cat or not val or val.lower() == "unknown":
+            return
+        key = (cat, val.upper() if cat == "symbols" else val.lower())
+        row = candidates.setdefault(key, {"category": cat, "name": key[1], "sources": []})
+        if source and source not in row["sources"]:
+            row["sources"].append(source)
+
+    for trade in _p210_safe_list(attribution.get("worst_trade_contributors"))[:10]:
+        row = _p210_safe_dict(trade)
+        add("symbols", row.get("symbol"), "worst_trade")
+        add("strategies", row.get("strategy"), "worst_trade")
+        add("exit_reasons", row.get("exit_reason"), "worst_trade")
+        if row.get("holding_days") is not None:
+            add("holding_periods", _p175_holding_bucket({"holding_days": row.get("holding_days")}), "worst_trade")
+        add("regime_modes", row.get("regime_mode"), "worst_trade")
+
+    for action_name in ("quarantine", "reduce"):
+        for rec in _p210_safe_list(_p210_safe_dict(attribution.get("recommendations")).get(action_name)):
+            r = _p210_safe_dict(rec)
+            add(r.get("category"), r.get("name"), f"{action_name}_recommendation")
+
+    for bucket_category, rows_key in (("symbols", "by_symbol"), ("strategies", "by_strategy"), ("entry_types", "by_entry_type"), ("exit_reasons", "by_exit_reason"), ("holding_periods", "by_holding_period")):
+        for bucket in _p210_safe_list(attribution.get(rows_key)):
+            b = _p210_safe_dict(bucket)
+            if int(b.get("closed_trades") or 0) < max(1, int(SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET or 1)):
+                continue
+            if float(b.get("gross_pnl") or 0.0) < 0 or (_p175_float(b.get("avg_r"), 0.0) or 0.0) <= float(SWING_PERFORMANCE_REDUCE_MAX_AVG_R):
+                add(bucket_category, b.get("name"), "weak_bucket")
+
+    return list(candidates.values())
+
+
+def _swing_profit_acceleration_simulator(perf_state: dict | None = None) -> dict:
+    state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
+    state, _ = _patch175_enrich_state_if_needed(state)
+    rows = [dict(r) for r in list((state or {}).get("closed_trades") or []) if isinstance(r, dict)]
+    baseline = _p210_rows_summary(rows)
+    attribution = _swing_performance_attribution(perf_state=state)
+    base_totals = _p210_safe_dict(baseline.get("totals"))
+    base_gross = float(base_totals.get("gross_pnl") or 0.0)
+    base_avg_r = _p175_float(base_totals.get("avg_r"), 0.0) or 0.0
+    base_win_rate = _p175_float(base_totals.get("win_rate"), 0.0) or 0.0
+    scenarios = []
+
+    for candidate in _p210_candidate_keys(rows, attribution):
+        category = str(candidate.get("category") or "")
+        name = str(candidate.get("name") or "")
+        removed = [r for r in rows if _p210_trade_bucket_value(r, category) == name]
+        if len(removed) < max(1, int(SWING_TUNING_SIM_MIN_REMOVED_TRADES or 1)):
+            continue
+        kept = [r for r in rows if _p210_trade_bucket_value(r, category) != name]
+        removed_summary = _p210_rows_summary(removed)
+        after_summary = _p210_rows_summary(kept)
+        after_totals = _p210_safe_dict(after_summary.get("totals"))
+        after_risk = _p210_safe_dict(after_summary.get("risk_scaling"))
+        scenario = {
+            "category": category,
+            "name": name,
+            "sources": list(candidate.get("sources") or []),
+            "action": "simulate_filter_bucket",
+            "trades_removed": len(removed),
+            "trades_remaining": len(kept),
+            "removed_gross_pnl": round(float(_p210_safe_dict(removed_summary.get("totals")).get("gross_pnl") or 0.0), 4),
+            "removed_avg_r": _p210_safe_dict(removed_summary.get("totals")).get("avg_r"),
+            "simulated_gross_pnl": round(float(after_totals.get("gross_pnl") or 0.0), 4),
+            "gross_pnl_delta": round(float(after_totals.get("gross_pnl") or 0.0) - base_gross, 4),
+            "simulated_win_rate": after_totals.get("win_rate"),
+            "win_rate_delta": round(float(after_totals.get("win_rate") or 0.0) - base_win_rate, 4),
+            "simulated_avg_r": after_totals.get("avg_r"),
+            "avg_r_delta": round(float(after_totals.get("avg_r") or 0.0) - base_avg_r, 4),
+            "simulated_worst_r": after_totals.get("worst_r"),
+            "ready_for_40_risk_after": bool(after_risk.get("ready_for_40_risk")),
+            "ready_for_50_risk_after": bool(after_risk.get("ready_for_50_risk")),
+            "risk_blockers_after": list(after_risk.get("blockers") or []),
+            "recommended_next_step": "consider_quarantine_or_tighten_filter" if float(after_totals.get("gross_pnl") or 0.0) > base_gross else "do_not_filter_without_more_proof",
+        }
+        scenarios.append(scenario)
+
+    scenarios = sorted(
+        scenarios,
+        key=lambda r: (
+            bool(r.get("ready_for_50_risk_after")),
+            bool(r.get("ready_for_40_risk_after")),
+            float(r.get("gross_pnl_delta") or 0.0),
+            float(r.get("avg_r_delta") or 0.0),
+            -int(r.get("trades_removed") or 0),
+        ),
+        reverse=True,
+    )[: max(1, int(SWING_TUNING_SIM_MAX_CANDIDATES or 12))]
+    best = scenarios[0] if scenarios else {}
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_simulation",
+        "baseline": baseline,
+        "best_tuning_candidate": best,
+        "scenarios": scenarios,
+        "scenario_count": len(scenarios),
+        "recommended_action": "review_best_candidate_before_live_filter" if scenarios else "collect_more_closed_trades",
+        "config": {
+            "max_candidates": int(SWING_TUNING_SIM_MAX_CANDIDATES or 0),
+            "min_removed_trades": int(SWING_TUNING_SIM_MIN_REMOVED_TRADES or 0),
+            "read_only": True,
+        },
+    }
+
+
 def _p207_bucket_summary(rows: list[dict], key_fn) -> list[dict]:
     buckets: dict[str, dict] = {}
     for raw in rows or []:
@@ -16640,6 +16789,12 @@ def _swing_performance_attribution(perf_state: dict | None = None) -> dict:
 def diagnostics_swing_performance_attribution(request: Request):
     require_admin_if_configured(request)
     return _swing_performance_attribution()
+
+
+@app.get("/diagnostics/swing_tuning_simulator")
+def diagnostics_swing_tuning_simulator(request: Request):
+    require_admin_if_configured(request)
+    return _swing_profit_acceleration_simulator()
 
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
@@ -16816,11 +16971,14 @@ def dashboard(request: Request):
     dashboard_detail = str(request.query_params.get("detail") or request.query_params.get("view") or "summary").strip().lower()
     dashboard_full = dashboard_detail in {"full", "heavy", "debug", "all"}
 
-    def _sd(v):
+    def _p210_safe_dict(v):
         return v if isinstance(v, dict) else {}
 
-    def _sl(v):
+    def _p210_safe_list(v):
         return v if isinstance(v, list) else []
+
+    _sd = _p210_safe_dict
+    _sl = _p210_safe_list
 
     def _up(v):
         return str(v or "").strip().upper()
@@ -16840,7 +16998,7 @@ def dashboard(request: Request):
             return out
 
     def _first(row, *keys):
-        row = _sd(row)
+        row = _p210_safe_dict(row)
         for k in keys:
             v = row.get(k)
             if v not in (None, ""):
@@ -16880,15 +17038,15 @@ def dashboard(request: Request):
 
     # Snapshot/state files only. The dashboard does not execute broker, reconcile, scanner, or exit work.
     # Default /dashboard is summary-first; use /dashboard?detail=full for heavier analytics panels.
-    snap = _sd(_read_json(globals().get("POSITION_SNAPSHOT_PATH") or os.getenv("POSITION_SNAPSHOT_PATH") or "/var/data/positions_snapshot.json", {}))
-    scan_state = _sd(_read_json(globals().get("SCAN_STATE_PATH") or os.getenv("SCAN_STATE_PATH") or "/var/data/scan_state.json", {}))
-    regime_state = _sd(_read_json(globals().get("REGIME_STATE_PATH") or os.getenv("REGIME_STATE_PATH") or "/var/data/regime_state.json", {}))
+    snap = _p210_safe_dict(_read_json(globals().get("POSITION_SNAPSHOT_PATH") or os.getenv("POSITION_SNAPSHOT_PATH") or "/var/data/positions_snapshot.json", {}))
+    scan_state = _p210_safe_dict(_read_json(globals().get("SCAN_STATE_PATH") or os.getenv("SCAN_STATE_PATH") or "/var/data/scan_state.json", {}))
+    regime_state = _p210_safe_dict(_read_json(globals().get("REGIME_STATE_PATH") or os.getenv("REGIME_STATE_PATH") or "/var/data/regime_state.json", {}))
     scanner_state = _sd(_read_json(globals().get("SCANNER_TELEMETRY_STATE_PATH") or os.getenv("SCANNER_TELEMETRY_STATE_PATH") or "/var/data/scanner_telemetry_state.json", {}))
     lifecycle_state = _sd(_read_json(globals().get("PAPER_LIFECYCLE_STATE_PATH") or os.getenv("PAPER_LIFECYCLE_STATE_PATH") or "/var/data/paper_lifecycle_state.json", {}))
     perf_payload = _sd(_read_json(globals().get("STRATEGY_PERFORMANCE_STATE_PATH") or os.getenv("STRATEGY_PERFORMANCE_STATE_PATH") or "/var/data/strategy_performance_state.json", {}))
     perf_state = _sd(perf_payload.get("state") if isinstance(perf_payload, dict) else {}) or perf_payload
 
-    positions = _sl(snap.get("positions"))
+    positions = _p210_safe_list(snap.get("positions"))
     active_plans = _sd(snap.get("active_plans")) or _sd(globals().get("TRADE_PLAN") or {})
     snap_summary = _sd(snap.get("summary"))
     latest_scan = _sd(scan_state.get("last_scan") or scan_state.get("last") or {})
@@ -16896,7 +17054,7 @@ def dashboard(request: Request):
     regime_current = _sd(regime_state.get("current") or regime_state.get("last") or regime_state)
     scanner_summary = _sd(scanner_state.get("summary") or scanner_state.get("last") or {})
     scanner_last = _sd(scanner_state.get("last") or scanner_state.get("summary") or {})
-    lifecycle_history = _sl(lifecycle_state.get("history"))[-8:]
+    lifecycle_history = _p210_safe_list(lifecycle_state.get("history"))[-8:]
     perf_by_strategy = _sd(perf_state.get("by_strategy"))
 
     closed_trade_rows = _sl(perf_state.get("closed_trades") or perf_state.get("closed_positions") or perf_state.get("trades_closed"))
@@ -17056,6 +17214,12 @@ def dashboard(request: Request):
         for r in _sl(swing_attribution.get('worst_trade_contributors'))[:10]
     ) or '<tr><td colspan="9" class="muted">No closed trade R data available.</td></tr>'
     p208_quarantine_controls = _sd(swing_attribution.get('quarantine_controls'))
+    swing_tuning_sim = _swing_profit_acceleration_simulator(perf_state=perf_state)
+    p210_best = _sd(swing_tuning_sim.get('best_tuning_candidate'))
+    p210_scenario_rows = ''.join(
+        f"<tr><td>{html.escape(str(_sd(r).get('category') or ''))}</td><td>{html.escape(str(_sd(r).get('name') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('trades_removed'))}</td><td>{_money(_sd(r).get('gross_pnl_delta'))}</td><td>{_dashboard_fmt(_sd(r).get('avg_r_delta'))}R</td><td>{_dashboard_fmt(_sd(r).get('simulated_worst_r'))}R</td><td>{_dashboard_fmt(_sd(r).get('ready_for_40_risk_after'))}</td></tr>"
+        for r in _sl(swing_tuning_sim.get('scenarios'))[:6]
+    ) or '<tr><td colspan="7" class="muted">No tuning simulation scenarios available yet.</td></tr>'
 
     strategy_rows = "".join(
         f"<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt(_sd(bucket).get('closed_trades'))}</td><td>{_dashboard_fmt(_sd(bucket).get('wins'))}</td><td>{_dashboard_fmt(_sd(bucket).get('losses'))}</td><td>{_pct(_flt(_sd(bucket).get('win_rate')) * 100.0)}</td><td>{_money(_sd(bucket).get('gross_pnl'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_r'))}R</td></tr>"
@@ -17325,6 +17489,7 @@ def dashboard(request: Request):
     readiness_assessment = _dashboard_readiness_assessment(blockers, scanner_ready, intraday_launch_gate_blockers)
     swing_profit_acceleration_html = f'''
 <div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('worst_r_symbol', p208_risk_explanation.get('worst_r_symbol')),('worst_r_exit_reason', p208_risk_explanation.get('worst_r_exit_reason')),('worst_r_strategy', p208_risk_explanation.get('worst_r_strategy')),('risk_scale_next_required_fix', p208_risk_explanation.get('risk_scale_next_required_fix')),('quarantine_enforced', p208_quarantine_controls.get('enforced')),('promote', p207_promote_text),('reduce', p207_reduce_text),('quarantine', p207_quarantine_text)])}</table><p class="muted">Read-only attribution turns win rate, P&amp;L, and avg R into promote / reduce / quarantine tuning decisions. Full JSON: <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a>.</p></div><div class="card"><h2>Top Symbol Attribution</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_symbol_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Swing Tuning Simulator</h2><table>{_rows([('mode', swing_tuning_sim.get('mode')),('best_category', p210_best.get('category')),('best_name', p210_best.get('name')),('best_trades_removed', p210_best.get('trades_removed')),('best_gross_pnl_delta', _money(p210_best.get('gross_pnl_delta'))),('best_avg_r_delta', f"{_dashboard_fmt(p210_best.get('avg_r_delta'))}R"),('best_worst_r_after', f"{_dashboard_fmt(p210_best.get('simulated_worst_r'))}R"),('best_ready_for_40_after', p210_best.get('ready_for_40_risk_after')),('recommended_action', swing_tuning_sim.get('recommended_action'))])}</table><p class="muted">Read-only what-if simulator. It removes weak buckets from historical closed trades to estimate whether tuning would improve avg R, worst R, and risk-scaling readiness. Full JSON: <a href="/diagnostics/swing_tuning_simulator">/diagnostics/swing_tuning_simulator</a>.</p></div><div class="card"><h2>Top Tuning Scenarios</h2><table><thead><tr><th>Category</th><th>Name</th><th>Removed</th><th>P&amp;L Δ</th><th>Avg R Δ</th><th>Worst R After</th><th>Ready $40</th></tr></thead><tbody>{p210_scenario_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Worst Trade Contributors</h2><table><thead><tr><th>Symbol</th><th>R</th><th>P&amp;L</th><th>Strategy</th><th>Entry</th><th>Exit</th><th>Hold days</th><th>Regime</th><th>Rank</th></tr></thead><tbody>{p208_worst_trade_rows}</tbody></table><p class="muted">These are the worst closed trades by R and explain blockers like worst_r_too_deep.</p></div><div class="card"><h2>Quarantine Controls</h2><table>{_rows([('SWING_QUARANTINE_SYMBOLS', ', '.join(_sl(p208_quarantine_controls.get('symbols'))) or 'none'),('SWING_QUARANTINE_STRATEGIES', ', '.join(_sl(p208_quarantine_controls.get('strategies'))) or 'none'),('SWING_QUARANTINE_ENTRY_TYPES', ', '.join(_sl(p208_quarantine_controls.get('entry_types'))) or 'none'),('SWING_QUARANTINE_ENFORCE', p208_quarantine_controls.get('enforced')),('mode', 'enforced' if p208_quarantine_controls.get('enforced') else 'read_only')])}</table><p class="muted">Quarantine lists are advisory unless SWING_QUARANTINE_ENFORCE=true.</p></div></div>
 <div class="section grid"><div class="card"><h2>Strategy / Entry Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_strategy_rows}</tbody></table><h3 style="margin-top:14px;">Entry type</h3><table><thead><tr><th>Entry</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_entry_rows}</tbody></table></div><div class="card"><h2>Exit / Holding Attribution</h2><h3>Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_exit_rows}</tbody></table><h3 style="margin-top:14px;">Holding period</h3><table><thead><tr><th>Hold</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_holding_rows}</tbody></table></div></div>
 '''
