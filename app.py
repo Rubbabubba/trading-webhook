@@ -1283,7 +1283,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-208-swing-attribution-drilldown-quarantine"
+PATCH_VERSION = "patch-209-after-hours-snapshot-refresh"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -14429,8 +14429,34 @@ def worker_exit(body: dict = Body(default_factory=dict)):
 
     if ONLY_MARKET_HOURS and not in_market_hours():
         status = _eod_flatten_status_snapshot(live=True)
-        update_exit_heartbeat(status="outside_market_hours", residual_count=status.get("residual_count"), still_open_symbols=status.get("residual_symbols"))
-        return {"ok": True, "skipped": True, "reason": "outside_market_hours", "eod_flatten_status": status}
+        snapshot = persist_positions_snapshot(
+            reason="worker_exit_outside_market_hours",
+            extra={
+                "worker_exit_status": "outside_market_hours",
+                "market_open": False,
+                "strategy_mode": STRATEGY_MODE,
+                "eod_flatten": status,
+                "reconcile_count": len(reconcile_actions),
+                "reconcile_actions": reconcile_actions[:20],
+            },
+        )
+        update_exit_heartbeat(
+            status="outside_market_hours",
+            residual_count=status.get("residual_count"),
+            still_open_symbols=status.get("residual_symbols"),
+            snapshot_reason=snapshot.get("reason"),
+            snapshot_ts_utc=snapshot.get("ts_utc"),
+        )
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "outside_market_hours",
+            "eod_flatten_status": status,
+            "snapshot_persisted": True,
+            "snapshot_reason": snapshot.get("reason"),
+            "snapshot_ts_utc": snapshot.get("ts_utc"),
+            "reconcile": reconcile_actions,
+        }
 
     # Manage active plans with stop/take
     for symbol, plan in list(TRADE_PLAN.items()):
