@@ -819,6 +819,8 @@ SWING_TRAIL_AFTER_R = getenv_float_any("SWING_TRAIL_AFTER_R", default=1.25)
 SWING_TRAIL_LOOKBACK_DAYS = getenv_int_any("SWING_TRAIL_LOOKBACK_DAYS", default=3)
 SWING_STALL_EXIT_DAYS = getenv_int_any("SWING_STALL_EXIT_DAYS", default=3)
 SWING_STALL_MIN_R = getenv_float_any("SWING_STALL_MIN_R", default=0.25)
+SWING_STALL_TUNING_BASELINE_MIN_R = getenv_float_any("SWING_STALL_TUNING_BASELINE_MIN_R", default=0.25)
+SWING_STALL_TUNING_START_UTC = str(getenv_any("SWING_STALL_TUNING_START_UTC", default="") or "").strip()
 SWING_PARTIAL_PROFIT_ENABLED = env_bool_any("SWING_PARTIAL_PROFIT_ENABLED", default=True)
 SWING_PARTIAL_PROFIT_R = getenv_float_any("SWING_PARTIAL_PROFIT_R", default=1.0)
 SWING_PARTIAL_PROFIT_FRACTION = getenv_float_any("SWING_PARTIAL_PROFIT_FRACTION", default=0.5)
@@ -1285,7 +1287,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-211-stall-exit-drilldown-simulator"
+PATCH_VERSION = "patch-212-stall-exit-tuning-monitor"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -16719,6 +16721,69 @@ def _swing_stall_exit_drilldown(perf_state: dict | None = None) -> dict:
     }
 
 
+def _p212_closed_trade_ts(row: dict | None):
+    row = row if isinstance(row, dict) else {}
+    return _p175_parse_dt(_p175_first(row, "ts_utc", "exit_ts_utc", "closed_at", "updated_at", "exit_time"))
+
+
+def _p212_rows_since(rows: list[dict], start_utc: str = "") -> list[dict]:
+    start_dt = _p175_parse_dt(start_utc) if start_utc else None
+    if not start_dt:
+        return list(rows or [])
+    out = []
+    for row in rows or []:
+        ts = _p212_closed_trade_ts(row)
+        if ts and ts >= start_dt:
+            out.append(row)
+    return out
+
+
+def _stall_exit_tuning_monitor(perf_state: dict | None = None) -> dict:
+    state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
+    state, _ = _patch175_enrich_state_if_needed(state)
+    rows = [dict(r) for r in list((state or {}).get("closed_trades") or []) if isinstance(r, dict)]
+    start_utc = str(SWING_STALL_TUNING_START_UTC or "").strip()
+    rows_since = _p212_rows_since(rows, start_utc)
+    stall_since = [r for r in rows_since if _p211_is_stall_exit(r)]
+    negative_stall_since = [r for r in stall_since if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) < 0)]
+    deep_stall_since = [r for r in stall_since if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) <= float(SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R))]
+    stall_summary = _p210_rows_summary(stall_since).get("totals")
+    since_summary = _p210_rows_summary(rows_since).get("totals")
+    changed = abs(float(SWING_STALL_MIN_R or 0.0) - float(SWING_STALL_TUNING_BASELINE_MIN_R or 0.0)) > 1e-9
+    active = bool(changed or start_utc)
+    assessment = "monitoring_post_change" if active else "baseline_not_changed"
+    if active and int(stall_summary.get("closed_trades") or 0) == 0:
+        assessment = "active_no_stall_exits_since_start"
+    elif active and int(deep_stall_since and len(deep_stall_since) or 0) > 0:
+        assessment = "active_but_deep_stall_exits_remain"
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_monitor",
+        "active_SWING_STALL_MIN_R": float(SWING_STALL_MIN_R or 0.0),
+        "baseline_SWING_STALL_MIN_R": float(SWING_STALL_TUNING_BASELINE_MIN_R or 0.0),
+        "active_SWING_STALL_EXIT_DAYS": int(SWING_STALL_EXIT_DAYS or 0),
+        "stall_tuning_active": bool(active),
+        "stall_tuning_changed_from_default": bool(changed),
+        "stall_tuning_start_utc": start_utc,
+        "post_tuning_window_configured": bool(start_utc),
+        "closed_trades_since_tuning": int(since_summary.get("closed_trades") or 0),
+        "stall_exits_since_tuning": int(stall_summary.get("closed_trades") or 0),
+        "stall_exit_gross_pnl_since_tuning": stall_summary.get("gross_pnl"),
+        "stall_exit_avg_r_since_tuning": stall_summary.get("avg_r"),
+        "stall_exit_worst_r_since_tuning": stall_summary.get("worst_r"),
+        "negative_stall_exit_count_since_tuning": len(negative_stall_since),
+        "deep_stall_exit_count_since_tuning": len(deep_stall_since),
+        "assessment": assessment,
+        "recommended_next_step": "collect_more_post_change_stall_exits" if active else "set_SWING_STALL_MIN_R_or_start_utc_when_tuning",
+        "recent_stall_exits": [_p208_trade_drilldown_row(r) for r in stall_since[-10:]],
+        "config": {
+            "set_SWING_STALL_TUNING_START_UTC_for_true_post_change_window": not bool(start_utc),
+            "read_only": True,
+        },
+    }
+
+
 def _p207_bucket_summary(rows: list[dict], key_fn) -> list[dict]:
     buckets: dict[str, dict] = {}
     for raw in rows or []:
@@ -16881,6 +16946,12 @@ def diagnostics_swing_tuning_simulator(request: Request):
 def diagnostics_swing_stall_exit_drilldown(request: Request):
     require_admin_if_configured(request)
     return _swing_stall_exit_drilldown()
+
+
+@app.get("/diagnostics/stall_exit_tuning_monitor")
+def diagnostics_stall_exit_tuning_monitor(request: Request):
+    require_admin_if_configured(request)
+    return _stall_exit_tuning_monitor()
 
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
@@ -17314,6 +17385,7 @@ def dashboard(request: Request):
         f"<tr><td>{html.escape(str(_sd(r).get('name') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('trades_removed'))}</td><td>{_money(_sd(r).get('gross_pnl_delta'))}</td><td>{_dashboard_fmt(_sd(r).get('avg_r_delta'))}R</td><td>{_dashboard_fmt(_sd(r).get('simulated_worst_r'))}R</td><td>{html.escape(str(_sd(r).get('env_hint') or ''))}</td></tr>"
         for r in _sl(stall_drilldown.get('exit_tightening_simulations'))[:5]
     ) or '<tr><td colspan="6" class="muted">No stall-exit tightening simulations available.</td></tr>'
+    stall_monitor = _stall_exit_tuning_monitor(perf_state=perf_state)
 
     strategy_rows = "".join(
         f"<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt(_sd(bucket).get('closed_trades'))}</td><td>{_dashboard_fmt(_sd(bucket).get('wins'))}</td><td>{_dashboard_fmt(_sd(bucket).get('losses'))}</td><td>{_pct(_flt(_sd(bucket).get('win_rate')) * 100.0)}</td><td>{_money(_sd(bucket).get('gross_pnl'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_r'))}R</td></tr>"
@@ -17585,6 +17657,7 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('worst_r_symbol', p208_risk_explanation.get('worst_r_symbol')),('worst_r_exit_reason', p208_risk_explanation.get('worst_r_exit_reason')),('worst_r_strategy', p208_risk_explanation.get('worst_r_strategy')),('risk_scale_next_required_fix', p208_risk_explanation.get('risk_scale_next_required_fix')),('quarantine_enforced', p208_quarantine_controls.get('enforced')),('promote', p207_promote_text),('reduce', p207_reduce_text),('quarantine', p207_quarantine_text)])}</table><p class="muted">Read-only attribution turns win rate, P&amp;L, and avg R into promote / reduce / quarantine tuning decisions. Full JSON: <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a>.</p></div><div class="card"><h2>Top Symbol Attribution</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_symbol_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Swing Tuning Simulator</h2><table>{_rows([('mode', swing_tuning_sim.get('mode')),('best_category', p210_best.get('category')),('best_name', p210_best.get('name')),('best_trades_removed', p210_best.get('trades_removed')),('best_gross_pnl_delta', _money(p210_best.get('gross_pnl_delta'))),('best_avg_r_delta', f"{_dashboard_fmt(p210_best.get('avg_r_delta'))}R"),('best_worst_r_after', f"{_dashboard_fmt(p210_best.get('simulated_worst_r'))}R"),('best_ready_for_40_after', p210_best.get('ready_for_40_risk_after')),('recommended_action', swing_tuning_sim.get('recommended_action'))])}</table><p class="muted">Read-only what-if simulator. It removes weak buckets from historical closed trades to estimate whether tuning would improve avg R, worst R, and risk-scaling readiness. Full JSON: <a href="/diagnostics/swing_tuning_simulator">/diagnostics/swing_tuning_simulator</a>.</p></div><div class="card"><h2>Top Tuning Scenarios</h2><table><thead><tr><th>Category</th><th>Name</th><th>Removed</th><th>P&amp;L Δ</th><th>Avg R Δ</th><th>Worst R After</th><th>Ready $40</th></tr></thead><tbody>{p210_scenario_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Stall Exit Drilldown</h2><table>{_rows([('stall_exit_count', stall_summary.get('closed_trades')),('stall_exit_gross_pnl', _money(stall_summary.get('gross_pnl'))),('stall_exit_avg_r', f"{_dashboard_fmt(stall_summary.get('avg_r'))}R"),('stall_exit_worst_r', f"{_dashboard_fmt(stall_summary.get('worst_r'))}R"),('top_stall_symbols', p211_symbol_text),('recommended_exit_tuning', p211_best.get('name')),('recommended_env_hint', p211_best.get('env_hint'))])}</table><p class="muted">Read-only stall-exit attribution and exit-tightening simulator. Full JSON: <a href="/diagnostics/swing_stall_exit_drilldown">/diagnostics/swing_stall_exit_drilldown</a>.</p></div><div class="card"><h2>Exit Tightening Simulations</h2><table><thead><tr><th>Scenario</th><th>Removed</th><th>P&amp;L Δ</th><th>Avg R Δ</th><th>Worst R After</th><th>Env hint</th></tr></thead><tbody>{p211_sim_rows}</tbody></table></div></div>
+<div class="section grid"><div class="card"><h2>Stall Tuning Monitor</h2><table>{_rows([('active_SWING_STALL_MIN_R', stall_monitor.get('active_SWING_STALL_MIN_R')),('active_SWING_STALL_EXIT_DAYS', stall_monitor.get('active_SWING_STALL_EXIT_DAYS')),('stall_tuning_active', stall_monitor.get('stall_tuning_active')),('stall_tuning_changed_from_default', stall_monitor.get('stall_tuning_changed_from_default')),('stall_tuning_start_utc', stall_monitor.get('stall_tuning_start_utc') or 'not_set'),('stall_exits_since_tuning', stall_monitor.get('stall_exits_since_tuning')),('stall_exit_avg_r_since_tuning', f"{_dashboard_fmt(stall_monitor.get('stall_exit_avg_r_since_tuning'))}R"),('stall_exit_worst_r_since_tuning', f"{_dashboard_fmt(stall_monitor.get('stall_exit_worst_r_since_tuning'))}R"),('negative_stall_exit_count_since_tuning', stall_monitor.get('negative_stall_exit_count_since_tuning')),('assessment', stall_monitor.get('assessment'))])}</table><p class="muted">Read-only post-change monitor. Set SWING_STALL_TUNING_START_UTC to isolate only exits after the tuning deploy. Full JSON: <a href="/diagnostics/stall_exit_tuning_monitor">/diagnostics/stall_exit_tuning_monitor</a>.</p></div></div>
 <div class="section grid"><div class="card"><h2>Worst Trade Contributors</h2><table><thead><tr><th>Symbol</th><th>R</th><th>P&amp;L</th><th>Strategy</th><th>Entry</th><th>Exit</th><th>Hold days</th><th>Regime</th><th>Rank</th></tr></thead><tbody>{p208_worst_trade_rows}</tbody></table><p class="muted">These are the worst closed trades by R and explain blockers like worst_r_too_deep.</p></div><div class="card"><h2>Quarantine Controls</h2><table>{_rows([('SWING_QUARANTINE_SYMBOLS', ', '.join(_sl(p208_quarantine_controls.get('symbols'))) or 'none'),('SWING_QUARANTINE_STRATEGIES', ', '.join(_sl(p208_quarantine_controls.get('strategies'))) or 'none'),('SWING_QUARANTINE_ENTRY_TYPES', ', '.join(_sl(p208_quarantine_controls.get('entry_types'))) or 'none'),('SWING_QUARANTINE_ENFORCE', p208_quarantine_controls.get('enforced')),('mode', 'enforced' if p208_quarantine_controls.get('enforced') else 'read_only')])}</table><p class="muted">Quarantine lists are advisory unless SWING_QUARANTINE_ENFORCE=true.</p></div></div>
 <div class="section grid"><div class="card"><h2>Strategy / Entry Attribution</h2><h3>Strategy</h3><table><thead><tr><th>Strategy</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_strategy_rows}</tbody></table><h3 style="margin-top:14px;">Entry type</h3><table><thead><tr><th>Entry</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_entry_rows}</tbody></table></div><div class="card"><h2>Exit / Holding Attribution</h2><h3>Exit reason</h3><table><thead><tr><th>Exit</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_exit_rows}</tbody></table><h3 style="margin-top:14px;">Holding period</h3><table><thead><tr><th>Hold</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_holding_rows}</tbody></table></div></div>
 '''
