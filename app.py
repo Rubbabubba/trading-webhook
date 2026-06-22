@@ -1287,7 +1287,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-214-dashboard-guide"
+PATCH_VERSION = "patch-215-execution-safety"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -4646,6 +4646,26 @@ def _alpaca_submit_order_rest(symbol: str, side: str, qty: float, client_order_i
 
 def _order_id_from_submit_response(order) -> str:
     return str(_order_attr(order, "id", "") or _order_attr(order, "order_id", "") or "")
+
+
+def _alpaca_order_error_text(err) -> str:
+    return str(err or "").strip()
+
+
+def _is_nonretryable_alpaca_order_error(err) -> bool:
+    text = _alpaca_order_error_text(err).lower()
+    if not text:
+        return False
+    nonretryable_markers = [
+        "fractional orders cannot be sold short",
+        "insufficient qty",
+        "insufficient quantity",
+        "requested asset is not available for trading",
+        "cannot be sold short",
+        "unprocessable entity",
+        "42210000",
+    ]
+    return any(marker in text for marker in nonretryable_markers)
     
     
 def submit_market_order(symbol: str, side: str, qty: float):
@@ -4673,6 +4693,8 @@ def submit_market_order(symbol: str, side: str, qty: float):
         return order
     except Exception as e:
         sdk_error = str(e)
+        if _is_nonretryable_alpaca_order_error(sdk_error):
+            raise RuntimeError(f"non_retryable_order_error:{sdk_error}")
         try:
             order = _alpaca_submit_order_rest(symbol, side, qty, client_order_id)
             order.setdefault("_sdk_error", sdk_error)
@@ -4741,6 +4763,54 @@ def find_open_order_for_symbol(symbol: str) -> dict:
         if str(order.get("symbol") or "").upper() == sym:
             return dict(order)
     return {}
+
+
+def _pending_close_order_for_symbol(symbol: str, close_side: str) -> dict:
+    sym = str(symbol or "").upper()
+    side = str(close_side or "").lower()
+    if not sym or side not in {"buy", "sell"}:
+        return {}
+    for order in list_open_orders_safe():
+        if str((order or {}).get("symbol") or "").upper() == sym and str((order or {}).get("side") or "").lower() == side:
+            return dict(order)
+    return {}
+
+
+def _normalize_close_qty(qty: float) -> float:
+    q = abs(float(qty or 0.0))
+    if q <= 0:
+        return 0.0
+    return float(_format_order_qty(q))
+
+
+def _record_exit_submit_failure(symbol: str, source: str, reason: str, close_side: str, qty: float, err) -> dict:
+    err_text = _alpaca_order_error_text(err)
+    payload = {
+        "closed": False,
+        "submit_error": True,
+        "symbol": str(symbol or "").upper(),
+        "qty": qty,
+        "close_side": close_side,
+        "reason": "exit_submit_failed",
+        "exit_reason": reason or "exit",
+        "error": err_text,
+        "nonretryable": _is_nonretryable_alpaca_order_error(err_text),
+    }
+    record_decision("EXIT", source, symbol, side=close_side, action="submit_failed", reason=reason or "exit", qty=qty, meta={"error": err_text, "nonretryable": payload["nonretryable"]})
+    try:
+        if isinstance(TRADE_PLAN.get(str(symbol or "").upper()), dict):
+            plan_ref = TRADE_PLAN[str(symbol or "").upper()]
+            plan_ref["last_exit_submit_error"] = err_text
+            plan_ref["last_exit_submit_error_at"] = datetime.now(timezone.utc).isoformat()
+            plan_ref["last_exit_submit_error_reason"] = reason or "exit"
+            plan_ref["last_exit_submit_error_source"] = source
+    except Exception:
+        pass
+    try:
+        persist_positions_snapshot(reason="close_position_submit_failed", extra={"symbol": str(symbol or "").upper(), "exit_reason": reason, "source": source, "close_side": close_side, "qty": qty, "error": err_text, "nonretryable": payload["nonretryable"]})
+    except Exception:
+        pass
+    return payload
 
 
 def _adopt_open_broker_order_as_plan(symbol: str, broker_order: dict, source: str = "reconcile", signal: str = "RECOVERED", base_price: float | None = None, meta: dict | None = None) -> dict:
@@ -4946,8 +5016,17 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
         record_decision("EXIT", source, symbol, action="ignored", reason="no_open_position", exit_reason=reason)
         return {"closed": False, "reason": "No open position"}
 
-    qty = abs(qty_signed)
+    qty = _normalize_close_qty(qty_signed)
     close_side = "sell" if qty_signed > 0 else "buy"
+    if qty <= 0:
+        record_decision("EXIT", source, symbol, side=close_side, action="ignored", reason="invalid_close_quantity", exit_reason=reason)
+        return {"closed": False, "reason": "Invalid close quantity", "symbol": symbol, "qty": qty, "close_side": close_side}
+
+    pending_close = _pending_close_order_for_symbol(symbol, close_side)
+    if pending_close:
+        order_id = str(pending_close.get("id") or "")
+        record_decision("EXIT", source, symbol, side=close_side, action="pending_close_exists", reason=reason or "exit", qty=qty, order_id=order_id)
+        return {"closed": False, "pending_close_order": True, "reason": "pending_close_order_exists", "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id}
 
     if not is_live_exit_permitted(source, reason=reason):
         payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED}
@@ -4973,7 +5052,10 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
             pass
         return payload
 
-    order = submit_market_order(symbol, close_side, qty)
+    try:
+        order = submit_market_order(symbol, close_side, qty)
+    except Exception as e:
+        return _record_exit_submit_failure(symbol, source, reason, close_side, qty, e)
     order_id = _order_id_from_submit_response(order)
     out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id}
     record_decision("EXIT", source, symbol, side=close_side, action="order_submitted", reason=reason or "exit", qty=qty, order_id=order_id)
@@ -4985,8 +5067,8 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
     try:
         if isinstance(TRADE_PLAN.get(symbol), dict):
             plan_ref = TRADE_PLAN[symbol]
-            plan_ref["last_exit_order_id"] = str(order.id)
-            _transition_execution_lifecycle(plan_ref, symbol, "close_submitted", reason="exit_submitted", details={"qty": qty, "source": source, "order_id": str(order.id)})
+            plan_ref["last_exit_order_id"] = order_id
+            _transition_execution_lifecycle(plan_ref, symbol, "close_submitted", reason="exit_submitted", details={"qty": qty, "source": source, "order_id": order_id})
     except Exception:
         pass
     return out
@@ -5005,8 +5087,16 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
     if available_qty <= 0 or requested_qty <= 0:
         return {"closed": False, "reason": "Invalid partial quantity"}
 
-    qty = min(available_qty, requested_qty)
+    qty = _normalize_close_qty(min(available_qty, requested_qty))
     close_side = "sell" if qty_signed > 0 else "buy"
+    if qty <= 0:
+        return {"closed": False, "reason": "Invalid partial quantity"}
+
+    pending_close = _pending_close_order_for_symbol(symbol, close_side)
+    if pending_close:
+        order_id = str(pending_close.get("id") or "")
+        record_decision("EXIT", source, symbol, side=close_side, action="pending_partial_close_exists", reason=reason or "partial_exit", qty=qty, order_id=order_id)
+        return {"closed": False, "pending_close_order": True, "reason": "pending_close_order_exists", "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id, "partial": True}
 
     if not is_live_exit_permitted(source, reason=reason):
         payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED, "partial": True}
@@ -5026,20 +5116,26 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
             pass
         return payload
 
-    order = submit_market_order(symbol, close_side, qty)
-    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": str(order.id), "partial": True}
-    record_decision("EXIT", source, symbol, side=close_side, action="partial_order_submitted", reason=reason or "partial_exit", qty=qty, order_id=str(order.id))
-    persist_positions_snapshot(reason="partial_close_submitted", extra={"symbol": symbol, "order_id": str(order.id), "exit_reason": reason, "source": source, "qty": qty})
     try:
-        _record_paper_lifecycle("exit", "submitted", symbol=symbol, details={"reason": reason or "partial_exit", "qty": qty, "source": source, "order_id": str(order.id), "partial": True})
+        order = submit_market_order(symbol, close_side, qty)
+    except Exception as e:
+        payload = _record_exit_submit_failure(symbol, source, reason or "partial_exit", close_side, qty, e)
+        payload["partial"] = True
+        return payload
+    order_id = _order_id_from_submit_response(order)
+    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id, "partial": True}
+    record_decision("EXIT", source, symbol, side=close_side, action="partial_order_submitted", reason=reason or "partial_exit", qty=qty, order_id=order_id)
+    persist_positions_snapshot(reason="partial_close_submitted", extra={"symbol": symbol, "order_id": order_id, "exit_reason": reason, "source": source, "qty": qty})
+    try:
+        _record_paper_lifecycle("exit", "submitted", symbol=symbol, details={"reason": reason or "partial_exit", "qty": qty, "source": source, "order_id": order_id, "partial": True})
     except Exception:
         pass
     try:
         if isinstance(TRADE_PLAN.get(symbol), dict):
             plan_ref = TRADE_PLAN[symbol]
-            plan_ref["last_exit_order_id"] = str(order.id)
-            plan_ref["last_partial_exit_order_id"] = str(order.id)
-            _transition_execution_lifecycle(plan_ref, symbol, "close_submitted", reason="partial_exit_submitted", details={"qty": qty, "source": source, "order_id": str(order.id), "partial": True})
+            plan_ref["last_exit_order_id"] = order_id
+            plan_ref["last_partial_exit_order_id"] = order_id
+            _transition_execution_lifecycle(plan_ref, symbol, "close_submitted", reason="partial_exit_submitted", details={"qty": qty, "source": source, "order_id": order_id, "partial": True})
     except Exception:
         pass
     return out
