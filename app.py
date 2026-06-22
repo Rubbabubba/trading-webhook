@@ -1287,7 +1287,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-215-execution-safety"
+PATCH_VERSION = "patch-216-dashboard-fast-freshness"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -1383,22 +1383,44 @@ def _dashboard_snapshot_age_view(snapshot_ts: object, generated_utc: object = No
     """Return a dashboard-only freshness view without live broker calls."""
     generated_dt = _ts_parse_or_none(generated_utc) or datetime.now(timezone.utc)
     snapshot_dt = _ts_parse_or_none(snapshot_ts)
+    stale_after = max(1, int(stale_after_sec or 120))
+    warning_after = max(stale_after * 2, int(os.getenv("DASHBOARD_SNAPSHOT_WARNING_SEC", "300") or 300))
+    critical_after = max(warning_after * 2, int(os.getenv("DASHBOARD_SNAPSHOT_CRITICAL_SEC", "600") or 600))
     if not snapshot_dt:
         return {
             "snapshot_ts": str(snapshot_ts or ""),
             "age_sec": None,
             "fresh": False,
+            "severity": "critical",
             "status": "snapshot_missing",
             "note": "No persisted position snapshot timestamp is available; dashboard may lag broker truth until the worker writes a snapshot.",
         }
     age_sec = max(0, int((generated_dt.astimezone(timezone.utc) - snapshot_dt.astimezone(timezone.utc)).total_seconds()))
-    fresh = age_sec <= int(stale_after_sec)
+    fresh = age_sec <= stale_after
+    if fresh:
+        status = "fresh"
+        severity = "good"
+        note = "Snapshot is current enough for the read-only dashboard."
+    elif age_sec <= warning_after:
+        status = "mild_stale"
+        severity = "warn"
+        note = "Snapshot is mildly stale; dashboard may be a few minutes behind Alpaca until the worker writes the next snapshot."
+    elif age_sec <= critical_after:
+        status = "stale"
+        severity = "warn"
+        note = "Snapshot is stale; confirm worker exit/reconcile cycles are refreshing positions_snapshot.json."
+    else:
+        status = "critical_stale"
+        severity = "critical"
+        note = "Snapshot is critically stale; investigate worker heartbeat, exit worker, and persisted snapshot writes."
     return {
         "snapshot_ts": snapshot_dt.astimezone(timezone.utc).isoformat(),
         "age_sec": age_sec,
         "fresh": fresh,
-        "status": "fresh" if fresh else "stale",
-        "note": "Snapshot is current enough for the read-only dashboard." if fresh else "Dashboard is read-only and may be behind Alpaca until the exit/reconcile worker refreshes positions_snapshot.json.",
+        "severity": severity,
+        "status": status,
+        "thresholds": {"fresh_sec": stale_after, "warning_sec": warning_after, "critical_sec": critical_after},
+        "note": note,
     }
 
 
@@ -17303,12 +17325,16 @@ def _swing_capacity_advisory(
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
-    """Patch 172: rich operator dashboard restored, snapshot-only fast path."""
+    """Patch 216: snapshot-only dashboard with lightweight default and full diagnostics on demand."""
     require_admin_if_configured(request)
     dashboard_started = _time.perf_counter()
     generated_utc = datetime.now(timezone.utc).isoformat()
     dashboard_detail = str(request.query_params.get("detail") or request.query_params.get("view") or "summary").strip().lower()
     dashboard_full = dashboard_detail in {"full", "heavy", "debug", "all"}
+    dashboard_timings: dict[str, float] = {}
+
+    def _mark_dashboard_phase(name: str):
+        dashboard_timings[name] = round((_time.perf_counter() - dashboard_started) * 1000.0, 1)
 
     def _p210_safe_dict(v):
         return v if isinstance(v, dict) else {}
@@ -17384,6 +17410,7 @@ def dashboard(request: Request):
     lifecycle_state = _sd(_read_json(globals().get("PAPER_LIFECYCLE_STATE_PATH") or os.getenv("PAPER_LIFECYCLE_STATE_PATH") or "/var/data/paper_lifecycle_state.json", {}))
     perf_payload = _sd(_read_json(globals().get("STRATEGY_PERFORMANCE_STATE_PATH") or os.getenv("STRATEGY_PERFORMANCE_STATE_PATH") or "/var/data/strategy_performance_state.json", {}))
     perf_state = _sd(perf_payload.get("state") if isinstance(perf_payload, dict) else {}) or perf_payload
+    _mark_dashboard_phase("snapshot_load_ms")
 
     positions = _p210_safe_list(snap.get("positions"))
     active_plans = _sd(snap.get("active_plans")) or _sd(globals().get("TRADE_PLAN") or {})
@@ -17506,6 +17533,7 @@ def dashboard(request: Request):
         f"<td>{_dashboard_fmt(r['days'])}</td>"
         "</tr>" for r in merged
     ) or '<tr><td colspan="10" class="muted">No active positions in latest snapshot.</td></tr>'
+    _mark_dashboard_phase("position_merge_ms")
 
     strategy_perf = perf_by_strategy if perf_by_strategy else _aggregate_strategy_from_closed(closed_trade_rows)
     closed_trades = int(sum(int(_sd(b).get("closed_trades") or 0) for b in strategy_perf.values()))
@@ -17524,7 +17552,27 @@ def dashboard(request: Request):
         win_rate=win_rate,
         avg_r=avg_r,
     )
-    swing_attribution = _swing_performance_attribution(perf_state=perf_state)
+    if dashboard_full:
+        swing_attribution = _swing_performance_attribution(perf_state=perf_state)
+    else:
+        swing_attribution = {
+            "risk_scaling": {
+                "current_risk_dollars": round(float(RISK_DOLLARS or 0.0), 2),
+                "recommended_risk_dollars": round(float(RISK_DOLLARS or 0.0), 2),
+                "ready_for_40_risk": False,
+                "ready_for_50_risk": False,
+                "blockers": ["open_full_diagnostics_for_attribution"],
+            },
+            "risk_blocker_explanation": {
+                "risk_scale_next_required_fix": "open_dashboard_detail_full_for_attribution",
+            },
+            "quarantine_controls": {
+                "symbols": sorted(SWING_QUARANTINE_SYMBOLS),
+                "strategies": sorted(SWING_QUARANTINE_STRATEGIES),
+                "entry_types": sorted(SWING_QUARANTINE_ENTRY_TYPES),
+                "enforced": bool(SWING_QUARANTINE_ENFORCE),
+            },
+        }
     swing_risk_scaling = _sd(swing_attribution.get("risk_scaling"))
 
     def _p207_rows(bucket_rows, limit=6):
@@ -17538,11 +17586,11 @@ def dashboard(request: Request):
         rows = _sl(_sd(swing_attribution.get('recommendations')).get(kind))
         return ', '.join(f"{_sd(r).get('category')}:{_sd(r).get('name')}({_dashboard_fmt(_sd(r).get('avg_r'))}R)" for r in rows[:5]) or 'none'
 
-    p207_symbol_rows = _p207_rows(swing_attribution.get('by_symbol'), limit=8)
-    p207_strategy_rows = _p207_rows(swing_attribution.get('by_strategy'), limit=6)
-    p207_entry_rows = _p207_rows(swing_attribution.get('by_entry_type'), limit=6)
-    p207_exit_rows = _p207_rows(swing_attribution.get('by_exit_reason'), limit=6)
-    p207_holding_rows = _p207_rows(swing_attribution.get('by_holding_period'), limit=6)
+    p207_symbol_rows = _p207_rows(swing_attribution.get('by_symbol'), limit=8) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for symbol attribution.</td></tr>'
+    p207_strategy_rows = _p207_rows(swing_attribution.get('by_strategy'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for strategy attribution.</td></tr>'
+    p207_entry_rows = _p207_rows(swing_attribution.get('by_entry_type'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for entry attribution.</td></tr>'
+    p207_exit_rows = _p207_rows(swing_attribution.get('by_exit_reason'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for exit attribution.</td></tr>'
+    p207_holding_rows = _p207_rows(swing_attribution.get('by_holding_period'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for holding-period attribution.</td></tr>'
     p207_promote_text = _p207_reco_text('promote')
     p207_reduce_text = _p207_reco_text('reduce')
     p207_quarantine_text = _p207_reco_text('quarantine')
@@ -17553,13 +17601,13 @@ def dashboard(request: Request):
         for r in _sl(swing_attribution.get('worst_trade_contributors'))[:10]
     ) or '<tr><td colspan="9" class="muted">No closed trade R data available.</td></tr>'
     p208_quarantine_controls = _sd(swing_attribution.get('quarantine_controls'))
-    swing_tuning_sim = _swing_profit_acceleration_simulator(perf_state=perf_state)
+    swing_tuning_sim = _swing_profit_acceleration_simulator(perf_state=perf_state) if dashboard_full else {"mode": "deferred_summary_fast_path", "recommended_action": "open_dashboard_detail_full_for_tuning_simulator", "best_tuning_candidate": {}, "scenarios": []}
     p210_best = _sd(swing_tuning_sim.get('best_tuning_candidate'))
     p210_scenario_rows = ''.join(
         f"<tr><td>{html.escape(str(_sd(r).get('category') or ''))}</td><td>{html.escape(str(_sd(r).get('name') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('trades_removed'))}</td><td>{_money(_sd(r).get('gross_pnl_delta'))}</td><td>{_dashboard_fmt(_sd(r).get('avg_r_delta'))}R</td><td>{_dashboard_fmt(_sd(r).get('simulated_worst_r'))}R</td><td>{_dashboard_fmt(_sd(r).get('ready_for_40_risk_after'))}</td></tr>"
         for r in _sl(swing_tuning_sim.get('scenarios'))[:6]
     ) or '<tr><td colspan="7" class="muted">No tuning simulation scenarios available yet.</td></tr>'
-    stall_drilldown = _swing_stall_exit_drilldown(perf_state=perf_state)
+    stall_drilldown = _swing_stall_exit_drilldown(perf_state=perf_state) if dashboard_full else {"stall_exit_summary": {}, "recommended_exit_tuning": {}, "by_symbol": [], "exit_tightening_simulations": []}
     stall_summary = _sd(stall_drilldown.get('stall_exit_summary'))
     p211_best = _sd(stall_drilldown.get('recommended_exit_tuning'))
     p211_symbol_text = ', '.join(f"{_sd(r).get('name')}({_dashboard_fmt(_sd(r).get('avg_r'))}R)" for r in _sl(stall_drilldown.get('by_symbol'))[:5]) or 'none'
@@ -17567,8 +17615,9 @@ def dashboard(request: Request):
         f"<tr><td>{html.escape(str(_sd(r).get('name') or ''))}</td><td>{_dashboard_fmt(_sd(r).get('trades_removed'))}</td><td>{_money(_sd(r).get('gross_pnl_delta'))}</td><td>{_dashboard_fmt(_sd(r).get('avg_r_delta'))}R</td><td>{_dashboard_fmt(_sd(r).get('simulated_worst_r'))}R</td><td>{html.escape(str(_sd(r).get('env_hint') or ''))}</td></tr>"
         for r in _sl(stall_drilldown.get('exit_tightening_simulations'))[:5]
     ) or '<tr><td colspan="6" class="muted">No stall-exit tightening simulations available.</td></tr>'
-    stall_monitor = _stall_exit_tuning_monitor(perf_state=perf_state)
-    post_tuning_validation = _post_tuning_exit_validation(perf_state=perf_state)
+    stall_monitor = _stall_exit_tuning_monitor(perf_state=perf_state) if dashboard_full else {"assessment": "deferred_to_full_dashboard", "stall_tuning_active": bool(SWING_STALL_TUNING_START_UTC), "stall_tuning_start_utc": SWING_STALL_TUNING_START_UTC}
+    post_tuning_validation = _post_tuning_exit_validation(perf_state=perf_state) if dashboard_full else {"post_tuning_validation_ready": False, "risk_scale_unlock_candidate": False, "risk_scale_unlock_blockers": ["open_dashboard_detail_full_for_post_tuning_validation"], "recommended_action": "open_dashboard_detail_full_for_post_tuning_validation"}
+    _mark_dashboard_phase("performance_analytics_ms")
 
     strategy_rows = "".join(
         f"<tr><td>{html.escape(str(name))}</td><td>{_dashboard_fmt(_sd(bucket).get('closed_trades'))}</td><td>{_dashboard_fmt(_sd(bucket).get('wins'))}</td><td>{_dashboard_fmt(_sd(bucket).get('losses'))}</td><td>{_pct(_flt(_sd(bucket).get('win_rate')) * 100.0)}</td><td>{_money(_sd(bucket).get('gross_pnl'))}</td><td>{_dashboard_fmt(_sd(bucket).get('avg_r'))}R</td></tr>"
@@ -17780,8 +17829,9 @@ def dashboard(request: Request):
     patch_action_label = html.escape(patch_display_label())
     snapshot_ts = snap.get("ts_utc") or snap.get("ts_ny") or ""
     snapshot_age_view = _dashboard_snapshot_age_view(snapshot_ts, generated_utc, stale_after_sec=int(os.getenv("DASHBOARD_SNAPSHOT_STALE_SEC", "120") or 120))
-    snapshot_badge_class = "good" if snapshot_age_view.get("fresh") else "neutral"
-    snapshot_alert_class = "good" if snapshot_age_view.get("fresh") else "neutral"
+    snapshot_severity = str(snapshot_age_view.get("severity") or "")
+    snapshot_badge_class = "good" if snapshot_severity == "good" else ("bad" if snapshot_severity == "critical" else "neutral")
+    snapshot_alert_class = "good" if snapshot_severity == "good" else ("bad" if snapshot_severity == "critical" else "neutral")
     last_scan_ts = latest_scan.get("ts_utc") or latest_scan.get("last_closed_utc") or scanner_summary.get("last_closed_utc") or scanner_last.get("last_closed_utc") or ""
     structural_exceptions_text = "\n".join(["missing_from_plans: none", "plans_missing_open_order: none", "stale_active_plans: none", "orphan_open_order_symbols: none", "partial_fill_plan_symbols: none"])
     intraday_projection = _intraday_launch_projection(open_count_override=len(merged))
@@ -17836,6 +17886,7 @@ def dashboard(request: Request):
     ignored_rank_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('reason')}:{_sd(r).get('rank_score')}" for r in _sl(intraday_signal_debug.get('ignored_ranked_out'))[:5]) or "none"
     would_submit_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('submit_state') or _sd(r).get('reason') or _sd(r).get('ok')}" for r in _sl(intraday_signal_debug.get('would_submit'))[:5]) or "none"
     readiness_assessment = _dashboard_readiness_assessment(blockers, scanner_ready, intraday_launch_gate_blockers)
+    _mark_dashboard_phase("intraday_readiness_ms")
     swing_profit_acceleration_html = f'''
 <div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('worst_r_symbol', p208_risk_explanation.get('worst_r_symbol')),('worst_r_exit_reason', p208_risk_explanation.get('worst_r_exit_reason')),('worst_r_strategy', p208_risk_explanation.get('worst_r_strategy')),('risk_scale_next_required_fix', p208_risk_explanation.get('risk_scale_next_required_fix')),('quarantine_enforced', p208_quarantine_controls.get('enforced')),('promote', p207_promote_text),('reduce', p207_reduce_text),('quarantine', p207_quarantine_text)])}</table><p class="muted">Read-only attribution turns win rate, P&amp;L, and avg R into promote / reduce / quarantine tuning decisions. Full JSON: <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a>.</p></div><div class="card"><h2>Top Symbol Attribution</h2><table><thead><tr><th>Symbol</th><th>Closed</th><th>Win rate</th><th>Gross P&amp;L</th><th>Avg R</th></tr></thead><tbody>{p207_symbol_rows}</tbody></table></div></div>
 <div class="section grid"><div class="card"><h2>Swing Tuning Simulator</h2><table>{_rows([('mode', swing_tuning_sim.get('mode')),('best_category', p210_best.get('category')),('best_name', p210_best.get('name')),('best_trades_removed', p210_best.get('trades_removed')),('best_gross_pnl_delta', _money(p210_best.get('gross_pnl_delta'))),('best_avg_r_delta', f"{_dashboard_fmt(p210_best.get('avg_r_delta'))}R"),('best_worst_r_after', f"{_dashboard_fmt(p210_best.get('simulated_worst_r'))}R"),('best_ready_for_40_after', p210_best.get('ready_for_40_risk_after')),('recommended_action', swing_tuning_sim.get('recommended_action'))])}</table><p class="muted">Read-only what-if simulator. It removes weak buckets from historical closed trades to estimate whether tuning would improve avg R, worst R, and risk-scaling readiness. Full JSON: <a href="/diagnostics/swing_tuning_simulator">/diagnostics/swing_tuning_simulator</a>.</p></div><div class="card"><h2>Top Tuning Scenarios</h2><table><thead><tr><th>Category</th><th>Name</th><th>Removed</th><th>P&amp;L Δ</th><th>Avg R Δ</th><th>Worst R After</th><th>Ready $40</th></tr></thead><tbody>{p210_scenario_rows}</tbody></table></div></div>
@@ -17862,16 +17913,20 @@ def dashboard(request: Request):
 <div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R'),('sample_maturity', maturity)])}</table><p class="muted">Heavy rank, symbol, holding-period, exit-attribution, and follow-through analytics are skipped on the summary dashboard. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for the full diagnostic view.</p></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
 '''
         diagnostic_detail_html = f'''
-{swing_profit_acceleration_html}
+<div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('risk_scale_next_required_fix', p208_risk_explanation.get('risk_scale_next_required_fix'))])}</table><p class="muted">Summary mode defers heavy attribution and tuning simulations. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> or <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a> for full promote / reduce / quarantine details.</p></div><div class="card"><h2>Post-Tuning Exit Validation</h2><table>{_rows([('post_tuning_validation_ready', post_tuning_validation.get('post_tuning_validation_ready')),('risk_scale_unlock_candidate', post_tuning_validation.get('risk_scale_unlock_candidate')),('risk_scale_unlock_blockers', ', '.join(_sl(post_tuning_validation.get('risk_scale_unlock_blockers'))) or 'none'),('recommended_action', post_tuning_validation.get('recommended_action'))])}</table><p class="muted">Detailed post-tuning validation is deferred on the fast dashboard. Full JSON: <a href="/diagnostics/post_tuning_exit_validation">/diagnostics/post_tuning_exit_validation</a>.</p></div></div>
+<div class="section grid"><div class="card"><h2>Swing Tuning Simulator</h2><table>{_rows([('mode', 'deferred_summary_fast_path'),('best_gross_pnl_delta', 'deferred'),('recommended_action', 'open_dashboard_detail_full_or_diagnostics')])}</table><p class="muted">Deferred on the fast dashboard. Full JSON: <a href="/diagnostics/swing_tuning_simulator">/diagnostics/swing_tuning_simulator</a>.</p></div><div class="card"><h2>Stall Exit Drilldown</h2><table>{_rows([('stall_exit_count', 'deferred'),('recommended_exit_tuning', 'open_full_dashboard'),('recommended_env_hint', 'open_full_dashboard')])}</table><p class="muted">Deferred on the fast dashboard. Full JSON: <a href="/diagnostics/swing_stall_exit_drilldown">/diagnostics/swing_stall_exit_drilldown</a>.</p></div></div>
+<div class="section grid"><div class="card"><h2>Exit Tightening Simulations</h2><p class="muted">Deferred on the fast dashboard. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for simulation rows.</p></div><div class="card"><h2>Stall Tuning Monitor</h2><table>{_rows([('active_SWING_STALL_MIN_R', SWING_STALL_MIN_R),('active_SWING_STALL_EXIT_DAYS', SWING_STALL_EXIT_DAYS),('negative_stall_exit_count_since_tuning', 'deferred'),('assessment', stall_monitor.get('assessment'))])}</table><p class="muted">Deferred on the fast dashboard. Full JSON: <a href="/diagnostics/stall_exit_tuning_monitor">/diagnostics/stall_exit_tuning_monitor</a>.</p></div></div>
+<div class="section grid"><div class="card"><h2>Worst Trade Contributors</h2><p class="muted">Deferred on the fast dashboard. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for worst 10 closed trades by R.</p></div><div class="card"><h2>Quarantine Controls</h2><table>{_rows([('SWING_QUARANTINE_SYMBOLS', ', '.join(_sl(p208_quarantine_controls.get('symbols'))) or 'none'),('SWING_QUARANTINE_STRATEGIES', ', '.join(_sl(p208_quarantine_controls.get('strategies'))) or 'none'),('SWING_QUARANTINE_ENTRY_TYPES', ', '.join(_sl(p208_quarantine_controls.get('entry_types'))) or 'none'),('SWING_QUARANTINE_ENFORCE', p208_quarantine_controls.get('enforced'))])}</table><p class="muted">Quarantine drilldown is deferred unless <a href="/dashboard?detail=full">full dashboard</a> is opened.</p></div></div>
 <div class="section grid"><div class="card"><h2>Signal / Rejection Summary</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('top_reclaim_blockers', reclaim_breakdown_text),('top_continuation_blockers', continuation_breakdown_text),('dominant_recent_blocker', dominant_recent_blocker),('rejection_window', rejection_scan_window)])}</table><p class="muted">Detailed intraday signal debug, top rejection rows, rejection totals, and correlation relaxation are skipped in summary mode. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for full diagnostics.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Summary mode shows current top persisted rows only. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
 '''
+    _mark_dashboard_phase("pre_html_ms")
     server_render_ms = round((_time.perf_counter() - dashboard_started) * 1000.0, 1)
 
     html_doc = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trading Webhook Dashboard</title><meta http-equiv="refresh" content="30"><style>
 :root{{color-scheme:dark}}body{{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top left,#17112a 0%,#090b10 28%,#06070b 100%);color:#eef2ff;margin:0;padding:20px}}.wrap{{max-width:1560px;margin:0 auto}}h1,h2,h3{{margin:0 0 10px;letter-spacing:-.02em}}h1{{font-size:38px}}h2{{font-size:20px}}.sub,.muted{{color:#9ca3af}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}}.kpi-grid{{display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:16px}}.alert-grid{{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}}.card{{background:linear-gradient(180deg,rgba(24,26,36,.94),rgba(12,14,22,.96));border:1px solid rgba(139,92,246,.14);border-radius:20px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.04);overflow:hidden}}.metric{{font-size:32px;font-weight:800;margin-top:8px}}.good{{color:#74e2a7}}.bad{{color:#fb7185}}.neutral{{color:#f6c86c}}.badge{{display:inline-block;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:#1f2937;margin:4px 6px 0 0;border:1px solid rgba(255,255,255,.05)}}.badge.good{{background:rgba(16,185,129,.14);color:#bbf7d0}}.badge.bad{{background:rgba(244,63,94,.14);color:#fecdd3}}.badge.neutral{{background:rgba(245,158,11,.14);color:#fde68a}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}}th{{color:#c4b5fd;font-weight:700}}pre{{white-space:pre-wrap;word-break:break-word;background:rgba(5,8,15,.72);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:12px;overflow:auto;color:#d1d5db}}.section{{margin-top:18px}}.links{{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}}.links a{{color:#c4b5fd;text-decoration:none;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.12);padding:7px 11px;border-radius:12px;font-size:13px}}.hero{{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:18px}}.hero-title{{font-size:18px;color:#a78bfa;font-weight:700;text-transform:uppercase;letter-spacing:.08em}}.hero-actions{{display:flex;gap:10px;flex-wrap:wrap}}.action-pill{{background:linear-gradient(135deg,rgba(139,92,246,.18),rgba(59,130,246,.12));border:1px solid rgba(139,92,246,.24);color:#ede9fe;padding:10px 14px;border-radius:14px;font-weight:700;font-size:13px}}.alert-chip{{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:16px;margin-bottom:10px;border:1px solid rgba(255,255,255,.05);background:rgba(255,255,255,.03)}}.alert-chip.good{{background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.18)}}.alert-chip.warn,.alert-chip.neutral{{background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.18)}}.alert-chip.bad{{background:rgba(244,63,94,.10);border-color:rgba(244,63,94,.18)}}@media(max-width:980px){{.alert-grid{{grid-template-columns:1fr}}.kpi-grid{{grid-template-columns:1fr}}.hero{{flex-direction:column;align-items:flex-start}}}}
 		</style></head><body><div class="wrap"><div class="hero"><div><div class="hero-title">Operator Console</div><h1>Dashboard</h1><p class="sub">Rich snapshot dashboard restored. No broker, reconcile, scan, or exit work is executed during render. Generated {html.escape(generated_utc)}. Server render {html.escape(str(server_render_ms))} ms.</p></div><div class="hero-actions"><div class="action-pill">{patch_action_label}</div><div class="action-pill">Read-only</div><div class="action-pill">Fast path</div></div></div>
 	<div class="links"><a href="/diagnostics/build">build</a><a href="/diagnostics/reconcile">reconcile</a><a href="/diagnostics/scanner">scanner</a><a href="/diagnostics/freshness">freshness</a><a href="/diagnostics/release">release</a><a href="/diagnostics/execution_lifecycle">execution_lifecycle</a><a href="/diagnostics/strategy_performance">strategy_performance</a><a href="/diagnostics/intraday_launch_readiness">intraday_launch</a><a href="/diagnostics/candidates">candidates</a><a href="/diagnostics/swing">swing</a></div><div><span class="badge neutral">{patch_label}</span><span class="badge good">snapshot only</span><span class="badge good">no live calls</span><span class="badge {snapshot_badge_class}">snapshot {html.escape(str(snapshot_age_view.get('status')))}</span></div>
-		<div class="section alert-grid"><div class="card"><h2>Operator Alerts</h2><div class="alert-chip {'bad' if blockers else 'good'}"><strong>{'Blockers present' if blockers else 'No current blockers'}</strong><span>{html.escape(', '.join(blockers) if blockers else 'System has no dashboard-visible blockers.')}</span></div><div class="alert-chip {worker_class}"><strong>Worker status</strong><span>Scanner: {html.escape(str(scanner_status))} → {html.escape(scanner_display_status)}; event: {html.escape(str(scanner_last_event or 'none'))}; in-flight: {html.escape(str(scanner_in_flight))}</span></div><div class="alert-chip {snapshot_alert_class}"><strong>Snapshot freshness</strong><span>{html.escape(str(snapshot_age_view.get('note')))} Age: {html.escape(str(snapshot_age_view.get('age_sec')))} sec.</span></div></div><div class="card"><h2>Exception Center</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('trading_blocked', trading_blocked),('snapshot_reason', snap.get('reason') or ''),('snapshot_age_sec', snapshot_age_view.get('age_sec')),('snapshot_fresh', snapshot_age_view.get('fresh')),('server_render_ms', server_render_ms)])}</table></div></div>
+		<div class="section alert-grid"><div class="card"><h2>Operator Alerts</h2><div class="alert-chip {'bad' if blockers else 'good'}"><strong>{'Blockers present' if blockers else 'No current blockers'}</strong><span>{html.escape(', '.join(blockers) if blockers else 'System has no dashboard-visible blockers.')}</span></div><div class="alert-chip {worker_class}"><strong>Worker status</strong><span>Scanner: {html.escape(str(scanner_status))} → {html.escape(scanner_display_status)}; event: {html.escape(str(scanner_last_event or 'none'))}; in-flight: {html.escape(str(scanner_in_flight))}</span></div><div class="alert-chip {snapshot_alert_class}"><strong>Snapshot freshness</strong><span>{html.escape(str(snapshot_age_view.get('note')))} Age: {html.escape(str(snapshot_age_view.get('age_sec')))} sec. Status: {html.escape(str(snapshot_age_view.get('status')))}.</span></div></div><div class="card"><h2>Exception Center</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('trading_blocked', trading_blocked),('snapshot_reason', snap.get('reason') or ''),('snapshot_age_sec', snapshot_age_view.get('age_sec')),('snapshot_status', snapshot_age_view.get('status')),('snapshot_severity', snapshot_age_view.get('severity')),('server_render_ms', server_render_ms),('snapshot_load_ms', dashboard_timings.get('snapshot_load_ms')),('position_merge_ms', dashboard_timings.get('position_merge_ms')),('performance_analytics_ms', dashboard_timings.get('performance_analytics_ms')),('intraday_readiness_ms', dashboard_timings.get('intraday_readiness_ms'))])}</table></div></div>
 <div class="section kpi-grid"><div class="card"><div class="muted">Release stage</div><div class="metric {live_class}">{live_text}</div><table>{_rows([('stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('dry_run', dry_run),('kill_switch', kill_switch)])}</table></div><div class="card"><div class="muted">Market hours</div><div class="metric {market_class}">{market_text}</div><table>{_rows([('now_ny', now_ny_text),('snapshot_ts', snapshot_ts),('last_scan_ts', last_scan_ts)])}</table></div><div class="card"><div class="muted">Regime</div><div class="metric {regime_class}">{_dashboard_fmt(regime_favorable).upper()}</div><table>{_rows([('index_symbol', regime_current.get('index_symbol')),('score', regime_current.get('score')),('breadth', regime_current.get('breadth')),('data_complete', regime_current.get('data_complete'))])}</table></div></div>
 	<div class="section kpi-grid"><div class="card"><div class="muted">Workers</div><div class="metric {worker_class}">{html.escape(scanner_display_status.upper())}</div><table>{_rows([('raw_scanner_status', scanner_status),('normalized_health', scanner_status_view.get('health')),('in_flight_run', scanner_in_flight),('last_event', scanner_last_event),('last_closed_utc', scanner_summary.get('last_closed_utc') or scanner_last.get('last_closed_utc'))])}</table></div><div class="card"><div class="muted">Reconcile</div><div class="metric {reconcile_class}">{html.escape(str(health_grade).upper())}</div><table>{_rows([('broker_positions_count', len(pos_by_symbol)),('active_plan_count', len(active_plan_symbols)),('open_order_count', snap.get('open_order_count', 0)),('issue_total', issue_total)])}</table></div><div class="card"><div class="muted">Active Position Count</div><div class="metric good">{_dashboard_fmt(len(merged))}</div><table>{_rows([('symbols', ', '.join([r['symbol'] for r in merged])),('snapshot_source', 'positions_snapshot.json'),('snapshot_age_sec', snapshot_age_view.get('age_sec'))])}</table></div></div>
 <div class="section card"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Days</th></tr></thead><tbody>{active_rows}</tbody></table><div class="muted" style="margin-top:10px;">Merged from broker-backed snapshot positions plus active plan risk fields. No live quote calls during dashboard render.</div></div>
