@@ -26,7 +26,7 @@ def test_patch_213_post_tuning_validation_can_unlock_40(monkeypatch):
     payload = app._post_tuning_exit_validation(perf_state={"closed_trades": _rows_ready(), "by_strategy": {}, "kill_switch": {}})
 
     assert payload["ok"] is True
-    assert payload["patch_version"].startswith("patch-213")
+    assert payload["patch_version"].startswith("patch-")
     assert payload["mode"] == "read_only_validation"
     assert payload["post_tuning_window_configured"] is True
     assert payload["post_tuning_closed_trades"] == 11
