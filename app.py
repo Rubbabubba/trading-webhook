@@ -1292,7 +1292,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-217-daily-stop-guardrails"
+PATCH_VERSION = "patch-218-daily-halt-truth-pnl"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7645,6 +7645,39 @@ def daily_pnl() -> float | None:
         return None
 
 
+def _account_daily_pnl_snapshot() -> dict:
+    """Broker account equity delta used as the highest-level daily P&L truth."""
+    try:
+        acct = trading_client.get_account()
+        equity = _safe_float(getattr(acct, "equity", None), 0.0)
+        last_equity = _safe_float(getattr(acct, "last_equity", None), 0.0)
+        buying_power = _safe_float(getattr(acct, "buying_power", None), 0.0)
+        cash = _safe_float(getattr(acct, "cash", None), 0.0)
+        pnl = equity - last_equity if equity or last_equity else 0.0
+        pct = (pnl / last_equity) if last_equity else 0.0
+        return {
+            "ok": True,
+            "source": "alpaca_account_equity",
+            "equity": round(equity, 4),
+            "last_equity": round(last_equity, 4),
+            "account_daily_pnl": round(pnl, 4),
+            "account_daily_pnl_pct": round(pct, 6),
+            "buying_power": round(buying_power, 4),
+            "cash": round(cash, 4),
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "ts_ny": now_ny().isoformat(),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "source": "alpaca_account_equity",
+            "error": str(exc),
+            "account_daily_pnl": None,
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "ts_ny": now_ny().isoformat(),
+        }
+
+
 def daily_stop_hit() -> bool:
     stop_dollars = _configured_daily_stop_dollars_safe()
     if stop_dollars <= 0:
@@ -8014,6 +8047,7 @@ def _today_realized_pnl_from_broker_orders() -> dict:
         return {"ok": False, "source": "alpaca_orders", "broker_truth_sync_enabled": True, "error": str(exc), "today_realized_pnl": 0.0, "closed_trades_today": 0, "broker_exit_fills_today": 0, "rows": []}
 
 def today_pnl_truth_snapshot() -> dict:
+    account_pnl = _account_daily_pnl_snapshot()
     broker_realized = _today_realized_pnl_from_broker_orders()
     strategy_realized = _today_realized_pnl_from_strategy_state()
     realized = broker_realized if broker_realized.get("ok") else strategy_realized
@@ -8027,14 +8061,15 @@ def today_pnl_truth_snapshot() -> dict:
     except Exception as exc:
         unrealized_error = str(exc)
     realized_value = _safe_float(realized.get("today_realized_pnl"), 0.0)
-    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "error": str(realized.get("error") or "")}
+    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "account_daily_pnl_source": account_pnl.get("source"), "account_daily_pnl": account_pnl.get("account_daily_pnl"), "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"), "account_equity": account_pnl.get("equity"), "account_last_equity": account_pnl.get("last_equity"), "account_pnl_ok": bool(account_pnl.get("ok")), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "account_pnl": account_pnl, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "error": str(realized.get("error") or "")}
 
 def daily_halt_truth_snapshot() -> dict:
     try:
         configured_daily_loss_limit = _configured_daily_loss_limit_safe()
         configured_daily_stop_dollars = _configured_daily_stop_dollars_safe()
         pnl_truth = today_pnl_truth_snapshot()
-        acct_daily_pnl = daily_pnl()
+        account_pnl = _account_daily_pnl_snapshot()
+        acct_daily_pnl = account_pnl.get("account_daily_pnl") if account_pnl.get("ok") else daily_pnl()
         halt_active = bool(daily_halt_active())
         trigger = "none"
         trigger_detail = "No daily halt is active."
@@ -8052,9 +8087,105 @@ def daily_halt_truth_snapshot() -> dict:
             else:
                 trigger = "manual_or_persisted_halt"
                 trigger_detail = "Daily halt is active, but configured P&L thresholds were not proven by available diagnostics."
-        return {"ok": True, "daily_halt_active": halt_active, "daily_halt_reason": trigger, "daily_halt_detail": trigger_detail, "configured_daily_loss_limit": configured_daily_loss_limit, "configured_daily_stop_dollars": configured_daily_stop_dollars, "account_daily_pnl": round(float(acct_daily_pnl), 4) if acct_daily_pnl is not None else None, "today_pnl_truth": pnl_truth}
+        return {"ok": True, "daily_halt_active": halt_active, "daily_halt_reason": trigger, "daily_halt_detail": trigger_detail, "configured_daily_loss_limit": configured_daily_loss_limit, "configured_daily_stop_dollars": configured_daily_stop_dollars, "account_daily_pnl": round(float(acct_daily_pnl), 4) if acct_daily_pnl is not None else None, "account_pnl": account_pnl, "today_pnl_truth": pnl_truth}
     except Exception as exc:
         return {"ok": False, "daily_halt_active": bool(daily_halt_active()) if "daily_halt_active" in globals() else False, "daily_halt_reason": "halt_truth_unavailable", "daily_halt_detail": f"Daily halt truth failed safely: {exc}", "configured_daily_loss_limit": _configured_daily_loss_limit_safe(), "configured_daily_stop_dollars": _configured_daily_stop_dollars_safe(), "today_pnl_truth": {"ok": False, "error": str(exc), "today_realized_pnl": 0.0, "today_unrealized_pnl": 0.0, "today_net_pnl": 0.0}}
+
+
+def _loss_control_incident_summary(
+    *,
+    daily_halt_truth: dict | None = None,
+    today_pnl_truth: dict | None = None,
+    account_pnl: dict | None = None,
+    flatten_decision: dict | None = None,
+    snapshot: dict | None = None,
+    reconcile_actions: list | None = None,
+) -> dict:
+    """Operator-facing incident summary for daily halt and loss-control events."""
+    halt_truth = dict(daily_halt_truth or {})
+    pnl_truth = dict(today_pnl_truth or halt_truth.get("today_pnl_truth") or {})
+    acct_pnl = dict(account_pnl or pnl_truth.get("account_pnl") or halt_truth.get("account_pnl") or {})
+    decision = dict(flatten_decision or {})
+    snap = dict(snapshot or read_positions_snapshot() or {})
+    snap_extra = snap.get("extra") if isinstance(snap.get("extra"), dict) else {}
+    if not decision:
+        decision = dict((snap_extra or {}).get("daily_stop_flatten_decision") or {})
+    positions = list(snap.get("positions") or [])
+    active_plans = dict(snap.get("active_plans") or {})
+    try:
+        open_order_count = len(list_open_orders_safe())
+    except Exception:
+        open_order_count = int(snap.get("open_order_count") or 0)
+
+    account_daily_pnl = acct_pnl.get("account_daily_pnl")
+    if account_daily_pnl is None:
+        account_daily_pnl = pnl_truth.get("account_daily_pnl")
+    account_daily_pnl = _safe_float(account_daily_pnl, 0.0) if account_daily_pnl not in (None, "") else None
+    today_net_pnl = _safe_float(pnl_truth.get("today_net_pnl"), 0.0)
+    daily_stop = _configured_daily_stop_dollars_safe()
+    daily_loss = _configured_daily_loss_limit_safe()
+    halt_active = bool(halt_truth.get("daily_halt_active") or daily_halt_active())
+    fully_flat = len(positions) == 0 and len(active_plans) == 0 and int(open_order_count or 0) == 0
+
+    breach_source = "none"
+    breach_value = None
+    if account_daily_pnl is not None and daily_stop > 0 and account_daily_pnl <= -abs(daily_stop):
+        breach_source = "alpaca_account_daily_pnl"
+        breach_value = round(account_daily_pnl, 4)
+    elif daily_loss > 0 and today_net_pnl <= -abs(daily_loss):
+        breach_source = "strategy_or_order_today_net_pnl"
+        breach_value = round(today_net_pnl, 4)
+    elif daily_stop > 0 and today_net_pnl <= -abs(daily_stop):
+        breach_source = "strategy_or_order_today_net_pnl_vs_daily_stop"
+        breach_value = round(today_net_pnl, 4)
+
+    recommended = []
+    if halt_active:
+        recommended.append("remain_halted_until_next_session")
+    if not fully_flat:
+        recommended.append("verify_open_positions_and_orders")
+    if account_daily_pnl is not None and abs(account_daily_pnl - today_net_pnl) > max(25.0, abs(account_daily_pnl) * 0.10):
+        recommended.append("reconcile_broker_realized_pnl_gap")
+    if not bool(decision.get("can_flatten")):
+        recommended.append("do_not_bulk_flatten_without_explicit_policy")
+    if not recommended:
+        recommended.append("monitor")
+
+    return {
+        "ok": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "ts_ny": now_ny().isoformat(),
+        "active": halt_active,
+        "session": str((DAILY_HALT_STATE or {}).get("session") or ""),
+        "triggered_at": str((DAILY_HALT_STATE or {}).get("triggered_at") or ""),
+        "daily_halt_reason": str(halt_truth.get("daily_halt_reason") or (DAILY_HALT_STATE or {}).get("reason") or "none"),
+        "daily_halt_detail": str(halt_truth.get("daily_halt_detail") or ""),
+        "configured_daily_stop_dollars": daily_stop,
+        "configured_daily_loss_limit": daily_loss,
+        "account_daily_pnl": round(account_daily_pnl, 4) if account_daily_pnl is not None else None,
+        "account_daily_pnl_pct": acct_pnl.get("account_daily_pnl_pct") or pnl_truth.get("account_daily_pnl_pct"),
+        "account_equity": acct_pnl.get("equity") or pnl_truth.get("account_equity"),
+        "account_last_equity": acct_pnl.get("last_equity") or pnl_truth.get("account_last_equity"),
+        "today_net_pnl_estimate": round(today_net_pnl, 4),
+        "today_realized_pnl_estimate": pnl_truth.get("today_realized_pnl"),
+        "broker_exit_fills_today": pnl_truth.get("broker_exit_fills_today"),
+        "closed_trades_today": pnl_truth.get("closed_trades_today"),
+        "breach_source": breach_source,
+        "breach_value": breach_value,
+        "flatten_policy": decision.get("action") or _daily_stop_action(),
+        "bulk_flatten_allowed": bool(decision.get("allow_bulk_flatten", globals().get("ALLOW_DAILY_STOP_BULK_FLATTEN", False))),
+        "can_flatten": bool(decision.get("can_flatten", False)),
+        "flatten_decision_reasons": list(decision.get("reasons") or []),
+        "snapshot_reason": snap.get("reason") or "",
+        "snapshot_ts_utc": snap.get("ts_utc") or "",
+        "broker_positions_count": len(positions),
+        "active_plan_count": len(active_plans),
+        "open_order_count": int(open_order_count or 0),
+        "fully_flat": fully_flat,
+        "reconcile_action_count": len(list(reconcile_actions or [])),
+        "recommended_actions": recommended,
+        "recommended_action": recommended[0],
+    }
 
 
 def risk_limits_ok() -> bool:
@@ -14659,19 +14790,41 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         activate_daily_halt("daily_stop_hit")
         flatten_decision = _daily_stop_flatten_decision()
         out = flatten_all("daily_stop_hit") if flatten_decision.get("can_flatten") else []
+        halt_truth = daily_halt_truth_snapshot()
+        pnl_truth = dict(halt_truth.get("today_pnl_truth") or today_pnl_truth_snapshot())
+        snapshot_extra = {
+            "daily_stop_flatten_decision": flatten_decision,
+            "daily_halt": DAILY_HALT_STATE,
+            "daily_halt_truth": halt_truth,
+            "today_pnl_truth": pnl_truth,
+            "reconcile": reconcile_actions[:20],
+        }
         snapshot = persist_positions_snapshot(
             reason="daily_stop_bulk_flatten" if out else "daily_stop_halt_only",
-            extra={
-                "daily_stop_flatten_decision": flatten_decision,
-                "daily_halt": DAILY_HALT_STATE,
-                "reconcile": reconcile_actions[:20],
-            },
+            extra=snapshot_extra,
         )
+        incident = _loss_control_incident_summary(
+            daily_halt_truth=halt_truth,
+            today_pnl_truth=pnl_truth,
+            flatten_decision=flatten_decision,
+            snapshot=snapshot,
+            reconcile_actions=reconcile_actions,
+        )
+        snapshot_extra["loss_control_incident"] = incident
+        snapshot["extra"] = snapshot_extra
+        if JOURNAL_ENABLED:
+            try:
+                _ensure_parent_dir(POSITION_SNAPSHOT_PATH)
+                Path(POSITION_SNAPSHOT_PATH).write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
+            except Exception as exc:
+                logger.warning("POSITION_SNAPSHOT_WRITE_FAILED err=%s", exc)
         update_exit_heartbeat(
             status="daily_stop_flatten" if out else "daily_stop_halt_only",
             results=len(out),
             daily_stop_action=flatten_decision.get("action"),
             can_flatten=flatten_decision.get("can_flatten"),
+            account_daily_pnl=incident.get("account_daily_pnl"),
+            loss_control_recommended_action=incident.get("recommended_action"),
             snapshot_reason=snapshot.get("reason"),
             snapshot_ts_utc=snapshot.get("ts_utc"),
         )
@@ -14683,6 +14836,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             "ts_ny": now_ny().isoformat(),
             "results": out,
             "reconcile": reconcile_actions,
+            "loss_control_incident": incident,
             "snapshot_persisted": True,
             "snapshot_reason": snapshot.get("reason"),
             "snapshot_ts_utc": snapshot.get("ts_utc"),
@@ -17564,6 +17718,11 @@ def dashboard(request: Request):
     perf_state = _sd(perf_payload.get("state") if isinstance(perf_payload, dict) else {}) or perf_payload
     _mark_dashboard_phase("snapshot_load_ms")
 
+    snap_extra = _sd(snap.get("extra"))
+    loss_control_incident = _sd(snap_extra.get("loss_control_incident"))
+    snapshot_today_pnl_truth = _sd(snap_extra.get("today_pnl_truth") or loss_control_incident)
+    snapshot_daily_halt_truth = _sd(snap_extra.get("daily_halt_truth"))
+
     positions = _p210_safe_list(snap.get("positions"))
     active_plans = _sd(snap.get("active_plans")) or _sd(globals().get("TRADE_PLAN") or {})
     snap_summary = _sd(snap.get("summary"))
@@ -18083,7 +18242,7 @@ def dashboard(request: Request):
 	<div class="section kpi-grid"><div class="card"><div class="muted">Workers</div><div class="metric {worker_class}">{html.escape(scanner_display_status.upper())}</div><table>{_rows([('raw_scanner_status', scanner_status),('normalized_health', scanner_status_view.get('health')),('in_flight_run', scanner_in_flight),('last_event', scanner_last_event),('last_closed_utc', scanner_summary.get('last_closed_utc') or scanner_last.get('last_closed_utc'))])}</table></div><div class="card"><div class="muted">Reconcile</div><div class="metric {reconcile_class}">{html.escape(str(health_grade).upper())}</div><table>{_rows([('broker_positions_count', len(pos_by_symbol)),('active_plan_count', len(active_plan_symbols)),('open_order_count', snap.get('open_order_count', 0)),('issue_total', issue_total)])}</table></div><div class="card"><div class="muted">Active Position Count</div><div class="metric good">{_dashboard_fmt(len(merged))}</div><table>{_rows([('symbols', ', '.join([r['symbol'] for r in merged])),('snapshot_source', 'positions_snapshot.json'),('snapshot_age_sec', snapshot_age_view.get('age_sec'))])}</table></div></div>
 <div class="section card"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Days</th></tr></thead><tbody>{active_rows}</tbody></table><div class="muted" style="margin-top:10px;">Merged from broker-backed snapshot positions plus active plan risk fields. No live quote calls during dashboard render.</div></div>
 <div class="section grid"><div class="card"><h2>P&amp;L Summary</h2><table>{_rows([('positions_with_snapshot', len(merged)),('total_unrealized_pl_snapshot', round(total_unrealized, 2)),('winners', winners),('losers', losers)])}</table></div><div class="card"><h2>Risk Integrity</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('active_plan_count', len(active_plan_symbols)),('broker_positions_count', len(pos_by_symbol)),('trading_blocked', trading_blocked)])}</table><h3 style="margin-top:14px;">Structural exceptions</h3><pre>{html.escape(structural_exceptions_text)}</pre></div><div class="card"><h2>Exposure &amp; Capacity</h2><table>{_rows([('current_open_positions', len(merged)),('effective_max_open_positions', _effective_max_open_positions()),('base_max_open_positions', globals().get('MAX_OPEN_POSITIONS')),('capacity_next_step', swing_capacity_advisory.get('recommended_next_max')),('safe_to_12', swing_capacity_advisory.get('safe_to_12')),('safe_to_15', swing_capacity_advisory.get('safe_to_15')),('capacity_note', swing_capacity_advisory.get('note')),('portfolio_exposure_snapshot', snap.get('portfolio_exposure') or ''),('effective_portfolio_cap_pct', _pct(_effective_portfolio_exposure_cap_pct())),('effective_symbol_cap_pct', _pct(_effective_symbol_exposure_cap_pct())),('portfolio_cap_mode', os.getenv('SWING_PORTFOLIO_CAP_BLOCK_MODE',''))])}</table><h3 style="margin-top:14px;">Strategy symbols</h3><pre>{html.escape(chr(10).join([r['symbol'] for r in merged]) or 'none')}</pre></div></div>
-	<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><div class="metric {halt_panel_class}">{html.escape(halt_interpretation)}</div><p class="muted">{html.escape(halt_detail)}</p><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or 'none'),('scanner_dashboard_ready', scanner_ready),('scanner_raw_healthy', scanner_healthy),('scanner_status', scanner_status),('scanner_status_normalized', scanner_status_view.get('health')),('scanner_last_event', scanner_last_event),('scanner_in_flight', scanner_in_flight),('release_or_reconcile_blocked', trading_blocked),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', 'alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data')),('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data')),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data')),('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data'))])}</table></div></div>
+	<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><div class="metric {halt_panel_class}">{html.escape(halt_interpretation)}</div><p class="muted">{html.escape(halt_detail)}</p><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or snapshot_daily_halt_truth.get('daily_halt_reason') or 'none'),('account_daily_pnl_snapshot', loss_control_incident.get('account_daily_pnl')),('breach_source', loss_control_incident.get('breach_source') or 'snapshot unavailable'),('flatten_policy', loss_control_incident.get('flatten_policy') or 'snapshot unavailable'),('bulk_flatten_allowed', loss_control_incident.get('bulk_flatten_allowed')),('can_flatten', loss_control_incident.get('can_flatten')),('fully_flat', loss_control_incident.get('fully_flat')),('scanner_status_normalized', scanner_status_view.get('health')),('release_or_reconcile_blocked', trading_blocked),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', snapshot_today_pnl_truth.get('account_daily_pnl_source') or snapshot_today_pnl_truth.get('accounting_source') or ('alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data'))),('account_daily_pnl', snapshot_today_pnl_truth.get('account_daily_pnl')),('today_realized_pnl', snapshot_today_pnl_truth.get('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data'))),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', snapshot_today_pnl_truth.get('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data'))),('broker_exit_fills_today', snapshot_today_pnl_truth.get('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data')))])}</table></div><div class="card"><h2>Loss Control Incident</h2><table>{_rows([('active', loss_control_incident.get('active')),('recommended_action', loss_control_incident.get('recommended_action') or 'open_diagnostics_loss_control_incident'),('recommended_actions', ', '.join(_sl(loss_control_incident.get('recommended_actions'))) or 'snapshot unavailable'),('snapshot_reason', loss_control_incident.get('snapshot_reason') or snap.get('reason') or ''),('broker_positions_count', loss_control_incident.get('broker_positions_count', len(pos_by_symbol))),('active_plan_count', loss_control_incident.get('active_plan_count', len(active_plan_symbols))),('open_order_count', loss_control_incident.get('open_order_count', snap.get('open_order_count', 0))),('flatten_decision_reasons', ', '.join(_sl(loss_control_incident.get('flatten_decision_reasons'))) or 'none')])}</table><p class="muted">Snapshot-only incident summary. Full broker-realized reconciliation: /diagnostics/loss_control_incident.</p></div></div>
 <div class="section grid"><div class="card"><h2>EOD Flatten Status</h2><table>{_rows([('last_eod_attempt', eod_flatten_status.get('ts_ny') or 'none'),('eod_flatten_time_ny', eod_flatten_status.get('eod_flatten_time_ny') or EOD_FLATTEN_TIME),('fully_flat', eod_flatten_status.get('fully_flat')),('attempted_count', len(_sl(eod_flatten_status.get('attempted_symbols')))),('submitted_count', len(_sl(eod_flatten_status.get('submitted_symbols')))),('confirmed_closed_count', len(_sl(eod_flatten_status.get('confirmed_closed_symbols')))),('residual_count', eod_flatten_status.get('residual_count')),('residual_symbols', eod_residual_symbols_text),('pending_close_order_symbols', eod_pending_close_symbols_text),('recommended_action', eod_flatten_status.get('recommended_action'))])}</table><p class="muted">Submitted symbols: {html.escape(eod_submitted_symbols_text)}. Full details: /diagnostics/eod_flatten_status.</p></div></div>
 {performance_detail_html}
 <div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_ready_now', readiness_assessment.get('intraday_launch_ready')),('projection_capacity_ready', intraday_projection_capacity_ready),('projection_blockers', intraday_projection_blockers_text),('launch_gate_actions', intraday_launch_gate_actions_text),('required_actions', intraday_projection_next_actions_text),('optional_scaling_actions', intraday_projection_optional_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('recommended_intraday_open_slots', intraday_projection.get('recommended_intraday_open_slots')),('recommended_intraday_daily_stop', intraday_projection.get('recommended_intraday_daily_stop_dollars')),('recommended_intraday_daily_loss', intraday_projection.get('recommended_intraday_daily_loss_limit')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><h3 style="margin-top:14px;">Launch env checklist</h3><pre>{html.escape(intraday_launch_env_text)}</pre><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('scanner_ready', scanner_ready),('component_ready', readiness_assessment.get('system_ready')),('intraday_launch_ready', readiness_assessment.get('intraday_launch_ready')),('intraday_launch_blockers', readiness_assessment.get('launch_blocker_count')),('launch_gate_blockers', intraday_launch_gate_blockers_text),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {html.escape(str(readiness_assessment.get('class') or 'neutral'))}">{html.escape(str(readiness_assessment.get('status') or 'CHECK BLOCKERS'))}</div></div></div>
@@ -19026,6 +19185,19 @@ def diagnostics_universe_shadow(limit: int = 10):
 @app.get("/diagnostics/worker_exit_status")
 def diagnostics_worker_exit_status(limit: int = 20):
     return _worker_exit_status_snapshot(limit=limit)
+
+@app.get("/diagnostics/loss_control_incident")
+def diagnostics_loss_control_incident(request: Request):
+    require_admin_if_configured(request)
+    halt_truth = daily_halt_truth_snapshot()
+    pnl_truth = dict(halt_truth.get("today_pnl_truth") or today_pnl_truth_snapshot())
+    snapshot = read_positions_snapshot()
+    return _loss_control_incident_summary(
+        daily_halt_truth=halt_truth,
+        today_pnl_truth=pnl_truth,
+        flatten_decision=dict(((snapshot.get("extra") or {}) if isinstance(snapshot.get("extra"), dict) else {}).get("daily_stop_flatten_decision") or {}),
+        snapshot=snapshot,
+    )
 
 @app.get("/diagnostics/eod_flatten_status")
 def diagnostics_eod_flatten_status():

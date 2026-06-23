@@ -315,6 +315,12 @@ Shows whether the system is halted for the day and why.
 | Headline | Daily halt status. | `NO DAILY HALT`. | If halted, do not force new entries. |
 | `daily_halt_active` | Boolean halt flag. | `FALSE`. | Investigate halt reason. |
 | `daily_halt_reason` | Reason halt was triggered. | `none`. | Review losses, stops, or system state. |
+| `account_daily_pnl_snapshot` | Last persisted Alpaca account equity delta from the worker/incident snapshot. | Matches broker daily change closely. | If missing or far from broker, open `/diagnostics/loss_control_incident`. |
+| `breach_source` | Which P&L truth source proved the halt threshold. | `alpaca_account_daily_pnl` for account-level daily stop. | If estimate-based, reconcile broker orders before resetting. |
+| `flatten_policy` | Daily-stop policy in force at the last incident. | `halt_only` for swing mode. | Do not use `flatten_all` unless intentional. |
+| `bulk_flatten_allowed` | Whether explicit bulk liquidation permission was enabled. | `FALSE` for swing. | If true unexpectedly, disable before next session. |
+| `can_flatten` | Whether all bulk-flatten guardrails were satisfied. | `FALSE` unless emergency liquidation intended. | If true unexpectedly, review daily-stop envs immediately. |
+| `fully_flat` | Whether snapshot positions, active plans, and open orders were all empty after the incident. | `TRUE` after a verified liquidation/flat state. | If false, verify Alpaca positions/orders and reconcile. |
 | `scanner_dashboard_ready` | Dashboard's scanner readiness state. | `TRUE`. | Check scanner if false. |
 | `scanner_raw_healthy` | Raw scanner health flag. | `TRUE`. | Inspect scanner logs if false. |
 | `scanner_status` | Scanner status string. | `ok` or success equivalent. | Errors need investigation. |
@@ -349,10 +355,32 @@ Shows today’s realized/unrealized accounting state.
 | Metric | Meaning | Good / Expected | Action if Bad |
 |---|---|---|---|
 | `accounting_source` | Source used for today P&L. | `alpaca_orders` or `persisted_strategy_state`. | If no data, inspect performance state. |
+| `account_daily_pnl` | Alpaca account equity minus prior close equity from the latest persisted truth snapshot. | Should match the broker daily change directionally. | Treat this as the loss-control source of truth when broker order P&L is incomplete. |
 | `today_realized_pnl` | Realized P&L today. | Within daily limits. | Stop trading if limit breached. |
 | `today_unrealized_pnl_snapshot` | Current unrealized P&L from snapshot. | Within tolerance. | Watch open-book drawdown. |
 | `closed_trades_today` | Count of closed trades today. | Informational. | Validate if unexpected. |
 | `broker_exit_fills_today` | Broker exit fills today. | Matches expected exits. | Reconcile if mismatch. |
+
+---
+
+# Loss Control Incident
+
+## Section purpose
+
+Summarizes the last daily-stop / daily-halt incident from persisted worker truth. This section is snapshot-only on the dashboard; use `/diagnostics/loss_control_incident` for live broker-account reconciliation.
+
+| Metric | Meaning | Good / Expected | Action if Bad |
+|---|---|---|---|
+| `active` | Whether a daily halt is active. | `FALSE` before trading; `TRUE` after a loss-control halt. | If true, keep entries blocked until next session/reset procedure. |
+| `recommended_action` | Primary operator action. | `monitor` when no incident; otherwise halt/reconcile guidance. | Follow this before touching trading envs. |
+| `recommended_actions` | Full ordered action list. | Clear checklist. | Complete each item before resuming trading. |
+| `snapshot_reason` | Snapshot reason that captured the incident. | `daily_stop_halt_only` for guarded swing stops. | If `daily_stop_bulk_flatten`, verify it was intentional. |
+| `broker_positions_count` | Positions in the persisted broker-backed snapshot. | `0` when flat. | If nonzero unexpectedly, verify Alpaca positions. |
+| `active_plan_count` | Active internal plans after stale-plan recovery. | `0` when flat. | If broker is flat but plans remain, run reconcile. |
+| `open_order_count` | Open orders seen by incident diagnostics. | `0`. | Cancel/verify orders before any reset. |
+| `flatten_decision_reasons` | Guardrail reasons explaining why bulk flatten was blocked or allowed. | `daily_stop_action_halt_only`, `bulk_flatten_not_explicitly_enabled` for swing. | Unexpected reasons indicate env drift. |
+
+Diagnostic endpoint: `/diagnostics/loss_control_incident`.
 
 ---
 
