@@ -325,6 +325,19 @@ Shows whether the system is halted for the day and why.
 | `configured_daily_loss_limit` | Configured daily loss limit. | Intended env value. | Verify before live trading. |
 | `configured_daily_stop_dollars` | Configured daily stop dollars. | Intended env value. | Verify before live trading. |
 
+## Patch 217 loss-control guardrails
+
+Daily stop should normally be treated as a **halt / no-new-risk** control for swing mode, not an automatic instruction to liquidate every swing position at the open. Use these controls when reviewing loss-control behavior:
+
+| Control | Meaning | Recommended Swing Default | Operator Rule |
+|---|---|---|---|
+| `DAILY_STOP_ACTION` | Selects whether daily stop is `halt_only` or `flatten_all`. | `halt_only` or unset. | Use `flatten_all` only for explicitly approved emergency behavior. |
+| `ALLOW_DAILY_STOP_BULK_FLATTEN` | Explicit second confirmation required before daily stop can close multiple positions. | `false`. | Keep false unless an operator intentionally wants account-level liquidation. |
+| `DAILY_STOP_CONFIRMATION_SEC` | Minimum time a daily-stop breach must persist before any eligible bulk flatten. | `60`. | Prevents one opening print or stale account tick from liquidating the book. |
+| `SWING_DAILY_STOP_OPEN_GRACE_MIN` | Market-open grace window during which swing daily-stop bulk flatten remains blocked. | `15`. | Lets the book absorb opening volatility and requires deliberate review. |
+
+If Daily Halt Truth shows `daily_stop_hit`, confirm whether the worker returned `daily_stop_halt_only` or `daily_stop_bulk_flatten` in `/diagnostics/worker_exit_status`, then verify broker truth in `/diagnostics/reconcile`.
+
 ---
 
 # Today P&L Truth

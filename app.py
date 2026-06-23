@@ -703,6 +703,11 @@ EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STR
 EOD_FLATTEN_VERIFY_ENABLE = env_bool("EOD_FLATTEN_VERIFY_ENABLE", True)
 EOD_FLATTEN_AFTER_MARKET_SUBMIT_ENABLE = env_bool("EOD_FLATTEN_AFTER_MARKET_SUBMIT_ENABLE", False)
 EXIT_COOLDOWN_SEC = int(os.getenv("EXIT_COOLDOWN_SEC", "20"))
+DAILY_STOP_ACTION = str(getenv_any("DAILY_STOP_ACTION", default="") or "").strip().lower()
+ALLOW_DAILY_STOP_BULK_FLATTEN = env_bool("ALLOW_DAILY_STOP_BULK_FLATTEN", False)
+DAILY_STOP_CONFIRMATION_SEC = int(getenv_any("DAILY_STOP_CONFIRMATION_SEC", default="60") or 60)
+SWING_DAILY_STOP_OPEN_GRACE_MIN = int(getenv_any("SWING_DAILY_STOP_OPEN_GRACE_MIN", default="15") or 15)
+DAILY_STOP_CONFIRMATION_STATE: dict = {}
 
 # Idempotency
 ENABLE_IDEMPOTENCY = getenv_any("ENABLE_IDEMPOTENCY", default="true").strip().lower() in ("1","true","yes","y","on")  # allow disabling dedup if needed
@@ -1287,7 +1292,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-216-dashboard-fast-freshness"
+PATCH_VERSION = "patch-217-daily-stop-guardrails"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -3476,6 +3481,10 @@ def config_effective_snapshot() -> dict:
         "readiness_require_workers": READINESS_REQUIRE_WORKERS,
         "rejection_history_limit": REJECTION_HISTORY_LIMIT,
         "auto_flatten_on_daily_stop": AUTO_FLATTEN_ON_DAILY_STOP,
+        "daily_stop_action": _daily_stop_action() if "_daily_stop_action" in globals() else DAILY_STOP_ACTION,
+        "allow_daily_stop_bulk_flatten": ALLOW_DAILY_STOP_BULK_FLATTEN,
+        "daily_stop_confirmation_sec": DAILY_STOP_CONFIRMATION_SEC,
+        "swing_daily_stop_open_grace_min": SWING_DAILY_STOP_OPEN_GRACE_MIN,
         "alerts_enabled": ALERTS_ENABLED,
         "alert_webhook_configured": bool(ALERT_WEBHOOK_URL),
         "alert_dedup_sec": ALERT_DEDUP_SEC,
@@ -7644,6 +7653,114 @@ def daily_stop_hit() -> bool:
     if pnl is None:
         return False
     return pnl <= -abs(stop_dollars)
+
+
+def _daily_stop_action() -> str:
+    configured = str(globals().get("DAILY_STOP_ACTION") or getenv_any("DAILY_STOP_ACTION", default="") or "").strip().lower()
+    if configured in {"flatten", "flatten_all", "liquidate", "close_all"}:
+        return "flatten_all"
+    if configured in {"halt", "halt_only", "block_only", "no_flatten"}:
+        return "halt_only"
+    mode = str(globals().get("STRATEGY_MODE") or getenv_any("STRATEGY_MODE", default="") or "").strip().lower()
+    return "halt_only" if mode == "swing" else "flatten_all"
+
+
+def _minutes_since_market_open(ts_ny: datetime | None = None) -> float:
+    now = ts_ny or now_ny()
+    market_open_dt = now.replace(hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute, second=0, microsecond=0)
+    return (now - market_open_dt).total_seconds() / 60.0
+
+
+def _daily_stop_flatten_decision(ts_ny: datetime | None = None) -> dict:
+    now = ts_ny or now_ny()
+    action = _daily_stop_action()
+    allow_bulk = bool(globals().get("ALLOW_DAILY_STOP_BULK_FLATTEN", False))
+    confirm_sec = max(0, int(globals().get("DAILY_STOP_CONFIRMATION_SEC", 60) or 0))
+    grace_min = max(0, int(globals().get("SWING_DAILY_STOP_OPEN_GRACE_MIN", 15) or 0))
+    mode = str(globals().get("STRATEGY_MODE") or "").strip().lower()
+    in_open_grace = bool(mode == "swing" and in_market_hours() and _minutes_since_market_open(now) < float(grace_min))
+
+    reasons: list[str] = []
+    if action != "flatten_all":
+        reasons.append("daily_stop_action_halt_only")
+    if not allow_bulk:
+        reasons.append("bulk_flatten_not_explicitly_enabled")
+    if in_open_grace:
+        reasons.append("swing_open_grace_active")
+
+    state = globals().setdefault("DAILY_STOP_CONFIRMATION_STATE", {})
+    first_seen_raw = state.get("first_seen_utc")
+    first_seen_dt = None
+    if first_seen_raw:
+        try:
+            first_seen_dt = datetime.fromisoformat(str(first_seen_raw).replace("Z", "+00:00"))
+            if first_seen_dt.tzinfo is None:
+                first_seen_dt = first_seen_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            first_seen_dt = None
+    now_utc = datetime.now(timezone.utc)
+    if first_seen_dt is None:
+        first_seen_dt = now_utc
+        state["first_seen_utc"] = now_utc.isoformat()
+        state["breach_count"] = 1
+    else:
+        state["breach_count"] = int(state.get("breach_count") or 1) + 1
+    elapsed_sec = max(0.0, (now_utc - first_seen_dt).total_seconds())
+    confirmed = elapsed_sec >= float(confirm_sec) or confirm_sec == 0
+    if not confirmed:
+        reasons.append("daily_stop_confirmation_pending")
+
+    can_flatten = bool(action == "flatten_all" and allow_bulk and confirmed and not in_open_grace)
+    if can_flatten:
+        state["last_confirmed_utc"] = now_utc.isoformat()
+    return {
+        "action": action,
+        "can_flatten": can_flatten,
+        "allow_bulk_flatten": allow_bulk,
+        "confirmation_sec": confirm_sec,
+        "confirmation_elapsed_sec": round(elapsed_sec, 3),
+        "confirmation_ready": confirmed,
+        "swing_open_grace_min": grace_min,
+        "in_open_grace": in_open_grace,
+        "minutes_since_market_open": round(_minutes_since_market_open(now), 3),
+        "reasons": reasons,
+        "recommended_action": "halt_only_no_bulk_flatten" if not can_flatten else "bulk_flatten_confirmed",
+    }
+
+
+def _deactivate_plans_without_broker_positions(source: str = "reconcile", reason: str = "broker_flat_verified") -> list[dict]:
+    live_symbols: set[str] = set()
+    try:
+        live_symbols.update({str((p or {}).get("symbol") or "").upper() for p in list_open_positions_details_allowed()})
+    except Exception:
+        pass
+    try:
+        live_symbols.update({str((p or {}).get("symbol") or "").upper() for p in list_open_positions_allowed()})
+    except Exception:
+        pass
+    try:
+        open_order_symbols = {str((o or {}).get("symbol") or "").upper() for o in list_open_orders_safe()}
+    except Exception:
+        open_order_symbols = set()
+    actions: list[dict] = []
+    for sym, plan in list((TRADE_PLAN or {}).items()):
+        symbol = str(sym or "").upper()
+        if not symbol or symbol in live_symbols or symbol in open_order_symbols:
+            continue
+        if not isinstance(plan, dict) or not bool(plan.get("active")) or _plan_is_pending_entry(plan):
+            continue
+        plan["active"] = False
+        plan["stale_position_recovered_at"] = now_ny().isoformat()
+        plan["stale_position_recovery_reason"] = reason
+        try:
+            _transition_execution_lifecycle(plan, symbol, "closed", reason=reason, details={"source": source}, allow_illegal=True)
+        except Exception:
+            pass
+        record_decision("RECONCILE", source, symbol, action="deactivated", reason=reason)
+        actions.append({"symbol": symbol, "action": "deactivated_stale_plan", "reason": reason})
+    if actions:
+        persist_positions_snapshot(reason=reason, extra={"stale_plan_recovery": actions})
+    return actions
 
 
 # Patch 167B: fail-safe daily halt / today P&L truth helpers.
@@ -14525,21 +14642,56 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         if (body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
-    # Kill switch / daily stop: flatten immediately
+    # Kill switch remains the only unconditional bulk-flatten path.
     if KILL_SWITCH:
         out = flatten_all("kill_switch")
         update_exit_heartbeat(status="kill_switch", results=len(out))
         return {"ok": True, "mode": "kill_switch", "ts_ny": now_ny().isoformat(), "results": out}
-
+    
+    # Reconcile internal plans from Alpaca positions before loss-control decisions so
+    # stale snapshot plans are not treated as live broker truth after a liquidation.
+    reconcile_actions = reconcile_trade_plans_from_alpaca()
+    stale_recovery_actions = _deactivate_plans_without_broker_positions(source="worker_exit", reason="broker_flat_verified")
+    if stale_recovery_actions:
+        reconcile_actions.extend(stale_recovery_actions)
+    
     if daily_stop_hit():
         activate_daily_halt("daily_stop_hit")
-        out = flatten_all("daily_stop_hit") if AUTO_FLATTEN_ON_DAILY_STOP else []
-        update_exit_heartbeat(status="daily_stop_hit", results=len(out))
-        return {"ok": True, "mode": "daily_stop_hit", "daily_halt": DAILY_HALT_STATE, "ts_ny": now_ny().isoformat(), "results": out}
+        flatten_decision = _daily_stop_flatten_decision()
+        out = flatten_all("daily_stop_hit") if flatten_decision.get("can_flatten") else []
+        snapshot = persist_positions_snapshot(
+            reason="daily_stop_bulk_flatten" if out else "daily_stop_halt_only",
+            extra={
+                "daily_stop_flatten_decision": flatten_decision,
+                "daily_halt": DAILY_HALT_STATE,
+                "reconcile": reconcile_actions[:20],
+            },
+        )
+        update_exit_heartbeat(
+            status="daily_stop_flatten" if out else "daily_stop_halt_only",
+            results=len(out),
+            daily_stop_action=flatten_decision.get("action"),
+            can_flatten=flatten_decision.get("can_flatten"),
+            snapshot_reason=snapshot.get("reason"),
+            snapshot_ts_utc=snapshot.get("ts_utc"),
+        )
+        return {
+            "ok": True,
+            "mode": "daily_stop_hit",
+            "daily_halt": DAILY_HALT_STATE,
+            "daily_stop_flatten_decision": flatten_decision,
+            "ts_ny": now_ny().isoformat(),
+            "results": out,
+            "reconcile": reconcile_actions,
+            "snapshot_persisted": True,
+            "snapshot_reason": snapshot.get("reason"),
+            "snapshot_ts_utc": snapshot.get("ts_utc"),
+        }
 
-    # Reconcile internal plans from Alpaca positions (protects positions across restarts).
-    # This must run before EOD flatten so broker-only residual positions are visible.
-    reconcile_actions = reconcile_trade_plans_from_alpaca()
+    try:
+        DAILY_STOP_CONFIRMATION_STATE.clear()
+    except Exception:
+        pass
 
     now = now_ny()
     results = []

@@ -39,7 +39,7 @@ def test_patch_216_summary_dashboard_defers_heavy_tuning(monkeypatch):
     req = app.Request({"type": "http", "headers": [], "query_string": b"", "method": "GET", "path": "/dashboard"})
     body = app.dashboard(req).body.decode("utf-8")
 
-    assert "patch-216-dashboard-fast-freshness" in body
+    assert "patch-217-daily-stop-guardrails" in body
     assert "snapshot_status" in body
     assert "performance_analytics_ms" in body
     assert "open_dashboard_detail_full_for_post_tuning_validation" in body
