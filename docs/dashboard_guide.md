@@ -344,6 +344,10 @@ Daily stop should normally be treated as a **halt / no-new-risk** control for sw
 
 If Daily Halt Truth shows `daily_stop_hit`, confirm whether the worker returned `daily_stop_halt_only` or `daily_stop_bulk_flatten` in `/diagnostics/worker_exit_status`, then verify broker truth in `/diagnostics/reconcile`.
 
+## Patch 219 session rollover note
+
+Daily halt state is session-scoped. A halt from the prior NY trading day should reset on the next NY session and should not be re-armed from stale premarket or after-hours account P&L. If the dashboard still shows `daily_halt_active=TRUE` before the next open, check `/diagnostics/worker_exit_status` for `daily_stop_evaluation_allowed=false` and confirm the snapshot reason is outside market hours rather than a new same-session loss event.
+
 ---
 
 # Today P&L Truth

@@ -1292,7 +1292,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-218-daily-halt-truth-pnl"
+PATCH_VERSION = "patch-219-daily-halt-rollover"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -7679,6 +7679,9 @@ def _account_daily_pnl_snapshot() -> dict:
 
 
 def daily_stop_hit() -> bool:
+    context = _daily_stop_evaluation_context()
+    if not bool(context.get("allowed")):
+        return False
     stop_dollars = _configured_daily_stop_dollars_safe()
     if stop_dollars <= 0:
         return False
@@ -7686,6 +7689,25 @@ def daily_stop_hit() -> bool:
     if pnl is None:
         return False
     return pnl <= -abs(stop_dollars)
+
+
+def _daily_stop_evaluation_context(ts_ny: datetime | None = None) -> dict:
+    """Daily stop is a regular-session control; do not re-arm yesterday's loss premarket/after-hours."""
+    now = ts_ny or now_ny()
+    market_day = bool(_is_regular_market_day(now))
+    market_open_now = bool(in_market_hours())
+    reasons: list[str] = []
+    if not market_day:
+        reasons.append("not_regular_market_day")
+    if not market_open_now:
+        reasons.append("outside_regular_market_hours")
+    return {
+        "allowed": bool(market_day and market_open_now),
+        "session": now.date().isoformat(),
+        "market_day": market_day,
+        "market_open_now": market_open_now,
+        "reasons": reasons,
+    }
 
 
 def _daily_stop_action() -> str:
@@ -7711,7 +7733,8 @@ def _daily_stop_flatten_decision(ts_ny: datetime | None = None) -> dict:
     confirm_sec = max(0, int(globals().get("DAILY_STOP_CONFIRMATION_SEC", 60) or 0))
     grace_min = max(0, int(globals().get("SWING_DAILY_STOP_OPEN_GRACE_MIN", 15) or 0))
     mode = str(globals().get("STRATEGY_MODE") or "").strip().lower()
-    in_open_grace = bool(mode == "swing" and in_market_hours() and _minutes_since_market_open(now) < float(grace_min))
+    minutes_since_open = _minutes_since_market_open(now)
+    in_open_grace = bool(mode == "swing" and in_market_hours() and grace_min > 0 and 0 <= minutes_since_open < float(grace_min))
 
     reasons: list[str] = []
     if action != "flatten_all":
@@ -7755,7 +7778,7 @@ def _daily_stop_flatten_decision(ts_ny: datetime | None = None) -> dict:
         "confirmation_ready": confirmed,
         "swing_open_grace_min": grace_min,
         "in_open_grace": in_open_grace,
-        "minutes_since_market_open": round(_minutes_since_market_open(now), 3),
+        "minutes_since_market_open": round(minutes_since_open, 3),
         "reasons": reasons,
         "recommended_action": "halt_only_no_bulk_flatten" if not can_flatten else "bulk_flatten_confirmed",
     }
@@ -14857,12 +14880,14 @@ def worker_exit(body: dict = Body(default_factory=dict)):
 
     if ONLY_MARKET_HOURS and not in_market_hours():
         status = _eod_flatten_status_snapshot(live=True)
+        daily_stop_context = _daily_stop_evaluation_context(now)
         snapshot = persist_positions_snapshot(
             reason="worker_exit_outside_market_hours",
             extra={
                 "worker_exit_status": "outside_market_hours",
                 "market_open": False,
                 "strategy_mode": STRATEGY_MODE,
+                "daily_stop_evaluation": daily_stop_context,
                 "eod_flatten": status,
                 "reconcile_count": len(reconcile_actions),
                 "reconcile_actions": reconcile_actions[:20],
@@ -14872,6 +14897,8 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             status="outside_market_hours",
             residual_count=status.get("residual_count"),
             still_open_symbols=status.get("residual_symbols"),
+            daily_stop_evaluation_allowed=daily_stop_context.get("allowed"),
+            daily_stop_evaluation_reasons=daily_stop_context.get("reasons"),
             snapshot_reason=snapshot.get("reason"),
             snapshot_ts_utc=snapshot.get("ts_utc"),
         )
@@ -17720,6 +17747,14 @@ def dashboard(request: Request):
 
     snap_extra = _sd(snap.get("extra"))
     loss_control_incident = _sd(snap_extra.get("loss_control_incident"))
+    current_dashboard_session = _current_session_key()
+    incident_session = str(loss_control_incident.get("session") or "")
+    if loss_control_incident and incident_session and incident_session != current_dashboard_session:
+        loss_control_incident = dict(loss_control_incident)
+        loss_control_incident["active"] = False
+        loss_control_incident["stale_session"] = incident_session
+        loss_control_incident["recommended_action"] = "prior_session_incident_review_only"
+        loss_control_incident["recommended_actions"] = ["prior_session_incident_review_only"]
     snapshot_today_pnl_truth = _sd(snap_extra.get("today_pnl_truth") or loss_control_incident)
     snapshot_daily_halt_truth = _sd(snap_extra.get("daily_halt_truth"))
 
@@ -17801,6 +17836,12 @@ def dashboard(request: Request):
         daily_halt_active_value = bool(daily_halt_active())
     except Exception:
         daily_halt_active_value = bool(daily_halt_state.get("active") or daily_halt_state.get("daily_halt_active"))
+    dashboard_daily_halt_reason = (
+        daily_halt_state.get("reason")
+        or daily_halt_state.get("daily_halt_reason")
+        or snapshot_daily_halt_truth.get("daily_halt_reason")
+        or "none"
+    ) if daily_halt_active_value else "none"
     live_orders = bool(live_enabled and not kill_switch and not dry_run and not daily_halt_active_value)
 
     merged = []
