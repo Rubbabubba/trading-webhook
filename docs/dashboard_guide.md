@@ -1023,3 +1023,18 @@ When dashboard sections or metrics change:
 3. Add any new diagnostics endpoint to the endpoint reference.
 4. Add operator decision rules for any metric that can change trading behavior.
 5. Keep the guide copy/paste friendly: headings, tables, bullets, and code blocks only.
+
+### Patch 220 worker completion watchdog and position truth
+
+Patch 220 adds a worker-exit completion watchdog and a broker/plan/snapshot truth view.  The dashboard remains snapshot-only, but the Workers and Reconcile cards now show whether a worker-exit heartbeat has been stuck in `started` longer than `WORKER_EXIT_STARTED_STALE_SEC`, plus a compact position-truth status and mismatch count.
+
+Operational flow:
+
+1. If `worker_exit_started_stale` is true, inspect `/diagnostics/worker_exit_status` before relying on a fresh exit cycle.
+2. If `position_truth_status` is not `aligned`, open `/diagnostics/position_truth` to compare live broker positions, active internal plans, open orders, and the persisted dashboard snapshot.
+3. Treat dashboard active positions as advisory whenever the snapshot is stale or position truth reports mismatches; reconcile against Alpaca before taking manual action.
+
+New optional environment variables:
+
+- `WORKER_EXIT_STARTED_STALE_SEC` — seconds a `started` worker-exit heartbeat may remain incomplete before it is flagged.  Defaults to the larger of 180 seconds or twice `READINESS_EXIT_MAX_AGE_SEC`.
+- `POSITION_TRUTH_STALE_SEC` — freshness threshold for position-truth snapshot alignment.  Defaults to 180 seconds.

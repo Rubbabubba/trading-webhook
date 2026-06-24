@@ -958,6 +958,8 @@ SCANNER_INTERVAL_SEC = getenv_int("SCAN_INTERVAL_SEC", getenv_int("SWING_SCAN_IN
 SCANNER_TIMEOUT_SEC = getenv_int("SCAN_TIMEOUT_SEC", 60)
 SCANNER_JITTER_SEC = max(0, getenv_int("SCAN_JITTER_SEC", 0))
 READINESS_EXIT_MAX_AGE_SEC = int(getenv_any("READINESS_EXIT_MAX_AGE_SEC", default="90"))
+WORKER_EXIT_STARTED_STALE_SEC = int(getenv_any("WORKER_EXIT_STARTED_STALE_SEC", default=str(max(180, READINESS_EXIT_MAX_AGE_SEC * 2))))
+POSITION_TRUTH_STALE_SEC = int(getenv_any("POSITION_TRUTH_STALE_SEC", default="180"))
 RISK_RECHECK_TOLERANCE_PCT = float(getenv_any("RISK_RECHECK_TOLERANCE_PCT", default="0.10"))
 
 # Patch 007: monitoring + alerts
@@ -1292,7 +1294,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-219-daily-halt-rollover"
+PATCH_VERSION = "patch-220-worker-position-truth"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -4927,6 +4929,121 @@ def build_reconcile_snapshot() -> dict:
     }
     snap.update(_build_reconcile_assessment(snap))
     return snap
+
+
+def _position_truth_snapshot(
+    snapshot: dict | None = None,
+    reconcile: dict | None = None,
+    live: bool = False,
+) -> dict:
+    """Compare broker-position, active-plan, open-order, and persisted-snapshot truth.
+
+    ``live=True`` is intended for diagnostics and may call Alpaca through
+    ``build_reconcile_snapshot``.  The dashboard passes persisted snapshot data
+    only, so rendering remains read-only/no-live-call.
+    """
+    snap = dict(snapshot or read_positions_snapshot() or {})
+    if reconcile is None:
+        reconcile = build_reconcile_snapshot() if live else {}
+    rec = dict(reconcile or {})
+
+    snapshot_positions = [
+        p for p in list(snap.get("positions") or [])
+        if isinstance(p, dict) and str(p.get("symbol") or "").strip()
+    ]
+    snapshot_position_symbols = sorted({
+        str(p.get("symbol") or "").upper()
+        for p in snapshot_positions
+        if str(p.get("symbol") or "").strip()
+    })
+    snapshot_plans = {
+        str(sym or plan.get("symbol") or "").upper(): plan
+        for sym, plan in dict(snap.get("active_plans") or {}).items()
+        if isinstance(plan, dict) and bool(plan.get("active")) and str(sym or plan.get("symbol") or "").strip()
+    }
+    snapshot_active_plan_symbols = sorted(snapshot_plans.keys())
+
+    broker_symbols = sorted({
+        str(sym or "").upper()
+        for sym in (rec.get("broker_symbols") or snapshot_position_symbols)
+        if str(sym or "").strip()
+    })
+    active_plan_symbols = sorted({
+        str(sym or "").upper()
+        for sym in (rec.get("active_plan_symbols") or snapshot_active_plan_symbols)
+        if str(sym or "").strip()
+    })
+    open_order_symbols = sorted({
+        str(sym or "").upper()
+        for sym in (rec.get("open_order_symbols") or [])
+        if str(sym or "").strip()
+    })
+
+    broker_set = set(broker_symbols)
+    plan_set = set(active_plan_symbols)
+    open_order_set = set(open_order_symbols)
+    snapshot_set = set(snapshot_position_symbols)
+
+    plans_without_broker_positions = sorted(plan_set - broker_set - open_order_set)
+    broker_positions_without_active_plans = sorted(broker_set - plan_set)
+    snapshot_positions_without_broker = sorted(snapshot_set - broker_set) if live else []
+    broker_positions_missing_from_snapshot = sorted(broker_set - snapshot_set) if live else []
+    open_orders_without_plans = sorted(open_order_set - plan_set)
+    mismatch_symbols = sorted(
+        set(plans_without_broker_positions)
+        | set(broker_positions_without_active_plans)
+        | set(snapshot_positions_without_broker)
+        | set(broker_positions_missing_from_snapshot)
+        | set(open_orders_without_plans)
+        | set(rec.get("missing_from_plans") or [])
+        | set(rec.get("stale_active_plans") or [])
+        | set(rec.get("plans_missing_open_order") or [])
+        | set(rec.get("orphan_open_order_symbols") or [])
+    )
+
+    snapshot_age_view = _dashboard_snapshot_age_view(
+        snap.get("ts_utc") or snap.get("ts_ny"),
+        datetime.now(timezone.utc).isoformat(),
+        stale_after_sec=max(1, int(POSITION_TRUTH_STALE_SEC or 180)),
+    )
+    mismatch_count = len(mismatch_symbols)
+    snapshot_fresh = str(snapshot_age_view.get("severity") or "") in {"good", "warn"}
+    status = "aligned" if mismatch_count == 0 and snapshot_fresh else ("mismatch" if mismatch_count else "snapshot_stale")
+    recommended_action = (
+        "none" if status == "aligned" else
+        "run_diagnostics_reconcile_and_verify_broker_positions" if mismatch_count else
+        "wait_for_worker_exit_snapshot_or_run_reconcile"
+    )
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "live_reconcile": bool(live),
+        "status": status,
+        "aligned": status == "aligned",
+        "recommended_action": recommended_action,
+        "broker_positions_count": len(broker_symbols),
+        "broker_symbols": broker_symbols,
+        "active_plan_count": len(active_plan_symbols),
+        "active_plan_symbols": active_plan_symbols,
+        "open_order_count": int(rec.get("open_order_count") if rec.get("open_order_count") is not None else len(open_order_symbols)),
+        "open_order_symbols": open_order_symbols,
+        "snapshot_position_count": len(snapshot_position_symbols),
+        "snapshot_position_symbols": snapshot_position_symbols,
+        "snapshot_active_plan_count": len(snapshot_active_plan_symbols),
+        "snapshot_active_plan_symbols": snapshot_active_plan_symbols,
+        "mismatch_count": mismatch_count,
+        "mismatch_symbols": mismatch_symbols,
+        "plans_without_broker_positions": plans_without_broker_positions,
+        "broker_positions_without_active_plans": broker_positions_without_active_plans,
+        "snapshot_positions_without_broker": snapshot_positions_without_broker,
+        "broker_positions_missing_from_snapshot": broker_positions_missing_from_snapshot,
+        "open_orders_without_plans": open_orders_without_plans,
+        "reconcile_issue_total": rec.get("issue_total", 0),
+        "reconcile_health_grade": rec.get("health_grade"),
+        "snapshot_reason": snap.get("reason"),
+        "snapshot_ts_utc": snap.get("ts_utc"),
+        "snapshot_age": snapshot_age_view,
+    }
 
 
 _RECONCILE_SEVERITY_RANK = {"info": 0, "warn": 1, "error": 2, "critical": 3}
@@ -17819,7 +17936,9 @@ def dashboard(request: Request):
                 plan_by_symbol[usym] = plan
     active_plan_symbols = {sym for sym, plan in plan_by_symbol.items() if bool(_sd(plan).get("active"))}
     row_symbols = sorted(set(pos_by_symbol.keys()) | active_plan_symbols)
-
+    position_truth = _position_truth_snapshot(snapshot=snap, reconcile=None, live=False)
+    worker_exit_view = _worker_exit_status_snapshot(limit=8)
+    
     try:
         now_local = now_ny()
         market_open = bool(in_market_hours())
@@ -18145,6 +18264,10 @@ def dashboard(request: Request):
         blockers.append("dry_run")
     if trading_blocked:
         blockers.append("reconcile_trading_blocked")
+    if worker_exit_view.get("started_stale"):
+        blockers.append("worker_exit_started_stale")
+    if int(position_truth.get("mismatch_count") or 0) > 0:
+        blockers.append("position_truth_mismatch")
     blockers_text = html.escape("\n".join(blockers or ["none"]))
 
     live_class = "good" if live_orders else "bad"
@@ -18185,7 +18308,13 @@ def dashboard(request: Request):
     snapshot_badge_class = "good" if snapshot_severity == "good" else ("bad" if snapshot_severity == "critical" else "neutral")
     snapshot_alert_class = "good" if snapshot_severity == "good" else ("bad" if snapshot_severity == "critical" else "neutral")
     last_scan_ts = latest_scan.get("ts_utc") or latest_scan.get("last_closed_utc") or scanner_summary.get("last_closed_utc") or scanner_last.get("last_closed_utc") or ""
-    structural_exceptions_text = "\n".join(["missing_from_plans: none", "plans_missing_open_order: none", "stale_active_plans: none", "orphan_open_order_symbols: none", "partial_fill_plan_symbols: none"])
+    structural_exceptions_text = "\n".join([
+        f"plans_without_broker_positions: {', '.join(position_truth.get('plans_without_broker_positions') or []) or 'none'}",
+        f"broker_positions_without_active_plans: {', '.join(position_truth.get('broker_positions_without_active_plans') or []) or 'none'}",
+        f"open_orders_without_plans: {', '.join(position_truth.get('open_orders_without_plans') or []) or 'none'}",
+        f"mismatch_symbols: {', '.join(position_truth.get('mismatch_symbols') or []) or 'none'}",
+        f"worker_exit_started_stale: {bool(worker_exit_view.get('started_stale'))}",
+    ])
     intraday_projection = _intraday_launch_projection(open_count_override=len(merged))
     intraday_active = _sd(intraday_projection.get('active'))
     intraday_projected = _sd(intraday_projection.get('projected_intraday'))
@@ -18280,10 +18409,10 @@ def dashboard(request: Request):
 	<div class="links"><a href="/diagnostics/build">build</a><a href="/diagnostics/reconcile">reconcile</a><a href="/diagnostics/scanner">scanner</a><a href="/diagnostics/freshness">freshness</a><a href="/diagnostics/release">release</a><a href="/diagnostics/execution_lifecycle">execution_lifecycle</a><a href="/diagnostics/strategy_performance">strategy_performance</a><a href="/diagnostics/intraday_launch_readiness">intraday_launch</a><a href="/diagnostics/candidates">candidates</a><a href="/diagnostics/swing">swing</a></div><div><span class="badge neutral">{patch_label}</span><span class="badge good">snapshot only</span><span class="badge good">no live calls</span><span class="badge {snapshot_badge_class}">snapshot {html.escape(str(snapshot_age_view.get('status')))}</span></div>
 		<div class="section alert-grid"><div class="card"><h2>Operator Alerts</h2><div class="alert-chip {'bad' if blockers else 'good'}"><strong>{'Blockers present' if blockers else 'No current blockers'}</strong><span>{html.escape(', '.join(blockers) if blockers else 'System has no dashboard-visible blockers.')}</span></div><div class="alert-chip {worker_class}"><strong>Worker status</strong><span>Scanner: {html.escape(str(scanner_status))} → {html.escape(scanner_display_status)}; event: {html.escape(str(scanner_last_event or 'none'))}; in-flight: {html.escape(str(scanner_in_flight))}</span></div><div class="alert-chip {snapshot_alert_class}"><strong>Snapshot freshness</strong><span>{html.escape(str(snapshot_age_view.get('note')))} Age: {html.escape(str(snapshot_age_view.get('age_sec')))} sec. Status: {html.escape(str(snapshot_age_view.get('status')))}.</span></div></div><div class="card"><h2>Exception Center</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('trading_blocked', trading_blocked),('snapshot_reason', snap.get('reason') or ''),('snapshot_age_sec', snapshot_age_view.get('age_sec')),('snapshot_status', snapshot_age_view.get('status')),('snapshot_severity', snapshot_age_view.get('severity')),('server_render_ms', server_render_ms),('snapshot_load_ms', dashboard_timings.get('snapshot_load_ms')),('position_merge_ms', dashboard_timings.get('position_merge_ms')),('performance_analytics_ms', dashboard_timings.get('performance_analytics_ms')),('intraday_readiness_ms', dashboard_timings.get('intraday_readiness_ms'))])}</table></div></div>
 <div class="section kpi-grid"><div class="card"><div class="muted">Release stage</div><div class="metric {live_class}">{live_text}</div><table>{_rows([('stage', globals().get('RELEASE_STAGE') or globals().get('SYSTEM_RELEASE_STAGE')),('live_orders_permitted', live_orders),('dry_run', dry_run),('kill_switch', kill_switch)])}</table></div><div class="card"><div class="muted">Market hours</div><div class="metric {market_class}">{market_text}</div><table>{_rows([('now_ny', now_ny_text),('snapshot_ts', snapshot_ts),('last_scan_ts', last_scan_ts)])}</table></div><div class="card"><div class="muted">Regime</div><div class="metric {regime_class}">{_dashboard_fmt(regime_favorable).upper()}</div><table>{_rows([('index_symbol', regime_current.get('index_symbol')),('score', regime_current.get('score')),('breadth', regime_current.get('breadth')),('data_complete', regime_current.get('data_complete'))])}</table></div></div>
-	<div class="section kpi-grid"><div class="card"><div class="muted">Workers</div><div class="metric {worker_class}">{html.escape(scanner_display_status.upper())}</div><table>{_rows([('raw_scanner_status', scanner_status),('normalized_health', scanner_status_view.get('health')),('in_flight_run', scanner_in_flight),('last_event', scanner_last_event),('last_closed_utc', scanner_summary.get('last_closed_utc') or scanner_last.get('last_closed_utc'))])}</table></div><div class="card"><div class="muted">Reconcile</div><div class="metric {reconcile_class}">{html.escape(str(health_grade).upper())}</div><table>{_rows([('broker_positions_count', len(pos_by_symbol)),('active_plan_count', len(active_plan_symbols)),('open_order_count', snap.get('open_order_count', 0)),('issue_total', issue_total)])}</table></div><div class="card"><div class="muted">Active Position Count</div><div class="metric good">{_dashboard_fmt(len(merged))}</div><table>{_rows([('symbols', ', '.join([r['symbol'] for r in merged])),('snapshot_source', 'positions_snapshot.json'),('snapshot_age_sec', snapshot_age_view.get('age_sec'))])}</table></div></div>
-<div class="section card"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Days</th></tr></thead><tbody>{active_rows}</tbody></table><div class="muted" style="margin-top:10px;">Merged from broker-backed snapshot positions plus active plan risk fields. No live quote calls during dashboard render.</div></div>
+	<div class="section kpi-grid"><div class="card"><div class="muted">Workers</div><div class="metric {worker_class}">{html.escape(scanner_display_status.upper())}</div><table>{_rows([('raw_scanner_status', scanner_status),('normalized_health', scanner_status_view.get('health')),('in_flight_run', scanner_in_flight),('last_event', scanner_last_event),('last_closed_utc', scanner_summary.get('last_closed_utc') or scanner_last.get('last_closed_utc')),('exit_worker_status', _sd(worker_exit_view.get('heartbeat')).get('status')),('exit_heartbeat_age_sec', worker_exit_view.get('heartbeat_age_sec')),('worker_exit_started_stale', worker_exit_view.get('started_stale')),('exit_recommended_action', worker_exit_view.get('recommended_action'))])}</table></div><div class="card"><div class="muted">Reconcile</div><div class="metric {reconcile_class}">{html.escape(str(health_grade).upper())}</div><table>{_rows([('broker_positions_count', position_truth.get('broker_positions_count')),('active_plan_count', position_truth.get('active_plan_count')),('open_order_count', position_truth.get('open_order_count')),('position_truth_status', position_truth.get('status')),('position_truth_mismatch_count', position_truth.get('mismatch_count')),('issue_total', issue_total)])}</table></div><div class="card"><div class="muted">Active Position Count</div><div class="metric good">{_dashboard_fmt(len(merged))}</div><table>{_rows([('symbols', ', '.join([r['symbol'] for r in merged])),('snapshot_source', 'positions_snapshot.json'),('snapshot_age_sec', snapshot_age_view.get('age_sec')),('truth_recommended_action', position_truth.get('recommended_action'))])}</table></div></div>
+<div class="section card"><h2>Active Positions</h2><table><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>Stop</th><th>Target</th><th>Signal</th><th>Status</th><th>Days</th></tr></thead><tbody>{active_rows}</tbody></table><div class="muted" style="margin-top:10px;">Merged from broker-backed snapshot positions plus active plan risk fields. No live quote calls during dashboard render. Snapshot status: {html.escape(str(snapshot_age_view.get('status')))} / {html.escape(str(snapshot_age_view.get('severity')))}. Position truth: {html.escape(str(position_truth.get('status')))} ({_dashboard_fmt(position_truth.get('mismatch_count'))} mismatches). If stale/mismatched, verify Alpaca positions via /diagnostics/position_truth or /diagnostics/reconcile before acting on these rows.</div></div>
 <div class="section grid"><div class="card"><h2>P&amp;L Summary</h2><table>{_rows([('positions_with_snapshot', len(merged)),('total_unrealized_pl_snapshot', round(total_unrealized, 2)),('winners', winners),('losers', losers)])}</table></div><div class="card"><h2>Risk Integrity</h2><table>{_rows([('health_grade', health_grade),('issue_total', issue_total),('active_plan_count', len(active_plan_symbols)),('broker_positions_count', len(pos_by_symbol)),('trading_blocked', trading_blocked)])}</table><h3 style="margin-top:14px;">Structural exceptions</h3><pre>{html.escape(structural_exceptions_text)}</pre></div><div class="card"><h2>Exposure &amp; Capacity</h2><table>{_rows([('current_open_positions', len(merged)),('effective_max_open_positions', _effective_max_open_positions()),('base_max_open_positions', globals().get('MAX_OPEN_POSITIONS')),('capacity_next_step', swing_capacity_advisory.get('recommended_next_max')),('safe_to_12', swing_capacity_advisory.get('safe_to_12')),('safe_to_15', swing_capacity_advisory.get('safe_to_15')),('capacity_note', swing_capacity_advisory.get('note')),('portfolio_exposure_snapshot', snap.get('portfolio_exposure') or ''),('effective_portfolio_cap_pct', _pct(_effective_portfolio_exposure_cap_pct())),('effective_symbol_cap_pct', _pct(_effective_symbol_exposure_cap_pct())),('portfolio_cap_mode', os.getenv('SWING_PORTFOLIO_CAP_BLOCK_MODE',''))])}</table><h3 style="margin-top:14px;">Strategy symbols</h3><pre>{html.escape(chr(10).join([r['symbol'] for r in merged]) or 'none')}</pre></div></div>
-	<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><div class="metric {halt_panel_class}">{html.escape(halt_interpretation)}</div><p class="muted">{html.escape(halt_detail)}</p><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', daily_halt_state.get('reason') or daily_halt_state.get('daily_halt_reason') or snapshot_daily_halt_truth.get('daily_halt_reason') or 'none'),('account_daily_pnl_snapshot', loss_control_incident.get('account_daily_pnl')),('breach_source', loss_control_incident.get('breach_source') or 'snapshot unavailable'),('flatten_policy', loss_control_incident.get('flatten_policy') or 'snapshot unavailable'),('bulk_flatten_allowed', loss_control_incident.get('bulk_flatten_allowed')),('can_flatten', loss_control_incident.get('can_flatten')),('fully_flat', loss_control_incident.get('fully_flat')),('scanner_status_normalized', scanner_status_view.get('health')),('release_or_reconcile_blocked', trading_blocked),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', snapshot_today_pnl_truth.get('account_daily_pnl_source') or snapshot_today_pnl_truth.get('accounting_source') or ('alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data'))),('account_daily_pnl', snapshot_today_pnl_truth.get('account_daily_pnl')),('today_realized_pnl', snapshot_today_pnl_truth.get('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data'))),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', snapshot_today_pnl_truth.get('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data'))),('broker_exit_fills_today', snapshot_today_pnl_truth.get('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data')))])}</table></div><div class="card"><h2>Loss Control Incident</h2><table>{_rows([('active', loss_control_incident.get('active')),('recommended_action', loss_control_incident.get('recommended_action') or 'open_diagnostics_loss_control_incident'),('recommended_actions', ', '.join(_sl(loss_control_incident.get('recommended_actions'))) or 'snapshot unavailable'),('snapshot_reason', loss_control_incident.get('snapshot_reason') or snap.get('reason') or ''),('broker_positions_count', loss_control_incident.get('broker_positions_count', len(pos_by_symbol))),('active_plan_count', loss_control_incident.get('active_plan_count', len(active_plan_symbols))),('open_order_count', loss_control_incident.get('open_order_count', snap.get('open_order_count', 0))),('flatten_decision_reasons', ', '.join(_sl(loss_control_incident.get('flatten_decision_reasons'))) or 'none')])}</table><p class="muted">Snapshot-only incident summary. Full broker-realized reconciliation: /diagnostics/loss_control_incident.</p></div></div>
+	<div class="section grid"><div class="card"><h2>Daily Halt Truth</h2><div class="metric {halt_panel_class}">{html.escape(halt_interpretation)}</div><p class="muted">{html.escape(halt_detail)}</p><table>{_rows([('daily_halt_active', daily_halt_active_value),('daily_halt_reason', dashboard_daily_halt_reason),('account_daily_pnl_snapshot', loss_control_incident.get('account_daily_pnl')),('breach_source', loss_control_incident.get('breach_source') or 'snapshot unavailable'),('flatten_policy', loss_control_incident.get('flatten_policy') or 'snapshot unavailable'),('bulk_flatten_allowed', loss_control_incident.get('bulk_flatten_allowed')),('can_flatten', loss_control_incident.get('can_flatten')),('fully_flat', loss_control_incident.get('fully_flat')),('scanner_status_normalized', scanner_status_view.get('health')),('release_or_reconcile_blocked', trading_blocked),('configured_daily_loss_limit', os.getenv('DAILY_LOSS_LIMIT','')),('configured_daily_stop_dollars', os.getenv('DAILY_STOP_DOLLARS',''))])}</table></div><div class="card"><h2>Today P&amp;L Truth</h2><table>{_rows([('accounting_source', snapshot_today_pnl_truth.get('account_daily_pnl_source') or snapshot_today_pnl_truth.get('accounting_source') or ('alpaca_orders' if _sl(perf_state.get('alpaca_orders')) else ('persisted_strategy_state' if perf_state else 'no_data'))),('account_daily_pnl', snapshot_today_pnl_truth.get('account_daily_pnl')),('today_realized_pnl', snapshot_today_pnl_truth.get('today_realized_pnl', perf_state.get('today_realized_pnl', 0 if perf_state else 'no data'))),('today_unrealized_pnl_snapshot', round(total_unrealized,2)),('closed_trades_today', snapshot_today_pnl_truth.get('closed_trades_today', perf_state.get('closed_trades_today', 0 if perf_state else 'no data'))),('broker_exit_fills_today', snapshot_today_pnl_truth.get('broker_exit_fills_today', perf_state.get('broker_exit_fills_today', 0 if perf_state else 'no data')))])}</table></div><div class="card"><h2>Loss Control Incident</h2><table>{_rows([('active', loss_control_incident.get('active')),('recommended_action', loss_control_incident.get('recommended_action') or 'open_diagnostics_loss_control_incident'),('recommended_actions', ', '.join(_sl(loss_control_incident.get('recommended_actions'))) or 'snapshot unavailable'),('snapshot_reason', loss_control_incident.get('snapshot_reason') or snap.get('reason') or ''),('broker_positions_count', loss_control_incident.get('broker_positions_count', len(pos_by_symbol))),('active_plan_count', loss_control_incident.get('active_plan_count', len(active_plan_symbols))),('open_order_count', loss_control_incident.get('open_order_count', snap.get('open_order_count', 0))),('flatten_decision_reasons', ', '.join(_sl(loss_control_incident.get('flatten_decision_reasons'))) or 'none')])}</table><p class="muted">Snapshot-only incident summary. Full broker-realized reconciliation: /diagnostics/loss_control_incident.</p></div></div>
 <div class="section grid"><div class="card"><h2>EOD Flatten Status</h2><table>{_rows([('last_eod_attempt', eod_flatten_status.get('ts_ny') or 'none'),('eod_flatten_time_ny', eod_flatten_status.get('eod_flatten_time_ny') or EOD_FLATTEN_TIME),('fully_flat', eod_flatten_status.get('fully_flat')),('attempted_count', len(_sl(eod_flatten_status.get('attempted_symbols')))),('submitted_count', len(_sl(eod_flatten_status.get('submitted_symbols')))),('confirmed_closed_count', len(_sl(eod_flatten_status.get('confirmed_closed_symbols')))),('residual_count', eod_flatten_status.get('residual_count')),('residual_symbols', eod_residual_symbols_text),('pending_close_order_symbols', eod_pending_close_symbols_text),('recommended_action', eod_flatten_status.get('recommended_action'))])}</table><p class="muted">Submitted symbols: {html.escape(eod_submitted_symbols_text)}. Full details: /diagnostics/eod_flatten_status.</p></div></div>
 {performance_detail_html}
 <div class="section grid"><div class="card"><h2>Intraday Launch Projection</h2><table>{_rows([('launch_ready_now', readiness_assessment.get('intraday_launch_ready')),('projection_capacity_ready', intraday_projection_capacity_ready),('projection_blockers', intraday_projection_blockers_text),('launch_gate_actions', intraday_launch_gate_actions_text),('required_actions', intraday_projection_next_actions_text),('optional_scaling_actions', intraday_projection_optional_actions_text),('active_strategy_mode', intraday_projection.get('strategy_mode')),('mode_switch_required', intraday_projection.get('mode_switch_required')),('active_open_slots', intraday_active.get('open_slots_available')),('launch_min_open_slots', intraday_projection.get('launch_min_open_slots')),('recommended_intraday_max_positions', intraday_projection.get('recommended_intraday_max_open_positions')),('recommended_intraday_open_slots', intraday_projection.get('recommended_intraday_open_slots')),('recommended_intraday_daily_stop', intraday_projection.get('recommended_intraday_daily_stop_dollars')),('recommended_intraday_daily_loss', intraday_projection.get('recommended_intraday_daily_loss_limit')),('projected_intraday_max_positions', intraday_projected.get('max_open_positions')),('projected_intraday_open_slots', intraday_projected.get('open_slots_available')),('open_slots_gap_to_min', intraday_projected.get('open_slots_gap_to_min')),('projected_daily_stop_dollars', intraday_projected.get('daily_stop_dollars')),('projected_daily_loss_limit', intraday_projected.get('daily_loss_limit')),('projected_portfolio_cap_pct', _pct(intraday_projected.get('portfolio_exposure_cap_pct'))),('projected_symbol_cap_pct', _pct(intraday_projected.get('symbol_exposure_cap_pct'))),('june4_framework', 'finra_intraday_margin')])}</table><h3 style="margin-top:14px;">Launch env checklist</h3><pre>{html.escape(intraday_launch_env_text)}</pre><p class="muted">Projection shows the values that would apply after switching STRATEGY_MODE=intraday. Use /diagnostics/intraday_launch_readiness for the full blocker checklist.</p></div><div class="card"><h2>Readiness Evidence</h2><table>{_rows([('system_health_ok', str(health_grade).lower() == 'healthy'),('market_tradable_now', market_open),('scanner_ready', scanner_ready),('component_ready', readiness_assessment.get('system_ready')),('intraday_launch_ready', readiness_assessment.get('intraday_launch_ready')),('intraday_launch_blockers', readiness_assessment.get('launch_blocker_count')),('launch_gate_blockers', intraday_launch_gate_blockers_text),('same_session_proven', bool(last_scan_ts)),('trade_path_proven', closed_trades > 0),('entry_events', scanner_summary.get('dispatch_attempts_total'))])}</table><h3 style="margin-top:14px;">Assessment</h3><div class="metric {html.escape(str(readiness_assessment.get('class') or 'neutral'))}">{html.escape(str(readiness_assessment.get('status') or 'CHECK BLOCKERS'))}</div></div></div>
@@ -19209,14 +19338,30 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
                 "side": plan.get("side"),
                 "filled_qty": plan.get("filled_qty"),
             })
+    status = str(hb.get("status") or "").lower()
+    stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
+    started_stale = bool(status == "started" and age_sec is not None and age_sec > stale_threshold)
+    terminal_status_seen = bool(status and status != "started")
+    healthy = bool(status not in {"error", "failed"} and not started_stale)
+    recommended_action = (
+        "investigate_worker_exit_started_without_completion" if started_stale else
+        "inspect_recent_worker_exit_errors" if status in {"error", "failed"} or error_like else
+        "none"
+    )
     return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
         "heartbeat": hb,
         "heartbeat_age_sec": age_sec,
+        "started_stale": started_stale,
+        "started_stale_sec": stale_threshold,
+        "terminal_status_seen": terminal_status_seen,
+        "recommended_action": recommended_action,
         "active_plan_count": len(active_plans),
         "active_plans": active_plans[:10],
         "recent_worker_exit_decisions": recent,
         "error_like_recent_count": len(error_like),
-        "healthy": hb.get("status") not in {"error", "failed"},
+        "healthy": healthy,
     }
 
 @app.get("/diagnostics/universe_shadow")
@@ -19226,6 +19371,19 @@ def diagnostics_universe_shadow(limit: int = 10):
 @app.get("/diagnostics/worker_exit_status")
 def diagnostics_worker_exit_status(limit: int = 20):
     return _worker_exit_status_snapshot(limit=limit)
+
+
+@app.get("/diagnostics/position_truth")
+def diagnostics_position_truth(request: Request):
+    require_admin_if_configured(request)
+    reconcile_snapshot = build_reconcile_snapshot()
+    latest_snapshot = read_positions_snapshot()
+    return {
+        **_position_truth_snapshot(snapshot=latest_snapshot, reconcile=reconcile_snapshot, live=True),
+        "latest_snapshot": latest_snapshot,
+        "worker_exit_status": _worker_exit_status_snapshot(limit=20),
+        "reconcile_snapshot": reconcile_snapshot,
+    }
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
