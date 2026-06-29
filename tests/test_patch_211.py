@@ -30,7 +30,7 @@ def test_patch_211_stall_exit_drilldown_summarizes_and_recommends():
     assert payload["stall_exit_summary"]["closed_trades"] == 4
     assert payload["stall_exit_summary"]["gross_pnl"] == -215.0
     assert payload["by_symbol"][0]["name"] == "STAL"
-    assert payload["recommended_exit_tuning"]["name"] in {"raise_stall_min_r_filter_negative_stalls", "earlier_break_even_for_deep_stalls", "reduce_stall_exit_days_for_slow_stalls", "avoid_weak_regime_stall_setups"}
+    assert payload["recommended_exit_tuning"]["name"] in {"stall_loss_guard_for_guard_leaks", "raise_stall_min_r_filter_negative_stalls", "earlier_break_even_for_deep_stalls", "reduce_stall_exit_days_for_slow_stalls", "avoid_weak_regime_stall_setups"}
     assert payload["recommended_exit_tuning"]["gross_pnl_delta"] > 0
     assert payload["config"]["read_only"] is True
 
@@ -42,7 +42,7 @@ def test_patch_211_diagnostics_endpoint(monkeypatch):
 
     payload = app.diagnostics_swing_stall_exit_drilldown(req)
 
-    assert payload["patch_version"].startswith("patch-211")
+    assert payload["patch_version"].startswith("patch-")
     assert payload["stall_exit_summary"]["closed_trades"] == 4
     assert payload["exit_tightening_simulations"]
 

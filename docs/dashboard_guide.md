@@ -1038,3 +1038,16 @@ New optional environment variables:
 
 - `WORKER_EXIT_STARTED_STALE_SEC` — seconds a `started` worker-exit heartbeat may remain incomplete before it is flagged.  Defaults to the larger of 180 seconds or twice `READINESS_EXIT_MAX_AGE_SEC`.
 - `POSITION_TRUTH_STALE_SEC` — freshness threshold for position-truth snapshot alignment.  Defaults to 180 seconds.
+
+
+## Patch 221 stall-exit guardrails
+
+Patch 221 keeps the next successful step focused on swing exit quality: it adds a configurable stall-loss guard that can close a stalled swing position before it becomes a deep loss-R outlier. This does **not** size up risk and does **not** enable intraday live orders.
+
+| Setting | Meaning | Default | Operator note |
+|---|---|---:|---|
+| `SWING_STALL_LOSS_GUARD_ENABLED` | Enables the early stall-loss guard. | `true` | Keep enabled while reviewing stall exits. |
+| `SWING_STALL_LOSS_GUARD_DAYS` | Minimum held days before the loss guard can trigger. | `1` | Avoids same-day churn while still acting before the classic stall window. |
+| `SWING_STALL_MAX_LOSS_R` | Loss-R threshold that marks a stalled trade for exit. | `-0.60` | Tune conservatively; this is intended to prevent `stall_exit` losses from reaching deep-loss buckets. |
+
+Review `/diagnostics/swing_stall_exit_drilldown` and `/diagnostics/stall_exit_tuning_monitor` after deployment. The dashboard now shows the active stall max-loss guard in the Stall Tuning Monitor panels.
