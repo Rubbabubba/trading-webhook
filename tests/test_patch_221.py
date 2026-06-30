@@ -70,6 +70,6 @@ def test_patch_221_stall_drilldown_surfaces_guardrail_config(monkeypatch):
 
     out = app._swing_stall_exit_drilldown(perf_state={"closed_trades": rows, "by_strategy": {}, "kill_switch": {}})
 
-    assert out["patch_version"] == "patch-221-stall-exit-guardrails"
+    assert out["patch_version"] == "patch-222-recovered-attribution-backfill"
     assert out["config"]["SWING_STALL_MAX_LOSS_R"] == -0.60
     assert any(s["name"] == "stall_loss_guard_for_guard_leaks" for s in out["exit_tightening_simulations"])

@@ -1297,7 +1297,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-221-stall-exit-guardrails"
+PATCH_VERSION = "patch-222-recovered-attribution-backfill"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -4577,22 +4577,155 @@ def _reconcile_manual_exit_plan(plan: dict | None, symbol: str, source: str = "b
     return {"ok": True, "reason": "patch154_quarantined", "exit_price": round(exit_px, 4), "closed_trade_recorded": False, "order_id": str((order or {}).get("id") or "")}
 
 
-def _infer_strategy_name_for_symbol(symbol: str) -> str:
-    sym = str(symbol or '').strip().upper()
+def _valid_strategy_identity(value: object) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if not text or lowered in {"recovered", "recovered_open_order", "broker_position", "unknown", "none", "null"}:
+        return ""
+    return lowered
+
+
+def _candidate_attribution_meta(row: dict | None, source: str = "") -> dict:
+    row = dict(row or {})
+    strategy = _valid_strategy_identity(row.get("strategy") or row.get("strategy_name") or row.get("signal"))
+    signal = _valid_strategy_identity(row.get("signal") or row.get("strategy") or row.get("strategy_name")) or strategy
+    if not strategy and not signal:
+        return {}
+    return {
+        "strategy_name": strategy or signal,
+        "signal": signal or strategy,
+        "rank_score": row.get("rank_score"),
+        "selection_quality_score": row.get("selection_quality_score"),
+        "entry_type": row.get("entry_type"),
+        "regime_mode": row.get("regime_mode"),
+        "breakout_level": row.get("breakout_level"),
+        "stop_price": row.get("stop_price"),
+        "take_price": row.get("take_price") or row.get("target_price"),
+        "target_price": row.get("target_price") or row.get("take_price"),
+        "risk_per_share": row.get("risk_per_share"),
+        "scan_ts": row.get("scan_ts_utc") or row.get("ts_utc"),
+        "attribution_source": source,
+    }
+
+
+def _merge_attribution_meta(base: dict | None, extra: dict | None) -> dict:
+    merged = dict(base or {})
+    for key, val in dict(extra or {}).items():
+        if val in (None, "", [], {}):
+            continue
+        if key in {"signal", "strategy_name"}:
+            val = _valid_strategy_identity(val)
+            if not val:
+                continue
+        if merged.get(key) in (None, "", [], {}) or key in {"signal", "strategy_name", "attribution_source"}:
+            merged[key] = val
+    return merged
+
+
+def _infer_recovered_plan_attribution(symbol: str, order_id: str = "") -> dict:
+    sym = str(symbol or "").strip().upper()
+    order_id = str(order_id or "").strip()
     if not sym:
-        return BREAKOUT_STRATEGY_NAME
+        return {}
+    # Highest confidence: entry decisions persisted with order id / selected scanner metadata.
+    decision_rows = [dict(r or {}) for r in list(DECISIONS or [])]
+    decision_rows.extend(_read_journal(limit=JOURNAL_BOOTSTRAP_LIMIT, symbol=sym))
+    for row in reversed(decision_rows):
+        if str(row.get("symbol") or "").strip().upper() != sym:
+            continue
+        if str(row.get("event") or "").upper() not in {"ENTRY", "CANDIDATE", "SCAN"}:
+            continue
+        details = dict(row.get("details") or {})
+        row_order_id = str(details.get("order_id") or row.get("order_id") or "").strip()
+        if order_id and row_order_id and row_order_id != order_id:
+            continue
+        meta = dict(details.get("meta") or {}) if isinstance(details.get("meta"), dict) else {}
+        candidate = dict(meta.get("candidate") or {}) if isinstance(meta.get("candidate"), dict) else {}
+        inferred = _candidate_attribution_meta(candidate, "decision_candidate")
+        inferred = _merge_attribution_meta(inferred, _candidate_attribution_meta(meta, "decision_meta"))
+        inferred = _merge_attribution_meta(inferred, _candidate_attribution_meta(row, "decision_row"))
+        if inferred:
+            return inferred
+
+    # Lifecycle history often has entry submitted/selected events with signal details.
     events = list(PAPER_LIFECYCLE_HISTORY or [])
     if LAST_PAPER_LIFECYCLE and (not events or events[-1] != LAST_PAPER_LIFECYCLE):
         events.append(dict(LAST_PAPER_LIFECYCLE))
     for ev in reversed(events):
-        if str((ev or {}).get('symbol') or '').strip().upper() != sym:
+        if str((ev or {}).get("symbol") or "").strip().upper() != sym:
             continue
-        details = dict((ev or {}).get('details') or {})
-        signal = str(details.get('signal') or details.get('strategy_name') or details.get('strategy') or '').strip().lower()
-        if signal:
-            return signal
-    return BREAKOUT_STRATEGY_NAME
+        details = dict((ev or {}).get("details") or {})
+        inferred = _candidate_attribution_meta(details, "paper_lifecycle")
+        if inferred:
+            return inferred
 
+    # Scanner/candidate state survives restarts and contains selected rows.
+    for hist in reversed(list(CANDIDATE_HISTORY or [])):
+        if not isinstance(hist, dict):
+            continue
+        rows = list(hist.get("candidates") or []) + list(hist.get("adaptive_capacity_candidates") or []) + list(hist.get("shadow_candidates") or [])
+        selected = {str(x or "").upper() for x in (hist.get("selected") or [])}
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("symbol") or "").upper() != sym:
+                continue
+            inferred = _candidate_attribution_meta(row, "candidate_history_selected" if sym in selected else "candidate_history")
+            inferred = _merge_attribution_meta({"regime_mode": hist.get("regime_mode"), "scan_ts": hist.get("ts_utc")}, inferred)
+            if inferred:
+                return inferred
+
+    for row in reversed(list(LAST_SWING_CANDIDATES or [])):
+        if not isinstance(row, dict) or str(row.get("symbol") or "").upper() != sym:
+            continue
+        inferred = _candidate_attribution_meta(row, "last_swing_candidates")
+        if inferred:
+            return inferred
+
+    for scan in reversed(list(SCAN_HISTORY or [])):
+        if not isinstance(scan, dict):
+            continue
+        rows = list(scan.get("would_submit") or []) + list(scan.get("results") or []) + list((scan.get("summary") or {}).get("top_candidates") or [])
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("symbol") or "").upper() != sym:
+                continue
+            inferred = _candidate_attribution_meta(row, "scan_history")
+            if inferred:
+                return inferred
+    return {"strategy_name": BREAKOUT_STRATEGY_NAME, "signal": BREAKOUT_STRATEGY_NAME, "attribution_source": "fallback_breakout"}
+
+
+def _infer_strategy_name_for_symbol(symbol: str) -> str:
+    meta = _infer_recovered_plan_attribution(symbol)
+    return _valid_strategy_identity(meta.get("strategy_name") or meta.get("signal")) or BREAKOUT_STRATEGY_NAME
+
+
+def _apply_recovered_plan_attribution(plan: dict | None, symbol: str = "", order_id: str = "") -> dict:
+    plan = dict(plan or {})
+    inferred = _infer_recovered_plan_attribution(symbol or plan.get("symbol"), order_id or plan.get("order_id"))
+    strategy = _valid_strategy_identity(inferred.get("strategy_name") or inferred.get("signal"))
+    signal = _valid_strategy_identity(inferred.get("signal") or inferred.get("strategy_name"))
+    if not strategy and not signal:
+        return plan
+    original_signal = str(plan.get("recovered_original_signal") or plan.get("signal") or "")
+    original_strategy = str(plan.get("recovered_original_strategy_name") or plan.get("strategy_name") or "")
+    plan["recovered_original_signal"] = original_signal
+    plan["recovered_original_strategy_name"] = original_strategy
+    plan["signal"] = signal or strategy
+    plan["strategy_name"] = strategy or signal
+    for key in ["rank_score", "selection_quality_score", "entry_type", "regime_mode"]:
+        if plan.get(key) in (None, "", [], {}) and inferred.get(key) not in (None, "", [], {}):
+            plan[key] = inferred.get(key)
+    thesis = dict(plan.get("thesis") or {})
+    for key, target in [("rank_score", "candidate_rank_score"), ("selection_quality_score", "selection_quality_score"), ("entry_type", "entry_type"), ("regime_mode", "regime_mode"), ("breakout_level", "breakout_level")]:
+        if thesis.get(target) in (None, "", [], {}) and inferred.get(key) not in (None, "", [], {}):
+            thesis[target] = inferred.get(key)
+    if inferred.get("scan_ts") and thesis.get("candidate_ts") in (None, "", [], {}):
+        thesis["candidate_ts"] = inferred.get("scan_ts")
+    if thesis:
+        plan["thesis"] = thesis
+    plan["attribution_backfilled"] = True
+    plan["attribution_source"] = inferred.get("attribution_source") or "recovered_backfill"
+    return plan
+    
 
 def _find_recent_entry_fill_for_symbol(symbol: str, side: str, before_iso: str | None = None) -> dict:
     sym = str(symbol or '').upper()
@@ -4877,10 +5010,17 @@ def _adopt_open_broker_order_as_plan(symbol: str, broker_order: dict, source: st
             price = 0.0
     if not price or price <= 0:
         price = 1.0
-    plan = build_trade_plan(sym, side, qty, float(price), signal=signal, meta=meta)
+    order_id = str(order.get("id") or "")
+    inferred_meta = _infer_recovered_plan_attribution(sym, order_id=order_id)
+    merged_meta = _merge_attribution_meta(inferred_meta, meta or {})
+    build_signal = _valid_strategy_identity(merged_meta.get("signal") or merged_meta.get("strategy_name") or signal) or signal
+    plan = build_trade_plan(sym, side, qty, float(price), signal=build_signal, meta=merged_meta)
+    plan["recovered_original_signal"] = str(signal or "")
+    plan["recovered_original_strategy_name"] = str((meta or {}).get("strategy_name") or (meta or {}).get("strategy") or "")
+    plan = _apply_recovered_plan_attribution(plan, sym, order_id=order_id)
     plan["active"] = True
     plan["source"] = source
-    plan["order_id"] = str(order.get("id") or "")
+    plan["order_id"] = order_id
     plan["submitted_at"] = str(order.get("submitted_at") or plan.get("submitted_at") or now_ny().isoformat())
     plan["requested_qty"] = qty
     plan["submitted_qty"] = qty
@@ -5548,7 +5688,12 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
                             action="skipped", reason="no_entry_price")
             continue
 
-        recovered_plan = build_trade_plan(sym, side, qty, float(avg_entry), signal="RECOVERED")
+        inferred_meta = _infer_recovered_plan_attribution(sym)
+        recovered_signal = _valid_strategy_identity(inferred_meta.get("signal") or inferred_meta.get("strategy_name")) or "RECOVERED"
+        recovered_plan = build_trade_plan(sym, side, qty, float(avg_entry), signal=recovered_signal, meta=inferred_meta)
+        recovered_plan["recovered_original_signal"] = "RECOVERED"
+        recovered_plan["recovered_original_strategy_name"] = "RECOVERED"
+        recovered_plan = _apply_recovered_plan_attribution(recovered_plan, sym)
         recovered_plan["recovered"] = True
         recovered_plan["recovered_at"] = now_ny().isoformat()
         _ensure_execution_lifecycle_plan(sym, recovered_plan)
@@ -5571,7 +5716,7 @@ def _restore_snapshot_plan_classification(plan: dict) -> dict:
     signal = str(plan.get("signal") or "").strip().upper()
     strategy_name = str(plan.get("strategy_name") or "").strip().upper()
     explicit_class = str(plan.get("startup_restore_classification") or "").strip().lower()
-    looks_recovered = signal == "RECOVERED" or strategy_name == "RECOVERED" or explicit_class == "recovered"
+    looks_recovered = signal in {"RECOVERED", "RECOVERED_OPEN_ORDER"} or strategy_name in {"RECOVERED", "RECOVERED_OPEN_ORDER"} or explicit_class == "recovered" or bool(plan.get("recovered"))
     was_recovered = bool(plan.get("recovered")) and looks_recovered
     if was_recovered:
         plan["recovered"] = True
@@ -6068,7 +6213,7 @@ def _append_strategy_closed_trade(plan: dict | None, exit_price: float | None, r
     entry_dt = _p175_parse_dt(plan.get("opened_at") or plan.get("submitted_at") or plan.get("created_at"))
     holding_hours = round((exit_dt - entry_dt).total_seconds() / 3600.0, 4) if entry_dt and exit_dt >= entry_dt else None
     rank_score = _p175_rank_score(plan)
-    row = {"ts_utc": exit_dt.isoformat(), "symbol": str(plan.get("symbol") or plan.get("instrument") or "").upper(), "strategy_name": strategy_name, "signal": str(plan.get("signal") or strategy_name), "entry_price": round(entry_price,4), "exit_price": round(exit_px,4), "qty": round(qty,4), "gross_pnl": round(gross_pnl,4), "pnl_r": round((pnl_per_share / risk_per_share) if risk_per_share > 0 else 0.0,4), "return_pct": round((pnl_per_share / entry_price * 100.0) if entry_price > 0 else 0.0,4), "reason": str(reason or ""), "exit_reason": str(reason or ""), "source": str(source or ""), "entry_regime_mode": str((thesis.get("regime_mode") or plan.get("regime_mode") or "")).strip().lower() or None, "max_hold_days": int(plan.get("max_hold_days") or 0), "rank_score": rank_score, "selection_quality_score": _p175_first(plan, "selection_quality_score") or thesis.get("selection_quality_score"), "entry_ts_utc": entry_dt.isoformat() if entry_dt else None, "holding_hours": holding_hours, "holding_days": round(holding_hours / 24.0, 4) if holding_hours is not None else None, "entry_type": plan.get("entry_type") or thesis.get("entry_type"), "breakout_level": thesis.get("breakout_level")}
+    row = {"ts_utc": exit_dt.isoformat(), "symbol": str(plan.get("symbol") or plan.get("instrument") or "").upper(), "strategy_name": strategy_name, "signal": str(plan.get("signal") or strategy_name), "entry_price": round(entry_price,4), "exit_price": round(exit_px,4), "qty": round(qty,4), "gross_pnl": round(gross_pnl,4), "pnl_r": round((pnl_per_share / risk_per_share) if risk_per_share > 0 else 0.0,4), "return_pct": round((pnl_per_share / entry_price * 100.0) if entry_price > 0 else 0.0,4), "reason": str(reason or ""), "exit_reason": str(reason or ""), "source": str(source or ""), "entry_regime_mode": str((thesis.get("regime_mode") or plan.get("regime_mode") or "")).strip().lower() or None, "max_hold_days": int(plan.get("max_hold_days") or 0), "rank_score": rank_score, "selection_quality_score": _p175_first(plan, "selection_quality_score") or thesis.get("selection_quality_score"), "entry_ts_utc": entry_dt.isoformat() if entry_dt else None, "holding_hours": holding_hours, "holding_days": round(holding_hours / 24.0, 4) if holding_hours is not None else None, "entry_type": plan.get("entry_type") or thesis.get("entry_type"), "breakout_level": thesis.get("breakout_level"), "recovered": bool(plan.get("recovered")), "attribution_backfilled": bool(plan.get("attribution_backfilled")), "attribution_source": plan.get("attribution_source")}
     row["close_fingerprint"] = _strategy_trade_row_fingerprint(row)
     state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state()); closed = list(state.get("closed_trades") or []); closed.append(row); state["closed_trades"] = closed[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]; globals()["STRATEGY_PERFORMANCE_STATE"] = state; _recompute_strategy_performance_state(); persist_strategy_performance_state(reason=f"closed_trade:{strategy_name}"); return row
 
@@ -18003,6 +18148,8 @@ def dashboard(request: Request):
         stop = _first(plan, "stop_price", "initial_stop_price")
         target = _first(plan, "take_price", "target_price", "initial_take_price")
         signal = _first(plan, "signal", "strategy_name") or ("broker_position" if pos else "")
+        if bool(plan.get("recovered")) and bool(plan.get("attribution_backfilled")) and str(signal or "").upper() in {"RECOVERED", "RECOVERED_OPEN_ORDER"}:
+            signal = _first(plan, "strategy_name") or signal
         status = _first(plan, "execution_state", "lifecycle_state", "order_status") or ("broker_position" if pos else "")
         days = _first(plan, "days_held")
         last = _first(pos, "current_price", "last_price", "latest_price", "market_price") or _first(plan, "last_price", "current_price", "latest_price")

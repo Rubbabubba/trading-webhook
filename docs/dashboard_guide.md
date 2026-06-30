@@ -1051,3 +1051,15 @@ Patch 221 keeps the next successful step focused on swing exit quality: it adds 
 | `SWING_STALL_MAX_LOSS_R` | Loss-R threshold that marks a stalled trade for exit. | `-0.60` | Tune conservatively; this is intended to prevent `stall_exit` losses from reaching deep-loss buckets. |
 
 Review `/diagnostics/swing_stall_exit_drilldown` and `/diagnostics/stall_exit_tuning_monitor` after deployment. The dashboard now shows the active stall max-loss guard in the Stall Tuning Monitor panels.
+
+
+## Patch 222 recovered-plan attribution backfill
+
+Patch 222 keeps recovered broker-backed plans from polluting strategy attribution as `RECOVERED`. When reconcile has to rebuild an internal plan from an existing broker position or open order, the system now searches recent decision rows, the execution journal, lifecycle history, candidate history, and scan history for the original strategy identity.
+
+Operator notes:
+
+1. A recovered plan can still show `recovered=true` internally, but the dashboard Signal column should prefer the inferred strategy such as `daily_breakout` or `daily_mean_reversion`.
+2. Closed-trade analytics keep both facts: the recovered provenance remains available, while strategy-level P&L buckets use the inferred strategy instead of a generic recovered bucket.
+3. If no reliable match exists, the fallback remains the configured swing breakout strategy rather than `RECOVERED`, so attribution stays useful while preserving recovered metadata for audit.
+4. Use `/diagnostics/reconcile`, `/diagnostics/position_truth`, and `/diagnostics/swing_performance_attribution` to verify recovered plans are broker-aligned and attributed to their trading strategy.

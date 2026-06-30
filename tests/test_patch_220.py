@@ -12,7 +12,7 @@ def test_worker_exit_started_watchdog_flags_stale(monkeypatch):
         "status": "started",
     })
     out = app._worker_exit_status_snapshot(limit=5)
-    assert out["patch_version"] == "patch-220-worker-position-truth"
+    assert out["patch_version"] == "patch-222-recovered-attribution-backfill"
     assert out["started_stale"] is True
     assert out["healthy"] is False
     assert out["recommended_action"] == "investigate_worker_exit_started_without_completion"
@@ -64,6 +64,6 @@ def test_position_truth_endpoint_returns_worker_and_reconcile(monkeypatch):
     req = type("Req", (), {"headers": {}, "query_params": {}})()
     out = app.diagnostics_position_truth(req)
     assert out["ok"] is True
-    assert out["patch_version"] == "patch-220-worker-position-truth"
+    assert out["patch_version"] == "patch-222-recovered-attribution-backfill"
     assert "worker_exit_status" in out
     assert "reconcile_snapshot" in out
