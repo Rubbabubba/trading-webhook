@@ -1077,3 +1077,40 @@ Operator notes:
 - The dashboard remains snapshot-only; it displays the latest persisted state and does not call Alpaca during render.
 - If Days still looks wrong, run `/diagnostics/reconcile` or wait for the next worker/reconcile snapshot so recovered plans can backfill `opened_at` from broker order history.
 - If closed-trade counts lag broker activity, inspect `/diagnostics/loss_control_incident` or the next worker snapshot for `broker_strategy_sync` counts.
+
+## Patch 224: Live operator dashboard and active-position audit
+
+Patch 224 adds a focused live dashboard for intraday monitoring while leaving the existing research dashboard unchanged.
+
+### `/dashboard/live`
+
+Use `/dashboard/live` when you want a simple screen that answers: "What does Alpaca say I actually hold right now?" The page intentionally makes live broker/account calls, unlike the default `/dashboard`, and is designed to be kept open during the session.
+
+It shows:
+
+- **Broker Positions** from the live Alpaca position endpoint.
+- **Trust** counts for position rows that need attention.
+- **Today P&L** from live/account or broker-realized truth helpers.
+- **Performance** from the strategy performance state.
+- **Active Positions Audit** with symbol, side, quantity, entry, latest broker price, unrealized P&L, stop, target, strategy signal, and row-level warnings.
+- **Open Orders** so a pending close/open order is visible without leaving the trading app.
+
+The live page has a small cache controlled by `LIVE_DASHBOARD_CACHE_SEC` (default `10`) so a browser refresh does not spam Alpaca. Use `/dashboard/live?refresh=1` to bypass the cache. Use `/dashboard/live?auto=0` to disable the default auto-refresh meta tag.
+
+### `/diagnostics/live_positions`
+
+Use `/diagnostics/live_positions?refresh=1` for the JSON source behind the live dashboard. This is the best endpoint to compare against Alpaca screenshots because it includes:
+
+- `positions`: one row per broker position, active internal plan, or open order.
+- `summary`: counts for broker positions, plans, open orders, bad rows, warning rows, shorts, and position-truth status.
+- `today_pnl`: the same live P&L truth used by the dashboard.
+- `performance`: compact closed-trade statistics.
+- `reconcile` and `position_truth`: the underlying alignment evidence.
+
+Row trust levels:
+
+- `ok`: broker position and internal plan align with no open-order warning.
+- `warn`: the row is usable but has an open-order/pending-close condition to watch.
+- `bad`: missing plan, stale plan, quantity mismatch, or short position requires operator review before relying on the internal stop/target fields.
+
+The existing `/dashboard` remains snapshot-only and research-oriented, and `/dashboard?detail=full` continues to expose heavy diagnostics.
