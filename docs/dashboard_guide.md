@@ -1063,3 +1063,17 @@ Operator notes:
 2. Closed-trade analytics keep both facts: the recovered provenance remains available, while strategy-level P&L buckets use the inferred strategy instead of a generic recovered bucket.
 3. If no reliable match exists, the fallback remains the configured swing breakout strategy rather than `RECOVERED`, so attribution stays useful while preserving recovered metadata for audit.
 4. Use `/diagnostics/reconcile`, `/diagnostics/position_truth`, and `/diagnostics/swing_performance_attribution` to verify recovered plans are broker-aligned and attributed to their trading strategy.
+
+
+## Patch 223 dashboard trust reconciliation
+
+Patch 223 addresses two dashboard trust gaps:
+
+1. **Active-position Days** now falls back to `opened_at` / recovered broker entry-fill time when `days_held` is missing or zero, so broker-recovered positions do not all display as day zero after reconcile.
+2. **Completed-trade analytics** can sync broker exit fills from the daily P&L truth path into `strategy_performance_state`, deduped by exit order id, so manual or broker-side filled exits are less likely to be missing from Performance Analytics.
+
+Operator notes:
+
+- The dashboard remains snapshot-only; it displays the latest persisted state and does not call Alpaca during render.
+- If Days still looks wrong, run `/diagnostics/reconcile` or wait for the next worker/reconcile snapshot so recovered plans can backfill `opened_at` from broker order history.
+- If closed-trade counts lag broker activity, inspect `/diagnostics/loss_control_incident` or the next worker snapshot for `broker_strategy_sync` counts.

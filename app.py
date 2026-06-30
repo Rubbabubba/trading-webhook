@@ -1297,7 +1297,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-222-recovered-attribution-backfill"
+PATCH_VERSION = "patch-223-dashboard-trust-reconciliation"
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -5694,6 +5694,13 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
         recovered_plan["recovered_original_signal"] = "RECOVERED"
         recovered_plan["recovered_original_strategy_name"] = "RECOVERED"
         recovered_plan = _apply_recovered_plan_attribution(recovered_plan, sym)
+        recent_entry_fill = _find_recent_entry_fill_for_symbol(sym, side)
+        fill_opened_at = str((recent_entry_fill or {}).get("filled_at") or (recent_entry_fill or {}).get("submitted_at") or "")
+        if fill_opened_at:
+            recovered_plan["opened_at"] = fill_opened_at
+            recovered_plan["submitted_at"] = fill_opened_at
+            recovered_plan["recovered_entry_fill_source"] = "broker_order_history"
+        recovered_plan["days_held"] = plan_days_held(recovered_plan)
         recovered_plan["recovered"] = True
         recovered_plan["recovered_at"] = now_ny().isoformat()
         _ensure_execution_lifecycle_plan(sym, recovered_plan)
@@ -6216,6 +6223,78 @@ def _append_strategy_closed_trade(plan: dict | None, exit_price: float | None, r
     row = {"ts_utc": exit_dt.isoformat(), "symbol": str(plan.get("symbol") or plan.get("instrument") or "").upper(), "strategy_name": strategy_name, "signal": str(plan.get("signal") or strategy_name), "entry_price": round(entry_price,4), "exit_price": round(exit_px,4), "qty": round(qty,4), "gross_pnl": round(gross_pnl,4), "pnl_r": round((pnl_per_share / risk_per_share) if risk_per_share > 0 else 0.0,4), "return_pct": round((pnl_per_share / entry_price * 100.0) if entry_price > 0 else 0.0,4), "reason": str(reason or ""), "exit_reason": str(reason or ""), "source": str(source or ""), "entry_regime_mode": str((thesis.get("regime_mode") or plan.get("regime_mode") or "")).strip().lower() or None, "max_hold_days": int(plan.get("max_hold_days") or 0), "rank_score": rank_score, "selection_quality_score": _p175_first(plan, "selection_quality_score") or thesis.get("selection_quality_score"), "entry_ts_utc": entry_dt.isoformat() if entry_dt else None, "holding_hours": holding_hours, "holding_days": round(holding_hours / 24.0, 4) if holding_hours is not None else None, "entry_type": plan.get("entry_type") or thesis.get("entry_type"), "breakout_level": thesis.get("breakout_level"), "recovered": bool(plan.get("recovered")), "attribution_backfilled": bool(plan.get("attribution_backfilled")), "attribution_source": plan.get("attribution_source")}
     row["close_fingerprint"] = _strategy_trade_row_fingerprint(row)
     state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state()); closed = list(state.get("closed_trades") or []); closed.append(row); state["closed_trades"] = closed[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]; globals()["STRATEGY_PERFORMANCE_STATE"] = state; _recompute_strategy_performance_state(); persist_strategy_performance_state(reason=f"closed_trade:{strategy_name}"); return row
+
+
+def _append_strategy_closed_trade_row(row: dict | None, reason: str = "") -> dict:
+    row = dict(row or {})
+    if not row.get("symbol") or not row.get("strategy_name"):
+        return {}
+    row["close_fingerprint"] = _strategy_trade_row_fingerprint(row)
+    state = dict(STRATEGY_PERFORMANCE_STATE or _strategy_performance_default_state())
+    closed = list(state.get("closed_trades") or [])
+    existing = {str(r.get("close_fingerprint") or _strategy_trade_row_fingerprint(r)) for r in closed if isinstance(r, dict)}
+    exit_order_id = str(row.get("exit_order_id") or "").strip()
+    if exit_order_id and any(str((r or {}).get("exit_order_id") or "").strip() == exit_order_id for r in closed if isinstance(r, dict)):
+        return {}
+    if str(row.get("close_fingerprint") or "") in existing:
+        return {}
+    closed.append(row)
+    state["closed_trades"] = closed[-max(1, STRATEGY_PERFORMANCE_HISTORY_LIMIT):]
+    globals()["STRATEGY_PERFORMANCE_STATE"] = state
+    _recompute_strategy_performance_state()
+    persist_strategy_performance_state(reason=reason or "closed_trade_row_append")
+    return row
+
+
+def _sync_broker_realized_rows_to_strategy_performance(broker_realized: dict | None) -> dict:
+    payload = dict(broker_realized or {})
+    if not payload.get("ok"):
+        return {"ok": False, "synced": 0, "reason": "broker_realized_unavailable"}
+    synced = 0
+    skipped = 0
+    for raw in list(payload.get("rows") or []):
+        row = dict(raw or {})
+        if not row.get("calc_ok"):
+            skipped += 1
+            continue
+        sym = str(row.get("symbol") or "").upper()
+        inferred = _infer_recovered_plan_attribution(sym, order_id=str(row.get("entry_order_id") or ""))
+        strategy = _valid_strategy_identity(inferred.get("strategy_name") or inferred.get("signal")) or BREAKOUT_STRATEGY_NAME
+        signal = _valid_strategy_identity(inferred.get("signal") or inferred.get("strategy_name")) or strategy
+        entry_px = _safe_float(row.get("entry_price"), 0.0)
+        exit_px = _safe_float(row.get("exit_price"), 0.0)
+        qty = abs(_safe_float(row.get("qty"), 0.0))
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        if not sym or entry_px <= 0 or exit_px <= 0 or qty <= 0:
+            skipped += 1
+            continue
+        trade_row = {
+            "ts_utc": str(row.get("ts_utc") or datetime.now(timezone.utc).isoformat()),
+            "symbol": sym,
+            "strategy_name": strategy,
+            "signal": signal,
+            "entry_price": round(entry_px, 4),
+            "exit_price": round(exit_px, 4),
+            "qty": round(qty, 4),
+            "gross_pnl": round(pnl, 4),
+            "pnl_r": 0.0,
+            "return_pct": round(((exit_px - entry_px) / entry_px * 100.0) if entry_px > 0 else 0.0, 4),
+            "reason": "broker_exit_fill",
+            "exit_reason": "broker_exit_fill",
+            "source": "alpaca_orders_reconciled",
+            "entry_order_id": str(row.get("entry_order_id") or ""),
+            "exit_order_id": str(row.get("exit_order_id") or ""),
+            "broker_reconciled": True,
+            "attribution_source": inferred.get("attribution_source") or "broker_realized_sync",
+        }
+        if trade_row.get("exit_order_id"):
+            trade_row["close_fingerprint"] = f"broker_exit:{trade_row['exit_order_id']}"
+        appended = _append_strategy_closed_trade_row(trade_row, reason="broker_realized_sync")
+        if appended:
+            synced += 1
+        else:
+            skipped += 1
+    return {"ok": True, "synced": synced, "skipped": skipped}
 
 
 def _strategy_kill_switch_active(strategy_name: str) -> tuple[bool, list[str]]:
@@ -8337,6 +8416,7 @@ def _today_realized_pnl_from_broker_orders() -> dict:
 def today_pnl_truth_snapshot() -> dict:
     account_pnl = _account_daily_pnl_snapshot()
     broker_realized = _today_realized_pnl_from_broker_orders()
+    broker_strategy_sync = _sync_broker_realized_rows_to_strategy_performance(broker_realized)
     strategy_realized = _today_realized_pnl_from_strategy_state()
     realized = broker_realized if broker_realized.get("ok") else strategy_realized
     if broker_realized.get("ok") and int(broker_realized.get("closed_trades_today") or 0) == 0 and int(strategy_realized.get("closed_trades_today") or 0) > 0:
@@ -8349,7 +8429,7 @@ def today_pnl_truth_snapshot() -> dict:
     except Exception as exc:
         unrealized_error = str(exc)
     realized_value = _safe_float(realized.get("today_realized_pnl"), 0.0)
-    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "account_daily_pnl_source": account_pnl.get("source"), "account_daily_pnl": account_pnl.get("account_daily_pnl"), "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"), "account_equity": account_pnl.get("equity"), "account_last_equity": account_pnl.get("last_equity"), "account_pnl_ok": bool(account_pnl.get("ok")), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "account_pnl": account_pnl, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "error": str(realized.get("error") or "")}
+    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "account_daily_pnl_source": account_pnl.get("source"), "account_daily_pnl": account_pnl.get("account_daily_pnl"), "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"), "account_equity": account_pnl.get("equity"), "account_last_equity": account_pnl.get("last_equity"), "account_pnl_ok": bool(account_pnl.get("ok")), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "account_pnl": account_pnl, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "broker_strategy_sync": broker_strategy_sync, "error": str(realized.get("error") or "")}
 
 def daily_halt_truth_snapshot() -> dict:
     try:
@@ -18152,6 +18232,8 @@ def dashboard(request: Request):
             signal = _first(plan, "strategy_name") or signal
         status = _first(plan, "execution_state", "lifecycle_state", "order_status") or ("broker_position" if pos else "")
         days = _first(plan, "days_held")
+        if days in (None, "", 0, "0") and plan:
+            days = plan_days_held(plan)
         last = _first(pos, "current_price", "last_price", "latest_price", "market_price") or _first(plan, "last_price", "current_price", "latest_price")
         upl = _first(pos, "unrealized_pl", "unrealized_intraday_pl")
         if upl is None and last is not None and entry is not None and qty is not None:
@@ -18181,7 +18263,10 @@ def dashboard(request: Request):
     ) or '<tr><td colspan="10" class="muted">No active positions in latest snapshot.</td></tr>'
     _mark_dashboard_phase("position_merge_ms")
 
-    strategy_perf = perf_by_strategy if perf_by_strategy else _aggregate_strategy_from_closed(closed_trade_rows)
+    row_strategy_perf = _aggregate_strategy_from_closed(closed_trade_rows)
+    by_strategy_count = int(sum(int(_sd(b).get("closed_trades") or 0) for b in perf_by_strategy.values())) if perf_by_strategy else 0
+    row_strategy_count = int(sum(int(_sd(b).get("closed_trades") or 0) for b in row_strategy_perf.values()))
+    strategy_perf = perf_by_strategy if by_strategy_count >= row_strategy_count and perf_by_strategy else row_strategy_perf
     closed_trades = int(sum(int(_sd(b).get("closed_trades") or 0) for b in strategy_perf.values()))
     wins = int(sum(int(_sd(b).get("wins") or 0) for b in strategy_perf.values()))
     losses = int(sum(int(_sd(b).get("losses") or 0) for b in strategy_perf.values()))
