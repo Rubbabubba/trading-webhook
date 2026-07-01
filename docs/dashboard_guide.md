@@ -1124,3 +1124,7 @@ The `/dashboard/live` Active Positions Audit now colors unrealized P&L dollar an
 `/dashboard/live` now includes a compact **Loss Halt Checklist** so the operator does not need to switch to the full research dashboard during a halt. The checklist displays daily halt state, halt reason, account daily P&L, realized/unrealized P&L, configured daily stop dollars, whether new entries are blocked, whether exits remain permitted, whether bulk flattening is allowed, and recommended actions.
 
 During a loss halt, the expected recommended actions are `monitor_existing_positions`, `verify_open_orders`, `do_not_enable_new_entries`, and `review_after_close`. This panel is informational and does not submit orders or change risk policy.
+
+### Patch 227 live dashboard halt-panel placement
+
+The `/dashboard/live` **Loss Halt Checklist** now renders below **Open Orders**. The live dashboard therefore keeps the highest-frequency monitoring flow first: portfolio summary, active positions, open orders, then the halt checklist for context and end-of-day review.
