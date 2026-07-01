@@ -1114,3 +1114,7 @@ Row trust levels:
 - `bad`: missing plan, stale plan, quantity mismatch, or short position requires operator review before relying on the internal stop/target fields.
 
 The existing `/dashboard` remains snapshot-only and research-oriented, and `/dashboard?detail=full` continues to expose heavy diagnostics.
+
+### Patch 225 live P&L color emphasis
+
+The `/dashboard/live` Active Positions Audit now colors unrealized P&L dollar and percent cells green for positive values, red for negative values, and yellow/neutral for flat values so profitable and losing rows stand out during live monitoring.

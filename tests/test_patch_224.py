@@ -32,7 +32,7 @@ def test_live_positions_endpoint_aligns_broker_plan_and_pnl(monkeypatch):
 
     out = app.diagnostics_live_positions(Req({"refresh": "1"}))
 
-    assert out["patch_version"] == "patch-224-live-operator-dashboard"
+    assert out["patch_version"] == "patch-225-live-pnl-color"
     assert out["summary"]["broker_positions_count"] == 1
     assert out["summary"]["bad_count"] == 0
     assert out["positions"][0]["symbol"] == "AMD"
@@ -59,7 +59,7 @@ def test_live_positions_flags_short_and_missing_internal_plan(monkeypatch):
 def test_live_dashboard_renders_compact_operator_view(monkeypatch):
     payload = {
         "ok": True,
-        "patch_version": "patch-224-live-operator-dashboard",
+        "patch_version": "patch-225-live-pnl-color",
         "generated_utc": "2026-06-30T12:00:00+00:00",
         "cached": False,
         "cache_ttl_sec": 10,
@@ -76,4 +76,5 @@ def test_live_dashboard_renders_compact_operator_view(monkeypatch):
     assert "Live Operator Dashboard" in body
     assert "Active Positions Audit" in body
     assert "AMD" in body
+    assert "class='good signed-value'" in body
     assert "Research dashboard" in body

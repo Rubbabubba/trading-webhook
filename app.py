@@ -1297,7 +1297,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-224-live-operator-dashboard"
+PATCH_VERSION = "patch-225-live-pnl-color"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -18187,6 +18187,14 @@ def dashboard_live(request: Request):
         cls = "good" if str(value).lower() in {"ok", "healthy", "true"} else ("bad" if str(value).lower() in {"bad", "false", "mismatch"} else "neutral")
         return f'<span class="badge {cls}">{text}</span>'
 
+    def _signed_value_class(value: object) -> str:
+        val = _safe_float(value, 0.0)
+        if val > 0:
+            return "good signed-value"
+        if val < 0:
+            return "bad signed-value"
+        return "neutral signed-value"
+
     pos_rows = "".join(
         "<tr>"
         f"<td>{html.escape(str(row.get('symbol') or ''))}</td>"
@@ -18195,8 +18203,8 @@ def dashboard_live(request: Request):
         f"<td>{_dashboard_fmt((row.get('broker') or {}).get('qty'))}</td>"
         f"<td>{_dashboard_money((row.get('broker') or {}).get('avg_entry_price'))}</td>"
         f"<td>{_dashboard_money((row.get('broker') or {}).get('last_price'))}</td>"
-        f"<td>{_dashboard_money((row.get('broker') or {}).get('unrealized_pl'))}</td>"
-        f"<td>{_dashboard_pct(_safe_float((row.get('broker') or {}).get('unrealized_plpc'), 0.0) * 100.0)}</td>"
+        f"<td class='{_signed_value_class((row.get('broker') or {}).get('unrealized_pl'))}'>{_dashboard_money((row.get('broker') or {}).get('unrealized_pl'))}</td>"
+        f"<td class='{_signed_value_class((row.get('broker') or {}).get('unrealized_plpc'))}'>{_dashboard_pct(_safe_float((row.get('broker') or {}).get('unrealized_plpc'), 0.0) * 100.0)}</td>"
         f"<td>{_dashboard_money((row.get('plan') or {}).get('stop_price'))}</td>"
         f"<td>{_dashboard_money((row.get('plan') or {}).get('take_price'))}</td>"
         f"<td>{html.escape(str((row.get('plan') or {}).get('signal') or ''))}</td>"
@@ -18210,7 +18218,7 @@ def dashboard_live(request: Request):
     ) or '<tr><td colspan="7" class="muted">No open orders.</td></tr>'
     refresh_meta = '<meta http-equiv="refresh" content="15">' if auto_refresh else ''
     html_doc = f'''<!doctype html><html><head><meta charset="utf-8"><title>Live Operator Dashboard</title>{refresh_meta}<style>
-    body{{font-family:Inter,system-ui,Arial,sans-serif;background:#0b0b16;color:#f6f4ff;margin:18px}} a{{color:#b9a7ff}} .muted{{color:#a9a1c4;font-size:12px}} .top{{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}} .grid{{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:12px;margin:14px 0}} .card{{background:#151522;border:1px solid #30245a;border-radius:10px;padding:14px}} .metric{{font-size:28px;font-weight:800}} .good{{color:#61f2a9}} .bad{{color:#ff5c8a}} .neutral{{color:#ffd36a}} table{{width:100%;border-collapse:collapse;font-size:12px}} th,td{{border-bottom:1px solid #2a2540;padding:7px;text-align:left;vertical-align:top}} th{{color:#d7cbff}} .badge{{border:1px solid #49368a;border-radius:999px;padding:3px 7px;background:#24164c;font-size:11px}} .actions a{{display:inline-block;margin-left:8px;padding:7px 10px;border:1px solid #4c3d89;border-radius:8px;text-decoration:none}}</style></head><body>
+    body{{font-family:Inter,system-ui,Arial,sans-serif;background:#0b0b16;color:#f6f4ff;margin:18px}} a{{color:#b9a7ff}} .muted{{color:#a9a1c4;font-size:12px}} .top{{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}} .grid{{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:12px;margin:14px 0}} .card{{background:#151522;border:1px solid #30245a;border-radius:10px;padding:14px}} .metric{{font-size:28px;font-weight:800}} .good{{color:#61f2a9}} .bad{{color:#ff5c8a}} .neutral{{color:#ffd36a}} .signed-value{{font-weight:800}} table{{width:100%;border-collapse:collapse;font-size:12px}} th,td{{border-bottom:1px solid #2a2540;padding:7px;text-align:left;vertical-align:top}} th{{color:#d7cbff}} .badge{{border:1px solid #49368a;border-radius:999px;padding:3px 7px;background:#24164c;font-size:11px}} .actions a{{display:inline-block;margin-left:8px;padding:7px 10px;border:1px solid #4c3d89;border-radius:8px;text-decoration:none}}</style></head><body>
     <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Broker-backed live view. This page intentionally makes live broker/account calls and caches for {int(data.get('cache_ttl_sec') or 0)}s. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}.</p></div><div class="actions"><a href="/dashboard/live?refresh=1">Refresh now</a><a href="/diagnostics/live_positions?refresh=1">JSON</a><a href="/dashboard">Research dashboard</a><a href="/dashboard?detail=full">Full diagnostics</a></div></div>
     <div class="grid"><div class="card"><div class="muted">Broker Positions</div><div class="metric good">{_dashboard_fmt(summary.get('broker_positions_count'))}</div><table>{_dashboard_rows([('active_plans', summary.get('active_plan_count')),('open_orders', summary.get('open_order_count'))])}</table></div><div class="card"><div class="muted">Trust</div><div class="metric {'bad' if int(summary.get('bad_count') or 0) else 'good'}">{_dashboard_fmt(summary.get('bad_count'))}</div><table>{_dashboard_rows([('warning_count', summary.get('warning_count')),('short_count', summary.get('short_count')),('truth_status', summary.get('position_truth_status')),('mismatches', summary.get('position_truth_mismatch_count'))])}</table></div><div class="card"><div class="muted">Today P&amp;L</div><div class="metric {'good' if _safe_float(pnl.get('today_net_pnl'),0)>=0 else 'bad'}">{_dashboard_money(pnl.get('today_net_pnl'))}</div><table>{_dashboard_rows([('realized', pnl.get('today_realized_pnl')),('unrealized', pnl.get('today_unrealized_pnl')),('closed_trades_today', pnl.get('closed_trades_today')),('source', pnl.get('accounting_source'))])}</table></div><div class="card"><div class="muted">Performance</div><div class="metric good">{_dashboard_fmt(perf.get('closed_trades'))}</div><table>{_dashboard_rows([('wins', perf.get('wins')),('losses', perf.get('losses')),('win_rate', _dashboard_pct(_safe_float(perf.get('win_rate'),0)*100.0)),('gross_pnl', _dashboard_money(perf.get('gross_pnl'))),('avg_r', perf.get('avg_r')),('sample', perf.get('sample_maturity'))])}</table></div></div>
     <div class="card"><h2>Active Positions Audit</h2><table><thead><tr><th>Symbol</th><th>Trust</th><th>Side</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>U P&amp;L %</th><th>Stop</th><th>Target</th><th>Signal</th><th>Warnings</th></tr></thead><tbody>{pos_rows}</tbody></table><p class="muted">Trust is based on live broker positions, in-memory/persisted active plans, and open orders. Any missing plan, stale plan, short position, or quantity mismatch is highlighted before you rely on the row.</p></div>
