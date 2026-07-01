@@ -1297,7 +1297,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-225-live-pnl-color"
+PATCH_VERSION = "patch-226-live-loss-halt-checklist"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -16127,6 +16127,39 @@ def _live_operator_performance_summary() -> dict:
     return {"closed_trades": len(closed), "wins": wins, "losses": losses, "flat": flat, "win_rate": round(wins / max(1, len(closed)), 4) if closed else 0.0, "gross_pnl": gross, "avg_r": avg_r, "sample_maturity": "ESTABLISHED" if len(closed) >= 100 else "BUILDING"}
 
 
+def _live_loss_halt_checklist(halt_truth: dict | None, today_pnl: dict | None, flatten_decision: dict | None, open_orders: list | None = None) -> dict:
+    halt = dict(halt_truth or {})
+    pnl = dict(today_pnl or halt.get("today_pnl_truth") or {})
+    decision = dict(flatten_decision or {})
+    active = bool(halt.get("daily_halt_active") or daily_halt_active())
+    new_entries_blocked = bool(active or (not NEW_ENTRIES_ENABLED) or (not is_live_trading_permitted("worker_scan")))
+    exits_still_permitted = bool(is_live_exit_permitted("worker_exit", reason="daily_stop_hit" if active else ""))
+    bulk_flatten_allowed = bool(decision.get("allow_bulk_flatten", globals().get("ALLOW_DAILY_STOP_BULK_FLATTEN", False)))
+    recommended = []
+    if active:
+        recommended.extend(["monitor_existing_positions", "verify_open_orders", "do_not_enable_new_entries", "review_after_close"])
+    elif open_orders:
+        recommended.append("verify_open_orders")
+    else:
+        recommended.append("monitor")
+    return {
+        "daily_halt_active": active,
+        "daily_halt_reason": halt.get("daily_halt_reason") or (DAILY_HALT_STATE or {}).get("reason") or "none",
+        "account_daily_pnl": halt.get("account_daily_pnl") if halt.get("account_daily_pnl") is not None else pnl.get("account_daily_pnl"),
+        "today_realized_pnl": pnl.get("today_realized_pnl"),
+        "today_unrealized_pnl": pnl.get("today_unrealized_pnl"),
+        "configured_daily_stop_dollars": halt.get("configured_daily_stop_dollars") or _configured_daily_stop_dollars_safe(),
+        "new_entries_blocked": new_entries_blocked,
+        "exits_still_permitted": exits_still_permitted,
+        "bulk_flatten_allowed": bulk_flatten_allowed,
+        "can_bulk_flatten_now": bool(decision.get("can_flatten", False)),
+        "flatten_decision_reasons": list(decision.get("reasons") or []),
+        "recommended_actions": recommended,
+        "recommended_action": recommended[0],
+        "open_order_count": len(list(open_orders or [])),
+    }
+
+
 def _live_operator_snapshot(force: bool = False) -> dict:
     now_ts = _time.time()
     cached = LIVE_DASHBOARD_CACHE.get("payload")
@@ -16222,7 +16255,10 @@ def _live_operator_snapshot(force: bool = False) -> dict:
             },
             "open_orders": symbol_orders,
         })
-    today_pnl = today_pnl_truth_snapshot()
+    halt_truth = daily_halt_truth_snapshot()
+    today_pnl = dict(halt_truth.get("today_pnl_truth") or today_pnl_truth_snapshot())
+    flatten_decision = _daily_stop_flatten_decision() if bool(halt_truth.get("daily_halt_active")) else {}
+    loss_halt = _live_loss_halt_checklist(halt_truth, today_pnl, flatten_decision, open_orders)
     summary = {
         "broker_positions_count": len(broker_positions),
         "active_plan_count": len(active_plans),
@@ -16233,7 +16269,7 @@ def _live_operator_snapshot(force: bool = False) -> dict:
         "position_truth_status": truth.get("status"),
         "position_truth_mismatch_count": truth.get("mismatch_count"),
     }
-    payload = {"ok": True, "patch_version": PATCH_VERSION, "generated_utc": generated_utc, "generated_ny": generated_ny, "cached": False, "cache_ttl_sec": int(LIVE_DASHBOARD_CACHE_SEC), "market_open": bool(in_market_hours()), "summary": summary, "positions": rows, "open_orders": open_orders, "position_truth": truth, "reconcile": reconcile, "today_pnl": today_pnl, "performance": _live_operator_performance_summary()}
+    payload = {"ok": True, "patch_version": PATCH_VERSION, "generated_utc": generated_utc, "generated_ny": generated_ny, "cached": False, "cache_ttl_sec": int(LIVE_DASHBOARD_CACHE_SEC), "market_open": bool(in_market_hours()), "summary": summary, "positions": rows, "open_orders": open_orders, "position_truth": truth, "reconcile": reconcile, "today_pnl": today_pnl, "loss_halt": loss_halt, "performance": _live_operator_performance_summary()}
     LIVE_DASHBOARD_CACHE.update({"ts": now_ts, "payload": payload})
     return payload
     
@@ -18179,6 +18215,7 @@ def dashboard_live(request: Request):
     summary = dict(data.get("summary") or {})
     pnl = dict(data.get("today_pnl") or {})
     perf = dict(data.get("performance") or {})
+    halt = dict(data.get("loss_halt") or {})
     positions = list(data.get("positions") or [])
     orders = list(data.get("open_orders") or [])
 
@@ -18212,6 +18249,21 @@ def dashboard_live(request: Request):
         "</tr>"
         for row in positions
     ) or '<tr><td colspan="12" class="muted">No live broker positions, plans, or open orders.</td></tr>'
+    halt_class = "bad" if halt.get("daily_halt_active") else "good"
+    halt_actions = ", ".join(str(x) for x in (halt.get("recommended_actions") or [])) or "monitor"
+    halt_rows = _dashboard_rows([
+        ("daily_halt_active", halt.get("daily_halt_active")),
+        ("daily_halt_reason", halt.get("daily_halt_reason")),
+        ("account_daily_pnl", halt.get("account_daily_pnl")),
+        ("today_realized_pnl", halt.get("today_realized_pnl")),
+        ("today_unrealized_pnl", halt.get("today_unrealized_pnl")),
+        ("configured_daily_stop_dollars", halt.get("configured_daily_stop_dollars")),
+        ("new_entries_blocked", halt.get("new_entries_blocked")),
+        ("exits_still_permitted", halt.get("exits_still_permitted")),
+        ("bulk_flatten_allowed", halt.get("bulk_flatten_allowed")),
+        ("recommended_action", halt.get("recommended_action")),
+        ("recommended_actions", halt_actions),
+    ])
     order_rows = "".join(
         f"<tr><td>{html.escape(str((o or {}).get('symbol') or ''))}</td><td>{html.escape(str((o or {}).get('side') or ''))}</td><td>{html.escape(str((o or {}).get('type') or ''))}</td><td>{_dashboard_fmt((o or {}).get('qty'))}</td><td>{_dashboard_fmt((o or {}).get('filled_qty'))}</td><td>{html.escape(str((o or {}).get('status') or ''))}</td><td>{html.escape(str((o or {}).get('submitted_at') or ''))}</td></tr>"
         for o in orders
@@ -18221,7 +18273,8 @@ def dashboard_live(request: Request):
     body{{font-family:Inter,system-ui,Arial,sans-serif;background:#0b0b16;color:#f6f4ff;margin:18px}} a{{color:#b9a7ff}} .muted{{color:#a9a1c4;font-size:12px}} .top{{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}} .grid{{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:12px;margin:14px 0}} .card{{background:#151522;border:1px solid #30245a;border-radius:10px;padding:14px}} .metric{{font-size:28px;font-weight:800}} .good{{color:#61f2a9}} .bad{{color:#ff5c8a}} .neutral{{color:#ffd36a}} .signed-value{{font-weight:800}} table{{width:100%;border-collapse:collapse;font-size:12px}} th,td{{border-bottom:1px solid #2a2540;padding:7px;text-align:left;vertical-align:top}} th{{color:#d7cbff}} .badge{{border:1px solid #49368a;border-radius:999px;padding:3px 7px;background:#24164c;font-size:11px}} .actions a{{display:inline-block;margin-left:8px;padding:7px 10px;border:1px solid #4c3d89;border-radius:8px;text-decoration:none}}</style></head><body>
     <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Broker-backed live view. This page intentionally makes live broker/account calls and caches for {int(data.get('cache_ttl_sec') or 0)}s. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}.</p></div><div class="actions"><a href="/dashboard/live?refresh=1">Refresh now</a><a href="/diagnostics/live_positions?refresh=1">JSON</a><a href="/dashboard">Research dashboard</a><a href="/dashboard?detail=full">Full diagnostics</a></div></div>
     <div class="grid"><div class="card"><div class="muted">Broker Positions</div><div class="metric good">{_dashboard_fmt(summary.get('broker_positions_count'))}</div><table>{_dashboard_rows([('active_plans', summary.get('active_plan_count')),('open_orders', summary.get('open_order_count'))])}</table></div><div class="card"><div class="muted">Trust</div><div class="metric {'bad' if int(summary.get('bad_count') or 0) else 'good'}">{_dashboard_fmt(summary.get('bad_count'))}</div><table>{_dashboard_rows([('warning_count', summary.get('warning_count')),('short_count', summary.get('short_count')),('truth_status', summary.get('position_truth_status')),('mismatches', summary.get('position_truth_mismatch_count'))])}</table></div><div class="card"><div class="muted">Today P&amp;L</div><div class="metric {'good' if _safe_float(pnl.get('today_net_pnl'),0)>=0 else 'bad'}">{_dashboard_money(pnl.get('today_net_pnl'))}</div><table>{_dashboard_rows([('realized', pnl.get('today_realized_pnl')),('unrealized', pnl.get('today_unrealized_pnl')),('closed_trades_today', pnl.get('closed_trades_today')),('source', pnl.get('accounting_source'))])}</table></div><div class="card"><div class="muted">Performance</div><div class="metric good">{_dashboard_fmt(perf.get('closed_trades'))}</div><table>{_dashboard_rows([('wins', perf.get('wins')),('losses', perf.get('losses')),('win_rate', _dashboard_pct(_safe_float(perf.get('win_rate'),0)*100.0)),('gross_pnl', _dashboard_money(perf.get('gross_pnl'))),('avg_r', perf.get('avg_r')),('sample', perf.get('sample_maturity'))])}</table></div></div>
-    <div class="card"><h2>Active Positions Audit</h2><table><thead><tr><th>Symbol</th><th>Trust</th><th>Side</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>U P&amp;L %</th><th>Stop</th><th>Target</th><th>Signal</th><th>Warnings</th></tr></thead><tbody>{pos_rows}</tbody></table><p class="muted">Trust is based on live broker positions, in-memory/persisted active plans, and open orders. Any missing plan, stale plan, short position, or quantity mismatch is highlighted before you rely on the row.</p></div>
+    <div class="card"><h2>Loss Halt Checklist</h2><div class="metric {halt_class}">{'LOSS HALT ACTIVE' if halt.get('daily_halt_active') else 'NO LOSS HALT'}</div><table>{halt_rows}</table><p class="muted">When halted, keep entries blocked, monitor existing positions, verify open orders, and review after the close unless you deliberately override risk policy.</p></div>
+    <div class="card" style="margin-top:14px"><h2>Active Positions Audit</h2><table><thead><tr><th>Symbol</th><th>Trust</th><th>Side</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>U P&amp;L %</th><th>Stop</th><th>Target</th><th>Signal</th><th>Warnings</th></tr></thead><tbody>{pos_rows}</tbody></table><p class="muted">Trust is based on live broker positions, in-memory/persisted active plans, and open orders. Any missing plan, stale plan, short position, or quantity mismatch is highlighted before you rely on the row.</p></div>
     <div class="card" style="margin-top:14px"><h2>Open Orders</h2><table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Filled</th><th>Status</th><th>Submitted</th></tr></thead><tbody>{order_rows}</tbody></table></div>
     </body></html>'''
     return HTMLResponse(content=html_doc, headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})

@@ -18,7 +18,10 @@ class Req:
 def _base_monkeypatch(monkeypatch):
     monkeypatch.setattr(app, "LIVE_DASHBOARD_CACHE", {"ts": 0.0, "payload": None})
     monkeypatch.setattr(app, "read_positions_snapshot", lambda: {"ts_utc": datetime.now(timezone.utc).isoformat(), "positions": [], "active_plans": {}})
-    monkeypatch.setattr(app, "today_pnl_truth_snapshot", lambda: {"ok": True, "accounting_source": "unit", "today_realized_pnl": 5.0, "today_unrealized_pnl": 10.0, "today_net_pnl": 15.0, "closed_trades_today": 1})
+    pnl = {"ok": True, "accounting_source": "unit", "today_realized_pnl": 5.0, "today_unrealized_pnl": 10.0, "today_net_pnl": 15.0, "closed_trades_today": 1, "account_daily_pnl": 15.0}
+    monkeypatch.setattr(app, "today_pnl_truth_snapshot", lambda: dict(pnl))
+    monkeypatch.setattr(app, "daily_halt_truth_snapshot", lambda: {"ok": True, "daily_halt_active": False, "daily_halt_reason": "none", "account_daily_pnl": 15.0, "configured_daily_stop_dollars": 150.0, "today_pnl_truth": dict(pnl)})
+    monkeypatch.setattr(app, "_daily_stop_flatten_decision", lambda *args, **kwargs: {"action": "halt_only", "can_flatten": False, "allow_bulk_flatten": False, "reasons": ["daily_stop_action_halt_only"]})
     monkeypatch.setattr(app, "_recompute_strategy_performance_state", lambda: {"closed_trades": [{"gross_pnl": 5.0, "pnl_r": 0.2}], "by_strategy": {}, "kill_switch": {}})
     monkeypatch.setattr(app, "in_market_hours", lambda: True)
 
@@ -32,12 +35,14 @@ def test_live_positions_endpoint_aligns_broker_plan_and_pnl(monkeypatch):
 
     out = app.diagnostics_live_positions(Req({"refresh": "1"}))
 
-    assert out["patch_version"] == "patch-225-live-pnl-color"
+    assert out["patch_version"] == "patch-226-live-loss-halt-checklist"
     assert out["summary"]["broker_positions_count"] == 1
     assert out["summary"]["bad_count"] == 0
     assert out["positions"][0]["symbol"] == "AMD"
     assert out["positions"][0]["trust"] == "ok"
     assert out["today_pnl"]["today_net_pnl"] == 15.0
+    assert out["loss_halt"]["daily_halt_active"] is False
+    assert out["loss_halt"]["recommended_action"] == "monitor"
 
 
 def test_live_positions_flags_short_and_missing_internal_plan(monkeypatch):
@@ -59,13 +64,14 @@ def test_live_positions_flags_short_and_missing_internal_plan(monkeypatch):
 def test_live_dashboard_renders_compact_operator_view(monkeypatch):
     payload = {
         "ok": True,
-        "patch_version": "patch-225-live-pnl-color",
+        "patch_version": "patch-226-live-loss-halt-checklist",
         "generated_utc": "2026-06-30T12:00:00+00:00",
         "cached": False,
         "cache_ttl_sec": 10,
         "summary": {"broker_positions_count": 1, "active_plan_count": 1, "open_order_count": 0, "bad_count": 0, "warning_count": 0, "short_count": 0, "position_truth_status": "aligned", "position_truth_mismatch_count": 0},
         "today_pnl": {"today_net_pnl": 15, "today_realized_pnl": 5, "today_unrealized_pnl": 10, "closed_trades_today": 1, "accounting_source": "unit"},
         "performance": {"closed_trades": 125, "wins": 67, "losses": 49, "gross_pnl": 2000, "avg_r": 0.7, "win_rate": 0.53, "sample_maturity": "ESTABLISHED"},
+        "loss_halt": {"daily_halt_active": True, "daily_halt_reason": "daily_stop_hit", "account_daily_pnl": -151, "today_realized_pnl": 5, "today_unrealized_pnl": -156, "configured_daily_stop_dollars": 150, "new_entries_blocked": True, "exits_still_permitted": True, "bulk_flatten_allowed": False, "recommended_action": "monitor_existing_positions", "recommended_actions": ["monitor_existing_positions", "verify_open_orders", "do_not_enable_new_entries", "review_after_close"]},
         "positions": [{"symbol": "AMD", "trust": "ok", "warnings": [], "broker": {"side": "long", "qty": 2, "avg_entry_price": 100, "last_price": 105, "unrealized_pl": 10, "unrealized_plpc": 0.05}, "plan": {"stop_price": 95, "take_price": 115, "signal": "daily_breakout"}, "open_orders": []}],
         "open_orders": [],
     }
@@ -74,6 +80,8 @@ def test_live_dashboard_renders_compact_operator_view(monkeypatch):
     body = app.dashboard_live(Req({"auto": "0"})).body.decode("utf-8")
 
     assert "Live Operator Dashboard" in body
+    assert "Loss Halt Checklist" in body
+    assert "monitor_existing_positions" in body
     assert "Active Positions Audit" in body
     assert "AMD" in body
     assert "class='good signed-value'" in body
