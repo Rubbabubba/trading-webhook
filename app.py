@@ -1297,7 +1297,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-227-live-halt-layout"
+PATCH_VERSION = "patch-228-loss-cluster-forensics"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8431,6 +8431,274 @@ def today_pnl_truth_snapshot() -> dict:
         unrealized_error = str(exc)
     realized_value = _safe_float(realized.get("today_realized_pnl"), 0.0)
     return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "account_daily_pnl_source": account_pnl.get("source"), "account_daily_pnl": account_pnl.get("account_daily_pnl"), "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"), "account_equity": account_pnl.get("equity"), "account_last_equity": account_pnl.get("last_equity"), "account_pnl_ok": bool(account_pnl.get("ok")), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "account_pnl": account_pnl, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "broker_strategy_sync": broker_strategy_sync, "error": str(realized.get("error") or "")}
+
+
+def _p228_dt_utc(ts: object):
+    try:
+        text = str(ts or "").strip()
+        if not text:
+            return None
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _p228_delta_sec(a: object, b: object) -> float | None:
+    da = _p228_dt_utc(a)
+    db = _p228_dt_utc(b)
+    if not da or not db:
+        return None
+    return abs((da - db).total_seconds())
+
+
+def _p228_norm_strategy_row(row: dict | None) -> dict:
+    row = dict(row or {})
+    reason = str(row.get("reason") or row.get("exit_reason") or "")
+    source = str(row.get("source") or "")
+    return {
+        "symbol": str(row.get("symbol") or "").upper(),
+        "strategy_name": str(row.get("strategy_name") or row.get("signal") or ""),
+        "ts_utc": str(row.get("ts_utc") or ""),
+        "qty": round(abs(_safe_float(row.get("qty"), 0.0)), 4),
+        "entry_price": round(_safe_float(row.get("entry_price"), 0.0), 4) if _safe_float(row.get("entry_price"), 0.0) > 0 else None,
+        "exit_price": round(_safe_float(row.get("exit_price"), 0.0), 4) if _safe_float(row.get("exit_price"), 0.0) > 0 else None,
+        "gross_pnl": round(_safe_float(row.get("gross_pnl"), 0.0), 4),
+        "pnl_r": round(_safe_float(row.get("pnl_r"), 0.0), 4),
+        "reason": reason,
+        "source": source,
+        "exit_order_id": str(row.get("exit_order_id") or ""),
+        "entry_order_id": str(row.get("entry_order_id") or ""),
+        "holding_days": row.get("holding_days"),
+        "holding_period": _p175_holding_bucket(row),
+        "recovered": bool(row.get("recovered")),
+        "attribution_source": row.get("attribution_source"),
+        "broker_reconciled": bool(row.get("broker_reconciled")) or source == "alpaca_orders_reconciled",
+    }
+
+
+def _p228_norm_broker_row(row: dict | None) -> dict:
+    row = dict(row or {})
+    return {
+        "symbol": str(row.get("symbol") or "").upper(),
+        "ts_utc": str(row.get("ts_utc") or ""),
+        "qty": round(abs(_safe_float(row.get("qty"), 0.0)), 4),
+        "entry_price": round(_safe_float(row.get("entry_price"), 0.0), 4) if _safe_float(row.get("entry_price"), 0.0) > 0 else None,
+        "exit_price": round(_safe_float(row.get("exit_price"), 0.0), 4) if _safe_float(row.get("exit_price"), 0.0) > 0 else None,
+        "gross_pnl": round(_safe_float(row.get("gross_pnl"), 0.0), 4),
+        "calc_ok": bool(row.get("calc_ok")),
+        "exit_order_id": str(row.get("exit_order_id") or ""),
+        "entry_order_id": str(row.get("entry_order_id") or ""),
+        "source": str(row.get("source") or "alpaca_orders"),
+    }
+
+
+def _p228_today_strategy_rows(perf_state: dict | None = None) -> list[dict]:
+    state = perf_state if isinstance(perf_state, dict) else dict(STRATEGY_PERFORMANCE_STATE or {})
+    session = _session_boundary_snapshot()
+    today = str((session or {}).get("today_ny") or "")
+    rows = []
+    for raw in list((state or {}).get("closed_trades") or []):
+        if not isinstance(raw, dict):
+            continue
+        ts = str(raw.get("ts_utc") or "")
+        if today and _ny_date_from_iso(ts) != today:
+            continue
+        rows.append(_p228_norm_strategy_row(raw))
+    return rows
+
+
+def _p228_same_exit(a: dict, b: dict, max_delta_sec: int = 300) -> bool:
+    if str(a.get("symbol") or "").upper() != str(b.get("symbol") or "").upper():
+        return False
+    aid = str(a.get("exit_order_id") or "").strip()
+    bid = str(b.get("exit_order_id") or "").strip()
+    if aid and bid and aid == bid:
+        return True
+    delta = _p228_delta_sec(a.get("ts_utc"), b.get("ts_utc"))
+    if delta is None or delta > max_delta_sec:
+        return False
+    aq = _safe_float(a.get("qty"), 0.0)
+    bq = _safe_float(b.get("qty"), 0.0)
+    return aq <= 0 or bq <= 0 or abs(aq - bq) <= max(0.01, 0.02 * max(aq, bq))
+
+
+def _p228_find_match(row: dict, candidates: list[dict], used: set[int] | None = None) -> tuple[int | None, dict | None]:
+    used = used or set()
+    best_i = None
+    best_row = None
+    best_delta = None
+    for i, candidate in enumerate(candidates):
+        if i in used:
+            continue
+        if not _p228_same_exit(row, candidate):
+            continue
+        delta = _p228_delta_sec(row.get("ts_utc"), candidate.get("ts_utc"))
+        delta = 0.0 if delta is None else delta
+        if best_delta is None or delta < best_delta:
+            best_i = i
+            best_row = candidate
+            best_delta = delta
+    return best_i, best_row
+
+
+def _p228_bucket_losses(rows: list[dict], key_fn) -> list[dict]:
+    buckets: dict[str, dict] = {}
+    for row in rows:
+        name = str(key_fn(row) or "unknown")
+        bucket = buckets.setdefault(name, {"name": name, "closed_trades": 0, "gross_pnl": 0.0, "losses": 0, "wins": 0, "flat": 0})
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        bucket["closed_trades"] += 1
+        bucket["gross_pnl"] += pnl
+        if pnl > 0:
+            bucket["wins"] += 1
+        elif pnl < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
+    out = []
+    for bucket in buckets.values():
+        bucket["gross_pnl"] = round(float(bucket.get("gross_pnl") or 0.0), 4)
+        out.append(bucket)
+    return sorted(out, key=lambda r: float(r.get("gross_pnl") or 0.0))
+
+
+def _loss_cluster_report(perf_state: dict | None = None, pnl_truth: dict | None = None, halt_truth: dict | None = None) -> dict:
+    pnl = dict(pnl_truth or today_pnl_truth_snapshot())
+    halt = dict(halt_truth or daily_halt_truth_snapshot())
+    strategy_rows = _p228_today_strategy_rows(perf_state=perf_state)
+    worker_rows = [r for r in strategy_rows if str(r.get("source") or "") == "worker_exit"]
+    broker_fill_rows = [
+        r for r in strategy_rows
+        if str(r.get("source") or "") == "alpaca_orders_reconciled" or str(r.get("reason") or "") == "broker_exit_fill"
+    ]
+    broker_rows = [_p228_norm_broker_row(r) for r in list(dict(pnl.get("broker_orders_today") or {}).get("rows") or [])]
+
+    duplicate_pairs = []
+    used_broker_fill = set()
+    for worker in worker_rows:
+        idx, fill = _p228_find_match(worker, broker_fill_rows, used_broker_fill)
+        if fill is None:
+            continue
+        used_broker_fill.add(int(idx))
+        duplicate_pairs.append({
+            "symbol": worker.get("symbol"),
+            "worker_ts_utc": worker.get("ts_utc"),
+            "broker_fill_ts_utc": fill.get("ts_utc"),
+            "delta_sec": _p228_delta_sec(worker.get("ts_utc"), fill.get("ts_utc")),
+            "qty_worker": worker.get("qty"),
+            "qty_broker_fill": fill.get("qty"),
+            "worker_gross_pnl": worker.get("gross_pnl"),
+            "broker_fill_gross_pnl": fill.get("gross_pnl"),
+            "exit_order_id": fill.get("exit_order_id") or worker.get("exit_order_id"),
+            "classification": "duplicate_economic_exit",
+        })
+
+    matched_worker_ids = {(p.get("symbol"), p.get("worker_ts_utc")) for p in duplicate_pairs}
+    matched_fill_ids = {(p.get("symbol"), p.get("broker_fill_ts_utc")) for p in duplicate_pairs}
+    economic_rows = []
+
+    used_worker = set()
+    used_fill = set()
+    for broker in broker_rows:
+        wi, worker = _p228_find_match(broker, worker_rows, used_worker)
+        fi, fill = _p228_find_match(broker, broker_fill_rows, used_fill)
+        if wi is not None:
+            used_worker.add(int(wi))
+        if fi is not None:
+            used_fill.add(int(fi))
+        preferred = dict(broker)
+        basis = "broker_order_calc" if broker.get("calc_ok") else "missing_broker_entry_basis"
+        if not broker.get("calc_ok") and fill is not None:
+            preferred = dict(fill)
+            basis = "broker_reconciled_strategy_estimate"
+        elif not broker.get("calc_ok") and worker is not None:
+            preferred = dict(worker)
+            basis = "worker_exit_estimate"
+        preferred["preferred_basis"] = basis
+        preferred["paired_worker_exit"] = bool(worker)
+        preferred["paired_broker_fill"] = bool(fill)
+        economic_rows.append(preferred)
+
+    for i, fill in enumerate(broker_fill_rows):
+        if i in used_fill or (fill.get("symbol"), fill.get("ts_utc")) in matched_fill_ids:
+            continue
+        fill = dict(fill)
+        fill["preferred_basis"] = "unmatched_broker_reconciled_strategy_row"
+        economic_rows.append(fill)
+
+    for i, worker in enumerate(worker_rows):
+        if i in used_worker or (worker.get("symbol"), worker.get("ts_utc")) in matched_worker_ids:
+            continue
+        worker = dict(worker)
+        worker["preferred_basis"] = "unmatched_worker_exit"
+        economic_rows.append(worker)
+
+    broker_calc_rows = [r for r in broker_rows if r.get("calc_ok")]
+    missing_basis_rows = [r for r in broker_rows if not r.get("calc_ok")]
+    strategy_total = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in strategy_rows), 4)
+    broker_calc_total = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in broker_calc_rows), 4)
+    adjusted_total = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in economic_rows), 4)
+    duplicate_overstatement = round(strategy_total - adjusted_total, 4)
+    closed_trade_stop = abs(_safe_float(halt.get("configured_daily_stop_dollars") or pnl.get("configured_daily_stop_dollars"), 0.0))
+    closed_trade_loss_limit = abs(_safe_float(halt.get("configured_daily_loss_limit"), 0.0))
+    closed_trade_breach = bool((closed_trade_stop > 0 and adjusted_total <= -closed_trade_stop) or (closed_trade_loss_limit > 0 and adjusted_total <= -closed_trade_loss_limit))
+    account_daily_pnl = halt.get("account_daily_pnl", pnl.get("account_daily_pnl"))
+
+    recommended_actions = ["do_not_shut_off_trading", "do_not_enable_intraday_live", "do_not_size_up"]
+    if duplicate_pairs:
+        recommended_actions.append("dedupe_strategy_state_realized_exit_reporting")
+    if missing_basis_rows:
+        recommended_actions.append("backfill_missing_broker_entry_basis")
+    if closed_trade_breach and not bool(halt.get("daily_halt_active")):
+        recommended_actions.append("add_realized_closed_trade_loss_halt_check")
+    if _p228_bucket_losses(economic_rows, lambda r: str(r.get("reason") or r.get("preferred_basis") or "unknown")):
+        recommended_actions.append("review_stall_exit_tightening_before_risk_scale")
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_forensic_report",
+        "summary": {
+            "strategy_state_realized_pnl": strategy_total,
+            "strategy_state_closed_rows": len(strategy_rows),
+            "broker_calc_realized_pnl": broker_calc_total,
+            "broker_calc_closed_rows": len(broker_calc_rows),
+            "broker_exit_fills": len(broker_rows),
+            "missing_broker_entry_basis_count": len(missing_basis_rows),
+            "duplicate_pair_count": len(duplicate_pairs),
+            "duplicate_adjusted_realized_pnl": adjusted_total,
+            "duplicate_overstatement": duplicate_overstatement,
+            "account_daily_pnl": account_daily_pnl,
+            "daily_halt_active": bool(halt.get("daily_halt_active")),
+            "closed_trade_realized_halt_breached": closed_trade_breach,
+            "trust_assessment": "strategy_state_duplicate_accounting_suspect" if duplicate_pairs else "no_duplicate_pairs_detected",
+        },
+        "broker_realized_exits_today": broker_rows,
+        "worker_exit_rows_today": worker_rows,
+        "broker_exit_fill_rows_today": broker_fill_rows,
+        "duplicate_pairs": duplicate_pairs,
+        "duplicate_adjusted_economic_exits": economic_rows,
+        "missing_entry_basis_rows": missing_basis_rows,
+        "losses_by_symbol": _p228_bucket_losses(economic_rows, lambda r: str(r.get("symbol") or "unknown").upper()),
+        "losses_by_strategy": _p228_bucket_losses(economic_rows, lambda r: str(r.get("strategy_name") or "unknown")),
+        "losses_by_exit_reason": _p228_bucket_losses(economic_rows, lambda r: str(r.get("reason") or r.get("preferred_basis") or "unknown")),
+        "losses_by_holding_period": _p228_bucket_losses(economic_rows, lambda r: str(r.get("holding_period") or "unknown")),
+        "losses_by_recovered": _p228_bucket_losses(economic_rows, lambda r: "recovered" if r.get("recovered") else "not_recovered"),
+        "halt_comparison": {
+            "account_daily_pnl": account_daily_pnl,
+            "account_daily_pnl_source": pnl.get("account_daily_pnl_source"),
+            "duplicate_adjusted_realized_pnl": adjusted_total,
+            "configured_daily_stop_dollars": halt.get("configured_daily_stop_dollars"),
+            "configured_daily_loss_limit": halt.get("configured_daily_loss_limit"),
+            "daily_halt_active": bool(halt.get("daily_halt_active")),
+            "daily_halt_reason": halt.get("daily_halt_reason"),
+            "closed_trade_realized_halt_breached": closed_trade_breach,
+        },
+        "recommended_actions": recommended_actions,
+    }
 
 def daily_halt_truth_snapshot() -> dict:
     try:
@@ -18031,6 +18299,11 @@ def diagnostics_stall_exit_tuning_monitor(request: Request):
 def diagnostics_post_tuning_exit_validation(request: Request):
     require_admin_if_configured(request)
     return _post_tuning_exit_validation()
+    
+app.get("/diagnostics/loss_cluster_report")
+def diagnostics_loss_cluster_report(request: Request):
+    require_admin_if_configured(request)
+    return _loss_cluster_report()
 
 @app.get("/diagnostics/strategy_performance")
 def diagnostics_strategy_performance(request: Request):
