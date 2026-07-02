@@ -1,0 +1,1152 @@
+{
+  "ok": true,
+  "patch_version": "patch-227-live-halt-layout",
+  "totals": {
+    "name": "all",
+    "closed_trades": 136,
+    "wins": 77,
+    "losses": 59,
+    "flat": 0,
+    "gross_pnl": 1872.3564,
+    "best_r": 12.4955,
+    "worst_r": -4.0074,
+    "win_rate": 0.5662,
+    "avg_r": 0.5471
+  },
+  "by_symbol": [
+    {
+      "name": "SNOW",
+      "closed_trades": 5,
+      "wins": 4,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 518.8808,
+      "best_r": 12.4955,
+      "worst_r": -0.0161,
+      "win_rate": 0.8,
+      "avg_r": 3.4534
+    },
+    {
+      "name": "INTC",
+      "closed_trades": 12,
+      "wins": 7,
+      "losses": 5,
+      "flat": 0,
+      "gross_pnl": 453.9441,
+      "best_r": 9.6603,
+      "worst_r": -3.9158,
+      "win_rate": 0.5833,
+      "avg_r": 1.3274
+    },
+    {
+      "name": "CRWD",
+      "closed_trades": 6,
+      "wins": 6,
+      "losses": 0,
+      "flat": 0,
+      "gross_pnl": 280.1305,
+      "best_r": 2.1627,
+      "worst_r": 0.1957,
+      "win_rate": 1,
+      "avg_r": 1.5545
+    },
+    {
+      "name": "AMD",
+      "closed_trades": 6,
+      "wins": 5,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 207.953,
+      "best_r": 2.0622,
+      "worst_r": -0.2472,
+      "win_rate": 0.8333,
+      "avg_r": 0.7181
+    },
+    {
+      "name": "SMCI",
+      "closed_trades": 6,
+      "wins": 5,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 169.135,
+      "best_r": 2.8475,
+      "worst_r": -1.093,
+      "win_rate": 0.8333,
+      "avg_r": 1.0788
+    },
+    {
+      "name": "PANW",
+      "closed_trades": 8,
+      "wins": 4,
+      "losses": 4,
+      "flat": 0,
+      "gross_pnl": 94.6354,
+      "best_r": 2.2717,
+      "worst_r": -0.8611,
+      "win_rate": 0.5,
+      "avg_r": 0.3934
+    },
+    {
+      "name": "ORCL",
+      "closed_trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "flat": 0,
+      "gross_pnl": 83.3721,
+      "best_r": 2.7769,
+      "worst_r": 2.7769,
+      "win_rate": 1,
+      "avg_r": 2.7769
+    },
+    {
+      "name": "TSLA",
+      "closed_trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 79.8674,
+      "best_r": 2.128,
+      "worst_r": -1.5556,
+      "win_rate": 0.6667,
+      "avg_r": 0.8886
+    },
+    {
+      "name": "QQQ",
+      "closed_trades": 6,
+      "wins": 4,
+      "losses": 2,
+      "flat": 0,
+      "gross_pnl": 67.6418,
+      "best_r": 2.0208,
+      "worst_r": -0.1601,
+      "win_rate": 0.6667,
+      "avg_r": 0.4331
+    },
+    {
+      "name": "CRM",
+      "closed_trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "flat": 0,
+      "gross_pnl": 66.3363,
+      "best_r": 2.2104,
+      "worst_r": 2.2104,
+      "win_rate": 1,
+      "avg_r": 2.2104
+    },
+    {
+      "name": "NFLX",
+      "closed_trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "flat": 0,
+      "gross_pnl": 60.2288,
+      "best_r": 2.0115,
+      "worst_r": 2.0115,
+      "win_rate": 1,
+      "avg_r": 2.0115
+    },
+    {
+      "name": "LRCX",
+      "closed_trades": 4,
+      "wins": 3,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 50.3771,
+      "best_r": 0.3483,
+      "worst_r": -0.4745,
+      "win_rate": 0.75,
+      "avg_r": -0.0315
+    },
+    {
+      "name": "AVGO",
+      "closed_trades": 3,
+      "wins": 1,
+      "losses": 2,
+      "flat": 0,
+      "gross_pnl": 47.8659,
+      "best_r": 2.0192,
+      "worst_r": -0.4019,
+      "win_rate": 0.3333,
+      "avg_r": 0.5323
+    },
+    {
+      "name": "IWM",
+      "closed_trades": 5,
+      "wins": 4,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 47.5296,
+      "best_r": 1.0252,
+      "worst_r": -0.1063,
+      "win_rate": 0.8,
+      "avg_r": 0.317
+    },
+    {
+      "name": "AMZN",
+      "closed_trades": 5,
+      "wins": 3,
+      "losses": 2,
+      "flat": 0,
+      "gross_pnl": 38.2373,
+      "best_r": 2.0033,
+      "worst_r": -0.8826,
+      "win_rate": 0.6,
+      "avg_r": 0.2381
+    },
+    {
+      "name": "MU",
+      "closed_trades": 14,
+      "wins": 6,
+      "losses": 8,
+      "flat": 0,
+      "gross_pnl": 37.4944,
+      "best_r": 2.4423,
+      "worst_r": -3.7078,
+      "win_rate": 0.4286,
+      "avg_r": 0.3901
+    },
+    {
+      "name": "ANET",
+      "closed_trades": 5,
+      "wins": 4,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 28.1982,
+      "best_r": 0.451,
+      "worst_r": -1.1988,
+      "win_rate": 0.8,
+      "avg_r": -0.1496
+    },
+    {
+      "name": "SHOP",
+      "closed_trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "flat": 0,
+      "gross_pnl": 22.3521,
+      "best_r": 0.7435,
+      "worst_r": 0.7435,
+      "win_rate": 1,
+      "avg_r": 0.7435
+    },
+    {
+      "name": "AMAT",
+      "closed_trades": 16,
+      "wins": 6,
+      "losses": 10,
+      "flat": 0,
+      "gross_pnl": 20.7179,
+      "best_r": 2.1891,
+      "worst_r": -4.0074,
+      "win_rate": 0.375,
+      "avg_r": 0.2405
+    },
+    {
+      "name": "ARM",
+      "closed_trades": 2,
+      "wins": 1,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 17.8982,
+      "best_r": 2.0014,
+      "worst_r": -1.4073,
+      "win_rate": 0.5,
+      "avg_r": 0.297
+    },
+    {
+      "name": "NVDA",
+      "closed_trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "flat": 0,
+      "gross_pnl": 6.1596,
+      "best_r": 0.2054,
+      "worst_r": 0.2054,
+      "win_rate": 1,
+      "avg_r": 0.2054
+    },
+    {
+      "name": "SPY",
+      "closed_trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "flat": 0,
+      "gross_pnl": 1.3909,
+      "best_r": 0.0463,
+      "worst_r": 0.0463,
+      "win_rate": 1,
+      "avg_r": 0.0463
+    },
+    {
+      "name": "NOW",
+      "closed_trades": 2,
+      "wins": 1,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": -2.1182,
+      "best_r": 2.6157,
+      "worst_r": -2.6824,
+      "win_rate": 0.5,
+      "avg_r": -0.0333
+    },
+    {
+      "name": "NET",
+      "closed_trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": -3.9846,
+      "best_r": -0.1326,
+      "worst_r": -0.1326,
+      "win_rate": 0,
+      "avg_r": -0.1326
+    },
+    {
+      "name": "MRVL",
+      "closed_trades": 2,
+      "wins": 1,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": -12.3434,
+      "best_r": 2.0198,
+      "worst_r": -2.4424,
+      "win_rate": 0.5,
+      "avg_r": -0.2113
+    },
+    {
+      "name": "GOOGL",
+      "closed_trades": 3,
+      "wins": 1,
+      "losses": 2,
+      "flat": 0,
+      "gross_pnl": -12.5757,
+      "best_r": 2.0044,
+      "worst_r": -1.7212,
+      "win_rate": 0.3333,
+      "avg_r": -0.1389
+    },
+    {
+      "name": "AAPL",
+      "closed_trades": 5,
+      "wins": 2,
+      "losses": 3,
+      "flat": 0,
+      "gross_pnl": -17.0546,
+      "best_r": 1.3601,
+      "worst_r": -1.0146,
+      "win_rate": 0.4,
+      "avg_r": -0.114
+    },
+    {
+      "name": "META",
+      "closed_trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "flat": 0,
+      "gross_pnl": -33.4579,
+      "best_r": -0.3591,
+      "worst_r": -0.7572,
+      "win_rate": 0,
+      "avg_r": -0.5581
+    },
+    {
+      "name": "ADBE",
+      "closed_trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "flat": 0,
+      "gross_pnl": -99.9118,
+      "best_r": -0.8016,
+      "worst_r": -2.5284,
+      "win_rate": 0,
+      "avg_r": -1.665
+    },
+    {
+      "name": "UBER",
+      "closed_trades": 5,
+      "wins": 1,
+      "losses": 4,
+      "flat": 0,
+      "gross_pnl": -169.528,
+      "best_r": 2.1373,
+      "worst_r": -2.1106,
+      "win_rate": 0.2,
+      "avg_r": -0.3893
+    },
+    {
+      "name": "VRT",
+      "closed_trades": 2,
+      "wins": 0,
+      "losses": 2,
+      "flat": 0,
+      "gross_pnl": -177.0158,
+      "best_r": 0,
+      "worst_r": -0.7022,
+      "win_rate": 0,
+      "avg_r": -0.3511
+    }
+  ],
+  "by_strategy": [
+    {
+      "name": "daily_breakout",
+      "closed_trades": 109,
+      "wins": 60,
+      "losses": 49,
+      "flat": 0,
+      "gross_pnl": 1790.6408,
+      "best_r": 12.4955,
+      "worst_r": -4.0074,
+      "win_rate": 0.5505,
+      "avg_r": 0.6693
+    },
+    {
+      "name": "daily_mean_reversion",
+      "closed_trades": 9,
+      "wins": 8,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 114.4287,
+      "best_r": 1.0252,
+      "worst_r": -0.1601,
+      "win_rate": 0.8889,
+      "avg_r": 0.3025
+    },
+    {
+      "name": "recovered",
+      "closed_trades": 18,
+      "wins": 9,
+      "losses": 9,
+      "flat": 0,
+      "gross_pnl": -32.7131,
+      "best_r": 2.35,
+      "worst_r": -2.4424,
+      "win_rate": 0.5,
+      "avg_r": -0.0702
+    }
+  ],
+  "by_entry_type": [
+    {
+      "name": "worker_exit",
+      "closed_trades": 120,
+      "wins": 67,
+      "losses": 53,
+      "flat": 0,
+      "gross_pnl": 2232.9753,
+      "best_r": 12.4955,
+      "worst_r": -4.0074,
+      "win_rate": 0.5583,
+      "avg_r": 0.6259
+    },
+    {
+      "name": "standard",
+      "closed_trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": -94.2134,
+      "best_r": -0.7022,
+      "worst_r": -0.7022,
+      "win_rate": 0,
+      "avg_r": -0.7022
+    },
+    {
+      "name": "alpaca_orders_reconciled",
+      "closed_trades": 15,
+      "wins": 10,
+      "losses": 5,
+      "flat": 0,
+      "gross_pnl": -266.4055,
+      "best_r": 0,
+      "worst_r": 0,
+      "win_rate": 0.6667,
+      "avg_r": 0
+    }
+  ],
+  "by_exit_reason": [
+    {
+      "name": "target",
+      "closed_trades": 43,
+      "wins": 43,
+      "losses": 0,
+      "flat": 0,
+      "gross_pnl": 3346.5813,
+      "best_r": 12.4955,
+      "worst_r": 2.0014,
+      "win_rate": 1,
+      "avg_r": 2.6555
+    },
+    {
+      "name": "time_exit",
+      "closed_trades": 8,
+      "wins": 7,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 102.6329,
+      "best_r": 1.3601,
+      "worst_r": -1.5556,
+      "win_rate": 0.875,
+      "avg_r": 0.4702
+    },
+    {
+      "name": "stop",
+      "closed_trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": -30.4454,
+      "best_r": -1.0146,
+      "worst_r": -1.0146,
+      "win_rate": 0,
+      "avg_r": -1.0146
+    },
+    {
+      "name": "profit_lock_stop",
+      "closed_trades": 17,
+      "wins": 0,
+      "losses": 17,
+      "flat": 0,
+      "gross_pnl": -102.4272,
+      "best_r": -0.0078,
+      "worst_r": -1.1988,
+      "win_rate": 0,
+      "avg_r": -0.2714
+    },
+    {
+      "name": "broker_exit_fill",
+      "closed_trades": 15,
+      "wins": 10,
+      "losses": 5,
+      "flat": 0,
+      "gross_pnl": -266.4055,
+      "best_r": 0,
+      "worst_r": 0,
+      "win_rate": 0.6667,
+      "avg_r": 0
+    },
+    {
+      "name": "stall_exit",
+      "closed_trades": 52,
+      "wins": 17,
+      "losses": 35,
+      "flat": 0,
+      "gross_pnl": -1177.5797,
+      "best_r": 0.4651,
+      "worst_r": -4.0074,
+      "win_rate": 0.3269,
+      "avg_r": -0.7291
+    }
+  ],
+  "by_holding_period": [
+    {
+      "name": "unknown",
+      "closed_trades": 58,
+      "wins": 37,
+      "losses": 21,
+      "flat": 0,
+      "gross_pnl": 1208.6716,
+      "best_r": 9.6603,
+      "worst_r": -2.1106,
+      "win_rate": 0.6379,
+      "avg_r": 0.841
+    },
+    {
+      "name": "intraday",
+      "closed_trades": 13,
+      "wins": 9,
+      "losses": 4,
+      "flat": 0,
+      "gross_pnl": 542.1776,
+      "best_r": 2.8475,
+      "worst_r": -1.0146,
+      "win_rate": 0.6923,
+      "avg_r": 1.4401
+    },
+    {
+      "name": "4-7 days",
+      "closed_trades": 7,
+      "wins": 6,
+      "losses": 1,
+      "flat": 0,
+      "gross_pnl": 101.6035,
+      "best_r": 1.3601,
+      "worst_r": -1.5556,
+      "win_rate": 0.8571,
+      "avg_r": 0.5325
+    },
+    {
+      "name": "1 day",
+      "closed_trades": 14,
+      "wins": 5,
+      "losses": 9,
+      "flat": 0,
+      "gross_pnl": 71.1105,
+      "best_r": 12.4955,
+      "worst_r": -4.0074,
+      "win_rate": 0.3571,
+      "avg_r": 0.4355
+    },
+    {
+      "name": "2-3 days",
+      "closed_trades": 44,
+      "wins": 20,
+      "losses": 24,
+      "flat": 0,
+      "gross_pnl": -51.2068,
+      "best_r": 2.4423,
+      "worst_r": -3.7078,
+      "win_rate": 0.4545,
+      "avg_r": -0.0663
+    }
+  ],
+  "recommendations": {
+    "promote": [
+      {
+        "category": "symbols",
+        "name": "SNOW",
+        "closed_trades": 5,
+        "gross_pnl": 518.8808,
+        "avg_r": 3.4534,
+        "win_rate": 0.8,
+        "reason": "positive_edge_established"
+      },
+      {
+        "category": "exit_reasons",
+        "name": "target",
+        "closed_trades": 43,
+        "gross_pnl": 3346.5813,
+        "avg_r": 2.6555,
+        "win_rate": 1,
+        "reason": "positive_edge_established"
+      },
+      {
+        "category": "symbols",
+        "name": "CRWD",
+        "closed_trades": 6,
+        "gross_pnl": 280.1305,
+        "avg_r": 1.5545,
+        "win_rate": 1,
+        "reason": "positive_edge_established"
+      },
+      {
+        "category": "holding_periods",
+        "name": "intraday",
+        "closed_trades": 13,
+        "gross_pnl": 542.1776,
+        "avg_r": 1.4401,
+        "win_rate": 0.6923,
+        "reason": "positive_edge_established"
+      },
+      {
+        "category": "symbols",
+        "name": "INTC",
+        "closed_trades": 12,
+        "gross_pnl": 453.9441,
+        "avg_r": 1.3274,
+        "win_rate": 0.5833,
+        "reason": "positive_edge_established"
+      },
+      {
+        "category": "symbols",
+        "name": "SMCI",
+        "closed_trades": 6,
+        "gross_pnl": 169.135,
+        "avg_r": 1.0788,
+        "win_rate": 0.8333,
+        "reason": "positive_edge_established"
+      },
+      {
+        "category": "holding_periods",
+        "name": "unknown",
+        "closed_trades": 58,
+        "gross_pnl": 1208.6716,
+        "avg_r": 0.841,
+        "win_rate": 0.6379,
+        "reason": "positive_edge_established"
+      }
+    ],
+    "reduce": [
+      {
+        "category": "entry_types",
+        "name": "alpaca_orders_reconciled",
+        "closed_trades": 15,
+        "gross_pnl": -266.4055,
+        "avg_r": 0,
+        "win_rate": 0.6667,
+        "reason": "negative_or_weak_edge"
+      },
+      {
+        "category": "exit_reasons",
+        "name": "broker_exit_fill",
+        "closed_trades": 15,
+        "gross_pnl": -266.4055,
+        "avg_r": 0,
+        "win_rate": 0.6667,
+        "reason": "negative_or_weak_edge"
+      },
+      {
+        "category": "strategies",
+        "name": "recovered",
+        "closed_trades": 18,
+        "gross_pnl": -32.7131,
+        "avg_r": -0.0702,
+        "win_rate": 0.5,
+        "reason": "negative_or_weak_edge"
+      },
+      {
+        "category": "holding_periods",
+        "name": "2-3 days",
+        "closed_trades": 44,
+        "gross_pnl": -51.2068,
+        "avg_r": -0.0663,
+        "win_rate": 0.4545,
+        "reason": "negative_or_weak_edge"
+      },
+      {
+        "category": "symbols",
+        "name": "LRCX",
+        "closed_trades": 4,
+        "gross_pnl": 50.3771,
+        "avg_r": -0.0315,
+        "win_rate": 0.75,
+        "reason": "negative_or_weak_edge"
+      }
+    ],
+    "quarantine": [
+      {
+        "category": "exit_reasons",
+        "name": "stall_exit",
+        "closed_trades": 52,
+        "gross_pnl": -1177.5797,
+        "avg_r": -0.7291,
+        "win_rate": 0.3269,
+        "reason": "avg_r_below_quarantine_threshold"
+      },
+      {
+        "category": "symbols",
+        "name": "UBER",
+        "closed_trades": 5,
+        "gross_pnl": -169.528,
+        "avg_r": -0.3893,
+        "win_rate": 0.2,
+        "reason": "avg_r_below_quarantine_threshold"
+      },
+      {
+        "category": "exit_reasons",
+        "name": "profit_lock_stop",
+        "closed_trades": 17,
+        "gross_pnl": -102.4272,
+        "avg_r": -0.2714,
+        "win_rate": 0,
+        "reason": "avg_r_below_quarantine_threshold"
+      },
+      {
+        "category": "symbols",
+        "name": "ANET",
+        "closed_trades": 5,
+        "gross_pnl": 28.1982,
+        "avg_r": -0.1496,
+        "win_rate": 0.8,
+        "reason": "avg_r_below_quarantine_threshold"
+      },
+      {
+        "category": "symbols",
+        "name": "GOOGL",
+        "closed_trades": 3,
+        "gross_pnl": -12.5757,
+        "avg_r": -0.1389,
+        "win_rate": 0.3333,
+        "reason": "avg_r_below_quarantine_threshold"
+      },
+      {
+        "category": "symbols",
+        "name": "AAPL",
+        "closed_trades": 5,
+        "gross_pnl": -17.0546,
+        "avg_r": -0.114,
+        "win_rate": 0.4,
+        "reason": "avg_r_below_quarantine_threshold"
+      }
+    ],
+    "monitor": [
+      {
+        "category": "symbols",
+        "name": "ADBE",
+        "closed_trades": 2,
+        "gross_pnl": -99.9118,
+        "avg_r": -1.665,
+        "win_rate": 0,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "exit_reasons",
+        "name": "stop",
+        "closed_trades": 1,
+        "gross_pnl": -30.4454,
+        "avg_r": -1.0146,
+        "win_rate": 0,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "entry_types",
+        "name": "standard",
+        "closed_trades": 1,
+        "gross_pnl": -94.2134,
+        "avg_r": -0.7022,
+        "win_rate": 0,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "symbols",
+        "name": "META",
+        "closed_trades": 2,
+        "gross_pnl": -33.4579,
+        "avg_r": -0.5581,
+        "win_rate": 0,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "symbols",
+        "name": "VRT",
+        "closed_trades": 2,
+        "gross_pnl": -177.0158,
+        "avg_r": -0.3511,
+        "win_rate": 0,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "symbols",
+        "name": "MRVL",
+        "closed_trades": 2,
+        "gross_pnl": -12.3434,
+        "avg_r": -0.2113,
+        "win_rate": 0.5,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "symbols",
+        "name": "NET",
+        "closed_trades": 1,
+        "gross_pnl": -3.9846,
+        "avg_r": -0.1326,
+        "win_rate": 0,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "symbols",
+        "name": "NOW",
+        "closed_trades": 2,
+        "gross_pnl": -2.1182,
+        "avg_r": -0.0333,
+        "win_rate": 0.5,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "symbols",
+        "name": "SPY",
+        "closed_trades": 1,
+        "gross_pnl": 1.3909,
+        "avg_r": 0.0463,
+        "win_rate": 1,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "symbols",
+        "name": "NVDA",
+        "closed_trades": 1,
+        "gross_pnl": 6.1596,
+        "avg_r": 0.2054,
+        "win_rate": 1,
+        "reason": "sample_below_min"
+      },
+      {
+        "category": "symbols",
+        "name": "AMZN",
+        "closed_trades": 5,
+        "gross_pnl": 38.2373,
+        "avg_r": 0.2381,
+        "win_rate": 0.6,
+        "reason": "edge_not_decisive"
+      },
+      {
+        "category": "symbols",
+        "name": "AMAT",
+        "closed_trades": 16,
+        "gross_pnl": 20.7179,
+        "avg_r": 0.2405,
+        "win_rate": 0.375,
+        "reason": "edge_not_decisive"
+      }
+    ]
+  },
+  "worst_trade_contributors": [
+    {
+      "symbol": "AMAT",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 1.7314,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -120.2648,
+      "pnl_r": -4.0074,
+      "ts_utc": "2026-07-02T13:33:13.093491+00:00"
+    },
+    {
+      "symbol": "INTC",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 1.7347,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -117.3488,
+      "pnl_r": -3.9158,
+      "ts_utc": "2026-07-02T13:31:21.377703+00:00"
+    },
+    {
+      "symbol": "MU",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 3.8233,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -114.104,
+      "pnl_r": -3.7078,
+      "ts_utc": "2026-06-29T13:34:04.605839+00:00"
+    },
+    {
+      "symbol": "MU",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 1.8845,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -108.1704,
+      "pnl_r": -3.5952,
+      "ts_utc": "2026-07-02T13:39:40.703623+00:00"
+    },
+    {
+      "symbol": "NOW",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 2.9866,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -80.6908,
+      "pnl_r": -2.6824,
+      "ts_utc": "2026-05-22T13:30:49.581556+00:00"
+    },
+    {
+      "symbol": "ADBE",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 2.9713,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -75.8713,
+      "pnl_r": -2.5284,
+      "ts_utc": "2026-05-22T13:31:11.018031+00:00"
+    },
+    {
+      "symbol": "MRVL",
+      "strategy": "recovered",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 3.7931,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -73.1241,
+      "pnl_r": -2.4424,
+      "ts_utc": "2026-06-22T13:33:20.014997+00:00"
+    },
+    {
+      "symbol": "UBER",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": null,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -63.4538,
+      "pnl_r": -2.1106,
+      "ts_utc": "2026-05-11T13:30:30.927430+00:00"
+    },
+    {
+      "symbol": "UBER",
+      "strategy": "recovered",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 2.216,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -57.6576,
+      "pnl_r": -1.9244,
+      "ts_utc": "2026-07-02T13:35:40.482280+00:00"
+    },
+    {
+      "symbol": "GOOGL",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 2.9946,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -51.6348,
+      "pnl_r": -1.7212,
+      "ts_utc": "2026-05-21T13:30:38.826556+00:00"
+    }
+  ],
+  "risk_blocker_explanation": {
+    "worst_r_too_deep": true,
+    "worst_r_threshold": -2,
+    "offending_trades": [
+      {
+        "symbol": "AMAT",
+        "strategy": "daily_breakout",
+        "entry_type": "worker_exit",
+        "exit_reason": "stall_exit",
+        "holding_days": 1.7314,
+        "regime_mode": "unknown",
+        "rank_score": null,
+        "gross_pnl": -120.2648,
+        "pnl_r": -4.0074,
+        "ts_utc": "2026-07-02T13:33:13.093491+00:00"
+      },
+      {
+        "symbol": "INTC",
+        "strategy": "daily_breakout",
+        "entry_type": "worker_exit",
+        "exit_reason": "stall_exit",
+        "holding_days": 1.7347,
+        "regime_mode": "unknown",
+        "rank_score": null,
+        "gross_pnl": -117.3488,
+        "pnl_r": -3.9158,
+        "ts_utc": "2026-07-02T13:31:21.377703+00:00"
+      },
+      {
+        "symbol": "MU",
+        "strategy": "daily_breakout",
+        "entry_type": "worker_exit",
+        "exit_reason": "stall_exit",
+        "holding_days": 3.8233,
+        "regime_mode": "unknown",
+        "rank_score": null,
+        "gross_pnl": -114.104,
+        "pnl_r": -3.7078,
+        "ts_utc": "2026-06-29T13:34:04.605839+00:00"
+      },
+      {
+        "symbol": "MU",
+        "strategy": "daily_breakout",
+        "entry_type": "worker_exit",
+        "exit_reason": "stall_exit",
+        "holding_days": 1.8845,
+        "regime_mode": "unknown",
+        "rank_score": null,
+        "gross_pnl": -108.1704,
+        "pnl_r": -3.5952,
+        "ts_utc": "2026-07-02T13:39:40.703623+00:00"
+      },
+      {
+        "symbol": "NOW",
+        "strategy": "daily_breakout",
+        "entry_type": "worker_exit",
+        "exit_reason": "stall_exit",
+        "holding_days": 2.9866,
+        "regime_mode": "unknown",
+        "rank_score": null,
+        "gross_pnl": -80.6908,
+        "pnl_r": -2.6824,
+        "ts_utc": "2026-05-22T13:30:49.581556+00:00"
+      },
+      {
+        "symbol": "ADBE",
+        "strategy": "daily_breakout",
+        "entry_type": "worker_exit",
+        "exit_reason": "stall_exit",
+        "holding_days": 2.9713,
+        "regime_mode": "unknown",
+        "rank_score": null,
+        "gross_pnl": -75.8713,
+        "pnl_r": -2.5284,
+        "ts_utc": "2026-05-22T13:31:11.018031+00:00"
+      },
+      {
+        "symbol": "MRVL",
+        "strategy": "recovered",
+        "entry_type": "worker_exit",
+        "exit_reason": "stall_exit",
+        "holding_days": 3.7931,
+        "regime_mode": "unknown",
+        "rank_score": null,
+        "gross_pnl": -73.1241,
+        "pnl_r": -2.4424,
+        "ts_utc": "2026-06-22T13:33:20.014997+00:00"
+      },
+      {
+        "symbol": "UBER",
+        "strategy": "daily_breakout",
+        "entry_type": "worker_exit",
+        "exit_reason": "stall_exit",
+        "holding_days": null,
+        "regime_mode": "unknown",
+        "rank_score": null,
+        "gross_pnl": -63.4538,
+        "pnl_r": -2.1106,
+        "ts_utc": "2026-05-11T13:30:30.927430+00:00"
+      }
+    ],
+    "worst_trade": {
+      "symbol": "AMAT",
+      "strategy": "daily_breakout",
+      "entry_type": "worker_exit",
+      "exit_reason": "stall_exit",
+      "holding_days": 1.7314,
+      "regime_mode": "unknown",
+      "rank_score": null,
+      "gross_pnl": -120.2648,
+      "pnl_r": -4.0074,
+      "ts_utc": "2026-07-02T13:33:13.093491+00:00"
+    },
+    "worst_r_symbol": "AMAT",
+    "worst_r_exit_reason": "stall_exit",
+    "worst_r_strategy": "daily_breakout",
+    "risk_scale_next_required_fix": "inspect_worst_r_trade_and_tighten_bucket_or_quarantine"
+  },
+  "risk_scaling": {
+    "current_risk_dollars": 30,
+    "ready_for_40_risk": false,
+    "ready_for_50_risk": false,
+    "recommended_risk_dollars": 30,
+    "closed_trades": 136,
+    "win_rate": 0.5662,
+    "avg_r": 0.5471,
+    "worst_r": -4.0074,
+    "blockers": [
+      "avg_r_below_40_risk_min",
+      "worst_r_too_deep"
+    ],
+    "assessment": "not_ready"
+  },
+  "quarantine_controls": {
+    "symbols": [],
+    "strategies": [],
+    "entry_types": [],
+    "enforced": false,
+    "read_only_until_enforced": true
+  },
+  "config": {
+    "min_trades_per_bucket": 3,
+    "promote_min_trades": 5,
+    "promote_min_avg_r": 0.75,
+    "risk_scale_min_trades": 75,
+    "risk_40_min_avg_r": 0.75,
+    "risk_50_min_avg_r": 1
+  }
+}

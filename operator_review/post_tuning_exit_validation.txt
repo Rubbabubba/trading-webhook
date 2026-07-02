@@ -1,0 +1,96 @@
+{
+  "ok": true,
+  "patch_version": "patch-227-live-halt-layout",
+  "mode": "read_only_validation",
+  "post_tuning_start_utc": "2026-06-21T15:07:49+00:00",
+  "post_tuning_window_configured": true,
+  "pre_tuning_totals": {
+    "name": "all",
+    "closed_trades": 96,
+    "wins": 58,
+    "losses": 38,
+    "flat": 0,
+    "gross_pnl": 2719.6788,
+    "best_r": 12.4955,
+    "worst_r": -2.6824,
+    "win_rate": 0.6042,
+    "avg_r": 0.9543
+  },
+  "post_tuning_totals": {
+    "name": "all",
+    "closed_trades": 40,
+    "wins": 19,
+    "losses": 21,
+    "flat": 0,
+    "gross_pnl": -847.3224,
+    "best_r": 2.35,
+    "worst_r": -4.0074,
+    "win_rate": 0.475,
+    "avg_r": -0.4301
+  },
+  "pre_tuning_stall_exit_summary": {
+    "name": "all",
+    "closed_trades": 33,
+    "wins": 11,
+    "losses": 22,
+    "flat": 0,
+    "gross_pnl": -478.5596,
+    "best_r": 0.2245,
+    "worst_r": -2.6824,
+    "win_rate": 0.3333,
+    "avg_r": -0.4815
+  },
+  "post_tuning_stall_exit_summary": {
+    "name": "all",
+    "closed_trades": 19,
+    "wins": 6,
+    "losses": 13,
+    "flat": 0,
+    "gross_pnl": -699.0201,
+    "best_r": 0.4651,
+    "worst_r": -4.0074,
+    "win_rate": 0.3158,
+    "avg_r": -1.1591
+  },
+  "post_tuning_risk_scaling": {
+    "current_risk_dollars": 30,
+    "ready_for_40_risk": false,
+    "ready_for_50_risk": false,
+    "recommended_risk_dollars": 30,
+    "closed_trades": 40,
+    "win_rate": 0.475,
+    "avg_r": -0.4301,
+    "worst_r": -4.0074,
+    "blockers": [
+      "sample_below_risk_scale_min",
+      "win_rate_below_risk_scale_min",
+      "avg_r_below_40_risk_min",
+      "worst_r_too_deep"
+    ],
+    "assessment": "not_ready"
+  },
+  "post_tuning_closed_trades": 40,
+  "post_tuning_stall_exits": 19,
+  "post_tuning_negative_stall_exits": 13,
+  "post_tuning_deep_stall_exits": 5,
+  "post_tuning_validation_ready": false,
+  "ready_for_40_after_post_tuning": false,
+  "risk_scale_unlock_candidate": false,
+  "risk_scale_unlock_blockers": [
+    "deep_post_tuning_stall_exit_remains",
+    "post_tuning_stall_avg_r_still_negative",
+    "post_tuning_stall_worst_r_below_minus_1",
+    "post_tuning_avg_r_below_40_risk_min",
+    "post_tuning_win_rate_below_risk_min"
+  ],
+  "recommended_action": "continue_collecting_post_tuning_exit_sample",
+  "criteria": {
+    "min_post_tuning_closed_trades": 10,
+    "requires_post_tuning_stall_exit_sample": true,
+    "max_post_tuning_stall_worst_r": -1,
+    "min_post_tuning_stall_avg_r": 0,
+    "risk_40_min_avg_r": 0.75,
+    "risk_min_win_rate": 0.55,
+    "read_only": true
+  }
+}

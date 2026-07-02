@@ -1,0 +1,335 @@
+{
+  "ok": true,
+  "reconcile_order_lookback_limit": 100,
+  "reconcile_orphan_order_max_age_sec": 900,
+  "reconcile_deactivate_orphan_plans": true,
+  "reconcile_partial_fill_max_age_sec": 1800,
+  "startup_state": {
+    "ran": true,
+    "ts_utc": "2026-07-01T19:12:10.080901+00:00",
+    "ts_ny": "2026-07-01T15:12:10.080920-04:00",
+    "snapshot_found": true,
+    "snapshot_path": "/var/data/positions_snapshot.json",
+    "journal_path": "/var/data/execution_journal.jsonl",
+    "recovered_from_snapshot_count": 3,
+    "recovered_from_broker_only_count": 0,
+    "stale_snapshot_count": 0,
+    "stale_snapshot_symbols": [],
+    "reconcile_actions": [],
+    "error": "",
+    "paper_lifecycle_normalization": {
+      "checked": true,
+      "mutated": false,
+      "issues": [],
+      "execution_cleanup": {
+        "changed_symbols": [],
+        "changed_count": 0
+      }
+    },
+    "scan_state_restore": {
+      "path": "/var/data/scan_state.json",
+      "loaded": true,
+      "last_scan_restored": true,
+      "scan_history_restored": 30,
+      "candidate_history_restored": 50,
+      "last_swing_candidates_restored": 10
+    },
+    "regime_state_restore": {
+      "path": "/var/data/regime_state.json",
+      "loaded": true,
+      "current_restored": true,
+      "history_restored": 100
+    },
+    "paper_lifecycle_state_restore": {
+      "path": "/var/data/paper_lifecycle_state.json",
+      "loaded": true,
+      "last_event_restored": true,
+      "history_restored": 500
+    },
+    "cohort_evidence_state_restore": {
+      "path": "/var/data/cohort_evidence_state.json",
+      "loaded": true,
+      "history_restored": 200,
+      "backfilled_from_candidate_history": 0
+    },
+    "strategy_performance_state_restore": {
+      "path": "/var/data/strategy_performance_state.json",
+      "loaded": true,
+      "closed_trades_restored": 126,
+      "quarantine_applied": false,
+      "quarantined_count": 0,
+      "quarantine_path": "/var/data/strategy_performance_state.quarantine.json",
+      "patch175_enrichment": {
+        "rows_seen": 126,
+        "rows_changed": 0,
+        "changed": false,
+        "deferred": true
+      }
+    },
+    "hybrid_proof_ledger_state_restore": {
+      "path": "/var/data/hybrid_proof_ledger.json",
+      "loaded": true,
+      "ledger_restored": 265
+    },
+    "release_state_restore": {
+      "path": "/var/data/release_state.json",
+      "loaded": true,
+      "current_stage": "live",
+      "history_restored": 2
+    }
+  },
+  "latest_snapshot": {
+    "ts_utc": "2026-07-02T15:59:24.326678+00:00",
+    "ts_ny": "2026-07-02T11:59:24.326683-04:00",
+    "reason": "worker_exit_cycle",
+    "positions": [
+      {
+        "symbol": "IWM",
+        "qty": 4.04,
+        "avg_entry_price": 297.3132,
+        "current_price": 297.78,
+        "last_price": 297.78,
+        "market_value": 1203.0312,
+        "unrealized_pl": 1.885872,
+        "unrealized_plpc": 0.00157
+      },
+      {
+        "symbol": "PANW",
+        "qty": 3.4,
+        "avg_entry_price": 352.7928,
+        "current_price": 348.79,
+        "last_price": 348.79,
+        "market_value": 1185.886,
+        "unrealized_pl": -13.60952,
+        "unrealized_plpc": -0.01135
+      }
+    ],
+    "active_plans": {
+      "IWM": {
+        "active": true,
+        "side": "buy",
+        "qty": 4.04,
+        "requested_qty": 4.04,
+        "filled_qty": 4.04,
+        "avg_fill_price": 297.3132,
+        "entry_price": 297.3132,
+        "stop_price": 289.88,
+        "take_price": 312.18,
+        "initial_stop_price": 289.88,
+        "initial_take_price": 312.18,
+        "signal": "RECOVERED",
+        "opened_at": "2026-06-30T04:24:36.096370-04:00",
+        "last_exit_attempt_ts": 0,
+        "actual_risk_dollars": 30.0301,
+        "risk_per_share": 7.4332,
+        "max_hold_days": 5,
+        "strategy_name": "RECOVERED",
+        "rank_score": null,
+        "selection_quality_score": null,
+        "entry_type": null,
+        "regime_mode": null,
+        "thesis": {
+          "candidate_rank_score": null,
+          "selection_quality_score": null,
+          "entry_type": null,
+          "regime_mode": null,
+          "breakout_level": null,
+          "breakout_ref": null,
+          "breakout_lookback_days": 20,
+          "stop_basis": "breakout_buffer",
+          "target_r_mult": 2,
+          "candidate_ts": "2026-06-30T04:24:36.096380-04:00"
+        },
+        "recovered": true,
+        "recovered_at": "2026-07-01T15:12:10.393991-04:00",
+        "symbol": "IWM",
+        "execution_state": "filled",
+        "lifecycle_state": "filled",
+        "execution_state_reason": "recovered_open_position",
+        "execution_updated_utc": "2026-06-30T08:24:36.096403+00:00",
+        "execution_updated_ny": "2026-06-30T04:24:36.096406-04:00",
+        "execution_lifecycle_history": [
+          {
+            "ts_utc": "2026-06-30T08:24:36.096391+00:00",
+            "ts_ny": "2026-06-30T04:24:36.096395-04:00",
+            "symbol": "IWM",
+            "from_state": null,
+            "to_state": "planned",
+            "reason": "initialize_plan",
+            "details": {
+              "backfilled": true
+            }
+          },
+          {
+            "ts_utc": "2026-06-30T08:24:36.096403+00:00",
+            "ts_ny": "2026-06-30T04:24:36.096406-04:00",
+            "symbol": "IWM",
+            "from_state": "planned",
+            "to_state": "filled",
+            "reason": "recovered_open_position",
+            "details": {
+              "qty": 4.04,
+              "entry_price": 297.3132
+            }
+          }
+        ],
+        "exit_armed_at": "2026-06-30T04:24:36.096412-04:00",
+        "days_held": 2,
+        "startup_restore_classification": "recovered",
+        "startup_restored": true,
+        "broker_backed": true
+      },
+      "PANW": {
+        "active": true,
+        "side": "buy",
+        "qty": 3.4,
+        "requested_qty": 3.4,
+        "filled_qty": 3.4,
+        "avg_fill_price": 352.7928,
+        "entry_price": 352.7928,
+        "stop_price": 343.97,
+        "take_price": 370.43,
+        "initial_stop_price": 343.97,
+        "initial_take_price": 370.43,
+        "signal": "daily_breakout",
+        "opened_at": "2026-07-02T09:52:27.476242-04:00",
+        "last_exit_attempt_ts": 0,
+        "actual_risk_dollars": 29.9975,
+        "risk_per_share": 8.8228,
+        "max_hold_days": 5,
+        "strategy_name": "daily_breakout",
+        "rank_score": null,
+        "selection_quality_score": null,
+        "entry_type": null,
+        "regime_mode": null,
+        "thesis": {
+          "candidate_rank_score": null,
+          "selection_quality_score": null,
+          "entry_type": null,
+          "regime_mode": null,
+          "breakout_level": null,
+          "breakout_ref": null,
+          "breakout_lookback_days": 20,
+          "stop_basis": "breakout_buffer",
+          "target_r_mult": 2,
+          "candidate_ts": "2026-07-02T09:52:27.476266-04:00"
+        },
+        "source": "worker_scan",
+        "order_id": "c518b17c-a578-40e4-9799-9132649c3745",
+        "submitted_at": "2026-07-02T09:51:48.396593-04:00",
+        "submitted_qty": 3.4,
+        "order_status": "filled",
+        "affordability": {
+          "requested_qty": 3.4,
+          "affordable_qty": 72.61,
+          "submitted_qty": 3.4,
+          "affordability_clipped": false,
+          "buying_power_snapshot": {
+            "ok": true,
+            "buying_power": 26935.71,
+            "equity": 7100.08,
+            "cash": 5879.56
+          },
+          "effective_buying_power": 25588.92,
+          "reason": ""
+        },
+        "symbol": "PANW",
+        "execution_state": "filled",
+        "lifecycle_state": "filled",
+        "execution_state_reason": "reconcile",
+        "execution_updated_utc": "2026-07-02T13:52:27.476324+00:00",
+        "execution_updated_ny": "2026-07-02T09:52:27.476331-04:00",
+        "execution_lifecycle_history": [
+          {
+            "ts_utc": "2026-07-02T13:51:48.396614+00:00",
+            "ts_ny": "2026-07-02T09:51:48.396620-04:00",
+            "symbol": "PANW",
+            "from_state": null,
+            "to_state": "submitted",
+            "reason": "initialize_plan",
+            "details": {
+              "backfilled": true
+            }
+          },
+          {
+            "ts_utc": "2026-07-02T13:51:48.396638+00:00",
+            "ts_ny": "2026-07-02T09:51:48.396643-04:00",
+            "symbol": "PANW",
+            "from_state": "submitted",
+            "to_state": "submitted",
+            "reason": "entry_submitted",
+            "details": {
+              "source": "worker_scan",
+              "signal": "daily_breakout",
+              "qty": 3.4,
+              "order_id": "c518b17c-a578-40e4-9799-9132649c3745"
+            }
+          },
+          {
+            "ts_utc": "2026-07-02T13:52:27.476324+00:00",
+            "ts_ny": "2026-07-02T09:52:27.476331-04:00",
+            "symbol": "PANW",
+            "from_state": "submitted",
+            "to_state": "filled",
+            "reason": "reconcile",
+            "details": {
+              "order_status": "filled",
+              "position_qty": 3.4
+            }
+          }
+        ],
+        "fill_reconciled": true,
+        "filled_avg_price": 352.7928,
+        "days_held": 0
+      }
+    },
+    "extra": {
+      "results_count": 2,
+      "reconcile_count": 0
+    }
+  },
+  "summary": {
+    "health_grade": "healthy",
+    "max_severity": "info",
+    "trading_blocked": false,
+    "issue_total": 0,
+    "issue_counts": {
+      "info": 0,
+      "warn": 0,
+      "error": 0,
+      "critical": 0
+    },
+    "recommended_action_count": 0
+  },
+  "broker_positions_count": 2,
+  "broker_symbols": [
+    "IWM",
+    "PANW"
+  ],
+  "active_plan_count": 2,
+  "active_plan_symbols": [
+    "IWM",
+    "PANW"
+  ],
+  "open_order_count": 0,
+  "open_order_symbols": [],
+  "missing_from_plans": [],
+  "stale_active_plans": [],
+  "pending_entry_plan_symbols": [],
+  "orphan_open_order_symbols": [],
+  "plans_missing_open_order": [],
+  "partial_fill_plan_symbols": [],
+  "open_orders": [],
+  "health_grade": "healthy",
+  "max_severity": "info",
+  "trading_blocked": false,
+  "issue_counts": {
+    "info": 0,
+    "warn": 0,
+    "error": 0,
+    "critical": 0
+  },
+  "issue_total": 0,
+  "issues": [],
+  "recommended_actions": []
+}
