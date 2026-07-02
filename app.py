@@ -1297,7 +1297,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-228-loss-cluster-forensics"
+PATCH_VERSION = "patch-229-realized-loss-halt-attribution"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7768,6 +7768,8 @@ def is_live_trading_permitted(source: str = "") -> bool:
         return False
     if source == "worker_scan" and (not NEW_ENTRIES_ENABLED):
         return False
+    if source == "worker_scan" and realized_closed_trade_loss_halt_active():
+        return False
     if source == "worker_scan" and (not SCANNER_ALLOW_LIVE):
         return False
     if RELEASE_GATE_ENFORCED and (not release_gate_status().get("live_orders_permitted")):
@@ -8563,6 +8565,61 @@ def _p228_bucket_losses(rows: list[dict], key_fn) -> list[dict]:
         bucket["gross_pnl"] = round(float(bucket.get("gross_pnl") or 0.0), 4)
         out.append(bucket)
     return sorted(out, key=lambda r: float(r.get("gross_pnl") or 0.0))
+    
+def _p229_realized_closed_trade_loss_halt(pnl_truth: dict | None = None) -> dict:
+    """Read-only closed-trade realized loss halt for entry admission.
+
+    This deliberately blocks new entries only. It does not disable exits, does
+    not activate bulk flatten, and does not mutate DAILY_HALT_STATE.
+    """
+    try:
+        pnl = dict(pnl_truth or today_pnl_truth_snapshot())
+        broker_orders = dict(pnl.get("broker_orders_today") or {})
+        rows = [_p228_norm_broker_row(r) for r in list(broker_orders.get("rows") or [])]
+        calc_rows = [r for r in rows if r.get("calc_ok")]
+        realized = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in calc_rows), 4)
+        daily_stop = abs(_configured_daily_stop_dollars_safe())
+        daily_loss = abs(_configured_daily_loss_limit_safe())
+        stop_breached = bool(daily_stop > 0 and realized <= -daily_stop)
+        loss_breached = bool(daily_loss > 0 and realized <= -daily_loss)
+        active = bool(stop_breached or loss_breached)
+        reasons = []
+        if stop_breached:
+            reasons.append("realized_closed_trade_daily_stop_breached")
+        if loss_breached:
+            reasons.append("realized_closed_trade_daily_loss_breached")
+        return {
+            "ok": True,
+            "active": active,
+            "new_entries_blocked": active,
+            "exits_still_permitted": True,
+            "bulk_flatten_allowed": False,
+            "can_flatten": False,
+            "reason": reasons[0] if reasons else "none",
+            "reasons": reasons,
+            "realized_closed_trade_pnl": realized,
+            "calc_closed_trades_today": len(calc_rows),
+            "broker_exit_fills_today": int(broker_orders.get("broker_exit_fills_today") or len(rows)),
+            "configured_daily_stop_dollars": daily_stop,
+            "configured_daily_loss_limit": daily_loss,
+            "source": "broker_orders_today_calc_rows",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "active": False,
+            "new_entries_blocked": False,
+            "exits_still_permitted": True,
+            "bulk_flatten_allowed": False,
+            "can_flatten": False,
+            "reason": "realized_closed_trade_halt_unavailable",
+            "reasons": ["realized_closed_trade_halt_unavailable"],
+            "error": str(exc),
+        }
+
+
+def realized_closed_trade_loss_halt_active(pnl_truth: dict | None = None) -> bool:
+    return bool(_p229_realized_closed_trade_loss_halt(pnl_truth=pnl_truth).get("active"))
 
 
 def _loss_cluster_report(perf_state: dict | None = None, pnl_truth: dict | None = None, halt_truth: dict | None = None) -> dict:
@@ -8609,14 +8666,31 @@ def _loss_cluster_report(perf_state: dict | None = None, pnl_truth: dict | None 
             used_worker.add(int(wi))
         if fi is not None:
             used_fill.add(int(fi))
+
+        worker = dict(worker or {})
+        fill = dict(fill or {})
         preferred = dict(broker)
         basis = "broker_order_calc" if broker.get("calc_ok") else "missing_broker_entry_basis"
-        if not broker.get("calc_ok") and fill is not None:
+
+        if not broker.get("calc_ok") and fill:
             preferred = dict(fill)
             basis = "broker_reconciled_strategy_estimate"
-        elif not broker.get("calc_ok") and worker is not None:
+        elif not broker.get("calc_ok") and worker:
             preferred = dict(worker)
             basis = "worker_exit_estimate"
+        elif broker.get("calc_ok"):
+            attribution = worker or fill
+            if attribution:
+                preferred["strategy_name"] = attribution.get("strategy_name") or preferred.get("strategy_name") or "unknown"
+                preferred["signal"] = attribution.get("signal") or attribution.get("strategy_name") or preferred.get("signal")
+                preferred["reason"] = attribution.get("reason") or attribution.get("exit_reason") or preferred.get("reason") or "broker_exit_fill"
+                preferred["exit_reason"] = attribution.get("exit_reason") or attribution.get("reason") or preferred.get("exit_reason") or preferred.get("reason")
+                preferred["holding_days"] = attribution.get("holding_days")
+                preferred["holding_period"] = attribution.get("holding_period") or _p175_holding_bucket(attribution)
+                preferred["recovered"] = bool(attribution.get("recovered"))
+                preferred["attribution_source"] = attribution.get("attribution_source")
+                preferred["pnl_r"] = attribution.get("pnl_r")
+
         preferred["preferred_basis"] = basis
         preferred["paired_worker_exit"] = bool(worker)
         preferred["paired_broker_fill"] = bool(fill)
@@ -8646,6 +8720,7 @@ def _loss_cluster_report(perf_state: dict | None = None, pnl_truth: dict | None 
     closed_trade_loss_limit = abs(_safe_float(halt.get("configured_daily_loss_limit"), 0.0))
     closed_trade_breach = bool((closed_trade_stop > 0 and adjusted_total <= -closed_trade_stop) or (closed_trade_loss_limit > 0 and adjusted_total <= -closed_trade_loss_limit))
     account_daily_pnl = halt.get("account_daily_pnl", pnl.get("account_daily_pnl"))
+    realized_halt = _p229_realized_closed_trade_loss_halt(pnl_truth=pnl)
 
     recommended_actions = ["do_not_shut_off_trading", "do_not_enable_intraday_live", "do_not_size_up"]
     if duplicate_pairs:
@@ -8674,6 +8749,8 @@ def _loss_cluster_report(perf_state: dict | None = None, pnl_truth: dict | None 
             "account_daily_pnl": account_daily_pnl,
             "daily_halt_active": bool(halt.get("daily_halt_active")),
             "closed_trade_realized_halt_breached": closed_trade_breach,
+            "realized_closed_trade_loss_halt_active": bool(realized_halt.get("active")),
+            "realized_closed_trade_loss_halt_reason": realized_halt.get("reason"),
             "trust_assessment": "strategy_state_duplicate_accounting_suspect" if duplicate_pairs else "no_duplicate_pairs_detected",
         },
         "broker_realized_exits_today": broker_rows,
@@ -8696,6 +8773,7 @@ def _loss_cluster_report(perf_state: dict | None = None, pnl_truth: dict | None 
             "daily_halt_active": bool(halt.get("daily_halt_active")),
             "daily_halt_reason": halt.get("daily_halt_reason"),
             "closed_trade_realized_halt_breached": closed_trade_breach,
+            "realized_closed_trade_loss_halt": realized_halt,
         },
         "recommended_actions": recommended_actions,
     }
@@ -8707,9 +8785,13 @@ def daily_halt_truth_snapshot() -> dict:
         pnl_truth = today_pnl_truth_snapshot()
         account_pnl = _account_daily_pnl_snapshot()
         acct_daily_pnl = account_pnl.get("account_daily_pnl") if account_pnl.get("ok") else daily_pnl()
-        halt_active = bool(daily_halt_active())
+        realized_halt = _p229_realized_closed_trade_loss_halt(pnl_truth=pnl_truth)
+        halt_active = bool(daily_halt_active() or realized_halt.get("active"))
         trigger = "none"
         trigger_detail = "No daily halt is active."
+        if bool(realized_halt.get("active")) and not bool(daily_halt_active()):
+            trigger = realized_halt.get("reason") or "realized_closed_trade_loss_halt"
+            trigger_detail = f"Broker-calculated closed-trade realized P&L {float(realized_halt.get('realized_closed_trade_pnl') or 0.0):.2f} breached the realized-loss entry halt. Exits remain permitted; bulk flatten is not enabled."
         if halt_active:
             net_today = _safe_float(pnl_truth.get("today_net_pnl"), 0.0)
             if configured_daily_stop_dollars > 0 and acct_daily_pnl is not None and float(acct_daily_pnl) <= -abs(configured_daily_stop_dollars):
@@ -8724,7 +8806,7 @@ def daily_halt_truth_snapshot() -> dict:
             else:
                 trigger = "manual_or_persisted_halt"
                 trigger_detail = "Daily halt is active, but configured P&L thresholds were not proven by available diagnostics."
-        return {"ok": True, "daily_halt_active": halt_active, "daily_halt_reason": trigger, "daily_halt_detail": trigger_detail, "configured_daily_loss_limit": configured_daily_loss_limit, "configured_daily_stop_dollars": configured_daily_stop_dollars, "account_daily_pnl": round(float(acct_daily_pnl), 4) if acct_daily_pnl is not None else None, "account_pnl": account_pnl, "today_pnl_truth": pnl_truth}
+        return {"ok": True, "daily_halt_active": halt_active, "daily_halt_reason": trigger, "daily_halt_detail": trigger_detail, "configured_daily_loss_limit": configured_daily_loss_limit, "configured_daily_stop_dollars": configured_daily_stop_dollars, "account_daily_pnl": round(float(acct_daily_pnl), 4) if acct_daily_pnl is not None else None, "account_pnl": account_pnl, "today_pnl_truth": pnl_truth, "realized_closed_trade_loss_halt": realized_halt}
     except Exception as exc:
         return {"ok": False, "daily_halt_active": bool(daily_halt_active()) if "daily_halt_active" in globals() else False, "daily_halt_reason": "halt_truth_unavailable", "daily_halt_detail": f"Daily halt truth failed safely: {exc}", "configured_daily_loss_limit": _configured_daily_loss_limit_safe(), "configured_daily_stop_dollars": _configured_daily_stop_dollars_safe(), "today_pnl_truth": {"ok": False, "error": str(exc), "today_realized_pnl": 0.0, "today_unrealized_pnl": 0.0, "today_net_pnl": 0.0}}
 
@@ -14955,6 +15037,10 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         activate_daily_halt("daily_stop_hit")
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="daily_stop_hit", meta=meta)
         return {"ok": False, "rejected": True, "reason": "daily_stop_hit"}
+    realized_halt = _p229_realized_closed_trade_loss_halt()
+    if bool(realized_halt.get("active")):
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason=realized_halt.get("reason") or "realized_closed_trade_loss_halt", meta={**(meta or {}), "realized_closed_trade_loss_halt": realized_halt})
+        return {"ok": False, "rejected": True, "reason": realized_halt.get("reason") or "realized_closed_trade_loss_halt", "realized_closed_trade_loss_halt": realized_halt}
     if ONLY_MARKET_HOURS and not in_market_hours():
         return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal}
 
@@ -16399,7 +16485,8 @@ def _live_loss_halt_checklist(halt_truth: dict | None, today_pnl: dict | None, f
     halt = dict(halt_truth or {})
     pnl = dict(today_pnl or halt.get("today_pnl_truth") or {})
     decision = dict(flatten_decision or {})
-    active = bool(halt.get("daily_halt_active") or daily_halt_active())
+    realized_halt = dict(halt.get("realized_closed_trade_loss_halt") or _p229_realized_closed_trade_loss_halt(pnl_truth=pnl))
+    active = bool(halt.get("daily_halt_active") or daily_halt_active() or realized_halt.get("active"))
     new_entries_blocked = bool(active or (not NEW_ENTRIES_ENABLED) or (not is_live_trading_permitted("worker_scan")))
     exits_still_permitted = bool(is_live_exit_permitted("worker_exit", reason="daily_stop_hit" if active else ""))
     bulk_flatten_allowed = bool(decision.get("allow_bulk_flatten", globals().get("ALLOW_DAILY_STOP_BULK_FLATTEN", False)))
@@ -16417,6 +16504,7 @@ def _live_loss_halt_checklist(halt_truth: dict | None, today_pnl: dict | None, f
         "today_realized_pnl": pnl.get("today_realized_pnl"),
         "today_unrealized_pnl": pnl.get("today_unrealized_pnl"),
         "configured_daily_stop_dollars": halt.get("configured_daily_stop_dollars") or _configured_daily_stop_dollars_safe(),
+        "realized_closed_trade_loss_halt": realized_halt,
         "new_entries_blocked": new_entries_blocked,
         "exits_still_permitted": exits_still_permitted,
         "bulk_flatten_allowed": bulk_flatten_allowed,
