@@ -18300,7 +18300,7 @@ def diagnostics_post_tuning_exit_validation(request: Request):
     require_admin_if_configured(request)
     return _post_tuning_exit_validation()
     
-app.get("/diagnostics/loss_cluster_report")
+@app.get("/diagnostics/loss_cluster_report")
 def diagnostics_loss_cluster_report(request: Request):
     require_admin_if_configured(request)
     return _loss_cluster_report()
