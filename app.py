@@ -14055,6 +14055,48 @@ def _hybrid_eod_readiness_view() -> dict:
         "note": mode_note,
     }
 
+def _hybrid_eod_flat_session_key(row: dict) -> str:
+    raw = (
+        (row or {}).get("settled_utc")
+        or (row or {}).get("last_observed_utc")
+        or (row or {}).get("scan_ts_utc")
+        or (row or {}).get("created_utc")
+        or (row or {}).get("ts_utc")
+    )
+    if not raw:
+        return ""
+    try:
+        return _coerce_dt_ny(raw).date().isoformat()
+    except Exception:
+        return ""
+
+
+def _hybrid_eod_flat_session_count(rows: list[dict]) -> int:
+    sessions = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "").strip().lower()
+        reason = str(row.get("settled_reason") or "").strip().lower()
+        if status != "shadow_eod_flat" and "eod_flat" not in reason:
+            continue
+        session_key = _hybrid_eod_flat_session_key(row)
+        if session_key:
+            sessions.add(session_key)
+    return len(sessions)
+
+
+def _hybrid_eod_flat_gate_ok(eod_flat_sessions: int, rows: list[dict] | None = None) -> bool:
+    required = max(0, int(HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS or 0))
+    mode = str(HYBRID_PROOF_EOD_GATE_MODE or "").strip().lower()
+
+    if mode in {"off", "disabled", "none", "false"}:
+        return True
+
+    if required <= 0:
+        return True
+
+    return int(eod_flat_sessions or 0) >= required
 
 def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
