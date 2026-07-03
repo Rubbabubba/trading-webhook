@@ -1322,7 +1322,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-235-hotfix4-deterministic-shadow-classification"
+PATCH_VERSION = "patch-236-regular-session-shadow-settlement-cap-quality-attribution"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14008,7 +14008,166 @@ def _hybrid_proof_load_ledger_compat(force: bool = False) -> dict:
             "count": len(HYBRID_PROOF_LEDGER),
         }
 
-def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) -> dict:
+def _hybrid_shadow_is_regular_session_bar(bar: dict) -> bool:
+    bar_dt_ny = _hybrid_shadow_bar_ts_ny(bar)
+    if not bar_dt_ny:
+        return False
+
+    minutes = bar_dt_ny.hour * 60 + bar_dt_ny.minute
+    regular_open = 9 * 60 + 30
+    regular_close = 16 * 60
+
+    return regular_open <= minutes < regular_close
+
+
+def _hybrid_shadow_regular_session_bars_for_row(row: dict, symbol_bars: list[dict]) -> list[dict]:
+    row_session_date = _hybrid_shadow_row_session_date(row)
+    scan_ts = row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc")
+
+    try:
+        entry_dt_ny = _coerce_dt_ny(scan_ts)
+    except Exception:
+        entry_dt_ny = None
+
+    same_session_bars = []
+    for bar in symbol_bars or []:
+        bar_dt_ny = _hybrid_shadow_bar_ts_ny(bar)
+        if not bar_dt_ny:
+            continue
+
+        if bar_dt_ny.date().isoformat() != row_session_date:
+            continue
+
+        if entry_dt_ny and bar_dt_ny < entry_dt_ny:
+            continue
+
+        if not _hybrid_shadow_is_regular_session_bar(bar):
+            continue
+
+        same_session_bars.append(bar)
+
+    same_session_bars.sort(key=lambda b: _hybrid_shadow_bar_ts_ny(b) or now_ny())
+    return same_session_bars
+
+
+def _hybrid_shadow_quality_bucket(value: float, cuts: list[float]) -> str:
+    v = _safe_float(value)
+    if not cuts:
+        return "all"
+
+    lower = None
+    for cut in cuts:
+        if v < cut:
+            if lower is None:
+                return f"<{cut:g}"
+            return f"{lower:g}-{cut:g}"
+        lower = cut
+
+    return f">={cuts[-1]:g}"
+
+
+def _hybrid_shadow_time_bucket(row: dict) -> str:
+    raw = row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc")
+    try:
+        dt = _coerce_dt_ny(raw)
+    except Exception:
+        return "unknown"
+
+    minutes = dt.hour * 60 + dt.minute
+
+    if minutes < 10 * 60:
+        return "09:30-09:59"
+    if minutes < 11 * 60:
+        return "10:00-10:59"
+    if minutes < 12 * 60:
+        return "11:00-11:59"
+    if minutes < 14 * 60:
+        return "12:00-13:59"
+    if minutes < 15 * 60:
+        return "14:00-14:59"
+    if minutes < 16 * 60:
+        return "15:00-15:59"
+    return "outside_regular"
+
+def _hybrid_shadow_quality_attribution(rows: list[dict]) -> dict:
+    performance_rows = [
+        r for r in rows or []
+        if isinstance(r, dict) and _hybrid_shadow_is_settled(r)
+    ]
+
+    def build_group(key_fn):
+        groups = {}
+
+        for row in performance_rows:
+            key = str(key_fn(row) or "unknown")
+            item = groups.setdefault(key, {
+                "count": 0,
+                "wins": 0,
+                "losses": 0,
+                "flat": 0,
+                "avg_r_sum": 0.0,
+                "avg_return_sum": 0.0,
+                "best_r": None,
+                "worst_r": None,
+                "status_counts": {},
+            })
+
+            r_value = _safe_float(row.get("latest_r") or 0.0)
+            return_pct = _safe_float(row.get("latest_return_pct") or 0.0)
+            status = str(row.get("status") or "unknown").strip().lower()
+
+            item["count"] += 1
+            item["avg_r_sum"] += r_value
+            item["avg_return_sum"] += return_pct
+            item["status_counts"][status] = item["status_counts"].get(status, 0) + 1
+
+            if r_value > 0:
+                item["wins"] += 1
+            elif r_value < 0:
+                item["losses"] += 1
+            else:
+                item["flat"] += 1
+
+            item["best_r"] = r_value if item["best_r"] is None else max(item["best_r"], r_value)
+            item["worst_r"] = r_value if item["worst_r"] is None else min(item["worst_r"], r_value)
+
+        out = []
+        for key, item in groups.items():
+            count = max(1, int(item["count"]))
+            out.append({
+                "key": key,
+                "count": item["count"],
+                "wins": item["wins"],
+                "losses": item["losses"],
+                "flat": item["flat"],
+                "win_rate": round(item["wins"] / count, 4),
+                "avg_r": round(item["avg_r_sum"] / count, 4),
+                "avg_return_pct": round((item["avg_return_sum"] / count) * 100.0, 4),
+                "best_r": round(_safe_float(item["best_r"]), 4),
+                "worst_r": round(_safe_float(item["worst_r"]), 4),
+                "status_counts": item["status_counts"],
+            })
+
+        out.sort(key=lambda x: (x.get("avg_r", 0.0), x.get("count", 0)), reverse=True)
+        return out
+
+    return {
+        "sample_count": len(performance_rows),
+        "by_signal": build_group(lambda r: r.get("signal") or r.get("strategy_name") or "unknown"),
+        "by_symbol": build_group(lambda r: r.get("symbol") or "unknown"),
+        "by_status": build_group(lambda r: r.get("status") or "unknown"),
+        "by_score_bucket": build_group(lambda r: _hybrid_shadow_quality_bucket(_safe_float(r.get("score") or 0.0), [90, 100, 110, 120])),
+        "by_rank_score_bucket": build_group(lambda r: _hybrid_shadow_quality_bucket(_safe_float(r.get("rank_score") or 0.0), [100, 120, 130, 140])),
+        "by_time_bucket": build_group(_hybrid_shadow_time_bucket),
+        "unverifiable_count": sum(1 for r in rows or [] if isinstance(r, dict) and _hybrid_shadow_is_unverifiable(r)),
+        "open_shadow_count": sum(1 for r in rows or [] if isinstance(r, dict) and str(r.get("status") or "").strip().lower() == "open_shadow"),
+    }
+
+def _hybrid_shadow_backfill_settlements(
+    apply: bool = False,
+    limit: int = 1000,
+    recompute_terminal: bool = False,
+) -> dict:
     _ensure_runtime_state_loaded()
     ledger_load = _hybrid_proof_load_ledger_compat()
 
@@ -14025,14 +14184,25 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
         }
 
     rows = [r for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
-    open_rows = [
+
+    target_statuses = {"open_shadow"}
+    if recompute_terminal:
+        target_statuses = {
+            "open_shadow",
+            "shadow_stop_hit",
+            "shadow_target_hit",
+            "shadow_eod_flat",
+        }
+
+    target_rows = [
         r for r in rows
-        if str(r.get("status") or "").strip().lower() == "open_shadow"
+        if str(r.get("status") or "").strip().lower() in target_statuses
+        and str(r.get("source") or "").strip().lower() in {"intraday_shadow", ""}
     ][: max(1, min(int(limit or 1000), 5000))]
 
     symbols = sorted({
         str(r.get("symbol") or "").upper().strip()
-        for r in open_rows
+        for r in target_rows
         if str(r.get("symbol") or "").strip()
     })
 
@@ -14044,7 +14214,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 lookback_days=max(1, HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS),
             ) or {}
         except Exception as exc:
-            logger.warning("hybrid shadow deterministic classification bars fetch failed: %s", exc)
+            logger.warning("hybrid shadow regular-session classification bars fetch failed: %s", exc)
             bars_by_symbol = {}
 
     now_local = now_ny()
@@ -14066,25 +14236,17 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
     eod_flat_count = 0
     examples = []
 
-    for row in open_rows:
+    for row in target_rows:
         checked += 1
 
+        original_status = str(row.get("status") or "").strip().lower()
         symbol = str(row.get("symbol") or "").upper().strip()
         row_session_date = _hybrid_shadow_row_session_date(row)
         entry_price = _safe_float(row.get("entry_price") or row.get("entry") or 0.0)
         stop_price = _safe_float(row.get("stop_price") or row.get("stop") or 0.0)
         target_price = _safe_float(row.get("target_price") or row.get("target") or 0.0)
         scan_ts = row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc")
-
-        try:
-            row_date = _hybrid_shadow_parse_session_date(row_session_date)
-        except Exception:
-            row_date = None
-
-        try:
-            entry_dt_ny = _coerce_dt_ny(scan_ts)
-        except Exception:
-            entry_dt_ny = None
+        row_date = _hybrid_shadow_parse_session_date(row_session_date)
 
         if not symbol or not row_session_date or not row_date or entry_price <= 0:
             invalid_rows += 1
@@ -14101,30 +14263,17 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 "symbol": symbol,
                 "scan_ts_utc": scan_ts,
                 "row_session_date": row_session_date,
+                "original_status": original_status,
                 "status": "shadow_unverifiable",
                 "reason": "invalid_shadow_row",
                 "same_session": False,
             })
             continue
 
-        same_session_bars = []
-        for bar in list(bars_by_symbol.get(symbol) or []):
-            bar_dt_ny = _hybrid_shadow_bar_ts_ny(bar)
-            if not bar_dt_ny:
-                continue
-
-            bar_session_date = bar_dt_ny.date().isoformat()
-            if bar_session_date != row_session_date:
-                if entry_dt_ny and bar_dt_ny >= entry_dt_ny:
-                    cross_session_bars_rejected += 1
-                continue
-
-            if entry_dt_ny and bar_dt_ny < entry_dt_ny:
-                continue
-
-            same_session_bars.append(bar)
-
-        same_session_bars.sort(key=lambda b: _hybrid_shadow_bar_ts_ny(b) or now_ny())
+        same_session_bars = _hybrid_shadow_regular_session_bars_for_row(
+            row,
+            list(bars_by_symbol.get(symbol) or []),
+        )
 
         if not same_session_bars:
             no_same_session_bars += 1
@@ -14132,7 +14281,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
 
             if apply:
                 row["status"] = "shadow_unverifiable"
-                row["unverifiable_reason"] = "no_same_session_bars"
+                row["unverifiable_reason"] = "no_regular_session_bars"
                 row["settlement_patch"] = PATCH_VERSION
                 row["settlement_same_session"] = False
                 classified_unverifiable += 1
@@ -14141,8 +14290,9 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 "symbol": symbol,
                 "scan_ts_utc": scan_ts,
                 "row_session_date": row_session_date,
+                "original_status": original_status,
                 "status": "shadow_unverifiable",
-                "reason": "no_same_session_bars",
+                "reason": "no_regular_session_bars",
                 "same_session": False,
             })
             continue
@@ -14158,7 +14308,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
             if stop_price > 0 and low > 0 and low <= stop_price:
                 chosen = {
                     "status": "shadow_stop_hit",
-                    "reason": "same_session_backfill_stop_hit",
+                    "reason": "regular_session_backfill_stop_hit",
                     "price": stop_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(bar),
                 }
@@ -14167,7 +14317,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
             if target_price > 0 and high > 0 and high >= target_price:
                 chosen = {
                     "status": "shadow_target_hit",
-                    "reason": "same_session_backfill_target_hit",
+                    "reason": "regular_session_backfill_target_hit",
                     "price": target_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(bar),
                 }
@@ -14181,22 +14331,23 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 close_price = _safe_float(last_bar.get("close") or last_bar.get("c") or entry_price)
                 chosen = {
                     "status": "shadow_eod_flat",
-                    "reason": "historical_same_session_backfill_eod_flat" if historical_session else "same_session_backfill_eod_flat",
+                    "reason": "regular_session_backfill_eod_flat",
                     "price": close_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(last_bar),
                 }
             else:
                 session_incomplete += 1
                 if apply:
-                    row["settlement_backfill_reason"] = "same_session_incomplete"
+                    row["settlement_backfill_reason"] = "regular_session_incomplete"
                     row["settlement_patch"] = PATCH_VERSION
 
                 examples.append({
                     "symbol": symbol,
                     "scan_ts_utc": scan_ts,
                     "row_session_date": row_session_date,
+                    "original_status": original_status,
                     "status": "open_shadow",
-                    "reason": "same_session_incomplete",
+                    "reason": "regular_session_incomplete",
                     "same_session": True,
                 })
                 continue
@@ -14223,8 +14374,32 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 "symbol": symbol,
                 "scan_ts_utc": scan_ts,
                 "row_session_date": row_session_date,
+                "original_status": original_status,
                 "status": "shadow_unverifiable",
                 "reason": "rejected_cross_session_settlement",
+                "settlement_session_date": settled_session_date,
+                "same_session": False,
+            })
+            continue
+
+        if not _hybrid_shadow_is_regular_session_bar({"ts_utc": chosen.get("ts_utc")}):
+            cross_session_bars_rejected += 1
+            would_classify_unverifiable += 1
+
+            if apply:
+                row["status"] = "shadow_unverifiable"
+                row["unverifiable_reason"] = "rejected_non_regular_session_settlement"
+                row["settlement_patch"] = PATCH_VERSION
+                row["settlement_same_session"] = False
+                classified_unverifiable += 1
+
+            examples.append({
+                "symbol": symbol,
+                "scan_ts_utc": scan_ts,
+                "row_session_date": row_session_date,
+                "original_status": original_status,
+                "status": "shadow_unverifiable",
+                "reason": "rejected_non_regular_session_settlement",
                 "settlement_session_date": settled_session_date,
                 "same_session": False,
             })
@@ -14249,18 +14424,22 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
             )
             row["settlement_session_date"] = row_session_date
             row["settlement_same_session"] = True
+            row["settlement_regular_session"] = True
+            row["settlement_patch"] = PATCH_VERSION
             settled += 1
 
         examples.append({
             "symbol": symbol,
             "scan_ts_utc": scan_ts,
             "row_session_date": row_session_date,
+            "original_status": original_status,
             "status": chosen["status"],
             "reason": chosen["reason"],
             "price": round(float(chosen["price"]), 4),
             "ts_utc": chosen["ts_utc"],
             "settlement_session_date": settled_session_date,
             "same_session": True,
+            "regular_session": True,
         })
 
     persist_result = {"ok": True, "method": "not_needed"}
@@ -14275,8 +14454,10 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
         "enabled": True,
         "apply": bool(apply),
         "same_session_only": True,
+        "regular_session_only": True,
         "classifies_unverifiable": True,
         "deterministic_classification": True,
+        "recompute_terminal": bool(recompute_terminal),
         "checked": checked,
         "would_settle": would_settle,
         "settled": settled,
@@ -14484,6 +14665,7 @@ def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
         if str(r.get("status") or "").strip().lower() == "open_shadow"
     ]
     status_breakdown = _hybrid_shadow_status_breakdown(rows)
+    quality_attribution = _hybrid_shadow_quality_attribution(rows)
 
     all_returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in rows]
     all_r_values = [_safe_float(r.get("latest_r") or 0.0) for r in rows]
@@ -14569,6 +14751,7 @@ def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
         "open_shadow_count": open_shadow_count,
         "unverifiable_count": len(unverifiable_rows),
         "status_breakdown": status_breakdown,
+        "quality_attribution": quality_attribution,
         "settled_avg_return_pct": round(settled_avg_return * 100.0, 4),
         "settled_avg_r": round(settled_avg_r, 4),
         "settled_positive_rate": round(settled_positive_rate, 4),
@@ -18337,9 +18520,14 @@ def diagnostics_intraday_shadow_settlement_backfill(
     request: Request,
     apply: bool = False,
     limit: int = 1000,
+    recompute_terminal: bool = False,
 ):
     require_admin_if_configured(request)
-    summary = _hybrid_shadow_backfill_settlements(apply=bool(apply), limit=int(limit or 1000))
+    summary = _hybrid_shadow_backfill_settlements(
+        apply=bool(apply),
+        limit=int(limit or 1000),
+        recompute_terminal=bool(recompute_terminal),
+    )
     capacity_plan = _hybrid_capacity_plan()
     proof_metrics = _hybrid_proof_metrics(capacity_plan=capacity_plan)
     live_preflight = _intraday_live_preflight(proof_metrics=proof_metrics)
@@ -18367,6 +18555,7 @@ def diagnostics_hybrid_proof(request: Request, limit: int = 50):
         "ledger_load": ledger_load,
         "hybrid_capacity_plan": capacity_plan,
         "proof_metrics": proof_metrics,
+        "quality_attribution": proof_metrics.get("quality_attribution") or {},
         "live_promotion_truth": {
             "ready": proof_metrics.get("live_promotion_ready"),
             "blockers": proof_metrics.get("live_promotion_blockers"),
