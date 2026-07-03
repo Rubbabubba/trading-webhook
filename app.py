@@ -14153,23 +14153,30 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 row_date = None
 
             session_complete = False
+            historical_session = False
+
             if row_date:
                 if row_date < today_local:
+                    historical_session = True
                     session_complete = True
                 elif row_date == today_local and not market_now_open and after_regular_close:
                     session_complete = True
 
             last_dt_ny = _hybrid_shadow_bar_ts_ny(last_bar)
+
             if HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION and last_dt_ny:
-                session_complete = session_complete and (
-                    last_dt_ny.hour > 15 or (last_dt_ny.hour == 15 and last_dt_ny.minute >= 55)
-                )
+                if historical_session:
+                    session_complete = True
+                else:
+                    session_complete = session_complete and (
+                        last_dt_ny.hour > 15 or (last_dt_ny.hour == 15 and last_dt_ny.minute >= 55)
+                    )
 
             if session_complete:
                 close_price = _safe_float(last_bar.get("close") or last_bar.get("c") or entry_price)
                 chosen = {
                     "status": "shadow_eod_flat",
-                    "reason": "same_session_backfill_eod_flat",
+                    "reason": "historical_same_session_backfill_eod_flat" if historical_session else "same_session_backfill_eod_flat",
                     "price": close_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(last_bar),
                     "session_date": row_session_date,
