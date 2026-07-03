@@ -13726,6 +13726,22 @@ def _hybrid_shadow_is_settled(row: dict) -> bool:
         "shadow_settled",
     }
 
+def _hybrid_shadow_parse_session_date(session_date: str):
+    text = str(session_date or "").strip()[:10]
+    if not text:
+        return None
+
+    try:
+        parts = text.split("-")
+        if len(parts) != 3:
+            return None
+        year = int(parts[0])
+        month = int(parts[1])
+        day = int(parts[2])
+        return datetime(year, month, day, tzinfo=NY_TZ).date()
+    except Exception:
+        return None
+
 def _hybrid_shadow_is_unverifiable(row: dict) -> bool:
     status = str((row or {}).get("status") or "").strip().lower()
     return status == "shadow_unverifiable"
@@ -14061,7 +14077,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
         scan_ts = row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc")
 
         try:
-            row_date = date.fromisoformat(row_session_date) if row_session_date else None
+            row_date = _hybrid_shadow_parse_session_date(row_session_date)
         except Exception:
             row_date = None
 
