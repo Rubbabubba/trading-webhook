@@ -16044,7 +16044,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         plan["days_held"] = hold_days
         max_hold_days = int(plan.get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0)
 
-                damage_guard = _swing_opening_damage_guard(symbol, plan, float(px)) if STRATEGY_MODE == "swing" else {"triggered": False}
+        damage_guard = _swing_opening_damage_guard(symbol, plan, float(px)) if STRATEGY_MODE == "swing" else {"triggered": False}
         if damage_guard.get("triggered"):
             plan["last_exit_attempt_ts"] = now_ts
             reason = "opening_damage_exit"
