@@ -13777,6 +13777,93 @@ def _hybrid_shadow_row_session_date(row: dict) -> str:
     except Exception:
         return ""
 
+def _hybrid_shadow_persist_ledger_after_backfill() -> dict:
+    existing_helpers = [
+        "_save_hybrid_proof_ledger",
+        "_persist_hybrid_proof_ledger",
+        "_save_runtime_state",
+        "_persist_state",
+    ]
+
+    for helper_name in existing_helpers:
+        helper = globals().get(helper_name)
+        if callable(helper):
+            try:
+                helper()
+                return {
+                    "ok": True,
+                    "method": helper_name,
+                    "path": HYBRID_PROOF_LEDGER_STATE_PATH,
+                }
+            except TypeError:
+                try:
+                    helper(HYBRID_PROOF_LEDGER)
+                    return {
+                        "ok": True,
+                        "method": helper_name,
+                        "path": HYBRID_PROOF_LEDGER_STATE_PATH,
+                    }
+                except Exception as exc:
+                    logger.warning("hybrid proof ledger helper persist failed helper=%s err=%s", helper_name, exc)
+            except Exception as exc:
+                logger.warning("hybrid proof ledger helper persist failed helper=%s err=%s", helper_name, exc)
+
+    path = str(HYBRID_PROOF_LEDGER_STATE_PATH or "").strip()
+    if not path:
+        return {
+            "ok": False,
+            "method": "none",
+            "error": "HYBRID_PROOF_LEDGER_STATE_PATH is empty",
+        }
+
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+        payload = list(HYBRID_PROOF_LEDGER)
+
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as existing_file:
+                    existing_payload = json.load(existing_file)
+
+                if isinstance(existing_payload, dict):
+                    existing_payload["patch_version"] = PATCH_VERSION
+                    existing_payload["updated_utc"] = utc_now_iso()
+                    if "ledger" in existing_payload:
+                        existing_payload["ledger"] = list(HYBRID_PROOF_LEDGER)
+                    elif "hybrid_proof_ledger" in existing_payload:
+                        existing_payload["hybrid_proof_ledger"] = list(HYBRID_PROOF_LEDGER)
+                    elif "rows" in existing_payload:
+                        existing_payload["rows"] = list(HYBRID_PROOF_LEDGER)
+                    else:
+                        existing_payload["ledger"] = list(HYBRID_PROOF_LEDGER)
+                    payload = existing_payload
+        except Exception as exc:
+            logger.warning("hybrid proof ledger existing payload read failed path=%s err=%s", path, exc)
+
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, default=str)
+
+        os.replace(tmp_path, path)
+
+        return {
+            "ok": True,
+            "method": "json_fallback",
+            "path": path,
+            "ledger_count": len(HYBRID_PROOF_LEDGER),
+        }
+    except Exception as exc:
+        logger.exception("hybrid proof ledger persist failed")
+        return {
+            "ok": False,
+            "method": "json_fallback",
+            "path": path,
+            "error": str(exc),
+        }
+
 def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) -> dict:
     _ensure_runtime_state_loaded()
 
@@ -13984,8 +14071,29 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 row["settlement_backfill_reason"] = "same_session_not_settleable"
                 row["settlement_patch"] = PATCH_VERSION
 
+    persist_result = {"ok": True, "method": "not_needed"}
+
     if apply and settled:
-        _persist_runtime_state()
+        persist_result = _hybrid_shadow_persist_ledger_after_backfill()
+        if not persist_result.get("ok"):
+            return {
+                "enabled": True,
+                "apply": bool(apply),
+                "same_session_only": True,
+                "checked": checked,
+                "would_settle": would_settle,
+                "settled": settled,
+                "open_remaining": open_remaining,
+                "no_same_session_bars": no_same_session_bars,
+                "session_incomplete": session_incomplete,
+                "cross_session_bars_rejected": cross_session_bars_rejected,
+                "invalid_rows": invalid_rows,
+                "symbols_checked": symbols,
+                "lookback_days": HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS,
+                "require_full_session": HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION,
+                "persist_result": persist_result,
+                "examples": examples[:25],
+            }
 
     return {
         "enabled": True,
@@ -14002,6 +14110,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
         "symbols_checked": symbols,
         "lookback_days": HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS,
         "require_full_session": HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION,
+        "persist_result": persist_result,
         "examples": examples[:25],
     }
 
