@@ -833,6 +833,10 @@ SWING_STALL_TUNING_START_UTC = str(getenv_any("SWING_STALL_TUNING_START_UTC", de
 SWING_STALL_LOSS_GUARD_ENABLED = env_bool_any("SWING_STALL_LOSS_GUARD_ENABLED", default=True)
 SWING_STALL_LOSS_GUARD_DAYS = getenv_int_any("SWING_STALL_LOSS_GUARD_DAYS", default=1)
 SWING_STALL_MAX_LOSS_R = getenv_float_any("SWING_STALL_MAX_LOSS_R", default=-0.60)
+SWING_OPENING_DAMAGE_GUARD_ENABLED = env_bool_any("SWING_OPENING_DAMAGE_GUARD_ENABLED", default=True)
+SWING_OPENING_DAMAGE_MAX_LOSS_R = getenv_float_any("SWING_OPENING_DAMAGE_MAX_LOSS_R", default=-1.10)
+SWING_OPENING_DAMAGE_GRACE_MIN = getenv_int_any("SWING_OPENING_DAMAGE_GRACE_MIN", default=5)
+SWING_OPENING_DAMAGE_REQUIRE_MARKET_OPEN = env_bool_any("SWING_OPENING_DAMAGE_REQUIRE_MARKET_OPEN", default=True)
 SWING_PARTIAL_PROFIT_ENABLED = env_bool_any("SWING_PARTIAL_PROFIT_ENABLED", default=True)
 SWING_PARTIAL_PROFIT_R = getenv_float_any("SWING_PARTIAL_PROFIT_R", default=1.0)
 SWING_PARTIAL_PROFIT_FRACTION = getenv_float_any("SWING_PARTIAL_PROFIT_FRACTION", default=0.5)
@@ -1309,7 +1313,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-231-exchange-calendar-market-guard-pending-order-freeze"
+PATCH_VERSION = "patch-232-swing-opening-damage-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7941,7 +7945,18 @@ def same_day_exit_blocked(plan: dict, reason: str = "") -> bool:
         return False
     if SWING_ALLOW_SAME_DAY_EXIT:
         return False
-    if (reason or "").strip().lower() in {"kill_switch", "daily_stop_hit", "broker_reconcile_failure", "manual_emergency", "catastrophic_invalid"}:
+    protective_reasons = {
+        "kill_switch",
+        "daily_stop_hit",
+        "broker_reconcile_failure",
+        "manual_emergency",
+        "catastrophic_invalid",
+        "stop",
+        "profit_lock_stop",
+        "opening_damage_exit",
+        "stall_loss_guard",
+    }
+    if (reason or "").strip().lower() in protective_reasons:
         return False
     opened = _parse_plan_opened_dt(plan)
     if opened is None:
@@ -15034,7 +15049,70 @@ def _swing_unrealized_r(plan: dict, px: float) -> float:
     return (entry - float(px)) / risk
 
 
+def _swing_opening_damage_guard(symbol: str, plan: dict, px: float) -> dict:
+    out = {
+        "enabled": bool(SWING_OPENING_DAMAGE_GUARD_ENABLED),
+        "triggered": False,
+        "reason": "disabled",
+        "symbol": str(symbol or "").upper(),
+    }
+    if not SWING_OPENING_DAMAGE_GUARD_ENABLED:
+        return out
+    if STRATEGY_MODE != "swing":
+        out["reason"] = "strategy_mode_not_swing"
+        return out
+    if SWING_OPENING_DAMAGE_REQUIRE_MARKET_OPEN and not in_market_hours():
+        out["reason"] = "market_not_open"
+        return out
 
+    side = str((plan or {}).get("side") or "buy").lower()
+    if side != "buy":
+        out["reason"] = "not_long"
+        return out
+
+    entry = _safe_float((plan or {}).get("entry_price") or (plan or {}).get("avg_fill_price") or 0.0)
+    risk = _plan_risk_per_share(plan or {})
+    if entry <= 0 or risk <= 0 or px <= 0:
+        out["reason"] = "missing_entry_or_risk"
+        return out
+
+    hold_days = plan_days_held(plan or {})
+    unrealized_r = _swing_unrealized_r(plan or {}, float(px))
+    minutes_since_open = _minutes_since_market_open()
+    max_loss_r = float(SWING_OPENING_DAMAGE_MAX_LOSS_R or -1.10)
+    grace_min = max(0, int(SWING_OPENING_DAMAGE_GRACE_MIN or 0))
+
+    out.update({
+        "reason": "ok",
+        "entry_price": round(entry, 4),
+        "price": round(float(px), 4),
+        "risk_per_share": round(risk, 4),
+        "hold_days": int(hold_days),
+        "unrealized_r": round(unrealized_r, 4),
+        "max_loss_r": float(max_loss_r),
+        "minutes_since_market_open": round(float(minutes_since_open), 3),
+        "grace_min": int(grace_min),
+    })
+
+    if minutes_since_open < grace_min:
+        out["reason"] = "opening_grace_active"
+        return out
+
+    if unrealized_r <= max_loss_r:
+        out["triggered"] = True
+        out["reason"] = "opening_damage_max_loss_r"
+        return out
+
+    stop = _safe_float((plan or {}).get("stop_price") or 0.0)
+    initial_stop = _safe_float((plan or {}).get("initial_stop_price") or 0.0)
+    protective_stop = initial_stop if initial_stop > 0 else stop
+    if protective_stop > 0 and float(px) <= protective_stop:
+        out["triggered"] = True
+        out["reason"] = "opening_damage_below_protective_stop"
+        out["protective_stop"] = round(protective_stop, 4)
+        return out
+
+    return out
 
 
 def _normalize_long_exit_plan(plan: dict, px: float) -> dict:
@@ -15966,6 +16044,39 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         plan["days_held"] = hold_days
         max_hold_days = int(plan.get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0)
 
+                damage_guard = _swing_opening_damage_guard(symbol, plan, float(px)) if STRATEGY_MODE == "swing" else {"triggered": False}
+        if damage_guard.get("triggered"):
+            plan["last_exit_attempt_ts"] = now_ts
+            reason = "opening_damage_exit"
+            out = close_position(symbol, reason=reason, source="worker_exit")
+            if out.get("closed"):
+                plan["active"] = False
+                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+                results.append({
+                    "symbol": symbol,
+                    "action": reason,
+                    "price": px,
+                    "stop": stop_price,
+                    "take": take_price,
+                    "days_held": hold_days,
+                    "damage_guard": damage_guard,
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                    "stall_r": dynamic_exit.get("stall_r"),
+                    **out,
+                })
+            else:
+                results.append({
+                    "symbol": symbol,
+                    "action": f"{reason}_failed",
+                    "price": px,
+                    "days_held": hold_days,
+                    "damage_guard": damage_guard,
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                    "stall_r": dynamic_exit.get("stall_r"),
+                    **out,
+                })
+            continue
+        
         if dynamic_exit.get("partial_profit_ready") and not bool(plan.get("partial_profit_taken")):
             qty_to_close = float(dynamic_exit.get("partial_profit_qty") or 0.0)
             if qty_to_close > 0:
@@ -15995,7 +16106,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
 
         if dynamic_exit.get("stall_exit"):
             plan["last_exit_attempt_ts"] = now_ts
-            reason = "stall_exit"
+            reason = "stall_loss_guard" if "stall_loss_guard_ready" in set(dynamic_exit.get("flags") or []) else "stall_exit"
             if same_day_exit_blocked(plan, reason=reason):
                 results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": reason, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r")})
                 continue
@@ -18170,6 +18281,55 @@ def _p210_candidate_keys(rows: list[dict], attribution: dict | None = None) -> l
     return list(candidates.values())
 
 
+def _swing_damage_guard_snapshot() -> dict:
+    rows = []
+    for symbol, plan in list((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not bool(plan.get("active")):
+            continue
+        sym = str(symbol or plan.get("symbol") or "").upper()
+        if not sym:
+            continue
+        try:
+            qty_signed, _pos_side = get_position(sym)
+        except Exception:
+            qty_signed = 0
+        try:
+            px = get_latest_price(sym) if qty_signed != 0 else 0.0
+        except Exception:
+            px = 0.0
+        guard = _swing_opening_damage_guard(sym, plan, float(px)) if px > 0 else {
+            "enabled": bool(SWING_OPENING_DAMAGE_GUARD_ENABLED),
+            "triggered": False,
+            "reason": "latest_price_unavailable",
+            "symbol": sym,
+        }
+        rows.append({
+            "symbol": sym,
+            "active": bool(plan.get("active")),
+            "broker_position_qty": qty_signed,
+            "price": round(float(px), 4) if px else None,
+            "entry_price": plan.get("entry_price"),
+            "stop_price": plan.get("stop_price"),
+            "initial_stop_price": plan.get("initial_stop_price"),
+            "take_price": plan.get("take_price"),
+            "days_held": plan_days_held(plan),
+            "damage_guard": guard,
+        })
+    triggered = [r for r in rows if bool((r.get("damage_guard") or {}).get("triggered"))]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "strategy_mode": STRATEGY_MODE,
+        "market_open": bool(in_market_hours()),
+        "enabled": bool(SWING_OPENING_DAMAGE_GUARD_ENABLED),
+        "max_loss_r": float(SWING_OPENING_DAMAGE_MAX_LOSS_R),
+        "grace_min": int(SWING_OPENING_DAMAGE_GRACE_MIN),
+        "positions_checked": len(rows),
+        "triggered_count": len(triggered),
+        "triggered_symbols": [r.get("symbol") for r in triggered],
+        "positions": rows,
+    }
+
 def _swing_profit_acceleration_simulator(perf_state: dict | None = None) -> dict:
     state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
     state, _ = _patch175_enrich_state_if_needed(state)
@@ -18639,6 +18799,10 @@ def diagnostics_swing_stall_exit_drilldown(request: Request):
     require_admin_if_configured(request)
     return _swing_stall_exit_drilldown()
 
+@app.get("/diagnostics/swing_damage_guard")
+def diagnostics_swing_damage_guard(request: Request):
+    require_admin_if_configured(request)
+    return _swing_damage_guard_snapshot()
 
 @app.get("/diagnostics/stall_exit_tuning_monitor")
 def diagnostics_stall_exit_tuning_monitor(request: Request):
