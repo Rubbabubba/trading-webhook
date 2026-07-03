@@ -745,6 +745,15 @@ HYBRID_PROOF_MIN_AVG_R = float(getenv_any("HYBRID_PROOF_MIN_AVG_R", default="0.1
 HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS = int(getenv_any("HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS", default="3"))
 HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER = env_bool("HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER", False)
 HYBRID_PROOF_EOD_GATE_MODE = str(getenv_any("HYBRID_PROOF_EOD_GATE_MODE", default="intraday_only") or "intraday_only").strip().lower()
+
+HYBRID_PROOF_SETTLEMENT_BACKFILL_ENABLE = env_bool("HYBRID_PROOF_SETTLEMENT_BACKFILL_ENABLE", True)
+HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS = int(getenv_any("HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS", default="10"))
+HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION = env_bool("HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION", False)
+
+HYBRID_PROOF_LIVE_PROMOTION_MAX_OPEN_SHADOW = int(getenv_any("HYBRID_PROOF_LIVE_PROMOTION_MAX_OPEN_SHADOW", default="0"))
+HYBRID_PROOF_LIVE_PROMOTION_MIN_SETTLED = int(getenv_any("HYBRID_PROOF_LIVE_PROMOTION_MIN_SETTLED", default="20"))
+HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE = float(getenv_any("HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE", default="0.52"))
+HYBRID_PROOF_LIVE_PROMOTION_MAX_WORST_R = float(getenv_any("HYBRID_PROOF_LIVE_PROMOTION_MAX_WORST_R", default="-2.00"))
 HYBRID_MODE = str(getenv_any("HYBRID_MODE", default="shadow") or "shadow").strip().lower()
 PAPER_LIFECYCLE_HISTORY_LIMIT = int(getenv_any("PAPER_LIFECYCLE_HISTORY_LIMIT", default="500"))
 SCANNER_TELEMETRY_HISTORY_LIMIT = int(getenv_any("SCANNER_TELEMETRY_HISTORY_LIMIT", default="500"))
@@ -1313,7 +1322,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-232-swing-opening-damage-guard"
+PATCH_VERSION = "patch-233-intraday-shadow-settlement-backfill-live-promotion-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -13707,6 +13716,212 @@ def _hybrid_proof_update_entry(row: dict, latest_price: float, ts_utc: str = "")
                 pass
     return row
 
+def _hybrid_shadow_is_settled(row: dict) -> bool:
+    status = str((row or {}).get("status") or "").strip().lower()
+    return status in {
+        "shadow_stop_hit",
+        "shadow_target_hit",
+        "shadow_eod_flat",
+        "shadow_expired",
+        "shadow_settled",
+    }
+
+
+def _hybrid_shadow_bar_ts_utc(bar: dict) -> str:
+    raw = (bar or {}).get("ts_utc") or (bar or {}).get("timestamp") or (bar or {}).get("t")
+    if isinstance(raw, datetime):
+        dt = raw
+    else:
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except Exception:
+            return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _hybrid_shadow_bar_ts_ny(bar: dict) -> Optional[datetime]:
+    raw = (bar or {}).get("ts_ny") or (bar or {}).get("ts_utc") or (bar or {}).get("timestamp") or (bar or {}).get("t")
+    try:
+        return _coerce_dt_ny(raw)
+    except Exception:
+        return None
+
+
+def _hybrid_shadow_settle_row(row: dict, price: float, status: str, reason: str, ts_utc: str) -> dict:
+    _hybrid_proof_update_entry(row, price, ts_utc=ts_utc)
+    row["status"] = status
+    row["settled_reason"] = reason
+    row["settled_utc"] = ts_utc or utc_now_iso()
+    row["settlement_price"] = round(float(price), 4)
+    row["settlement_backfilled"] = True
+    row["settlement_patch"] = PATCH_VERSION
+    return row
+
+
+def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) -> dict:
+    _ensure_runtime_state_loaded()
+
+    if not HYBRID_PROOF_SETTLEMENT_BACKFILL_ENABLE:
+        return {
+            "enabled": False,
+            "apply": bool(apply),
+            "checked": 0,
+            "settled": 0,
+            "open_remaining": 0,
+            "reason": "HYBRID_PROOF_SETTLEMENT_BACKFILL_ENABLE=false",
+        }
+
+    rows = [r for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
+    open_rows = [
+        r for r in rows
+        if str(r.get("status") or "").strip().lower() == "open_shadow"
+    ][: max(1, min(int(limit or 1000), 5000))]
+
+    symbols = sorted({
+        str(r.get("symbol") or "").upper().strip()
+        for r in open_rows
+        if str(r.get("symbol") or "").strip()
+    })
+
+    bars_by_symbol = {}
+    if symbols:
+        try:
+            bars_by_symbol = fetch_1m_bars_multi_guarded(
+                symbols,
+                lookback_days=max(1, HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS),
+            ) or {}
+        except Exception as exc:
+            logger.warning("hybrid shadow backfill bars fetch failed: %s", exc)
+            bars_by_symbol = {}
+
+    market_now_open = bool(in_market_hours())
+    today_ny = now_ny().date()
+
+    checked = 0
+    settled = 0
+    would_settle = 0
+    open_remaining = 0
+    no_forward_bars = 0
+    examples = []
+
+    for row in open_rows:
+        checked += 1
+        symbol = str(row.get("symbol") or "").upper().strip()
+        entry_price = _safe_float(row.get("entry_price") or row.get("entry") or 0.0)
+        stop_price = _safe_float(row.get("stop_price") or row.get("stop") or 0.0)
+        target_price = _safe_float(row.get("target_price") or row.get("target") or 0.0)
+        scan_ts = row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc")
+
+        try:
+            entry_dt_ny = _coerce_dt_ny(scan_ts)
+        except Exception:
+            entry_dt_ny = None
+
+        symbol_bars = list(bars_by_symbol.get(symbol) or [])
+        forward_bars = []
+        for bar in symbol_bars:
+            bar_dt_ny = _hybrid_shadow_bar_ts_ny(bar)
+            if not bar_dt_ny:
+                continue
+            if entry_dt_ny and bar_dt_ny < entry_dt_ny:
+                continue
+            forward_bars.append(bar)
+
+        forward_bars.sort(key=lambda b: _hybrid_shadow_bar_ts_ny(b) or now_ny())
+
+        if not forward_bars:
+            no_forward_bars += 1
+            open_remaining += 1
+            row["settlement_backfill_reason"] = "no_forward_bars"
+            continue
+
+        last_bar = None
+        chosen = None
+
+        for bar in forward_bars:
+            last_bar = bar
+            high = _safe_float(bar.get("high") or bar.get("h") or 0.0)
+            low = _safe_float(bar.get("low") or bar.get("l") or 0.0)
+
+            if stop_price > 0 and low > 0 and low <= stop_price:
+                chosen = {
+                    "status": "shadow_stop_hit",
+                    "reason": "backfill_stop_hit",
+                    "price": stop_price,
+                    "ts_utc": _hybrid_shadow_bar_ts_utc(bar),
+                }
+                break
+
+            if target_price > 0 and high > 0 and high >= target_price:
+                chosen = {
+                    "status": "shadow_target_hit",
+                    "reason": "backfill_target_hit",
+                    "price": target_price,
+                    "ts_utc": _hybrid_shadow_bar_ts_utc(bar),
+                }
+                break
+
+        if not chosen and last_bar:
+            last_dt_ny = _hybrid_shadow_bar_ts_ny(last_bar)
+            can_eod_settle = bool(last_dt_ny)
+            if last_dt_ny and last_dt_ny.date() == today_ny and market_now_open:
+                can_eod_settle = False
+
+            if HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION and last_dt_ny:
+                can_eod_settle = can_eod_settle and (
+                    last_dt_ny.hour > 15 or (last_dt_ny.hour == 15 and last_dt_ny.minute >= 55)
+                )
+
+            if can_eod_settle:
+                close_price = _safe_float(last_bar.get("close") or last_bar.get("c") or entry_price)
+                chosen = {
+                    "status": "shadow_eod_flat",
+                    "reason": "backfill_eod_flat",
+                    "price": close_price,
+                    "ts_utc": _hybrid_shadow_bar_ts_utc(last_bar),
+                }
+
+        if chosen:
+            would_settle += 1
+            if apply:
+                _hybrid_shadow_settle_row(
+                    row,
+                    price=float(chosen["price"]),
+                    status=str(chosen["status"]),
+                    reason=str(chosen["reason"]),
+                    ts_utc=str(chosen["ts_utc"]),
+                )
+                settled += 1
+            examples.append({
+                "symbol": symbol,
+                "scan_ts_utc": scan_ts,
+                "status": chosen["status"],
+                "reason": chosen["reason"],
+                "price": round(float(chosen["price"]), 4),
+                "ts_utc": chosen["ts_utc"],
+            })
+        else:
+            open_remaining += 1
+            row["settlement_backfill_reason"] = "session_not_complete_or_no_settlement"
+
+    if apply and settled:
+        _persist_runtime_state()
+
+    return {
+        "enabled": True,
+        "apply": bool(apply),
+        "checked": checked,
+        "would_settle": would_settle,
+        "settled": settled,
+        "open_remaining": open_remaining,
+        "no_forward_bars": no_forward_bars,
+        "symbols_checked": symbols,
+        "lookback_days": HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS,
+        "require_full_session": HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION,
+        "examples": examples[:25],
+    }
 
 def _hybrid_proof_record_from_signal(signal: dict, bars_today: list[dict], scan_ts_utc: str) -> dict | None:
     sym = str((signal or {}).get("symbol") or "").strip().upper()
@@ -13841,51 +14056,127 @@ def _hybrid_eod_readiness_view() -> dict:
     }
 
 
-def _hybrid_proof_metrics(capacity_plan: dict | None = None) -> dict:
+def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
-    returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in rows]
-    r_values = [_safe_float(r.get("latest_r") or 0.0) for r in rows]
-    positive = sum(1 for v in returns if v > 0)
-    eod_view = _hybrid_eod_readiness_view()
-    eod_flat_ok = bool(eod_view.get("ok"))
-    observed_eod_flat_sessions = 1 if eod_flat_ok and LAST_EOD_FLATTEN_STATUS else 0
-    required_eod_flat_sessions = max(0, int(HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS or 0))
-    eod_flat_sessions_ready = observed_eod_flat_sessions >= required_eod_flat_sessions
-    capacity = dict(capacity_plan or _hybrid_capacity_plan())
-    avg_r = round(sum(r_values) / len(r_values), 4) if r_values else 0.0
-    sample_ready = len(rows) >= int(HYBRID_PROOF_MIN_SHADOW_TRADES)
-    avg_r_ready = avg_r >= float(HYBRID_PROOF_MIN_AVG_R)
-    sleeves_ready = bool(capacity.get("sleeves_configured"))
-    proof_ready_for_paper = bool(sample_ready and avg_r_ready and sleeves_ready and (eod_flat_sessions_ready or not HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER))
-    proof_ready_for_live = bool(proof_ready_for_paper and eod_flat_sessions_ready and eod_flat_ok)
+    settled_rows = [r for r in rows if _hybrid_shadow_is_settled(r)]
+    open_rows = [
+        r for r in rows
+        if str(r.get("status") or "").strip().lower() == "open_shadow"
+    ]
+
+    all_returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in rows]
+    all_r_values = [_safe_float(r.get("latest_r") or 0.0) for r in rows]
+
+    settled_returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in settled_rows]
+    settled_r_values = [_safe_float(r.get("latest_r") or 0.0) for r in settled_rows]
+
+    sample_count = len(rows)
+    settled_count = len(settled_rows)
+    open_shadow_count = len(open_rows)
+
+    avg_return = _mean(all_returns)
+    avg_r = _mean(all_r_values)
+    settled_avg_return = _mean(settled_returns)
+    settled_avg_r = _mean(settled_r_values)
+
+    settled_positive = sum(1 for v in settled_returns if v > 0)
+    settled_positive_rate = (settled_positive / settled_count) if settled_count else 0.0
+    settled_worst_r = min(settled_r_values) if settled_r_values else 0.0
+    settled_best_r = max(settled_r_values) if settled_r_values else 0.0
+
+    settled_sample_ready = settled_count >= HYBRID_PROOF_LIVE_PROMOTION_MIN_SETTLED
+    settled_avg_r_ready = settled_avg_r >= HYBRID_PROOF_MIN_AVG_R
+    settled_positive_ready = settled_positive_rate >= HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE
+    settled_worst_r_ready = settled_worst_r >= HYBRID_PROOF_LIVE_PROMOTION_MAX_WORST_R
+    open_shadow_ready = open_shadow_count <= HYBRID_PROOF_LIVE_PROMOTION_MAX_OPEN_SHADOW
+
+    eod_flat_sessions = _hybrid_eod_flat_session_count(rows)
+    eod_flat_sessions_ready = eod_flat_sessions >= HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS
+    eod_flat_ok = _hybrid_eod_flat_gate_ok(
+        eod_flat_sessions=eod_flat_sessions,
+        rows=rows,
+    )
+
+    sleeves_ready = True
+    sleeves_reason = "not_checked"
+    if capacity_plan is not None:
+        sleeves_ready = bool(capacity_plan.get("sleeves_configured"))
+        sleeves_reason = str(capacity_plan.get("reason") or "")
+
+    sample_ready = sample_count >= HYBRID_PROOF_MIN_SHADOW_TRADES
+    avg_r_ready = avg_r >= HYBRID_PROOF_MIN_AVG_R
+
+    proof_ready_for_paper = bool(
+        sample_ready
+        and avg_r_ready
+        and sleeves_ready
+        and (
+            not HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER
+            or eod_flat_ok
+        )
+    )
+
+    live_promotion_blockers = []
+    if not settled_sample_ready:
+        live_promotion_blockers.append("settled_sample_below_min")
+    if not settled_avg_r_ready:
+        live_promotion_blockers.append("settled_avg_r_below_min")
+    if not settled_positive_ready:
+        live_promotion_blockers.append("settled_positive_rate_below_min")
+    if not settled_worst_r_ready:
+        live_promotion_blockers.append("settled_worst_r_below_limit")
+    if not open_shadow_ready:
+        live_promotion_blockers.append("open_shadow_count_above_limit")
+    if not eod_flat_ok:
+        live_promotion_blockers.append("eod_flat_gate_not_ready")
+    if not sleeves_ready:
+        live_promotion_blockers.append("sleeves_not_configured")
+
+    live_promotion_ready = not live_promotion_blockers
+
     return {
-        "state_path": HYBRID_PROOF_LEDGER_STATE_PATH,
-        "ledger_count": len(rows),
-        "open_shadow_count": sum(1 for r in rows if str(r.get("status") or "") == "open_shadow"),
-        "settled_shadow_count": sum(1 for r in rows if str(r.get("status") or "").startswith("shadow_") and str(r.get("status") or "") != "open_shadow"),
-        "shadow_stop_hit_count": sum(1 for r in rows if str(r.get("status") or "") == "shadow_stop_hit"),
-        "shadow_target_hit_count": sum(1 for r in rows if str(r.get("status") or "") == "shadow_target_hit"),
-        "shadow_eod_flat_count": sum(1 for r in rows if str(r.get("status") or "") == "shadow_eod_flat"),
-        "positive_count": positive,
-        "positive_rate": round(positive / len(rows), 4) if rows else 0.0,
-        "avg_return_pct": round(sum(returns) / len(returns), 6) if returns else 0.0,
-        "avg_r": avg_r,
-        "best_r": round(max(r_values), 4) if r_values else 0.0,
-        "worst_r": round(min(r_values), 4) if r_values else 0.0,
-        "min_shadow_trades": int(HYBRID_PROOF_MIN_SHADOW_TRADES),
+        "sample_count": sample_count,
         "sample_ready": sample_ready,
-        "min_avg_r": float(HYBRID_PROOF_MIN_AVG_R),
+        "min_shadow_trades": HYBRID_PROOF_MIN_SHADOW_TRADES,
+        "avg_return_pct": round(avg_return * 100.0, 4),
+        "avg_r": round(avg_r, 4),
         "avg_r_ready": avg_r_ready,
-        "eod_flat_ok": eod_flat_ok,
-        "eod_readiness": eod_view,
-        "observed_eod_flat_sessions": observed_eod_flat_sessions,
-        "required_eod_flat_sessions": required_eod_flat_sessions,
-        "require_eod_for_paper": bool(HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER),
+        "min_avg_r": HYBRID_PROOF_MIN_AVG_R,
+
+        "settled_count": settled_count,
+        "open_shadow_count": open_shadow_count,
+        "settled_avg_return_pct": round(settled_avg_return * 100.0, 4),
+        "settled_avg_r": round(settled_avg_r, 4),
+        "settled_positive_rate": round(settled_positive_rate, 4),
+        "settled_worst_r": round(settled_worst_r, 4),
+        "settled_best_r": round(settled_best_r, 4),
+        "settled_sample_ready": settled_sample_ready,
+        "settled_avg_r_ready": settled_avg_r_ready,
+        "settled_positive_ready": settled_positive_ready,
+        "settled_worst_r_ready": settled_worst_r_ready,
+        "open_shadow_ready": open_shadow_ready,
+
+        "live_promotion_ready": live_promotion_ready,
+        "live_promotion_blockers": live_promotion_blockers,
+        "live_promotion_thresholds": {
+            "min_settled": HYBRID_PROOF_LIVE_PROMOTION_MIN_SETTLED,
+            "min_avg_r": HYBRID_PROOF_MIN_AVG_R,
+            "min_positive_rate": HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE,
+            "max_worst_r": HYBRID_PROOF_LIVE_PROMOTION_MAX_WORST_R,
+            "max_open_shadow": HYBRID_PROOF_LIVE_PROMOTION_MAX_OPEN_SHADOW,
+        },
+
+        "eod_flat_sessions": eod_flat_sessions,
         "eod_flat_sessions_ready": eod_flat_sessions_ready,
-        "sleeves_configured": sleeves_ready,
+        "eod_flat_required_sessions": HYBRID_PROOF_REQUIRE_EOD_FLAT_SESSIONS,
+        "eod_flat_ok": eod_flat_ok,
+        "eod_gate_mode": HYBRID_PROOF_EOD_GATE_MODE,
+        "require_eod_for_paper": HYBRID_PROOF_REQUIRE_EOD_FOR_PAPER,
+
+        "sleeves_ready": sleeves_ready,
+        "sleeves_reason": sleeves_reason,
         "proof_ready_for_paper": proof_ready_for_paper,
-        "proof_ready_for_live": proof_ready_for_live,
-        "recommended_action": "continue_shadow_collection" if not proof_ready_for_paper else ("paper_pilot_enabled" if capacity.get("intraday_paper_enabled") else "review_for_intraday_paper_pilot"),
+        "proof_ready_for_live": live_promotion_ready,
     }
 
 def _intraday_live_preflight(proof_metrics: dict | None = None) -> dict:
@@ -13900,7 +14191,19 @@ def _intraday_live_preflight(proof_metrics: dict | None = None) -> dict:
         {"name": "intraday_live_enabled", "ok": bool(INTRADAY_LIVE_ENABLED), "value": bool(INTRADAY_LIVE_ENABLED)},
         {"name": "scanner_live_allowed", "ok": bool(SCANNER_ALLOW_LIVE) and not bool(DRY_RUN), "value": {"scanner_allow_live": bool(SCANNER_ALLOW_LIVE), "dry_run": bool(DRY_RUN)}},
         {"name": "realized_loss_halt_clear", "ok": not bool(loss_halt.get("active")), "value": loss_halt},
-        {"name": "proof_ready_for_live", "ok": bool(metrics.get("proof_ready_for_live")), "value": bool(metrics.get("proof_ready_for_live"))},
+        {
+            "name": "live_promotion_truth_ready",
+            "ok": bool(metrics.get("live_promotion_ready")),
+            "value": {
+                "ready": bool(metrics.get("live_promotion_ready")),
+                "blockers": metrics.get("live_promotion_blockers") or [],
+                "settled_count": metrics.get("settled_count"),
+                "open_shadow_count": metrics.get("open_shadow_count"),
+                "settled_avg_r": metrics.get("settled_avg_r"),
+                "settled_positive_rate": metrics.get("settled_positive_rate"),
+                "settled_worst_r": metrics.get("settled_worst_r"),
+            },
+        },
     ]
     if INTRADAY_LIVE_PREFLIGHT_REQUIRE_SHADOW_SETTLED:
         checks.append({
@@ -13915,6 +14218,8 @@ def _intraday_live_preflight(proof_metrics: dict | None = None) -> dict:
         "blockers": blockers,
         "checks": checks,
         "proof_ready_for_live": bool(metrics.get("proof_ready_for_live")),
+        "live_promotion_ready": bool(metrics.get("live_promotion_ready")),
+        "live_promotion_blockers": metrics.get("live_promotion_blockers") or [],
         "open_shadow_count": open_shadow_count,
         "realized_closed_trade_loss_halt_active": bool(loss_halt.get("active")),
     }
@@ -17603,6 +17908,25 @@ def diagnostics_intraday_shadow(request: Request):
         },
     }
 
+@app.get("/diagnostics/intraday_shadow_settlement_backfill")
+def diagnostics_intraday_shadow_settlement_backfill(
+    request: Request,
+    apply: bool = False,
+    limit: int = 1000,
+):
+    require_admin_if_configured(request)
+    summary = _hybrid_shadow_backfill_settlements(apply=bool(apply), limit=int(limit or 1000))
+    capacity_plan = _hybrid_capacity_plan()
+    proof_metrics = _hybrid_proof_metrics(capacity_plan=capacity_plan)
+    live_preflight = _intraday_live_preflight(proof_metrics=proof_metrics)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "summary": summary,
+        "proof_metrics": proof_metrics,
+        "intraday_live_preflight": live_preflight,
+    }
+
 @app.get("/diagnostics/hybrid_proof")
 def diagnostics_hybrid_proof(request: Request, limit: int = 50):
     require_admin_if_configured(request)
@@ -17617,6 +17941,16 @@ def diagnostics_hybrid_proof(request: Request, limit: int = 50):
         "strategy_mode": STRATEGY_MODE,
         "hybrid_capacity_plan": capacity_plan,
         "proof_metrics": proof_metrics,
+        "live_promotion_truth": {
+            "ready": proof_metrics.get("live_promotion_ready"),
+            "blockers": proof_metrics.get("live_promotion_blockers"),
+            "thresholds": proof_metrics.get("live_promotion_thresholds"),
+            "settled_count": proof_metrics.get("settled_count"),
+            "open_shadow_count": proof_metrics.get("open_shadow_count"),
+            "settled_avg_r": proof_metrics.get("settled_avg_r"),
+            "settled_positive_rate": proof_metrics.get("settled_positive_rate"),
+            "settled_worst_r": proof_metrics.get("settled_worst_r"),
+        },
         "intraday_live_preflight": live_preflight,
         "hybrid_mode": HYBRID_MODE,
         "paper_pilot_config": {
