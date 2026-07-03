@@ -1322,7 +1322,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-235-intraday-shadow-eod-flat-completion-unverifiable-classification"
+PATCH_VERSION = "patch-235-hotfix4-deterministic-shadow-classification"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14028,12 +14028,12 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 lookback_days=max(1, HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS),
             ) or {}
         except Exception as exc:
-            logger.warning("hybrid shadow classification bars fetch failed: %s", exc)
+            logger.warning("hybrid shadow deterministic classification bars fetch failed: %s", exc)
             bars_by_symbol = {}
 
-    market_now_open = bool(in_market_hours())
     now_local = now_ny()
     today_local = now_local.date()
+    market_now_open = bool(in_market_hours())
     after_regular_close = now_local.hour > 15 or (now_local.hour == 15 and now_local.minute >= 55)
 
     checked = 0
@@ -14041,14 +14041,13 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
     settled = 0
     would_classify_unverifiable = 0
     classified_unverifiable = 0
-    open_remaining = 0
     no_same_session_bars = 0
     session_incomplete = 0
     cross_session_bars_rejected = 0
     invalid_rows = 0
-    eod_flat_count = 0
     stop_hit_count = 0
     target_hit_count = 0
+    eod_flat_count = 0
     examples = []
 
     for row in open_rows:
@@ -14061,21 +14060,36 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
         target_price = _safe_float(row.get("target_price") or row.get("target") or 0.0)
         scan_ts = row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc")
 
-        if not symbol or not row_session_date or entry_price <= 0:
+        try:
+            row_date = date.fromisoformat(row_session_date) if row_session_date else None
+        except Exception:
+            row_date = None
+
+        try:
+            entry_dt_ny = _coerce_dt_ny(scan_ts)
+        except Exception:
+            entry_dt_ny = None
+
+        if not symbol or not row_session_date or not row_date or entry_price <= 0:
             invalid_rows += 1
             would_classify_unverifiable += 1
+
             if apply:
                 row["status"] = "shadow_unverifiable"
                 row["unverifiable_reason"] = "invalid_shadow_row"
                 row["settlement_patch"] = PATCH_VERSION
                 row["settlement_same_session"] = False
                 classified_unverifiable += 1
-            continue
 
-        try:
-            entry_dt_ny = _coerce_dt_ny(scan_ts)
-        except Exception:
-            entry_dt_ny = None
+            examples.append({
+                "symbol": symbol,
+                "scan_ts_utc": scan_ts,
+                "row_session_date": row_session_date,
+                "status": "shadow_unverifiable",
+                "reason": "invalid_shadow_row",
+                "same_session": False,
+            })
+            continue
 
         same_session_bars = []
         for bar in list(bars_by_symbol.get(symbol) or []):
@@ -14131,7 +14145,6 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                     "reason": "same_session_backfill_stop_hit",
                     "price": stop_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(bar),
-                    "session_date": row_session_date,
                 }
                 break
 
@@ -14141,121 +14154,98 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                     "reason": "same_session_backfill_target_hit",
                     "price": target_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(bar),
-                    "session_date": row_session_date,
                 }
                 break
 
-        if not chosen and last_bar:
-            row_date = None
-            try:
-                row_date = date.fromisoformat(row_session_date)
-            except Exception:
-                row_date = None
+        if not chosen:
+            historical_session = row_date < today_local
+            completed_current_session = row_date == today_local and not market_now_open and after_regular_close
 
-            session_complete = False
-            historical_session = False
-
-            if row_date:
-                if row_date < today_local:
-                    historical_session = True
-                    session_complete = True
-                elif row_date == today_local and not market_now_open and after_regular_close:
-                    session_complete = True
-
-            last_dt_ny = _hybrid_shadow_bar_ts_ny(last_bar)
-
-            if HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION and last_dt_ny:
-                if historical_session:
-                    session_complete = True
-                else:
-                    session_complete = session_complete and (
-                        last_dt_ny.hour > 15 or (last_dt_ny.hour == 15 and last_dt_ny.minute >= 55)
-                    )
-
-            if session_complete:
+            if historical_session or completed_current_session:
                 close_price = _safe_float(last_bar.get("close") or last_bar.get("c") or entry_price)
                 chosen = {
                     "status": "shadow_eod_flat",
                     "reason": "historical_same_session_backfill_eod_flat" if historical_session else "same_session_backfill_eod_flat",
                     "price": close_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(last_bar),
-                    "session_date": row_session_date,
                 }
             else:
-                forced_historical_eod = False
-
-                if row_date and row_date < today_local and last_bar:
-                    close_price = _safe_float(last_bar.get("close") or last_bar.get("c") or entry_price)
-                    chosen = {
-                        "status": "shadow_eod_flat",
-                        "reason": "historical_same_session_backfill_eod_flat_forced",
-                        "price": close_price,
-                        "ts_utc": _hybrid_shadow_bar_ts_utc(last_bar),
-                        "session_date": row_session_date,
-                    }
-                    forced_historical_eod = True
-
-                if not forced_historical_eod:
-                    session_incomplete += 1
-                    open_remaining += 1
-                    if apply:
-                        row["settlement_backfill_reason"] = "same_session_incomplete"
-                        row["settlement_patch"] = PATCH_VERSION
-                    continue
-
-        if chosen:
-            settled_ts_ny = None
-            try:
-                settled_ts_ny = _coerce_dt_ny(chosen.get("ts_utc"))
-            except Exception:
-                settled_ts_ny = None
-
-            settled_session_date = settled_ts_ny.date().isoformat() if settled_ts_ny else ""
-            if settled_session_date != row_session_date:
-                cross_session_bars_rejected += 1
-                would_classify_unverifiable += 1
-
+                session_incomplete += 1
                 if apply:
-                    row["status"] = "shadow_unverifiable"
-                    row["unverifiable_reason"] = "rejected_cross_session_settlement"
+                    row["settlement_backfill_reason"] = "same_session_incomplete"
                     row["settlement_patch"] = PATCH_VERSION
-                    row["settlement_same_session"] = False
-                    classified_unverifiable += 1
 
+                examples.append({
+                    "symbol": symbol,
+                    "scan_ts_utc": scan_ts,
+                    "row_session_date": row_session_date,
+                    "status": "open_shadow",
+                    "reason": "same_session_incomplete",
+                    "same_session": True,
+                })
                 continue
 
-            would_settle += 1
+        settled_ts_ny = None
+        try:
+            settled_ts_ny = _coerce_dt_ny(chosen.get("ts_utc"))
+        except Exception:
+            settled_ts_ny = None
 
-            if chosen["status"] == "shadow_stop_hit":
-                stop_hit_count += 1
-            elif chosen["status"] == "shadow_target_hit":
-                target_hit_count += 1
-            elif chosen["status"] == "shadow_eod_flat":
-                eod_flat_count += 1
+        settled_session_date = settled_ts_ny.date().isoformat() if settled_ts_ny else ""
+        if settled_session_date != row_session_date:
+            cross_session_bars_rejected += 1
+            would_classify_unverifiable += 1
 
             if apply:
-                _hybrid_shadow_settle_row(
-                    row,
-                    price=float(chosen["price"]),
-                    status=str(chosen["status"]),
-                    reason=str(chosen["reason"]),
-                    ts_utc=str(chosen["ts_utc"]),
-                )
-                row["settlement_session_date"] = row_session_date
-                row["settlement_same_session"] = True
-                settled += 1
+                row["status"] = "shadow_unverifiable"
+                row["unverifiable_reason"] = "rejected_cross_session_settlement"
+                row["settlement_patch"] = PATCH_VERSION
+                row["settlement_same_session"] = False
+                classified_unverifiable += 1
 
             examples.append({
                 "symbol": symbol,
                 "scan_ts_utc": scan_ts,
                 "row_session_date": row_session_date,
-                "status": chosen["status"],
-                "reason": chosen["reason"],
-                "price": round(float(chosen["price"]), 4),
-                "ts_utc": chosen["ts_utc"],
+                "status": "shadow_unverifiable",
+                "reason": "rejected_cross_session_settlement",
                 "settlement_session_date": settled_session_date,
-                "same_session": settled_session_date == row_session_date,
+                "same_session": False,
             })
+            continue
+
+        would_settle += 1
+
+        if chosen["status"] == "shadow_stop_hit":
+            stop_hit_count += 1
+        elif chosen["status"] == "shadow_target_hit":
+            target_hit_count += 1
+        elif chosen["status"] == "shadow_eod_flat":
+            eod_flat_count += 1
+
+        if apply:
+            _hybrid_shadow_settle_row(
+                row,
+                price=float(chosen["price"]),
+                status=str(chosen["status"]),
+                reason=str(chosen["reason"]),
+                ts_utc=str(chosen["ts_utc"]),
+            )
+            row["settlement_session_date"] = row_session_date
+            row["settlement_same_session"] = True
+            settled += 1
+
+        examples.append({
+            "symbol": symbol,
+            "scan_ts_utc": scan_ts,
+            "row_session_date": row_session_date,
+            "status": chosen["status"],
+            "reason": chosen["reason"],
+            "price": round(float(chosen["price"]), 4),
+            "ts_utc": chosen["ts_utc"],
+            "settlement_session_date": settled_session_date,
+            "same_session": True,
+        })
 
     persist_result = {"ok": True, "method": "not_needed"}
 
@@ -14270,12 +14260,13 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
         "apply": bool(apply),
         "same_session_only": True,
         "classifies_unverifiable": True,
+        "deterministic_classification": True,
         "checked": checked,
         "would_settle": would_settle,
         "settled": settled,
         "would_classify_unverifiable": would_classify_unverifiable,
         "classified_unverifiable": classified_unverifiable,
-        "open_remaining": status_breakdown.get("open_shadow", open_remaining),
+        "open_remaining": status_breakdown.get("open_shadow", 0),
         "no_same_session_bars": no_same_session_bars,
         "session_incomplete": session_incomplete,
         "cross_session_bars_rejected": cross_session_bars_rejected,
