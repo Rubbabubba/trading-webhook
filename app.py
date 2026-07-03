@@ -696,6 +696,10 @@ DRY_RUN = env_bool_any("DRY_RUN", default="false")
 ONLY_MARKET_HOURS = env_bool_any("SWING_ONLY_MARKET_HOURS", "ONLY_MARKET_HOURS", default="true")
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
+MARKET_CLOCK_CACHE_TTL_SEC = int(getenv_any("MARKET_CLOCK_CACHE_TTL_SEC", default="20"))
+MARKET_CLOCK_FAIL_OPEN = env_bool("MARKET_CLOCK_FAIL_OPEN", "false")
+MARKET_CLOSED_DATES_NY = {s.strip() for s in str(getenv_any("MARKET_CLOSED_DATES_NY", default="2026-07-03") or "").split(",") if s.strip()}
+PENDING_ORDER_ENTRY_FREEZE_ENABLE = env_bool("PENDING_ORDER_ENTRY_FREEZE_ENABLE", "true")
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -1305,7 +1309,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-230-intraday-live-preflight-shadow-settlement-orb-vwap-gate"
+PATCH_VERSION = "patch-231-exchange-calendar-market-guard-pending-order-freeze"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -4295,20 +4299,96 @@ log("CONFIG_EFFECTIVE", **config_effective_snapshot())
 # =============================
 # Core helpers
 # =============================
-def _is_regular_market_day(dt_local=None) -> bool:
+_MARKET_CLOCK_CACHE: dict = {"ts": 0.0, "snapshot": {}}
+
+
+def _static_market_window_snapshot(dt_local=None) -> dict:
     dt_local = dt_local or now_ny()
+    today = dt_local.date().isoformat()
+    weekday_open = False
     try:
-        return int(dt_local.weekday()) < 5
+        weekday_open = int(dt_local.weekday()) < 5
     except Exception:
-        return False
+        weekday_open = False
+    configured_closed = today in MARKET_CLOSED_DATES_NY
+    market_day = bool(weekday_open and not configured_closed)
+    clock_open = bool(market_day and MARKET_OPEN <= dt_local.time() <= MARKET_CLOSE)
+    reason = "open" if clock_open else ("configured_market_closed_date" if configured_closed else ("weekend" if not weekday_open else "outside_market_hours"))
+    return {
+        "ok": True,
+        "source": "static_fallback",
+        "is_open": clock_open,
+        "market_open_now": clock_open,
+        "market_day": market_day,
+        "configured_closed": configured_closed,
+        "today_ny": today,
+        "now_ny": dt_local.isoformat(),
+        "reason": reason,
+    }
+
+
+def _coerce_clock_dt(value) -> str | None:
+    if not value:
+        return None
+    try:
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(NY_TZ).isoformat()
+    except Exception:
+        return str(value)
+
+
+def _market_clock_snapshot(force: bool = False) -> dict:
+    now_ts = _time.time()
+    cached = dict(_MARKET_CLOCK_CACHE.get("snapshot") or {})
+    if cached and not force and now_ts - float(_MARKET_CLOCK_CACHE.get("ts") or 0.0) <= max(1, int(MARKET_CLOCK_CACHE_TTL_SEC or 1)):
+        return cached
+
+    static = _static_market_window_snapshot()
+    try:
+        clock = trading_client.get_clock()
+        is_open = bool(getattr(clock, "is_open", False))
+        today = str(static.get("today_ny") or "")
+        if today in MARKET_CLOSED_DATES_NY:
+            is_open = False
+            reason = "configured_market_closed_date"
+        else:
+            reason = "alpaca_clock_open" if is_open else "alpaca_clock_closed"
+        snap = {
+            **static,
+            "ok": True,
+            "source": "alpaca_clock",
+            "is_open": is_open,
+            "market_open_now": is_open,
+            "reason": reason,
+            "timestamp_ny": _coerce_clock_dt(getattr(clock, "timestamp", None)),
+            "next_open_ny": _coerce_clock_dt(getattr(clock, "next_open", None)),
+            "next_close_ny": _coerce_clock_dt(getattr(clock, "next_close", None)),
+        }
+    except Exception as exc:
+        fail_open = bool(MARKET_CLOCK_FAIL_OPEN)
+        snap = {
+            **static,
+            "ok": False,
+            "source": "alpaca_clock_error",
+            "is_open": bool(static.get("is_open")) if fail_open else False,
+            "market_open_now": bool(static.get("is_open")) if fail_open else False,
+            "reason": "alpaca_clock_error_fail_open" if fail_open else "alpaca_clock_error_fail_closed",
+            "error": str(exc),
+        }
+
+    _MARKET_CLOCK_CACHE["ts"] = now_ts
+    _MARKET_CLOCK_CACHE["snapshot"] = dict(snap)
+    return dict(snap)
+
+
+def _is_regular_market_day(dt_local=None) -> bool:
+    return bool(_static_market_window_snapshot(dt_local).get("market_day"))
 
 
 def in_market_hours() -> bool:
-    dt_local = now_ny()
-    if not _is_regular_market_day(dt_local):
-        return False
-    t = dt_local.time()
-    return (t >= MARKET_OPEN) and (t <= MARKET_CLOSE)
+    return bool(_market_clock_snapshot().get("is_open"))
 
 
 def compute_qty(price: float) -> float:
@@ -6973,14 +7053,16 @@ def _session_boundary_snapshot() -> dict:
     today_ny = now_local.date().isoformat()
     open_local = datetime.combine(now_local.date(), MARKET_OPEN, tzinfo=NY_TZ)
     close_local = datetime.combine(now_local.date(), MARKET_CLOSE, tzinfo=NY_TZ)
-    market_day = _is_regular_market_day(now_local)
-    market_closed_reason = "weekend" if not market_day else ""
+    clock = _market_clock_snapshot()
+    market_day = bool(clock.get("market_day"))
+    market_open_now = bool(clock.get("is_open"))
+    market_closed_reason = "" if market_open_now else str(clock.get("reason") or "")
     opening_window_minutes = max(1, int(OPENING_WINDOW_REFRESH_MINUTES or 15))
     opening_window_sec = opening_window_minutes * 60
     seconds_since_open = None
     if market_day and now_local >= open_local:
         seconds_since_open = max(0.0, (now_local - open_local).total_seconds())
-    opening_window_active = bool(in_market_hours()) and seconds_since_open is not None and seconds_since_open <= opening_window_sec
+    opening_window_active = bool(market_open_now and seconds_since_open is not None and seconds_since_open <= opening_window_sec)
     return {
         "today_ny": today_ny,
         "now_ny": now_local.isoformat(),
@@ -6990,7 +7072,8 @@ def _session_boundary_snapshot() -> dict:
         "market_close_utc": close_local.astimezone(timezone.utc).isoformat(),
         "market_day": bool(market_day),
         "market_closed_reason": market_closed_reason,
-        "market_open_now": bool(in_market_hours()),
+        "market_open_now": bool(market_open_now),
+        "market_clock": clock,
         "seconds_since_open": seconds_since_open,
         "opening_window_active": opening_window_active,
         "opening_window_minutes": opening_window_minutes,
@@ -15164,6 +15247,19 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         out["flags"].append("stall_exit_ready")
     return out
 
+def _pending_order_entry_freeze_snapshot() -> dict:
+    if not PENDING_ORDER_ENTRY_FREEZE_ENABLE:
+        return {"active": False, "enabled": False, "open_order_count": 0, "open_order_symbols": [], "open_orders": []}
+    orders = list_open_orders_safe()
+    symbols = sorted({str(o.get("symbol") or "").upper() for o in orders if str(o.get("symbol") or "").strip()})
+    return {
+        "active": bool(orders),
+        "enabled": True,
+        "open_order_count": len(orders),
+        "open_order_symbols": symbols,
+        "open_orders": orders,
+    }
+
 def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta: dict | None = None, auth_payload: dict | None = None) -> dict:
     """Shared entry execution path for scanner + webhook."""
     meta = meta or {}
@@ -15197,8 +15293,15 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
     if bool(realized_halt.get("active")):
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason=realized_halt.get("reason") or "realized_closed_trade_loss_halt", meta={**(meta or {}), "realized_closed_trade_loss_halt": realized_halt})
         return {"ok": False, "rejected": True, "reason": realized_halt.get("reason") or "realized_closed_trade_loss_halt", "realized_closed_trade_loss_halt": realized_halt}
-    if ONLY_MARKET_HOURS and not in_market_hours():
-        return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal}
+    market_clock = _market_clock_snapshot()
+    if ONLY_MARKET_HOURS and not bool(market_clock.get("is_open")):
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="outside_market_hours", meta={"market_clock": market_clock, **(meta or {})})
+        return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal, "market_clock": market_clock}
+
+    pending_freeze = _pending_order_entry_freeze_snapshot()
+    if bool(pending_freeze.get("active")):
+        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="pending_order_entry_freeze", meta={"pending_order_entry_freeze": pending_freeze, **(meta or {})})
+        return {"ok": True, "ignored": True, "reason": "pending_order_entry_freeze", "symbol": symbol, "signal": signal, "pending_order_entry_freeze": pending_freeze}
 
     if side == "sell" and not ALLOW_SHORT:
         qty_signed, _pos_side = get_position(symbol)
@@ -19699,6 +19802,19 @@ def diagnostics_pipeline_guardrails(limit: int = 20):
     _ensure_runtime_state_loaded()
     return _pipeline_guardrail_snapshot(limit=limit)
     
+@app.get("/diagnostics/market_clock")
+def diagnostics_market_clock(request: Request):
+    require_admin_if_configured(request)
+    clock = _market_clock_snapshot(force=True)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "in_market_hours": bool(in_market_hours()),
+        "market_clock": clock,
+        "pending_order_entry_freeze": _pending_order_entry_freeze_snapshot(),
+        "configured_closed_dates_ny": sorted(MARKET_CLOSED_DATES_NY),
+        "market_clock_fail_open": bool(MARKET_CLOCK_FAIL_OPEN),
+    }
 
 @app.get("/diagnostics/intraday_launch_readiness")
 def diagnostics_intraday_launch_readiness(request: Request):
