@@ -13894,9 +13894,107 @@ def _hybrid_shadow_status_breakdown(rows: list[dict]) -> dict:
     )
     counts["terminal_count"] = counts["settled_performance_count"] + counts["shadow_unverifiable"]
     return counts
+    
+def _hybrid_proof_extract_ledger_rows(payload) -> list[dict]:
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+
+    if not isinstance(payload, dict):
+        return []
+
+    candidate_keys = [
+        "ledger",
+        "hybrid_proof_ledger",
+        "proof_ledger",
+        "rows",
+        "data",
+        "items",
+    ]
+
+    for key in candidate_keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [r for r in value if isinstance(r, dict)]
+
+    nested_state = payload.get("state")
+    if isinstance(nested_state, dict):
+        for key in candidate_keys:
+            value = nested_state.get(key)
+            if isinstance(value, list):
+                return [r for r in value if isinstance(r, dict)]
+
+    return []
+
+
+def _hybrid_proof_load_ledger_compat(force: bool = False) -> dict:
+    global HYBRID_PROOF_LEDGER
+
+    if HYBRID_PROOF_LEDGER and not force:
+        return {
+            "ok": True,
+            "loaded": False,
+            "reason": "memory_ledger_present",
+            "count": len(HYBRID_PROOF_LEDGER),
+        }
+
+    path = str(HYBRID_PROOF_LEDGER_STATE_PATH or "").strip()
+    if not path:
+        return {
+            "ok": False,
+            "loaded": False,
+            "reason": "empty_path",
+            "count": len(HYBRID_PROOF_LEDGER),
+        }
+
+    if not os.path.exists(path):
+        return {
+            "ok": False,
+            "loaded": False,
+            "reason": "path_missing",
+            "path": path,
+            "count": len(HYBRID_PROOF_LEDGER),
+        }
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        rows = _hybrid_proof_extract_ledger_rows(payload)
+        if not rows:
+            return {
+                "ok": False,
+                "loaded": False,
+                "reason": "no_rows_in_payload",
+                "path": path,
+                "payload_type": type(payload).__name__,
+                "count": len(HYBRID_PROOF_LEDGER),
+            }
+
+        HYBRID_PROOF_LEDGER.clear()
+        HYBRID_PROOF_LEDGER.extend(rows)
+
+        return {
+            "ok": True,
+            "loaded": True,
+            "reason": "loaded_from_disk",
+            "path": path,
+            "payload_type": type(payload).__name__,
+            "count": len(HYBRID_PROOF_LEDGER),
+        }
+    except Exception as exc:
+        logger.exception("hybrid proof ledger compat load failed")
+        return {
+            "ok": False,
+            "loaded": False,
+            "reason": "exception",
+            "path": path,
+            "error": str(exc),
+            "count": len(HYBRID_PROOF_LEDGER),
+        }
 
 def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) -> dict:
     _ensure_runtime_state_loaded()
+    ledger_load = _hybrid_proof_load_ledger_compat()
 
     if not HYBRID_PROOF_SETTLEMENT_BACKFILL_ENABLE:
         return {
@@ -13906,6 +14004,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
             "settled": 0,
             "classified_unverifiable": 0,
             "open_remaining": 0,
+            "ledger_load": ledger_load,
             "reason": "HYBRID_PROOF_SETTLEMENT_BACKFILL_ENABLE=false",
         }
 
@@ -14167,6 +14266,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
         "symbols_checked": symbols,
         "lookback_days": HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS,
         "require_full_session": HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION,
+        "ledger_load": ledger_load,
         "persist_result": persist_result,
         "examples": examples[:25],
     }
@@ -14347,6 +14447,7 @@ def _hybrid_eod_flat_gate_ok(eod_flat_sessions: int, rows: list[dict] | None = N
     return int(eod_flat_sessions or 0) >= required
 
 def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
+    ledger_load = _hybrid_proof_load_ledger_compat()
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
     settled_rows = [r for r in rows if _hybrid_shadow_is_settled(r)]
     unverifiable_rows = [r for r in rows if _hybrid_shadow_is_unverifiable(r)]
@@ -14428,6 +14529,7 @@ def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
 
     return {
         "sample_count": sample_count,
+        "ledger_load": ledger_load,
         "sample_ready": sample_ready,
         "min_shadow_trades": HYBRID_PROOF_MIN_SHADOW_TRADES,
         "avg_return_pct": round(avg_return * 100.0, 4),
@@ -18225,6 +18327,7 @@ def diagnostics_intraday_shadow_settlement_backfill(
 def diagnostics_hybrid_proof(request: Request, limit: int = 50):
     require_admin_if_configured(request)
     _ensure_runtime_state_loaded()
+    ledger_load = _hybrid_proof_load_ledger_compat()
     lim = max(1, min(int(limit or 50), 500))
     capacity_plan = _hybrid_capacity_plan()
     proof_metrics = _hybrid_proof_metrics(capacity_plan=capacity_plan)
@@ -18233,6 +18336,7 @@ def diagnostics_hybrid_proof(request: Request, limit: int = 50):
         "ok": True,
         "patch_version": PATCH_VERSION,
         "strategy_mode": STRATEGY_MODE,
+        "ledger_load": ledger_load,
         "hybrid_capacity_plan": capacity_plan,
         "proof_metrics": proof_metrics,
         "live_promotion_truth": {
