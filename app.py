@@ -1322,7 +1322,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-233-intraday-shadow-settlement-backfill-live-promotion-truth"
+PATCH_VERSION = "patch-234-intraday-same-session-shadow-settlement-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -13759,6 +13759,23 @@ def _hybrid_shadow_settle_row(row: dict, price: float, status: str, reason: str,
     row["settlement_patch"] = PATCH_VERSION
     return row
 
+def _hybrid_shadow_row_session_date(row: dict) -> str:
+    ny_date = str((row or {}).get("ny_date") or "").strip()
+    if ny_date:
+        return ny_date[:10]
+
+    raw = (
+        (row or {}).get("scan_ts_utc")
+        or (row or {}).get("created_utc")
+        or (row or {}).get("ts_utc")
+    )
+    if not raw:
+        return ""
+
+    try:
+        return _coerce_dt_ny(raw).date().isoformat()
+    except Exception:
+        return ""
 
 def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) -> dict:
     _ensure_runtime_state_loaded()
@@ -13793,54 +13810,77 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 lookback_days=max(1, HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS),
             ) or {}
         except Exception as exc:
-            logger.warning("hybrid shadow backfill bars fetch failed: %s", exc)
+            logger.warning("hybrid shadow same-session backfill bars fetch failed: %s", exc)
             bars_by_symbol = {}
 
     market_now_open = bool(in_market_hours())
-    today_ny = now_ny().date()
+    now_local = now_ny()
+    today_local = now_local.date()
+    after_regular_close = now_local.hour > 15 or (now_local.hour == 15 and now_local.minute >= 55)
 
     checked = 0
     settled = 0
     would_settle = 0
     open_remaining = 0
-    no_forward_bars = 0
+    no_same_session_bars = 0
+    session_incomplete = 0
+    cross_session_bars_rejected = 0
+    invalid_rows = 0
     examples = []
 
     for row in open_rows:
         checked += 1
+
         symbol = str(row.get("symbol") or "").upper().strip()
+        row_session_date = _hybrid_shadow_row_session_date(row)
         entry_price = _safe_float(row.get("entry_price") or row.get("entry") or 0.0)
         stop_price = _safe_float(row.get("stop_price") or row.get("stop") or 0.0)
         target_price = _safe_float(row.get("target_price") or row.get("target") or 0.0)
         scan_ts = row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc")
+
+        if not symbol or not row_session_date or entry_price <= 0:
+            invalid_rows += 1
+            open_remaining += 1
+            if apply:
+                row["settlement_backfill_reason"] = "invalid_shadow_row"
+            continue
 
         try:
             entry_dt_ny = _coerce_dt_ny(scan_ts)
         except Exception:
             entry_dt_ny = None
 
-        symbol_bars = list(bars_by_symbol.get(symbol) or [])
-        forward_bars = []
-        for bar in symbol_bars:
+        same_session_bars = []
+        for bar in list(bars_by_symbol.get(symbol) or []):
             bar_dt_ny = _hybrid_shadow_bar_ts_ny(bar)
             if not bar_dt_ny:
                 continue
+
+            bar_session_date = bar_dt_ny.date().isoformat()
+            if bar_session_date != row_session_date:
+                if entry_dt_ny and bar_dt_ny >= entry_dt_ny:
+                    cross_session_bars_rejected += 1
+                continue
+
             if entry_dt_ny and bar_dt_ny < entry_dt_ny:
                 continue
-            forward_bars.append(bar)
 
-        forward_bars.sort(key=lambda b: _hybrid_shadow_bar_ts_ny(b) or now_ny())
+            same_session_bars.append(bar)
 
-        if not forward_bars:
-            no_forward_bars += 1
+        same_session_bars.sort(key=lambda b: _hybrid_shadow_bar_ts_ny(b) or now_ny())
+
+        if not same_session_bars:
+            no_same_session_bars += 1
             open_remaining += 1
-            row["settlement_backfill_reason"] = "no_forward_bars"
+            if apply:
+                row["settlement_backfill_reason"] = "no_same_session_bars"
+                row["settlement_patch"] = PATCH_VERSION
             continue
 
-        last_bar = None
         chosen = None
+        last_bar = None
 
-        for bar in forward_bars:
+        for bar in same_session_bars:
             last_bar = bar
             high = _safe_float(bar.get("high") or bar.get("h") or 0.0)
             low = _safe_float(bar.get("low") or bar.get("l") or 0.0)
@@ -13848,43 +13888,73 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
             if stop_price > 0 and low > 0 and low <= stop_price:
                 chosen = {
                     "status": "shadow_stop_hit",
-                    "reason": "backfill_stop_hit",
+                    "reason": "same_session_backfill_stop_hit",
                     "price": stop_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(bar),
+                    "session_date": row_session_date,
                 }
                 break
 
             if target_price > 0 and high > 0 and high >= target_price:
                 chosen = {
                     "status": "shadow_target_hit",
-                    "reason": "backfill_target_hit",
+                    "reason": "same_session_backfill_target_hit",
                     "price": target_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(bar),
+                    "session_date": row_session_date,
                 }
                 break
 
         if not chosen and last_bar:
-            last_dt_ny = _hybrid_shadow_bar_ts_ny(last_bar)
-            can_eod_settle = bool(last_dt_ny)
-            if last_dt_ny and last_dt_ny.date() == today_ny and market_now_open:
-                can_eod_settle = False
+            row_date = None
+            try:
+                row_date = date.fromisoformat(row_session_date)
+            except Exception:
+                row_date = None
 
+            session_complete = False
+            if row_date:
+                if row_date < today_local:
+                    session_complete = True
+                elif row_date == today_local and not market_now_open and after_regular_close:
+                    session_complete = True
+
+            last_dt_ny = _hybrid_shadow_bar_ts_ny(last_bar)
             if HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION and last_dt_ny:
-                can_eod_settle = can_eod_settle and (
+                session_complete = session_complete and (
                     last_dt_ny.hour > 15 or (last_dt_ny.hour == 15 and last_dt_ny.minute >= 55)
                 )
 
-            if can_eod_settle:
+            if session_complete:
                 close_price = _safe_float(last_bar.get("close") or last_bar.get("c") or entry_price)
                 chosen = {
                     "status": "shadow_eod_flat",
-                    "reason": "backfill_eod_flat",
+                    "reason": "same_session_backfill_eod_flat",
                     "price": close_price,
                     "ts_utc": _hybrid_shadow_bar_ts_utc(last_bar),
+                    "session_date": row_session_date,
                 }
+            else:
+                session_incomplete += 1
 
         if chosen:
+            settled_ts_ny = None
+            try:
+                settled_ts_ny = _coerce_dt_ny(chosen.get("ts_utc"))
+            except Exception:
+                settled_ts_ny = None
+
+            settled_session_date = settled_ts_ny.date().isoformat() if settled_ts_ny else ""
+            if settled_session_date != row_session_date:
+                cross_session_bars_rejected += 1
+                open_remaining += 1
+                if apply:
+                    row["settlement_backfill_reason"] = "rejected_cross_session_settlement"
+                    row["settlement_patch"] = PATCH_VERSION
+                continue
+
             would_settle += 1
+
             if apply:
                 _hybrid_shadow_settle_row(
                     row,
@@ -13893,18 +13963,26 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                     reason=str(chosen["reason"]),
                     ts_utc=str(chosen["ts_utc"]),
                 )
+                row["settlement_session_date"] = row_session_date
+                row["settlement_same_session"] = True
                 settled += 1
+
             examples.append({
                 "symbol": symbol,
                 "scan_ts_utc": scan_ts,
+                "row_session_date": row_session_date,
                 "status": chosen["status"],
                 "reason": chosen["reason"],
                 "price": round(float(chosen["price"]), 4),
                 "ts_utc": chosen["ts_utc"],
+                "settlement_session_date": settled_session_date,
+                "same_session": settled_session_date == row_session_date,
             })
         else:
             open_remaining += 1
-            row["settlement_backfill_reason"] = "session_not_complete_or_no_settlement"
+            if apply:
+                row["settlement_backfill_reason"] = "same_session_not_settleable"
+                row["settlement_patch"] = PATCH_VERSION
 
     if apply and settled:
         _persist_runtime_state()
@@ -13912,11 +13990,15 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
     return {
         "enabled": True,
         "apply": bool(apply),
+        "same_session_only": True,
         "checked": checked,
         "would_settle": would_settle,
         "settled": settled,
         "open_remaining": open_remaining,
-        "no_forward_bars": no_forward_bars,
+        "no_same_session_bars": no_same_session_bars,
+        "session_incomplete": session_incomplete,
+        "cross_session_bars_rejected": cross_session_bars_rejected,
+        "invalid_rows": invalid_rows,
         "symbols_checked": symbols,
         "lookback_days": HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS,
         "require_full_session": HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION,
