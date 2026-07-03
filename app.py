@@ -1322,7 +1322,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-234-intraday-same-session-shadow-settlement-guard"
+PATCH_VERSION = "patch-235-intraday-shadow-eod-flat-completion-unverifiable-classification"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -13726,6 +13726,9 @@ def _hybrid_shadow_is_settled(row: dict) -> bool:
         "shadow_settled",
     }
 
+def _hybrid_shadow_is_unverifiable(row: dict) -> bool:
+    status = str((row or {}).get("status") or "").strip().lower()
+    return status == "shadow_unverifiable"
 
 def _hybrid_shadow_bar_ts_utc(bar: dict) -> str:
     raw = (bar or {}).get("ts_utc") or (bar or {}).get("timestamp") or (bar or {}).get("t")
@@ -13864,6 +13867,34 @@ def _hybrid_shadow_persist_ledger_after_backfill() -> dict:
             "error": str(exc),
         }
 
+def _hybrid_shadow_status_breakdown(rows: list[dict]) -> dict:
+    counts = {
+        "open_shadow": 0,
+        "shadow_stop_hit": 0,
+        "shadow_target_hit": 0,
+        "shadow_eod_flat": 0,
+        "shadow_unverifiable": 0,
+        "other": 0,
+    }
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        status = str(row.get("status") or "").strip().lower()
+        if status in counts:
+            counts[status] += 1
+        else:
+            counts["other"] += 1
+
+    counts["settled_performance_count"] = (
+        counts["shadow_stop_hit"]
+        + counts["shadow_target_hit"]
+        + counts["shadow_eod_flat"]
+    )
+    counts["terminal_count"] = counts["settled_performance_count"] + counts["shadow_unverifiable"]
+    return counts
+
 def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) -> dict:
     _ensure_runtime_state_loaded()
 
@@ -13873,6 +13904,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
             "apply": bool(apply),
             "checked": 0,
             "settled": 0,
+            "classified_unverifiable": 0,
             "open_remaining": 0,
             "reason": "HYBRID_PROOF_SETTLEMENT_BACKFILL_ENABLE=false",
         }
@@ -13897,7 +13929,7 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 lookback_days=max(1, HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS),
             ) or {}
         except Exception as exc:
-            logger.warning("hybrid shadow same-session backfill bars fetch failed: %s", exc)
+            logger.warning("hybrid shadow classification bars fetch failed: %s", exc)
             bars_by_symbol = {}
 
     market_now_open = bool(in_market_hours())
@@ -13906,13 +13938,18 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
     after_regular_close = now_local.hour > 15 or (now_local.hour == 15 and now_local.minute >= 55)
 
     checked = 0
-    settled = 0
     would_settle = 0
+    settled = 0
+    would_classify_unverifiable = 0
+    classified_unverifiable = 0
     open_remaining = 0
     no_same_session_bars = 0
     session_incomplete = 0
     cross_session_bars_rejected = 0
     invalid_rows = 0
+    eod_flat_count = 0
+    stop_hit_count = 0
+    target_hit_count = 0
     examples = []
 
     for row in open_rows:
@@ -13927,9 +13964,13 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
 
         if not symbol or not row_session_date or entry_price <= 0:
             invalid_rows += 1
-            open_remaining += 1
+            would_classify_unverifiable += 1
             if apply:
-                row["settlement_backfill_reason"] = "invalid_shadow_row"
+                row["status"] = "shadow_unverifiable"
+                row["unverifiable_reason"] = "invalid_shadow_row"
+                row["settlement_patch"] = PATCH_VERSION
+                row["settlement_same_session"] = False
+                classified_unverifiable += 1
             continue
 
         try:
@@ -13958,10 +13999,23 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
 
         if not same_session_bars:
             no_same_session_bars += 1
-            open_remaining += 1
+            would_classify_unverifiable += 1
+
             if apply:
-                row["settlement_backfill_reason"] = "no_same_session_bars"
+                row["status"] = "shadow_unverifiable"
+                row["unverifiable_reason"] = "no_same_session_bars"
                 row["settlement_patch"] = PATCH_VERSION
+                row["settlement_same_session"] = False
+                classified_unverifiable += 1
+
+            examples.append({
+                "symbol": symbol,
+                "scan_ts_utc": scan_ts,
+                "row_session_date": row_session_date,
+                "status": "shadow_unverifiable",
+                "reason": "no_same_session_bars",
+                "same_session": False,
+            })
             continue
 
         chosen = None
@@ -14023,6 +14077,11 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 }
             else:
                 session_incomplete += 1
+                open_remaining += 1
+                if apply:
+                    row["settlement_backfill_reason"] = "same_session_incomplete"
+                    row["settlement_patch"] = PATCH_VERSION
+                continue
 
         if chosen:
             settled_ts_ny = None
@@ -14034,13 +14093,25 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
             settled_session_date = settled_ts_ny.date().isoformat() if settled_ts_ny else ""
             if settled_session_date != row_session_date:
                 cross_session_bars_rejected += 1
-                open_remaining += 1
+                would_classify_unverifiable += 1
+
                 if apply:
-                    row["settlement_backfill_reason"] = "rejected_cross_session_settlement"
+                    row["status"] = "shadow_unverifiable"
+                    row["unverifiable_reason"] = "rejected_cross_session_settlement"
                     row["settlement_patch"] = PATCH_VERSION
+                    row["settlement_same_session"] = False
+                    classified_unverifiable += 1
+
                 continue
 
             would_settle += 1
+
+            if chosen["status"] == "shadow_stop_hit":
+                stop_hit_count += 1
+            elif chosen["status"] == "shadow_target_hit":
+                target_hit_count += 1
+            elif chosen["status"] == "shadow_eod_flat":
+                eod_flat_count += 1
 
             if apply:
                 _hybrid_shadow_settle_row(
@@ -14065,48 +14136,34 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                 "settlement_session_date": settled_session_date,
                 "same_session": settled_session_date == row_session_date,
             })
-        else:
-            open_remaining += 1
-            if apply:
-                row["settlement_backfill_reason"] = "same_session_not_settleable"
-                row["settlement_patch"] = PATCH_VERSION
 
     persist_result = {"ok": True, "method": "not_needed"}
 
-    if apply and settled:
+    if apply and (settled or classified_unverifiable):
         persist_result = _hybrid_shadow_persist_ledger_after_backfill()
-        if not persist_result.get("ok"):
-            return {
-                "enabled": True,
-                "apply": bool(apply),
-                "same_session_only": True,
-                "checked": checked,
-                "would_settle": would_settle,
-                "settled": settled,
-                "open_remaining": open_remaining,
-                "no_same_session_bars": no_same_session_bars,
-                "session_incomplete": session_incomplete,
-                "cross_session_bars_rejected": cross_session_bars_rejected,
-                "invalid_rows": invalid_rows,
-                "symbols_checked": symbols,
-                "lookback_days": HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS,
-                "require_full_session": HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION,
-                "persist_result": persist_result,
-                "examples": examples[:25],
-            }
+
+    post_rows = [r for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
+    status_breakdown = _hybrid_shadow_status_breakdown(post_rows)
 
     return {
         "enabled": True,
         "apply": bool(apply),
         "same_session_only": True,
+        "classifies_unverifiable": True,
         "checked": checked,
         "would_settle": would_settle,
         "settled": settled,
-        "open_remaining": open_remaining,
+        "would_classify_unverifiable": would_classify_unverifiable,
+        "classified_unverifiable": classified_unverifiable,
+        "open_remaining": status_breakdown.get("open_shadow", open_remaining),
         "no_same_session_bars": no_same_session_bars,
         "session_incomplete": session_incomplete,
         "cross_session_bars_rejected": cross_session_bars_rejected,
         "invalid_rows": invalid_rows,
+        "stop_hit_count": stop_hit_count,
+        "target_hit_count": target_hit_count,
+        "eod_flat_count": eod_flat_count,
+        "status_breakdown": status_breakdown,
         "symbols_checked": symbols,
         "lookback_days": HYBRID_PROOF_SETTLEMENT_LOOKBACK_DAYS,
         "require_full_session": HYBRID_PROOF_SETTLEMENT_REQUIRE_FULL_SESSION,
@@ -14292,10 +14349,12 @@ def _hybrid_eod_flat_gate_ok(eod_flat_sessions: int, rows: list[dict] | None = N
 def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
     settled_rows = [r for r in rows if _hybrid_shadow_is_settled(r)]
+    unverifiable_rows = [r for r in rows if _hybrid_shadow_is_unverifiable(r)]
     open_rows = [
         r for r in rows
         if str(r.get("status") or "").strip().lower() == "open_shadow"
     ]
+    status_breakdown = _hybrid_shadow_status_breakdown(rows)
 
     all_returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in rows]
     all_r_values = [_safe_float(r.get("latest_r") or 0.0) for r in rows]
@@ -14378,6 +14437,8 @@ def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
 
         "settled_count": settled_count,
         "open_shadow_count": open_shadow_count,
+        "unverifiable_count": len(unverifiable_rows),
+        "status_breakdown": status_breakdown,
         "settled_avg_return_pct": round(settled_avg_return * 100.0, 4),
         "settled_avg_r": round(settled_avg_r, 4),
         "settled_positive_rate": round(settled_positive_rate, 4),
