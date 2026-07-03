@@ -14182,12 +14182,26 @@ def _hybrid_shadow_backfill_settlements(apply: bool = False, limit: int = 1000) 
                     "session_date": row_session_date,
                 }
             else:
-                session_incomplete += 1
-                open_remaining += 1
-                if apply:
-                    row["settlement_backfill_reason"] = "same_session_incomplete"
-                    row["settlement_patch"] = PATCH_VERSION
-                continue
+                forced_historical_eod = False
+
+                if row_date and row_date < today_local and last_bar:
+                    close_price = _safe_float(last_bar.get("close") or last_bar.get("c") or entry_price)
+                    chosen = {
+                        "status": "shadow_eod_flat",
+                        "reason": "historical_same_session_backfill_eod_flat_forced",
+                        "price": close_price,
+                        "ts_utc": _hybrid_shadow_bar_ts_utc(last_bar),
+                        "session_date": row_session_date,
+                    }
+                    forced_historical_eod = True
+
+                if not forced_historical_eod:
+                    session_incomplete += 1
+                    open_remaining += 1
+                    if apply:
+                        row["settlement_backfill_reason"] = "same_session_incomplete"
+                        row["settlement_patch"] = PATCH_VERSION
+                    continue
 
         if chosen:
             settled_ts_ny = None
