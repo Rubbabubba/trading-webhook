@@ -1156,6 +1156,14 @@ INTRADAY_VWAP_CONTINUATION_ALLOW_NEGATIVE_VWAP_SLOPE_PCT = float(os.getenv("INTR
 INTRADAY_VWAP_CONTINUATION_REQUIRE_GREEN_LAST_1M = env_bool("INTRADAY_VWAP_CONTINUATION_REQUIRE_GREEN_LAST_1M", "false")
 INTRADAY_VWAP_CONTINUATION_REQUIRE_HIGHER_LOW = env_bool("INTRADAY_VWAP_CONTINUATION_REQUIRE_HIGHER_LOW", "true")
 INTRADAY_VWAP_CONTINUATION_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH = env_bool("INTRADAY_VWAP_CONTINUATION_ENTRY_CONFIRM_ABOVE_PRIOR_1M_HIGH", "false")
+INTRADAY_ORB_VWAP_QUALITY_GATE_ENABLE = env_bool("INTRADAY_ORB_VWAP_QUALITY_GATE_ENABLE", "true")
+INTRADAY_ORB_BARS = int(getenv_any("INTRADAY_ORB_BARS", default=str(SCANNER_HF_ORB_BARS)))
+INTRADAY_ORB_BREAKOUT_BUFFER_PCT = float(getenv_any("INTRADAY_ORB_BREAKOUT_BUFFER_PCT", default="0.0005"))
+INTRADAY_ORB_MAX_EXTENSION_FROM_VWAP_PCT = float(getenv_any("INTRADAY_ORB_MAX_EXTENSION_FROM_VWAP_PCT", default="0.0120"))
+INTRADAY_ORB_MIN_RECENT_VOL_RATIO = float(getenv_any("INTRADAY_ORB_MIN_RECENT_VOL_RATIO", default="0.85"))
+INTRADAY_ORB_MIN_DAY_RANGE_PCT = float(getenv_any("INTRADAY_ORB_MIN_DAY_RANGE_PCT", default="0.0035"))
+INTRADAY_LIVE_PREFLIGHT_REQUIRE_SHADOW_SETTLED = env_bool("INTRADAY_LIVE_PREFLIGHT_REQUIRE_SHADOW_SETTLED", "true")
+INTRADAY_LIVE_PREFLIGHT_MAX_OPEN_SHADOW = int(getenv_any("INTRADAY_LIVE_PREFLIGHT_MAX_OPEN_SHADOW", default="0"))
 INTRADAY_SHADOW_EVALUATION_ENABLE = env_bool("INTRADAY_SHADOW_EVALUATION_ENABLE", "true")
 INTRADAY_SHADOW_MAX_SYMBOLS = int(getenv_any("INTRADAY_SHADOW_MAX_SYMBOLS", default="10"))
 INTRADAY_SHADOW_FORCE_ENABLED_PATHS = env_bool("INTRADAY_SHADOW_FORCE_ENABLED_PATHS", "true")
@@ -1297,7 +1305,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-229-realized-loss-halt-attribution"
+PATCH_VERSION = "patch-230-intraday-live-preflight-shadow-settlement-orb-vwap-gate"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -13133,6 +13141,10 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict], force_enable: bool = Fa
     if not day_range_ok: component_reasons.append("day_range_too_small")
     if not micro_confirm_ok: component_reasons.append("micro_confirm_fail")
 
+    orb_vwap_quality_gate = _intraday_orb_vwap_quality_gate(rows, path="intraday_vwap_reclaim", force_enable=force_enable)
+    if not bool(orb_vwap_quality_gate.get("ok")):
+        component_reasons.append(str(orb_vwap_quality_gate.get("reason") or "orb_vwap_quality_fail"))
+
     triggered = bool(
         trend_ok
         and price_above_vwap
@@ -13142,6 +13154,7 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict], force_enable: bool = Fa
         and micro_vol_ok
         and day_range_ok
         and micro_confirm_ok
+        and bool(orb_vwap_quality_gate.get("ok"))
         and score >= float(INTRADAY_VWAP_RECLAIM_SCORE_MIN)
     )
     reason = "ok" if triggered else ("score_too_low" if score < float(INTRADAY_VWAP_RECLAIM_SCORE_MIN) else (component_reasons[0] if component_reasons else "no_reclaim"))
@@ -13176,6 +13189,7 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict], force_enable: bool = Fa
         "atr_ok": bool(atr_ok),
         "score": round(score, 3),
         "score_min": float(INTRADAY_VWAP_RECLAIM_SCORE_MIN),
+        "orb_vwap_quality_gate": orb_vwap_quality_gate,
         "component_reasons": component_reasons,
         "blocker_split": {
             "macro": [r for r in component_reasons if r not in {"recent_1m_volume_fail", "micro_confirm_fail"}],
@@ -13326,12 +13340,17 @@ def _intraday_vwap_continuation_setup(bars_today: list[dict], force_enable: bool
     if not trend_ok and "intraday_trend_fail" not in component_reasons:
         component_reasons.append("intraday_trend_fail")
 
+    orb_vwap_quality_gate = _intraday_orb_vwap_quality_gate(rows, path="intraday_vwap_continuation", force_enable=force_enable)
+    if not bool(orb_vwap_quality_gate.get("ok")):
+        component_reasons.append(str(orb_vwap_quality_gate.get("reason") or "orb_vwap_quality_fail"))
+
     triggered = bool(
         trend_ok
         and extension_ok
         and micro_vol_ok
         and day_range_ok
         and micro_confirm_ok
+        and bool(orb_vwap_quality_gate.get("ok"))
         and score >= float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN)
     )
     reason = "ok" if triggered else ("score_too_low" if score < float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN) else (component_reasons[0] if component_reasons else "no_continuation"))
@@ -13368,6 +13387,7 @@ def _intraday_vwap_continuation_setup(bars_today: list[dict], force_enable: bool
         "atr_ok": bool(atr_ok),
         "score": round(score, 3),
         "score_min": float(INTRADAY_VWAP_CONTINUATION_SCORE_MIN),
+        "orb_vwap_quality_gate": orb_vwap_quality_gate,
         "component_reasons": component_reasons,
         "blocker_split": {
             "macro": [r for r in component_reasons if r not in {"recent_1m_volume_fail", "micro_confirm_fail"}],
@@ -13396,7 +13416,88 @@ def eval_intraday_vwap_continuation_signal_with_diag(bars_today: list[dict], for
     diag = _intraday_vwap_continuation_setup(bars_today, force_enable=force_enable)
     return ("BUY" if diag.get("triggered") else None, diag)
 
+def _intraday_orb_vwap_quality_gate(bars_today: list[dict], *, path: str = "", force_enable: bool = False) -> dict:
+    enabled = bool(INTRADAY_ORB_VWAP_QUALITY_GATE_ENABLE and (force_enable or str(STRATEGY_MODE or "").strip().lower() == "intraday"))
+    out = {
+        "enabled": enabled,
+        "path": str(path or ""),
+        "ok": True,
+        "reason": "disabled",
+    }
+    if not enabled:
+        return out
 
+    rows = _bars_for_today_regular_session(bars_today)
+    orb_bars = max(2, int(INTRADAY_ORB_BARS or 5))
+    out["bars_1m"] = len(rows)
+    out["orb_bars"] = orb_bars
+    if len(rows) <= orb_bars:
+        out.update({"ok": False, "reason": "orb_window_not_complete"})
+        return out
+
+    closes = [float(b.get("close") or 0.0) for b in rows]
+    highs = [float(b.get("high", b.get("close") or 0.0) or 0.0) for b in rows]
+    lows = [float(b.get("low", b.get("close") or 0.0) or 0.0) for b in rows]
+    volumes = [float(b.get("volume") or 0.0) for b in rows]
+    price = closes[-1]
+    orb_high = max(highs[:orb_bars])
+    orb_low = min(lows[:orb_bars])
+
+    pv = 0.0
+    vv = 0.0
+    vwaps: list[float] = []
+    for h, l, c, v in zip(highs, lows, closes, volumes):
+        tp = (h + l + c) / 3.0
+        pv += tp * v
+        vv += v
+        vwaps.append((pv / vv) if vv > 0 else c)
+    vwap = vwaps[-1] if vwaps else price
+
+    buffer_pct = float(INTRADAY_ORB_BREAKOUT_BUFFER_PCT)
+    price_above_orb = bool(price >= orb_high * (1.0 + buffer_pct))
+    price_above_vwap = bool(price >= vwap)
+    extension_pct = ((price - vwap) / max(vwap, 1e-9)) if vwap else 0.0
+    extension_ok = bool(0.0 <= extension_pct <= float(INTRADAY_ORB_MAX_EXTENSION_FROM_VWAP_PCT))
+
+    recent_vol = _mean(volumes[-5:]) if len(volumes) >= 5 else _mean(volumes)
+    baseline_vol = _mean(volumes[-20:-5]) if len(volumes) >= 20 else _mean(volumes[:-5])
+    recent_1m_vol_ratio = recent_vol / max(baseline_vol, 1.0) if baseline_vol > 0 else 1.0
+    volume_ok = bool(recent_1m_vol_ratio >= float(INTRADAY_ORB_MIN_RECENT_VOL_RATIO))
+
+    day_range_pct = ((max(highs) - min(lows)) / max(price, 1e-9)) if price else 0.0
+    day_range_ok = bool(day_range_pct >= float(INTRADAY_ORB_MIN_DAY_RANGE_PCT))
+
+    reasons = []
+    if not price_above_orb:
+        reasons.append("orb_breakout_missing")
+    if not price_above_vwap:
+        reasons.append("price_below_vwap")
+    if not extension_ok:
+        reasons.append("too_extended_from_vwap")
+    if not volume_ok:
+        reasons.append("recent_1m_volume_fail")
+    if not day_range_ok:
+        reasons.append("day_range_too_small")
+
+    ok = not reasons
+    out.update({
+        "ok": ok,
+        "reason": "ok" if ok else reasons[0],
+        "component_reasons": reasons,
+        "price": round(price, 4),
+        "orb_high": round(orb_high, 4),
+        "orb_low": round(orb_low, 4),
+        "vwap": round(vwap, 4),
+        "price_above_orb": price_above_orb,
+        "price_above_vwap": price_above_vwap,
+        "extension_ok": extension_ok,
+        "dist_to_vwap_pct": round(extension_pct * 100.0, 3),
+        "recent_1m_vol_ratio": round(recent_1m_vol_ratio, 3),
+        "volume_ok": volume_ok,
+        "day_range_pct": round(day_range_pct * 100.0, 3),
+        "day_range_ok": day_range_ok,
+    })
+    return out
 
 def _hybrid_capacity_plan(current_open_positions: int | None = None) -> dict:
     """Report separate sleeve targets for a future swing+intraday hybrid mode.
@@ -13485,6 +13586,27 @@ def _hybrid_proof_update_entry(row: dict, latest_price: float, ts_utc: str = "")
     row["worst_r"] = round(min(_safe_float(row.get("worst_r") or latest_r), latest_r), 4)
     if ts_utc:
         row["last_observed_utc"] = ts_utc
+
+    status = str(row.get("status") or "open_shadow")
+    if status == "open_shadow":
+        stop = _safe_float(row.get("stop_price") or 0.0)
+        target = _safe_float(row.get("target_price") or 0.0)
+        if stop > 0 and latest_price <= stop:
+            row["status"] = "shadow_stop_hit"
+            row["settled_reason"] = "stop_hit"
+            row["settled_utc"] = ts_utc or datetime.now(timezone.utc).isoformat()
+        elif target > 0 and latest_price >= target:
+            row["status"] = "shadow_target_hit"
+            row["settled_reason"] = "target_hit"
+            row["settled_utc"] = ts_utc or datetime.now(timezone.utc).isoformat()
+        else:
+            try:
+                if not in_market_hours():
+                    row["status"] = "shadow_eod_flat"
+                    row["settled_reason"] = "eod_flat"
+                    row["settled_utc"] = ts_utc or datetime.now(timezone.utc).isoformat()
+            except Exception:
+                pass
     return row
 
 
@@ -13642,6 +13764,10 @@ def _hybrid_proof_metrics(capacity_plan: dict | None = None) -> dict:
         "state_path": HYBRID_PROOF_LEDGER_STATE_PATH,
         "ledger_count": len(rows),
         "open_shadow_count": sum(1 for r in rows if str(r.get("status") or "") == "open_shadow"),
+        "settled_shadow_count": sum(1 for r in rows if str(r.get("status") or "").startswith("shadow_") and str(r.get("status") or "") != "open_shadow"),
+        "shadow_stop_hit_count": sum(1 for r in rows if str(r.get("status") or "") == "shadow_stop_hit"),
+        "shadow_target_hit_count": sum(1 for r in rows if str(r.get("status") or "") == "shadow_target_hit"),
+        "shadow_eod_flat_count": sum(1 for r in rows if str(r.get("status") or "") == "shadow_eod_flat"),
         "positive_count": positive,
         "positive_rate": round(positive / len(rows), 4) if rows else 0.0,
         "avg_return_pct": round(sum(returns) / len(returns), 6) if returns else 0.0,
@@ -13664,6 +13790,36 @@ def _hybrid_proof_metrics(capacity_plan: dict | None = None) -> dict:
         "recommended_action": "continue_shadow_collection" if not proof_ready_for_paper else ("paper_pilot_enabled" if capacity.get("intraday_paper_enabled") else "review_for_intraday_paper_pilot"),
     }
 
+def _intraday_live_preflight(proof_metrics: dict | None = None) -> dict:
+    metrics = dict(proof_metrics or _hybrid_proof_metrics())
+    loss_halt = _p229_realized_closed_trade_loss_halt()
+    open_shadow_count = int(metrics.get("open_shadow_count") or 0)
+    checks = [
+        {"name": "live_trading_enabled", "ok": bool(LIVE_TRADING_ENABLED), "value": bool(LIVE_TRADING_ENABLED)},
+        {"name": "market_tradable_now", "ok": bool(in_market_hours()), "value": bool(in_market_hours())},
+        {"name": "strategy_mode_intraday", "ok": str(STRATEGY_MODE or "").strip().lower() == "intraday", "value": STRATEGY_MODE},
+        {"name": "hybrid_mode_live", "ok": str(HYBRID_MODE or "").strip().lower() == "live", "value": HYBRID_MODE},
+        {"name": "intraday_live_enabled", "ok": bool(INTRADAY_LIVE_ENABLED), "value": bool(INTRADAY_LIVE_ENABLED)},
+        {"name": "scanner_live_allowed", "ok": bool(SCANNER_ALLOW_LIVE) and not bool(DRY_RUN), "value": {"scanner_allow_live": bool(SCANNER_ALLOW_LIVE), "dry_run": bool(DRY_RUN)}},
+        {"name": "realized_loss_halt_clear", "ok": not bool(loss_halt.get("active")), "value": loss_halt},
+        {"name": "proof_ready_for_live", "ok": bool(metrics.get("proof_ready_for_live")), "value": bool(metrics.get("proof_ready_for_live"))},
+    ]
+    if INTRADAY_LIVE_PREFLIGHT_REQUIRE_SHADOW_SETTLED:
+        checks.append({
+            "name": "shadow_exits_settled",
+            "ok": open_shadow_count <= int(INTRADAY_LIVE_PREFLIGHT_MAX_OPEN_SHADOW),
+            "value": {"open_shadow_count": open_shadow_count, "max_open_shadow": int(INTRADAY_LIVE_PREFLIGHT_MAX_OPEN_SHADOW)},
+        })
+    blockers = [str(c.get("name")) for c in checks if not c.get("ok")]
+    return {
+        "ok": not blockers,
+        "allowed": not blockers,
+        "blockers": blockers,
+        "checks": checks,
+        "proof_ready_for_live": bool(metrics.get("proof_ready_for_live")),
+        "open_shadow_count": open_shadow_count,
+        "realized_closed_trade_loss_halt_active": bool(loss_halt.get("active")),
+    }
 
 def _hybrid_paper_pilot_plan(would_trade: list[dict], metrics: dict, capacity_plan: dict) -> dict:
     """Plan hypothetical intraday paper entries without changing broker/plans."""
@@ -17238,12 +17394,16 @@ def diagnostics_hybrid_proof(request: Request, limit: int = 50):
     require_admin_if_configured(request)
     _ensure_runtime_state_loaded()
     lim = max(1, min(int(limit or 50), 500))
+    capacity_plan = _hybrid_capacity_plan()
+    proof_metrics = _hybrid_proof_metrics(capacity_plan=capacity_plan)
+    live_preflight = _intraday_live_preflight(proof_metrics=proof_metrics)
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "strategy_mode": STRATEGY_MODE,
-        "hybrid_capacity_plan": _hybrid_capacity_plan(),
-        "proof_metrics": _hybrid_proof_metrics(),
+        "hybrid_capacity_plan": capacity_plan,
+        "proof_metrics": proof_metrics,
+        "intraday_live_preflight": live_preflight,
         "hybrid_mode": HYBRID_MODE,
         "paper_pilot_config": {
             "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
@@ -19585,6 +19745,10 @@ def diagnostics_intraday_launch_readiness(request: Request):
         check["required_for_launch"] = check.get("name") in required_check_names
     blockers = [c.get("name") for c in checks if c.get("required_for_launch") and not c.get("ok")]
     recommended_followups = [c.get("name") for c in checks if not c.get("required_for_launch") and not c.get("ok")]
+    live_preflight = _intraday_live_preflight()
+    for preflight_blocker in live_preflight.get("blockers") or []:
+        if preflight_blocker not in blockers:
+            blockers.append(preflight_blocker)
     launch_gate_actions = _intraday_launch_gate_actions(blockers)
     launch_action_plan = _intraday_launch_action_plan(
         gate_actions=launch_gate_actions,
@@ -19600,6 +19764,7 @@ def diagnostics_intraday_launch_readiness(request: Request):
         "strategy_mode": str(globals().get("STRATEGY_MODE") or ""),
         "projection": projection,
         "launch_gate_status": {"market_tradable_now": market_tradable_now, "regime_favorable": regime_favorable},
+        "intraday_live_preflight": live_preflight,
         "launch_gate_actions": launch_gate_actions,
         "launch_action_plan": launch_action_plan,
         "score_passed": len(checks) - len(blockers),
