@@ -1191,7 +1191,9 @@ INTRADAY_PAPER_MAX_POSITIONS = int(getenv_any("INTRADAY_PAPER_MAX_POSITIONS", de
 INTRADAY_PAPER_REQUIRE_PROOF_READY = env_bool("INTRADAY_PAPER_REQUIRE_PROOF_READY", "true")
 
 INTRADAY_QUALITY_GATE_ENABLED = env_bool("INTRADAY_QUALITY_GATE_ENABLED", "true")
+INTRADAY_QUALITY_ACTIVE_SCENARIO = getenv_any("INTRADAY_QUALITY_ACTIVE_SCENARIO", default="rank_130_140_only").strip().lower()
 INTRADAY_QUALITY_TIME_WINDOWS = getenv_any("INTRADAY_QUALITY_TIME_WINDOWS", default="12:00-13:59")
+INTRADAY_QUALITY_BLOCKED_TIME_WINDOWS = getenv_any("INTRADAY_QUALITY_BLOCKED_TIME_WINDOWS", default="")
 INTRADAY_QUALITY_ALLOWED_SYMBOLS = getenv_any("INTRADAY_QUALITY_ALLOWED_SYMBOLS", default="PANW,AMD,MRVL,NET,SPY,AMAT,CRWD,MU")
 INTRADAY_QUALITY_BLOCKED_SYMBOLS = getenv_any("INTRADAY_QUALITY_BLOCKED_SYMBOLS", default="GOOGL,COIN,QQQ,LRCX,ANET,AMZN,META,UBER,SHOP,DDOG,IWM")
 INTRADAY_QUALITY_MIN_SCORE = float(getenv_any("INTRADAY_QUALITY_MIN_SCORE", default="100"))
@@ -1333,7 +1335,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-237-intraday-pilot-quality-gate-filter-simulation"
+PATCH_VERSION = "patch-238-intraday-filter-lab-non-empty-paper-pilot-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14178,25 +14180,116 @@ def _intraday_quality_csv_set(raw: str) -> set[str]:
     return {str(x or "").strip().upper() for x in str(raw or "").split(",") if str(x or "").strip()}
 
 
-def _intraday_quality_gate_config() -> dict:
+def _intraday_quality_csv_list(raw: str) -> list[str]:
+    return [str(x or "").strip() for x in str(raw or "").split(",") if str(x or "").strip()]
+
+
+def _intraday_quality_config_from_values(
+    *,
+    name: str,
+    time_windows: str = "",
+    blocked_time_windows: str = "",
+    allowed_symbols: str = "",
+    blocked_symbols: str = "",
+    min_score: float = 0.0,
+    min_rank_score: float = 0.0,
+    max_rank_score: float = 0.0,
+    blocked_rank_buckets: str = "",
+) -> dict:
     return {
+        "name": str(name or "custom").strip().lower(),
         "enabled": bool(INTRADAY_QUALITY_GATE_ENABLED),
-        "time_windows": str(INTRADAY_QUALITY_TIME_WINDOWS or "").strip(),
-        "allowed_symbols": sorted(_intraday_quality_csv_set(INTRADAY_QUALITY_ALLOWED_SYMBOLS)),
-        "blocked_symbols": sorted(_intraday_quality_csv_set(INTRADAY_QUALITY_BLOCKED_SYMBOLS)),
-        "min_score": float(INTRADAY_QUALITY_MIN_SCORE),
-        "min_rank_score": float(INTRADAY_QUALITY_MIN_RANK_SCORE),
-        "max_rank_score": float(INTRADAY_QUALITY_MAX_RANK_SCORE),
-        "blocked_rank_buckets": sorted(_intraday_quality_csv_set(INTRADAY_QUALITY_BLOCK_RANK_BUCKETS)),
+        "time_windows": str(time_windows or "").strip(),
+        "blocked_time_windows": str(blocked_time_windows or "").strip(),
+        "allowed_symbols": sorted(_intraday_quality_csv_set(allowed_symbols)),
+        "blocked_symbols": sorted(_intraday_quality_csv_set(blocked_symbols)),
+        "min_score": float(min_score or 0.0),
+        "min_rank_score": float(min_rank_score or 0.0),
+        "max_rank_score": float(max_rank_score or 0.0),
+        "blocked_rank_buckets": sorted(_intraday_quality_csv_set(blocked_rank_buckets)),
         "filter_min_settled": int(INTRADAY_QUALITY_FILTER_MIN_SETTLED),
         "require_filter_proof_ready": bool(INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY),
     }
 
 
-def _intraday_quality_time_allowed(ts_utc: str | None = None) -> bool:
-    windows = [w.strip() for w in str(INTRADAY_QUALITY_TIME_WINDOWS or "").split(",") if w.strip()]
+def _intraday_quality_scenario_configs() -> dict[str, dict]:
+    blocked_symbols = str(INTRADAY_QUALITY_BLOCKED_SYMBOLS or "")
+    allowed_symbols = str(INTRADAY_QUALITY_ALLOWED_SYMBOLS or "")
+    return {
+        "custom_env": _intraday_quality_config_from_values(
+            name="custom_env",
+            time_windows=INTRADAY_QUALITY_TIME_WINDOWS,
+            blocked_time_windows=INTRADAY_QUALITY_BLOCKED_TIME_WINDOWS,
+            allowed_symbols=INTRADAY_QUALITY_ALLOWED_SYMBOLS,
+            blocked_symbols=INTRADAY_QUALITY_BLOCKED_SYMBOLS,
+            min_score=INTRADAY_QUALITY_MIN_SCORE,
+            min_rank_score=INTRADAY_QUALITY_MIN_RANK_SCORE,
+            max_rank_score=INTRADAY_QUALITY_MAX_RANK_SCORE,
+            blocked_rank_buckets=INTRADAY_QUALITY_BLOCK_RANK_BUCKETS,
+        ),
+        "time_only_midday": _intraday_quality_config_from_values(
+            name="time_only_midday",
+            time_windows="12:00-13:59",
+        ),
+        "rank_130_140_only": _intraday_quality_config_from_values(
+            name="rank_130_140_only",
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
+        "symbol_allowlist_only": _intraday_quality_config_from_values(
+            name="symbol_allowlist_only",
+            allowed_symbols=allowed_symbols,
+        ),
+        "exclude_bad_symbols_only": _intraday_quality_config_from_values(
+            name="exclude_bad_symbols_only",
+            blocked_symbols=blocked_symbols,
+        ),
+        "exclude_morning_only": _intraday_quality_config_from_values(
+            name="exclude_morning_only",
+            blocked_time_windows="09:30-10:59",
+        ),
+        "time_plus_rank": _intraday_quality_config_from_values(
+            name="time_plus_rank",
+            time_windows="12:00-13:59",
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
+        "rank_plus_no_bad_symbols": _intraday_quality_config_from_values(
+            name="rank_plus_no_bad_symbols",
+            blocked_symbols=blocked_symbols,
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
+        "midday_plus_no_bad_symbols": _intraday_quality_config_from_values(
+            name="midday_plus_no_bad_symbols",
+            time_windows="12:00-13:59",
+            blocked_symbols=blocked_symbols,
+        ),
+        "score_100_plus_no_bad_symbols": _intraday_quality_config_from_values(
+            name="score_100_plus_no_bad_symbols",
+            blocked_symbols=blocked_symbols,
+            min_score=100,
+        ),
+    }
+
+
+def _intraday_quality_active_config() -> dict:
+    scenarios = _intraday_quality_scenario_configs()
+    name = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "rank_130_140_only").strip().lower()
+    return dict(scenarios.get(name) or scenarios.get("rank_130_140_only") or scenarios["custom_env"])
+
+
+def _intraday_quality_gate_config() -> dict:
+    cfg = _intraday_quality_active_config()
+    cfg["active_scenario"] = cfg.get("name")
+    cfg["available_scenarios"] = sorted(_intraday_quality_scenario_configs().keys())
+    return cfg
+
+
+def _intraday_quality_time_in_windows(ts_utc: str | None, windows_raw: str) -> bool:
+    windows = [w.strip() for w in str(windows_raw or "").split(",") if w.strip()]
     if not windows:
-        return True
+        return False
     try:
         dt_ny = _coerce_dt_ny(ts_utc) if ts_utc else now_ny()
     except Exception:
@@ -14216,16 +14309,17 @@ def _intraday_quality_time_allowed(ts_utc: str | None = None) -> bool:
     return False
 
 
-def _intraday_quality_gate_reasons(candidate: dict, ts_utc: str | None = None) -> list[str]:
+def _intraday_quality_gate_reasons(candidate: dict, ts_utc: str | None = None, config: dict | None = None) -> list[str]:
     if not INTRADAY_QUALITY_GATE_ENABLED:
         return []
 
+    cfg = dict(config or _intraday_quality_active_config())
     symbol = str((candidate or {}).get("symbol") or "").strip().upper()
     score = _safe_float((candidate or {}).get("score") or 0.0)
     rank_score = _safe_float((candidate or {}).get("rank_score") or 0.0)
-    allowed_symbols = _intraday_quality_csv_set(INTRADAY_QUALITY_ALLOWED_SYMBOLS)
-    blocked_symbols = _intraday_quality_csv_set(INTRADAY_QUALITY_BLOCKED_SYMBOLS)
-    blocked_rank_buckets = _intraday_quality_csv_set(INTRADAY_QUALITY_BLOCK_RANK_BUCKETS)
+    allowed_symbols = {str(x or "").strip().upper() for x in (cfg.get("allowed_symbols") or []) if str(x or "").strip()}
+    blocked_symbols = {str(x or "").strip().upper() for x in (cfg.get("blocked_symbols") or []) if str(x or "").strip()}
+    blocked_rank_buckets = {str(x or "").strip().upper() for x in (cfg.get("blocked_rank_buckets") or []) if str(x or "").strip()}
     rank_bucket = _hybrid_shadow_quality_bucket(rank_score, [100, 120, 130, 140])
 
     reasons = []
@@ -14233,28 +14327,37 @@ def _intraday_quality_gate_reasons(candidate: dict, ts_utc: str | None = None) -
         reasons.append("symbol_not_in_quality_allowlist")
     if blocked_symbols and symbol in blocked_symbols:
         reasons.append("symbol_in_quality_blocklist")
-    if score < float(INTRADAY_QUALITY_MIN_SCORE):
+    if score < float(cfg.get("min_score") or 0.0):
         reasons.append("score_below_quality_min")
-    if rank_score < float(INTRADAY_QUALITY_MIN_RANK_SCORE):
+    if rank_score < float(cfg.get("min_rank_score") or 0.0):
         reasons.append("rank_score_below_quality_min")
-    if float(INTRADAY_QUALITY_MAX_RANK_SCORE) > 0 and rank_score >= float(INTRADAY_QUALITY_MAX_RANK_SCORE):
+    if float(cfg.get("max_rank_score") or 0.0) > 0 and rank_score >= float(cfg.get("max_rank_score") or 0.0):
         reasons.append("rank_score_above_quality_max")
     if rank_bucket.upper() in blocked_rank_buckets:
         reasons.append("rank_bucket_blocked")
-    if not _intraday_quality_time_allowed(ts_utc):
+
+    time_windows = str(cfg.get("time_windows") or "").strip()
+    if time_windows and not _intraday_quality_time_in_windows(ts_utc, time_windows):
         reasons.append("time_window_blocked")
+
+    blocked_time_windows = str(cfg.get("blocked_time_windows") or "").strip()
+    if blocked_time_windows and _intraday_quality_time_in_windows(ts_utc, blocked_time_windows):
+        reasons.append("blocked_time_window")
+
     return reasons
 
 
-def _intraday_quality_filter_candidates(candidates: list[dict], ts_utc: str | None = None) -> dict:
+def _intraday_quality_filter_candidates(candidates: list[dict], ts_utc: str | None = None, config: dict | None = None) -> dict:
+    cfg = dict(config or _intraday_quality_active_config())
     accepted = []
     rejected = []
     reason_counts = {}
     for row in candidates or []:
         candidate = dict(row or {})
-        reasons = _intraday_quality_gate_reasons(candidate, ts_utc=ts_utc)
+        reasons = _intraday_quality_gate_reasons(candidate, ts_utc=ts_utc, config=cfg)
         candidate["quality_gate_pass"] = not reasons
         candidate["quality_gate_reasons"] = reasons
+        candidate["quality_gate_scenario"] = cfg.get("name")
         if reasons:
             rejected.append(candidate)
             for reason in reasons:
@@ -14263,30 +14366,34 @@ def _intraday_quality_filter_candidates(candidates: list[dict], ts_utc: str | No
             accepted.append(candidate)
     return {
         "enabled": bool(INTRADAY_QUALITY_GATE_ENABLED),
-        "config": _intraday_quality_gate_config(),
+        "scenario": cfg.get("name"),
+        "config": cfg,
         "accepted": accepted,
         "rejected": rejected,
         "accepted_count": len(accepted),
         "rejected_count": len(rejected),
+        "raw_count": len(candidates or []),
+        "non_empty_guard_ok": len(accepted) > 0 or len(candidates or []) == 0,
         "rejection_reason_counts": reason_counts,
     }
 
 
-def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 1000) -> dict:
-    _ensure_runtime_state_loaded()
-    _hybrid_proof_load_ledger_compat()
-    source_rows = [dict(r) for r in (rows if rows is not None else HYBRID_PROOF_LEDGER) if isinstance(r, dict)]
-    settled_rows = [r for r in source_rows if _hybrid_shadow_is_settled(r)]
-    limited_rows = settled_rows[-max(1, min(int(limit or 1000), 5000)):]
-
+def _intraday_filter_simulate_config(rows: list[dict], cfg: dict, limit: int = 1000) -> dict:
+    limited_rows = list(rows or [])[-max(1, min(int(limit or 1000), 5000)):]
     accepted = []
     rejected = []
     reason_counts = {}
+
     for row in limited_rows:
-        reasons = _intraday_quality_gate_reasons(row, ts_utc=row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc"))
+        reasons = _intraday_quality_gate_reasons(
+            row,
+            ts_utc=row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc"),
+            config=cfg,
+        )
         copy_row = dict(row)
         copy_row["quality_gate_pass"] = not reasons
         copy_row["quality_gate_reasons"] = reasons
+        copy_row["quality_gate_scenario"] = cfg.get("name")
         if reasons:
             rejected.append(copy_row)
             for reason in reasons:
@@ -14301,6 +14408,7 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
     accepted_count = len(accepted)
     avg_r = _mean(r_values)
     positive_rate = (positive / accepted_count) if accepted_count else 0.0
+    stop_hit_rate = (stop_hits / accepted_count) if accepted_count else 0.0
 
     blockers = []
     if accepted_count < int(INTRADAY_QUALITY_FILTER_MIN_SETTLED):
@@ -14311,9 +14419,8 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
         blockers.append("quality_filter_positive_rate_below_min")
 
     return {
-        "enabled": bool(INTRADAY_QUALITY_GATE_ENABLED),
-        "config": _intraday_quality_gate_config(),
-        "source_settled_count": len(settled_rows),
+        "scenario": cfg.get("name"),
+        "config": cfg,
         "checked": len(limited_rows),
         "accepted_count": accepted_count,
         "rejected_count": len(rejected),
@@ -14322,17 +14429,59 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
         "avg_return_pct": round(_mean(returns) * 100.0, 4),
         "positive_rate": round(positive_rate, 4),
         "stop_hit_count": stop_hits,
-        "stop_hit_rate": round((stop_hits / accepted_count) if accepted_count else 0.0, 4),
+        "stop_hit_rate": round(stop_hit_rate, 4),
         "ready": not blockers,
         "blockers": blockers,
+        "quality_attribution": _hybrid_shadow_quality_attribution(accepted),
+        "accepted_examples": accepted[-25:],
+        "rejected_examples": rejected[-10:],
+    }
+
+
+def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 1000) -> dict:
+    _ensure_runtime_state_loaded()
+    _hybrid_proof_load_ledger_compat()
+    source_rows = [dict(r) for r in (rows if rows is not None else HYBRID_PROOF_LEDGER) if isinstance(r, dict)]
+    settled_rows = [r for r in source_rows if _hybrid_shadow_is_settled(r)]
+    scenarios = _intraday_quality_scenario_configs()
+    active_cfg = _intraday_quality_active_config()
+
+    scenario_results = []
+    for cfg in scenarios.values():
+        scenario_results.append(_intraday_filter_simulate_config(settled_rows, cfg, limit=limit))
+
+    scenario_results.sort(
+        key=lambda r: (
+            bool(r.get("ready")),
+            int(r.get("accepted_count") or 0) >= int(INTRADAY_QUALITY_FILTER_MIN_SETTLED),
+            _safe_float(r.get("avg_r") or 0.0),
+            _safe_float(r.get("positive_rate") or 0.0),
+            -_safe_float(r.get("stop_hit_rate") or 0.0),
+            int(r.get("accepted_count") or 0),
+        ),
+        reverse=True,
+    )
+
+    active_result = _intraday_filter_simulate_config(settled_rows, active_cfg, limit=limit)
+    best_ready = next((r for r in scenario_results if bool(r.get("ready"))), None)
+    best_non_empty = next((r for r in scenario_results if int(r.get("accepted_count") or 0) > 0), None)
+
+    return {
+        "enabled": bool(INTRADAY_QUALITY_GATE_ENABLED),
+        "active_scenario": active_cfg.get("name"),
+        "active": active_result,
+        "best_ready_scenario": best_ready,
+        "best_non_empty_scenario": best_non_empty,
+        "source_settled_count": len(settled_rows),
+        "checked": len(settled_rows[-max(1, min(int(limit or 1000), 5000)):]),
+        "ready": bool(active_result.get("ready")),
+        "blockers": active_result.get("blockers") or [],
         "thresholds": {
             "min_settled": int(INTRADAY_QUALITY_FILTER_MIN_SETTLED),
             "min_avg_r": float(HYBRID_PROOF_MIN_AVG_R),
             "min_positive_rate": float(HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE),
         },
-        "quality_attribution": _hybrid_shadow_quality_attribution(accepted),
-        "accepted_examples": accepted[-25:],
-        "rejected_examples": rejected[-25:],
+        "scenarios": scenario_results,
     }
 
 def _hybrid_shadow_backfill_settlements(
@@ -15121,6 +15270,18 @@ def _run_intraday_shadow_scan(symbols: list[str], *, lookback_days: int | None =
     capacity_plan = _hybrid_capacity_plan()
     proof_metrics = _hybrid_proof_metrics(capacity_plan=capacity_plan)
     paper_pilot = _hybrid_paper_pilot_plan(would_trade, proof_metrics, capacity_plan)
+    if bool(INTRADAY_QUALITY_GATE_ENABLED) and raw_would_trade and not would_trade:
+        paper_pilot = dict(paper_pilot)
+        paper_pilot["eligible"] = False
+        paper_pilot["reason"] = "quality_gate_empty_after_filter"
+        paper_pilot["planned_count"] = 0
+        paper_pilot["planned_entries"] = []
+        paper_pilot["quality_gate_non_empty_guard"] = {
+            "raw_would_trade": len(raw_would_trade),
+            "accepted_count": 0,
+            "scenario": quality_filter.get("scenario"),
+            "recommended_action": "review_diagnostics_intraday_filter_simulation",
+        }
     shadow_payload = {
         "enabled": True,
         "status": "completed",
@@ -15142,6 +15303,18 @@ def _run_intraday_shadow_scan(symbols: list[str], *, lookback_days: int | None =
     shadow_payload["proof_ledger_update"] = _record_intraday_shadow_proof(shadow_payload, bars_map, scan_ts_utc)
     shadow_payload["proof_metrics"] = _hybrid_proof_metrics(capacity_plan=capacity_plan)
     shadow_payload["paper_pilot"] = _hybrid_paper_pilot_plan(would_trade, shadow_payload["proof_metrics"], capacity_plan)
+    if bool(INTRADAY_QUALITY_GATE_ENABLED) and raw_would_trade and not would_trade:
+        shadow_payload["paper_pilot"] = dict(shadow_payload["paper_pilot"])
+        shadow_payload["paper_pilot"]["eligible"] = False
+        shadow_payload["paper_pilot"]["reason"] = "quality_gate_empty_after_filter"
+        shadow_payload["paper_pilot"]["planned_count"] = 0
+        shadow_payload["paper_pilot"]["planned_entries"] = []
+        shadow_payload["paper_pilot"]["quality_gate_non_empty_guard"] = {
+            "raw_would_trade": len(raw_would_trade),
+            "accepted_count": 0,
+            "scenario": quality_filter.get("scenario"),
+            "recommended_action": "review_diagnostics_intraday_filter_simulation",
+        }
     return shadow_payload
     
     
@@ -18733,6 +18906,11 @@ def diagnostics_intraday_filter_simulation(request: Request, limit: int = 1000):
         "patch_version": PATCH_VERSION,
         "strategy_mode": STRATEGY_MODE,
         "hybrid_mode": HYBRID_MODE,
+        "active_scenario": simulation.get("active_scenario"),
+        "active": simulation.get("active"),
+        "best_ready_scenario": simulation.get("best_ready_scenario"),
+        "best_non_empty_scenario": simulation.get("best_non_empty_scenario"),
+        "scenarios": simulation.get("scenarios") or [],
         "simulation": simulation,
         "proof_ready_for_live": bool(proof_metrics.get("proof_ready_for_live")),
         "live_promotion_ready": bool(proof_metrics.get("live_promotion_ready")),
@@ -18757,6 +18935,8 @@ def diagnostics_hybrid_proof(request: Request, limit: int = 50):
         "proof_metrics": proof_metrics,
         "quality_attribution": proof_metrics.get("quality_attribution") or {},
         "quality_filter_simulation": proof_metrics.get("quality_filter_simulation") or {},
+        "quality_filter_active": (proof_metrics.get("quality_filter_simulation") or {}).get("active") or {},
+        "quality_filter_best_ready": (proof_metrics.get("quality_filter_simulation") or {}).get("best_ready_scenario") or {},
         "live_promotion_truth": {
             "ready": proof_metrics.get("live_promotion_ready"),
             "blockers": proof_metrics.get("live_promotion_blockers"),
