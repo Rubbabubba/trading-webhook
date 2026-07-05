@@ -1191,7 +1191,7 @@ INTRADAY_PAPER_MAX_POSITIONS = int(getenv_any("INTRADAY_PAPER_MAX_POSITIONS", de
 INTRADAY_PAPER_REQUIRE_PROOF_READY = env_bool("INTRADAY_PAPER_REQUIRE_PROOF_READY", "true")
 
 INTRADAY_QUALITY_GATE_ENABLED = env_bool("INTRADAY_QUALITY_GATE_ENABLED", "true")
-INTRADAY_QUALITY_ACTIVE_SCENARIO = getenv_any("INTRADAY_QUALITY_ACTIVE_SCENARIO", default="rank_130_140_only").strip().lower()
+INTRADAY_QUALITY_ACTIVE_SCENARIO = getenv_any("INTRADAY_QUALITY_ACTIVE_SCENARIO", default="symbol_allowlist_rank_130_140").strip().lower()
 INTRADAY_QUALITY_TIME_WINDOWS = getenv_any("INTRADAY_QUALITY_TIME_WINDOWS", default="12:00-13:59")
 INTRADAY_QUALITY_BLOCKED_TIME_WINDOWS = getenv_any("INTRADAY_QUALITY_BLOCKED_TIME_WINDOWS", default="")
 INTRADAY_QUALITY_ALLOWED_SYMBOLS = getenv_any("INTRADAY_QUALITY_ALLOWED_SYMBOLS", default="PANW,AMD,MRVL,NET,SPY,AMAT,CRWD,MU")
@@ -1335,7 +1335,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-238-intraday-filter-lab-non-empty-paper-pilot-guard"
+PATCH_VERSION = "patch-239-intraday-paper-pilot-scenario-promotion-allowlist-rank-gate"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14236,6 +14236,12 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
             min_rank_score=130,
             max_rank_score=140,
         ),
+        "symbol_allowlist_rank_130_140": _intraday_quality_config_from_values(
+            name="symbol_allowlist_rank_130_140",
+            allowed_symbols=allowed_symbols,
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
         "symbol_allowlist_only": _intraday_quality_config_from_values(
             name="symbol_allowlist_only",
             allowed_symbols=allowed_symbols,
@@ -14275,8 +14281,13 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
 
 def _intraday_quality_active_config() -> dict:
     scenarios = _intraday_quality_scenario_configs()
-    name = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "rank_130_140_only").strip().lower()
-    return dict(scenarios.get(name) or scenarios.get("rank_130_140_only") or scenarios["custom_env"])
+    name = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "symbol_allowlist_rank_130_140").strip().lower()
+    return dict(
+        scenarios.get(name)
+        or scenarios.get("symbol_allowlist_rank_130_140")
+        or scenarios.get("rank_130_140_only")
+        or scenarios["custom_env"]
+    )
 
 
 def _intraday_quality_gate_config() -> dict:
@@ -14466,16 +14477,30 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
     best_ready = next((r for r in scenario_results if bool(r.get("ready"))), None)
     best_non_empty = next((r for r in scenario_results if int(r.get("accepted_count") or 0) > 0), None)
 
+    promoted = scenarios.get("symbol_allowlist_rank_130_140") or {}
+    promoted_result = _intraday_filter_simulate_config(settled_rows, promoted, limit=limit) if promoted else {}
+
     return {
         "enabled": bool(INTRADAY_QUALITY_GATE_ENABLED),
         "active_scenario": active_cfg.get("name"),
         "active": active_result,
+        "promoted_paper_scenario": promoted_result,
         "best_ready_scenario": best_ready,
         "best_non_empty_scenario": best_non_empty,
         "source_settled_count": len(settled_rows),
         "checked": len(settled_rows[-max(1, min(int(limit or 1000), 5000)):]),
         "ready": bool(active_result.get("ready")),
         "blockers": active_result.get("blockers") or [],
+        "paper_pilot_recommendation": {
+            "scenario": "symbol_allowlist_rank_130_140",
+            "use_for_paper": bool(promoted_result.get("ready")),
+            "keep_intraday_live_disabled": True,
+            "reason": "allowlisted_symbol_rank_130_140_has_best_clean_pilot_profile_seen_so_far",
+            "accepted_count": promoted_result.get("accepted_count"),
+            "avg_r": promoted_result.get("avg_r"),
+            "positive_rate": promoted_result.get("positive_rate"),
+            "stop_hit_rate": promoted_result.get("stop_hit_rate"),
+        },
         "thresholds": {
             "min_settled": int(INTRADAY_QUALITY_FILTER_MIN_SETTLED),
             "min_avg_r": float(HYBRID_PROOF_MIN_AVG_R),
@@ -18908,6 +18933,8 @@ def diagnostics_intraday_filter_simulation(request: Request, limit: int = 1000):
         "hybrid_mode": HYBRID_MODE,
         "active_scenario": simulation.get("active_scenario"),
         "active": simulation.get("active"),
+        "promoted_paper_scenario": simulation.get("promoted_paper_scenario"),
+        "paper_pilot_recommendation": simulation.get("paper_pilot_recommendation"),
         "best_ready_scenario": simulation.get("best_ready_scenario"),
         "best_non_empty_scenario": simulation.get("best_non_empty_scenario"),
         "scenarios": simulation.get("scenarios") or [],
@@ -18936,6 +18963,8 @@ def diagnostics_hybrid_proof(request: Request, limit: int = 50):
         "quality_attribution": proof_metrics.get("quality_attribution") or {},
         "quality_filter_simulation": proof_metrics.get("quality_filter_simulation") or {},
         "quality_filter_active": (proof_metrics.get("quality_filter_simulation") or {}).get("active") or {},
+        "quality_filter_promoted_paper": (proof_metrics.get("quality_filter_simulation") or {}).get("promoted_paper_scenario") or {},
+        "paper_pilot_recommendation": (proof_metrics.get("quality_filter_simulation") or {}).get("paper_pilot_recommendation") or {},
         "quality_filter_best_ready": (proof_metrics.get("quality_filter_simulation") or {}).get("best_ready_scenario") or {},
         "live_promotion_truth": {
             "ready": proof_metrics.get("live_promotion_ready"),
