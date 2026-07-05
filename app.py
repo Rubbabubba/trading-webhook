@@ -1335,7 +1335,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-242-intraday-paper-pilot-promotion-gate-10am-kill-switch"
+PATCH_VERSION = "patch-242-hotfix-conservative-paper-pilot-gate"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14339,9 +14339,10 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
 
 def _intraday_quality_active_config() -> dict:
     scenarios = _intraday_quality_scenario_configs()
-    name = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "core_symbols_block_10am").strip().lower()
+    name = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "paper_pilot_conservative").strip().lower()
     return dict(
         scenarios.get(name)
+        or scenarios.get("paper_pilot_conservative")
         or scenarios.get("core_symbols_block_10am")
         or scenarios.get("symbol_allowlist_rank_130_140")
         or scenarios.get("rank_130_140_only")
@@ -14543,7 +14544,7 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
     best_ready = next((r for r in scenario_results if bool(r.get("ready"))), None)
     best_non_empty = next((r for r in scenario_results if int(r.get("accepted_count") or 0) > 0), None)
 
-    promoted = scenarios.get("core_symbols_block_10am") or scenarios.get("symbol_allowlist_rank_130_140") or {}
+    promoted = scenarios.get("paper_pilot_conservative") or scenarios.get("core_symbols_block_10am") or scenarios.get("symbol_allowlist_rank_130_140") or {}
     promoted_result = _intraday_filter_simulate_config(settled_rows, promoted, limit=limit) if promoted else {}
 
     return {
@@ -14558,10 +14559,10 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
         "ready": bool(active_result.get("ready")),
         "blockers": active_result.get("blockers") or [],
         "paper_pilot_recommendation": {
-            "scenario": "core_symbols_block_10am",
+            "scenario": "paper_pilot_conservative",
             "use_for_paper": bool(promoted_result.get("ready")),
             "keep_intraday_live_disabled": True,
-            "reason": "replay_lab_promoted_core_symbols_with_10am_kill_switch",
+            "reason": "conservative_replay_lab_paper_pilot_without_crwd",
             "accepted_count": promoted_result.get("accepted_count"),
             "avg_r": promoted_result.get("avg_r"),
             "positive_rate": promoted_result.get("positive_rate"),
@@ -14579,9 +14580,9 @@ def _intraday_paper_pilot_readiness() -> dict:
     sim = _intraday_filter_simulation(limit=1000)
     scenarios = _intraday_quality_scenario_configs()
 
-    promoted_cfg = scenarios.get("core_symbols_block_10am") or {}
+    promoted_cfg = scenarios.get("paper_pilot_conservative") or {}
     conservative_cfg = scenarios.get("core_reclaim_block_10am") or {}
-    fallback_cfg = scenarios.get("paper_pilot_conservative") or {}
+    fallback_cfg = scenarios.get("core_symbols_block_10am") or {}
 
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
     settled_rows = [r for r in rows if _hybrid_shadow_is_settled(r)]
@@ -14597,8 +14598,8 @@ def _intraday_paper_pilot_readiness() -> dict:
         blockers.append("hybrid_mode_not_paper")
     if bool(INTRADAY_LIVE_ENABLED):
         blockers.append("intraday_live_should_remain_disabled")
-    if str((sim.get("active_scenario") or "")).strip().lower() != "core_symbols_block_10am":
-        blockers.append("active_scenario_not_promoted_paper_gate")
+    if str((sim.get("active_scenario") or "")).strip().lower() != "paper_pilot_conservative":
+        blockers.append("active_scenario_not_conservative_paper_gate")
     if not bool(promoted.get("ready")):
         blockers.append("promoted_paper_gate_not_ready_from_shadow_ledger")
 
@@ -14607,23 +14608,23 @@ def _intraday_paper_pilot_readiness() -> dict:
         "ready": not blockers,
         "blockers": blockers,
         "active_scenario": sim.get("active_scenario"),
-        "required_active_scenario": "core_symbols_block_10am",
+        "required_active_scenario": "paper_pilot_conservative",
         "promoted_paper_gate": promoted,
         "conservative_reclaim_gate": conservative,
         "paper_pilot_conservative_gate": fallback,
         "required_env": {
             "HYBRID_MODE": "paper",
             "INTRADAY_LIVE_ENABLED": "false",
-            "INTRADAY_QUALITY_ACTIVE_SCENARIO": "core_symbols_block_10am",
+            "INTRADAY_QUALITY_ACTIVE_SCENARIO": "paper_pilot_conservative",
         },
         "recommended_env": {
-            "INTRADAY_QUALITY_ALLOWED_SYMBOLS": "AMD,CRWD,MRVL,PANW",
+            "INTRADAY_QUALITY_ALLOWED_SYMBOLS": "AMD,MRVL,PANW",
             "INTRADAY_QUALITY_BLOCKED_TIME_WINDOWS": "10:00-10:59",
         },
         "notes": [
             "This is a paper-pilot readiness gate only.",
             "Intraday live should remain disabled until replay and paper-forward evidence agree.",
-            "core_reclaim_block_10am is available as the conservative fallback scenario.",
+            "core_symbols_block_10am remains available for shadow comparison, but CRWD is excluded from the promoted paper pilot.",
         ],
     }
 
