@@ -1335,7 +1335,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-240-intraday-historical-replay-backtest-current-settings"
+PATCH_VERSION = "patch-241-intraday-replay-scenario-lab-symbol-time-kill-switches"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14717,6 +14717,231 @@ def _intraday_replay_summary(rows: list[dict]) -> dict:
         "examples": rows[-25:],
     }
 
+def _intraday_replay_lab_scenario_configs(base_cfg: dict) -> dict[str, dict]:
+    base_cfg = dict(base_cfg or _intraday_quality_active_config())
+
+    def cfg(
+        name: str,
+        *,
+        allowed_symbols: str = "",
+        blocked_symbols: str = "",
+        time_windows: str = "",
+        blocked_time_windows: str = "",
+        min_rank_score: float | None = None,
+        max_rank_score: float | None = None,
+        allowed_signals: str = "",
+        blocked_signals: str = "",
+    ) -> dict:
+        out = dict(base_cfg)
+        out["name"] = name
+        if allowed_symbols:
+            out["allowed_symbols"] = sorted(_intraday_quality_csv_set(allowed_symbols))
+        if blocked_symbols:
+            out["blocked_symbols"] = sorted(_intraday_quality_csv_set(blocked_symbols))
+        if time_windows:
+            out["time_windows"] = time_windows
+        if blocked_time_windows:
+            out["blocked_time_windows"] = blocked_time_windows
+        if min_rank_score is not None:
+            out["min_rank_score"] = float(min_rank_score)
+        if max_rank_score is not None:
+            out["max_rank_score"] = float(max_rank_score)
+        out["allowed_signals"] = sorted(_intraday_quality_csv_set(allowed_signals))
+        out["blocked_signals"] = sorted(_intraday_quality_csv_set(blocked_signals))
+        return out
+
+    return {
+        "active_current": cfg("active_current"),
+        "core_symbols_only": cfg(
+            "core_symbols_only",
+            allowed_symbols="MRVL,PANW,CRWD,AMD",
+        ),
+        "best_three_only": cfg(
+            "best_three_only",
+            allowed_symbols="MRVL,PANW,CRWD",
+        ),
+        "exclude_replay_losers": cfg(
+            "exclude_replay_losers",
+            blocked_symbols="AMAT,NET,SPY,MU",
+        ),
+        "block_10am_hour": cfg(
+            "block_10am_hour",
+            blocked_time_windows="10:00-10:59",
+        ),
+        "core_symbols_block_10am": cfg(
+            "core_symbols_block_10am",
+            allowed_symbols="MRVL,PANW,CRWD,AMD",
+            blocked_time_windows="10:00-10:59",
+        ),
+        "best_three_block_10am": cfg(
+            "best_three_block_10am",
+            allowed_symbols="MRVL,PANW,CRWD",
+            blocked_time_windows="10:00-10:59",
+        ),
+        "morning_or_late_only": cfg(
+            "morning_or_late_only",
+            time_windows="09:30-09:59,11:00-11:59,14:00-15:59",
+        ),
+        "reclaim_only": cfg(
+            "reclaim_only",
+            allowed_signals="INTRADAY_VWAP_RECLAIM",
+        ),
+        "continuation_only": cfg(
+            "continuation_only",
+            allowed_signals="INTRADAY_VWAP_CONTINUATION",
+        ),
+        "core_reclaim_block_10am": cfg(
+            "core_reclaim_block_10am",
+            allowed_symbols="MRVL,PANW,CRWD,AMD",
+            blocked_time_windows="10:00-10:59",
+            allowed_signals="INTRADAY_VWAP_RECLAIM",
+        ),
+        "rank_132_140": cfg(
+            "rank_132_140",
+            min_rank_score=132,
+            max_rank_score=140,
+        ),
+        "core_rank_132_140_block_10am": cfg(
+            "core_rank_132_140_block_10am",
+            allowed_symbols="MRVL,PANW,CRWD,AMD",
+            blocked_time_windows="10:00-10:59",
+            min_rank_score=132,
+            max_rank_score=140,
+        ),
+    }
+
+
+def _intraday_replay_lab_signal_reasons(candidate: dict, cfg: dict) -> list[str]:
+    signal = str((candidate or {}).get("signal") or "").strip().upper()
+    allowed = {str(x or "").strip().upper() for x in (cfg.get("allowed_signals") or []) if str(x or "").strip()}
+    blocked = {str(x or "").strip().upper() for x in (cfg.get("blocked_signals") or []) if str(x or "").strip()}
+
+    reasons = []
+    if allowed and signal not in allowed:
+        reasons.append("signal_not_in_replay_allowlist")
+    if blocked and signal in blocked:
+        reasons.append("signal_in_replay_blocklist")
+    return reasons
+
+
+def _intraday_replay_lab_apply_config(rows: list[dict], cfg: dict) -> dict:
+    accepted = []
+    rejected = []
+    reason_counts = Counter()
+
+    for row in rows or []:
+        candidate = dict(row or {})
+        reasons = _intraday_quality_gate_reasons(
+            candidate,
+            ts_utc=candidate.get("scan_ts_utc") or candidate.get("entry_ts_utc"),
+            config=cfg,
+        )
+        reasons.extend(_intraday_replay_lab_signal_reasons(candidate, cfg))
+
+        candidate["replay_lab_pass"] = not reasons
+        candidate["replay_lab_reasons"] = reasons
+        candidate["replay_lab_scenario"] = cfg.get("name")
+
+        if reasons:
+            rejected.append(candidate)
+            for reason in reasons:
+                reason_counts[reason] += 1
+        else:
+            accepted.append(candidate)
+
+    summary = _intraday_replay_summary(accepted)
+    blockers = []
+    if summary.get("count", 0) < int(INTRADAY_QUALITY_FILTER_MIN_SETTLED):
+        blockers.append("replay_sample_below_min")
+    if _safe_float(summary.get("avg_r") or 0.0) < float(HYBRID_PROOF_MIN_AVG_R):
+        blockers.append("replay_avg_r_below_min")
+    if _safe_float(summary.get("win_rate") or 0.0) < float(HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE):
+        blockers.append("replay_win_rate_below_min")
+    if _safe_float(summary.get("stop_hit_rate") or 0.0) > 0.35:
+        blockers.append("replay_stop_hit_rate_too_high")
+
+    return {
+        "scenario": cfg.get("name"),
+        "config": cfg,
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "ready": not blockers,
+        "blockers": blockers,
+        "summary": summary,
+        "rejection_reason_counts": dict(reason_counts),
+        "accepted_examples": accepted[-20:],
+        "rejected_examples": rejected[-10:],
+    }
+
+
+def _intraday_replay_lab_recommendations(results: list[dict]) -> dict:
+    ranked = sorted(
+        [dict(r) for r in results or []],
+        key=lambda r: (
+            bool(r.get("ready")),
+            _safe_float((r.get("summary") or {}).get("avg_r") or 0.0),
+            _safe_float((r.get("summary") or {}).get("win_rate") or 0.0),
+            -_safe_float((r.get("summary") or {}).get("stop_hit_rate") or 0.0),
+            int(r.get("accepted_count") or 0),
+        ),
+        reverse=True,
+    )
+    best = ranked[0] if ranked else {}
+
+    symbol_rows = ((best.get("summary") or {}).get("quality_attribution") or {}).get("by_symbol") or []
+    time_rows = ((best.get("summary") or {}).get("quality_attribution") or {}).get("by_time_bucket") or []
+    signal_rows = ((best.get("summary") or {}).get("quality_attribution") or {}).get("by_signal") or []
+
+    reduce_symbols = [
+        r.get("key")
+        for r in symbol_rows
+        if int(r.get("count") or 0) >= 3 and _safe_float(r.get("avg_r") or 0.0) < 0
+    ]
+    promote_symbols = [
+        r.get("key")
+        for r in symbol_rows
+        if int(r.get("count") or 0) >= 3 and _safe_float(r.get("avg_r") or 0.0) >= float(HYBRID_PROOF_MIN_AVG_R)
+    ]
+    block_times = [
+        r.get("key")
+        for r in time_rows
+        if int(r.get("count") or 0) >= 5 and _safe_float(r.get("avg_r") or 0.0) < 0
+    ]
+    promote_signals = [
+        r.get("key")
+        for r in signal_rows
+        if int(r.get("count") or 0) >= 5 and _safe_float(r.get("avg_r") or 0.0) >= float(HYBRID_PROOF_MIN_AVG_R)
+    ]
+
+    return {
+        "best_scenario": best.get("scenario"),
+        "best_ready": bool(best.get("ready")),
+        "best_summary": best.get("summary") or {},
+        "ranked_scenarios": [
+            {
+                "scenario": r.get("scenario"),
+                "ready": bool(r.get("ready")),
+                "blockers": r.get("blockers") or [],
+                "accepted_count": r.get("accepted_count"),
+                "avg_r": (r.get("summary") or {}).get("avg_r"),
+                "win_rate": (r.get("summary") or {}).get("win_rate"),
+                "stop_hit_rate": (r.get("summary") or {}).get("stop_hit_rate"),
+            }
+            for r in ranked
+        ],
+        "recommended_env_if_promoted_to_paper": {
+            "INTRADAY_QUALITY_ALLOWED_SYMBOLS": ",".join([str(s) for s in promote_symbols if s]),
+            "INTRADAY_QUALITY_BLOCKED_SYMBOLS": ",".join([str(s) for s in reduce_symbols if s]),
+            "INTRADAY_QUALITY_BLOCKED_TIME_WINDOWS": ",".join([str(t) for t in block_times if t]),
+        },
+        "kill_switch_recommendations": {
+            "keep_intraday_live_disabled": True,
+            "reduce_or_block_symbols": reduce_symbols,
+            "candidate_symbols_for_paper": promote_symbols,
+            "block_time_windows": block_times,
+            "candidate_signals_for_paper": promote_signals,
+        },
+    }
 
 def _intraday_replay_backtest(
     *,
@@ -14849,6 +15074,23 @@ def _intraday_replay_backtest(
 
     filter_result = _intraday_filter_simulate_config(accepted_rows, cfg, limit=max(1000, len(accepted_rows) or 1000))
 
+    lab_configs = _intraday_replay_lab_scenario_configs(cfg)
+    lab_results = [
+        _intraday_replay_lab_apply_config(accepted_rows, lab_cfg)
+        for lab_cfg in lab_configs.values()
+    ]
+    lab_results.sort(
+        key=lambda r: (
+            bool(r.get("ready")),
+            _safe_float((r.get("summary") or {}).get("avg_r") or 0.0),
+            _safe_float((r.get("summary") or {}).get("win_rate") or 0.0),
+            -_safe_float((r.get("summary") or {}).get("stop_hit_rate") or 0.0),
+            int(r.get("accepted_count") or 0),
+        ),
+        reverse=True,
+    )
+    lab_recommendations = _intraday_replay_lab_recommendations(lab_results)
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -14872,6 +15114,11 @@ def _intraday_replay_backtest(
         "train": _intraday_replay_summary(train_rows),
         "validation": _intraday_replay_summary(validation_rows),
         "quality_filter_result": filter_result,
+        "scenario_lab": {
+            "enabled": True,
+            "results": lab_results,
+            "recommendations": lab_recommendations,
+        },
         "rejection_reason_counts": Counter(
             reason
             for row in rejected_rows
@@ -19333,6 +19580,38 @@ def diagnostics_intraday_replay_backtest(
         limit_per_symbol=int(limit_per_symbol or 12000),
         max_trades_per_symbol_session=int(max_trades_per_symbol_session or 1),
     )
+
+@app.get("/diagnostics/intraday_replay_scenario_lab")
+def diagnostics_intraday_replay_scenario_lab(
+    request: Request,
+    symbols: str = "",
+    lookback_days: int = 30,
+    scenario: str = "",
+    limit_per_symbol: int = 12000,
+    max_trades_per_symbol_session: int = 1,
+):
+    require_admin_if_configured(request)
+    replay = _intraday_replay_backtest(
+        symbols=symbols,
+        lookback_days=int(lookback_days or 30),
+        scenario=scenario,
+        limit_per_symbol=int(limit_per_symbol or 12000),
+        max_trades_per_symbol_session=int(max_trades_per_symbol_session or 1),
+    )
+    lab = replay.get("scenario_lab") or {}
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_intraday_replay_scenario_lab",
+        "symbols": replay.get("symbols") or [],
+        "lookback_days": replay.get("lookback_days"),
+        "scenario": replay.get("scenario"),
+        "session_count": replay.get("session_count"),
+        "accepted_count": replay.get("accepted_count"),
+        "baseline": replay.get("all") or {},
+        "recommendations": lab.get("recommendations") or {},
+        "results": lab.get("results") or [],
+    }
 
 @app.get("/diagnostics/hybrid_proof")
 def diagnostics_hybrid_proof(request: Request, limit: int = 50):
