@@ -1335,7 +1335,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-239-intraday-paper-pilot-scenario-promotion-allowlist-rank-gate"
+PATCH_VERSION = "patch-240-intraday-historical-replay-backtest-current-settings"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -13140,7 +13140,11 @@ def eval_vwap_pullback_signal_with_diag(bars_5m_or_today: list[dict]) -> tuple[s
 
 
 
-def _intraday_vwap_reclaim_setup(bars_today: list[dict], force_enable: bool = False) -> dict:
+def _intraday_vwap_reclaim_setup(
+    bars_today: list[dict],
+    force_enable: bool = False,
+    session_date=None,
+) -> dict:
     """Dedicated intraday VWAP reclaim candidate path.
 
     This is intentionally separate from the swing/daily breakout filters.  It only
@@ -13160,7 +13164,7 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict], force_enable: bool = Fa
         out["reason"] = "strategy_mode_not_intraday" if str(STRATEGY_MODE or "").strip().lower() != "intraday" and not force_enable else "disabled"
         return out
 
-    rows = _bars_for_today_regular_session(bars_today)
+    rows = _bars_for_regular_session_date(bars_today, session_date) if session_date else _bars_for_today_regular_session(bars_today)
     out["bars_1m"] = len(rows)
     min_1m = max(10, int(INTRADAY_VWAP_RECLAIM_MIN_1M_BARS or 0))
     out["min_bars_1m"] = min_1m
@@ -13261,7 +13265,12 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict], force_enable: bool = Fa
     if not day_range_ok: component_reasons.append("day_range_too_small")
     if not micro_confirm_ok: component_reasons.append("micro_confirm_fail")
 
-    orb_vwap_quality_gate = _intraday_orb_vwap_quality_gate(rows, path="intraday_vwap_reclaim", force_enable=force_enable)
+    orb_vwap_quality_gate = _intraday_orb_vwap_quality_gate(
+        rows,
+        path="intraday_vwap_reclaim",
+        force_enable=force_enable,
+        session_date=session_date,
+    )
     if not bool(orb_vwap_quality_gate.get("ok")):
         component_reasons.append(str(orb_vwap_quality_gate.get("reason") or "orb_vwap_quality_fail"))
 
@@ -13335,12 +13344,20 @@ def _intraday_vwap_reclaim_setup(bars_today: list[dict], force_enable: bool = Fa
     return out
 
 
-def eval_intraday_vwap_reclaim_signal_with_diag(bars_today: list[dict], force_enable: bool = False) -> tuple[str | None, dict]:
-    diag = _intraday_vwap_reclaim_setup(bars_today, force_enable=force_enable)
+def eval_intraday_vwap_reclaim_signal_with_diag(
+    bars_today: list[dict],
+    force_enable: bool = False,
+    session_date=None,
+) -> tuple[str | None, dict]:
+    diag = _intraday_vwap_reclaim_setup(bars_today, force_enable=force_enable, session_date=session_date)
     return ("BUY" if diag.get("triggered") else None, diag)
 
 
-def _intraday_vwap_continuation_setup(bars_today: list[dict], force_enable: bool = False) -> dict:
+def _intraday_vwap_continuation_setup(
+    bars_today: list[dict],
+    force_enable: bool = False,
+    session_date=None,
+) -> dict:
     """Intraday VWAP trend-continuation path.
 
     This is separate from VWAP reclaim: it can select symbols that are already
@@ -13358,7 +13375,7 @@ def _intraday_vwap_continuation_setup(bars_today: list[dict], force_enable: bool
         out["reason"] = "strategy_mode_not_intraday" if str(STRATEGY_MODE or "").strip().lower() != "intraday" and not force_enable else "disabled"
         return out
 
-    rows = _bars_for_today_regular_session(bars_today)
+    rows = _bars_for_regular_session_date(bars_today, session_date) if session_date else _bars_for_today_regular_session(bars_today)
     out["bars_1m"] = len(rows)
     min_1m = max(10, int(INTRADAY_VWAP_CONTINUATION_MIN_1M_BARS or 0))
     out["min_bars_1m"] = min_1m
@@ -13460,7 +13477,12 @@ def _intraday_vwap_continuation_setup(bars_today: list[dict], force_enable: bool
     if not trend_ok and "intraday_trend_fail" not in component_reasons:
         component_reasons.append("intraday_trend_fail")
 
-    orb_vwap_quality_gate = _intraday_orb_vwap_quality_gate(rows, path="intraday_vwap_continuation", force_enable=force_enable)
+    orb_vwap_quality_gate = _intraday_orb_vwap_quality_gate(
+        rows,
+        path="intraday_vwap_continuation",
+        force_enable=force_enable,
+        session_date=session_date,
+    )
     if not bool(orb_vwap_quality_gate.get("ok")):
         component_reasons.append(str(orb_vwap_quality_gate.get("reason") or "orb_vwap_quality_fail"))
 
@@ -13532,11 +13554,21 @@ def _intraday_vwap_continuation_setup(bars_today: list[dict], force_enable: bool
     return out
 
 
-def eval_intraday_vwap_continuation_signal_with_diag(bars_today: list[dict], force_enable: bool = False) -> tuple[str | None, dict]:
-    diag = _intraday_vwap_continuation_setup(bars_today, force_enable=force_enable)
+def eval_intraday_vwap_continuation_signal_with_diag(
+    bars_today: list[dict],
+    force_enable: bool = False,
+    session_date=None,
+) -> tuple[str | None, dict]:
+    diag = _intraday_vwap_continuation_setup(bars_today, force_enable=force_enable, session_date=session_date)
     return ("BUY" if diag.get("triggered") else None, diag)
 
-def _intraday_orb_vwap_quality_gate(bars_today: list[dict], *, path: str = "", force_enable: bool = False) -> dict:
+def _intraday_orb_vwap_quality_gate(
+    bars_today: list[dict],
+    *,
+    path: str = "",
+    force_enable: bool = False,
+    session_date=None,
+) -> dict:
     enabled = bool(INTRADAY_ORB_VWAP_QUALITY_GATE_ENABLE and (force_enable or str(STRATEGY_MODE or "").strip().lower() == "intraday"))
     out = {
         "enabled": enabled,
@@ -13547,7 +13579,7 @@ def _intraday_orb_vwap_quality_gate(bars_today: list[dict], *, path: str = "", f
     if not enabled:
         return out
 
-    rows = _bars_for_today_regular_session(bars_today)
+    rows = _bars_for_regular_session_date(bars_today, session_date) if session_date else _bars_for_today_regular_session(bars_today)
     orb_bars = max(2, int(INTRADAY_ORB_BARS or 5))
     out["bars_1m"] = len(rows)
     out["orb_bars"] = orb_bars
@@ -14507,6 +14539,346 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
             "min_positive_rate": float(HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE),
         },
         "scenarios": scenario_results,
+    }
+
+def _intraday_replay_symbols(raw_symbols: str = "") -> list[str]:
+    raw = str(raw_symbols or "").strip()
+    if raw:
+        return _dedupe_keep_order([s.strip().upper() for s in raw.split(",") if s.strip()])
+
+    cfg = _intraday_quality_active_config()
+    allowed = [str(s or "").strip().upper() for s in (cfg.get("allowed_symbols") or []) if str(s or "").strip()]
+    if allowed:
+        return _dedupe_keep_order(allowed)
+
+    env_allowed = _intraday_quality_csv_list(str(INTRADAY_QUALITY_ALLOWED_SYMBOLS or ""))
+    if env_allowed:
+        return _dedupe_keep_order([s.upper() for s in env_allowed])
+
+    return sorted(ALLOWED_SYMBOLS)[: max(1, min(10, int(SCANNER_MAX_SYMBOLS_PER_CYCLE or 10)))]
+
+
+def _intraday_replay_session_dates(bars: list[dict]) -> list:
+    dates = set()
+    for row in bars or []:
+        dt = _coerce_dt_ny((row or {}).get("ts_ny") or (row or {}).get("ts_utc"))
+        if not dt:
+            continue
+        if MARKET_OPEN <= dt.time() <= MARKET_CLOSE:
+            dates.add(dt.date())
+    return sorted(dates)
+
+
+def _intraday_replay_exit(
+    *,
+    entry_bar: dict,
+    forward_bars: list[dict],
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+) -> dict:
+    for row in forward_bars or []:
+        low = _safe_float(row.get("low") or row.get("close") or 0.0)
+        high = _safe_float(row.get("high") or row.get("close") or 0.0)
+
+        # Conservative same-bar ordering: if both stop and target are touched, count stop first.
+        if low <= stop_price:
+            return {
+                "exit_reason": "stop_hit",
+                "exit_price": stop_price,
+                "exit_ts_utc": _iso_utc(row.get("ts_utc")),
+                "status": "shadow_stop_hit",
+            }
+        if high >= target_price:
+            return {
+                "exit_reason": "target_hit",
+                "exit_price": target_price,
+                "exit_ts_utc": _iso_utc(row.get("ts_utc")),
+                "status": "shadow_target_hit",
+            }
+
+    eod_bar = (forward_bars or [entry_bar])[-1]
+    return {
+        "exit_reason": "eod_flat",
+        "exit_price": _safe_float(eod_bar.get("close") or entry_price),
+        "exit_ts_utc": _iso_utc(eod_bar.get("ts_utc")),
+        "status": "shadow_eod_flat",
+    }
+
+
+def _intraday_replay_candidate_from_diag(
+    *,
+    symbol: str,
+    signal_name: str,
+    diag: dict,
+    signal_bar: dict,
+    entry_bar: dict,
+    session_date,
+) -> dict:
+    rank_score, rank_diag = compute_signal_rank(signal_name, diag)
+    entry_price = _safe_float(entry_bar.get("open") or entry_bar.get("close") or diag.get("price") or 0.0)
+    stop_price = _safe_float(diag.get("stop_price") or 0.0)
+
+    if entry_price <= 0:
+        return {}
+    if stop_price <= 0 or stop_price >= entry_price:
+        stop_price = max(0.01, entry_price * 0.9975)
+
+    risk_per_share = max(entry_price - stop_price, entry_price * 0.0025)
+    target_price = entry_price + (risk_per_share * float(SWING_TARGET_R_MULT or 1.8))
+
+    return {
+        "id": str(uuid.uuid4()),
+        "source": "intraday_replay",
+        "ny_date": session_date.isoformat() if session_date else "",
+        "session_date": session_date.isoformat() if session_date else "",
+        "scan_ts_utc": _iso_utc(signal_bar.get("ts_utc")),
+        "entry_ts_utc": _iso_utc(entry_bar.get("ts_utc")),
+        "symbol": str(symbol or "").upper(),
+        "signal": signal_name,
+        "side": "buy",
+        "entry_price": round(entry_price, 4),
+        "stop_price": round(stop_price, 4),
+        "target_price": round(target_price, 4),
+        "risk_per_share": round(risk_per_share, 4),
+        "score": round(_safe_float(diag.get("score") or 0.0), 4),
+        "rank_score": round(rank_score, 4),
+        "rank_diag": rank_diag,
+        "would_pass_rank": True,
+        "diagnostics": {
+            "reason": diag.get("reason"),
+            "candidate_path": diag.get("candidate_path"),
+            "bars_1m": diag.get("bars_1m"),
+            "bars_5m": diag.get("bars_5m"),
+            "vwap": diag.get("vwap"),
+            "dist_to_vwap_pct": diag.get("dist_to_vwap_pct"),
+            "recent_1m_vol_ratio": diag.get("recent_1m_vol_ratio"),
+            "orb_vwap_quality_gate": diag.get("orb_vwap_quality_gate"),
+        },
+    }
+
+
+def _intraday_replay_apply_exit(candidate: dict, exit_result: dict) -> dict:
+    row = dict(candidate or {})
+    entry_price = _safe_float(row.get("entry_price") or 0.0)
+    risk_per_share = _safe_float(row.get("risk_per_share") or 0.0)
+    exit_price = _safe_float(exit_result.get("exit_price") or entry_price)
+
+    latest_return_pct = ((exit_price - entry_price) / entry_price) if entry_price else 0.0
+    latest_r = ((exit_price - entry_price) / risk_per_share) if risk_per_share else 0.0
+
+    row.update({
+        "status": exit_result.get("status"),
+        "settled_reason": "intraday_replay_" + str(exit_result.get("exit_reason") or "unknown"),
+        "settled_utc": exit_result.get("exit_ts_utc"),
+        "settlement_price": round(exit_price, 4),
+        "latest_price": round(exit_price, 4),
+        "latest_return_pct": round(latest_return_pct, 6),
+        "latest_r": round(latest_r, 4),
+        "best_return_pct": round(max(latest_return_pct, 0.0), 6),
+        "worst_return_pct": round(min(latest_return_pct, 0.0), 6),
+        "best_r": round(max(latest_r, 0.0), 4),
+        "worst_r": round(min(latest_r, 0.0), 4),
+        "last_observed_utc": exit_result.get("exit_ts_utc"),
+        "settlement_backfilled": False,
+        "settlement_patch": PATCH_VERSION,
+        "settlement_session_date": row.get("session_date"),
+        "settlement_same_session": True,
+        "settlement_regular_session": True,
+    })
+    return row
+
+
+def _intraday_replay_summary(rows: list[dict]) -> dict:
+    rows = [dict(r) for r in rows or [] if isinstance(r, dict)]
+    r_values = [_safe_float(r.get("latest_r") or 0.0) for r in rows]
+    returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in rows]
+    wins = sum(1 for r in r_values if r > 0)
+    losses = sum(1 for r in r_values if r < 0)
+    stops = sum(1 for r in rows if str(r.get("status") or "") == "shadow_stop_hit")
+    targets = sum(1 for r in rows if str(r.get("status") or "") == "shadow_target_hit")
+    eod = sum(1 for r in rows if str(r.get("status") or "") == "shadow_eod_flat")
+    count = len(rows)
+
+    return {
+        "count": count,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round((wins / count) if count else 0.0, 4),
+        "avg_r": round(_mean(r_values), 4),
+        "avg_return_pct": round(_mean(returns) * 100.0, 4),
+        "best_r": round(max(r_values), 4) if r_values else 0.0,
+        "worst_r": round(min(r_values), 4) if r_values else 0.0,
+        "stop_hit_count": stops,
+        "stop_hit_rate": round((stops / count) if count else 0.0, 4),
+        "target_hit_count": targets,
+        "eod_flat_count": eod,
+        "quality_attribution": _hybrid_shadow_quality_attribution(rows),
+        "examples": rows[-25:],
+    }
+
+
+def _intraday_replay_backtest(
+    *,
+    symbols: str = "",
+    lookback_days: int = 30,
+    scenario: str = "",
+    limit_per_symbol: int = 12000,
+    max_trades_per_symbol_session: int = 1,
+) -> dict:
+    syms = _intraday_replay_symbols(symbols)
+    lookback = max(1, min(int(lookback_days or 30), 90))
+    limit = max(1000, min(int(limit_per_symbol or 12000), 50000))
+    max_trades = max(1, min(int(max_trades_per_symbol_session or 1), 10))
+
+    scenarios = _intraday_quality_scenario_configs()
+    active_cfg = _intraday_quality_active_config()
+    scenario_name = str(scenario or active_cfg.get("name") or "").strip().lower()
+    cfg = dict(scenarios.get(scenario_name) or active_cfg)
+
+    bars_map: dict[str, list[dict]] = {}
+    fetch_errors = []
+    for chunk in _chunked(syms, 4):
+        try:
+            chunk_rows = fetch_1m_bars_multi(chunk, lookback_days=lookback, limit_per_symbol=limit)
+            for sym in chunk:
+                bars_map[sym] = list((chunk_rows or {}).get(sym) or [])
+        except Exception as exc:
+            fetch_errors.append({"symbols": chunk, "error": str(exc)})
+            for sym in chunk:
+                bars_map.setdefault(sym, [])
+
+    accepted_rows: list[dict] = []
+    rejected_rows: list[dict] = []
+    raw_triggered_count = 0
+    sessions_seen = set()
+    symbol_session_counts: dict[str, int] = {}
+
+    for sym in syms:
+        bars = sorted(bars_map.get(sym) or [], key=lambda r: r.get("ts_utc") or datetime.min.replace(tzinfo=timezone.utc))
+        for session_date in _intraday_replay_session_dates(bars):
+            session_rows = _bars_for_regular_session_date(bars, session_date)
+            if len(session_rows) < 25:
+                continue
+
+            sessions_seen.add(session_date.isoformat())
+            taken_for_session = 0
+
+            for idx in range(10, len(session_rows) - 1):
+                if taken_for_session >= max_trades:
+                    break
+
+                signal_bar = session_rows[idx]
+                entry_bar = session_rows[idx + 1]
+                bars_to_signal = session_rows[: idx + 1]
+                forward_bars = session_rows[idx + 1 :]
+
+                candidates = []
+
+                reclaim_sig, reclaim_diag = eval_intraday_vwap_reclaim_signal_with_diag(
+                    bars_to_signal,
+                    force_enable=True,
+                    session_date=session_date,
+                )
+                if reclaim_sig:
+                    row = _intraday_replay_candidate_from_diag(
+                        symbol=sym,
+                        signal_name="INTRADAY_VWAP_RECLAIM",
+                        diag=reclaim_diag,
+                        signal_bar=signal_bar,
+                        entry_bar=entry_bar,
+                        session_date=session_date,
+                    )
+                    if row:
+                        candidates.append(row)
+
+                continuation_sig, continuation_diag = eval_intraday_vwap_continuation_signal_with_diag(
+                    bars_to_signal,
+                    force_enable=True,
+                    session_date=session_date,
+                )
+                if continuation_sig:
+                    row = _intraday_replay_candidate_from_diag(
+                        symbol=sym,
+                        signal_name="INTRADAY_VWAP_CONTINUATION",
+                        diag=continuation_diag,
+                        signal_bar=signal_bar,
+                        entry_bar=entry_bar,
+                        session_date=session_date,
+                    )
+                    if row:
+                        candidates.append(row)
+
+                if not candidates:
+                    continue
+
+                raw_triggered_count += len(candidates)
+                candidates.sort(key=lambda r: _safe_float(r.get("rank_score") or 0.0), reverse=True)
+
+                for candidate in candidates:
+                    reasons = _intraday_quality_gate_reasons(
+                        candidate,
+                        ts_utc=candidate.get("scan_ts_utc"),
+                        config=cfg,
+                    )
+                    candidate["quality_gate_pass"] = not reasons
+                    candidate["quality_gate_reasons"] = reasons
+                    candidate["quality_gate_scenario"] = cfg.get("name")
+
+                    if reasons:
+                        rejected_rows.append(candidate)
+                        continue
+
+                    exit_result = _intraday_replay_exit(
+                        entry_bar=entry_bar,
+                        forward_bars=forward_bars,
+                        entry_price=_safe_float(candidate.get("entry_price") or 0.0),
+                        stop_price=_safe_float(candidate.get("stop_price") or 0.0),
+                        target_price=_safe_float(candidate.get("target_price") or 0.0),
+                    )
+                    accepted_rows.append(_intraday_replay_apply_exit(candidate, exit_result))
+                    taken_for_session += 1
+                    symbol_session_counts[sym] = symbol_session_counts.get(sym, 0) + 1
+                    break
+
+    session_list = sorted(sessions_seen)
+    validation_session_count = max(1, min(5, len(session_list) // 3 if len(session_list) >= 3 else len(session_list)))
+    validation_sessions = set(session_list[-validation_session_count:]) if session_list else set()
+    train_rows = [r for r in accepted_rows if r.get("session_date") not in validation_sessions]
+    validation_rows = [r for r in accepted_rows if r.get("session_date") in validation_sessions]
+
+    filter_result = _intraday_filter_simulate_config(accepted_rows, cfg, limit=max(1000, len(accepted_rows) or 1000))
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_historical_replay",
+        "note": "No orders are placed and the hybrid proof ledger is not modified.",
+        "symbols": syms,
+        "lookback_days": lookback,
+        "limit_per_symbol": limit,
+        "scenario": cfg.get("name"),
+        "config": cfg,
+        "sessions_seen": session_list,
+        "session_count": len(session_list),
+        "validation_sessions": sorted(validation_sessions),
+        "bars_by_symbol": {sym: len(bars_map.get(sym) or []) for sym in syms},
+        "fetch_errors": fetch_errors,
+        "raw_triggered_count": raw_triggered_count,
+        "accepted_count": len(accepted_rows),
+        "rejected_count": len(rejected_rows),
+        "symbol_session_trade_counts": symbol_session_counts,
+        "all": _intraday_replay_summary(accepted_rows),
+        "train": _intraday_replay_summary(train_rows),
+        "validation": _intraday_replay_summary(validation_rows),
+        "quality_filter_result": filter_result,
+        "rejection_reason_counts": Counter(
+            reason
+            for row in rejected_rows
+            for reason in (row.get("quality_gate_reasons") or [])
+        ),
+        "accepted_examples": accepted_rows[-50:],
+        "rejected_examples": rejected_rows[-25:],
     }
 
 def _hybrid_shadow_backfill_settlements(
@@ -18943,6 +19315,24 @@ def diagnostics_intraday_filter_simulation(request: Request, limit: int = 1000):
         "live_promotion_ready": bool(proof_metrics.get("live_promotion_ready")),
         "live_promotion_blockers": proof_metrics.get("live_promotion_blockers") or [],
     }
+
+@app.get("/diagnostics/intraday_replay_backtest")
+def diagnostics_intraday_replay_backtest(
+    request: Request,
+    symbols: str = "",
+    lookback_days: int = 30,
+    scenario: str = "",
+    limit_per_symbol: int = 12000,
+    max_trades_per_symbol_session: int = 1,
+):
+    require_admin_if_configured(request)
+    return _intraday_replay_backtest(
+        symbols=symbols,
+        lookback_days=int(lookback_days or 30),
+        scenario=scenario,
+        limit_per_symbol=int(limit_per_symbol or 12000),
+        max_trades_per_symbol_session=int(max_trades_per_symbol_session or 1),
+    )
 
 @app.get("/diagnostics/hybrid_proof")
 def diagnostics_hybrid_proof(request: Request, limit: int = 50):
