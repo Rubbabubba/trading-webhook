@@ -1335,7 +1335,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-241-intraday-replay-scenario-lab-symbol-time-kill-switches"
+PATCH_VERSION = "patch-242-intraday-paper-pilot-promotion-gate-10am-kill-switch"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14227,6 +14227,8 @@ def _intraday_quality_config_from_values(
     min_rank_score: float = 0.0,
     max_rank_score: float = 0.0,
     blocked_rank_buckets: str = "",
+    allowed_signals: str = "",
+    blocked_signals: str = "",
 ) -> dict:
     return {
         "name": str(name or "custom").strip().lower(),
@@ -14239,6 +14241,8 @@ def _intraday_quality_config_from_values(
         "min_rank_score": float(min_rank_score or 0.0),
         "max_rank_score": float(max_rank_score or 0.0),
         "blocked_rank_buckets": sorted(_intraday_quality_csv_set(blocked_rank_buckets)),
+        "allowed_signals": sorted(_intraday_quality_csv_set(allowed_signals)),
+        "blocked_signals": sorted(_intraday_quality_csv_set(blocked_signals)),
         "filter_min_settled": int(INTRADAY_QUALITY_FILTER_MIN_SETTLED),
         "require_filter_proof_ready": bool(INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY),
     }
@@ -14271,6 +14275,28 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
         "symbol_allowlist_rank_130_140": _intraday_quality_config_from_values(
             name="symbol_allowlist_rank_130_140",
             allowed_symbols=allowed_symbols,
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
+        "core_symbols_block_10am": _intraday_quality_config_from_values(
+            name="core_symbols_block_10am",
+            allowed_symbols="AMD,CRWD,MRVL,PANW",
+            blocked_time_windows="10:00-10:59",
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
+        "core_reclaim_block_10am": _intraday_quality_config_from_values(
+            name="core_reclaim_block_10am",
+            allowed_symbols="AMD,CRWD,MRVL,PANW",
+            blocked_time_windows="10:00-10:59",
+            min_rank_score=130,
+            max_rank_score=140,
+            allowed_signals="INTRADAY_VWAP_RECLAIM",
+        ),
+        "paper_pilot_conservative": _intraday_quality_config_from_values(
+            name="paper_pilot_conservative",
+            allowed_symbols="AMD,MRVL,PANW",
+            blocked_time_windows="10:00-10:59",
             min_rank_score=130,
             max_rank_score=140,
         ),
@@ -14313,9 +14339,10 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
 
 def _intraday_quality_active_config() -> dict:
     scenarios = _intraday_quality_scenario_configs()
-    name = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "symbol_allowlist_rank_130_140").strip().lower()
+    name = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "core_symbols_block_10am").strip().lower()
     return dict(
         scenarios.get(name)
+        or scenarios.get("core_symbols_block_10am")
         or scenarios.get("symbol_allowlist_rank_130_140")
         or scenarios.get("rank_130_140_only")
         or scenarios["custom_env"]
@@ -14363,6 +14390,9 @@ def _intraday_quality_gate_reasons(candidate: dict, ts_utc: str | None = None, c
     allowed_symbols = {str(x or "").strip().upper() for x in (cfg.get("allowed_symbols") or []) if str(x or "").strip()}
     blocked_symbols = {str(x or "").strip().upper() for x in (cfg.get("blocked_symbols") or []) if str(x or "").strip()}
     blocked_rank_buckets = {str(x or "").strip().upper() for x in (cfg.get("blocked_rank_buckets") or []) if str(x or "").strip()}
+    allowed_signals = {str(x or "").strip().upper() for x in (cfg.get("allowed_signals") or []) if str(x or "").strip()}
+    blocked_signals = {str(x or "").strip().upper() for x in (cfg.get("blocked_signals") or []) if str(x or "").strip()}
+    signal = str((candidate or {}).get("signal") or (candidate or {}).get("strategy_name") or "").strip().upper()
     rank_bucket = _hybrid_shadow_quality_bucket(rank_score, [100, 120, 130, 140])
 
     reasons = []
@@ -14378,6 +14408,10 @@ def _intraday_quality_gate_reasons(candidate: dict, ts_utc: str | None = None, c
         reasons.append("rank_score_above_quality_max")
     if rank_bucket.upper() in blocked_rank_buckets:
         reasons.append("rank_bucket_blocked")
+    if allowed_signals and signal not in allowed_signals:
+        reasons.append("signal_not_in_quality_allowlist")
+    if blocked_signals and signal in blocked_signals:
+        reasons.append("signal_in_quality_blocklist")
 
     time_windows = str(cfg.get("time_windows") or "").strip()
     if time_windows and not _intraday_quality_time_in_windows(ts_utc, time_windows):
@@ -14509,7 +14543,7 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
     best_ready = next((r for r in scenario_results if bool(r.get("ready"))), None)
     best_non_empty = next((r for r in scenario_results if int(r.get("accepted_count") or 0) > 0), None)
 
-    promoted = scenarios.get("symbol_allowlist_rank_130_140") or {}
+    promoted = scenarios.get("core_symbols_block_10am") or scenarios.get("symbol_allowlist_rank_130_140") or {}
     promoted_result = _intraday_filter_simulate_config(settled_rows, promoted, limit=limit) if promoted else {}
 
     return {
@@ -14524,10 +14558,10 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
         "ready": bool(active_result.get("ready")),
         "blockers": active_result.get("blockers") or [],
         "paper_pilot_recommendation": {
-            "scenario": "symbol_allowlist_rank_130_140",
+            "scenario": "core_symbols_block_10am",
             "use_for_paper": bool(promoted_result.get("ready")),
             "keep_intraday_live_disabled": True,
-            "reason": "allowlisted_symbol_rank_130_140_has_best_clean_pilot_profile_seen_so_far",
+            "reason": "replay_lab_promoted_core_symbols_with_10am_kill_switch",
             "accepted_count": promoted_result.get("accepted_count"),
             "avg_r": promoted_result.get("avg_r"),
             "positive_rate": promoted_result.get("positive_rate"),
@@ -14539,6 +14573,58 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
             "min_positive_rate": float(HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE),
         },
         "scenarios": scenario_results,
+    }
+
+def _intraday_paper_pilot_readiness() -> dict:
+    sim = _intraday_filter_simulation(limit=1000)
+    scenarios = _intraday_quality_scenario_configs()
+
+    promoted_cfg = scenarios.get("core_symbols_block_10am") or {}
+    conservative_cfg = scenarios.get("core_reclaim_block_10am") or {}
+    fallback_cfg = scenarios.get("paper_pilot_conservative") or {}
+
+    rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
+    settled_rows = [r for r in rows if _hybrid_shadow_is_settled(r)]
+
+    promoted = _intraday_filter_simulate_config(settled_rows, promoted_cfg, limit=1000) if promoted_cfg else {}
+    conservative = _intraday_filter_simulate_config(settled_rows, conservative_cfg, limit=1000) if conservative_cfg else {}
+    fallback = _intraday_filter_simulate_config(settled_rows, fallback_cfg, limit=1000) if fallback_cfg else {}
+
+    blockers = []
+    if not bool(INTRADAY_PAPER_ENABLED or HYBRID_MODE == "paper"):
+        blockers.append("intraday_paper_not_enabled")
+    if str(HYBRID_MODE or "").strip().lower() != "paper":
+        blockers.append("hybrid_mode_not_paper")
+    if bool(INTRADAY_LIVE_ENABLED):
+        blockers.append("intraday_live_should_remain_disabled")
+    if str((sim.get("active_scenario") or "")).strip().lower() != "core_symbols_block_10am":
+        blockers.append("active_scenario_not_promoted_paper_gate")
+    if not bool(promoted.get("ready")):
+        blockers.append("promoted_paper_gate_not_ready_from_shadow_ledger")
+
+    return {
+        "ok": not blockers,
+        "ready": not blockers,
+        "blockers": blockers,
+        "active_scenario": sim.get("active_scenario"),
+        "required_active_scenario": "core_symbols_block_10am",
+        "promoted_paper_gate": promoted,
+        "conservative_reclaim_gate": conservative,
+        "paper_pilot_conservative_gate": fallback,
+        "required_env": {
+            "HYBRID_MODE": "paper",
+            "INTRADAY_LIVE_ENABLED": "false",
+            "INTRADAY_QUALITY_ACTIVE_SCENARIO": "core_symbols_block_10am",
+        },
+        "recommended_env": {
+            "INTRADAY_QUALITY_ALLOWED_SYMBOLS": "AMD,CRWD,MRVL,PANW",
+            "INTRADAY_QUALITY_BLOCKED_TIME_WINDOWS": "10:00-10:59",
+        },
+        "notes": [
+            "This is a paper-pilot readiness gate only.",
+            "Intraday live should remain disabled until replay and paper-forward evidence agree.",
+            "core_reclaim_block_10am is available as the conservative fallback scenario.",
+        ],
     }
 
 def _intraday_replay_symbols(raw_symbols: str = "") -> list[str]:
@@ -19561,6 +19647,20 @@ def diagnostics_intraday_filter_simulation(request: Request, limit: int = 1000):
         "proof_ready_for_live": bool(proof_metrics.get("proof_ready_for_live")),
         "live_promotion_ready": bool(proof_metrics.get("live_promotion_ready")),
         "live_promotion_blockers": proof_metrics.get("live_promotion_blockers") or [],
+    }
+
+@app.get("/diagnostics/intraday_paper_pilot_readiness")
+def diagnostics_intraday_paper_pilot_readiness(request: Request):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "paper_pilot_readiness": _intraday_paper_pilot_readiness(),
     }
 
 @app.get("/diagnostics/intraday_replay_backtest")
