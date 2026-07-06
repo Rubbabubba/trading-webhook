@@ -882,6 +882,8 @@ SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS = getenv_float_any("SWING_LO
 SWING_LOSS_DAY_ENTRY_THROTTLE_MAX_NEW_ENTRIES_AFTER_TRIGGER = getenv_int_any("SWING_LOSS_DAY_ENTRY_THROTTLE_MAX_NEW_ENTRIES_AFTER_TRIGGER", default=0)
 SWING_LOSS_DAY_ENTRY_THROTTLE_INCLUDE_UNREALIZED = env_bool_any("SWING_LOSS_DAY_ENTRY_THROTTLE_INCLUDE_UNREALIZED", default=False)
 SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY = env_bool_any("SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY", default=False)
+SWING_SIMPLIFICATION_AUDIT_ENABLED = env_bool_any("SWING_SIMPLIFICATION_AUDIT_ENABLED", default=True)
+SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY = env_bool_any("SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY", default=True)
 SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
 SWING_NEUTRAL_MIN_20D_RETURN_PCT = getenv_float_any("SWING_NEUTRAL_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.01)))
 SWING_DEFENSIVE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_20D_RETURN_PCT", default=0.0)
@@ -1350,7 +1352,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-252-swing-loss-day-entry-throttle-fresh-snapshot-guard-source"
+PATCH_VERSION = "patch-253-swing-system-simplification-audit-broker-backed-exposure-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -19706,6 +19708,169 @@ def _p252_swing_loss_day_entry_throttle_snapshot() -> dict:
         "recommended_action": "block_new_swing_entries_for_loss_day" if block_new_entries else ("limit_new_swing_entries_for_loss_day" if active else "none"),
     }
 
+def _p253_control_row(name: str, enabled: bool, category: str, live_effect: str, env_name: str = "", value: object = None, recommendation: str = "keep") -> dict:
+    return {
+        "name": name,
+        "enabled": bool(enabled),
+        "category": category,
+        "live_effect": live_effect,
+        "env": env_name or None,
+        "value": value,
+        "recommendation": recommendation,
+    }
+
+
+def _p253_swing_control_surface_snapshot() -> dict:
+    controls = [
+        _p253_control_row("scanner_live", bool(SCANNER_ALLOW_LIVE and not SCANNER_DRY_RUN and not DRY_RUN), "entry", "can_submit_orders", "SCANNER_ALLOW_LIVE", bool(SCANNER_ALLOW_LIVE), "keep"),
+        _p253_control_row("new_entries_enabled", bool(NEW_ENTRIES_ENABLED), "entry", "can_allow_new_entries", "NEW_ENTRIES_ENABLED", bool(NEW_ENTRIES_ENABLED), "keep"),
+        _p253_control_row("daily_halt", bool(daily_halt_active()), "risk", "blocks_new_entries", "DAILY_STOP_DOLLARS", DAILY_STOP_DOLLARS, "keep"),
+        _p253_control_row("same_day_symbol_loss_cooldown", bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED), "entry", "blocks_symbol_after_same_day_loss", "SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED", bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED), "keep"),
+        _p253_control_row("loss_day_entry_throttle", bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED), "entry", "blocks_new_entries_after_realized_loss_threshold", "SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED", bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED), "keep"),
+        _p253_control_row("defensive_entry_tightening", bool(SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED), "entry", "filters_defensive_breakouts", "SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED", bool(SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED), "watch"),
+        _p253_control_row("adaptive_capacity", bool(SWING_ADAPTIVE_CAPACITY_ENABLED), "entry", "adds_entries_when_standard_candidates_fail", "SWING_ADAPTIVE_CAPACITY_ENABLED", bool(SWING_ADAPTIVE_CAPACITY_ENABLED), "disable_during_simplification_audit"),
+        _p253_control_row("early_entry_override", bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED), "entry", "can_override_normal_entry_path", "SWING_EARLY_ENTRY_OVERRIDE_ENABLED", bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED), "disable_during_simplification_audit"),
+        _p253_control_row("mean_reversion", bool(SWING_MEAN_REVERSION_ENABLED), "entry", "alternate_strategy_when_regime_unfavorable", "SWING_MEAN_REVERSION_ENABLED", bool(SWING_MEAN_REVERSION_ENABLED), "keep_for_now"),
+        _p253_control_row("opening_damage_guard", bool(SWING_OPENING_DAMAGE_GUARD_ENABLED), "exit", "can_exit_fast_losers", "SWING_OPENING_DAMAGE_GUARD_ENABLED", bool(SWING_OPENING_DAMAGE_GUARD_ENABLED), "keep"),
+        _p253_control_row("stall_loss_guard", bool(SWING_STALL_LOSS_GUARD_ENABLED), "exit", "can_exit_stalled_losers", "SWING_STALL_LOSS_GUARD_ENABLED", bool(SWING_STALL_LOSS_GUARD_ENABLED), "keep"),
+        _p253_control_row("trailing_stop", bool(SWING_ENABLE_TRAILING_STOP), "exit", "manages_winners", "SWING_ENABLE_TRAILING_STOP", bool(SWING_ENABLE_TRAILING_STOP), "keep"),
+        _p253_control_row("break_even_stop", bool(SWING_ENABLE_BREAK_EVEN_STOP), "exit", "moves_stop_after_profit", "SWING_ENABLE_BREAK_EVEN_STOP", bool(SWING_ENABLE_BREAK_EVEN_STOP), "keep"),
+        _p253_control_row("correlation_group_limit", int(SWING_MAX_GROUP_POSITIONS or 0) > 0, "entry", "limits_related_symbols", "SWING_MAX_GROUP_POSITIONS", int(SWING_MAX_GROUP_POSITIONS or 0), "keep"),
+        _p253_control_row("portfolio_exposure_cap", float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT or 0) > 0, "entry", "limits_total_exposure", "SWING_MAX_PORTFOLIO_EXPOSURE_PCT", float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT or 0), "keep"),
+    ]
+
+    enabled = [c for c in controls if c.get("enabled")]
+    entry_blocking = [c for c in enabled if c.get("category") == "entry"]
+    exit_active = [c for c in enabled if c.get("category") == "exit"]
+    simplify = [c for c in controls if str(c.get("recommendation") or "").startswith("disable")]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_control_surface_audit",
+        "enabled_control_count": len(enabled),
+        "entry_control_count": len(entry_blocking),
+        "exit_control_count": len(exit_active),
+        "controls": controls,
+        "recommended_env_updates": [
+            "SWING_ADAPTIVE_CAPACITY_ENABLED=false",
+            "SWING_EARLY_ENTRY_OVERRIDE_ENABLED=false",
+            "SWING_MAX_NEW_ENTRIES_PER_DAY=3",
+        ],
+        "simplification_candidates": [c.get("name") for c in simplify],
+        "recommended_action": "disable_expansion_controls_then_observe_core_strategy",
+    }
+
+
+def _p253_broker_backed_exposure_truth_snapshot() -> dict:
+    broker_positions = []
+    try:
+        broker_positions = list_open_positions_details_allowed() or []
+    except Exception:
+        broker_positions = []
+
+    broker_by_symbol = {
+        str((p or {}).get("symbol") or "").upper(): dict(p or {})
+        for p in broker_positions
+        if str((p or {}).get("symbol") or "").strip()
+    }
+
+    rows = []
+    totals = {
+        "broker_market_value": 0.0,
+        "current_strategy_market_value": 0.0,
+        "current_recovered_market_value": 0.0,
+        "corrected_strategy_market_value": 0.0,
+        "corrected_recovered_market_value": 0.0,
+    }
+
+    for sym, pos in sorted(broker_by_symbol.items()):
+        plan = dict((TRADE_PLAN or {}).get(sym) or {})
+        market_value = abs(_safe_float(pos.get("market_value"), 0.0))
+        signal = str(plan.get("signal") or plan.get("strategy_name") or "").strip().lower()
+        recovered = bool(plan.get("recovered"))
+        broker_backed = bool(pos)
+        is_swing_strategy = signal in {BREAKOUT_STRATEGY_NAME, MEAN_REVERSION_STRATEGY_NAME, "daily_breakout", "daily_mean_reversion"}
+
+        current_bucket = "recovered" if recovered else ("strategy" if is_swing_strategy else "unmanaged")
+        corrected_bucket = "strategy" if broker_backed and is_swing_strategy and bool(SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY) else current_bucket
+
+        totals["broker_market_value"] += market_value
+        if current_bucket == "strategy":
+            totals["current_strategy_market_value"] += market_value
+        elif current_bucket == "recovered":
+            totals["current_recovered_market_value"] += market_value
+
+        if corrected_bucket == "strategy":
+            totals["corrected_strategy_market_value"] += market_value
+        elif corrected_bucket == "recovered":
+            totals["corrected_recovered_market_value"] += market_value
+
+        rows.append({
+            "symbol": sym,
+            "market_value": round(market_value, 4),
+            "qty": pos.get("qty"),
+            "signal": signal or None,
+            "recovered": recovered,
+            "broker_backed": broker_backed,
+            "is_swing_strategy": bool(is_swing_strategy),
+            "current_bucket": current_bucket,
+            "corrected_bucket": corrected_bucket,
+            "classification_changed": current_bucket != corrected_bucket,
+            "opened_at": plan.get("opened_at"),
+            "source": plan.get("source"),
+            "attribution_source": plan.get("attribution_source"),
+        })
+
+    changed = [r for r in rows if r.get("classification_changed")]
+    rounded_totals = {k: round(v, 4) for k, v in totals.items()}
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_backed_exposure_truth",
+        "counts_recovered_as_strategy": bool(SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY),
+        "broker_position_count": len(rows),
+        "classification_changed_count": len(changed),
+        "classification_changed_symbols": [r.get("symbol") for r in changed],
+        "totals": rounded_totals,
+        "rows": rows,
+        "recommended_action": "patch_capacity_to_use_corrected_strategy_exposure" if changed else "none",
+    }
+
+
+def _p253_swing_simplification_audit_snapshot() -> dict:
+    control_surface = _p253_swing_control_surface_snapshot()
+    exposure_truth = _p253_broker_backed_exposure_truth_snapshot()
+
+    try:
+        performance = _p245_broker_preferred_performance_snapshot()
+    except Exception as exc:
+        performance = {"ok": False, "error": str(exc)}
+
+    try:
+        throttle = _p252_swing_loss_day_entry_throttle_snapshot()
+    except Exception as exc:
+        throttle = {"ok": False, "error": str(exc)}
+
+    try:
+        cooldown = _p251_same_day_symbol_loss_cooldown_snapshot()
+    except Exception as exc:
+        cooldown = {"ok": False, "error": str(exc)}
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_system_simplification_audit",
+        "read_only": True,
+        "control_surface": control_surface,
+        "broker_backed_exposure_truth": exposure_truth,
+        "performance": performance.get("broker_preferred") if isinstance(performance, dict) else {},
+        "same_day_symbol_loss_cooldown": cooldown,
+        "loss_day_entry_throttle": throttle,
+        "recommended_env_updates": control_surface.get("recommended_env_updates"),
+        "recommended_next_patch": "capacity_truth_uses_broker_backed_strategy_exposure" if exposure_truth.get("classification_changed_count") else "observe_simplified_core_strategy",
+    }
 
 def _p252_fresh_active_plans_for_snapshot_guard() -> dict[str, dict]:
     plans: dict[str, dict] = {}
@@ -24259,6 +24424,24 @@ def diagnostics_same_day_symbol_loss_cooldown():
 def diagnostics_swing_loss_day_entry_throttle():
     _ensure_runtime_state_loaded()
     return _p252_swing_loss_day_entry_throttle_snapshot()
+
+@app.get("/diagnostics/swing_control_surface")
+def diagnostics_swing_control_surface():
+    _ensure_runtime_state_loaded()
+    return _p253_swing_control_surface_snapshot()
+
+
+@app.get("/diagnostics/broker_backed_exposure_truth")
+def diagnostics_broker_backed_exposure_truth():
+    _ensure_runtime_state_loaded()
+    return _p253_broker_backed_exposure_truth_snapshot()
+
+
+@app.get("/diagnostics/swing_simplification_audit")
+def diagnostics_swing_simplification_audit():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return _p253_swing_simplification_audit_snapshot()
 
 @app.get("/diagnostics/entry_snapshot_guard")
 def diagnostics_entry_snapshot_guard():
