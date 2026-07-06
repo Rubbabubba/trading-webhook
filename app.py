@@ -877,6 +877,11 @@ SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_OPENING_DAMAGE = env_bool_any("SWING
 SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_STALL_LOSS = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_STALL_LOSS", default=True)
 SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_MIN_LOSS_DOLLARS = getenv_float_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_MIN_LOSS_DOLLARS", default=0.01)
 SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY", default=False)
+SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED = env_bool_any("SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED", default=True)
+SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS = getenv_float_any("SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS", default=60.0)
+SWING_LOSS_DAY_ENTRY_THROTTLE_MAX_NEW_ENTRIES_AFTER_TRIGGER = getenv_int_any("SWING_LOSS_DAY_ENTRY_THROTTLE_MAX_NEW_ENTRIES_AFTER_TRIGGER", default=0)
+SWING_LOSS_DAY_ENTRY_THROTTLE_INCLUDE_UNREALIZED = env_bool_any("SWING_LOSS_DAY_ENTRY_THROTTLE_INCLUDE_UNREALIZED", default=False)
+SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY = env_bool_any("SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY", default=False)
 SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
 SWING_NEUTRAL_MIN_20D_RETURN_PCT = getenv_float_any("SWING_NEUTRAL_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.01)))
 SWING_DEFENSIVE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_20D_RETURN_PCT", default=0.0)
@@ -1345,7 +1350,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-251-same-day-symbol-loss-cooldown-placeholder-entry-snapshot-guard-swing-replay-backtest-lab"
+PATCH_VERSION = "patch-252-swing-loss-day-entry-throttle-fresh-snapshot-guard-source"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11704,6 +11709,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         portfolio_cap_blocked = False
     new_entries_globally_blocked = False
     global_block_reasons = []
+    loss_day_throttle = _p252_swing_loss_day_entry_throttle_snapshot()
     if daily_halt_active() or daily_stop_hit():
         new_entries_globally_blocked = True
         global_block_reasons.append('daily_halt_active')
@@ -11716,6 +11722,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             global_block_reasons.append('portfolio_already_over_cap_total')
         if block_strategy_cap:
             global_block_reasons.append('portfolio_already_over_cap_strategy')
+    if loss_day_throttle.get("block_new_entries"):
+        new_entries_globally_blocked = True
+        global_block_reasons.append("swing_loss_day_entry_throttle")
 
     candidates = []
     shadow_candidates = []
@@ -11747,6 +11756,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if c.get('eligible') and cooldown.get('blocked'):
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('same_day_symbol_loss_cooldown')
+            c['swing_loss_day_entry_throttle'] = loss_day_throttle
         if c.get('eligible') and new_entries_globally_blocked:
             if not (strategy_name == MEAN_REVERSION_STRATEGY_NAME and 'weak_tape' in global_block_reasons and SWING_MEAN_REVERSION_ENABLED):
                 c['eligible'] = False
@@ -11812,6 +11822,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     adaptive_capacity_candidates = []
     adaptive_capacity_selected = []
     max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
+    if (
+        loss_day_throttle.get("active")
+        and not loss_day_throttle.get("advisory_only")
+        and int(loss_day_throttle.get("max_new_entries_after_trigger") or 0) >= 0
+    ):
+        max_new_entries = min(max_new_entries, int(loss_day_throttle.get("max_new_entries_after_trigger") or 0))
     if breakout_approved:
         if regime_mode == 'defensive':
             max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
@@ -11901,6 +11917,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'early_entry_override_enabled': bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED),
             'early_entry_override_triggered': bool(entry_type == 'early_override'),
             'early_entry_override_reasons': list(override_live_reasons if entry_type == 'early_override' else (_candidate_qualifies_early_entry_override(c, regime=regime)[1] if SWING_EARLY_ENTRY_OVERRIDE_ENABLED else [])),
+            'swing_loss_day_entry_throttle': loss_day_throttle,
             'swing_quarantine': quarantine_decision,
             'same_day_symbol_loss_cooldown': c.get('same_day_symbol_loss_cooldown'),
         }
@@ -19635,16 +19652,119 @@ def _p251_same_day_symbol_loss_cooldown_snapshot() -> dict:
         "recommended_action": "cooldown_active_for_loss_symbols" if symbols else "none",
     }
 
+def _p252_swing_loss_day_entry_throttle_snapshot() -> dict:
+    try:
+        pnl = dict(today_pnl_truth_snapshot() or {})
+    except Exception as exc:
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "swing_loss_day_entry_throttle",
+            "enabled": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED),
+            "active": False,
+            "block_new_entries": False,
+            "error": str(exc),
+            "recommended_action": "monitor",
+        }
+
+    realized = _safe_float(pnl.get("today_realized_pnl"), 0.0)
+    unrealized = _safe_float(pnl.get("today_unrealized_pnl"), 0.0)
+    include_unrealized = bool(SWING_LOSS_DAY_ENTRY_THROTTLE_INCLUDE_UNREALIZED)
+    loss_basis = realized + unrealized if include_unrealized else realized
+    threshold = abs(float(SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS or 0.0))
+    max_after = max(0, int(SWING_LOSS_DAY_ENTRY_THROTTLE_MAX_NEW_ENTRIES_AFTER_TRIGGER or 0))
+
+    active = bool(
+        SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED
+        and threshold > 0
+        and loss_basis <= -threshold
+    )
+    block_new_entries = bool(
+        active
+        and not SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY
+        and max_after <= 0
+    )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_loss_day_entry_throttle",
+        "enabled": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED),
+        "advisory_only": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY),
+        "active": bool(active),
+        "block_new_entries": bool(block_new_entries),
+        "max_new_entries_after_trigger": int(max_after),
+        "include_unrealized": bool(include_unrealized),
+        "loss_basis": "realized_plus_unrealized" if include_unrealized else "realized_only",
+        "loss_basis_value": round(loss_basis, 4),
+        "today_realized_pnl": round(realized, 4),
+        "today_unrealized_pnl": round(unrealized, 4),
+        "threshold_dollars": float(threshold),
+        "accounting_source": pnl.get("accounting_source"),
+        "broker_exit_fills_today": pnl.get("broker_exit_fills_today"),
+        "closed_trades_today": pnl.get("closed_trades_today"),
+        "recommended_action": "block_new_swing_entries_for_loss_day" if block_new_entries else ("limit_new_swing_entries_for_loss_day" if active else "none"),
+    }
+
+
+def _p252_fresh_active_plans_for_snapshot_guard() -> dict[str, dict]:
+    plans: dict[str, dict] = {}
+
+    for sym, plan in dict(TRADE_PLAN or {}).items():
+        if isinstance(plan, dict) and bool(plan.get("active")):
+            key = str(sym or plan.get("symbol") or "").strip().upper()
+            if key:
+                plans[key] = dict(plan)
+
+    try:
+        snap = dict(read_positions_snapshot() or {})
+        snapshot_plans = dict(snap.get("active_plans") or {})
+    except Exception:
+        snapshot_plans = {}
+
+    for sym, plan in snapshot_plans.items():
+        if not isinstance(plan, dict) or not bool(plan.get("active")):
+            continue
+        key = str(sym or plan.get("symbol") or "").strip().upper()
+        if not key:
+            continue
+
+        current = dict(plans.get(key) or {})
+        current_thesis = dict(current.get("thesis") or {}) if isinstance(current.get("thesis"), dict) else {}
+        current_snap = dict(current_thesis.get("entry_quality_snapshot") or {}) if isinstance(current_thesis.get("entry_quality_snapshot"), dict) else {}
+
+        snapshot_thesis = dict(plan.get("thesis") or {}) if isinstance(plan.get("thesis"), dict) else {}
+        snapshot_snap = dict(snapshot_thesis.get("entry_quality_snapshot") or {}) if isinstance(snapshot_thesis.get("entry_quality_snapshot"), dict) else {}
+
+        if not current or (
+            _p249_snapshot_has_useful_values(snapshot_snap)
+            and not _p249_snapshot_has_useful_values(current_snap)
+        ):
+            plans[key] = dict(plan)
+
+    try:
+        for pos in list_open_positions_details_allowed() or []:
+            key = str((pos or {}).get("symbol") or "").strip().upper()
+            if key and key not in plans and isinstance(TRADE_PLAN.get(key), dict):
+                plans[key] = dict(TRADE_PLAN.get(key) or {})
+    except Exception:
+        pass
+
+    return plans
 
 def _p251_entry_snapshot_guard_snapshot() -> dict:
     rows = []
-    for sym, plan in list((TRADE_PLAN or {}).items()):
+    plans = _p252_fresh_active_plans_for_snapshot_guard()
+
+    for sym, plan in sorted(plans.items()):
         if not isinstance(plan, dict) or not plan.get("active"):
             continue
+
         thesis = dict(plan.get("thesis") or {}) if isinstance(plan.get("thesis"), dict) else {}
         snap = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
         completeness = _p251_entry_snapshot_completeness(snap)
         probe = _p247_entry_quality_backfill_probe_for_position(str(sym or "").upper(), plan)
+
         rows.append({
             "symbol": str(sym or "").upper(),
             "complete": bool(completeness.get("useful")),
@@ -19653,14 +19773,17 @@ def _p251_entry_snapshot_guard_snapshot() -> dict:
             "snapshot": snap,
             "can_backfill": bool(probe.get("can_backfill")),
             "recovered_snapshot_preview": probe.get("recovered_snapshot_preview"),
+            "source": "fresh_active_plan_snapshot_merge",
             "recommended_action": "apply_entry_memory_backfill" if probe.get("can_backfill") else ("patch_or_monitor_partial_snapshot" if completeness.get("partial") else "none"),
         })
+
     partial = [r for r in rows if r.get("partial")]
     backfillable = [r for r in rows if r.get("can_backfill")]
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
-        "mode": "placeholder_entry_snapshot_guard",
+        "mode": "fresh_placeholder_entry_snapshot_guard",
         "active_position_count": len(rows),
         "partial_snapshot_count": len(partial),
         "backfillable_count": len(backfillable),
@@ -19669,7 +19792,6 @@ def _p251_entry_snapshot_guard_snapshot() -> dict:
         "rows": rows,
         "recommended_action": "apply_entry_memory_backfill" if backfillable else ("review_partial_snapshots" if partial else "none"),
     }
-
 
 def _p251_simulate_exit_variant(rows: list[dict], name: str, remove_reasons: set[str] | None = None, blocked_symbols: set[str] | None = None) -> dict:
     remove_reasons = set(remove_reasons or set())
@@ -24133,6 +24255,10 @@ def diagnostics_same_day_symbol_loss_cooldown():
     _recompute_strategy_performance_state()
     return _p251_same_day_symbol_loss_cooldown_snapshot()
 
+@app.get("/diagnostics/swing_loss_day_entry_throttle")
+def diagnostics_swing_loss_day_entry_throttle():
+    _ensure_runtime_state_loaded()
+    return _p252_swing_loss_day_entry_throttle_snapshot()
 
 @app.get("/diagnostics/entry_snapshot_guard")
 def diagnostics_entry_snapshot_guard():
