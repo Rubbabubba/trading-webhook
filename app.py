@@ -1340,7 +1340,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-245-broker-preferred-performance-rollup-defensive-open-guard"
+PATCH_VERSION = "patch-246-live-unrealized-pnl-truth-entry-quality-memory-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -6167,6 +6167,23 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "stop_basis": meta.get("stop_basis") or SWING_STOP_MODE,
         "target_r_mult": meta.get("target_r_mult") or SWING_TARGET_R_MULT,
         "candidate_ts": meta.get("scan_ts") or now_ny().isoformat(),
+        "entry_quality_snapshot": {
+            "symbol": meta.get("symbol"),
+            "strategy": meta.get("strategy") or meta.get("strategy_name") or signal,
+            "rank_score": meta.get("rank_score"),
+            "min_rank_score": meta.get("min_rank_score"),
+            "selection_quality_score": meta.get("selection_quality_score"),
+            "regime_mode": meta.get("regime_mode"),
+            "return_20d_pct": meta.get("return_20d_pct"),
+            "risk_per_share_pct": meta.get("risk_per_share_pct"),
+            "breakout_distance_pct": meta.get("breakout_distance_pct"),
+            "close_to_high_pct": meta.get("close_to_high_pct"),
+            "strong_atr_relax_applied": meta.get("strong_atr_relax_applied"),
+            "defensive_tightening_enabled": meta.get("defensive_tightening_enabled"),
+            "defensive_max_20d_return_pct": meta.get("defensive_max_20d_return_pct"),
+            "defensive_max_risk_per_share_pct": meta.get("defensive_max_risk_per_share_pct"),
+            "rejection_reasons_at_entry": list(meta.get("rejection_reasons") or []),
+        },
     }
     return plan
 
@@ -8710,6 +8727,43 @@ def _today_realized_pnl_from_broker_orders() -> dict:
     except Exception as exc:
         return {"ok": False, "source": "alpaca_orders", "broker_truth_sync_enabled": True, "error": str(exc), "today_realized_pnl": 0.0, "closed_trades_today": 0, "broker_exit_fills_today": 0, "rows": []}
 
+def _p246_live_unrealized_pnl_truth() -> dict:
+    rows = []
+    total = 0.0
+    source = "broker_positions_detail"
+    try:
+        positions = list(list_open_positions_details_allowed() or [])
+        for pos in positions:
+            row = dict(pos or {})
+            sym = str(row.get("symbol") or "").upper()
+            unreal = _safe_float(row.get("unrealized_pl"), 0.0)
+            total += unreal
+            rows.append({
+                "symbol": sym,
+                "qty": row.get("qty"),
+                "avg_entry_price": row.get("avg_entry_price"),
+                "last_price": row.get("current_price") or row.get("last_price"),
+                "market_value": row.get("market_value"),
+                "unrealized_pl": round(unreal, 4),
+                "unrealized_plpc": row.get("unrealized_plpc"),
+            })
+        return {
+            "ok": True,
+            "source": source,
+            "open_position_count": len(rows),
+            "today_unrealized_pnl": round(total, 4),
+            "rows": rows,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "source": source,
+            "error": str(exc),
+            "open_position_count": 0,
+            "today_unrealized_pnl": 0.0,
+            "rows": [],
+        }
+
 def today_pnl_truth_snapshot() -> dict:
     account_pnl = _account_daily_pnl_snapshot()
     broker_realized = _today_realized_pnl_from_broker_orders()
@@ -8718,15 +8772,11 @@ def today_pnl_truth_snapshot() -> dict:
     realized = broker_realized if broker_realized.get("ok") else strategy_realized
     if broker_realized.get("ok") and int(broker_realized.get("closed_trades_today") or 0) == 0 and int(strategy_realized.get("closed_trades_today") or 0) > 0:
         realized = strategy_realized
-    unrealized = 0.0
-    unrealized_error = ""
-    try:
-        for pos in list_open_positions_allowed():
-            unrealized += _safe_float((pos or {}).get("unrealized_pl"), 0.0)
-    except Exception as exc:
-        unrealized_error = str(exc)
+    unrealized_truth = _p246_live_unrealized_pnl_truth()
+    unrealized = _safe_float(unrealized_truth.get("today_unrealized_pnl"), 0.0)
+    unrealized_error = str(unrealized_truth.get("error") or "")
     realized_value = _safe_float(realized.get("today_realized_pnl"), 0.0)
-    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "account_daily_pnl_source": account_pnl.get("source"), "account_daily_pnl": account_pnl.get("account_daily_pnl"), "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"), "account_equity": account_pnl.get("equity"), "account_last_equity": account_pnl.get("last_equity"), "account_pnl_ok": bool(account_pnl.get("ok")), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": "broker_positions", "unrealized_error": unrealized_error, "account_pnl": account_pnl, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "broker_strategy_sync": broker_strategy_sync, "error": str(realized.get("error") or "")}
+    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "account_daily_pnl_source": account_pnl.get("source"), "account_daily_pnl": account_pnl.get("account_daily_pnl"), "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"), "account_equity": account_pnl.get("equity"), "account_last_equity": account_pnl.get("last_equity"), "account_pnl_ok": bool(account_pnl.get("ok")), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": unrealized_truth.get("source") or "broker_positions_detail", "unrealized_truth": unrealized_truth, "unrealized_error": unrealized_error, "account_pnl": account_pnl, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "broker_strategy_sync": broker_strategy_sync, "error": str(realized.get("error") or "")}
 
 
 def _p228_dt_utc(ts: object):
@@ -19254,6 +19304,83 @@ def _p245_defensive_open_position_guard(symbol: str, plan: dict | None, pos: dic
         "recommended_action": "monitor_tight_exit_behavior" if reasons else "none",
     }
 
+def _p246_entry_quality_memory_guard(symbol: str, plan: dict | None, pos: dict | None) -> dict:
+    sym = str(symbol or "").upper()
+    p = dict(plan or {})
+    thesis = dict(p.get("thesis") or {}) if isinstance(p.get("thesis"), dict) else {}
+    snap = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
+    broker = dict(pos or {})
+
+    mode = str(snap.get("regime_mode") or thesis.get("regime_mode") or p.get("regime_mode") or "").strip().lower()
+    strategy = str(snap.get("strategy") or p.get("strategy_name") or p.get("signal") or "").strip().lower()
+    return_20d = _safe_float(snap.get("return_20d_pct"), 0.0)
+    risk_pct = _safe_float(snap.get("risk_per_share_pct"), 0.0)
+    breakout_distance = _safe_float(snap.get("breakout_distance_pct"), 0.0)
+    rank_score = snap.get("rank_score") if snap.get("rank_score") is not None else thesis.get("candidate_rank_score")
+    reasons = []
+
+    has_snapshot = bool(snap)
+    if strategy == BREAKOUT_STRATEGY_NAME and mode == "defensive":
+        if has_snapshot:
+            if float(SWING_DEFENSIVE_MAX_20D_RETURN_PCT) > 0 and return_20d > float(SWING_DEFENSIVE_MAX_20D_RETURN_PCT) * 100.0:
+                reasons.append("entry_memory_defensive_20d_return_too_extended")
+            if float(SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT) > 0 and risk_pct > float(SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT) * 100.0:
+                reasons.append("entry_memory_defensive_risk_per_share_too_wide")
+        else:
+            reasons.append("entry_quality_snapshot_missing")
+
+    unrealized = _safe_float(broker.get("unrealized_pl"), 0.0)
+    if unrealized < 0 and reasons:
+        reasons.append("open_position_negative_with_entry_quality_warning")
+
+    return {
+        "symbol": sym,
+        "enabled": True,
+        "advisory_only": True,
+        "has_entry_quality_snapshot": has_snapshot,
+        "triggered": bool(reasons),
+        "reasons": reasons,
+        "entry_snapshot": {
+            "strategy": strategy or None,
+            "regime_mode": mode or None,
+            "rank_score": rank_score,
+            "return_20d_pct": return_20d if has_snapshot else None,
+            "risk_per_share_pct": risk_pct if has_snapshot else None,
+            "breakout_distance_pct": breakout_distance if has_snapshot else None,
+            "defensive_tightening_enabled": snap.get("defensive_tightening_enabled"),
+        },
+        "current_unrealized_pl": round(unrealized, 4),
+        "recommended_action": "monitor_or_tighten_exit_only" if reasons else "none",
+    }
+
+
+def _p246_entry_quality_memory_snapshot() -> dict:
+    rows = []
+    for sym, plan in list((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not plan.get("active"):
+            continue
+        symbol = str(sym or plan.get("symbol") or "").upper()
+        pos = {}
+        try:
+            for row in list_open_positions_details_allowed() or []:
+                if str((row or {}).get("symbol") or "").upper() == symbol:
+                    pos = dict(row or {})
+                    break
+        except Exception:
+            pos = {}
+        rows.append(_p246_entry_quality_memory_guard(symbol, plan, pos))
+    triggered = [r for r in rows if r.get("triggered")]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_entry_quality_memory_guard",
+        "active_position_count": len(rows),
+        "triggered_count": len(triggered),
+        "triggered_symbols": [r.get("symbol") for r in triggered],
+        "rows": rows,
+        "recommended_action": "review_triggered_positions_exit_plan" if triggered else "none",
+    }
+
 def _live_operator_snapshot(force: bool = False) -> dict:
     now_ts = _time.time()
     cached = LIVE_DASHBOARD_CACHE.get("payload")
@@ -19348,10 +19475,17 @@ def _live_operator_snapshot(force: bool = False) -> dict:
                 "attribution_source": plan.get("attribution_source"),
             },
             "defensive_open_guard": _p245_defensive_open_position_guard(sym, plan, pos),
+            "entry_quality_memory_guard": _p246_entry_quality_memory_guard(sym, plan, pos),
             "open_orders": symbol_orders,
         })
     halt_truth = daily_halt_truth_snapshot()
     today_pnl = dict(halt_truth.get("today_pnl_truth") or today_pnl_truth_snapshot())
+    live_unrealized_truth = _p246_live_unrealized_pnl_truth()
+    if live_unrealized_truth.get("ok"):
+        today_pnl["today_unrealized_pnl"] = live_unrealized_truth.get("today_unrealized_pnl")
+        today_pnl["today_net_pnl"] = round(_safe_float(today_pnl.get("today_realized_pnl"), 0.0) + _safe_float(today_pnl.get("today_unrealized_pnl"), 0.0), 4)
+        today_pnl["unrealized_source"] = live_unrealized_truth.get("source")
+        today_pnl["unrealized_truth"] = live_unrealized_truth
     flatten_decision = _daily_stop_flatten_decision() if bool(halt_truth.get("daily_halt_active")) else {}
     loss_halt = _live_loss_halt_checklist(halt_truth, today_pnl, flatten_decision, open_orders)
     summary = {
@@ -23282,6 +23416,20 @@ def diagnostics_broker_preferred_performance():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
     return _p245_broker_preferred_performance_snapshot()
+
+@app.get("/diagnostics/live_unrealized_pnl_truth")
+def diagnostics_live_unrealized_pnl_truth():
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "today_pnl_truth": today_pnl_truth_snapshot(),
+        "live_unrealized": _p246_live_unrealized_pnl_truth(),
+    }
+
+@app.get("/diagnostics/entry_quality_memory_guard")
+def diagnostics_entry_quality_memory_guard():
+    _ensure_runtime_state_loaded()
+    return _p246_entry_quality_memory_snapshot()
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
