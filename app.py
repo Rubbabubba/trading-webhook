@@ -1352,7 +1352,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-253-swing-system-simplification-audit-broker-backed-exposure-truth"
+PATCH_VERSION = "patch-254-broker-preferred-daily-pnl-dedup-corrected-swing-capacity-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8674,6 +8674,80 @@ def _today_realized_pnl_from_strategy_state() -> dict:
         return {"ok": False, "source": "strategy_performance_state", "error": str(exc), "today_realized_pnl": 0.0, "closed_trades_today": 0, "rows": []}
     return {"ok": True, "source": "strategy_performance_state", "today_realized_pnl": round(gross, 4), "closed_trades_today": len(rows), "wins_today": wins, "losses_today": losses, "flat_today": flat, "rows": rows[-20:]}
 
+def _p254_broker_preferred_today_strategy_realized_pnl(perf_state: dict | None = None) -> dict:
+    try:
+        strategy_rows = _p228_today_strategy_rows(perf_state=perf_state)
+        worker_rows = [r for r in strategy_rows if str(r.get("source") or "") == "worker_exit"]
+        broker_rows = [
+            r for r in strategy_rows
+            if str(r.get("source") or "") == "alpaca_orders_reconciled"
+            or str(r.get("reason") or "") == "broker_exit_fill"
+        ]
+        other_rows = [
+            r for r in strategy_rows
+            if r not in worker_rows and r not in broker_rows
+        ]
+
+        economic_rows = []
+        used_worker: set[int] = set()
+
+        for broker in sorted(broker_rows, key=lambda r: str(r.get("ts_utc") or "")):
+            wi, worker = _p228_find_match(broker, worker_rows, used_worker)
+            if wi is not None:
+                used_worker.add(int(wi))
+            row = dict(broker)
+            row["preferred_basis"] = "broker_reconciled_strategy_row"
+            row["paired_worker_exit"] = bool(worker)
+            economic_rows.append(row)
+
+        for i, worker in enumerate(worker_rows):
+            if i in used_worker:
+                continue
+            row = dict(worker)
+            row["preferred_basis"] = "unmatched_worker_exit"
+            row["paired_worker_exit"] = False
+            economic_rows.append(row)
+
+        for row in other_rows:
+            copy = dict(row)
+            copy["preferred_basis"] = copy.get("preferred_basis") or "non_worker_non_broker_strategy_row"
+            economic_rows.append(copy)
+
+        gross = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in economic_rows), 4)
+        raw_gross = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in strategy_rows), 4)
+        wins = sum(1 for r in economic_rows if _safe_float(r.get("gross_pnl"), 0.0) > 0)
+        losses = sum(1 for r in economic_rows if _safe_float(r.get("gross_pnl"), 0.0) < 0)
+        flat = sum(1 for r in economic_rows if _safe_float(r.get("gross_pnl"), 0.0) == 0)
+        duplicate_worker_rows_removed = max(0, len(strategy_rows) - len(economic_rows))
+
+        return {
+            "ok": True,
+            "source": "strategy_performance_state_broker_preferred_deduped",
+            "today_realized_pnl": gross,
+            "raw_strategy_state_realized_pnl": raw_gross,
+            "duplicate_adjustment": round(gross - raw_gross, 4),
+            "closed_trades_today": len(economic_rows),
+            "raw_closed_rows_today": len(strategy_rows),
+            "broker_reconciled_rows_today": len(broker_rows),
+            "worker_exit_rows_today": len(worker_rows),
+            "duplicate_worker_rows_removed": duplicate_worker_rows_removed,
+            "wins_today": wins,
+            "losses_today": losses,
+            "flat_today": flat,
+            "rows": economic_rows[-20:],
+            "raw_rows": strategy_rows[-20:],
+            "recommended_action": "use_broker_preferred_deduped_daily_pnl",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "source": "strategy_performance_state_broker_preferred_deduped",
+            "error": str(exc),
+            "today_realized_pnl": 0.0,
+            "closed_trades_today": 0,
+            "rows": [],
+        }
+
 def _ny_date_from_iso(ts: str) -> str:
     try:
         if not ts:
@@ -8781,15 +8855,62 @@ def today_pnl_truth_snapshot() -> dict:
     broker_realized = _today_realized_pnl_from_broker_orders()
     broker_strategy_sync = _sync_broker_realized_rows_to_strategy_performance(broker_realized)
     strategy_realized = _today_realized_pnl_from_strategy_state()
-    realized = broker_realized if broker_realized.get("ok") else strategy_realized
-    if broker_realized.get("ok") and int(broker_realized.get("closed_trades_today") or 0) == 0 and int(strategy_realized.get("closed_trades_today") or 0) > 0:
+    deduped_strategy_realized = _p254_broker_preferred_today_strategy_realized_pnl()
+
+    broker_calc_count = int(broker_realized.get("closed_trades_today") or 0)
+    deduped_count = int(deduped_strategy_realized.get("closed_trades_today") or 0)
+    strategy_count = int(strategy_realized.get("closed_trades_today") or 0)
+
+    if broker_realized.get("ok") and broker_calc_count > 0:
+        realized = broker_realized
+        accounting_source = "alpaca_orders"
+    elif deduped_strategy_realized.get("ok") and deduped_count > 0:
+        realized = deduped_strategy_realized
+        accounting_source = "strategy_performance_state_broker_preferred_deduped"
+    elif strategy_realized.get("ok") and strategy_count > 0:
         realized = strategy_realized
+        accounting_source = "strategy_performance_state"
+    else:
+        realized = broker_realized if broker_realized.get("ok") else strategy_realized
+        accounting_source = realized.get("source") or "strategy_performance_state"
+
     unrealized_truth = _p246_live_unrealized_pnl_truth()
     unrealized = _safe_float(unrealized_truth.get("today_unrealized_pnl"), 0.0)
     unrealized_error = str(unrealized_truth.get("error") or "")
     realized_value = _safe_float(realized.get("today_realized_pnl"), 0.0)
-    return {"ok": bool(realized.get("ok", True)), "accounting_source": realized.get("source") or "strategy_performance_state", "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)), "account_daily_pnl_source": account_pnl.get("source"), "account_daily_pnl": account_pnl.get("account_daily_pnl"), "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"), "account_equity": account_pnl.get("equity"), "account_last_equity": account_pnl.get("last_equity"), "account_pnl_ok": bool(account_pnl.get("ok")), "today_realized_pnl": round(realized_value, 4), "today_unrealized_pnl": round(unrealized, 4), "today_net_pnl": round(realized_value + unrealized, 4), "closed_trades_today": int(realized.get("closed_trades_today") or 0), "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or 0), "wins_today": int(realized.get("wins_today") or 0), "losses_today": int(realized.get("losses_today") or 0), "flat_today": int(realized.get("flat_today") or 0), "unrealized_source": unrealized_truth.get("source") or "broker_positions_detail", "unrealized_truth": unrealized_truth, "unrealized_error": unrealized_error, "account_pnl": account_pnl, "sample_rows": list(realized.get("rows") or []), "strategy_state_today": strategy_realized, "broker_orders_today": broker_realized, "broker_strategy_sync": broker_strategy_sync, "error": str(realized.get("error") or "")}
 
+    return {
+        "ok": bool(realized.get("ok", True)),
+        "accounting_source": accounting_source,
+        "broker_truth_sync_enabled": bool(broker_realized.get("broker_truth_sync_enabled", True)),
+        "account_daily_pnl_source": account_pnl.get("source"),
+        "account_daily_pnl": account_pnl.get("account_daily_pnl"),
+        "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"),
+        "account_equity": account_pnl.get("equity"),
+        "account_last_equity": account_pnl.get("last_equity"),
+        "account_pnl_ok": bool(account_pnl.get("ok")),
+        "today_realized_pnl": round(realized_value, 4),
+        "today_unrealized_pnl": round(unrealized, 4),
+        "today_net_pnl": round(realized_value + unrealized, 4),
+        "closed_trades_today": int(realized.get("closed_trades_today") or 0),
+        "raw_strategy_closed_rows_today": int(deduped_strategy_realized.get("raw_closed_rows_today") or strategy_count),
+        "duplicate_worker_rows_removed": int(deduped_strategy_realized.get("duplicate_worker_rows_removed") or 0),
+        "duplicate_adjustment": deduped_strategy_realized.get("duplicate_adjustment"),
+        "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or deduped_strategy_realized.get("broker_reconciled_rows_today") or 0),
+        "wins_today": int(realized.get("wins_today") or 0),
+        "losses_today": int(realized.get("losses_today") or 0),
+        "flat_today": int(realized.get("flat_today") or 0),
+        "unrealized_source": unrealized_truth.get("source") or "broker_positions_detail",
+        "unrealized_truth": unrealized_truth,
+        "unrealized_error": unrealized_error,
+        "account_pnl": account_pnl,
+        "sample_rows": list(realized.get("rows") or []),
+        "strategy_state_today": strategy_realized,
+        "deduped_strategy_state_today": deduped_strategy_realized,
+        "broker_orders_today": broker_realized,
+        "broker_strategy_sync": broker_strategy_sync,
+        "error": str(realized.get("error") or ""),
+    }
 
 def _p228_dt_utc(ts: object):
     try:
@@ -9543,6 +9664,40 @@ def _plan_is_recovered(plan: dict | None) -> bool:
     signal = str(p.get("signal") or "").upper()
     return bool(p.get("recovered")) or signal == "RECOVERED"
 
+def _p254_plan_strategy_name(plan: dict | None) -> str:
+    p = plan or {}
+    return str(p.get("strategy_name") or p.get("signal") or "").strip().lower()
+
+
+def _p254_is_swing_strategy_plan(plan: dict | None) -> bool:
+    strategy = _p254_plan_strategy_name(plan)
+    return strategy in {
+        str(BREAKOUT_STRATEGY_NAME).strip().lower(),
+        str(MEAN_REVERSION_STRATEGY_NAME).strip().lower(),
+        "daily_breakout",
+        "daily_mean_reversion",
+    }
+
+
+def _p254_position_notional(pos: dict | None) -> float:
+    row = dict(pos or {})
+    market_value = abs(_safe_float(row.get("market_value"), 0.0))
+    if market_value > 0:
+        return market_value
+    qty = abs(_safe_float(row.get("qty"), 0.0))
+    px = _safe_float(row.get("avg_entry_price") or row.get("current_price") or row.get("last_price"), 0.0)
+    return max(0.0, qty * px)
+
+
+def _p254_recovered_broker_backed_counts_as_strategy(sym: str, plan: dict | None, broker_by_symbol: dict[str, dict]) -> bool:
+    symbol = str(sym or "").strip().upper()
+    if not symbol or symbol not in broker_by_symbol:
+        return False
+    if not bool(SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY):
+        return False
+    if not _plan_is_recovered(plan):
+        return False
+    return _p254_is_swing_strategy_plan(plan)
 
 def _current_portfolio_exposure_breakdown() -> dict:
     total = 0.0
@@ -9554,42 +9709,61 @@ def _current_portfolio_exposure_breakdown() -> dict:
     recovered_symbols: list[str] = []
     strategy_symbols: list[str] = []
     unmanaged_symbols: list[str] = []
-    for p in list_open_positions_details_allowed():
-        sym = str(p.get('symbol') or '').upper()
-        qty = abs(_safe_float(p.get('qty') or 0.0))
-        px = _safe_float(p.get('avg_entry_price') or 0.0)
-        notion = qty * px
+    corrected_recovered_as_strategy_symbols: list[str] = []
+
+    broker_positions = list(list_open_positions_details_allowed() or [])
+    broker_by_symbol = {
+        str((p or {}).get("symbol") or "").upper(): dict(p or {})
+        for p in broker_positions
+        if str((p or {}).get("symbol") or "").strip()
+    }
+
+    for p in broker_positions:
+        sym = str(p.get("symbol") or "").upper()
+        notion = _p254_position_notional(p)
         total += notion
         if sym:
             by_symbol[sym] = notion
+
         plan = (TRADE_PLAN or {}).get(sym) or {}
-        if _plan_is_recovered(plan):
-            recovered += notion
-            if sym:
-                by_symbol_class[sym] = 'recovered'
-                recovered_symbols.append(sym)
-        elif bool(plan.get('active')):
+        recovered_counts_as_strategy = _p254_recovered_broker_backed_counts_as_strategy(sym, plan, broker_by_symbol)
+
+        if recovered_counts_as_strategy:
             strategy_managed += notion
             if sym:
-                by_symbol_class[sym] = 'strategy_managed'
+                by_symbol_class[sym] = "strategy_managed"
+                strategy_symbols.append(sym)
+                corrected_recovered_as_strategy_symbols.append(sym)
+        elif _plan_is_recovered(plan):
+            recovered += notion
+            if sym:
+                by_symbol_class[sym] = "recovered"
+                recovered_symbols.append(sym)
+        elif bool(plan.get("active")):
+            strategy_managed += notion
+            if sym:
+                by_symbol_class[sym] = "strategy_managed"
                 strategy_symbols.append(sym)
         else:
             unmanaged += notion
             if sym:
-                by_symbol_class[sym] = 'unmanaged'
+                by_symbol_class[sym] = "unmanaged"
                 unmanaged_symbols.append(sym)
-    return {
-        'total': total,
-        'strategy_managed': strategy_managed,
-        'recovered': recovered,
-        'unmanaged': unmanaged,
-        'by_symbol': by_symbol,
-        'by_symbol_class': by_symbol_class,
-        'recovered_symbols': recovered_symbols,
-        'strategy_symbols': strategy_symbols,
-        'unmanaged_symbols': unmanaged_symbols,
-    }
 
+    return {
+        "total": total,
+        "strategy_managed": strategy_managed,
+        "recovered": recovered,
+        "unmanaged": unmanaged,
+        "by_symbol": by_symbol,
+        "by_symbol_class": by_symbol_class,
+        "recovered_symbols": recovered_symbols,
+        "strategy_symbols": strategy_symbols,
+        "unmanaged_symbols": unmanaged_symbols,
+        "corrected_recovered_as_strategy_symbols": corrected_recovered_as_strategy_symbols,
+        "classification_source": "broker_backed_corrected",
+        "counts_recovered_as_strategy": bool(SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY),
+    }
 
 def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
     b = _current_portfolio_exposure_breakdown()
@@ -9752,45 +9926,69 @@ def _same_day_entry_stats() -> dict:
     today = now_ny().date()
     counted = 0
     skipped_recovered = 0
+    recovered_counted_as_strategy = 0
     skipped_inactive = 0
     skipped_not_today = 0
     items = []
+
+    try:
+        broker_positions = list(list_open_positions_details_allowed() or [])
+    except Exception:
+        broker_positions = []
+
+    broker_by_symbol = {
+        str((p or {}).get("symbol") or "").upper(): dict(p or {})
+        for p in broker_positions
+        if str((p or {}).get("symbol") or "").strip()
+    }
+
     for symbol, plan in (TRADE_PLAN or {}).items():
+        sym = str(symbol or "").upper()
         p = plan or {}
         active = bool(p.get("active"))
-        signal = str(p.get("signal") or "").upper()
-        recovered = bool(p.get("recovered")) or signal == "RECOVERED"
+        signal = str(p.get("signal") or "")
+        recovered = _plan_is_recovered(p)
+        recovered_counts_as_strategy = _p254_recovered_broker_backed_counts_as_strategy(sym, p, broker_by_symbol)
         dt = _parse_plan_opened_dt(p)
         opened_today = bool(dt and dt.date() == today)
         counted_here = False
+
         if not active:
             skipped_inactive += 1
-        elif recovered:
-            skipped_recovered += 1
         elif not opened_today:
             skipped_not_today += 1
+        elif recovered and not recovered_counts_as_strategy:
+            skipped_recovered += 1
         else:
             counted += 1
             counted_here = True
+            if recovered_counts_as_strategy:
+                recovered_counted_as_strategy += 1
+
         items.append({
-            "symbol": str(symbol or "").upper(),
+            "symbol": sym,
             "active": active,
             "recovered": recovered,
-            "signal": str(p.get("signal") or ""),
+            "recovered_counted_as_strategy": recovered_counts_as_strategy,
+            "broker_backed": sym in broker_by_symbol,
+            "signal": signal,
+            "strategy_name": str(p.get("strategy_name") or ""),
             "opened_at": dt.isoformat() if dt else None,
             "opened_today": opened_today,
             "counted": counted_here,
         })
+
     return {
         "today_ny": today.isoformat(),
         "counted": counted,
         "total_active": sum(1 for plan in (TRADE_PLAN or {}).values() if bool((plan or {}).get("active"))),
+        "recovered_counted_as_strategy": recovered_counted_as_strategy,
         "skipped_recovered": skipped_recovered,
         "skipped_inactive": skipped_inactive,
         "skipped_not_today": skipped_not_today,
+        "classification_source": "broker_backed_corrected",
         "items": items[:50],
     }
-
 
 def _same_day_entry_count() -> int:
     return int((_same_day_entry_stats() or {}).get("counted") or 0)
@@ -19786,7 +19984,7 @@ def _p253_broker_backed_exposure_truth_snapshot() -> dict:
 
     for sym, pos in sorted(broker_by_symbol.items()):
         plan = dict((TRADE_PLAN or {}).get(sym) or {})
-        market_value = abs(_safe_float(pos.get("market_value"), 0.0))
+        market_value = _p254_position_notional(pos)
         signal = str(plan.get("signal") or plan.get("strategy_name") or "").strip().lower()
         recovered = bool(plan.get("recovered"))
         broker_backed = bool(pos)
@@ -19869,7 +20067,7 @@ def _p253_swing_simplification_audit_snapshot() -> dict:
         "same_day_symbol_loss_cooldown": cooldown,
         "loss_day_entry_throttle": throttle,
         "recommended_env_updates": control_surface.get("recommended_env_updates"),
-        "recommended_next_patch": "capacity_truth_uses_broker_backed_strategy_exposure" if exposure_truth.get("classification_changed_count") else "observe_simplified_core_strategy",
+        "recommended_next_patch": "observe_corrected_capacity_and_broker_preferred_daily_pnl",
     }
 
 def _p252_fresh_active_plans_for_snapshot_guard() -> dict[str, dict]:
@@ -24392,6 +24590,47 @@ def diagnostics_live_unrealized_pnl_truth():
         "patch_version": PATCH_VERSION,
         "today_pnl_truth": today_pnl_truth_snapshot(),
         "live_unrealized": _p246_live_unrealized_pnl_truth(),
+    }
+
+@app.get("/diagnostics/broker_preferred_daily_pnl_dedup")
+def diagnostics_broker_preferred_daily_pnl_dedup():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "today_pnl_truth": today_pnl_truth_snapshot(),
+        "deduped_strategy_state_today": _p254_broker_preferred_today_strategy_realized_pnl(),
+    }
+
+
+@app.get("/diagnostics/corrected_swing_capacity_truth")
+def diagnostics_corrected_swing_capacity_truth():
+    _ensure_runtime_state_loaded()
+    exposure = _current_portfolio_exposure_breakdown()
+    same_day_stats = _same_day_entry_stats()
+    equity = max(0.0, _current_equity_estimate())
+    portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "corrected_swing_capacity_truth",
+        "same_day_entry_count": int(same_day_stats.get("counted") or 0),
+        "same_day_entry_details": same_day_stats,
+        "max_new_entries_per_day": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+        "remaining_new_entries_today": max(0, int(SWING_MAX_NEW_ENTRIES_PER_DAY) - int(same_day_stats.get("counted") or 0)),
+        "portfolio_exposure": round(float(exposure.get("total") or 0.0), 2),
+        "strategy_portfolio_exposure": round(float(exposure.get("strategy_managed") or 0.0), 2),
+        "recovered_portfolio_exposure": round(float(exposure.get("recovered") or 0.0), 2),
+        "unmanaged_portfolio_exposure": round(float(exposure.get("unmanaged") or 0.0), 2),
+        "portfolio_exposure_cap": round(portfolio_cap, 2),
+        "portfolio_exposure_remaining": round(max(0.0, portfolio_cap - float(exposure.get("strategy_managed") or 0.0)), 2) if portfolio_cap > 0 else None,
+        "classification_source": exposure.get("classification_source"),
+        "counts_recovered_as_strategy": exposure.get("counts_recovered_as_strategy"),
+        "corrected_recovered_as_strategy_symbols": list(exposure.get("corrected_recovered_as_strategy_symbols") or []),
+        "strategy_symbols": list(exposure.get("strategy_symbols") or []),
+        "recovered_symbols": list(exposure.get("recovered_symbols") or []),
+        "recommended_action": "use_this_capacity_truth_for_swing_entry_limits",
     }
 
 @app.get("/diagnostics/entry_quality_memory_guard")
