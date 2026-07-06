@@ -872,6 +872,11 @@ SWING_DEFENSIVE_MAX_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MAX_20D_R
 SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT = getenv_float_any("SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT", default=0.12)
 SWING_DEFENSIVE_DISABLE_STRONG_ATR_RELAX = env_bool_any("SWING_DEFENSIVE_DISABLE_STRONG_ATR_RELAX", default=True)
 SWING_DEFENSIVE_REQUIRE_BREAKOUT_NOT_EXTENDED = env_bool_any("SWING_DEFENSIVE_REQUIRE_BREAKOUT_NOT_EXTENDED", default=True)
+SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED", default=True)
+SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_OPENING_DAMAGE = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_OPENING_DAMAGE", default=True)
+SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_STALL_LOSS = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_STALL_LOSS", default=True)
+SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_MIN_LOSS_DOLLARS = getenv_float_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_MIN_LOSS_DOLLARS", default=0.01)
+SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY", default=False)
 SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
 SWING_NEUTRAL_MIN_20D_RETURN_PCT = getenv_float_any("SWING_NEUTRAL_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.01)))
 SWING_DEFENSIVE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_20D_RETURN_PCT", default=0.0)
@@ -1340,7 +1345,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-250-entry-quality-flagged-exit-advisory-stall-risk-projection"
+PATCH_VERSION = "patch-251-same-day-symbol-loss-cooldown-placeholder-entry-snapshot-guard-swing-replay-backtest-lab"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11737,6 +11742,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('strategy_kill_switch_active')
             c['strategy_kill_switch_reasons'] = list(kill_reasons)
+        cooldown = _p251_same_day_symbol_loss_cooldown(sym)
+        c['same_day_symbol_loss_cooldown'] = cooldown
+        if c.get('eligible') and cooldown.get('blocked'):
+            c['eligible'] = False
+            c.setdefault('rejection_reasons', []).append('same_day_symbol_loss_cooldown')
         if c.get('eligible') and new_entries_globally_blocked:
             if not (strategy_name == MEAN_REVERSION_STRATEGY_NAME and 'weak_tape' in global_block_reasons and SWING_MEAN_REVERSION_ENABLED):
                 c['eligible'] = False
@@ -11892,6 +11902,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'early_entry_override_triggered': bool(entry_type == 'early_override'),
             'early_entry_override_reasons': list(override_live_reasons if entry_type == 'early_override' else (_candidate_qualifies_early_entry_override(c, regime=regime)[1] if SWING_EARLY_ENTRY_OVERRIDE_ENABLED else [])),
             'swing_quarantine': quarantine_decision,
+            'same_day_symbol_loss_cooldown': c.get('same_day_symbol_loss_cooldown'),
         }
         if live_allowed:
             resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta, source=source_name)
@@ -19547,6 +19558,176 @@ def _p250_entry_quality_exit_advisory_snapshot() -> dict:
         "recommended_action": "review_tighten_candidates" if tighten else ("monitor_flagged_entries" if flagged else "none"),
     }
 
+def _p251_today_symbol_loss_cooldown_rows(state: dict | None = None) -> list[dict]:
+    preferred = _p245_broker_preferred_closed_rows(state or STRATEGY_PERFORMANCE_STATE)
+    rows = []
+    today = now_ny().date()
+
+    for row in list(preferred.get("kept_rows") or []):
+        r = dict(row or {})
+        sym = str(r.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+
+        ts = _p175_parse_dt(r.get("ts_utc") or r.get("closed_at") or r.get("exit_ts_utc"))
+        if not ts:
+            continue
+        if ts.astimezone(NY_TZ).date() != today:
+            continue
+
+        pnl = _safe_float(r.get("gross_pnl"), 0.0)
+        if pnl >= -abs(float(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_MIN_LOSS_DOLLARS or 0.01)):
+            continue
+
+        reason = str(r.get("reason") or r.get("exit_reason") or "").strip().lower()
+        if reason == "opening_damage_exit" and not bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_OPENING_DAMAGE):
+            continue
+        if reason in {"stall_loss_guard", "stall_exit"} and not bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_STALL_LOSS):
+            continue
+
+        rows.append({
+            "symbol": sym,
+            "ts_utc": ts.astimezone(timezone.utc).isoformat(),
+            "gross_pnl": round(pnl, 4),
+            "reason": reason or None,
+            "source": r.get("source"),
+            "entry_price": r.get("entry_price"),
+            "exit_price": r.get("exit_price"),
+            "qty": r.get("qty"),
+        })
+
+    rows.sort(key=lambda x: str(x.get("ts_utc") or ""), reverse=True)
+    return rows
+
+
+def _p251_same_day_symbol_loss_cooldown(symbol: str, state: dict | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    rows = [r for r in _p251_today_symbol_loss_cooldown_rows(state=state) if str(r.get("symbol") or "").upper() == sym]
+    active = bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED and rows)
+    blocked = bool(active and not SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY)
+    return {
+        "symbol": sym,
+        "enabled": bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED),
+        "advisory_only": bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY),
+        "active": bool(active),
+        "blocked": bool(blocked),
+        "reason": "same_day_symbol_realized_loss" if active else "none",
+        "loss_count_today": len(rows),
+        "gross_pnl_today": round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in rows), 4),
+        "rows": rows,
+    }
+
+
+def _p251_same_day_symbol_loss_cooldown_snapshot() -> dict:
+    rows = _p251_today_symbol_loss_cooldown_rows()
+    symbols = sorted({str(r.get("symbol") or "").upper() for r in rows if str(r.get("symbol") or "").strip()})
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "same_day_symbol_loss_cooldown",
+        "enabled": bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED),
+        "advisory_only": bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY),
+        "blocked_symbols": [] if SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY else symbols,
+        "loss_symbols": symbols,
+        "loss_count": len(rows),
+        "gross_pnl": round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in rows), 4),
+        "rows": rows,
+        "recommended_action": "cooldown_active_for_loss_symbols" if symbols else "none",
+    }
+
+
+def _p251_entry_snapshot_guard_snapshot() -> dict:
+    rows = []
+    for sym, plan in list((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not plan.get("active"):
+            continue
+        thesis = dict(plan.get("thesis") or {}) if isinstance(plan.get("thesis"), dict) else {}
+        snap = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
+        completeness = _p251_entry_snapshot_completeness(snap)
+        probe = _p247_entry_quality_backfill_probe_for_position(str(sym or "").upper(), plan)
+        rows.append({
+            "symbol": str(sym or "").upper(),
+            "complete": bool(completeness.get("useful")),
+            "partial": bool(completeness.get("partial")),
+            "required_missing": list(completeness.get("required_missing") or []),
+            "snapshot": snap,
+            "can_backfill": bool(probe.get("can_backfill")),
+            "recovered_snapshot_preview": probe.get("recovered_snapshot_preview"),
+            "recommended_action": "apply_entry_memory_backfill" if probe.get("can_backfill") else ("patch_or_monitor_partial_snapshot" if completeness.get("partial") else "none"),
+        })
+    partial = [r for r in rows if r.get("partial")]
+    backfillable = [r for r in rows if r.get("can_backfill")]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "placeholder_entry_snapshot_guard",
+        "active_position_count": len(rows),
+        "partial_snapshot_count": len(partial),
+        "backfillable_count": len(backfillable),
+        "partial_symbols": [r.get("symbol") for r in partial],
+        "backfillable_symbols": [r.get("symbol") for r in backfillable],
+        "rows": rows,
+        "recommended_action": "apply_entry_memory_backfill" if backfillable else ("review_partial_snapshots" if partial else "none"),
+    }
+
+
+def _p251_simulate_exit_variant(rows: list[dict], name: str, remove_reasons: set[str] | None = None, blocked_symbols: set[str] | None = None) -> dict:
+    remove_reasons = set(remove_reasons or set())
+    blocked_symbols = set(blocked_symbols or set())
+    kept = []
+    removed = []
+
+    for row in rows:
+        r = dict(row or {})
+        sym = str(r.get("symbol") or "").upper()
+        reason = str(r.get("reason") or r.get("exit_reason") or "").strip().lower()
+        if sym in blocked_symbols or reason in remove_reasons:
+            removed.append(r)
+        else:
+            kept.append(r)
+
+    kept_rollup = _p245_performance_rollup(kept)
+    base_rollup = _p245_performance_rollup(rows)
+    return {
+        "scenario": name,
+        "removed_count": len(removed),
+        "removed_gross_pnl": round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in removed), 4),
+        "base": base_rollup,
+        "simulated": kept_rollup,
+        "gross_pnl_delta": round(_safe_float(kept_rollup.get("gross_pnl"), 0.0) - _safe_float(base_rollup.get("gross_pnl"), 0.0), 4),
+        "avg_r_delta": round(_safe_float(kept_rollup.get("avg_r"), 0.0) - _safe_float(base_rollup.get("avg_r"), 0.0), 4),
+        "removed_symbols": sorted({str(r.get("symbol") or "").upper() for r in removed if str(r.get("symbol") or "").strip()}),
+    }
+
+
+def _p251_swing_replay_backtest_lab() -> dict:
+    preferred = _p245_broker_preferred_closed_rows()
+    rows = [dict(r or {}) for r in list(preferred.get("kept_rows") or []) if isinstance(r, dict)]
+    today_loss_rows = _p251_today_symbol_loss_cooldown_rows()
+    today_loss_symbols = {str(r.get("symbol") or "").upper() for r in today_loss_rows}
+
+    scenarios = [
+        _p251_simulate_exit_variant(rows, "current_broker_preferred", set(), set()),
+        _p251_simulate_exit_variant(rows, "remove_opening_damage_exits", {"opening_damage_exit"}, set()),
+        _p251_simulate_exit_variant(rows, "remove_stall_loss_guard_exits", {"stall_loss_guard"}, set()),
+        _p251_simulate_exit_variant(rows, "remove_stall_exits", {"stall_exit"}, set()),
+        _p251_simulate_exit_variant(rows, "same_day_loss_symbol_cooldown_today", set(), today_loss_symbols),
+    ]
+
+    scenarios.sort(key=lambda r: _safe_float(r.get("gross_pnl_delta"), 0.0), reverse=True)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_swing_replay_backtest_lab",
+        "note": "This is a closed-trade attribution simulator, not a full OHLCV bar replay yet.",
+        "closed_trade_count": len(rows),
+        "base": _p245_performance_rollup(rows),
+        "today_loss_symbols": sorted(today_loss_symbols),
+        "scenarios": scenarios,
+        "recommended_action": "use_next_patch_for_full_bar_replay" if rows else "collect_more_trades",
+    }
+
 def _p247_candidate_like_rows_from_payload(payload: object, limit: int = 500) -> list[dict]:
     rows: list[dict] = []
 
@@ -19619,32 +19800,56 @@ def _p247_recent_candidate_rows_for_symbol(symbol: str, limit: int = 200) -> lis
 
     return matches[:max(1, int(limit or 200))]
 
-def _p249_snapshot_has_useful_values(snapshot: dict | None) -> bool:
+def _p251_entry_snapshot_completeness(snapshot: dict | None) -> dict:
     snap = dict(snapshot or {})
-    useful_keys = [
-        "symbol",
-        "rank_score",
-        "min_rank_score",
-        "selection_quality_score",
-        "regime_mode",
-        "return_20d_pct",
-        "risk_per_share_pct",
-        "breakout_distance_pct",
-        "close_to_high_pct",
-        "defensive_tightening_enabled",
-    ]
-    for key in useful_keys:
-        value = snap.get(key)
-        if value not in (None, "", [], {}):
-            return True
-    return False
+    symbol = str(snap.get("symbol") or "").strip().upper()
+    strategy = str(snap.get("strategy") or snap.get("strategy_name") or snap.get("signal") or "").strip().lower()
+    regime_mode = str(snap.get("regime_mode") or "").strip().lower()
+
+    has_rank = snap.get("rank_score") not in (None, "", [], {})
+    has_selection_quality = snap.get("selection_quality_score") not in (None, "", [], {})
+    has_return = snap.get("return_20d_pct") not in (None, "", [], {})
+    has_risk = snap.get("risk_per_share_pct") not in (None, "", [], {})
+    has_breakout_distance = snap.get("breakout_distance_pct") not in (None, "", [], {})
+    has_defensive_flag = snap.get("defensive_tightening_enabled") not in (None, "", [], {})
+
+    required_missing = []
+    if not symbol:
+        required_missing.append("symbol")
+    if not strategy:
+        required_missing.append("strategy")
+    if not regime_mode:
+        required_missing.append("regime_mode")
+    if not has_rank:
+        required_missing.append("rank_score")
+    if not has_return:
+        required_missing.append("return_20d_pct")
+    if not has_risk:
+        required_missing.append("risk_per_share_pct")
+    if not has_breakout_distance:
+        required_missing.append("breakout_distance_pct")
+
+    useful = bool(symbol and strategy and regime_mode and has_rank and has_return and has_risk and has_breakout_distance)
+    partial = bool(snap) and not useful
+
+    return {
+        "useful": bool(useful),
+        "partial": bool(partial),
+        "required_missing": required_missing,
+        "has_selection_quality": bool(has_selection_quality),
+        "has_defensive_flag": bool(has_defensive_flag),
+    }
+
+
+def _p249_snapshot_has_useful_values(snapshot: dict | None) -> bool:
+    return bool(_p251_entry_snapshot_completeness(snapshot).get("useful"))
 
 
 def _p249_snapshot_is_empty_or_placeholder(snapshot: dict | None) -> bool:
     snap = dict(snapshot or {})
     if not snap:
         return True
-    return not _p249_snapshot_has_useful_values(snap)
+    return not bool(_p251_entry_snapshot_completeness(snap).get("useful"))
 
 def _p247_entry_quality_backfill_probe_for_position(symbol: str, plan: dict | None) -> dict:
     sym = str(symbol or "").strip().upper()
@@ -23921,6 +24126,25 @@ def diagnostics_entry_memory_backfill_apply(apply: bool = False):
 def diagnostics_entry_quality_exit_advisory():
     _ensure_runtime_state_loaded()
     return _p250_entry_quality_exit_advisory_snapshot()
+    
+@app.get("/diagnostics/same_day_symbol_loss_cooldown")
+def diagnostics_same_day_symbol_loss_cooldown():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return _p251_same_day_symbol_loss_cooldown_snapshot()
+
+
+@app.get("/diagnostics/entry_snapshot_guard")
+def diagnostics_entry_snapshot_guard():
+    _ensure_runtime_state_loaded()
+    return _p251_entry_snapshot_guard_snapshot()
+
+
+@app.get("/diagnostics/swing_replay_backtest_lab")
+def diagnostics_swing_replay_backtest_lab():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return _p251_swing_replay_backtest_lab()
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
