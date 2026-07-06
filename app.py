@@ -1340,7 +1340,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-248-entry-memory-backfill-apply-advisory-guard-activation"
+PATCH_VERSION = "patch-249-entry-memory-persistence-fix-empty-snapshot-replacement"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -19453,13 +19453,39 @@ def _p247_recent_candidate_rows_for_symbol(symbol: str, limit: int = 200) -> lis
 
     return matches[:max(1, int(limit or 200))]
 
+def _p249_snapshot_has_useful_values(snapshot: dict | None) -> bool:
+    snap = dict(snapshot or {})
+    useful_keys = [
+        "symbol",
+        "rank_score",
+        "min_rank_score",
+        "selection_quality_score",
+        "regime_mode",
+        "return_20d_pct",
+        "risk_per_share_pct",
+        "breakout_distance_pct",
+        "close_to_high_pct",
+        "defensive_tightening_enabled",
+    ]
+    for key in useful_keys:
+        value = snap.get(key)
+        if value not in (None, "", [], {}):
+            return True
+    return False
+
+
+def _p249_snapshot_is_empty_or_placeholder(snapshot: dict | None) -> bool:
+    snap = dict(snapshot or {})
+    if not snap:
+        return True
+    return not _p249_snapshot_has_useful_values(snap)
 
 def _p247_entry_quality_backfill_probe_for_position(symbol: str, plan: dict | None) -> dict:
     sym = str(symbol or "").strip().upper()
     p = dict(plan or {})
     thesis = dict(p.get("thesis") or {}) if isinstance(p.get("thesis"), dict) else {}
     existing_snapshot = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
-    existing_snapshot_has_values = bool(existing_snapshot) and any(v not in (None, "", [], {}) for v in existing_snapshot.values())
+    existing_snapshot_has_values = _p249_snapshot_has_useful_values(existing_snapshot)
 
     rows = _p247_recent_candidate_rows_for_symbol(sym, limit=200)
     best = {}
@@ -19552,7 +19578,7 @@ def _p248_apply_entry_quality_snapshot(symbol: str, recovered_snapshot: dict | N
     thesis = dict(plan.get("thesis") or {}) if isinstance(plan.get("thesis"), dict) else {}
     existing = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
 
-    if existing and any(v not in (None, "", [], {}) for v in existing.values()):
+    if _p249_snapshot_has_useful_values(existing):
         return {
             "ok": True,
             "symbol": sym,
@@ -19561,10 +19587,13 @@ def _p248_apply_entry_quality_snapshot(symbol: str, recovered_snapshot: dict | N
             "existing_snapshot": existing,
         }
 
+    replace_reason = "empty_snapshot_replaced" if existing else "missing_snapshot_backfilled"
+
     thesis["entry_quality_snapshot"] = snapshot
     thesis["entry_quality_snapshot_backfilled"] = True
     thesis["entry_quality_snapshot_backfilled_at_utc"] = datetime.now(timezone.utc).isoformat()
     thesis["entry_quality_snapshot_backfill_patch"] = PATCH_VERSION
+    thesis["entry_quality_snapshot_replace_reason"] = replace_reason
 
     plan["thesis"] = thesis
     plan["rank_score"] = plan.get("rank_score") if plan.get("rank_score") not in (None, "", [], {}) else snapshot.get("rank_score")
@@ -19573,23 +19602,28 @@ def _p248_apply_entry_quality_snapshot(symbol: str, recovered_snapshot: dict | N
     plan["entry_type"] = plan.get("entry_type") if plan.get("entry_type") not in (None, "", [], {}) else "standard"
 
     TRADE_PLAN[sym] = plan
+    persist_result = {"ok": False, "method": "none"}
     try:
-        persist_trade_plan()
+        persist_positions_snapshot(
+            reason="entry_quality_snapshot_backfill",
+            extra={
+                "symbol": sym,
+                "patch_version": PATCH_VERSION,
+                "replace_reason": replace_reason,
+                "entry_quality_snapshot": snapshot,
+            },
+        )
+        persist_result = {"ok": True, "method": "persist_positions_snapshot"}
     except Exception as exc:
-        return {
-            "ok": False,
-            "symbol": sym,
-            "applied": True,
-            "reason": "applied_but_persist_failed",
-            "error": str(exc),
-            "entry_quality_snapshot": snapshot,
-        }
+        persist_result = {"ok": False, "method": "persist_positions_snapshot", "error": str(exc)}
 
     return {
-        "ok": True,
+        "ok": bool(persist_result.get("ok")),
         "symbol": sym,
         "applied": True,
-        "reason": "entry_quality_snapshot_backfilled",
+        "reason": "entry_quality_snapshot_backfilled" if persist_result.get("ok") else "applied_but_persist_failed",
+        "replace_reason": replace_reason,
+        "persist_result": persist_result,
         "entry_quality_snapshot": snapshot,
     }
 
@@ -19620,8 +19654,10 @@ def _p248_entry_memory_backfill_apply_snapshot(apply: bool = False) -> dict:
                 "reason": apply_result.get("reason"),
                 "apply_result": apply_result,
             })
-            if apply_result.get("applied"):
+            if apply_result.get("applied") and apply_result.get("ok"):
                 applied += 1
+            elif apply_result.get("applied") and not apply_result.get("ok"):
+                errors += 1
             elif apply_result.get("ok"):
                 skipped += 1
             else:
@@ -19645,6 +19681,7 @@ def _p248_entry_memory_backfill_apply_snapshot(apply: bool = False) -> dict:
         "error_count": errors,
         "rows": rows,
         "post_apply_guard": _p246_entry_quality_memory_snapshot() if apply else None,
+        "post_apply_backfill_probe": _p247_entry_memory_backfill_probe_snapshot() if apply else None,
         "recommended_action": "rerun_entry_quality_memory_guard" if apply and applied else ("review_backfillable_entry_snapshots" if probe.get("backfillable_count") else "none"),
     }
 
