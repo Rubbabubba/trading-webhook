@@ -1335,7 +1335,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-242-hotfix-conservative-paper-pilot-gate"
+PATCH_VERSION = "patch-243-intraday-symbol-discovery-replay-lab"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14300,6 +14300,13 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
             min_rank_score=130,
             max_rank_score=140,
         ),
+        "panw_mrvl_only_block_10am_late": _intraday_quality_config_from_values(
+            name="panw_mrvl_only_block_10am_late",
+            allowed_symbols="MRVL,PANW",
+            blocked_time_windows="10:00-10:59,15:00-15:59",
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
         "symbol_allowlist_only": _intraday_quality_config_from_values(
             name="symbol_allowlist_only",
             allowed_symbols=allowed_symbols,
@@ -15030,6 +15037,151 @@ def _intraday_replay_lab_recommendations(results: list[dict]) -> dict:
         },
     }
 
+def _intraday_symbol_discovery_default_universe() -> list[str]:
+    return _dedupe_keep_order([
+        "AAPL", "MSFT", "NVDA", "AMD", "AVGO", "TSLA", "META", "AMZN", "GOOGL", "NFLX",
+        "PANW", "CRWD", "MRVL", "MU", "AMAT", "LRCX", "KLAC", "ANET", "NET", "DDOG",
+        "SNOW", "SHOP", "UBER", "COIN", "PLTR", "ARM", "SMCI", "DELL", "ORCL", "CRM",
+        "NOW", "ADBE", "INTC", "QCOM", "TXN", "IBM", "SPY", "QQQ", "IWM", "DIA",
+    ])
+
+
+def _intraday_symbol_discovery_symbols(symbols: str = "", max_symbols: int = 20) -> list[str]:
+    if str(symbols or "").strip():
+        raw = [s.strip().upper() for s in str(symbols or "").split(",") if s.strip()]
+    else:
+        raw = _intraday_symbol_discovery_default_universe()
+    return _dedupe_keep_order(raw)[: max(1, min(int(max_symbols or 20), 60))]
+
+
+def _intraday_symbol_discovery_score(summary: dict) -> float:
+    count = int((summary or {}).get("count") or 0)
+    avg_r = _safe_float((summary or {}).get("avg_r") or 0.0)
+    win_rate = _safe_float((summary or {}).get("win_rate") or 0.0)
+    stop_hit_rate = _safe_float((summary or {}).get("stop_hit_rate") or 0.0)
+    target_hit_count = int((summary or {}).get("target_hit_count") or 0)
+    sample_bonus = min(count, 20) * 0.015
+    target_bonus = min(target_hit_count, 8) * 0.025
+    return round((avg_r * 1.5) + win_rate - stop_hit_rate + sample_bonus + target_bonus, 4)
+
+
+def _intraday_symbol_discovery_replay_lab(
+    *,
+    symbols: str = "",
+    lookback_days: int = 30,
+    max_symbols: int = 20,
+    limit_per_symbol: int = 12000,
+    min_trades: int = 5,
+    min_avg_r: float = 0.10,
+    min_win_rate: float = 0.45,
+    max_stop_hit_rate: float = 0.40,
+    blocked_time_windows: str = "10:00-10:59,15:00-15:59",
+    min_rank_score: float = 130,
+    max_rank_score: float = 140,
+) -> dict:
+    syms = _intraday_symbol_discovery_symbols(symbols=symbols, max_symbols=max_symbols)
+    results = []
+
+    for sym in syms:
+        cfg = _intraday_quality_config_from_values(
+            name=f"discovery_{sym.lower()}",
+            allowed_symbols=sym,
+            blocked_time_windows=blocked_time_windows,
+            min_rank_score=float(min_rank_score or 130),
+            max_rank_score=float(max_rank_score or 140),
+        )
+
+        try:
+            replay = _intraday_replay_backtest(
+                symbols=sym,
+                lookback_days=int(lookback_days or 30),
+                scenario="rank_130_140_only",
+                limit_per_symbol=int(limit_per_symbol or 12000),
+                max_trades_per_symbol_session=1,
+                config_override=cfg,
+            )
+            summary = replay.get("all") or {}
+            validation = replay.get("validation") or {}
+            count = int(summary.get("count") or 0)
+            avg_r = _safe_float(summary.get("avg_r") or 0.0)
+            win_rate = _safe_float(summary.get("win_rate") or 0.0)
+            stop_hit_rate = _safe_float(summary.get("stop_hit_rate") or 0.0)
+
+            blockers = []
+            if count < int(min_trades or 5):
+                blockers.append("sample_below_min")
+            if avg_r < float(min_avg_r or 0.10):
+                blockers.append("avg_r_below_min")
+            if win_rate < float(min_win_rate or 0.45):
+                blockers.append("win_rate_below_min")
+            if stop_hit_rate > float(max_stop_hit_rate or 0.40):
+                blockers.append("stop_hit_rate_above_max")
+
+            results.append({
+                "symbol": sym,
+                "ready": not blockers,
+                "blockers": blockers,
+                "score": _intraday_symbol_discovery_score(summary),
+                "summary": summary,
+                "validation": validation,
+                "sessions": replay.get("session_count"),
+                "bars": (replay.get("bars_by_symbol") or {}).get(sym),
+                "fetch_errors": replay.get("fetch_errors") or [],
+            })
+        except Exception as exc:
+            results.append({
+                "symbol": sym,
+                "ready": False,
+                "blockers": ["replay_error"],
+                "score": -999,
+                "error": str(exc),
+            })
+
+    ranked = sorted(
+        results,
+        key=lambda r: (
+            bool(r.get("ready")),
+            _safe_float(r.get("score") or 0.0),
+            _safe_float((r.get("summary") or {}).get("avg_r") or 0.0),
+            _safe_float((r.get("summary") or {}).get("win_rate") or 0.0),
+            -_safe_float((r.get("summary") or {}).get("stop_hit_rate") or 0.0),
+            int((r.get("summary") or {}).get("count") or 0),
+        ),
+        reverse=True,
+    )
+
+    ready_symbols = [r.get("symbol") for r in ranked if bool(r.get("ready"))]
+    top_symbols = [r.get("symbol") for r in ranked[:8] if r.get("symbol")]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_intraday_symbol_discovery_replay_lab",
+        "lookback_days": int(lookback_days or 30),
+        "symbols_checked": syms,
+        "blocked_time_windows": blocked_time_windows,
+        "rank_window": {
+            "min_rank_score": float(min_rank_score or 130),
+            "max_rank_score": float(max_rank_score or 140),
+        },
+        "thresholds": {
+            "min_trades": int(min_trades or 5),
+            "min_avg_r": float(min_avg_r or 0.10),
+            "min_win_rate": float(min_win_rate or 0.45),
+            "max_stop_hit_rate": float(max_stop_hit_rate or 0.40),
+        },
+        "ready_symbols": ready_symbols,
+        "top_symbols": top_symbols,
+        "recommended_next_allowed_symbols": ",".join(ready_symbols[:6]),
+        "keep_intraday_live_disabled": True,
+        "ranked": ranked,
+        "notes": [
+            "Discovery is replay-only and does not change the active paper pilot.",
+            "Symbols should be promoted only after replay and forward paper evidence agree.",
+            "Use the top candidates to build the next paper pilot allowlist.",
+        ],
+    }
+
 def _intraday_replay_backtest(
     *,
     symbols: str = "",
@@ -15037,6 +15189,7 @@ def _intraday_replay_backtest(
     scenario: str = "",
     limit_per_symbol: int = 12000,
     max_trades_per_symbol_session: int = 1,
+    config_override: dict | None = None,
 ) -> dict:
     syms = _intraday_replay_symbols(symbols)
     lookback = max(1, min(int(lookback_days or 30), 90))
@@ -15046,7 +15199,7 @@ def _intraday_replay_backtest(
     scenarios = _intraday_quality_scenario_configs()
     active_cfg = _intraday_quality_active_config()
     scenario_name = str(scenario or active_cfg.get("name") or "").strip().lower()
-    cfg = dict(scenarios.get(scenario_name) or active_cfg)
+    cfg = dict(config_override or scenarios.get(scenario_name) or active_cfg)
 
     bars_map: dict[str, list[dict]] = {}
     fetch_errors = []
@@ -19713,6 +19866,36 @@ def diagnostics_intraday_replay_scenario_lab(
         "recommendations": lab.get("recommendations") or {},
         "results": lab.get("results") or [],
     }
+
+@app.get("/diagnostics/intraday_symbol_discovery_replay_lab")
+def diagnostics_intraday_symbol_discovery_replay_lab(
+    request: Request,
+    symbols: str = "",
+    lookback_days: int = 30,
+    max_symbols: int = 20,
+    limit_per_symbol: int = 12000,
+    min_trades: int = 5,
+    min_avg_r: float = 0.10,
+    min_win_rate: float = 0.45,
+    max_stop_hit_rate: float = 0.40,
+    blocked_time_windows: str = "10:00-10:59,15:00-15:59",
+    min_rank_score: float = 130,
+    max_rank_score: float = 140,
+):
+    require_admin_if_configured(request)
+    return _intraday_symbol_discovery_replay_lab(
+        symbols=symbols,
+        lookback_days=int(lookback_days or 30),
+        max_symbols=int(max_symbols or 20),
+        limit_per_symbol=int(limit_per_symbol or 12000),
+        min_trades=int(min_trades or 5),
+        min_avg_r=float(min_avg_r or 0.10),
+        min_win_rate=float(min_win_rate or 0.45),
+        max_stop_hit_rate=float(max_stop_hit_rate or 0.40),
+        blocked_time_windows=blocked_time_windows,
+        min_rank_score=float(min_rank_score or 130),
+        max_rank_score=float(max_rank_score or 140),
+    )
 
 @app.get("/diagnostics/hybrid_proof")
 def diagnostics_hybrid_proof(request: Request, limit: int = 50):
