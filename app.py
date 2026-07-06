@@ -1340,7 +1340,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-247-live-positions-fresh-pnl-override-entry-memory-backfill-probe"
+PATCH_VERSION = "patch-248-entry-memory-backfill-apply-advisory-guard-activation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -19459,6 +19459,7 @@ def _p247_entry_quality_backfill_probe_for_position(symbol: str, plan: dict | No
     p = dict(plan or {})
     thesis = dict(p.get("thesis") or {}) if isinstance(p.get("thesis"), dict) else {}
     existing_snapshot = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
+    existing_snapshot_has_values = bool(existing_snapshot) and any(v not in (None, "", [], {}) for v in existing_snapshot.values())
 
     rows = _p247_recent_candidate_rows_for_symbol(sym, limit=200)
     best = {}
@@ -19493,7 +19494,7 @@ def _p247_entry_quality_backfill_probe_for_position(symbol: str, plan: dict | No
         }
 
     reasons = []
-    if existing_snapshot:
+    if existing_snapshot_has_values:
         reasons.append("entry_quality_snapshot_already_present")
     elif recovered_snapshot:
         reasons.append("candidate_history_match_available")
@@ -19506,9 +19507,9 @@ def _p247_entry_quality_backfill_probe_for_position(symbol: str, plan: dict | No
         "patch_version": PATCH_VERSION,
         "mode": "read_only_entry_memory_backfill_probe",
         "advisory_only": True,
-        "has_existing_entry_quality_snapshot": bool(existing_snapshot),
+        "has_existing_entry_quality_snapshot": bool(existing_snapshot_has_values),
         "candidate_history_match_count": len(rows),
-        "can_backfill": bool((not existing_snapshot) and recovered_snapshot),
+        "can_backfill": bool((not existing_snapshot_has_values) and recovered_snapshot),
         "reasons": reasons,
         "existing_snapshot": existing_snapshot,
         "recovered_snapshot_preview": recovered_snapshot,
@@ -19534,6 +19535,117 @@ def _p247_entry_memory_backfill_probe_snapshot() -> dict:
         "backfillable_symbols": [r.get("symbol") for r in backfillable],
         "rows": rows,
         "recommended_action": "review_backfillable_entry_snapshots" if backfillable else "none",
+    }
+
+def _p248_apply_entry_quality_snapshot(symbol: str, recovered_snapshot: dict | None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    snapshot = dict(recovered_snapshot or {})
+    if not sym:
+        return {"ok": False, "symbol": sym, "applied": False, "reason": "missing_symbol"}
+    if not snapshot:
+        return {"ok": False, "symbol": sym, "applied": False, "reason": "missing_recovered_snapshot"}
+
+    plan = dict((TRADE_PLAN or {}).get(sym) or {})
+    if not plan or not plan.get("active"):
+        return {"ok": False, "symbol": sym, "applied": False, "reason": "active_plan_missing"}
+
+    thesis = dict(plan.get("thesis") or {}) if isinstance(plan.get("thesis"), dict) else {}
+    existing = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
+
+    if existing and any(v not in (None, "", [], {}) for v in existing.values()):
+        return {
+            "ok": True,
+            "symbol": sym,
+            "applied": False,
+            "reason": "entry_quality_snapshot_already_present",
+            "existing_snapshot": existing,
+        }
+
+    thesis["entry_quality_snapshot"] = snapshot
+    thesis["entry_quality_snapshot_backfilled"] = True
+    thesis["entry_quality_snapshot_backfilled_at_utc"] = datetime.now(timezone.utc).isoformat()
+    thesis["entry_quality_snapshot_backfill_patch"] = PATCH_VERSION
+
+    plan["thesis"] = thesis
+    plan["rank_score"] = plan.get("rank_score") if plan.get("rank_score") not in (None, "", [], {}) else snapshot.get("rank_score")
+    plan["selection_quality_score"] = plan.get("selection_quality_score") if plan.get("selection_quality_score") not in (None, "", [], {}) else snapshot.get("selection_quality_score")
+    plan["regime_mode"] = plan.get("regime_mode") if plan.get("regime_mode") not in (None, "", [], {}) else snapshot.get("regime_mode")
+    plan["entry_type"] = plan.get("entry_type") if plan.get("entry_type") not in (None, "", [], {}) else "standard"
+
+    TRADE_PLAN[sym] = plan
+    try:
+        persist_trade_plan()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "symbol": sym,
+            "applied": True,
+            "reason": "applied_but_persist_failed",
+            "error": str(exc),
+            "entry_quality_snapshot": snapshot,
+        }
+
+    return {
+        "ok": True,
+        "symbol": sym,
+        "applied": True,
+        "reason": "entry_quality_snapshot_backfilled",
+        "entry_quality_snapshot": snapshot,
+    }
+
+
+def _p248_entry_memory_backfill_apply_snapshot(apply: bool = False) -> dict:
+    probe = _p247_entry_memory_backfill_probe_snapshot()
+    rows = []
+    applied = 0
+    skipped = 0
+    errors = 0
+
+    for row in list(probe.get("rows") or []):
+        item = dict(row or {})
+        sym = str(item.get("symbol") or "").upper()
+        result = {
+            "symbol": sym,
+            "can_backfill": bool(item.get("can_backfill")),
+            "apply_requested": bool(apply),
+            "applied": False,
+            "reason": "apply_false_read_only",
+            "probe": item,
+        }
+
+        if apply and item.get("can_backfill"):
+            apply_result = _p248_apply_entry_quality_snapshot(sym, item.get("recovered_snapshot_preview") or {})
+            result.update({
+                "applied": bool(apply_result.get("applied")),
+                "reason": apply_result.get("reason"),
+                "apply_result": apply_result,
+            })
+            if apply_result.get("applied"):
+                applied += 1
+            elif apply_result.get("ok"):
+                skipped += 1
+            else:
+                errors += 1
+        elif item.get("can_backfill"):
+            skipped += 1
+        else:
+            skipped += 1
+
+        rows.append(result)
+
+    return {
+        "ok": errors == 0,
+        "patch_version": PATCH_VERSION,
+        "mode": "entry_memory_backfill_apply" if apply else "read_only_entry_memory_backfill_apply_preview",
+        "apply": bool(apply),
+        "active_position_count": probe.get("active_position_count"),
+        "backfillable_count": probe.get("backfillable_count"),
+        "applied_count": applied,
+        "skipped_count": skipped,
+        "error_count": errors,
+        "rows": rows,
+        "post_apply_guard": _p246_entry_quality_memory_snapshot() if apply else None,
+        "recommended_action": "rerun_entry_quality_memory_guard" if apply and applied else ("review_backfillable_entry_snapshots" if probe.get("backfillable_count") else "none"),
     }
 
 def _live_operator_snapshot(force: bool = False) -> dict:
@@ -23595,6 +23707,11 @@ def diagnostics_entry_quality_memory_guard():
 def diagnostics_entry_memory_backfill_probe():
     _ensure_runtime_state_loaded()
     return _p247_entry_memory_backfill_probe_snapshot()
+
+@app.get("/diagnostics/entry_memory_backfill_apply")
+def diagnostics_entry_memory_backfill_apply(apply: bool = False):
+    _ensure_runtime_state_loaded()
+    return _p248_entry_memory_backfill_apply_snapshot(apply=bool(apply))
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
