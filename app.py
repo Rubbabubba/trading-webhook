@@ -1352,7 +1352,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-256-stall-exit-profit-leak-drilldown-conservative-retune-simulation"
+PATCH_VERSION = "patch-256-hotfix-stall-retune-fingerprint-loss-cap-repricing"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -22647,27 +22647,123 @@ def _p256_rows_summary(rows: list[dict]) -> dict:
     }
 
 
-def _p256_conservative_stall_retune_scenario(all_rows: list[dict], affected_rows: list[dict], name: str, rationale: str, env_hint: str, confidence: str) -> dict:
-    affected_ids = {id(r) for r in affected_rows}
-    kept = [r for r in all_rows if id(r) not in affected_ids]
+def _p256_row_fingerprint(row: dict | None) -> str:
+    r = dict(row or {})
+    return "|".join([
+        str(r.get("symbol") or "").upper(),
+        _p207_closed_trade_strategy(r),
+        _p207_closed_trade_exit_reason(r),
+        str(_p175_first(r, "entry_ts_utc", "opened_at") or ""),
+        str(_p175_first(r, "ts_utc", "exit_ts_utc", "closed_at", "updated_at") or ""),
+        str(r.get("entry_order_id") or ""),
+        str(r.get("exit_order_id") or ""),
+        str(round(_safe_float(r.get("qty"), 0.0), 6)),
+        str(round(_safe_float(r.get("entry_price"), 0.0), 6)),
+        str(round(_safe_float(r.get("exit_price"), 0.0), 6)),
+        str(round(_safe_float(r.get("gross_pnl"), 0.0), 6)),
+        str(round(_safe_float(r.get("pnl_r"), 0.0), 6)),
+    ])
+
+
+def _p256_apply_loss_cap_to_row(row: dict | None, cap_r: float) -> tuple[dict, bool]:
+    r = dict(row or {})
+    pnl_r = _p175_closed_trade_r(r)
+    gross = _p175_closed_trade_pnl(r)
+
+    if pnl_r is None:
+        return r, False
+
+    pnl_r = float(pnl_r)
+    cap_r = float(cap_r)
+
+    if pnl_r >= cap_r:
+        return r, False
+
+    if abs(pnl_r) <= 1e-9:
+        return r, False
+
+    risk_dollars = abs(float(gross) / pnl_r)
+    if risk_dollars <= 0:
+        return r, False
+
+    capped_gross = round(risk_dollars * cap_r, 4)
+    capped_r = round(cap_r, 4)
+
+    r["p256_original_gross_pnl"] = round(float(gross), 4)
+    r["p256_original_pnl_r"] = round(pnl_r, 4)
+    r["p256_loss_cap_r"] = capped_r
+    r["p256_repriced"] = True
+    r["gross_pnl"] = capped_gross
+    r["pnl_r"] = capped_r
+    return r, True
+
+
+def _p256_reprice_rows_with_loss_cap(all_rows: list[dict], affected_rows: list[dict], cap_r: float) -> tuple[list[dict], list[dict]]:
+    affected_keys = {_p256_row_fingerprint(r) for r in affected_rows}
+    repriced_rows = []
+    changed_rows = []
+
+    for row in all_rows:
+        r = dict(row or {})
+        if _p256_row_fingerprint(r) in affected_keys:
+            adjusted, changed = _p256_apply_loss_cap_to_row(r, cap_r)
+            repriced_rows.append(adjusted)
+            if changed:
+                changed_rows.append(adjusted)
+        else:
+            repriced_rows.append(r)
+
+    return repriced_rows, changed_rows
+
+
+def _p256_conservative_stall_retune_scenario(
+    all_rows: list[dict],
+    affected_rows: list[dict],
+    name: str,
+    rationale: str,
+    env_hint: str,
+    confidence: str,
+    cap_r: float,
+) -> dict:
+    simulated_rows, changed_rows = _p256_reprice_rows_with_loss_cap(all_rows, affected_rows, cap_r)
     baseline = _p256_rows_summary(all_rows)
-    simulated = _p256_rows_summary(kept)
-    removed = _p256_rows_summary(affected_rows)
+    simulated = _p256_rows_summary(simulated_rows)
+    affected = _p256_rows_summary(affected_rows)
+    changed = _p256_rows_summary(changed_rows)
+
+    baseline_pnl = _safe_float(baseline.get("gross_pnl"), 0.0)
+    simulated_pnl = _safe_float(simulated.get("gross_pnl"), 0.0)
+
     return {
         "scenario": name,
         "rationale": rationale,
         "env_hint": env_hint,
         "confidence": confidence,
+        "loss_cap_r": round(float(cap_r), 4),
         "affected_count": len(affected_rows),
+        "repriced_count": len(changed_rows),
         "affected_symbols": sorted({str(r.get("symbol") or "").upper() for r in affected_rows if str(r.get("symbol") or "").strip()}),
-        "affected": removed,
+        "affected": affected,
+        "repriced": changed,
         "simulated": simulated,
-        "gross_pnl_delta": round(_safe_float(simulated.get("gross_pnl"), 0.0) - _safe_float(baseline.get("gross_pnl"), 0.0), 4),
+        "gross_pnl_delta": round(simulated_pnl - baseline_pnl, 4),
         "avg_r_delta": round(_safe_float(simulated.get("avg_r"), 0.0) - _safe_float(baseline.get("avg_r"), 0.0), 4),
         "win_rate_delta": round(_safe_float(simulated.get("win_rate"), 0.0) - _safe_float(baseline.get("win_rate"), 0.0), 4),
-        "note": "Closed-trade proxy only. It estimates which historical stall exits were profit leaks; it does not prove the exact alternative exit price.",
+        "repriced_rows": [
+            {
+                "symbol": str(r.get("symbol") or "").upper(),
+                "original_gross_pnl": r.get("p256_original_gross_pnl"),
+                "repriced_gross_pnl": r.get("gross_pnl"),
+                "original_pnl_r": r.get("p256_original_pnl_r"),
+                "repriced_pnl_r": r.get("pnl_r"),
+                "loss_cap_r": r.get("p256_loss_cap_r"),
+                "exit_reason": _p207_closed_trade_exit_reason(r),
+                "ts_utc": _p175_first(r, "ts_utc", "exit_ts_utc", "closed_at", "updated_at"),
+            }
+            for r in changed_rows[:25]
+        ],
+        "note": "Closed-trade proxy only. This reprices historical affected stall exits to a loss cap and does not prove the exact alternative live fill price.",
     }
-
 
 def _p256_stall_exit_profit_leak_drilldown() -> dict:
     rows = _p256_broker_preferred_rows_for_stall()
@@ -22695,46 +22791,67 @@ def _p256_stall_exit_profit_leak_drilldown() -> dict:
         _p256_conservative_stall_retune_scenario(
             rows,
             guard_threshold_stalls,
-            "tighten_stall_loss_guard_to_reduce_guard_threshold_leaks",
-            "Targets stall exits that already exceeded the configured stall loss guard threshold.",
+            "cap_guard_threshold_stalls_at_minus_0_60r",
+            "Models the current stall loss guard working as a hard cap at -0.60R for trades that leaked beyond it.",
+            "confirm_SWING_STALL_LOSS_GUARD_ENABLED=true_and_SWING_STALL_MAX_LOSS_R=-0.60",
+            "medium",
+            -0.60,
+        ),
+        _p256_conservative_stall_retune_scenario(
+            rows,
+            guard_threshold_stalls,
+            "tighten_stall_loss_guard_to_minus_0_40r",
+            "Models a more conservative stall loss guard cap at -0.40R for trades that leaked beyond the current guard threshold.",
             "consider_SWING_STALL_MAX_LOSS_R=-0.40_after_review",
             "medium",
+            -0.40,
         ),
         _p256_conservative_stall_retune_scenario(
             rows,
             deep_loss_stalls,
-            "prevent_deep_loss_stall_tail",
-            "Targets only the deepest stall-exit losses below -1R.",
+            "cap_deep_stall_tail_at_minus_1_00r",
+            "Models preventing only the deepest stall-exit tail losses from exceeding -1.00R.",
             "review_break_even_and_stop_tightening_for_stall_prone_positions",
             "medium",
+            -1.00,
         ),
         _p256_conservative_stall_retune_scenario(
             rows,
             slow_negative_stalls,
-            "earlier_plain_stall_exit_for_negative_slow_stalls",
-            "Targets negative stall exits that reached or exceeded the current stall window.",
+            "cap_slow_negative_stalls_at_minus_0_50r",
+            "Models earlier plain-stall action for negative slow stalls by capping them at -0.50R.",
             "consider_SWING_STALL_EXIT_DAYS=2_only_if_live_sample_confirms",
             "low_to_medium",
+            -0.50,
         ),
         _p256_conservative_stall_retune_scenario(
             rows,
             low_rank_negative_stalls,
-            "entry_quality_filter_for_low_rank_negative_stalls",
-            "Targets negative stall exits from lower-rank entries, pointing to entry quality rather than exit timing.",
+            "cap_low_rank_negative_stalls_at_minus_0_50r",
+            "Models entry-quality protection for lower-rank entries that later became negative stall exits.",
             "consider_entry_quality_guard_for_rank_below_88_after_review",
             "medium",
+            -0.50,
         ),
         _p256_conservative_stall_retune_scenario(
             rows,
             weak_regime_negative_stalls,
-            "avoid_weak_regime_negative_stalls",
-            "Targets negative stall exits opened outside favorable/trend regimes.",
+            "cap_weak_regime_negative_stalls_at_minus_0_50r",
+            "Models tighter regime protection for trades that later became negative stall exits.",
             "consider_tighter_regime_filter_for_stall_prone_entries_after_review",
             "medium",
+            -0.50,
         ),
     ]
-    scenarios = [s for s in scenarios if int(s.get("affected_count") or 0) > 0]
-    scenarios.sort(key=lambda r: (_safe_float(r.get("gross_pnl_delta"), 0.0), _safe_float(r.get("avg_r_delta"), 0.0)), reverse=True)
+    scenarios = [s for s in scenarios if int(s.get("affected_count") or 0) > 0 and int(s.get("repriced_count") or 0) > 0]
+    scenarios.sort(
+        key=lambda r: (
+            _safe_float(r.get("gross_pnl_delta"), 0.0),
+            _safe_float(r.get("avg_r_delta"), 0.0),
+            _safe_float(r.get("win_rate_delta"), 0.0),
+        ),
+        reverse=True,
+    )
 
     baseline = _p256_rows_summary(rows)
     stall_summary = _p256_rows_summary(stall_rows)
@@ -22751,6 +22868,8 @@ def _p256_stall_exit_profit_leak_drilldown() -> dict:
         "profit_leak": {
             "stall_exit_count": len(stall_rows),
             "negative_stall_count": len(negative_stalls),
+            "guard_threshold_stall_gross_pnl": round(sum(_p175_closed_trade_pnl(r) for r in guard_threshold_stalls), 4),
+            "deep_loss_stall_gross_pnl": round(sum(_p175_closed_trade_pnl(r) for r in deep_loss_stalls), 4),
             "guard_threshold_stall_count": len(guard_threshold_stalls),
             "deep_loss_stall_count": len(deep_loss_stalls),
             "stall_exit_gross_pnl": stall_summary.get("gross_pnl"),
