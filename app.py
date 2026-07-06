@@ -1352,7 +1352,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-255-simplification-audit-cleanup-swing-profit-opportunity-backtest"
+PATCH_VERSION = "patch-256-stall-exit-profit-leak-drilldown-conservative-retune-simulation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -22592,6 +22592,189 @@ def _swing_stall_exit_drilldown(perf_state: dict | None = None) -> dict:
         },
     }
 
+def _p256_broker_preferred_rows_for_stall() -> list[dict]:
+    preferred = _p245_broker_preferred_closed_rows()
+    rows = [dict(r or {}) for r in list(preferred.get("kept_rows") or []) if isinstance(r, dict)]
+    return rows
+
+
+def _p256_stall_exit_rows(rows: list[dict]) -> list[dict]:
+    return [dict(r or {}) for r in rows if _p211_is_stall_exit(r)]
+
+
+def _p256_stall_profit_leak_row(row: dict | None) -> dict:
+    r = dict(row or {})
+    pnl_r = _p175_closed_trade_r(r)
+    gross = _p175_closed_trade_pnl(r)
+    holding_days = _p175_holding_days(r)
+    rank = _p175_rank_score(r)
+    return {
+        "symbol": str(r.get("symbol") or "").upper(),
+        "strategy": _p207_closed_trade_strategy(r),
+        "entry_type": _p207_closed_trade_entry_type(r),
+        "exit_reason": _p207_closed_trade_exit_reason(r),
+        "gross_pnl": round(gross, 4),
+        "pnl_r": pnl_r,
+        "holding_days": holding_days,
+        "rank_score": rank,
+        "rank_bucket": _p175_rank_bucket(r),
+        "holding_bucket": _p175_holding_bucket(r),
+        "regime_mode": str(_p175_first(r, "entry_regime_mode", "regime_mode", "regime") or "unknown").strip().lower() or "unknown",
+        "entry_ts_utc": _p175_first(r, "entry_ts_utc", "opened_at"),
+        "exit_ts_utc": _p175_first(r, "ts_utc", "exit_ts_utc", "closed_at", "updated_at"),
+        "source": r.get("source"),
+        "broker_reconciled": bool(r.get("broker_reconciled")) or str(r.get("source") or "").strip().lower() == "alpaca_orders_reconciled",
+        "leak_class": (
+            "deep_loss_stall" if pnl_r is not None and float(pnl_r) <= -1.0 else
+            "guard_threshold_loss" if pnl_r is not None and float(pnl_r) <= float(SWING_STALL_MAX_LOSS_R or -0.60) else
+            "negative_stall" if pnl_r is not None and float(pnl_r) < 0 else
+            "positive_or_flat_stall"
+        ),
+    }
+
+
+def _p256_rows_summary(rows: list[dict]) -> dict:
+    totals = _p210_safe_dict(_p210_rows_summary(rows).get("totals"))
+    return {
+        "closed_trades": int(totals.get("closed_trades") or 0),
+        "wins": int(totals.get("wins") or 0),
+        "losses": int(totals.get("losses") or 0),
+        "win_rate": totals.get("win_rate"),
+        "gross_pnl": totals.get("gross_pnl"),
+        "avg_r": totals.get("avg_r"),
+        "worst_r": totals.get("worst_r"),
+        "best_r": totals.get("best_r"),
+    }
+
+
+def _p256_conservative_stall_retune_scenario(all_rows: list[dict], affected_rows: list[dict], name: str, rationale: str, env_hint: str, confidence: str) -> dict:
+    affected_ids = {id(r) for r in affected_rows}
+    kept = [r for r in all_rows if id(r) not in affected_ids]
+    baseline = _p256_rows_summary(all_rows)
+    simulated = _p256_rows_summary(kept)
+    removed = _p256_rows_summary(affected_rows)
+    return {
+        "scenario": name,
+        "rationale": rationale,
+        "env_hint": env_hint,
+        "confidence": confidence,
+        "affected_count": len(affected_rows),
+        "affected_symbols": sorted({str(r.get("symbol") or "").upper() for r in affected_rows if str(r.get("symbol") or "").strip()}),
+        "affected": removed,
+        "simulated": simulated,
+        "gross_pnl_delta": round(_safe_float(simulated.get("gross_pnl"), 0.0) - _safe_float(baseline.get("gross_pnl"), 0.0), 4),
+        "avg_r_delta": round(_safe_float(simulated.get("avg_r"), 0.0) - _safe_float(baseline.get("avg_r"), 0.0), 4),
+        "win_rate_delta": round(_safe_float(simulated.get("win_rate"), 0.0) - _safe_float(baseline.get("win_rate"), 0.0), 4),
+        "note": "Closed-trade proxy only. It estimates which historical stall exits were profit leaks; it does not prove the exact alternative exit price.",
+    }
+
+
+def _p256_stall_exit_profit_leak_drilldown() -> dict:
+    rows = _p256_broker_preferred_rows_for_stall()
+    stall_rows = _p256_stall_exit_rows(rows)
+    stall_detail = [_p256_stall_profit_leak_row(r) for r in stall_rows]
+
+    negative_stalls = [r for r in stall_rows if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) < 0)]
+    guard_threshold_stalls = [r for r in stall_rows if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) <= float(SWING_STALL_MAX_LOSS_R or -0.60))]
+    deep_loss_stalls = [r for r in stall_rows if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) <= -1.0)]
+    slow_negative_stalls = [
+        r for r in stall_rows
+        if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) < 0)
+        and ((_p175_holding_days(r) or 0.0) >= max(1, int(SWING_STALL_EXIT_DAYS or 0)))
+    ]
+    low_rank_negative_stalls = [
+        r for r in negative_stalls
+        if (_p175_rank_score(r) is not None and float(_p175_rank_score(r) or 0.0) < 88.0)
+    ]
+    weak_regime_negative_stalls = [
+        r for r in negative_stalls
+        if str(_p175_first(r, "entry_regime_mode", "regime_mode", "regime") or "unknown").strip().lower() not in {"trend", "favorable", "bull", "strong"}
+    ]
+
+    scenarios = [
+        _p256_conservative_stall_retune_scenario(
+            rows,
+            guard_threshold_stalls,
+            "tighten_stall_loss_guard_to_reduce_guard_threshold_leaks",
+            "Targets stall exits that already exceeded the configured stall loss guard threshold.",
+            "consider_SWING_STALL_MAX_LOSS_R=-0.40_after_review",
+            "medium",
+        ),
+        _p256_conservative_stall_retune_scenario(
+            rows,
+            deep_loss_stalls,
+            "prevent_deep_loss_stall_tail",
+            "Targets only the deepest stall-exit losses below -1R.",
+            "review_break_even_and_stop_tightening_for_stall_prone_positions",
+            "medium",
+        ),
+        _p256_conservative_stall_retune_scenario(
+            rows,
+            slow_negative_stalls,
+            "earlier_plain_stall_exit_for_negative_slow_stalls",
+            "Targets negative stall exits that reached or exceeded the current stall window.",
+            "consider_SWING_STALL_EXIT_DAYS=2_only_if_live_sample_confirms",
+            "low_to_medium",
+        ),
+        _p256_conservative_stall_retune_scenario(
+            rows,
+            low_rank_negative_stalls,
+            "entry_quality_filter_for_low_rank_negative_stalls",
+            "Targets negative stall exits from lower-rank entries, pointing to entry quality rather than exit timing.",
+            "consider_entry_quality_guard_for_rank_below_88_after_review",
+            "medium",
+        ),
+        _p256_conservative_stall_retune_scenario(
+            rows,
+            weak_regime_negative_stalls,
+            "avoid_weak_regime_negative_stalls",
+            "Targets negative stall exits opened outside favorable/trend regimes.",
+            "consider_tighter_regime_filter_for_stall_prone_entries_after_review",
+            "medium",
+        ),
+    ]
+    scenarios = [s for s in scenarios if int(s.get("affected_count") or 0) > 0]
+    scenarios.sort(key=lambda r: (_safe_float(r.get("gross_pnl_delta"), 0.0), _safe_float(r.get("avg_r_delta"), 0.0)), reverse=True)
+
+    baseline = _p256_rows_summary(rows)
+    stall_summary = _p256_rows_summary(stall_rows)
+    negative_summary = _p256_rows_summary(negative_stalls)
+    best = scenarios[0] if scenarios else {}
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_stall_exit_profit_leak_drilldown",
+        "baseline": baseline,
+        "stall_exit_summary": stall_summary,
+        "negative_stall_summary": negative_summary,
+        "profit_leak": {
+            "stall_exit_count": len(stall_rows),
+            "negative_stall_count": len(negative_stalls),
+            "guard_threshold_stall_count": len(guard_threshold_stalls),
+            "deep_loss_stall_count": len(deep_loss_stalls),
+            "stall_exit_gross_pnl": stall_summary.get("gross_pnl"),
+            "negative_stall_gross_pnl": negative_summary.get("gross_pnl"),
+            "stall_share_of_closed_trades": round(len(stall_rows) / max(1, len(rows)), 4),
+            "negative_stall_share_of_stalls": round(len(negative_stalls) / max(1, len(stall_rows)), 4),
+        },
+        "by_symbol": _p207_bucket_summary(stall_rows, lambda r: str(r.get("symbol") or "unknown").upper() or "unknown"),
+        "by_holding_period": _p207_bucket_summary(stall_rows, _p175_holding_bucket),
+        "by_regime_mode": _p207_bucket_summary(stall_rows, lambda r: str(_p175_first(r, "entry_regime_mode", "regime_mode", "regime") or "unknown").strip().lower() or "unknown"),
+        "by_rank_bucket": _p207_bucket_summary(stall_rows, _p175_rank_bucket),
+        "worst_stall_trades": sorted(stall_detail, key=lambda r: (_safe_float(r.get("pnl_r"), 0.0), _safe_float(r.get("gross_pnl"), 0.0)))[:10],
+        "conservative_retune_simulations": scenarios,
+        "best_conservative_retune": best,
+        "recommended_action": "review_best_conservative_retune_before_env_change" if scenarios else "collect_more_stall_exit_sample",
+        "config": {
+            "current_SWING_STALL_EXIT_DAYS": int(SWING_STALL_EXIT_DAYS or 0),
+            "current_SWING_STALL_MIN_R": float(SWING_STALL_MIN_R or 0.0),
+            "SWING_STALL_LOSS_GUARD_ENABLED": bool(SWING_STALL_LOSS_GUARD_ENABLED),
+            "SWING_STALL_LOSS_GUARD_DAYS": int(SWING_STALL_LOSS_GUARD_DAYS or 0),
+            "SWING_STALL_MAX_LOSS_R": float(SWING_STALL_MAX_LOSS_R or 0.0),
+            "read_only": True,
+        },
+    }
 
 def _p212_closed_trade_ts(row: dict | None):
     row = row if isinstance(row, dict) else {}
@@ -22890,17 +23073,22 @@ def diagnostics_swing_performance_attribution(request: Request):
     require_admin_if_configured(request)
     return _swing_performance_attribution()
 
-
 @app.get("/diagnostics/swing_tuning_simulator")
 def diagnostics_swing_tuning_simulator(request: Request):
     require_admin_if_configured(request)
     return _swing_profit_acceleration_simulator()
 
-
 @app.get("/diagnostics/swing_stall_exit_drilldown")
 def diagnostics_swing_stall_exit_drilldown(request: Request):
     require_admin_if_configured(request)
-    return _swing_stall_exit_drilldown()
+    payload = _swing_stall_exit_drilldown()
+    payload["patch256_profit_leak_drilldown"] = _p256_stall_exit_profit_leak_drilldown()
+    return payload
+
+@app.get("/diagnostics/stall_exit_profit_leak_drilldown")
+def diagnostics_stall_exit_profit_leak_drilldown(request: Request):
+    require_admin_if_configured(request)
+    return _p256_stall_exit_profit_leak_drilldown()
 
 @app.get("/diagnostics/swing_damage_guard")
 def diagnostics_swing_damage_guard(request: Request):
