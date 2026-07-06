@@ -1340,7 +1340,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-249-entry-memory-persistence-fix-empty-snapshot-replacement"
+PATCH_VERSION = "patch-250-entry-quality-flagged-exit-advisory-stall-risk-projection"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -19381,6 +19381,172 @@ def _p246_entry_quality_memory_snapshot() -> dict:
         "recommended_action": "review_triggered_positions_exit_plan" if triggered else "none",
     }
 
+def _p250_entry_quality_exit_advisory(symbol: str, plan: dict | None, pos: dict | None) -> dict:
+    sym = str(symbol or "").upper()
+    p = dict(plan or {})
+    broker = dict(pos or {})
+
+    entry = _safe_float(
+        broker.get("avg_entry_price")
+        or p.get("entry_price")
+        or p.get("avg_fill_price")
+        or 0.0
+    )
+    last = _safe_float(
+        broker.get("current_price")
+        or broker.get("last_price")
+        or p.get("last_price")
+        or p.get("entry_price")
+        or 0.0
+    )
+    stop = _safe_float(p.get("stop_price") or p.get("initial_stop_price") or 0.0)
+    target = _safe_float(p.get("take_price") or p.get("target_price") or 0.0)
+    qty = _safe_float(broker.get("qty") or p.get("qty") or p.get("quantity") or 0.0)
+    side = str(p.get("side") or broker.get("side") or "buy").strip().lower()
+
+    risk = _plan_risk_per_share(p)
+    if risk <= 0 and entry > 0 and stop > 0:
+        risk = abs(entry - stop)
+
+    current_r = None
+    if entry > 0 and last > 0 and risk > 0:
+        if side in {"sell", "short"}:
+            current_r = (entry - last) / risk
+        else:
+            current_r = (last - entry) / risk
+
+    distance_to_stop_pct = None
+    if last > 0 and stop > 0:
+        distance_to_stop_pct = ((last - stop) / last) * 100.0
+
+    distance_to_target_pct = None
+    if last > 0 and target > 0:
+        distance_to_target_pct = ((target - last) / last) * 100.0
+
+    days_held = plan_days_held(p)
+    memory_guard = _p246_entry_quality_memory_guard(sym, p, broker)
+
+    stall_loss_guard_due = (
+        bool(SWING_STALL_LOSS_GUARD_ENABLED)
+        and current_r is not None
+        and int(days_held or 0) >= int(SWING_STALL_LOSS_GUARD_DAYS or 0)
+        and float(current_r) <= float(SWING_STALL_MAX_LOSS_R or -0.60)
+    )
+    stall_exit_due = (
+        current_r is not None
+        and int(SWING_STALL_EXIT_DAYS or 0) > 0
+        and int(days_held or 0) >= int(SWING_STALL_EXIT_DAYS or 0)
+        and float(current_r) < float(SWING_STALL_MIN_R or 0.0)
+    )
+    opening_damage_due = (
+        current_r is not None
+        and bool(SWING_OPENING_DAMAGE_GUARD_ENABLED)
+        and float(current_r) <= float(SWING_OPENING_DAMAGE_MAX_LOSS_R or -1.10)
+    )
+    near_stop = distance_to_stop_pct is not None and distance_to_stop_pct <= 1.0
+
+    reasons = []
+    if memory_guard.get("triggered"):
+        reasons.append("entry_quality_memory_flagged")
+    if current_r is not None and current_r < 0:
+        reasons.append("position_negative_r")
+    if near_stop:
+        reasons.append("within_1pct_of_stop")
+    if stall_loss_guard_due:
+        reasons.append("stall_loss_guard_due")
+    if stall_exit_due:
+        reasons.append("stall_exit_due")
+    if opening_damage_due:
+        reasons.append("opening_damage_guard_due")
+
+    if stall_loss_guard_due or opening_damage_due:
+        recommended_action = "exit_guard_likely_or_active"
+    elif memory_guard.get("triggered") and (near_stop or (current_r is not None and current_r <= -0.50)):
+        recommended_action = "tighten_exit_review"
+    elif stall_exit_due:
+        recommended_action = "stall_exit_review"
+    elif memory_guard.get("triggered"):
+        recommended_action = "monitor_flagged_entry"
+    else:
+        recommended_action = "allow_normal_hold"
+
+    return {
+        "symbol": sym,
+        "mode": "read_only_entry_quality_exit_advisory",
+        "advisory_only": True,
+        "qty": round(qty, 6),
+        "side": side,
+        "entry_price": round(entry, 4) if entry > 0 else None,
+        "last_price": round(last, 4) if last > 0 else None,
+        "stop_price": round(stop, 4) if stop > 0 else None,
+        "target_price": round(target, 4) if target > 0 else None,
+        "risk_per_share": round(risk, 4) if risk > 0 else None,
+        "current_r": round(float(current_r), 4) if current_r is not None else None,
+        "days_held": int(days_held or 0),
+        "distance_to_stop_pct": round(distance_to_stop_pct, 4) if distance_to_stop_pct is not None else None,
+        "distance_to_target_pct": round(distance_to_target_pct, 4) if distance_to_target_pct is not None else None,
+        "entry_quality_memory_guard": memory_guard,
+        "stall_projection": {
+            "stall_loss_guard_enabled": bool(SWING_STALL_LOSS_GUARD_ENABLED),
+            "stall_loss_guard_days": int(SWING_STALL_LOSS_GUARD_DAYS or 0),
+            "stall_max_loss_r": float(SWING_STALL_MAX_LOSS_R or 0.0),
+            "stall_exit_days": int(SWING_STALL_EXIT_DAYS or 0),
+            "stall_min_r": float(SWING_STALL_MIN_R or 0.0),
+            "stall_loss_guard_due": bool(stall_loss_guard_due),
+            "stall_exit_due": bool(stall_exit_due),
+        },
+        "opening_damage_projection": {
+            "enabled": bool(SWING_OPENING_DAMAGE_GUARD_ENABLED),
+            "max_loss_r": float(SWING_OPENING_DAMAGE_MAX_LOSS_R or 0.0),
+            "guard_due": bool(opening_damage_due),
+        },
+        "triggered": bool(reasons),
+        "reasons": reasons,
+        "recommended_action": recommended_action,
+    }
+
+
+def _p250_entry_quality_exit_advisory_snapshot() -> dict:
+    rows = []
+    broker_by_symbol = {}
+
+    try:
+        for row in list_open_positions_details_allowed() or []:
+            sym = str((row or {}).get("symbol") or "").upper()
+            if sym:
+                broker_by_symbol[sym] = dict(row or {})
+    except Exception:
+        broker_by_symbol = {}
+
+    symbols = sorted({
+        str(sym or "").upper()
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if isinstance(plan, dict) and bool(plan.get("active"))
+    } | set(broker_by_symbol.keys()))
+
+    for sym in symbols:
+        plan = dict((TRADE_PLAN or {}).get(sym) or {})
+        pos = broker_by_symbol.get(sym) or {}
+        if not plan and not pos:
+            continue
+        rows.append(_p250_entry_quality_exit_advisory(sym, plan, pos))
+
+    tighten = [r for r in rows if r.get("recommended_action") in {"tighten_exit_review", "exit_guard_likely_or_active", "stall_exit_review"}]
+    flagged = [r for r in rows if bool((r.get("entry_quality_memory_guard") or {}).get("triggered"))]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_entry_quality_flagged_exit_advisory_stall_projection",
+        "active_position_count": len(rows),
+        "entry_quality_flagged_count": len(flagged),
+        "tighten_review_count": len(tighten),
+        "flagged_symbols": [r.get("symbol") for r in flagged],
+        "tighten_review_symbols": [r.get("symbol") for r in tighten],
+        "rows": rows,
+        "recommended_action": "review_tighten_candidates" if tighten else ("monitor_flagged_entries" if flagged else "none"),
+    }
+
 def _p247_candidate_like_rows_from_payload(payload: object, limit: int = 500) -> list[dict]:
     rows: list[dict] = []
 
@@ -19780,6 +19946,7 @@ def _live_operator_snapshot(force: bool = False) -> dict:
             },
             "defensive_open_guard": _p245_defensive_open_position_guard(sym, plan, pos),
             "entry_quality_memory_guard": _p246_entry_quality_memory_guard(sym, plan, pos),
+            "entry_quality_exit_advisory": _p250_entry_quality_exit_advisory(sym, plan, pos),
             "entry_memory_backfill_probe": _p247_entry_quality_backfill_probe_for_position(sym, plan),
             "open_orders": symbol_orders,
         })
@@ -23749,6 +23916,11 @@ def diagnostics_entry_memory_backfill_probe():
 def diagnostics_entry_memory_backfill_apply(apply: bool = False):
     _ensure_runtime_state_loaded()
     return _p248_entry_memory_backfill_apply_snapshot(apply=bool(apply))
+
+@app.get("/diagnostics/entry_quality_exit_advisory")
+def diagnostics_entry_quality_exit_advisory():
+    _ensure_runtime_state_loaded()
+    return _p250_entry_quality_exit_advisory_snapshot()
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
