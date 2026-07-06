@@ -867,6 +867,11 @@ SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_DEFE
 SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT", default=max(SWING_BREAKOUT_BUFFER_PCT, 0.02))
 SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_NEUTRAL_BREAKOUT_MAX_DISTANCE_PCT", default=max(SWING_BREAKOUT_BUFFER_PCT, 0.03))
 SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_DEFENSIVE_BREAKOUT_MAX_DISTANCE_PCT", default=0.07)
+SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED = env_bool_any("SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED", default=True)
+SWING_DEFENSIVE_MAX_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MAX_20D_RETURN_PCT", default=0.25)
+SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT = getenv_float_any("SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT", default=0.12)
+SWING_DEFENSIVE_DISABLE_STRONG_ATR_RELAX = env_bool_any("SWING_DEFENSIVE_DISABLE_STRONG_ATR_RELAX", default=True)
+SWING_DEFENSIVE_REQUIRE_BREAKOUT_NOT_EXTENDED = env_bool_any("SWING_DEFENSIVE_REQUIRE_BREAKOUT_NOT_EXTENDED", default=True)
 SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
 SWING_NEUTRAL_MIN_20D_RETURN_PCT = getenv_float_any("SWING_NEUTRAL_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.01)))
 SWING_DEFENSIVE_MIN_20D_RETURN_PCT = getenv_float_any("SWING_DEFENSIVE_MIN_20D_RETURN_PCT", default=0.0)
@@ -1335,7 +1340,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-243-intraday-symbol-discovery-replay-lab"
+PATCH_VERSION = "patch-244-swing-defensive-entry-tightening-duplicate-exit-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -6360,6 +6365,62 @@ def _append_strategy_closed_trade_row(row: dict | None, reason: str = "") -> dic
     persist_strategy_performance_state(reason=reason or "closed_trade_row_append")
     return row
 
+def _p244_exit_audit_session_key(row: dict | None) -> str:
+    row = dict(row or {})
+    ts = _p175_parse_dt(row.get("ts_utc") or row.get("closed_at") or row.get("exit_ts_utc"))
+    day = ts.date().isoformat() if ts else str(row.get("session_date") or "")[:10]
+    return "|".join([
+        str(row.get("symbol") or "").upper(),
+        str(row.get("strategy_name") or row.get("signal") or "").strip().lower(),
+        day,
+    ])
+
+
+def _p244_duplicate_realized_exit_audit(state: dict | None = None) -> dict:
+    rows = [dict(r or {}) for r in list((state or STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []) if isinstance(r, dict)]
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        key = _p244_exit_audit_session_key(row)
+        if key.strip("|"):
+            groups.setdefault(key, []).append(row)
+
+    duplicate_groups = []
+    worker_shadowed_rows = []
+    broker_rows = []
+    for key, group in groups.items():
+        broker = [r for r in group if str(r.get("source") or "").strip().lower() == "alpaca_orders_reconciled" or str(r.get("reason") or "").strip().lower() == "broker_exit_fill"]
+        worker = [r for r in group if str(r.get("source") or "").strip().lower() == "worker_exit"]
+        if broker:
+            broker_rows.extend(broker)
+        if broker and worker:
+            worker_shadowed_rows.extend(worker)
+            duplicate_groups.append({
+                "key": key,
+                "symbol": str((broker[0] or {}).get("symbol") or (worker[0] or {}).get("symbol") or "").upper(),
+                "broker_count": len(broker),
+                "worker_count": len(worker),
+                "broker_gross_pnl": round(sum(_safe_float(r.get("gross_pnl")) for r in broker), 4),
+                "worker_gross_pnl": round(sum(_safe_float(r.get("gross_pnl")) for r in worker), 4),
+                "broker_rows": broker[-5:],
+                "worker_rows": worker[-5:],
+            })
+
+    broker_total = round(sum(_safe_float(r.get("gross_pnl")) for r in broker_rows), 4)
+    shadowed_total = round(sum(_safe_float(r.get("gross_pnl")) for r in worker_shadowed_rows), 4)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_duplicate_realized_exit_audit",
+        "closed_trade_count": len(rows),
+        "duplicate_group_count": len(duplicate_groups),
+        "worker_shadowed_count": len(worker_shadowed_rows),
+        "broker_reconciled_count": len(broker_rows),
+        "broker_reconciled_gross_pnl": broker_total,
+        "worker_shadowed_gross_pnl": shadowed_total,
+        "accounting_preference": "broker_exit_fill_rows_preferred_over_worker_exit_estimates",
+        "duplicate_groups": duplicate_groups[-25:],
+        "recommended_action": "ignore_worker_shadowed_rows_for_realized_pnl" if duplicate_groups else "none",
+    }
 
 def _sync_broker_realized_rows_to_strategy_performance(broker_realized: dict | None) -> dict:
     payload = dict(broker_realized or {})
@@ -6409,7 +6470,7 @@ def _sync_broker_realized_rows_to_strategy_performance(broker_realized: dict | N
             synced += 1
         else:
             skipped += 1
-    return {"ok": True, "synced": synced, "skipped": skipped}
+    return {"ok": True, "synced": synced, "skipped": skipped, "duplicate_exit_audit": _p244_duplicate_realized_exit_audit()}
 
 
 def _strategy_kill_switch_active(strategy_name: str) -> tuple[bool, list[str]]:
@@ -9907,10 +9968,12 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         candidate['rejection_reasons'].append('close_not_near_high')
     effective_breakout_max_distance = float(thresholds.get('breakout_max_distance_pct') or 0.0)
     strong_atr_relax_applied = False
+    defensive_tightening_enabled = bool(SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED) and str(thresholds.get("mode") or "").strip().lower() == "defensive"
     if (
         atr_pct >= float(SWING_BREAKOUT_STRONG_ATR_PCT)
         and close_to_high >= float(thresholds.get('close_to_high_min_pct') or 0.0)
         and ret_20 >= float(thresholds.get('return_20d_min_pct') or 0.0)
+        and not (defensive_tightening_enabled and bool(SWING_DEFENSIVE_DISABLE_STRONG_ATR_RELAX))
     ):
         effective_breakout_max_distance += float(SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT)
         strong_atr_relax_applied = True
@@ -9921,6 +9984,16 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
     score += max(0.0, min(10.0, range_pct * 100.0))
     if atr_pct >= float(SWING_BREAKOUT_MIN_ATR_PCT):
         score += min(5.0, atr_pct * 100.0)
+    if defensive_tightening_enabled:
+        max_ret_20 = float(SWING_DEFENSIVE_MAX_20D_RETURN_PCT)
+        max_risk_pct = float(SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT)
+        risk_per_share_pct = risk_per_share / max(close, 1e-9)
+        if max_ret_20 > 0 and ret_20 > max_ret_20:
+            candidate['rejection_reasons'].append('defensive_20d_return_too_extended')
+        if max_risk_pct > 0 and risk_per_share_pct > max_risk_pct:
+            candidate['rejection_reasons'].append('defensive_risk_per_share_too_wide')
+        if bool(SWING_DEFENSIVE_REQUIRE_BREAKOUT_NOT_EXTENDED) and breakout_distance > effective_breakout_max_distance:
+            candidate['rejection_reasons'].append('defensive_breakout_extension_too_high')
     if bool(thresholds.get('require_index_alignment')) and index_aligned is False:
         candidate['rejection_reasons'].append('index_alignment_failed')
     min_rank_score = _breakout_min_rank_score_for_mode(thresholds.get('mode'))
@@ -9940,6 +10013,10 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         'breakout_distance_pct': round(breakout_distance * 100.0, 3),
         'effective_breakout_max_distance_pct': round(effective_breakout_max_distance * 100.0, 3),
         'strong_atr_relax_applied': bool(strong_atr_relax_applied),
+        'defensive_tightening_enabled': bool(defensive_tightening_enabled),
+        'defensive_max_20d_return_pct': round(float(SWING_DEFENSIVE_MAX_20D_RETURN_PCT) * 100.0, 3),
+        'defensive_max_risk_per_share_pct': round(float(SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT) * 100.0, 3),
+        'risk_per_share_pct': round((risk_per_share / max(close, 1e-9)) * 100.0, 3),
         'range_pct': round(range_pct * 100.0, 3),
         'stop_price': round(stop_price, 4),
         'target_price': round(target_price, 4),
@@ -23004,7 +23081,6 @@ def diagnostics_universe_shadow(limit: int = 10):
 def diagnostics_worker_exit_status(limit: int = 20):
     return _worker_exit_status_snapshot(limit=limit)
 
-
 @app.get("/diagnostics/position_truth")
 def diagnostics_position_truth(request: Request):
     require_admin_if_configured(request)
@@ -23016,6 +23092,11 @@ def diagnostics_position_truth(request: Request):
         "worker_exit_status": _worker_exit_status_snapshot(limit=20),
         "reconcile_snapshot": reconcile_snapshot,
     }
+
+@app.get("/diagnostics/duplicate_realized_exit_audit")
+def diagnostics_duplicate_realized_exit_audit():
+    _ensure_runtime_state_loaded()
+    return _p244_duplicate_realized_exit_audit()
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
