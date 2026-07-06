@@ -1352,7 +1352,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-254-broker-preferred-daily-pnl-dedup-corrected-swing-capacity-truth"
+PATCH_VERSION = "patch-255-simplification-audit-cleanup-swing-profit-opportunity-backtest"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -20033,7 +20033,8 @@ def _p253_broker_backed_exposure_truth_snapshot() -> dict:
         "classification_changed_symbols": [r.get("symbol") for r in changed],
         "totals": rounded_totals,
         "rows": rows,
-        "recommended_action": "patch_capacity_to_use_corrected_strategy_exposure" if changed else "none",
+        "recommended_action": "capacity_truth_corrected_observe" if changed else "none",
+        "note": "Recovered broker-backed swing positions are now counted as strategy exposure by corrected capacity truth.",
     }
 
 
@@ -20056,6 +20057,16 @@ def _p253_swing_simplification_audit_snapshot() -> dict:
     except Exception as exc:
         cooldown = {"ok": False, "error": str(exc)}
 
+    try:
+        capacity = _p255_corrected_swing_capacity_truth_snapshot()
+    except Exception as exc:
+        capacity = {"ok": False, "error": str(exc)}
+
+    try:
+        backtest = _p255_swing_profit_opportunity_backtest()
+    except Exception as exc:
+        backtest = {"ok": False, "error": str(exc)}
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -20063,11 +20074,17 @@ def _p253_swing_simplification_audit_snapshot() -> dict:
         "read_only": True,
         "control_surface": control_surface,
         "broker_backed_exposure_truth": exposure_truth,
+        "corrected_capacity_truth": capacity,
         "performance": performance.get("broker_preferred") if isinstance(performance, dict) else {},
         "same_day_symbol_loss_cooldown": cooldown,
         "loss_day_entry_throttle": throttle,
+        "profit_opportunity_backtest_summary": {
+            "baseline": backtest.get("baseline"),
+            "best_scenario": backtest.get("best_scenario"),
+            "recommended_action": backtest.get("recommended_action"),
+        },
         "recommended_env_updates": control_surface.get("recommended_env_updates"),
-        "recommended_next_patch": "observe_corrected_capacity_and_broker_preferred_daily_pnl",
+        "recommended_next_patch": "review_swing_profit_opportunity_backtest",
     }
 
 def _p252_fresh_active_plans_for_snapshot_guard() -> dict[str, dict]:
@@ -20211,6 +20228,262 @@ def _p251_swing_replay_backtest_lab() -> dict:
         "today_loss_symbols": sorted(today_loss_symbols),
         "scenarios": scenarios,
         "recommended_action": "use_next_patch_for_full_bar_replay" if rows else "collect_more_trades",
+    }
+
+def _p255_corrected_swing_capacity_truth_snapshot() -> dict:
+    exposure = _current_portfolio_exposure_breakdown()
+    same_day_stats = _same_day_entry_stats()
+    equity = max(0.0, _current_equity_estimate())
+    portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
+    strategy_exposure = float(exposure.get("strategy_managed") or 0.0)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "corrected_swing_capacity_truth",
+        "same_day_entry_count": int(same_day_stats.get("counted") or 0),
+        "same_day_entry_details": same_day_stats,
+        "max_new_entries_per_day": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+        "remaining_new_entries_today": max(0, int(SWING_MAX_NEW_ENTRIES_PER_DAY) - int(same_day_stats.get("counted") or 0)),
+        "portfolio_exposure": round(float(exposure.get("total") or 0.0), 2),
+        "strategy_portfolio_exposure": round(strategy_exposure, 2),
+        "recovered_portfolio_exposure": round(float(exposure.get("recovered") or 0.0), 2),
+        "unmanaged_portfolio_exposure": round(float(exposure.get("unmanaged") or 0.0), 2),
+        "portfolio_exposure_cap": round(portfolio_cap, 2),
+        "portfolio_exposure_remaining": round(max(0.0, portfolio_cap - strategy_exposure), 2) if portfolio_cap > 0 else None,
+        "classification_source": exposure.get("classification_source"),
+        "counts_recovered_as_strategy": exposure.get("counts_recovered_as_strategy"),
+        "corrected_recovered_as_strategy_symbols": list(exposure.get("corrected_recovered_as_strategy_symbols") or []),
+        "strategy_symbols": list(exposure.get("strategy_symbols") or []),
+        "recovered_symbols": list(exposure.get("recovered_symbols") or []),
+        "recommended_action": "observe_corrected_capacity_truth",
+    }
+
+
+def _p255_ny_trade_day(row: dict | None) -> str:
+    r = dict(row or {})
+    ts = (
+        r.get("entry_ts_utc")
+        or r.get("opened_at")
+        or r.get("ts_utc")
+        or r.get("exit_ts_utc")
+        or r.get("closed_at")
+    )
+    dt = _p175_parse_dt(ts)
+    if dt:
+        return dt.astimezone(NY_TZ).date().isoformat()
+    return str(r.get("session_date") or "")[:10]
+
+
+def _p255_trade_sort_key(row: dict | None) -> str:
+    r = dict(row or {})
+    return str(
+        r.get("entry_ts_utc")
+        or r.get("opened_at")
+        or r.get("ts_utc")
+        or r.get("exit_ts_utc")
+        or r.get("closed_at")
+        or ""
+    )
+
+
+def _p255_backtest_summary(rows: list[dict]) -> dict:
+    rollup = _p245_performance_rollup(rows)
+    return {
+        "closed_trades": rollup.get("closed_trades"),
+        "wins": rollup.get("wins"),
+        "losses": rollup.get("losses"),
+        "win_rate": rollup.get("win_rate"),
+        "gross_pnl": rollup.get("gross_pnl"),
+        "avg_r": rollup.get("avg_r"),
+        "sample_maturity": rollup.get("sample_maturity"),
+    }
+
+
+def _p255_scenario_payload(name: str, baseline_rows: list[dict], kept_rows: list[dict], removed_rows: list[dict], rationale: str, env_hint: str = "") -> dict:
+    base = _p255_backtest_summary(baseline_rows)
+    simulated = _p255_backtest_summary(kept_rows)
+    removed = _p255_backtest_summary(removed_rows)
+    return {
+        "scenario": name,
+        "rationale": rationale,
+        "env_hint": env_hint,
+        "removed_count": len(removed_rows),
+        "removed_symbols": sorted({str(r.get("symbol") or "").upper() for r in removed_rows if str(r.get("symbol") or "").strip()}),
+        "removed": removed,
+        "simulated": simulated,
+        "gross_pnl_delta": round(_safe_float(simulated.get("gross_pnl"), 0.0) - _safe_float(base.get("gross_pnl"), 0.0), 4),
+        "avg_r_delta": round(_safe_float(simulated.get("avg_r"), 0.0) - _safe_float(base.get("avg_r"), 0.0), 4),
+        "win_rate_delta": round(_safe_float(simulated.get("win_rate"), 0.0) - _safe_float(base.get("win_rate"), 0.0), 4),
+    }
+
+
+def _p255_filter_daily_entry_cap(rows: list[dict], cap: int) -> tuple[list[dict], list[dict]]:
+    cap = max(1, int(cap or 1))
+    kept = []
+    removed = []
+    counts: dict[str, int] = {}
+    for row in sorted([dict(r or {}) for r in rows], key=_p255_trade_sort_key):
+        day = _p255_ny_trade_day(row)
+        if not day:
+            kept.append(row)
+            continue
+        counts[day] = int(counts.get(day, 0))
+        if counts[day] < cap:
+            kept.append(row)
+            counts[day] += 1
+        else:
+            copy = dict(row)
+            copy["p255_removed_reason"] = f"daily_entry_cap_{cap}"
+            removed.append(copy)
+    return kept, removed
+
+
+def _p255_filter_entry_types(rows: list[dict], blocked: set[str]) -> tuple[list[dict], list[dict]]:
+    kept = []
+    removed = []
+    blocked_norm = {str(x or "").strip().lower() for x in blocked}
+    for row in rows:
+        r = dict(row or {})
+        entry_type = _p207_closed_trade_entry_type(r)
+        if entry_type in blocked_norm:
+            r["p255_removed_reason"] = f"entry_type_{entry_type}"
+            removed.append(r)
+        else:
+            kept.append(r)
+    return kept, removed
+
+
+def _p255_filter_strategy(rows: list[dict], allowed: set[str]) -> tuple[list[dict], list[dict]]:
+    kept = []
+    removed = []
+    allowed_norm = {str(x or "").strip().lower() for x in allowed}
+    for row in rows:
+        r = dict(row or {})
+        strategy = _p207_closed_trade_strategy(r)
+        if strategy in allowed_norm:
+            kept.append(r)
+        else:
+            r["p255_removed_reason"] = f"strategy_{strategy}"
+            removed.append(r)
+    return kept, removed
+
+
+def _p255_filter_same_day_symbol_reentry_after_loss(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    kept = []
+    removed = []
+    symbol_day_loss_seen: set[tuple[str, str]] = set()
+    for row in sorted([dict(r or {}) for r in rows], key=_p255_trade_sort_key):
+        sym = str(row.get("symbol") or "").upper()
+        day = _p255_ny_trade_day(row)
+        key = (sym, day)
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        if sym and day and key in symbol_day_loss_seen:
+            row["p255_removed_reason"] = "same_day_symbol_reentry_after_loss"
+            removed.append(row)
+            continue
+        kept.append(row)
+        if sym and day and pnl < 0:
+            symbol_day_loss_seen.add(key)
+    return kept, removed
+
+
+def _p255_swing_profit_opportunity_backtest() -> dict:
+    preferred = _p245_broker_preferred_closed_rows()
+    rows = [dict(r or {}) for r in list(preferred.get("kept_rows") or []) if isinstance(r, dict)]
+    baseline = _p255_backtest_summary(rows)
+
+    scenarios = [
+        _p255_scenario_payload(
+            "current_broker_preferred",
+            rows,
+            rows,
+            [],
+            "Current broker-preferred performance after duplicate worker exits are removed.",
+            "",
+        )
+    ]
+
+    kept, removed = _p255_filter_daily_entry_cap(rows, 3)
+    scenarios.append(_p255_scenario_payload(
+        "max_3_entries_per_day_proxy",
+        rows,
+        kept,
+        removed,
+        "Closed-trade proxy for reducing daily entry burst risk to 3 entries.",
+        "SWING_MAX_NEW_ENTRIES_PER_DAY=3",
+    ))
+
+    kept, removed = _p255_filter_daily_entry_cap(rows, 4)
+    scenarios.append(_p255_scenario_payload(
+        "max_4_entries_per_day_proxy",
+        rows,
+        kept,
+        removed,
+        "Closed-trade proxy for reducing daily entry burst risk to 4 entries while preserving more opportunity.",
+        "SWING_MAX_NEW_ENTRIES_PER_DAY=4",
+    ))
+
+    kept, removed = _p255_filter_entry_types(rows, {"adaptive", "early_override"})
+    scenarios.append(_p255_scenario_payload(
+        "simplified_no_adaptive_or_early_override_history",
+        rows,
+        kept,
+        removed,
+        "Historical proxy for the current simplification posture with expansion entry types removed.",
+        "SWING_ADAPTIVE_CAPACITY_ENABLED=false; SWING_EARLY_ENTRY_OVERRIDE_ENABLED=false",
+    ))
+
+    kept, removed = _p255_filter_strategy(rows, {"daily_breakout"})
+    scenarios.append(_p255_scenario_payload(
+        "daily_breakout_only",
+        rows,
+        kept,
+        removed,
+        "Checks whether the original daily breakout engine is still the primary profit source.",
+        "",
+    ))
+
+    kept, removed = _p255_filter_same_day_symbol_reentry_after_loss(rows)
+    scenarios.append(_p255_scenario_payload(
+        "same_day_symbol_loss_cooldown_proxy",
+        rows,
+        kept,
+        removed,
+        "Closed-trade proxy for avoiding repeat same-day entries after a symbol has already lost.",
+        "SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED=true",
+    ))
+
+    tuning = _swing_profit_acceleration_simulator(perf_state={"closed_trades": rows})
+    tuning_scenarios = list(tuning.get("scenarios") or [])[:8]
+
+    ranked = sorted(
+        scenarios,
+        key=lambda r: (
+            _safe_float(r.get("gross_pnl_delta"), 0.0),
+            _safe_float(r.get("avg_r_delta"), 0.0),
+            _safe_float(r.get("win_rate_delta"), 0.0),
+        ),
+        reverse=True,
+    )
+    best = next((r for r in ranked if str(r.get("scenario")) != "current_broker_preferred"), ranked[0] if ranked else {})
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_swing_profit_opportunity_backtest",
+        "note": "Closed-trade replay proxy. This does not recreate full OHLCV entry timing, but it is useful for comparing simplification and capacity settings against actual closed-trade outcomes.",
+        "baseline": baseline,
+        "broker_preferred_source": {
+            "raw_count": preferred.get("raw_count"),
+            "kept_count": preferred.get("kept_count"),
+            "shadowed_worker_count": preferred.get("shadowed_worker_count"),
+            "shadowed_worker_gross_pnl": preferred.get("shadowed_worker_gross_pnl"),
+        },
+        "scenarios": ranked,
+        "best_scenario": best,
+        "tuning_simulator_best": tuning.get("best_tuning_candidate"),
+        "tuning_simulator_scenarios": tuning_scenarios,
+        "recommended_action": "review_best_scenario_before_env_change" if rows else "collect_more_closed_trades",
     }
 
 def _p247_candidate_like_rows_from_payload(payload: object, limit: int = 500) -> list[dict]:
@@ -24034,6 +24307,7 @@ def diagnostics_swing_profit_opportunity():
         })
     blocked = [r for r in rows if r.get("blocked_by_defensive_tightening")]
     eligible = [r for r in rows if r.get("eligible")]
+    backtest = _p255_swing_profit_opportunity_backtest()
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -24046,7 +24320,12 @@ def diagnostics_swing_profit_opportunity():
         "defensive_blocked_symbols": [r.get("symbol") for r in blocked],
         "top_eligible": sorted(eligible, key=lambda r: _safe_float(r.get("rank_score"), 0.0), reverse=True)[:10],
         "top_defensive_blocked": sorted(blocked, key=lambda r: _safe_float(r.get("rank_score"), 0.0), reverse=True)[:10],
-        "interpretation": "If eligible_count is persistently zero, loosen one defensive setting at a time. If defensive_blocked names later outperform, consider raising SWING_DEFENSIVE_MAX_20D_RETURN_PCT or SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT.",
+        "profit_opportunity_backtest": {
+            "baseline": backtest.get("baseline"),
+            "best_scenario": backtest.get("best_scenario"),
+            "recommended_action": backtest.get("recommended_action"),
+        },
+        "interpretation": "Use this with /diagnostics/swing_profit_opportunity_backtest. If eligible_count is persistently zero, loosen one defensive setting at a time only when the backtest also supports it.",
     }
 
 @app.get("/diagnostics/failure_decomp")
@@ -24607,31 +24886,7 @@ def diagnostics_broker_preferred_daily_pnl_dedup():
 @app.get("/diagnostics/corrected_swing_capacity_truth")
 def diagnostics_corrected_swing_capacity_truth():
     _ensure_runtime_state_loaded()
-    exposure = _current_portfolio_exposure_breakdown()
-    same_day_stats = _same_day_entry_stats()
-    equity = max(0.0, _current_equity_estimate())
-    portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
-    return {
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "corrected_swing_capacity_truth",
-        "same_day_entry_count": int(same_day_stats.get("counted") or 0),
-        "same_day_entry_details": same_day_stats,
-        "max_new_entries_per_day": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
-        "remaining_new_entries_today": max(0, int(SWING_MAX_NEW_ENTRIES_PER_DAY) - int(same_day_stats.get("counted") or 0)),
-        "portfolio_exposure": round(float(exposure.get("total") or 0.0), 2),
-        "strategy_portfolio_exposure": round(float(exposure.get("strategy_managed") or 0.0), 2),
-        "recovered_portfolio_exposure": round(float(exposure.get("recovered") or 0.0), 2),
-        "unmanaged_portfolio_exposure": round(float(exposure.get("unmanaged") or 0.0), 2),
-        "portfolio_exposure_cap": round(portfolio_cap, 2),
-        "portfolio_exposure_remaining": round(max(0.0, portfolio_cap - float(exposure.get("strategy_managed") or 0.0)), 2) if portfolio_cap > 0 else None,
-        "classification_source": exposure.get("classification_source"),
-        "counts_recovered_as_strategy": exposure.get("counts_recovered_as_strategy"),
-        "corrected_recovered_as_strategy_symbols": list(exposure.get("corrected_recovered_as_strategy_symbols") or []),
-        "strategy_symbols": list(exposure.get("strategy_symbols") or []),
-        "recovered_symbols": list(exposure.get("recovered_symbols") or []),
-        "recommended_action": "use_this_capacity_truth_for_swing_entry_limits",
-    }
+    return _p255_corrected_swing_capacity_truth_snapshot()
 
 @app.get("/diagnostics/entry_quality_memory_guard")
 def diagnostics_entry_quality_memory_guard():
@@ -24693,6 +24948,12 @@ def diagnostics_swing_replay_backtest_lab():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
     return _p251_swing_replay_backtest_lab()
+
+@app.get("/diagnostics/swing_profit_opportunity_backtest")
+def diagnostics_swing_profit_opportunity_backtest():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return _p255_swing_profit_opportunity_backtest()
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
