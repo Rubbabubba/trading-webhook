@@ -1340,7 +1340,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-244-swing-defensive-entry-tightening-duplicate-exit-audit"
+PATCH_VERSION = "patch-245-broker-preferred-performance-rollup-defensive-open-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -6420,6 +6420,111 @@ def _p244_duplicate_realized_exit_audit(state: dict | None = None) -> dict:
         "accounting_preference": "broker_exit_fill_rows_preferred_over_worker_exit_estimates",
         "duplicate_groups": duplicate_groups[-25:],
         "recommended_action": "ignore_worker_shadowed_rows_for_realized_pnl" if duplicate_groups else "none",
+    }
+
+def _p245_is_broker_reconciled_exit(row: dict | None) -> bool:
+    row = dict(row or {})
+    source = str(row.get("source") or "").strip().lower()
+    reason = str(row.get("reason") or row.get("exit_reason") or "").strip().lower()
+    return bool(row.get("broker_reconciled")) or source == "alpaca_orders_reconciled" or reason == "broker_exit_fill"
+
+
+def _p245_broker_preferred_closed_rows(state: dict | None = None) -> dict:
+    rows = [dict(r or {}) for r in list((state or STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []) if isinstance(r, dict)]
+    broker_keys = {
+        _p244_exit_audit_session_key(r)
+        for r in rows
+        if _p245_is_broker_reconciled_exit(r)
+    }
+
+    kept = []
+    shadowed = []
+    for row in rows:
+        key = _p244_exit_audit_session_key(row)
+        source = str(row.get("source") or "").strip().lower()
+        if key in broker_keys and source == "worker_exit" and not _p245_is_broker_reconciled_exit(row):
+            shadowed.append(row)
+            continue
+        kept.append(row)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "source": "broker_preferred_strategy_state",
+        "raw_count": len(rows),
+        "kept_count": len(kept),
+        "shadowed_worker_count": len(shadowed),
+        "shadowed_worker_gross_pnl": round(sum(_safe_float(r.get("gross_pnl")) for r in shadowed), 4),
+        "kept_rows": kept,
+        "shadowed_rows": shadowed[-25:],
+    }
+
+
+def _p245_performance_rollup(rows: list[dict] | None) -> dict:
+    rows = [dict(r or {}) for r in list(rows or []) if isinstance(r, dict)]
+    wins = losses = flat = 0
+    gross = 0.0
+    r_total = 0.0
+    by_strategy: dict[str, dict] = {}
+    for row in rows:
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        pnl_r = _safe_float(row.get("pnl_r"), 0.0)
+        gross += pnl
+        r_total += pnl_r
+        if pnl > 0:
+            wins += 1
+        elif pnl < 0:
+            losses += 1
+        else:
+            flat += 1
+
+        strategy = str(row.get("strategy_name") or row.get("signal") or "unknown").strip().lower() or "unknown"
+        bucket = by_strategy.setdefault(strategy, {"closed_trades": 0, "wins": 0, "losses": 0, "flat": 0, "gross_pnl": 0.0, "avg_r_total": 0.0})
+        bucket["closed_trades"] += 1
+        bucket["gross_pnl"] += pnl
+        bucket["avg_r_total"] += pnl_r
+        if pnl > 0:
+            bucket["wins"] += 1
+        elif pnl < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
+
+    for bucket in by_strategy.values():
+        count = max(1, int(bucket.get("closed_trades") or 0))
+        bucket["gross_pnl"] = round(float(bucket.get("gross_pnl") or 0.0), 4)
+        bucket["avg_r"] = round(float(bucket.pop("avg_r_total") or 0.0) / count, 4)
+        bucket["win_rate"] = round(float(bucket.get("wins") or 0) / count, 4)
+
+    count = len(rows)
+    return {
+        "closed_trades": count,
+        "wins": wins,
+        "losses": losses,
+        "flat": flat,
+        "win_rate": round(wins / max(1, count), 4) if count else 0.0,
+        "gross_pnl": round(gross, 4),
+        "avg_r": round(r_total / max(1, count), 4) if count else 0.0,
+        "sample_maturity": "ESTABLISHED" if count >= 100 else "BUILDING",
+        "by_strategy": by_strategy,
+    }
+
+
+def _p245_broker_preferred_performance_snapshot() -> dict:
+    preferred = _p245_broker_preferred_closed_rows()
+    rollup = _p245_performance_rollup(preferred.get("kept_rows") or [])
+    raw_rollup = _p245_performance_rollup(list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []))
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_preferred_performance_rollup",
+        "accounting_preference": "broker_exit_fill_rows_preferred_over_worker_exit_estimates",
+        "raw": raw_rollup,
+        "broker_preferred": rollup,
+        "shadowed_worker_count": preferred.get("shadowed_worker_count"),
+        "shadowed_worker_gross_pnl": preferred.get("shadowed_worker_gross_pnl"),
+        "shadowed_rows": preferred.get("shadowed_rows") or [],
+        "duplicate_exit_audit": _p244_duplicate_realized_exit_audit(),
     }
 
 def _sync_broker_realized_rows_to_strategy_performance(broker_realized: dict | None) -> dict:
@@ -19069,15 +19174,14 @@ def _live_position_side(qty: object) -> str:
 
 
 def _live_operator_performance_summary() -> dict:
-    state = _recompute_strategy_performance_state()
-    closed = list(state.get("closed_trades") or [])
-    wins = sum(1 for row in closed if _safe_float((row or {}).get("gross_pnl"), _safe_float((row or {}).get("pnl_r"), 0.0)) > 0)
-    losses = sum(1 for row in closed if _safe_float((row or {}).get("gross_pnl"), _safe_float((row or {}).get("pnl_r"), 0.0)) < 0)
-    flat = max(0, len(closed) - wins - losses)
-    gross = round(sum(_safe_float((row or {}).get("gross_pnl"), 0.0) for row in closed), 4)
-    avg_r = round(sum(_safe_float((row or {}).get("pnl_r"), 0.0) for row in closed) / max(1, len(closed)), 4) if closed else 0.0
-    return {"closed_trades": len(closed), "wins": wins, "losses": losses, "flat": flat, "win_rate": round(wins / max(1, len(closed)), 4) if closed else 0.0, "gross_pnl": gross, "avg_r": avg_r, "sample_maturity": "ESTABLISHED" if len(closed) >= 100 else "BUILDING"}
-
+    _recompute_strategy_performance_state()
+    snap = _p245_broker_preferred_performance_snapshot()
+    out = dict(snap.get("broker_preferred") or {})
+    out["accounting_source"] = "broker_preferred_strategy_state"
+    out["raw_closed_trades"] = (snap.get("raw") or {}).get("closed_trades")
+    out["shadowed_worker_count"] = snap.get("shadowed_worker_count")
+    out["shadowed_worker_gross_pnl"] = snap.get("shadowed_worker_gross_pnl")
+    return out
 
 def _live_loss_halt_checklist(halt_truth: dict | None, today_pnl: dict | None, flatten_decision: dict | None, open_orders: list | None = None) -> dict:
     halt = dict(halt_truth or {})
@@ -19113,6 +19217,42 @@ def _live_loss_halt_checklist(halt_truth: dict | None, today_pnl: dict | None, f
         "open_order_count": len(list(open_orders or [])),
     }
 
+def _p245_defensive_open_position_guard(symbol: str, plan: dict | None, pos: dict | None) -> dict:
+    sym = str(symbol or "").upper()
+    p = dict(plan or {})
+    broker = dict(pos or {})
+    signal = str(p.get("signal") or p.get("strategy_name") or "").strip().lower()
+    mode = str(p.get("regime_mode") or ((p.get("thesis") or {}) if isinstance(p.get("thesis"), dict) else {}).get("regime_mode") or "").strip().lower()
+    entry = _safe_float(broker.get("avg_entry_price") or p.get("entry_price") or p.get("avg_fill_price"), 0.0)
+    stop = _safe_float(p.get("stop_price") or p.get("initial_stop_price"), 0.0)
+    last = _safe_float(broker.get("current_price") or broker.get("last_price") or 0.0, 0.0)
+    risk_pct = ((entry - stop) / max(entry, 1e-9)) if entry > 0 and stop > 0 else 0.0
+    unrealized = _safe_float(broker.get("unrealized_pl"), 0.0)
+    reasons = []
+
+    if signal == BREAKOUT_STRATEGY_NAME and mode == "defensive":
+        if risk_pct > float(SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT):
+            reasons.append("open_defensive_risk_per_share_above_patch245_guard")
+        if last > 0 and stop > 0:
+            distance_to_stop_pct = (last - stop) / max(last, 1e-9)
+            if distance_to_stop_pct <= 0.01:
+                reasons.append("open_defensive_near_stop")
+        if unrealized < 0:
+            reasons.append("open_defensive_unrealized_negative")
+
+    return {
+        "symbol": sym,
+        "enabled": bool(SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED),
+        "advisory_only": True,
+        "triggered": bool(reasons),
+        "reasons": reasons,
+        "entry_price": round(entry, 4) if entry > 0 else None,
+        "last_price": round(last, 4) if last > 0 else None,
+        "stop_price": round(stop, 4) if stop > 0 else None,
+        "risk_per_share_pct": round(risk_pct * 100.0, 4),
+        "unrealized_pl": round(unrealized, 4),
+        "recommended_action": "monitor_tight_exit_behavior" if reasons else "none",
+    }
 
 def _live_operator_snapshot(force: bool = False) -> dict:
     now_ts = _time.time()
@@ -19207,6 +19347,7 @@ def _live_operator_snapshot(force: bool = False) -> dict:
                 "recovered": bool(plan.get("recovered")),
                 "attribution_source": plan.get("attribution_source"),
             },
+            "defensive_open_guard": _p245_defensive_open_position_guard(sym, plan, pos),
             "open_orders": symbol_orders,
         })
     halt_truth = daily_halt_truth_snapshot()
@@ -22569,6 +22710,44 @@ def diagnostics_candidates(limit: int = 25):
 def diagnostics_candidates_full(limit: int = 25):
     return _diagnostics_candidates_payload(limit=limit, full=True)
 
+@app.get("/diagnostics/swing_profit_opportunity")
+def diagnostics_swing_profit_opportunity():
+    _ensure_runtime_state_loaded()
+    _refresh_regime_snapshot_if_needed()
+    latest = dict((CANDIDATE_HISTORY or [])[-1]) if CANDIDATE_HISTORY else {}
+    items = list(latest.get("items") or latest.get("candidates") or [])
+    rows = []
+    for raw in items:
+        row = dict(raw or {})
+        reasons = list(row.get("rejection_reasons") or [])
+        rows.append({
+            "symbol": str(row.get("symbol") or "").upper(),
+            "eligible": bool(row.get("eligible")),
+            "selected": str(row.get("symbol") or "").upper() in {str(s or "").upper() for s in list(latest.get("selected_symbols") or [])},
+            "rank_score": row.get("rank_score"),
+            "return_20d_pct": row.get("return_20d_pct"),
+            "risk_per_share_pct": row.get("risk_per_share_pct"),
+            "breakout_distance_pct": row.get("breakout_distance_pct"),
+            "defensive_tightening_enabled": row.get("defensive_tightening_enabled"),
+            "rejection_reasons": reasons,
+            "blocked_by_defensive_tightening": any(str(r).startswith("defensive_") for r in reasons),
+        })
+    blocked = [r for r in rows if r.get("blocked_by_defensive_tightening")]
+    eligible = [r for r in rows if r.get("eligible")]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_swing_profit_opportunity",
+        "active_scan_ts_utc": latest.get("scan_ts_utc") or latest.get("active_scan_ts_utc"),
+        "total_candidates": len(rows),
+        "eligible_count": len(eligible),
+        "selected_symbols": list(latest.get("selected_symbols") or []),
+        "defensive_blocked_count": len(blocked),
+        "defensive_blocked_symbols": [r.get("symbol") for r in blocked],
+        "top_eligible": sorted(eligible, key=lambda r: _safe_float(r.get("rank_score"), 0.0), reverse=True)[:10],
+        "top_defensive_blocked": sorted(blocked, key=lambda r: _safe_float(r.get("rank_score"), 0.0), reverse=True)[:10],
+        "interpretation": "If eligible_count is persistently zero, loosen one defensive setting at a time. If defensive_blocked names later outperform, consider raising SWING_DEFENSIVE_MAX_20D_RETURN_PCT or SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT.",
+    }
 
 @app.get("/diagnostics/failure_decomp")
 def diagnostics_failure_decomp(history_limit: int = 10):
@@ -23097,6 +23276,12 @@ def diagnostics_position_truth(request: Request):
 def diagnostics_duplicate_realized_exit_audit():
     _ensure_runtime_state_loaded()
     return _p244_duplicate_realized_exit_audit()
+
+@app.get("/diagnostics/broker_preferred_performance")
+def diagnostics_broker_preferred_performance():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return _p245_broker_preferred_performance_snapshot()
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
