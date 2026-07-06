@@ -1340,7 +1340,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-246-live-unrealized-pnl-truth-entry-quality-memory-guard"
+PATCH_VERSION = "patch-247-live-positions-fresh-pnl-override-entry-memory-backfill-probe"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -19381,6 +19381,161 @@ def _p246_entry_quality_memory_snapshot() -> dict:
         "recommended_action": "review_triggered_positions_exit_plan" if triggered else "none",
     }
 
+def _p247_candidate_like_rows_from_payload(payload: object, limit: int = 500) -> list[dict]:
+    rows: list[dict] = []
+
+    def walk(obj: object):
+        if len(rows) >= max(1, int(limit or 500)):
+            return
+        if isinstance(obj, list):
+            for item in obj:
+                walk(item)
+            return
+        if not isinstance(obj, dict):
+            return
+
+        symbol = str(obj.get("symbol") or "").strip().upper()
+        if symbol and (
+            "rank_score" in obj
+            or "selection_quality_score" in obj
+            or "return_20d_pct" in obj
+            or "breakout_distance_pct" in obj
+            or "risk_per_share_pct" in obj
+            or "rejection_reasons" in obj
+        ):
+            rows.append(dict(obj))
+
+        for key in (
+            "items",
+            "candidates",
+            "top_candidates",
+            "eligible_but_not_selected",
+            "selection_blocked_items",
+            "shadow_items",
+            "shadow_selected",
+            "history",
+            "summary",
+            "last_scan",
+        ):
+            if key in obj:
+                walk(obj.get(key))
+
+    walk(payload)
+    return rows[:max(1, int(limit or 500))]
+
+
+def _p247_recent_candidate_rows_for_symbol(symbol: str, limit: int = 200) -> list[dict]:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return []
+
+    payloads = []
+    try:
+        payloads.extend(list(CANDIDATE_HISTORY or [])[-25:])
+    except Exception:
+        pass
+    try:
+        if LAST_SCAN:
+            payloads.append(dict(LAST_SCAN))
+    except Exception:
+        pass
+    try:
+        if LAST_SWING_CANDIDATES:
+            payloads.append({"items": list(LAST_SWING_CANDIDATES or [])})
+    except Exception:
+        pass
+
+    matches = []
+    for payload in reversed(payloads):
+        for row in _p247_candidate_like_rows_from_payload(payload, limit=limit):
+            if str(row.get("symbol") or "").strip().upper() == sym:
+                matches.append(row)
+
+    return matches[:max(1, int(limit or 200))]
+
+
+def _p247_entry_quality_backfill_probe_for_position(symbol: str, plan: dict | None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    p = dict(plan or {})
+    thesis = dict(p.get("thesis") or {}) if isinstance(p.get("thesis"), dict) else {}
+    existing_snapshot = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
+
+    rows = _p247_recent_candidate_rows_for_symbol(sym, limit=200)
+    best = {}
+    if rows:
+        best = sorted(
+            rows,
+            key=lambda r: (
+                _safe_float(r.get("rank_score"), 0.0),
+                _safe_float(r.get("selection_quality_score"), 0.0),
+            ),
+            reverse=True,
+        )[0]
+
+    recovered_snapshot = {}
+    if best:
+        recovered_snapshot = {
+            "symbol": sym,
+            "strategy": best.get("strategy") or best.get("strategy_name") or best.get("signal"),
+            "rank_score": best.get("rank_score"),
+            "min_rank_score": best.get("min_rank_score"),
+            "selection_quality_score": best.get("selection_quality_score"),
+            "regime_mode": best.get("regime_mode"),
+            "return_20d_pct": best.get("return_20d_pct"),
+            "risk_per_share_pct": best.get("risk_per_share_pct"),
+            "breakout_distance_pct": best.get("breakout_distance_pct"),
+            "close_to_high_pct": best.get("close_to_high_pct"),
+            "strong_atr_relax_applied": best.get("strong_atr_relax_applied"),
+            "defensive_tightening_enabled": best.get("defensive_tightening_enabled"),
+            "defensive_max_20d_return_pct": best.get("defensive_max_20d_return_pct"),
+            "defensive_max_risk_per_share_pct": best.get("defensive_max_risk_per_share_pct"),
+            "rejection_reasons_at_entry": list(best.get("rejection_reasons") or []),
+        }
+
+    reasons = []
+    if existing_snapshot:
+        reasons.append("entry_quality_snapshot_already_present")
+    elif recovered_snapshot:
+        reasons.append("candidate_history_match_available")
+    else:
+        reasons.append("candidate_history_match_missing")
+
+    return {
+        "symbol": sym,
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_entry_memory_backfill_probe",
+        "advisory_only": True,
+        "has_existing_entry_quality_snapshot": bool(existing_snapshot),
+        "candidate_history_match_count": len(rows),
+        "can_backfill": bool((not existing_snapshot) and recovered_snapshot),
+        "reasons": reasons,
+        "existing_snapshot": existing_snapshot,
+        "recovered_snapshot_preview": recovered_snapshot,
+        "recommended_action": "consider_manual_or_future_safe_backfill" if bool((not existing_snapshot) and recovered_snapshot) else "none",
+    }
+
+
+def _p247_entry_memory_backfill_probe_snapshot() -> dict:
+    rows = []
+    for sym, plan in list((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not plan.get("active"):
+            continue
+        symbol = str(sym or plan.get("symbol") or "").upper()
+        rows.append(_p247_entry_quality_backfill_probe_for_position(symbol, plan))
+
+    backfillable = [r for r in rows if r.get("can_backfill")]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_entry_memory_backfill_probe",
+        "active_position_count": len(rows),
+        "backfillable_count": len(backfillable),
+        "backfillable_symbols": [r.get("symbol") for r in backfillable],
+        "rows": rows,
+        "recommended_action": "review_backfillable_entry_snapshots" if backfillable else "none",
+    }
+
 def _live_operator_snapshot(force: bool = False) -> dict:
     now_ts = _time.time()
     cached = LIVE_DASHBOARD_CACHE.get("payload")
@@ -19476,10 +19631,15 @@ def _live_operator_snapshot(force: bool = False) -> dict:
             },
             "defensive_open_guard": _p245_defensive_open_position_guard(sym, plan, pos),
             "entry_quality_memory_guard": _p246_entry_quality_memory_guard(sym, plan, pos),
+            "entry_memory_backfill_probe": _p247_entry_quality_backfill_probe_for_position(sym, plan),
             "open_orders": symbol_orders,
         })
     halt_truth = daily_halt_truth_snapshot()
-    today_pnl = dict(halt_truth.get("today_pnl_truth") or today_pnl_truth_snapshot())
+    stale_halt_pnl = dict(halt_truth.get("today_pnl_truth") or {})
+    fresh_today_pnl = dict(today_pnl_truth_snapshot())
+    today_pnl = fresh_today_pnl if fresh_today_pnl.get("ok", True) else dict(stale_halt_pnl or fresh_today_pnl)
+    today_pnl["live_positions_pnl_source"] = "fresh_today_pnl_truth_snapshot"
+    today_pnl["stale_halt_pnl_snapshot"] = stale_halt_pnl
     live_unrealized_truth = _p246_live_unrealized_pnl_truth()
     if live_unrealized_truth.get("ok"):
         today_pnl["today_unrealized_pnl"] = live_unrealized_truth.get("today_unrealized_pnl")
@@ -23430,6 +23590,11 @@ def diagnostics_live_unrealized_pnl_truth():
 def diagnostics_entry_quality_memory_guard():
     _ensure_runtime_state_loaded()
     return _p246_entry_quality_memory_snapshot()
+
+@app.get("/diagnostics/entry_memory_backfill_probe")
+def diagnostics_entry_memory_backfill_probe():
+    _ensure_runtime_state_loaded()
+    return _p247_entry_memory_backfill_probe_snapshot()
 
 @app.get("/diagnostics/loss_control_incident")
 def diagnostics_loss_control_incident(request: Request):
