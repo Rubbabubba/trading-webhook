@@ -1221,6 +1221,14 @@ INTRADAY_QUALITY_FILTER_MIN_SETTLED = int(getenv_any("INTRADAY_QUALITY_FILTER_MI
 INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY = env_bool("INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY", "true")
 INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO = getenv_any("INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO", default="replay_aligned_paper_pilot").strip().lower()
 INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO = getenv_any("INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO", default=INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO).strip().lower()
+INTRADAY_PAPER_GATE_TOURNAMENT_CANDIDATES = getenv_any(
+    "INTRADAY_PAPER_GATE_TOURNAMENT_CANDIDATES",
+    default="symbol_allowlist_only,score_100_plus_no_bad_symbols,rank_plus_no_bad_symbols,replay_aligned_rank_132_140,replay_aligned_paper_pilot",
+)
+INTRADAY_PAPER_GATE_TOURNAMENT_MIN_ACCEPTED = int(getenv_any("INTRADAY_PAPER_GATE_TOURNAMENT_MIN_ACCEPTED", default="10"))
+INTRADAY_PAPER_GATE_TOURNAMENT_MIN_AVG_R = float(getenv_any("INTRADAY_PAPER_GATE_TOURNAMENT_MIN_AVG_R", default="0.10"))
+INTRADAY_PAPER_GATE_TOURNAMENT_MIN_POSITIVE_RATE = float(getenv_any("INTRADAY_PAPER_GATE_TOURNAMENT_MIN_POSITIVE_RATE", default="0.55"))
+INTRADAY_PAPER_GATE_TOURNAMENT_MAX_STOP_HIT_RATE = float(getenv_any("INTRADAY_PAPER_GATE_TOURNAMENT_MAX_STOP_HIT_RATE", default="0.35"))
 SWING_SLEEVE_MAX_OPEN_POSITIONS = int(getenv_any("SWING_SLEEVE_MAX_OPEN_POSITIONS", default=str(MAX_OPEN_POSITIONS)))
 INTRADAY_SLEEVE_MAX_OPEN_POSITIONS = int(getenv_any("INTRADAY_SLEEVE_MAX_OPEN_POSITIONS", default=getenv_any("INTRADAY_MAX_OPEN_POSITIONS", default="7")))
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
@@ -1354,7 +1362,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-258-intraday-paper-pilot-evidence-accelerator-replay-aligned-promotion-gate"
+PATCH_VERSION = "patch-259-intraday-paper-gate-tournament-active-shadow-config-freshness-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14729,7 +14737,7 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
             name="time_only_midday",
             time_windows="12:00-13:59",
         ),
-                "rank_130_140_only": _intraday_quality_config_from_values(
+        "rank_130_140_only": _intraday_quality_config_from_values(
             name="rank_130_140_only",
             min_rank_score=130,
             max_rank_score=140,
@@ -14995,6 +15003,161 @@ def _intraday_filter_simulate_config(rows: list[dict], cfg: dict, limit: int = 1
         "rejected_examples": rejected[-10:],
     }
 
+def _intraday_filter_compact_result(row: dict | None) -> dict:
+    row = dict(row or {})
+    return {
+        "scenario": row.get("scenario"),
+        "ready": bool(row.get("ready")),
+        "blockers": row.get("blockers") or [],
+        "checked": row.get("checked"),
+        "accepted_count": row.get("accepted_count"),
+        "rejected_count": row.get("rejected_count"),
+        "avg_r": row.get("avg_r"),
+        "avg_return_pct": row.get("avg_return_pct"),
+        "positive_rate": row.get("positive_rate"),
+        "stop_hit_count": row.get("stop_hit_count"),
+        "stop_hit_rate": row.get("stop_hit_rate"),
+        "rejection_reason_counts": row.get("rejection_reason_counts") or {},
+        "config": row.get("config") or {},
+    }
+
+
+def _intraday_paper_gate_tournament(simulation: dict | None = None) -> dict:
+    simulation = dict(simulation or {})
+    candidate_names = {
+        str(x or "").strip().lower()
+        for x in str(INTRADAY_PAPER_GATE_TOURNAMENT_CANDIDATES or "").split(",")
+        if str(x or "").strip()
+    }
+    rows = []
+    for row in simulation.get("scenarios") or []:
+        name = str((row or {}).get("scenario") or "").strip().lower()
+        if candidate_names and name not in candidate_names:
+            continue
+        compact = _intraday_filter_compact_result(row)
+        accepted = int(compact.get("accepted_count") or 0)
+        avg_r = _safe_float(compact.get("avg_r") or 0.0)
+        positive_rate = _safe_float(compact.get("positive_rate") or 0.0)
+        stop_hit_rate = _safe_float(compact.get("stop_hit_rate") or 0.0)
+        blockers = []
+        if accepted < int(INTRADAY_PAPER_GATE_TOURNAMENT_MIN_ACCEPTED):
+            blockers.append("tournament_sample_below_min")
+        if avg_r < float(INTRADAY_PAPER_GATE_TOURNAMENT_MIN_AVG_R):
+            blockers.append("tournament_avg_r_below_min")
+        if positive_rate < float(INTRADAY_PAPER_GATE_TOURNAMENT_MIN_POSITIVE_RATE):
+            blockers.append("tournament_positive_rate_below_min")
+        if stop_hit_rate > float(INTRADAY_PAPER_GATE_TOURNAMENT_MAX_STOP_HIT_RATE):
+            blockers.append("tournament_stop_hit_rate_above_max")
+
+        score = (
+            avg_r * 100.0
+            + positive_rate * 25.0
+            - stop_hit_rate * 20.0
+            + min(accepted, 40) * 0.25
+        )
+        compact["tournament_ready"] = not blockers
+        compact["tournament_blockers"] = blockers
+        compact["tournament_score"] = round(score, 4)
+        rows.append(compact)
+
+    rows.sort(
+        key=lambda r: (
+            bool(r.get("tournament_ready")),
+            _safe_float(r.get("tournament_score") or 0.0),
+            _safe_float(r.get("avg_r") or 0.0),
+            _safe_float(r.get("positive_rate") or 0.0),
+            -_safe_float(r.get("stop_hit_rate") or 0.0),
+            int(r.get("accepted_count") or 0),
+        ),
+        reverse=True,
+    )
+    recommended = rows[0] if rows else {}
+
+    return {
+        "ok": True,
+        "mode": "read_only_intraday_paper_gate_tournament",
+        "keep_intraday_live_disabled": True,
+        "thresholds": {
+            "min_accepted": int(INTRADAY_PAPER_GATE_TOURNAMENT_MIN_ACCEPTED),
+            "min_avg_r": float(INTRADAY_PAPER_GATE_TOURNAMENT_MIN_AVG_R),
+            "min_positive_rate": float(INTRADAY_PAPER_GATE_TOURNAMENT_MIN_POSITIVE_RATE),
+            "max_stop_hit_rate": float(INTRADAY_PAPER_GATE_TOURNAMENT_MAX_STOP_HIT_RATE),
+        },
+        "candidate_names": sorted(candidate_names),
+        "recommended_scenario": recommended.get("scenario"),
+        "recommended_ready": bool(recommended.get("tournament_ready")),
+        "recommended": recommended,
+        "ranked": rows,
+        "recommended_env": {
+            "INTRADAY_QUALITY_ACTIVE_SCENARIO": str(recommended.get("scenario") or ""),
+            "INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO": str(recommended.get("scenario") or ""),
+            "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": str(recommended.get("scenario") or ""),
+            "INTRADAY_LIVE_ENABLED": "false",
+        } if recommended else {},
+    }
+
+
+def _intraday_shadow_config_freshness_audit() -> dict:
+    current_cfg = _intraday_quality_gate_config()
+    latest = _latest_scan_item()
+    summary = _scan_summary_payload(latest)
+    latest_shadow = summary.get("intraday_shadow") if isinstance(summary.get("intraday_shadow"), dict) else {}
+    latest_quality = latest_shadow.get("quality_gate") if isinstance(latest_shadow.get("quality_gate"), dict) else {}
+    latest_cfg = latest_quality.get("config") if isinstance(latest_quality.get("config"), dict) else {}
+    if not latest_cfg:
+        latest_cfg = latest_shadow.get("config", {}).get("quality_gate") if isinstance(latest_shadow.get("config"), dict) else {}
+    if not isinstance(latest_cfg, dict):
+        latest_cfg = {}
+
+    def norm(value) -> str:
+        if isinstance(value, (list, tuple, set)):
+            return ",".join(sorted(str(x or "").strip().upper() for x in value if str(x or "").strip()))
+        return str(value if value is not None else "").strip()
+
+    fields = [
+        "name",
+        "time_windows",
+        "blocked_time_windows",
+        "allowed_symbols",
+        "blocked_symbols",
+        "min_score",
+        "min_rank_score",
+        "max_rank_score",
+        "blocked_rank_buckets",
+        "allowed_signals",
+        "blocked_signals",
+    ]
+    mismatches = []
+    for field in fields:
+        current_value = norm(current_cfg.get(field))
+        latest_value = norm(latest_cfg.get(field))
+        if current_value != latest_value:
+            mismatches.append({
+                "field": field,
+                "current": current_value,
+                "latest_shadow": latest_value,
+            })
+
+    latest_scenario = str(latest_quality.get("scenario") or latest_cfg.get("name") or "").strip().lower()
+    current_scenario = str(current_cfg.get("name") or "").strip().lower()
+    fresh = bool(latest_shadow) and not mismatches and latest_scenario == current_scenario
+
+    return {
+        "ok": True,
+        "fresh": fresh,
+        "reason": "fresh" if fresh else ("no_latest_intraday_shadow" if not latest_shadow else "latest_shadow_config_mismatch"),
+        "current_scenario": current_scenario,
+        "latest_shadow_scenario": latest_scenario,
+        "mismatches": mismatches,
+        "latest_shadow_status": latest_shadow.get("status"),
+        "latest_shadow_raw_would_trade": latest_shadow.get("raw_would_trade"),
+        "latest_shadow_would_trade": latest_shadow.get("would_trade"),
+        "latest_shadow_quality_accepted": latest_quality.get("accepted_count"),
+        "latest_shadow_quality_rejected": latest_quality.get("rejected_count"),
+        "latest_shadow_non_empty_guard_ok": latest_quality.get("non_empty_guard_ok"),
+        "current_config": current_cfg,
+        "latest_shadow_config": latest_cfg,
+    }
 
 def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 1000) -> dict:
     _ensure_runtime_state_loaded()
@@ -15038,7 +15201,7 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
     replay_aligned = scenarios.get("replay_aligned_paper_pilot") or {}
     replay_aligned_result = _intraday_filter_simulate_config(settled_rows, replay_aligned, limit=limit) if replay_aligned else {}
 
-    return {
+    payload = {
         "enabled": bool(INTRADAY_QUALITY_GATE_ENABLED),
         "active_scenario": active_cfg.get("name"),
         "active": active_result,
@@ -15054,7 +15217,7 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
             "scenario": promoted.get("name") or promoted_name,
             "use_for_paper": bool(promoted_result.get("ready")),
             "keep_intraday_live_disabled": True,
-            "reason": "replay_aligned_paper_evidence_acceleration_live_still_blocked",
+            "reason": "paper_gate_tournament_available_live_still_blocked",
             "accepted_count": promoted_result.get("accepted_count"),
             "avg_r": promoted_result.get("avg_r"),
             "positive_rate": promoted_result.get("positive_rate"),
@@ -15069,16 +15232,22 @@ def _intraday_filter_simulation(rows: list[dict] | None = None, limit: int = 100
         },
         "scenarios": scenario_results,
     }
+    payload["paper_gate_tournament"] = _intraday_paper_gate_tournament(payload)
+    return payload
 
 def _intraday_paper_pilot_readiness() -> dict:
     sim = _intraday_filter_simulation(limit=1000)
     scenarios = _intraday_quality_scenario_configs()
+    tournament = sim.get("paper_gate_tournament") or {}
 
-    required_name = str(INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO or "replay_aligned_paper_pilot").strip().lower()
+    tournament_recommended = str(tournament.get("recommended_scenario") or "").strip().lower()
+    required_name = str(INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO or tournament_recommended or "replay_aligned_paper_pilot").strip().lower()
     promoted_name = str(INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO or required_name).strip().lower()
+    expected_name = tournament_recommended or required_name
 
     promoted_cfg = (
         scenarios.get(promoted_name)
+        or scenarios.get(expected_name)
         or scenarios.get(required_name)
         or scenarios.get("replay_aligned_paper_pilot")
         or {}
@@ -15086,6 +15255,7 @@ def _intraday_paper_pilot_readiness() -> dict:
     replay_rank_cfg = scenarios.get("replay_aligned_rank_132_140") or {}
     conservative_cfg = scenarios.get("paper_pilot_conservative") or {}
     legacy_core_cfg = scenarios.get("core_symbols_block_10am") or {}
+    tournament_cfg = scenarios.get(expected_name) or promoted_cfg
 
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
     settled_rows = [r for r in rows if _hybrid_shadow_is_settled(r)]
@@ -15094,6 +15264,7 @@ def _intraday_paper_pilot_readiness() -> dict:
     replay_rank = _intraday_filter_simulate_config(settled_rows, replay_rank_cfg, limit=1000) if replay_rank_cfg else {}
     conservative = _intraday_filter_simulate_config(settled_rows, conservative_cfg, limit=1000) if conservative_cfg else {}
     legacy_core = _intraday_filter_simulate_config(settled_rows, legacy_core_cfg, limit=1000) if legacy_core_cfg else {}
+    tournament_gate = _intraday_filter_simulate_config(settled_rows, tournament_cfg, limit=1000) if tournament_cfg else {}
 
     active_name = str((sim.get("active_scenario") or "")).strip().lower()
     blockers = []
@@ -15103,49 +15274,57 @@ def _intraday_paper_pilot_readiness() -> dict:
         blockers.append("hybrid_mode_not_paper")
     if bool(INTRADAY_LIVE_ENABLED):
         blockers.append("intraday_live_should_remain_disabled")
-    if active_name != required_name:
-        blockers.append("active_scenario_not_replay_aligned_paper_gate")
-    if not bool(promoted.get("ready")):
-        blockers.append("promoted_paper_gate_not_ready_from_shadow_ledger")
+    if expected_name and active_name != expected_name:
+        blockers.append("active_scenario_not_tournament_recommended_gate")
+    if not bool(tournament.get("recommended_ready")):
+        blockers.append("paper_gate_tournament_recommendation_not_ready")
+    if not bool(tournament_gate.get("ready")):
+        blockers.append("tournament_gate_not_ready_from_shadow_ledger")
 
     return {
         "ok": not blockers,
         "ready": not blockers,
         "blockers": blockers,
         "active_scenario": sim.get("active_scenario"),
-        "required_active_scenario": required_name,
+        "required_active_scenario": expected_name,
         "promoted_scenario": promoted_name,
+        "tournament_recommended_scenario": tournament_recommended,
         "promoted_paper_gate": promoted,
+        "tournament_recommended_gate": tournament_gate,
         "replay_aligned_rank_gate": replay_rank,
         "paper_pilot_conservative_gate": conservative,
         "legacy_core_symbols_gate": legacy_core,
+        "paper_gate_tournament": tournament,
+        "shadow_config_freshness": _intraday_shadow_config_freshness_audit(),
         "evidence_accelerator": {
             "enabled": True,
-            "purpose": "collect_more_forward_paper_samples_using_replay_aligned_rank_gate",
+            "purpose": "select_best_forward_paper_gate_from_shadow_ledger_tournament",
             "keep_intraday_live_disabled": True,
             "required_settled_samples": int(INTRADAY_QUALITY_FILTER_MIN_SETTLED),
             "current_promoted_accepted_count": promoted.get("accepted_count"),
             "current_promoted_ready": bool(promoted.get("ready")),
             "current_promoted_blockers": promoted.get("blockers") or [],
+            "tournament_recommended_scenario": tournament_recommended,
+            "tournament_recommended_ready": bool(tournament.get("recommended_ready")),
         },
         "required_env": {
             "HYBRID_MODE": "paper",
             "INTRADAY_LIVE_ENABLED": "false",
-            "INTRADAY_QUALITY_ACTIVE_SCENARIO": required_name,
-            "INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO": required_name,
-            "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": promoted_name,
+            "INTRADAY_QUALITY_ACTIVE_SCENARIO": expected_name,
+            "INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO": expected_name,
+            "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": expected_name,
         },
         "recommended_env": {
-            "INTRADAY_QUALITY_ACTIVE_SCENARIO": "replay_aligned_paper_pilot",
-            "INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO": "replay_aligned_paper_pilot",
-            "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": "replay_aligned_paper_pilot",
+            "INTRADAY_QUALITY_ACTIVE_SCENARIO": expected_name,
+            "INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO": expected_name,
+            "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": expected_name,
             "INTRADAY_LIVE_ENABLED": "false",
         },
         "notes": [
             "This is a paper-pilot readiness gate only.",
-            "Intraday live remains disabled until replay-aligned paper evidence is settled and positive.",
-            "The replay-aligned pilot uses rank_score 132-140 and blocks the 10am and final-hour windows.",
-            "The older AMD/MRVL/PANW conservative gate is retained for comparison but no longer required.",
+            "Intraday live remains disabled until the selected paper gate proves itself forward and live promotion truth is clean.",
+            "The paper gate tournament ranks candidate gates by sample size, avg R, positive rate, and stop-hit rate.",
+            "The active shadow config freshness audit confirms whether the most recent shadow scan used the current active gate.",
         ],
     }
 
@@ -21668,35 +21847,21 @@ def diagnostics_intraday_paper_pilot_evidence_accelerator(request: Request, limi
     _ensure_runtime_state_loaded()
     simulation = _intraday_filter_simulation(limit=int(limit or 1000))
     readiness = _intraday_paper_pilot_readiness()
+    tournament = simulation.get("paper_gate_tournament") or {}
 
     watch_names = {
         "replay_aligned_paper_pilot",
         "replay_aligned_rank_132_140",
         "paper_pilot_conservative",
         "rank_130_140_only",
+        "rank_plus_no_bad_symbols",
         "symbol_allowlist_only",
         "score_100_plus_no_bad_symbols",
+        "exclude_bad_symbols_only",
     }
 
-    def compact_result(row: dict | None) -> dict:
-        row = dict(row or {})
-        return {
-            "scenario": row.get("scenario"),
-            "ready": bool(row.get("ready")),
-            "blockers": row.get("blockers") or [],
-            "checked": row.get("checked"),
-            "accepted_count": row.get("accepted_count"),
-            "rejected_count": row.get("rejected_count"),
-            "avg_r": row.get("avg_r"),
-            "positive_rate": row.get("positive_rate"),
-            "stop_hit_count": row.get("stop_hit_count"),
-            "stop_hit_rate": row.get("stop_hit_rate"),
-            "rejection_reason_counts": row.get("rejection_reason_counts") or {},
-            "config": row.get("config") or {},
-        }
-
     watched = [
-        compact_result(row)
+        _intraday_filter_compact_result(row)
         for row in (simulation.get("scenarios") or [])
         if str((row or {}).get("scenario") or "").strip().lower() in watch_names
     ]
@@ -21715,14 +21880,53 @@ def diagnostics_intraday_paper_pilot_evidence_accelerator(request: Request, limi
         "promoted_scenario": readiness.get("promoted_scenario"),
         "paper_pilot_ready": bool(readiness.get("ready")),
         "paper_pilot_blockers": readiness.get("blockers") or [],
-        "promoted_paper_gate": compact_result(readiness.get("promoted_paper_gate") or {}),
-        "replay_aligned_rank_gate": compact_result(readiness.get("replay_aligned_rank_gate") or {}),
+        "promoted_paper_gate": _intraday_filter_compact_result(readiness.get("promoted_paper_gate") or {}),
+        "tournament_recommended_gate": _intraday_filter_compact_result(readiness.get("tournament_recommended_gate") or {}),
+        "replay_aligned_rank_gate": _intraday_filter_compact_result(readiness.get("replay_aligned_rank_gate") or {}),
         "comparison_scenarios": watched,
-        "best_ready_scenario": compact_result(simulation.get("best_ready_scenario") or {}),
-        "best_non_empty_scenario": compact_result(simulation.get("best_non_empty_scenario") or {}),
+        "paper_gate_tournament": tournament,
+        "best_ready_scenario": _intraday_filter_compact_result(simulation.get("best_ready_scenario") or {}),
+        "best_non_empty_scenario": _intraday_filter_compact_result(simulation.get("best_non_empty_scenario") or {}),
+        "shadow_config_freshness": readiness.get("shadow_config_freshness") or {},
         "evidence_accelerator": readiness.get("evidence_accelerator") or {},
         "required_env": readiness.get("required_env") or {},
         "recommended_env": readiness.get("recommended_env") or {},
+    }
+
+@app.get("/diagnostics/intraday_paper_gate_tournament")
+def diagnostics_intraday_paper_gate_tournament(request: Request, limit: int = 1000):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+    simulation = _intraday_filter_simulation(limit=int(limit or 1000))
+    tournament = simulation.get("paper_gate_tournament") or {}
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_intraday_paper_gate_tournament",
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "active_scenario": simulation.get("active_scenario"),
+        "keep_intraday_live_disabled": True,
+        "tournament": tournament,
+        "active": _intraday_filter_compact_result(simulation.get("active") or {}),
+        "promoted_paper_scenario": _intraday_filter_compact_result(simulation.get("promoted_paper_scenario") or {}),
+        "best_ready_scenario": _intraday_filter_compact_result(simulation.get("best_ready_scenario") or {}),
+        "shadow_config_freshness": _intraday_shadow_config_freshness_audit(),
+    }
+
+@app.get("/diagnostics/intraday_shadow_config_freshness")
+def diagnostics_intraday_shadow_config_freshness(request: Request):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_intraday_shadow_config_freshness",
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "freshness": _intraday_shadow_config_freshness_audit(),
     }
 
 @app.get("/diagnostics/intraday_replay_backtest")
