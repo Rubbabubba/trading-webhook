@@ -1362,7 +1362,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-259-intraday-paper-gate-tournament-active-shadow-config-freshness-audit"
+PATCH_VERSION = "patch-260-quality-scoped-intraday-live-promotion-truth-open-shadow-drain-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -16553,6 +16553,137 @@ def _hybrid_eod_flat_gate_ok(eod_flat_sessions: int, rows: list[dict] | None = N
 
     return int(eod_flat_sessions or 0) >= required
 
+def _intraday_quality_scope_rows(rows: list[dict], config: dict | None = None) -> dict:
+    cfg = dict(config or _intraday_quality_active_config())
+    accepted = []
+    rejected = []
+    reason_counts = {}
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        reasons = _intraday_quality_gate_reasons(
+            row,
+            ts_utc=row.get("scan_ts_utc") or row.get("created_utc") or row.get("ts_utc"),
+            config=cfg,
+        )
+        copy_row = dict(row)
+        copy_row["quality_scope_pass"] = not reasons
+        copy_row["quality_scope_reasons"] = reasons
+        copy_row["quality_scope_scenario"] = cfg.get("name")
+        if reasons:
+            rejected.append(copy_row)
+            for reason in reasons:
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        else:
+            accepted.append(copy_row)
+
+    return {
+        "scenario": cfg.get("name"),
+        "config": cfg,
+        "accepted": accepted,
+        "rejected": rejected,
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "rejection_reason_counts": reason_counts,
+    }
+
+
+def _intraday_quality_scoped_live_promotion_truth(rows: list[dict], quality_filter_simulation: dict | None = None) -> dict:
+    quality_filter_simulation = dict(quality_filter_simulation or {})
+    active_result = dict(quality_filter_simulation.get("active") or {})
+    scope = _intraday_quality_scope_rows(rows, config=_intraday_quality_active_config())
+
+    accepted = [dict(r) for r in scope.get("accepted") or [] if isinstance(r, dict)]
+    settled = [r for r in accepted if _hybrid_shadow_is_settled(r)]
+    open_rows = [
+        r for r in accepted
+        if str(r.get("status") or "").strip().lower() == "open_shadow"
+    ]
+    raw_open_rows = [
+        dict(r) for r in rows or []
+        if isinstance(r, dict) and str(r.get("status") or "").strip().lower() == "open_shadow"
+    ]
+    irrelevant_open_rows = [
+        r for r in raw_open_rows
+        if not any(str(r.get("id") or "") and str(r.get("id") or "") == str(q.get("id") or "") for q in open_rows)
+    ]
+
+    settled_returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in settled]
+    settled_r_values = [_safe_float(r.get("latest_r") or 0.0) for r in settled]
+    settled_count = len(settled)
+    open_count = len(open_rows)
+
+    settled_avg_return = _mean(settled_returns)
+    settled_avg_r = _mean(settled_r_values)
+    settled_positive = sum(1 for v in settled_returns if v > 0)
+    settled_positive_rate = (settled_positive / settled_count) if settled_count else 0.0
+    settled_worst_r = min(settled_r_values) if settled_r_values else 0.0
+    settled_best_r = max(settled_r_values) if settled_r_values else 0.0
+
+    settled_sample_ready = settled_count >= HYBRID_PROOF_LIVE_PROMOTION_MIN_SETTLED
+    settled_avg_r_ready = settled_avg_r >= HYBRID_PROOF_MIN_AVG_R
+    settled_positive_ready = settled_positive_rate >= HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE
+    settled_worst_r_ready = settled_worst_r >= HYBRID_PROOF_LIVE_PROMOTION_MAX_WORST_R
+    open_shadow_ready = open_count <= HYBRID_PROOF_LIVE_PROMOTION_MAX_OPEN_SHADOW
+
+    blockers = []
+    if not settled_sample_ready:
+        blockers.append("quality_scoped_settled_sample_below_min")
+    if not settled_avg_r_ready:
+        blockers.append("quality_scoped_settled_avg_r_below_min")
+    if not settled_positive_ready:
+        blockers.append("quality_scoped_settled_positive_rate_below_min")
+    if not settled_worst_r_ready:
+        blockers.append("quality_scoped_settled_worst_r_below_limit")
+    if not open_shadow_ready:
+        blockers.append("quality_scoped_open_shadow_count_above_limit")
+    if INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY and not bool(active_result.get("ready")):
+        blockers.append("quality_filter_proof_not_ready")
+
+    def compact_open(row: dict) -> dict:
+        return {
+            "id": row.get("id"),
+            "symbol": row.get("symbol"),
+            "status": row.get("status"),
+            "ny_date": row.get("ny_date"),
+            "scan_ts_utc": row.get("scan_ts_utc"),
+            "signal": row.get("signal"),
+            "latest_r": row.get("latest_r"),
+            "rank_score": row.get("rank_score"),
+            "quality_scope_pass": row.get("quality_scope_pass"),
+            "quality_scope_reasons": row.get("quality_scope_reasons") or [],
+            "quality_scope_scenario": row.get("quality_scope_scenario"),
+        }
+
+    return {
+        "scope": "active_quality_gate",
+        "scenario": scope.get("scenario"),
+        "ready": not blockers,
+        "blockers": blockers,
+        "accepted_total_count": len(accepted),
+        "rejected_total_count": len(scope.get("rejected") or []),
+        "rejection_reason_counts": scope.get("rejection_reason_counts") or {},
+        "settled_count": settled_count,
+        "settled_avg_return_pct": round(settled_avg_return * 100.0, 4),
+        "settled_avg_r": round(settled_avg_r, 4),
+        "settled_positive_rate": round(settled_positive_rate, 4),
+        "settled_worst_r": round(settled_worst_r, 4),
+        "settled_best_r": round(settled_best_r, 4),
+        "settled_sample_ready": settled_sample_ready,
+        "settled_avg_r_ready": settled_avg_r_ready,
+        "settled_positive_ready": settled_positive_ready,
+        "settled_worst_r_ready": settled_worst_r_ready,
+        "open_shadow_count": open_count,
+        "open_shadow_ready": open_shadow_ready,
+        "open_shadow_rows": [compact_open(r) for r in open_rows[-25:]],
+        "raw_open_shadow_count": len(raw_open_rows),
+        "irrelevant_open_shadow_count": len(irrelevant_open_rows),
+        "irrelevant_open_shadow_rows": [compact_open(r) for r in irrelevant_open_rows[-25:]],
+        "quality_attribution": _hybrid_shadow_quality_attribution(settled),
+        "active_filter_result": _intraday_filter_compact_result(active_result),
+    }
+
 def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
     ledger_load = _hybrid_proof_load_ledger_compat()
     rows = [dict(r) for r in HYBRID_PROOF_LEDGER if isinstance(r, dict)]
@@ -16565,6 +16696,10 @@ def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
     status_breakdown = _hybrid_shadow_status_breakdown(rows)
     quality_attribution = _hybrid_shadow_quality_attribution(rows)
     quality_filter_simulation = _intraday_filter_simulation(rows=rows, limit=1000)
+    quality_scoped_truth = _intraday_quality_scoped_live_promotion_truth(
+        rows,
+        quality_filter_simulation=quality_filter_simulation,
+    )
 
     all_returns = [_safe_float(r.get("latest_return_pct") or 0.0) for r in rows]
     all_r_values = [_safe_float(r.get("latest_r") or 0.0) for r in rows]
@@ -16618,23 +16753,25 @@ def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
         )
     )
 
-    live_promotion_blockers = []
+    raw_live_promotion_blockers = []
     if not settled_sample_ready:
-        live_promotion_blockers.append("settled_sample_below_min")
+        raw_live_promotion_blockers.append("raw_settled_sample_below_min")
     if not settled_avg_r_ready:
-        live_promotion_blockers.append("settled_avg_r_below_min")
+        raw_live_promotion_blockers.append("raw_settled_avg_r_below_min")
     if not settled_positive_ready:
-        live_promotion_blockers.append("settled_positive_rate_below_min")
+        raw_live_promotion_blockers.append("raw_settled_positive_rate_below_min")
     if not settled_worst_r_ready:
-        live_promotion_blockers.append("settled_worst_r_below_limit")
+        raw_live_promotion_blockers.append("raw_settled_worst_r_below_limit")
     if not open_shadow_ready:
-        live_promotion_blockers.append("open_shadow_count_above_limit")
+        raw_live_promotion_blockers.append("raw_open_shadow_count_above_limit")
+    if INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY and not bool(quality_filter_simulation.get("ready")):
+        raw_live_promotion_blockers.append("raw_quality_filter_proof_not_ready")
+
+    live_promotion_blockers = list(quality_scoped_truth.get("blockers") or [])
     if not eod_flat_ok:
         live_promotion_blockers.append("eod_flat_gate_not_ready")
     if not sleeves_ready:
         live_promotion_blockers.append("sleeves_not_configured")
-    if INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY and not bool(quality_filter_simulation.get("ready")):
-        live_promotion_blockers.append("quality_filter_proof_not_ready")
 
     live_promotion_ready = not live_promotion_blockers
 
@@ -16665,9 +16802,35 @@ def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
         "settled_worst_r_ready": settled_worst_r_ready,
         "open_shadow_ready": open_shadow_ready,
 
+        "live_promotion_scope": "quality_scoped_active_gate",
+        "quality_scoped_live_promotion_truth": quality_scoped_truth,
+        "quality_scoped_settled_count": quality_scoped_truth.get("settled_count"),
+        "quality_scoped_open_shadow_count": quality_scoped_truth.get("open_shadow_count"),
+        "quality_scoped_settled_avg_r": quality_scoped_truth.get("settled_avg_r"),
+        "quality_scoped_settled_positive_rate": quality_scoped_truth.get("settled_positive_rate"),
+        "quality_scoped_settled_worst_r": quality_scoped_truth.get("settled_worst_r"),
+        "open_shadow_drain_audit": {
+            "raw_open_shadow_count": quality_scoped_truth.get("raw_open_shadow_count"),
+            "quality_scoped_open_shadow_count": quality_scoped_truth.get("open_shadow_count"),
+            "irrelevant_open_shadow_count": quality_scoped_truth.get("irrelevant_open_shadow_count"),
+            "blocking_open_shadow_rows": quality_scoped_truth.get("open_shadow_rows") or [],
+            "irrelevant_open_shadow_rows": quality_scoped_truth.get("irrelevant_open_shadow_rows") or [],
+            "recommended_action": "wait_for_quality_scoped_open_shadows_to_settle" if int(quality_scoped_truth.get("open_shadow_count") or 0) else "quality_scoped_open_shadow_clear",
+        },
+        "raw_live_promotion_truth": {
+            "ready": not raw_live_promotion_blockers,
+            "blockers": raw_live_promotion_blockers,
+            "settled_count": settled_count,
+            "open_shadow_count": open_shadow_count,
+            "settled_avg_r": round(settled_avg_r, 4),
+            "settled_positive_rate": round(settled_positive_rate, 4),
+            "settled_worst_r": round(settled_worst_r, 4),
+        },
+
         "live_promotion_ready": live_promotion_ready,
         "live_promotion_blockers": live_promotion_blockers,
         "live_promotion_thresholds": {
+            "scope": "quality_scoped_active_gate",
             "min_settled": HYBRID_PROOF_LIVE_PROMOTION_MIN_SETTLED,
             "min_avg_r": HYBRID_PROOF_MIN_AVG_R,
             "min_positive_rate": HYBRID_PROOF_LIVE_PROMOTION_MIN_POSITIVE_RATE,
@@ -16691,7 +16854,9 @@ def _hybrid_proof_metrics(capacity_plan: Optional[dict] = None) -> dict:
 def _intraday_live_preflight(proof_metrics: dict | None = None) -> dict:
     metrics = dict(proof_metrics or _hybrid_proof_metrics())
     loss_halt = _p229_realized_closed_trade_loss_halt()
-    open_shadow_count = int(metrics.get("open_shadow_count") or 0)
+    raw_open_shadow_count = int(metrics.get("open_shadow_count") or 0)
+    quality_open_shadow_count = int(metrics.get("quality_scoped_open_shadow_count") or 0)
+    open_shadow_count = quality_open_shadow_count
     checks = [
         {"name": "live_trading_enabled", "ok": bool(LIVE_TRADING_ENABLED), "value": bool(LIVE_TRADING_ENABLED)},
         {"name": "market_tradable_now", "ok": bool(in_market_hours()), "value": bool(in_market_hours())},
@@ -16704,13 +16869,15 @@ def _intraday_live_preflight(proof_metrics: dict | None = None) -> dict:
             "name": "live_promotion_truth_ready",
             "ok": bool(metrics.get("live_promotion_ready")),
             "value": {
+                "scope": metrics.get("live_promotion_scope"),
                 "ready": bool(metrics.get("live_promotion_ready")),
                 "blockers": metrics.get("live_promotion_blockers") or [],
-                "settled_count": metrics.get("settled_count"),
-                "open_shadow_count": metrics.get("open_shadow_count"),
-                "settled_avg_r": metrics.get("settled_avg_r"),
-                "settled_positive_rate": metrics.get("settled_positive_rate"),
-                "settled_worst_r": metrics.get("settled_worst_r"),
+                "quality_scoped_settled_count": metrics.get("quality_scoped_settled_count"),
+                "quality_scoped_open_shadow_count": metrics.get("quality_scoped_open_shadow_count"),
+                "quality_scoped_settled_avg_r": metrics.get("quality_scoped_settled_avg_r"),
+                "quality_scoped_settled_positive_rate": metrics.get("quality_scoped_settled_positive_rate"),
+                "quality_scoped_settled_worst_r": metrics.get("quality_scoped_settled_worst_r"),
+                "raw_live_promotion_truth": metrics.get("raw_live_promotion_truth") or {},
             },
         },
     ]
@@ -16718,7 +16885,13 @@ def _intraday_live_preflight(proof_metrics: dict | None = None) -> dict:
         checks.append({
             "name": "shadow_exits_settled",
             "ok": open_shadow_count <= int(INTRADAY_LIVE_PREFLIGHT_MAX_OPEN_SHADOW),
-            "value": {"open_shadow_count": open_shadow_count, "max_open_shadow": int(INTRADAY_LIVE_PREFLIGHT_MAX_OPEN_SHADOW)},
+            "value": {
+                "scope": "quality_scoped_active_gate",
+                "quality_scoped_open_shadow_count": quality_open_shadow_count,
+                "raw_open_shadow_count": raw_open_shadow_count,
+                "max_open_shadow": int(INTRADAY_LIVE_PREFLIGHT_MAX_OPEN_SHADOW),
+                "open_shadow_drain_audit": metrics.get("open_shadow_drain_audit") or {},
+            },
         })
     blockers = [str(c.get("name")) for c in checks if not c.get("ok")]
     return {
@@ -16728,8 +16901,12 @@ def _intraday_live_preflight(proof_metrics: dict | None = None) -> dict:
         "checks": checks,
         "proof_ready_for_live": bool(metrics.get("proof_ready_for_live")),
         "live_promotion_ready": bool(metrics.get("live_promotion_ready")),
+        "live_promotion_scope": metrics.get("live_promotion_scope"),
         "live_promotion_blockers": metrics.get("live_promotion_blockers") or [],
         "open_shadow_count": open_shadow_count,
+        "quality_scoped_open_shadow_count": quality_open_shadow_count,
+        "raw_open_shadow_count": raw_open_shadow_count,
+        "open_shadow_drain_audit": metrics.get("open_shadow_drain_audit") or {},
         "realized_closed_trade_loss_halt_active": bool(loss_halt.get("active")),
     }
 
@@ -21929,6 +22106,32 @@ def diagnostics_intraday_shadow_config_freshness(request: Request):
         "freshness": _intraday_shadow_config_freshness_audit(),
     }
 
+@app.get("/diagnostics/intraday_quality_scoped_live_promotion")
+def diagnostics_intraday_quality_scoped_live_promotion(request: Request):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+    capacity_plan = _hybrid_capacity_plan()
+    proof_metrics = _hybrid_proof_metrics(capacity_plan=capacity_plan)
+    live_preflight = _intraday_live_preflight(proof_metrics=proof_metrics)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_intraday_quality_scoped_live_promotion",
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "keep_intraday_live_disabled": not bool(INTRADAY_LIVE_ENABLED),
+        "live_promotion_scope": proof_metrics.get("live_promotion_scope"),
+        "live_promotion_ready": bool(proof_metrics.get("live_promotion_ready")),
+        "live_promotion_blockers": proof_metrics.get("live_promotion_blockers") or [],
+        "quality_scoped_live_promotion_truth": proof_metrics.get("quality_scoped_live_promotion_truth") or {},
+        "raw_live_promotion_truth": proof_metrics.get("raw_live_promotion_truth") or {},
+        "open_shadow_drain_audit": proof_metrics.get("open_shadow_drain_audit") or {},
+        "quality_filter_active": (proof_metrics.get("quality_filter_simulation") or {}).get("active") or {},
+        "quality_filter_promoted_paper": (proof_metrics.get("quality_filter_simulation") or {}).get("promoted_paper_scenario") or {},
+        "intraday_live_preflight": live_preflight,
+    }
+
 @app.get("/diagnostics/intraday_replay_backtest")
 def diagnostics_intraday_replay_backtest(
     request: Request,
@@ -22032,14 +22235,13 @@ def diagnostics_hybrid_proof(request: Request, limit: int = 50):
         "paper_pilot_recommendation": (proof_metrics.get("quality_filter_simulation") or {}).get("paper_pilot_recommendation") or {},
         "quality_filter_best_ready": (proof_metrics.get("quality_filter_simulation") or {}).get("best_ready_scenario") or {},
         "live_promotion_truth": {
+            "scope": proof_metrics.get("live_promotion_scope"),
             "ready": proof_metrics.get("live_promotion_ready"),
             "blockers": proof_metrics.get("live_promotion_blockers"),
             "thresholds": proof_metrics.get("live_promotion_thresholds"),
-            "settled_count": proof_metrics.get("settled_count"),
-            "open_shadow_count": proof_metrics.get("open_shadow_count"),
-            "settled_avg_r": proof_metrics.get("settled_avg_r"),
-            "settled_positive_rate": proof_metrics.get("settled_positive_rate"),
-            "settled_worst_r": proof_metrics.get("settled_worst_r"),
+            "quality_scoped": proof_metrics.get("quality_scoped_live_promotion_truth") or {},
+            "raw": proof_metrics.get("raw_live_promotion_truth") or {},
+            "open_shadow_drain_audit": proof_metrics.get("open_shadow_drain_audit") or {},
         },
         "intraday_live_preflight": live_preflight,
         "hybrid_mode": HYBRID_MODE,
