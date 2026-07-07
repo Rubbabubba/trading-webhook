@@ -1352,7 +1352,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-256-hotfix-stall-retune-fingerprint-loss-cap-repricing"
+PATCH_VERSION = "patch-257-stall-loss-guard-live-validation-current-open-stall-risk-preview"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -23040,6 +23040,165 @@ def _post_tuning_exit_validation(perf_state: dict | None = None) -> dict:
         },
     }
 
+def _p257_current_open_stall_risk_preview() -> dict:
+    advisory = _p250_entry_quality_exit_advisory_snapshot()
+    rows = []
+    guard_r = float(SWING_STALL_MAX_LOSS_R or -0.60)
+    guard_days = int(SWING_STALL_LOSS_GUARD_DAYS or 0)
+    warning_band_r = 0.25
+
+    for raw in list(advisory.get("rows") or []):
+        row = dict(raw or {})
+        current_r = row.get("current_r")
+        try:
+            current_r_float = float(current_r)
+        except Exception:
+            current_r_float = None
+
+        days_held = int(row.get("days_held") or 0)
+        guard_armed = bool(SWING_STALL_LOSS_GUARD_ENABLED and days_held >= guard_days)
+        guard_due = bool((row.get("stall_projection") or {}).get("stall_loss_guard_due"))
+
+        r_to_guard = None
+        near_guard = False
+        if current_r_float is not None:
+            r_to_guard = round(current_r_float - guard_r, 4)
+            near_guard = bool(guard_armed and current_r_float <= (guard_r + warning_band_r))
+
+        if guard_due:
+            recommended_action = "stall_loss_guard_due_or_imminent"
+        elif near_guard:
+            recommended_action = "watch_near_stall_loss_guard"
+        elif current_r_float is not None and current_r_float < 0:
+            recommended_action = "monitor_negative_r"
+        else:
+            recommended_action = "normal_hold"
+
+        rows.append({
+            "symbol": row.get("symbol"),
+            "current_r": current_r_float,
+            "days_held": days_held,
+            "guard_enabled": bool(SWING_STALL_LOSS_GUARD_ENABLED),
+            "guard_armed": guard_armed,
+            "guard_days": guard_days,
+            "guard_threshold_r": guard_r,
+            "r_to_guard": r_to_guard,
+            "near_guard": near_guard,
+            "guard_due": guard_due,
+            "entry_price": row.get("entry_price"),
+            "last_price": row.get("last_price"),
+            "stop_price": row.get("stop_price"),
+            "target_price": row.get("target_price"),
+            "risk_per_share": row.get("risk_per_share"),
+            "distance_to_stop_pct": row.get("distance_to_stop_pct"),
+            "reasons": list(row.get("reasons") or []),
+            "recommended_action": recommended_action,
+        })
+
+    rows.sort(key=lambda r: (
+        0 if r.get("guard_due") else 1,
+        0 if r.get("near_guard") else 1,
+        _safe_float(r.get("r_to_guard"), 999.0),
+    ))
+
+    guard_due_rows = [r for r in rows if r.get("guard_due")]
+    near_guard_rows = [r for r in rows if r.get("near_guard") and not r.get("guard_due")]
+    negative_rows = [r for r in rows if r.get("current_r") is not None and float(r.get("current_r") or 0.0) < 0]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "current_open_stall_risk_preview",
+        "read_only": True,
+        "guard_enabled": bool(SWING_STALL_LOSS_GUARD_ENABLED),
+        "guard_threshold_r": guard_r,
+        "guard_days": guard_days,
+        "active_position_count": len(rows),
+        "guard_due_count": len(guard_due_rows),
+        "near_guard_count": len(near_guard_rows),
+        "negative_r_count": len(negative_rows),
+        "guard_due_symbols": [r.get("symbol") for r in guard_due_rows],
+        "near_guard_symbols": [r.get("symbol") for r in near_guard_rows],
+        "rows": rows,
+        "recommended_action": (
+            "expect_worker_exit_to_process_guard_due_positions"
+            if guard_due_rows
+            else "watch_near_guard_positions"
+            if near_guard_rows
+            else "monitor_open_positions"
+        ),
+    }
+
+
+def _p257_stall_loss_guard_live_validation() -> dict:
+    monitor = _stall_exit_tuning_monitor()
+    validation = _post_tuning_exit_validation()
+    open_risk = _p257_current_open_stall_risk_preview()
+    leak = _p256_stall_exit_profit_leak_drilldown()
+
+    guard_r = float(SWING_STALL_MAX_LOSS_R or -0.60)
+    expected_guard_r = -0.40
+    guard_env_ready = bool(
+        SWING_STALL_LOSS_GUARD_ENABLED
+        and int(SWING_STALL_LOSS_GUARD_DAYS or 0) == 1
+        and abs(guard_r - expected_guard_r) <= 1e-9
+    )
+
+    blockers = []
+    if not SWING_STALL_LOSS_GUARD_ENABLED:
+        blockers.append("stall_loss_guard_disabled")
+    if abs(guard_r - expected_guard_r) > 1e-9:
+        blockers.append("stall_loss_guard_not_set_to_minus_0_40r")
+    if not str(SWING_STALL_TUNING_START_UTC or "").strip():
+        blockers.append("stall_tuning_start_utc_missing")
+    if int(monitor.get("closed_trades_since_tuning") or 0) < 10:
+        blockers.append("post_change_closed_trade_sample_below_10")
+    if int(monitor.get("stall_exits_since_tuning") or 0) < 1:
+        blockers.append("no_post_change_stall_exit_sample_yet")
+    if int(open_risk.get("guard_due_count") or 0) > 0:
+        blockers.append("open_position_stall_guard_due")
+
+    status = "ready_to_observe"
+    if blockers:
+        status = "collect_more_post_change_evidence"
+    if "stall_loss_guard_disabled" in blockers or "stall_loss_guard_not_set_to_minus_0_40r" in blockers:
+        status = "env_not_confirmed"
+    if "open_position_stall_guard_due" in blockers:
+        status = "guard_due_live_position_present"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "stall_loss_guard_live_validation",
+        "read_only": True,
+        "status": status,
+        "blockers": blockers,
+        "guard_env_ready": guard_env_ready,
+        "configured": {
+            "SWING_STALL_MAX_LOSS_R": guard_r,
+            "expected_SWING_STALL_MAX_LOSS_R": expected_guard_r,
+            "SWING_STALL_LOSS_GUARD_ENABLED": bool(SWING_STALL_LOSS_GUARD_ENABLED),
+            "SWING_STALL_LOSS_GUARD_DAYS": int(SWING_STALL_LOSS_GUARD_DAYS or 0),
+            "SWING_STALL_EXIT_DAYS": int(SWING_STALL_EXIT_DAYS or 0),
+            "SWING_STALL_MIN_R": float(SWING_STALL_MIN_R or 0.0),
+            "SWING_STALL_TUNING_START_UTC": str(SWING_STALL_TUNING_START_UTC or ""),
+            "SWING_STALL_TUNING_BASELINE_MIN_R": float(SWING_STALL_TUNING_BASELINE_MIN_R or 0.0),
+        },
+        "post_change_monitor": monitor,
+        "post_tuning_validation": validation,
+        "current_open_stall_risk_preview": open_risk,
+        "historical_loss_cap_best": leak.get("best_conservative_retune"),
+        "historical_profit_leak": leak.get("profit_leak"),
+        "recommended_action": (
+            "verify_envs_then_redeploy"
+            if status == "env_not_confirmed"
+            else "watch_worker_exit_for_guard_due_positions"
+            if status == "guard_due_live_position_present"
+            else "collect_more_post_change_stall_exit_sample"
+            if blockers
+            else "continue_observing_minus_0_40r_guard"
+        ),
+    }
 
 def _p207_bucket_summary(rows: list[dict], key_fn) -> list[dict]:
     buckets: dict[str, dict] = {}
@@ -23217,13 +23376,27 @@ def diagnostics_swing_damage_guard(request: Request):
 @app.get("/diagnostics/stall_exit_tuning_monitor")
 def diagnostics_stall_exit_tuning_monitor(request: Request):
     require_admin_if_configured(request)
-    return _stall_exit_tuning_monitor()
+    payload = _stall_exit_tuning_monitor()
+    payload["patch257_live_validation"] = _p257_stall_loss_guard_live_validation()
+    return payload
+
+@app.get("/diagnostics/current_open_stall_risk_preview")
+def diagnostics_current_open_stall_risk_preview(request: Request):
+    require_admin_if_configured(request)
+    return _p257_current_open_stall_risk_preview()
+
+@app.get("/diagnostics/stall_loss_guard_live_validation")
+def diagnostics_stall_loss_guard_live_validation(request: Request):
+    require_admin_if_configured(request)
+    return _p257_stall_loss_guard_live_validation()
 
 
 @app.get("/diagnostics/post_tuning_exit_validation")
 def diagnostics_post_tuning_exit_validation(request: Request):
     require_admin_if_configured(request)
-    return _post_tuning_exit_validation()
+    payload = _post_tuning_exit_validation()
+    payload["patch257_current_open_stall_risk_preview"] = _p257_current_open_stall_risk_preview()
+    return payload
     
 @app.get("/diagnostics/loss_cluster_report")
 def diagnostics_loss_cluster_report(request: Request):
