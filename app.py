@@ -842,6 +842,41 @@ SWING_STALL_TUNING_START_UTC = str(getenv_any("SWING_STALL_TUNING_START_UTC", de
 SWING_STALL_LOSS_GUARD_ENABLED = env_bool_any("SWING_STALL_LOSS_GUARD_ENABLED", default=True)
 SWING_STALL_LOSS_GUARD_DAYS = getenv_int_any("SWING_STALL_LOSS_GUARD_DAYS", default=1)
 SWING_STALL_MAX_LOSS_R = getenv_float_any("SWING_STALL_MAX_LOSS_R", default=-0.60)
+SWING_POST_CHANGE_DRAWDOWN_GUARD_ENABLED = env_bool_any(
+    "SWING_POST_CHANGE_DRAWDOWN_GUARD_ENABLED",
+    default=True,
+)
+SWING_POST_CHANGE_DRAWDOWN_GUARD_STRATEGIES = {
+    value.strip().lower()
+    for value in str(
+        getenv_any(
+            "SWING_POST_CHANGE_DRAWDOWN_GUARD_STRATEGIES",
+            default="daily_breakout",
+        )
+        or ""
+    ).split(",")
+    if value.strip()
+}
+SWING_POST_CHANGE_DRAWDOWN_MIN_TRADES = getenv_int_any(
+    "SWING_POST_CHANGE_DRAWDOWN_MIN_TRADES",
+    default=8,
+)
+SWING_POST_CHANGE_DRAWDOWN_MAX_WIN_RATE = getenv_float_any(
+    "SWING_POST_CHANGE_DRAWDOWN_MAX_WIN_RATE",
+    default=0.25,
+)
+SWING_POST_CHANGE_DRAWDOWN_MAX_AVG_R = getenv_float_any(
+    "SWING_POST_CHANGE_DRAWDOWN_MAX_AVG_R",
+    default=0.0,
+)
+SWING_POST_CHANGE_DRAWDOWN_BLOCK_NEW_ENTRIES = env_bool_any(
+    "SWING_POST_CHANGE_DRAWDOWN_BLOCK_NEW_ENTRIES",
+    default=True,
+)
+SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY = env_bool_any(
+    "SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY",
+    default=False,
+)
 SWING_OPENING_DAMAGE_GUARD_ENABLED = env_bool_any("SWING_OPENING_DAMAGE_GUARD_ENABLED", default=True)
 SWING_OPENING_DAMAGE_MAX_LOSS_R = getenv_float_any("SWING_OPENING_DAMAGE_MAX_LOSS_R", default=-1.10)
 SWING_OPENING_DAMAGE_GRACE_MIN = getenv_int_any("SWING_OPENING_DAMAGE_GRACE_MIN", default=5)
@@ -1362,7 +1397,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-260-quality-scoped-intraday-live-promotion-truth-open-shadow-drain-audit"
+PATCH_VERSION = "patch-261-swing-post-change-drawdown-circuit-stall-loss-guard-attribution-entry-cohort-rollback"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11920,6 +11955,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     new_entries_globally_blocked = False
     global_block_reasons = []
     loss_day_throttle = _p252_swing_loss_day_entry_throttle_snapshot()
+    post_change_drawdown = _p261_post_change_drawdown_snapshot()
     if daily_halt_active() or daily_stop_hit():
         new_entries_globally_blocked = True
         global_block_reasons.append('daily_halt_active')
@@ -12026,6 +12062,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     shadow_alignment_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     breakout_approved = [c for c in breakout_candidates if c.get('eligible')]
     mean_reversion_approved = [c for c in mean_reversion_candidates if c.get('eligible')]
+    if (
+        post_change_drawdown.get("block_new_entries")
+        and BREAKOUT_STRATEGY_NAME
+        in set(post_change_drawdown.get("guarded_strategies") or [])
+    ):
+        for candidate in breakout_approved:
+            candidate["eligible"] = False
+            candidate.setdefault("rejection_reasons", []).append(
+                "swing_post_change_drawdown_circuit"
+            )
+            candidate["post_change_drawdown_circuit"] = post_change_drawdown
+        breakout_approved = []
     breakout_approved.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     mean_reversion_approved.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     approved = breakout_approved if breakout_approved else mean_reversion_approved
@@ -12048,7 +12096,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     same_day_stats = _same_day_entry_stats()
     remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
     max_new_entries = min(max_new_entries, remaining_today)
-    if not approved and max_new_entries > 0 and bool(SWING_ADAPTIVE_CAPACITY_ENABLED):
+    if (
+        not approved
+        and max_new_entries > 0
+        and bool(SWING_ADAPTIVE_CAPACITY_ENABLED)
+        and not post_change_drawdown.get("block_new_entries")
+    ):
         for c in breakout_candidates:
             qualifies, adapt_reasons = _candidate_qualifies_adaptive_capacity(c)
             if not qualifies:
@@ -12144,6 +12197,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'strategy_name': SWING_STRATEGY_NAME,
         'index_symbol': SWING_INDEX_SYMBOL,
         'index_alignment_ok': index_ok,
+        'post_change_drawdown_circuit': post_change_drawdown,
         'regime': dict(regime),
         'regime_mode': regime_mode,
         'selected_strategy': (selected[0].get('strategy') if selected else None),
@@ -12175,6 +12229,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'scan_reason': None,
         'index_symbol': SWING_INDEX_SYMBOL,
         'index_alignment_ok': index_ok,
+        'post_change_drawdown_circuit': post_change_drawdown,
         'regime': dict(regime),
         'symbols': list(scan_symbols),
         'symbols_total': len(scan_symbols),
@@ -18392,6 +18447,38 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
     if bool(realized_halt.get("active")):
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason=realized_halt.get("reason") or "realized_closed_trade_loss_halt", meta={**(meta or {}), "realized_closed_trade_loss_halt": realized_halt})
         return {"ok": False, "rejected": True, "reason": realized_halt.get("reason") or "realized_closed_trade_loss_halt", "realized_closed_trade_loss_halt": realized_halt}
+        strategy_name = str(
+        meta.get("strategy_name")
+        or meta.get("strategy")
+        or signal
+        or ""
+    ).strip().lower()
+
+    if STRATEGY_MODE == "swing":
+        drawdown_block = _p261_strategy_entry_block(strategy_name)
+        if drawdown_block.get("blocked"):
+            record_decision(
+                "ENTRY",
+                source,
+                symbol,
+                side=side,
+                signal=signal,
+                action="rejected",
+                reason="swing_post_change_drawdown_circuit",
+                meta={
+                    **meta,
+                    "swing_post_change_drawdown_circuit": drawdown_block,
+                },
+            )
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "swing_post_change_drawdown_circuit",
+                "symbol": symbol,
+                "signal": signal,
+                "strategy_name": strategy_name,
+                "drawdown_circuit": drawdown_block,
+            }
     market_clock = _market_clock_snapshot()
     if ONLY_MARKET_HOURS and not bool(market_clock.get("is_open")):
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="outside_market_hours", meta={"market_clock": market_clock, **(meta or {})})
@@ -23434,14 +23521,291 @@ def _p212_rows_since(rows: list[dict], start_utc: str = "") -> list[dict]:
             out.append(row)
     return out
 
+def _p261_exit_reason(row: dict | None) -> str:
+    row = dict(row or {})
+    return str(
+        row.get("attributed_exit_reason")
+        or row.get("exit_reason")
+        or row.get("reason")
+        or "unknown"
+    ).strip().lower() or "unknown"
+
+
+def _p261_is_stall_family_exit(row: dict | None) -> bool:
+    return _p261_exit_reason(row) in {"stall_exit", "stall_loss_guard"}
+
+
+def _p261_broker_preferred_attributed_rows(
+    perf_state: dict | None = None,
+) -> dict:
+    preferred = _p245_broker_preferred_closed_rows(
+        state=perf_state if isinstance(perf_state, dict) else None
+    )
+    kept_rows = [
+        dict(row)
+        for row in list(preferred.get("kept_rows") or [])
+        if isinstance(row, dict)
+    ]
+    shadowed_rows = [
+        dict(row)
+        for row in list(preferred.get("shadowed_rows") or [])
+        if isinstance(row, dict)
+    ]
+
+    shadowed_by_key: dict[str, list[dict]] = {}
+    for row in shadowed_rows:
+        key = _p244_exit_audit_session_key(row)
+        shadowed_by_key.setdefault(key, []).append(row)
+
+    attributed_rows = []
+    attribution_count = 0
+
+    for raw in kept_rows:
+        row = dict(raw)
+        key = _p244_exit_audit_session_key(row)
+        worker_matches = shadowed_by_key.get(key) or []
+        worker_row = worker_matches[-1] if worker_matches else {}
+
+        if _p245_is_broker_reconciled_exit(row) and worker_row:
+            attributed_reason = str(
+                worker_row.get("exit_reason")
+                or worker_row.get("reason")
+                or ""
+            ).strip().lower()
+
+            if attributed_reason:
+                row["attributed_exit_reason"] = attributed_reason
+                row["broker_exit_reason"] = str(
+                    row.get("exit_reason")
+                    or row.get("reason")
+                    or "broker_exit_fill"
+                ).strip().lower()
+                row["attribution_source"] = "paired_worker_exit"
+                attribution_count += 1
+
+            worker_r = _p175_closed_trade_r(worker_row)
+            if worker_r is not None:
+                row["attributed_pnl_r"] = round(float(worker_r), 4)
+                row["pnl_r"] = round(float(worker_r), 4)
+
+            for field in (
+                "entry_ts_utc",
+                "entry_regime_mode",
+                "regime_mode",
+                "rank_score",
+                "selection_quality_score",
+                "entry_type",
+                "holding_hours",
+                "holding_days",
+                "breakout_level",
+                "recovered",
+            ):
+                if row.get(field) in (None, "") and worker_row.get(field) not in (None, ""):
+                    row[field] = worker_row.get(field)
+
+        row["exit_reason_family"] = (
+            "stall_family" if _p261_is_stall_family_exit(row) else "other"
+        )
+        attributed_rows.append(row)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "source": "broker_preferred_with_worker_decision_attribution",
+        "raw_count": preferred.get("raw_count"),
+        "kept_count": len(attributed_rows),
+        "shadowed_worker_count": preferred.get("shadowed_worker_count"),
+        "attributed_exit_count": attribution_count,
+        "rows": attributed_rows,
+    }
+
+
+def _p261_cohort_summary(rows: list[dict] | None) -> dict:
+    rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
+    summary = _p210_rows_summary(rows).get("totals") or {}
+
+    return {
+        "closed_trades": int(summary.get("closed_trades") or 0),
+        "wins": int(summary.get("wins") or 0),
+        "losses": int(summary.get("losses") or 0),
+        "flat": int(summary.get("flat") or 0),
+        "win_rate": round(float(summary.get("win_rate") or 0.0), 4),
+        "gross_pnl": round(float(summary.get("gross_pnl") or 0.0), 4),
+        "avg_r": round(float(summary.get("avg_r") or 0.0), 4),
+        "worst_r": summary.get("worst_r"),
+        "best_r": summary.get("best_r"),
+    }
+
+
+def _p261_bucket_summaries(rows: list[dict], field_fn) -> list[dict]:
+    buckets: dict[str, list[dict]] = {}
+
+    for row in rows:
+        key = str(field_fn(row) or "unknown").strip() or "unknown"
+        buckets.setdefault(key, []).append(row)
+
+    output = []
+    for key, bucket_rows in buckets.items():
+        output.append({
+            "key": key,
+            **_p261_cohort_summary(bucket_rows),
+        })
+
+    return sorted(
+        output,
+        key=lambda item: (
+            float(item.get("gross_pnl") or 0.0),
+            -int(item.get("closed_trades") or 0),
+        ),
+    )
+
+
+def _p261_post_change_drawdown_snapshot(
+    perf_state: dict | None = None,
+) -> dict:
+    start_utc = str(SWING_STALL_TUNING_START_UTC or "").strip()
+    start_dt = _p175_parse_dt(start_utc) if start_utc else None
+    attributed = _p261_broker_preferred_attributed_rows(perf_state=perf_state)
+    all_rows = list(attributed.get("rows") or [])
+    post_rows = _p212_rows_since(all_rows, start_utc) if start_dt else []
+
+    guarded_strategies = set(SWING_POST_CHANGE_DRAWDOWN_GUARD_STRATEGIES)
+    guarded_rows = [
+        row
+        for row in post_rows
+        if str(
+            row.get("strategy_name")
+            or row.get("signal")
+            or "unknown"
+        ).strip().lower() in guarded_strategies
+    ]
+    stall_family_rows = [
+        row for row in guarded_rows if _p261_is_stall_family_exit(row)
+    ]
+
+    totals = _p261_cohort_summary(guarded_rows)
+    stall_totals = _p261_cohort_summary(stall_family_rows)
+    closed_trades = int(totals.get("closed_trades") or 0)
+    win_rate = float(totals.get("win_rate") or 0.0)
+    avg_r = float(totals.get("avg_r") or 0.0)
+    gross_pnl = float(totals.get("gross_pnl") or 0.0)
+
+    trigger_reasons = []
+    if closed_trades < int(SWING_POST_CHANGE_DRAWDOWN_MIN_TRADES):
+        trigger_reasons.append("sample_below_minimum")
+    if win_rate > float(SWING_POST_CHANGE_DRAWDOWN_MAX_WIN_RATE):
+        trigger_reasons.append("win_rate_above_drawdown_trigger")
+    if avg_r > float(SWING_POST_CHANGE_DRAWDOWN_MAX_AVG_R):
+        trigger_reasons.append("avg_r_above_drawdown_trigger")
+    if gross_pnl >= 0:
+        trigger_reasons.append("gross_pnl_not_negative")
+
+    triggered = bool(
+        SWING_POST_CHANGE_DRAWDOWN_GUARD_ENABLED
+        and start_dt
+        and closed_trades >= int(SWING_POST_CHANGE_DRAWDOWN_MIN_TRADES)
+        and win_rate <= float(SWING_POST_CHANGE_DRAWDOWN_MAX_WIN_RATE)
+        and avg_r <= float(SWING_POST_CHANGE_DRAWDOWN_MAX_AVG_R)
+        and gross_pnl < 0
+    )
+    block_new_entries = bool(
+        triggered
+        and SWING_POST_CHANGE_DRAWDOWN_BLOCK_NEW_ENTRIES
+        and not SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY
+    )
+
+    if triggered:
+        recommended_action = "rollback_recent_daily_breakout_entry_cohort"
+    elif not start_dt:
+        recommended_action = "configure_post_change_start_utc"
+    else:
+        recommended_action = "continue_monitoring"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_post_change_drawdown_circuit",
+        "enabled": bool(SWING_POST_CHANGE_DRAWDOWN_GUARD_ENABLED),
+        "advisory_only": bool(SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY),
+        "post_change_start_utc": start_utc,
+        "post_change_window_configured": bool(start_dt),
+        "guarded_strategies": sorted(guarded_strategies),
+        "triggered": triggered,
+        "block_new_entries": block_new_entries,
+        "exits_still_permitted": True,
+        "unaffected_strategies": ["daily_mean_reversion"],
+        "trigger_reasons": [] if triggered else trigger_reasons,
+        "totals": totals,
+        "stall_family_totals": stall_totals,
+        "stall_exit_count": sum(
+            1 for row in stall_family_rows
+            if _p261_exit_reason(row) == "stall_exit"
+        ),
+        "stall_loss_guard_count": sum(
+            1 for row in stall_family_rows
+            if _p261_exit_reason(row) == "stall_loss_guard"
+        ),
+        "by_exit_reason": _p261_bucket_summaries(
+            guarded_rows,
+            _p261_exit_reason,
+        ),
+        "by_entry_date": _p261_bucket_summaries(
+            guarded_rows,
+            lambda row: str(row.get("entry_ts_utc") or "unknown")[:10],
+        ),
+        "by_regime": _p261_bucket_summaries(
+            guarded_rows,
+            lambda row: row.get("entry_regime_mode")
+            or row.get("regime_mode")
+            or "unknown",
+        ),
+        "by_entry_type": _p261_bucket_summaries(
+            guarded_rows,
+            lambda row: row.get("entry_type") or "unknown",
+        ),
+        "by_recovery_status": _p261_bucket_summaries(
+            guarded_rows,
+            lambda row: "recovered" if row.get("recovered") else "native",
+        ),
+        "recent_rows": guarded_rows[-25:],
+        "criteria": {
+            "min_closed_trades": int(SWING_POST_CHANGE_DRAWDOWN_MIN_TRADES),
+            "max_win_rate": float(SWING_POST_CHANGE_DRAWDOWN_MAX_WIN_RATE),
+            "max_avg_r": float(SWING_POST_CHANGE_DRAWDOWN_MAX_AVG_R),
+            "gross_pnl_must_be_negative": True,
+        },
+        "recommended_action": recommended_action,
+    }
+
+
+def _p261_strategy_entry_block(strategy: str) -> dict:
+    normalized = str(strategy or "").strip().lower()
+    circuit = _p261_post_change_drawdown_snapshot()
+
+    blocked = bool(
+        circuit.get("block_new_entries")
+        and normalized in set(circuit.get("guarded_strategies") or [])
+    )
+
+    return {
+        "blocked": blocked,
+        "reason": "swing_post_change_drawdown_circuit" if blocked else "none",
+        "strategy": normalized,
+        "circuit": circuit,
+    }
 
 def _stall_exit_tuning_monitor(perf_state: dict | None = None) -> dict:
     state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
     state, _ = _patch175_enrich_state_if_needed(state)
-    rows = [dict(r) for r in list((state or {}).get("closed_trades") or []) if isinstance(r, dict)]
+    attributed = _p261_broker_preferred_attributed_rows(perf_state=state)
+    rows = [
+        dict(row)
+        for row in list(attributed.get("rows") or [])
+        if isinstance(row, dict)
+    ]
     start_utc = str(SWING_STALL_TUNING_START_UTC or "").strip()
     rows_since = _p212_rows_since(rows, start_utc)
-    stall_since = [r for r in rows_since if _p211_is_stall_exit(r)]
+    stall_since = [r for r in rows_since if _p261_is_stall_family_exit(r)]
     negative_stall_since = [r for r in stall_since if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) < 0)]
     deep_stall_since = [r for r in stall_since if (_p175_closed_trade_r(r) is not None and float(_p175_closed_trade_r(r) or 0.0) <= float(SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R))]
     stall_summary = _p210_rows_summary(stall_since).get("totals")
@@ -23469,6 +23833,14 @@ def _stall_exit_tuning_monitor(perf_state: dict | None = None) -> dict:
         "post_tuning_window_configured": bool(start_utc),
         "closed_trades_since_tuning": int(since_summary.get("closed_trades") or 0),
         "stall_exits_since_tuning": int(stall_summary.get("closed_trades") or 0),
+                "classic_stall_exits_since_tuning": sum(
+            1 for row in stall_since
+            if _p261_exit_reason(row) == "stall_exit"
+        ),
+        "stall_loss_guard_exits_since_tuning": sum(
+            1 for row in stall_since
+            if _p261_exit_reason(row) == "stall_loss_guard"
+        ),
         "stall_exit_gross_pnl_since_tuning": stall_summary.get("gross_pnl"),
         "stall_exit_avg_r_since_tuning": stall_summary.get("avg_r"),
         "stall_exit_worst_r_since_tuning": stall_summary.get("worst_r"),
@@ -23902,6 +24274,12 @@ def diagnostics_stall_exit_tuning_monitor(request: Request):
     payload = _stall_exit_tuning_monitor()
     payload["patch257_live_validation"] = _p257_stall_loss_guard_live_validation()
     return payload
+
+@app.get("/diagnostics/swing_post_change_drawdown")
+def diagnostics_swing_post_change_drawdown():
+    _ensure_runtime_state_loaded()
+    perf_state = _recompute_strategy_performance_state()
+    return _p261_post_change_drawdown_snapshot(perf_state=perf_state)
 
 @app.get("/diagnostics/current_open_stall_risk_preview")
 def diagnostics_current_open_stall_risk_preview(request: Request):
