@@ -877,6 +877,14 @@ SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY = env_bool_any(
     "SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY",
     default=False,
 )
+SWING_ROLLBACK_LAB_PRE_WINDOW_TRADES = getenv_int_any(
+    "SWING_ROLLBACK_LAB_PRE_WINDOW_TRADES",
+    default=30,
+)
+SWING_ROLLBACK_LAB_MIN_ATTRIBUTE_COVERAGE = getenv_float_any(
+    "SWING_ROLLBACK_LAB_MIN_ATTRIBUTE_COVERAGE",
+    default=0.60,
+)
 SWING_OPENING_DAMAGE_GUARD_ENABLED = env_bool_any("SWING_OPENING_DAMAGE_GUARD_ENABLED", default=True)
 SWING_OPENING_DAMAGE_MAX_LOSS_R = getenv_float_any("SWING_OPENING_DAMAGE_MAX_LOSS_R", default=-1.10)
 SWING_OPENING_DAMAGE_GRACE_MIN = getenv_int_any("SWING_OPENING_DAMAGE_GRACE_MIN", default=5)
@@ -1397,7 +1405,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-261-hotfix-candidate-drawdown-circuit-truth-selected-symbol-suppression"
+PATCH_VERSION = "patch-262-daily-breakout-entry-cohort-rollback-lab-pre-post-change-strategy-simulation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -23829,6 +23837,530 @@ def _p261_strategy_entry_block(strategy: str) -> dict:
         "circuit": circuit,
     }
 
+def _p262_entry_dt(row: dict | None):
+    row = dict(row or {})
+    return _p175_parse_dt(
+        row.get("entry_ts_utc")
+        or row.get("opened_at")
+        or row.get("entry_time")
+    )
+
+
+def _p262_strategy(row: dict | None) -> str:
+    row = dict(row or {})
+    return str(
+        row.get("strategy_name")
+        or row.get("signal")
+        or "unknown"
+    ).strip().lower() or "unknown"
+
+
+def _p262_rank(row: dict | None):
+    row = dict(row or {})
+    value = row.get("rank_score")
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _p262_regime(row: dict | None) -> str:
+    row = dict(row or {})
+    return str(
+        row.get("entry_regime_mode")
+        or row.get("regime_mode")
+        or "unknown"
+    ).strip().lower() or "unknown"
+
+
+def _p262_entry_type(row: dict | None) -> str:
+    row = dict(row or {})
+    return str(
+        row.get("entry_type")
+        or "unknown"
+    ).strip().lower() or "unknown"
+
+
+def _p262_split_entry_cohorts(
+    rows: list[dict],
+    start_dt,
+    pre_limit: int,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    rows_with_entry = [
+        dict(row)
+        for row in list(rows or [])
+        if _p262_entry_dt(row) is not None
+    ]
+    rows_with_entry.sort(
+        key=lambda row: _p262_entry_dt(row)
+    )
+
+    pre_rows = [
+        row for row in rows_with_entry
+        if _p262_entry_dt(row) < start_dt
+    ]
+    post_rows = [
+        row for row in rows_with_entry
+        if _p262_entry_dt(row) >= start_dt
+    ]
+    pre_window = pre_rows[-max(1, int(pre_limit or 30)):]
+
+    carried_into_post_window = []
+    for row in pre_rows:
+        close_dt = _p212_closed_trade_ts(row)
+        if close_dt and close_dt >= start_dt:
+            carried_into_post_window.append(row)
+
+    return pre_window, post_rows, carried_into_post_window
+
+
+def _p262_attribute_coverage(rows: list[dict]) -> dict:
+    rows = [dict(row) for row in list(rows or [])]
+    count = len(rows)
+
+    def coverage(present_count: int) -> float:
+        return round(present_count / max(1, count), 4) if count else 0.0
+
+    rank_count = sum(1 for row in rows if _p262_rank(row) is not None)
+    regime_count = sum(
+        1 for row in rows if _p262_regime(row) != "unknown"
+    )
+    entry_type_count = sum(
+        1 for row in rows if _p262_entry_type(row) != "unknown"
+    )
+    entry_ts_count = sum(
+        1 for row in rows if _p262_entry_dt(row) is not None
+    )
+
+    return {
+        "row_count": count,
+        "entry_ts_count": entry_ts_count,
+        "entry_ts_coverage": coverage(entry_ts_count),
+        "rank_count": rank_count,
+        "rank_coverage": coverage(rank_count),
+        "regime_count": regime_count,
+        "regime_coverage": coverage(regime_count),
+        "entry_type_count": entry_type_count,
+        "entry_type_coverage": coverage(entry_type_count),
+    }
+
+
+def _p262_filter_scenario(
+    name: str,
+    rows: list[dict],
+    start_dt,
+    pre_limit: int,
+    keep_fn,
+    rationale: str,
+    env_hint: str = "",
+    required_attribute: str = "",
+) -> dict:
+    baseline_rows = [dict(row) for row in list(rows or [])]
+    kept_rows = []
+    removed_rows = []
+
+    for row in baseline_rows:
+        if keep_fn(row):
+            kept_rows.append(row)
+        else:
+            removed_rows.append(row)
+
+    base_pre, base_post, _ = _p262_split_entry_cohorts(
+        baseline_rows,
+        start_dt,
+        pre_limit,
+    )
+    kept_pre, kept_post, _ = _p262_split_entry_cohorts(
+        kept_rows,
+        start_dt,
+        pre_limit,
+    )
+
+    base_pre_summary = _p261_cohort_summary(base_pre)
+    base_post_summary = _p261_cohort_summary(base_post)
+    simulated_pre = _p261_cohort_summary(kept_pre)
+    simulated_post = _p261_cohort_summary(kept_post)
+
+    removed_pre = [
+        row for row in removed_rows
+        if _p262_entry_dt(row)
+        and _p262_entry_dt(row) < start_dt
+    ]
+    removed_post = [
+        row for row in removed_rows
+        if _p262_entry_dt(row)
+        and _p262_entry_dt(row) >= start_dt
+    ]
+
+    return {
+        "scenario": name,
+        "rationale": rationale,
+        "env_hint": env_hint,
+        "required_attribute": required_attribute or None,
+        "base_pre": base_pre_summary,
+        "base_post": base_post_summary,
+        "simulated_pre": simulated_pre,
+        "simulated_post": simulated_post,
+        "removed_pre_count": len(removed_pre),
+        "removed_post_count": len(removed_post),
+        "removed_pre": _p261_cohort_summary(removed_pre),
+        "removed_post": _p261_cohort_summary(removed_post),
+        "pre_gross_pnl_delta": round(
+            _safe_float(simulated_pre.get("gross_pnl"), 0.0)
+            - _safe_float(base_pre_summary.get("gross_pnl"), 0.0),
+            4,
+        ),
+        "post_gross_pnl_delta": round(
+            _safe_float(simulated_post.get("gross_pnl"), 0.0)
+            - _safe_float(base_post_summary.get("gross_pnl"), 0.0),
+            4,
+        ),
+        "pre_avg_r_delta": round(
+            _safe_float(simulated_pre.get("avg_r"), 0.0)
+            - _safe_float(base_pre_summary.get("avg_r"), 0.0),
+            4,
+        ),
+        "post_avg_r_delta": round(
+            _safe_float(simulated_post.get("avg_r"), 0.0)
+            - _safe_float(base_post_summary.get("avg_r"), 0.0),
+            4,
+        ),
+        "removed_symbols": sorted({
+            str(row.get("symbol") or "").upper()
+            for row in removed_rows
+            if str(row.get("symbol") or "").strip()
+        }),
+    }
+
+
+def _p262_daily_cap_scenario(
+    name: str,
+    rows: list[dict],
+    start_dt,
+    pre_limit: int,
+    cap: int,
+) -> dict:
+    kept_rows, removed_rows = _p255_filter_daily_entry_cap(rows, cap)
+
+    kept_ids = {
+        id(row) for row in kept_rows
+    }
+    removed_fingerprints = {
+        (
+            str(row.get("symbol") or ""),
+            str(
+                row.get("entry_ts_utc")
+                or row.get("opened_at")
+                or row.get("ts_utc")
+                or ""
+            ),
+        )
+        for row in removed_rows
+    }
+
+    return _p262_filter_scenario(
+        name=name,
+        rows=rows,
+        start_dt=start_dt,
+        pre_limit=pre_limit,
+        keep_fn=lambda row: (
+            (
+                str(row.get("symbol") or ""),
+                str(
+                    row.get("entry_ts_utc")
+                    or row.get("opened_at")
+                    or row.get("ts_utc")
+                    or ""
+                ),
+            )
+            not in removed_fingerprints
+        ),
+        rationale=(
+            f"Closed-trade proxy limiting daily breakout entries "
+            f"to {int(cap)} per NY trading day."
+        ),
+        env_hint=f"SWING_MAX_NEW_ENTRIES_PER_DAY={int(cap)}",
+    )
+
+
+def _p262_daily_breakout_rollback_lab() -> dict:
+    start_utc = str(SWING_STALL_TUNING_START_UTC or "").strip()
+    start_dt = _p175_parse_dt(start_utc) if start_utc else None
+    pre_limit = max(
+        5,
+        int(SWING_ROLLBACK_LAB_PRE_WINDOW_TRADES or 30),
+    )
+
+    attributed = _p261_broker_preferred_attributed_rows()
+    all_rows = [
+        dict(row)
+        for row in list(attributed.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    breakout_rows = [
+        row for row in all_rows
+        if _p262_strategy(row) == "daily_breakout"
+    ]
+
+    if not start_dt:
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "daily_breakout_entry_cohort_rollback_lab",
+            "error": "SWING_STALL_TUNING_START_UTC_not_configured",
+            "recommended_action": "configure_post_change_start_utc",
+        }
+
+    pre_rows, post_entry_rows, carried_rows = (
+        _p262_split_entry_cohorts(
+            breakout_rows,
+            start_dt,
+            pre_limit,
+        )
+    )
+
+    post_exit_rows = [
+        row for row in breakout_rows
+        if (
+            _p212_closed_trade_ts(row)
+            and _p212_closed_trade_ts(row) >= start_dt
+        )
+    ]
+
+    coverage = _p262_attribute_coverage(breakout_rows)
+    post_coverage = _p262_attribute_coverage(post_entry_rows)
+
+    scenarios = [
+        _p262_filter_scenario(
+            name="exclude_defensive_entry_cohorts",
+            rows=breakout_rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            keep_fn=lambda row: _p262_regime(row) != "defensive",
+            rationale=(
+                "Tests whether defensive-regime breakout entries damaged "
+                "both historical and post-change performance."
+            ),
+            env_hint=(
+                "SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES=false"
+            ),
+            required_attribute="regime_mode",
+        ),
+        _p262_filter_scenario(
+            name="exclude_recovered_entry_cohorts",
+            rows=breakout_rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            keep_fn=lambda row: not bool(row.get("recovered")),
+            rationale=(
+                "Tests whether recovered-plan attribution or recovered "
+                "entries are driving the drawdown."
+            ),
+            env_hint="diagnostic_only_no_direct_env_change",
+            required_attribute="recovered",
+        ),
+        _p262_filter_scenario(
+            name="known_rank_minimum_95",
+            rows=breakout_rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            keep_fn=lambda row: (
+                _p262_rank(row) is None
+                or _p262_rank(row) >= 95.0
+            ),
+            rationale=(
+                "Applies a 95 rank floor only where historical rank "
+                "attribution is available. Unknown ranks remain included."
+            ),
+            env_hint=(
+                "SWING_TREND_BREAKOUT_MIN_RANK_SCORE=95;"
+                "SWING_NEUTRAL_BREAKOUT_MIN_RANK_SCORE=95;"
+                "SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE=95"
+            ),
+            required_attribute="rank_score",
+        ),
+        _p262_filter_scenario(
+            name="known_rank_minimum_100",
+            rows=breakout_rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            keep_fn=lambda row: (
+                _p262_rank(row) is None
+                or _p262_rank(row) >= 100.0
+            ),
+            rationale=(
+                "Applies a stricter 100 rank floor only to trades with "
+                "known historical rank attribution."
+            ),
+            env_hint=(
+                "SWING_TREND_BREAKOUT_MIN_RANK_SCORE=100;"
+                "SWING_NEUTRAL_BREAKOUT_MIN_RANK_SCORE=100;"
+                "SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE=100"
+            ),
+            required_attribute="rank_score",
+        ),
+        _p262_daily_cap_scenario(
+            name="max_3_daily_breakout_entries",
+            rows=breakout_rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            cap=3,
+        ),
+        _p262_daily_cap_scenario(
+            name="max_4_daily_breakout_entries",
+            rows=breakout_rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            cap=4,
+        ),
+    ]
+
+    minimum_coverage = float(
+        SWING_ROLLBACK_LAB_MIN_ATTRIBUTE_COVERAGE or 0.60
+    )
+    for scenario in scenarios:
+        required = str(
+            scenario.get("required_attribute") or ""
+        ).strip()
+        if required == "rank_score":
+            attribute_coverage = float(
+                coverage.get("rank_coverage") or 0.0
+            )
+        elif required == "regime_mode":
+            attribute_coverage = float(
+                coverage.get("regime_coverage") or 0.0
+            )
+        else:
+            attribute_coverage = 1.0
+
+        scenario["attribute_coverage"] = round(
+            attribute_coverage,
+            4,
+        )
+        scenario["coverage_sufficient"] = bool(
+            attribute_coverage >= minimum_coverage
+        )
+
+    scenarios.sort(
+        key=lambda row: (
+            bool(row.get("coverage_sufficient")),
+            _safe_float(row.get("post_gross_pnl_delta"), 0.0),
+            _safe_float(row.get("pre_gross_pnl_delta"), 0.0),
+        ),
+        reverse=True,
+    )
+
+    supported = [
+        row for row in scenarios
+        if row.get("coverage_sufficient")
+        and int(row.get("removed_post_count") or 0) > 0
+    ]
+    best_supported = supported[0] if supported else {}
+
+    carried_gross = _safe_float(
+        _p261_cohort_summary(carried_rows).get("gross_pnl"),
+        0.0,
+    )
+    post_exit_gross = _safe_float(
+        _p261_cohort_summary(post_exit_rows).get("gross_pnl"),
+        0.0,
+    )
+    carried_share = (
+        abs(carried_gross) / max(0.01, abs(post_exit_gross))
+        if post_exit_gross < 0
+        else 0.0
+    )
+
+    conclusions = []
+    if carried_rows:
+        conclusions.append(
+            "post_change_exit_losses_include_pre_change_entries"
+        )
+    if carried_share >= 0.40:
+        conclusions.append(
+            "do_not_attribute_drawdown_to_entry_changes_alone"
+        )
+    if int(post_coverage.get("rank_count") or 0) == 0:
+        conclusions.append(
+            "post_change_rank_attribution_insufficient"
+        )
+    if not supported:
+        conclusions.append(
+            "no_rollback_scenario_has_sufficient_support"
+        )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "daily_breakout_entry_cohort_rollback_lab",
+        "read_only": True,
+        "live_entry_rules_changed": False,
+        "drawdown_circuit_remains_required": True,
+        "post_change_start_utc": start_utc,
+        "pre_window_trade_limit": pre_limit,
+        "broker_preferred_source": {
+            "raw_count": attributed.get("raw_count"),
+            "kept_count": attributed.get("kept_count"),
+            "shadowed_worker_count": (
+                attributed.get("shadowed_worker_count")
+            ),
+            "attributed_exit_count": (
+                attributed.get("attributed_exit_count")
+            ),
+        },
+        "cohorts": {
+            "all_daily_breakout": _p261_cohort_summary(
+                breakout_rows
+            ),
+            "pre_change_entry_window": _p261_cohort_summary(
+                pre_rows
+            ),
+            "post_change_entries": _p261_cohort_summary(
+                post_entry_rows
+            ),
+            "post_change_exits": _p261_cohort_summary(
+                post_exit_rows
+            ),
+            "carried_into_post_change_window": (
+                _p261_cohort_summary(carried_rows)
+            ),
+        },
+        "carried_position_analysis": {
+            "count": len(carried_rows),
+            "gross_pnl": round(carried_gross, 4),
+            "share_of_post_exit_loss": round(
+                carried_share,
+                4,
+            ),
+            "symbols": sorted({
+                str(row.get("symbol") or "").upper()
+                for row in carried_rows
+                if str(row.get("symbol") or "").strip()
+            }),
+        },
+        "attribute_coverage": coverage,
+        "post_change_attribute_coverage": post_coverage,
+        "minimum_attribute_coverage": minimum_coverage,
+        "scenarios": scenarios,
+        "best_supported_scenario": best_supported,
+        "conclusions": conclusions,
+        "recent_post_change_entries": post_entry_rows[-25:],
+        "carried_rows": carried_rows[-25:],
+        "recommended_action": (
+            "review_best_supported_rollback_before_env_change"
+            if best_supported
+            else "improve_entry_attribution_before_rollback"
+        ),
+        "operator_constraints": [
+            "do_not_disable_drawdown_circuit_yet",
+            "do_not_change_exit_execution_from_this_lab",
+            "do_not_treat_removed_losers_as_proof_of_counterfactual_profit",
+            "reset_post_change_start_only_after_rollback_selection",
+        ],
+    }
+
 def _stall_exit_tuning_monitor(perf_state: dict | None = None) -> dict:
     state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
     state, _ = _patch175_enrich_state_if_needed(state)
@@ -24315,6 +24847,12 @@ def diagnostics_swing_post_change_drawdown():
     _ensure_runtime_state_loaded()
     perf_state = _recompute_strategy_performance_state()
     return _p261_post_change_drawdown_snapshot(perf_state=perf_state)
+
+@app.get("/diagnostics/daily_breakout_rollback_lab")
+def diagnostics_daily_breakout_rollback_lab():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return _p262_daily_breakout_rollback_lab()
 
 @app.get("/diagnostics/current_open_stall_risk_preview")
 def diagnostics_current_open_stall_risk_preview(request: Request):
