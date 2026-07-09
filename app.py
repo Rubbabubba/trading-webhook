@@ -1440,7 +1440,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-266-selected-entry-decision-attribution-backfill-release-truth"
+PATCH_VERSION = "patch-267-rollback-removed-row-evidence-defensive-release-recheck"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -24075,6 +24075,8 @@ def _p262_filter_scenario(
         "removed_post_count": len(removed_post),
         "removed_pre": _p261_cohort_summary(removed_pre),
         "removed_post": _p261_cohort_summary(removed_post),
+        "removed_pre_rows": removed_pre[-25:],
+        "removed_post_rows": removed_post[-25:],
         "pre_gross_pnl_delta": round(
             _safe_float(simulated_pre.get("gross_pnl"), 0.0)
             - _safe_float(base_pre_summary.get("gross_pnl"), 0.0),
@@ -24818,6 +24820,47 @@ def _p266_daily_breakout_release_truth(
             "operator_may_review_env_release"
             if release_candidate
             else "keep_daily_breakout_drawdown_circuit_active"
+        ),
+    }
+
+def _p267_defensive_release_recheck(p263: dict | None) -> dict:
+    p263 = dict(p263 or {})
+    scenarios = [
+        dict(row)
+        for row in list(p263.get("all_scenarios_ranked") or [])
+        if isinstance(row, dict)
+    ]
+    defensive = next(
+        (
+            row for row in scenarios
+            if str(row.get("scenario") or "") == "exclude_defensive_after_recovery"
+        ),
+        {},
+    )
+    confidence = dict(defensive.get("confidence_guard") or {})
+
+    return {
+        "scenario": defensive.get("scenario") or "exclude_defensive_after_recovery",
+        "scenario_present": bool(defensive),
+        "scenario_supported": bool(defensive.get("scenario_supported")),
+        "post_helpful": bool(defensive.get("post_helpful")),
+        "coverage_sufficient": bool(defensive.get("coverage_sufficient")),
+        "confidence_sufficient": bool(defensive.get("confidence_sufficient")),
+        "attribute_coverage": defensive.get("attribute_coverage"),
+        "removed_post_count": int(defensive.get("removed_post_count") or 0),
+        "removed_post_gross_pnl": (defensive.get("removed_post") or {}).get("gross_pnl"),
+        "post_gross_pnl_delta": defensive.get("post_gross_pnl_delta"),
+        "post_avg_r_delta": defensive.get("post_avg_r_delta"),
+        "confidence_checked_rows": int(confidence.get("checked_rows") or 0),
+        "confidence_supported_rows": int(confidence.get("supported_rows") or 0),
+        "confidence_coverage": confidence.get("high_confidence_coverage"),
+        "confidence_blockers": list(confidence.get("blockers") or []),
+        "scenario_blockers": list(defensive.get("scenario_blockers") or []),
+        "env_hint": defensive.get("env_hint"),
+        "release_interpretation": (
+            "defensive_rollback_has_supported_evidence"
+            if bool(defensive.get("scenario_supported")) and bool(defensive.get("post_helpful"))
+            else "defensive_rollback_not_supported_yet"
         ),
     }
 
@@ -25597,6 +25640,7 @@ def _p264_daily_breakout_circuit_release_criteria() -> dict:
         blockers=blockers,
         release_candidate=release_candidate,
     )
+    defensive_release_recheck = _p267_defensive_release_recheck(p263)
 
     return {
         "ok": True,
@@ -25605,6 +25649,7 @@ def _p264_daily_breakout_circuit_release_criteria() -> dict:
         "read_only": True,
         "release_candidate": release_candidate,
         "release_truth": release_truth,
+        "defensive_release_recheck": defensive_release_recheck,
         "blockers": blockers,
         "defensive_daily_breakout_rollback_active": defensive_rollback_active,
         "mean_reversion_preserved": True,
