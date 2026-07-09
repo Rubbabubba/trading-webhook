@@ -889,6 +889,18 @@ SWING_ROLLBACK_LAB_ATTRIBUTION_MATCH_HOURS = getenv_float_any(
     "SWING_ROLLBACK_LAB_ATTRIBUTION_MATCH_HOURS",
     default=72.0,
 )
+SWING_ENTRY_ATTRIBUTION_LOCK_MIN_CONFIDENCE = getenv_float_any(
+    "SWING_ENTRY_ATTRIBUTION_LOCK_MIN_CONFIDENCE",
+    default=0.80,
+)
+SWING_ENTRY_ATTRIBUTION_LOCK_MAX_LOOSE_MATCH_HOURS = getenv_float_any(
+    "SWING_ENTRY_ATTRIBUTION_LOCK_MAX_LOOSE_MATCH_HOURS",
+    default=6.0,
+)
+SWING_ROLLBACK_SCENARIO_MIN_HIGH_CONFIDENCE_COVERAGE = getenv_float_any(
+    "SWING_ROLLBACK_SCENARIO_MIN_HIGH_CONFIDENCE_COVERAGE",
+    default=0.80,
+)
 SWING_ROLLBACK_LAB_ENTRY_CAPS = str(
     getenv_any("SWING_ROLLBACK_LAB_ENTRY_CAPS", default="2,3,4,5") or "2,3,4,5"
 ).strip()
@@ -1420,7 +1432,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-264-defensive-daily-breakout-rollback-mean-reversion-preservation-circuit-release-criteria"
+PATCH_VERSION = "patch-265-immutable-entry-attribution-lock-rollback-scenario-confidence-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -24439,6 +24451,203 @@ def _p263_parse_entry_caps() -> list[int]:
 
     return caps or [2, 3, 4, 5]
 
+def _p265_trade_attribution_identity(row: dict | None) -> str:
+    row = dict(row or {})
+    pieces = [
+        str(row.get("symbol") or "").strip().upper(),
+        str(row.get("entry_order_id") or row.get("order_id") or "").strip(),
+        str(row.get("entry_ts_utc") or row.get("opened_at") or "").strip(),
+        str(row.get("entry_price") or "").strip(),
+        str(row.get("qty") or "").strip(),
+    ]
+    return "|".join(pieces)
+
+
+def _p265_existing_attribution_confidence(row: dict | None) -> dict:
+    row = dict(row or {})
+    has_rank = _p262_rank(row) is not None
+    has_regime = _p262_regime(row) != "unknown"
+    has_entry_type = _p262_entry_type(row) != "unknown"
+    has_selection_quality = row.get("selection_quality_score") not in (None, "", [], {})
+    has_breakout = row.get("breakout_level") not in (None, "", [], {})
+
+    present = sum([
+        bool(has_rank),
+        bool(has_regime),
+        bool(has_entry_type),
+        bool(has_selection_quality),
+        bool(has_breakout),
+    ])
+    confidence = present / 5.0
+
+    source = str(row.get("attribution_source") or "").strip().lower()
+    if source in {"paired_worker_exit", "decision_row", "decision_candidate", "decision_meta"}:
+        confidence = max(confidence, 0.90)
+    if row.get("entry_order_id") and row.get("entry_ts_utc") and present >= 3:
+        confidence = max(confidence, 0.85)
+    if row.get("recovered") and present < 3:
+        confidence = min(confidence, 0.60)
+
+    return {
+        "confidence": round(float(confidence), 4),
+        "source": source or "existing_row",
+        "has_rank": bool(has_rank),
+        "has_regime": bool(has_regime),
+        "has_entry_type": bool(has_entry_type),
+        "has_selection_quality_score": bool(has_selection_quality),
+        "has_breakout_level": bool(has_breakout),
+        "present_field_count": int(present),
+        "high_confidence": bool(confidence >= float(SWING_ENTRY_ATTRIBUTION_LOCK_MIN_CONFIDENCE or 0.80)),
+    }
+
+
+def _p265_candidate_match_confidence(match: dict | None) -> dict:
+    match = dict(match or {})
+    source = str(match.get("source") or "").strip().lower()
+    selected = bool(match.get("selected"))
+    distance = match.get("distance_hours")
+    try:
+        distance_hours = float(distance) if distance is not None else None
+    except Exception:
+        distance_hours = None
+
+    confidence = 0.0
+    reasons = []
+
+    if not match:
+        return {
+            "confidence": 0.0,
+            "high_confidence": False,
+            "source": "none",
+            "reasons": ["no_candidate_match"],
+        }
+
+    if "decision" in source:
+        confidence = max(confidence, 0.95)
+        reasons.append("decision_source")
+    if selected:
+        confidence = max(confidence, 0.90)
+        reasons.append("selected_candidate")
+    if "scan_history_selected" in source or "candidate_history_selected" in source:
+        confidence = max(confidence, 0.88)
+        reasons.append("selected_history")
+    if "last_swing_candidates" in source:
+        confidence = max(confidence, 0.70)
+        reasons.append("last_swing_candidate")
+    if "candidate_history" in source or "scan_history" in source:
+        confidence = max(confidence, 0.55)
+        reasons.append("unselected_history_match")
+
+    max_loose_hours = float(SWING_ENTRY_ATTRIBUTION_LOCK_MAX_LOOSE_MATCH_HOURS or 6.0)
+    if distance_hours is not None:
+        if distance_hours <= 1.0:
+            confidence = max(confidence, 0.85)
+            reasons.append("entry_time_within_1h")
+        elif distance_hours <= max_loose_hours:
+            confidence = max(confidence, 0.75)
+            reasons.append("entry_time_within_loose_window")
+        else:
+            confidence = min(confidence, 0.60)
+            reasons.append("entry_time_outside_loose_window")
+
+    if not selected and ("candidate_history" in source or "scan_history" in source):
+        confidence = min(confidence, 0.60)
+        reasons.append("unselected_match_downgraded")
+
+    return {
+        "confidence": round(float(confidence), 4),
+        "high_confidence": bool(confidence >= float(SWING_ENTRY_ATTRIBUTION_LOCK_MIN_CONFIDENCE or 0.80)),
+        "source": source or "unknown",
+        "selected": selected,
+        "distance_hours": round(distance_hours, 4) if distance_hours is not None else None,
+        "reasons": sorted(set(reasons)),
+    }
+
+
+def _p265_locked_attribution_summary(rows: list[dict] | None) -> dict:
+    rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
+    count = len(rows)
+    high = [row for row in rows if bool((row.get("p265_attribution_lock") or {}).get("high_confidence"))]
+    low = [row for row in rows if not bool((row.get("p265_attribution_lock") or {}).get("high_confidence"))]
+
+    source_counts: dict[str, int] = {}
+    for row in rows:
+        lock = dict(row.get("p265_attribution_lock") or {})
+        source = str(lock.get("source") or "unknown")
+        source_counts[source] = int(source_counts.get(source) or 0) + 1
+
+    return {
+        "row_count": count,
+        "high_confidence_count": len(high),
+        "low_confidence_count": len(low),
+        "high_confidence_coverage": round(len(high) / max(1, count), 4) if count else 0.0,
+        "min_confidence_required": float(SWING_ENTRY_ATTRIBUTION_LOCK_MIN_CONFIDENCE or 0.80),
+        "source_counts": source_counts,
+        "low_confidence_symbols": sorted({
+            str(row.get("symbol") or "").strip().upper()
+            for row in low
+            if str(row.get("symbol") or "").strip()
+        }),
+    }
+
+
+def _p265_scenario_confidence_guard(scenario: dict, rows: list[dict], required_attribute: str = "") -> dict:
+    rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
+    removed_fingerprints = {
+        (
+            str(row.get("symbol") or "").strip().upper(),
+            str(row.get("entry_order_id") or row.get("entry_ts_utc") or row.get("ts_utc") or ""),
+        )
+        for row in list(scenario.get("removed_post_rows") or [])
+        if isinstance(row, dict)
+    }
+
+    if not removed_fingerprints:
+        removed_symbols = {
+            str(sym or "").strip().upper()
+            for sym in list(scenario.get("removed_symbols") or [])
+            if str(sym or "").strip()
+        }
+        removed_rows = [
+            row for row in rows
+            if str(row.get("symbol") or "").strip().upper() in removed_symbols
+            and _p262_entry_dt(row) is not None
+        ]
+    else:
+        removed_rows = [
+            row for row in rows
+            if (
+                str(row.get("symbol") or "").strip().upper(),
+                str(row.get("entry_order_id") or row.get("entry_ts_utc") or row.get("ts_utc") or ""),
+            ) in removed_fingerprints
+        ]
+
+    post_removed = [
+        row for row in removed_rows
+        if _p212_closed_trade_ts(row) is not None
+    ]
+
+    high_conf_rows = [
+        row for row in post_removed
+        if bool((row.get("p265_attribution_lock") or {}).get("high_confidence"))
+    ]
+
+    coverage = round(len(high_conf_rows) / max(1, len(post_removed)), 4) if post_removed else 1.0
+    min_coverage = float(SWING_ROLLBACK_SCENARIO_MIN_HIGH_CONFIDENCE_COVERAGE or 0.80)
+
+    return {
+        "required_attribute": required_attribute or scenario.get("required_attribute"),
+        "checked_rows": len(post_removed),
+        "high_confidence_rows": len(high_conf_rows),
+        "high_confidence_coverage": coverage,
+        "min_high_confidence_coverage": min_coverage,
+        "confidence_sufficient": bool(coverage >= min_coverage),
+        "low_confidence_removed_symbols": sorted({
+            str(row.get("symbol") or "").strip().upper()
+            for row in post_removed
+            if not bool((row.get("p265_attribution_lock") or {}).get("high_confidence"))
+        }),
+    }
 
 def _p263_candidate_match_for_trade(row: dict | None) -> dict:
     trade = dict(row or {})
@@ -24562,55 +24771,85 @@ def _p263_candidate_match_for_trade(row: dict | None) -> dict:
 def _p263_enrich_trade_attribution(row: dict | None) -> dict:
     trade = dict(row or {})
     before_missing = _p263_missing_attribution_fields(trade)
+    existing_conf = _p265_existing_attribution_confidence(trade)
+
     sources = []
     recovered_fields = []
+    locked_from_existing = bool(existing_conf.get("high_confidence"))
 
-    match = _p263_candidate_match_for_trade(trade)
-    inferred = dict((match or {}).get("meta") or {})
-    if inferred:
-        sources.append(str(inferred.get("attribution_source") or "p263_candidate_match"))
+    match = {}
+    match_conf = {"confidence": 0.0, "high_confidence": False, "source": "none", "reasons": ["not_needed_existing_lock"]}
 
-    if not inferred:
-        fallback = _infer_recovered_plan_attribution(
-            str(trade.get("symbol") or ""),
-            str(trade.get("entry_order_id") or trade.get("order_id") or ""),
-        )
-        if fallback:
-            inferred = dict(fallback)
-            sources.append(str(inferred.get("attribution_source") or "p263_existing_recovered_plan_inference"))
+    if locked_from_existing:
+        inferred = {}
+        sources.append(str(existing_conf.get("source") or "existing_high_confidence"))
+    else:
+        match = _p263_candidate_match_for_trade(trade)
+        match_conf = _p265_candidate_match_confidence(match)
+        inferred = dict((match or {}).get("meta") or {})
+        if inferred:
+            sources.append(str(inferred.get("attribution_source") or "p263_candidate_match"))
 
-    for source_key, target_keys in {
-        "strategy_name": ["strategy_name"],
-        "signal": ["signal"],
-        "rank_score": ["rank_score"],
-        "selection_quality_score": ["selection_quality_score"],
-        "entry_type": ["entry_type"],
-        "regime_mode": ["entry_regime_mode", "regime_mode"],
-        "breakout_level": ["breakout_level"],
-        "stop_price": ["stop_price"],
-        "take_price": ["take_price", "target_price"],
-        "target_price": ["target_price"],
-        "risk_per_share": ["risk_per_share"],
-    }.items():
-        value = inferred.get(source_key)
-        if value in (None, "", [], {}):
-            continue
+        if not inferred:
+            fallback = _infer_recovered_plan_attribution(
+                str(trade.get("symbol") or ""),
+                str(trade.get("entry_order_id") or trade.get("order_id") or ""),
+            )
+            if fallback:
+                inferred = dict(fallback)
+                sources.append(str(inferred.get("attribution_source") or "p263_existing_recovered_plan_inference"))
+                match_conf = {
+                    "confidence": max(0.70, float(match_conf.get("confidence") or 0.0)),
+                    "high_confidence": False,
+                    "source": "fallback_recovered_plan_inference",
+                    "reasons": ["fallback_without_exact_entry_lock"],
+                }
 
-        for target_key in target_keys:
-            current = trade.get(target_key)
-            if target_key in {"strategy_name", "signal"}:
-                if _valid_strategy_identity(current):
-                    continue
-                value = _valid_strategy_identity(value)
-                if not value:
-                    continue
-            elif current not in (None, "", [], {}):
+    if not locked_from_existing:
+        for source_key, target_keys in {
+            "strategy_name": ["strategy_name"],
+            "signal": ["signal"],
+            "rank_score": ["rank_score"],
+            "selection_quality_score": ["selection_quality_score"],
+            "entry_type": ["entry_type"],
+            "regime_mode": ["entry_regime_mode", "regime_mode"],
+            "breakout_level": ["breakout_level"],
+            "stop_price": ["stop_price"],
+            "take_price": ["take_price", "target_price"],
+            "target_price": ["target_price"],
+            "risk_per_share": ["risk_per_share"],
+        }.items():
+            value = inferred.get(source_key)
+            if value in (None, "", [], {}):
                 continue
 
-            trade[target_key] = value
-            recovered_fields.append(target_key)
+            for target_key in target_keys:
+                current = trade.get(target_key)
+                if target_key in {"strategy_name", "signal"}:
+                    if _valid_strategy_identity(current):
+                        continue
+                    value = _valid_strategy_identity(value)
+                    if not value:
+                        continue
+                elif current not in (None, "", [], {}):
+                    continue
+
+                trade[target_key] = value
+                recovered_fields.append(target_key)
 
     after_missing = _p263_missing_attribution_fields(trade)
+    final_existing_conf = _p265_existing_attribution_confidence(trade)
+    final_confidence = max(
+        float(existing_conf.get("confidence") or 0.0),
+        float(match_conf.get("confidence") or 0.0),
+        float(final_existing_conf.get("confidence") or 0.0) if locked_from_existing else 0.0,
+    )
+
+    high_confidence = bool(
+        locked_from_existing
+        or final_confidence >= float(SWING_ENTRY_ATTRIBUTION_LOCK_MIN_CONFIDENCE or 0.80)
+    )
+
     trade["p263_attribution_recovered"] = bool(len(after_missing) < len(before_missing))
     trade["p263_attribution_recovered_fields"] = sorted(set(recovered_fields))
     trade["p263_attribution_missing_before"] = before_missing
@@ -24622,9 +24861,28 @@ def _p263_enrich_trade_attribution(row: dict | None) -> dict:
         "selected": bool(match.get("selected")) if match else False,
         "score": match.get("score") if match else None,
     }
+    trade["p265_attribution_lock"] = {
+        "locked": bool(high_confidence),
+        "high_confidence": bool(high_confidence),
+        "confidence": round(float(final_confidence), 4),
+        "identity": _p265_trade_attribution_identity(trade),
+        "source": (
+            str(existing_conf.get("source") or "existing_row")
+            if locked_from_existing
+            else str(match_conf.get("source") or trade.get("p263_attribution_source") or "unknown")
+        ),
+        "locked_from_existing": bool(locked_from_existing),
+        "candidate_match_confidence": match_conf,
+        "existing_confidence": existing_conf,
+        "missing_after": after_missing,
+        "note": (
+            "existing_attribution_preserved"
+            if locked_from_existing
+            else "candidate_or_fallback_attribution_not_immutable_unless_high_confidence"
+        ),
+    }
 
     return trade
-
 
 def _p263_attribution_recovery_summary(before_rows: list[dict], after_rows: list[dict]) -> dict:
     before = _p262_attribute_coverage(before_rows)
@@ -24794,8 +25052,9 @@ def _p263_quality_filter_scenarios(rows: list[dict], start_dt, pre_limit: int) -
     ]
 
 
-def _p263_mark_scenario_support(scenarios: list[dict], coverage: dict) -> list[dict]:
+def _p263_mark_scenario_support(scenarios: list[dict], coverage: dict, rows: list[dict] | None = None) -> list[dict]:
     minimum = float(SWING_ROLLBACK_LAB_MIN_ATTRIBUTE_COVERAGE or 0.60)
+    rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
 
     for scenario in scenarios:
         required = str(scenario.get("required_attribute") or "").strip()
@@ -24806,14 +25065,29 @@ def _p263_mark_scenario_support(scenarios: list[dict], coverage: dict) -> list[d
         else:
             attribute_coverage = 1.0
 
+        confidence_guard = _p265_scenario_confidence_guard(
+            scenario,
+            rows,
+            required_attribute=required,
+        )
+
         scenario["attribute_coverage"] = round(attribute_coverage, 4)
         scenario["coverage_sufficient"] = bool(attribute_coverage >= minimum)
+        scenario["confidence_guard"] = confidence_guard
+        scenario["confidence_sufficient"] = bool(confidence_guard.get("confidence_sufficient"))
+        scenario["scenario_supported"] = bool(
+            scenario["coverage_sufficient"]
+            and scenario["confidence_sufficient"]
+        )
         scenario["post_helpful"] = bool(float(scenario.get("post_gross_pnl_delta") or 0.0) > 0.0)
         scenario["pre_helpful"] = bool(float(scenario.get("pre_gross_pnl_delta") or 0.0) > 0.0)
 
+        if not scenario["confidence_sufficient"]:
+            scenario.setdefault("scenario_blockers", []).append("low_confidence_entry_attribution")
+
     scenarios.sort(
         key=lambda row: (
-            bool(row.get("coverage_sufficient")),
+            bool(row.get("scenario_supported")),
             bool(row.get("post_helpful")),
             _safe_float(row.get("post_gross_pnl_delta"), 0.0),
             _safe_float(row.get("pre_gross_pnl_delta"), 0.0),
@@ -24870,11 +25144,11 @@ def _p263_daily_breakout_attribution_recovery_lab() -> dict:
             )
         )
     scenarios.extend(_p263_quality_filter_scenarios(enriched_rows, start_dt, pre_limit))
-    scenarios = _p263_mark_scenario_support(scenarios, coverage_after)
+    scenarios = _p263_mark_scenario_support(scenarios, coverage_after, rows=enriched_rows)
 
     supported = [
         row for row in scenarios
-        if bool(row.get("coverage_sufficient"))
+        if bool(row.get("scenario_supported"))
         and (
             float(row.get("post_gross_pnl_delta") or 0.0) > 0.0
             or int(row.get("removed_post_count") or 0) > 0
@@ -24893,6 +25167,8 @@ def _p263_daily_breakout_attribution_recovery_lab() -> dict:
         conclusions.append("no_supported_rollback_selected_yet")
     if best_supported:
         conclusions.append("supported_rollback_candidate_available")
+    if any(not bool(row.get("confidence_sufficient")) for row in scenarios):
+        conclusions.append("some_scenarios_downgraded_for_low_confidence_attribution")
 
     return {
         "ok": True,
@@ -24919,6 +25195,7 @@ def _p263_daily_breakout_attribution_recovery_lab() -> dict:
             "carried_into_post_change_window": _p261_cohort_summary(carried_rows),
         },
         "attribution_recovery": recovery,
+        "immutable_attribution_lock": _p265_locked_attribution_summary(enriched_rows),
         "entry_time_cap_scenarios": [
             row for row in scenarios
             if str(row.get("scenario") or "").startswith("entry_time_max_")
@@ -24952,7 +25229,8 @@ def _p264_daily_breakout_circuit_release_criteria() -> dict:
     attribution = dict((p263.get("attribution_recovery") or {}).get("after") or {})
     best = dict(p263.get("best_supported_scenario") or {})
     best_name = str(best.get("scenario") or "").strip()
-    best_supported = bool(best.get("coverage_sufficient")) and bool(best.get("post_helpful"))
+    best_supported = bool(best.get("scenario_supported")) and bool(best.get("post_helpful"))
+    best_confidence = dict(best.get("confidence_guard") or {})
 
     rank_coverage = float(attribution.get("rank_coverage") or 0.0)
     regime_coverage = float(attribution.get("regime_coverage") or 0.0)
@@ -24969,7 +25247,9 @@ def _p264_daily_breakout_circuit_release_criteria() -> dict:
     if best_name != "exclude_defensive_after_recovery":
         blockers.append("best_supported_scenario_not_defensive_rollback")
     if not best_supported:
-        blockers.append("best_supported_scenario_not_post_helpful")
+        blockers.append("best_supported_scenario_not_post_helpful_or_low_confidence")
+    if best and not bool(best_confidence.get("confidence_sufficient")):
+        blockers.append("best_supported_scenario_low_confidence_attribution")
     if (
         SWING_DAILY_BREAKOUT_RELEASE_REQUIRE_DEFENSIVE_ROLLBACK
         and not defensive_rollback_active
@@ -25007,6 +25287,8 @@ def _p264_daily_breakout_circuit_release_criteria() -> dict:
             "totals": dict(circuit.get("totals") or {}),
         },
         "best_supported_scenario": best,
+        "best_supported_scenario_confidence": best_confidence,
+        "immutable_attribution_lock": dict(p263.get("immutable_attribution_lock") or {}),
         "attribution_coverage_after_recovery": attribution,
         "release_min_attribution_coverage": min_coverage,
         "recommended_action": (
