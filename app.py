@@ -901,6 +901,10 @@ SWING_ROLLBACK_SCENARIO_MIN_HIGH_CONFIDENCE_COVERAGE = getenv_float_any(
     "SWING_ROLLBACK_SCENARIO_MIN_HIGH_CONFIDENCE_COVERAGE",
     default=0.80,
 )
+SWING_ROLLBACK_SCENARIO_MIN_POST_REMOVED_ROWS = getenv_int_any(
+    "SWING_ROLLBACK_SCENARIO_MIN_POST_REMOVED_ROWS",
+    default=2,
+)
 SWING_ROLLBACK_LAB_ENTRY_CAPS = str(
     getenv_any("SWING_ROLLBACK_LAB_ENTRY_CAPS", default="2,3,4,5") or "2,3,4,5"
 ).strip()
@@ -1432,7 +1436,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-265-immutable-entry-attribution-lock-rollback-scenario-confidence-guard"
+PATCH_VERSION = "patch-265-hotfix-attribute-field-aware-confidence-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -24590,9 +24594,38 @@ def _p265_locked_attribution_summary(rows: list[dict] | None) -> dict:
         }),
     }
 
+def _p265_row_supports_required_attribute(row: dict | None, required_attribute: str = "", scenario_name: str = "") -> bool:
+    row = dict(row or {})
+    required = str(required_attribute or "").strip()
+    scenario = str(scenario_name or "").strip().lower()
+    lock = dict(row.get("p265_attribution_lock") or {})
+
+    if not bool(lock.get("high_confidence")):
+        return False
+
+    if required == "rank_score":
+        return _p262_rank(row) is not None
+
+    if required == "regime_mode":
+        return _p262_regime(row) != "unknown"
+
+    if required == "recovered":
+        return "recovered" in row
+
+    if scenario.startswith("entry_time_max_"):
+        return bool(
+            _p262_entry_dt(row) is not None
+            and (
+                str(row.get("entry_order_id") or "").strip()
+                or str(row.get("entry_ts_utc") or "").strip()
+            )
+        )
+
+    return True
 
 def _p265_scenario_confidence_guard(scenario: dict, rows: list[dict], required_attribute: str = "") -> dict:
     rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
+    scenario_name = str(scenario.get("scenario") or "").strip()
     removed_fingerprints = {
         (
             str(row.get("symbol") or "").strip().upper(),
@@ -24602,50 +24635,61 @@ def _p265_scenario_confidence_guard(scenario: dict, rows: list[dict], required_a
         if isinstance(row, dict)
     }
 
-    if not removed_fingerprints:
-        removed_symbols = {
-            str(sym or "").strip().upper()
-            for sym in list(scenario.get("removed_symbols") or [])
-            if str(sym or "").strip()
-        }
-        removed_rows = [
-            row for row in rows
-            if str(row.get("symbol") or "").strip().upper() in removed_symbols
-            and _p262_entry_dt(row) is not None
-        ]
-    else:
-        removed_rows = [
+    if removed_fingerprints:
+        checked_rows = [
             row for row in rows
             if (
                 str(row.get("symbol") or "").strip().upper(),
                 str(row.get("entry_order_id") or row.get("entry_ts_utc") or row.get("ts_utc") or ""),
             ) in removed_fingerprints
         ]
+    else:
+        checked_rows = []
 
-    post_removed = [
-        row for row in removed_rows
-        if _p212_closed_trade_ts(row) is not None
+    required = str(required_attribute or scenario.get("required_attribute") or "").strip()
+    supported_rows = [
+        row for row in checked_rows
+        if _p265_row_supports_required_attribute(
+            row,
+            required_attribute=required,
+            scenario_name=scenario_name,
+        )
     ]
 
-    high_conf_rows = [
-        row for row in post_removed
-        if bool((row.get("p265_attribution_lock") or {}).get("high_confidence"))
-    ]
-
-    coverage = round(len(high_conf_rows) / max(1, len(post_removed)), 4) if post_removed else 1.0
+    coverage = round(len(supported_rows) / max(1, len(checked_rows)), 4) if checked_rows else 0.0
     min_coverage = float(SWING_ROLLBACK_SCENARIO_MIN_HIGH_CONFIDENCE_COVERAGE or 0.80)
+    min_post_rows = int(SWING_ROLLBACK_SCENARIO_MIN_POST_REMOVED_ROWS or 2)
+
+    blockers = []
+    if len(checked_rows) < min_post_rows:
+        blockers.append("post_removed_sample_below_min")
+    if coverage < min_coverage:
+        blockers.append("required_attribute_confidence_below_min")
+
+    confidence_sufficient = bool(
+        len(checked_rows) >= min_post_rows
+        and coverage >= min_coverage
+    )
 
     return {
-        "required_attribute": required_attribute or scenario.get("required_attribute"),
-        "checked_rows": len(post_removed),
-        "high_confidence_rows": len(high_conf_rows),
+        "required_attribute": required or None,
+        "scenario_name": scenario_name,
+        "checked_rows": len(checked_rows),
+        "supported_rows": len(supported_rows),
+        "high_confidence_rows": len(supported_rows),
         "high_confidence_coverage": coverage,
         "min_high_confidence_coverage": min_coverage,
-        "confidence_sufficient": bool(coverage >= min_coverage),
+        "min_post_removed_rows": min_post_rows,
+        "confidence_sufficient": confidence_sufficient,
+        "blockers": blockers,
         "low_confidence_removed_symbols": sorted({
             str(row.get("symbol") or "").strip().upper()
-            for row in post_removed
-            if not bool((row.get("p265_attribution_lock") or {}).get("high_confidence"))
+            for row in checked_rows
+            if not _p265_row_supports_required_attribute(
+                row,
+                required_attribute=required,
+                scenario_name=scenario_name,
+            )
         }),
     }
 
@@ -25083,7 +25127,9 @@ def _p263_mark_scenario_support(scenarios: list[dict], coverage: dict, rows: lis
         scenario["pre_helpful"] = bool(float(scenario.get("pre_gross_pnl_delta") or 0.0) > 0.0)
 
         if not scenario["confidence_sufficient"]:
-            scenario.setdefault("scenario_blockers", []).append("low_confidence_entry_attribution")
+            scenario.setdefault("scenario_blockers", []).extend(
+                list(confidence_guard.get("blockers") or ["low_confidence_entry_attribution"])
+            )
 
     scenarios.sort(
         key=lambda row: (
