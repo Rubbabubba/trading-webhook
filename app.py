@@ -1397,7 +1397,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-261-swing-post-change-drawdown-circuit-stall-loss-guard-attribution-entry-cohort-rollback"
+PATCH_VERSION = "patch-261-hotfix-candidate-drawdown-circuit-truth-selected-symbol-suppression"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -4147,6 +4147,12 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
         'mode_thresholds': dict(preview.get('mode_thresholds') or {}),
         'selected_symbols': list(selected_symbols),
         'eligible_but_not_selected': [dict(r) for r in (preview.get('eligible_but_not_selected') or []) if isinstance(r, dict)],
+        'post_change_drawdown_circuit': dict(
+            preview.get('post_change_drawdown_circuit') or {}
+        ),
+        'blocked_by_post_change_drawdown': bool(
+            preview.get('blocked_by_post_change_drawdown')
+        ),
         'top_candidates': top_candidates[:max(5, min(int(limit or 25), 100))],
         'preview_plans': dict(preview_plans),
     })
@@ -4156,6 +4162,12 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
         'symbols': list(symbols),
         'summary': summary,
         'preview_plans': dict(preview_plans),
+        'post_change_drawdown_circuit': dict(
+            preview.get('post_change_drawdown_circuit') or {}
+        ),
+        'blocked_by_post_change_drawdown': bool(
+            preview.get('blocked_by_post_change_drawdown')
+        ),
         '_scan_source': 'current_runtime_preview',
     }
     return scan
@@ -17620,6 +17632,18 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
     if regime.get('favorable') is False and not bool(thresholds.get('allow_entries_when_regime_unfavorable')):
         global_block_reasons.append('weak_tape')
 
+    post_change_drawdown = _p261_post_change_drawdown_snapshot()
+    breakout_drawdown_blocked = bool(
+        STRATEGY_MODE == "swing"
+        and post_change_drawdown.get("block_new_entries")
+        and BREAKOUT_STRATEGY_NAME
+        in set(post_change_drawdown.get("guarded_strategies") or [])
+    )
+    if breakout_drawdown_blocked:
+        global_block_reasons.append(
+            "swing_post_change_drawdown_circuit"
+        )
+
     exposure = _current_portfolio_exposure_breakdown()
     open_total = float(exposure.get('total') or 0.0)
     open_strategy = float(exposure.get('strategy_managed') or 0.0)
@@ -17707,6 +17731,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         "regime_mode": regime_mode,
         "mode_thresholds": thresholds,
         "global_block_reasons": global_block_reasons,
+        "post_change_drawdown_circuit": post_change_drawdown,
+        "blocked_by_post_change_drawdown": breakout_drawdown_blocked,
         "eligible_total": len(approved),
         "selected_total": len(selected_symbols),
         "selected_symbols": selected_symbols,
@@ -19671,6 +19697,13 @@ def _diagnostics_swing_blockers() -> dict:
     regime_thresholds = _regime_mode_thresholds(regime_mode)
     regime_blocked = bool(regime_favorable is False and not bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')))
     daily_halt_blocked = bool(daily_halt_active() or daily_stop_hit())
+    post_change_drawdown = _p261_post_change_drawdown_snapshot()
+    breakout_drawdown_blocked = bool(
+        STRATEGY_MODE == "swing"
+        and post_change_drawdown.get("block_new_entries")
+        and BREAKOUT_STRATEGY_NAME
+        in set(post_change_drawdown.get("guarded_strategies") or [])
+    )
     effective_dry_run = effective_entry_dry_run("diagnostics_swing")
     corr_groups = _correlation_groups_list()
     exposure = _current_portfolio_exposure_breakdown()
@@ -19711,6 +19744,8 @@ def _diagnostics_swing_blockers() -> dict:
             'allow_entries_when_regime_unfavorable': bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')),
         },
         'blocked_by_weak_regime': regime_blocked,
+        'blocked_by_post_change_drawdown': breakout_drawdown_blocked,
+        'post_change_drawdown_circuit': post_change_drawdown,
         'remaining_new_entries_today': int(remaining_today),
         'blocked_by_entry_cap': bool(remaining_today <= 0),
         'max_new_entries_per_day': int(SWING_MAX_NEW_ENTRIES_PER_DAY),
@@ -25591,6 +25626,11 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         if bool((item or {}).get('selection_blockers'))
     ]
     blockers = _diagnostics_swing_blockers()
+    post_change_drawdown = dict(
+        preview.get('post_change_drawdown_circuit')
+        or blockers.get('post_change_drawdown_circuit')
+        or {}
+    )
     payload = {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -25598,6 +25638,10 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         'payload_mode': 'full' if full else 'summary',
         'full_endpoint': '/diagnostics/candidates_full',
         'truth_source': source,
+        'post_change_drawdown_circuit': post_change_drawdown,
+        'blocked_by_post_change_drawdown': bool(
+            post_change_drawdown.get('block_new_entries')
+        ),
         'regime': {
             'ts_utc': (preview.get('regime') or LAST_REGIME_SNAPSHOT or {}).get('ts_utc'),
             'favorable': (preview.get('regime') or LAST_REGIME_SNAPSHOT or {}).get('favorable'),
@@ -25609,6 +25653,9 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
             'market_open_now': bool((blockers or {}).get('market_open_now')),
             'blocked_by_market_hours': bool((blockers or {}).get('blocked_by_market_hours')),
             'blocked_by_weak_regime': bool((blockers or {}).get('blocked_by_weak_regime')),
+            'blocked_by_post_change_drawdown': bool(
+                (blockers or {}).get('blocked_by_post_change_drawdown')
+            ),
             'blocked_by_entry_cap': bool((blockers or {}).get('blocked_by_entry_cap')),
             'blocked_by_portfolio_cap': bool((blockers or {}).get('blocked_by_portfolio_cap')),
             'remaining_new_entries_today': int((blockers or {}).get('remaining_new_entries_today') or 0),
