@@ -897,6 +897,10 @@ SWING_ENTRY_ATTRIBUTION_LOCK_MAX_LOOSE_MATCH_HOURS = getenv_float_any(
     "SWING_ENTRY_ATTRIBUTION_LOCK_MAX_LOOSE_MATCH_HOURS",
     default=6.0,
 )
+SWING_ENTRY_DECISION_BACKFILL_MAX_HOURS = getenv_float_any(
+    "SWING_ENTRY_DECISION_BACKFILL_MAX_HOURS",
+    default=96.0,
+)
 SWING_ROLLBACK_SCENARIO_MIN_HIGH_CONFIDENCE_COVERAGE = getenv_float_any(
     "SWING_ROLLBACK_SCENARIO_MIN_HIGH_CONFIDENCE_COVERAGE",
     default=0.80,
@@ -1436,7 +1440,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-265-hotfix-attribute-field-aware-confidence-guard"
+PATCH_VERSION = "patch-266-selected-entry-decision-attribution-backfill-release-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -24487,6 +24491,8 @@ def _p265_existing_attribution_confidence(row: dict | None) -> dict:
     source = str(row.get("attribution_source") or "").strip().lower()
     if source in {"paired_worker_exit", "decision_row", "decision_candidate", "decision_meta"}:
         confidence = max(confidence, 0.90)
+    if source == "p266_selected_entry_decision_backfill" and present >= 3:
+        confidence = max(confidence, 0.95)
     if row.get("entry_order_id") and row.get("entry_ts_utc") and present >= 3:
         confidence = max(confidence, 0.85)
     if row.get("recovered") and present < 3:
@@ -24567,6 +24573,253 @@ def _p265_candidate_match_confidence(match: dict | None) -> dict:
         "reasons": sorted(set(reasons)),
     }
 
+def _p266_decision_row_dt(row: dict | None):
+    row = dict(row or {})
+    return _p175_parse_dt(
+        row.get("ts_utc")
+        or row.get("created_at")
+        or row.get("submitted_at")
+        or row.get("ts_ny")
+    )
+
+
+def _p266_selected_entry_decision_backfill(row: dict | None) -> dict:
+    trade = dict(row or {})
+    sym = str(trade.get("symbol") or "").strip().upper()
+    order_id = str(
+        trade.get("entry_order_id")
+        or trade.get("order_id")
+        or ""
+    ).strip()
+    entry_dt = _p262_entry_dt(trade)
+    max_hours = max(1.0, float(SWING_ENTRY_DECISION_BACKFILL_MAX_HOURS or 96.0))
+
+    if not sym:
+        return {"applied": False, "reason": "missing_symbol"}
+
+    decision_rows = [dict(item or {}) for item in list(DECISIONS or [])]
+    decision_rows.extend(_read_journal(limit=JOURNAL_BOOTSTRAP_LIMIT, symbol=sym))
+
+    matches = []
+    for decision in decision_rows:
+        if str(decision.get("symbol") or "").strip().upper() != sym:
+            continue
+
+        event = str(decision.get("event") or "").strip().upper()
+        action = str(decision.get("action") or "").strip().lower()
+        if event not in {"ENTRY", "CANDIDATE", "SCAN"}:
+            continue
+
+        details = dict(decision.get("details") or {}) if isinstance(decision.get("details"), dict) else {}
+        row_order_id = str(
+            details.get("entry_order_id")
+            or details.get("order_id")
+            or decision.get("entry_order_id")
+            or decision.get("order_id")
+            or ""
+        ).strip()
+
+        exact_order_match = bool(order_id and row_order_id and row_order_id == order_id)
+        selected_like = bool(
+            action in {
+                "order_submitted",
+                "submitted",
+                "filled",
+                "candidate_selected",
+                "selected",
+                "planned",
+            }
+            or details.get("selected") is True
+            or details.get("submitted") is True
+        )
+
+        if not exact_order_match and not selected_like:
+            continue
+
+        decision_dt = _p266_decision_row_dt(decision)
+        distance_hours = None
+        if entry_dt and decision_dt:
+            distance_hours = abs((entry_dt - decision_dt).total_seconds()) / 3600.0
+            if not exact_order_match and distance_hours > max_hours:
+                continue
+
+        meta = dict(details.get("meta") or {}) if isinstance(details.get("meta"), dict) else {}
+        candidate = dict(meta.get("candidate") or {}) if isinstance(meta.get("candidate"), dict) else {}
+        inferred = _candidate_attribution_meta(candidate, "p266_selected_entry_decision_candidate")
+        inferred = _merge_attribution_meta(inferred, _candidate_attribution_meta(meta, "p266_selected_entry_decision_meta"))
+        inferred = _merge_attribution_meta(inferred, _candidate_attribution_meta(details, "p266_selected_entry_decision_details"))
+        inferred = _merge_attribution_meta(inferred, _candidate_attribution_meta(decision, "p266_selected_entry_decision_row"))
+
+        if not inferred:
+            continue
+
+        score = 0.0
+        if exact_order_match:
+            score += 1000.0
+        if selected_like:
+            score += 150.0
+        if event == "ENTRY":
+            score += 75.0
+        if distance_hours is not None:
+            score += max(0.0, 100.0 - distance_hours)
+
+        matches.append({
+            "score": round(score, 4),
+            "event": event,
+            "action": action,
+            "source": "p266_selected_entry_decision_backfill",
+            "exact_order_match": exact_order_match,
+            "selected_like": selected_like,
+            "distance_hours": round(distance_hours, 4) if distance_hours is not None else None,
+            "order_id": row_order_id,
+            "meta": inferred,
+        })
+
+    if not matches:
+        return {"applied": False, "reason": "no_selected_entry_decision_match"}
+
+    matches.sort(
+        key=lambda item: (
+            float(item.get("score") or 0.0),
+            bool(item.get("exact_order_match")),
+            bool(item.get("selected_like")),
+        ),
+        reverse=True,
+    )
+    best = matches[0]
+    inferred = dict(best.get("meta") or {})
+
+    recovered_fields = []
+    for source_key, target_keys in {
+        "strategy_name": ["strategy_name"],
+        "signal": ["signal"],
+        "rank_score": ["rank_score"],
+        "selection_quality_score": ["selection_quality_score"],
+        "entry_type": ["entry_type"],
+        "regime_mode": ["entry_regime_mode", "regime_mode"],
+        "breakout_level": ["breakout_level"],
+        "stop_price": ["stop_price"],
+        "take_price": ["take_price", "target_price"],
+        "target_price": ["target_price"],
+        "risk_per_share": ["risk_per_share"],
+    }.items():
+        value = inferred.get(source_key)
+        if value in (None, "", [], {}):
+            continue
+
+        for target_key in target_keys:
+            current = trade.get(target_key)
+            if target_key in {"strategy_name", "signal"}:
+                if _valid_strategy_identity(current):
+                    continue
+                value = _valid_strategy_identity(value)
+                if not value:
+                    continue
+            elif current not in (None, "", [], {}):
+                continue
+
+            trade[target_key] = value
+            recovered_fields.append(target_key)
+
+    if not recovered_fields:
+        return {
+            "applied": False,
+            "reason": "selected_entry_decision_match_no_missing_fields",
+            "match": {key: best.get(key) for key in ["source", "event", "action", "exact_order_match", "selected_like", "distance_hours", "score"]},
+        }
+
+    prior_source = str(trade.get("attribution_source") or "").strip().lower()
+    if prior_source in {"", "fallback_breakout", "fallback_recovered_plan_inference", "p263_existing_recovered_plan_inference"}:
+        trade["attribution_source"] = "p266_selected_entry_decision_backfill"
+
+    trade["p266_selected_decision_backfill"] = {
+        "applied": True,
+        "recovered_fields": sorted(set(recovered_fields)),
+        "match": {key: best.get(key) for key in ["source", "event", "action", "exact_order_match", "selected_like", "distance_hours", "score"]},
+    }
+
+    return {
+        "applied": True,
+        "trade": trade,
+        "recovered_fields": sorted(set(recovered_fields)),
+        "match": best,
+    }
+
+
+def _p266_selected_decision_backfill_summary(rows: list[dict] | None) -> dict:
+    rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
+    applied = [
+        row for row in rows
+        if bool((row.get("p266_selected_decision_backfill") or {}).get("applied"))
+    ]
+
+    return {
+        "row_count": len(rows),
+        "backfilled_count": len(applied),
+        "backfilled_symbols": sorted({
+            str(row.get("symbol") or "").strip().upper()
+            for row in applied
+            if str(row.get("symbol") or "").strip()
+        }),
+        "recovered_field_counts": {
+            field: sum(
+                1 for row in applied
+                if field in list((row.get("p266_selected_decision_backfill") or {}).get("recovered_fields") or [])
+            )
+            for field in [
+                "rank_score",
+                "entry_regime_mode",
+                "regime_mode",
+                "entry_type",
+                "selection_quality_score",
+                "breakout_level",
+            ]
+        },
+    }
+
+
+def _p266_daily_breakout_release_truth(
+    p263: dict | None,
+    circuit: dict | None,
+    blockers: list[str] | None,
+    release_candidate: bool,
+) -> dict:
+    p263 = dict(p263 or {})
+    circuit = dict(circuit or {})
+    blockers = list(blockers or [])
+    best = dict(p263.get("best_supported_scenario") or {})
+    lock = dict(p263.get("immutable_attribution_lock") or {})
+    backfill = dict(p263.get("selected_entry_decision_backfill") or {})
+
+    if release_candidate:
+        status = "release_candidate_ready_for_operator_review"
+    elif not p263.get("ok"):
+        status = "blocked_recovery_lab_not_ok"
+    elif not best:
+        status = "blocked_no_supported_rollback_scenario"
+    elif blockers:
+        status = "blocked_release_criteria_not_met"
+    else:
+        status = "blocked_unknown"
+
+    return {
+        "status": status,
+        "release_candidate": bool(release_candidate),
+        "safe_to_release_broad_daily_breakout_circuit": bool(release_candidate),
+        "broad_circuit_currently_blocking": bool(circuit.get("block_new_entries")),
+        "best_supported_scenario": str(best.get("scenario") or ""),
+        "best_supported_post_helpful": bool(best.get("post_helpful")),
+        "best_supported_confidence_sufficient": bool((best.get("confidence_guard") or {}).get("confidence_sufficient")),
+        "immutable_high_confidence_coverage": lock.get("high_confidence_coverage"),
+        "selected_decision_backfilled_count": backfill.get("backfilled_count"),
+        "selected_decision_backfilled_symbols": list(backfill.get("backfilled_symbols") or []),
+        "blockers": blockers,
+        "operator_action": (
+            "operator_may_review_env_release"
+            if release_candidate
+            else "keep_daily_breakout_drawdown_circuit_active"
+        ),
+    }
 
 def _p265_locked_attribution_summary(rows: list[dict] | None) -> dict:
     rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
@@ -24815,10 +25068,17 @@ def _p263_candidate_match_for_trade(row: dict | None) -> dict:
 def _p263_enrich_trade_attribution(row: dict | None) -> dict:
     trade = dict(row or {})
     before_missing = _p263_missing_attribution_fields(trade)
+
+    selected_decision_backfill = _p266_selected_entry_decision_backfill(trade)
+    p266_recovered_fields = []
+    if bool(selected_decision_backfill.get("applied")):
+        trade = dict(selected_decision_backfill.get("trade") or trade)
+        p266_recovered_fields = list(selected_decision_backfill.get("recovered_fields") or [])
+
     existing_conf = _p265_existing_attribution_confidence(trade)
 
     sources = []
-    recovered_fields = []
+    recovered_fields = list(p266_recovered_fields)
     locked_from_existing = bool(existing_conf.get("high_confidence"))
 
     match = {}
@@ -24886,13 +25146,16 @@ def _p263_enrich_trade_attribution(row: dict | None) -> dict:
     final_confidence = max(
         float(existing_conf.get("confidence") or 0.0),
         float(match_conf.get("confidence") or 0.0),
-        float(final_existing_conf.get("confidence") or 0.0) if locked_from_existing else 0.0,
+        float(final_existing_conf.get("confidence") or 0.0),
     )
 
     high_confidence = bool(
         locked_from_existing
         or final_confidence >= float(SWING_ENTRY_ATTRIBUTION_LOCK_MIN_CONFIDENCE or 0.80)
     )
+
+    if bool(selected_decision_backfill.get("applied")):
+        sources.append("p266_selected_entry_decision_backfill")
 
     trade["p263_attribution_recovered"] = bool(len(after_missing) < len(before_missing))
     trade["p263_attribution_recovered_fields"] = sorted(set(recovered_fields))
@@ -24905,6 +25168,14 @@ def _p263_enrich_trade_attribution(row: dict | None) -> dict:
         "selected": bool(match.get("selected")) if match else False,
         "score": match.get("score") if match else None,
     }
+    trade.setdefault(
+        "p266_selected_decision_backfill",
+        {
+            "applied": False,
+            "reason": selected_decision_backfill.get("reason"),
+            "match": selected_decision_backfill.get("match"),
+        },
+    )
     trade["p265_attribution_lock"] = {
         "locked": bool(high_confidence),
         "high_confidence": bool(high_confidence),
@@ -24913,7 +25184,7 @@ def _p263_enrich_trade_attribution(row: dict | None) -> dict:
         "source": (
             str(existing_conf.get("source") or "existing_row")
             if locked_from_existing
-            else str(match_conf.get("source") or trade.get("p263_attribution_source") or "unknown")
+            else str(match_conf.get("source") or trade.get("attribution_source") or trade.get("p263_attribution_source") or "unknown")
         ),
         "locked_from_existing": bool(locked_from_existing),
         "candidate_match_confidence": match_conf,
@@ -25209,6 +25480,8 @@ def _p263_daily_breakout_attribution_recovery_lab() -> dict:
         conclusions.append("regime_attribution_improved")
     if carried_rows:
         conclusions.append("post_change_losses_include_carried_positions")
+    if int(_p266_selected_decision_backfill_summary(enriched_rows).get("backfilled_count") or 0) > 0:
+        conclusions.append("selected_entry_decision_backfill_applied")
     if not best_supported:
         conclusions.append("no_supported_rollback_selected_yet")
     if best_supported:
@@ -25242,6 +25515,7 @@ def _p263_daily_breakout_attribution_recovery_lab() -> dict:
         },
         "attribution_recovery": recovery,
         "immutable_attribution_lock": _p265_locked_attribution_summary(enriched_rows),
+        "selected_entry_decision_backfill": _p266_selected_decision_backfill_summary(enriched_rows),
         "entry_time_cap_scenarios": [
             row for row in scenarios
             if str(row.get("scenario") or "").startswith("entry_time_max_")
@@ -25317,12 +25591,20 @@ def _p264_daily_breakout_circuit_release_criteria() -> dict:
         and circuit.get("block_new_entries")
     )
 
+    release_truth = _p266_daily_breakout_release_truth(
+        p263=p263,
+        circuit=circuit,
+        blockers=blockers,
+        release_candidate=release_candidate,
+    )
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "daily_breakout_circuit_release_criteria",
         "read_only": True,
         "release_candidate": release_candidate,
+        "release_truth": release_truth,
         "blockers": blockers,
         "defensive_daily_breakout_rollback_active": defensive_rollback_active,
         "mean_reversion_preserved": True,
@@ -25335,6 +25617,7 @@ def _p264_daily_breakout_circuit_release_criteria() -> dict:
         "best_supported_scenario": best,
         "best_supported_scenario_confidence": best_confidence,
         "immutable_attribution_lock": dict(p263.get("immutable_attribution_lock") or {}),
+        "selected_entry_decision_backfill": dict(p263.get("selected_entry_decision_backfill") or {}),
         "attribution_coverage_after_recovery": attribution,
         "release_min_attribution_coverage": min_coverage,
         "recommended_action": (
