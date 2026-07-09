@@ -885,6 +885,13 @@ SWING_ROLLBACK_LAB_MIN_ATTRIBUTE_COVERAGE = getenv_float_any(
     "SWING_ROLLBACK_LAB_MIN_ATTRIBUTE_COVERAGE",
     default=0.60,
 )
+SWING_ROLLBACK_LAB_ATTRIBUTION_MATCH_HOURS = getenv_float_any(
+    "SWING_ROLLBACK_LAB_ATTRIBUTION_MATCH_HOURS",
+    default=72.0,
+)
+SWING_ROLLBACK_LAB_ENTRY_CAPS = str(
+    getenv_any("SWING_ROLLBACK_LAB_ENTRY_CAPS", default="2,3,4,5") or "2,3,4,5"
+).strip()
 SWING_OPENING_DAMAGE_GUARD_ENABLED = env_bool_any("SWING_OPENING_DAMAGE_GUARD_ENABLED", default=True)
 SWING_OPENING_DAMAGE_MAX_LOSS_R = getenv_float_any("SWING_OPENING_DAMAGE_MAX_LOSS_R", default=-1.10)
 SWING_OPENING_DAMAGE_GRACE_MIN = getenv_int_any("SWING_OPENING_DAMAGE_GRACE_MIN", default=5)
@@ -1405,7 +1412,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-262-daily-breakout-entry-cohort-rollback-lab-pre-post-change-strategy-simulation"
+PATCH_VERSION = "patch-263-daily-breakout-attribution-recovery-entry-time-replay-rollback-simulator"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -24361,6 +24368,542 @@ def _p262_daily_breakout_rollback_lab() -> dict:
         ],
     }
 
+def _p263_missing_attribution_fields(row: dict | None) -> list[str]:
+    row = dict(row or {})
+    missing = []
+
+    if _p262_rank(row) is None:
+        missing.append("rank_score")
+    if _p262_regime(row) == "unknown":
+        missing.append("regime_mode")
+    if _p262_entry_type(row) == "unknown":
+        missing.append("entry_type")
+    if row.get("selection_quality_score") in (None, "", [], {}):
+        missing.append("selection_quality_score")
+    if row.get("breakout_level") in (None, "", [], {}):
+        missing.append("breakout_level")
+
+    return missing
+
+
+def _p263_parse_entry_caps() -> list[int]:
+    caps = []
+    for raw in str(SWING_ROLLBACK_LAB_ENTRY_CAPS or "").split(","):
+        try:
+            value = int(str(raw or "").strip())
+        except Exception:
+            continue
+        if value > 0 and value not in caps:
+            caps.append(value)
+
+    return caps or [2, 3, 4, 5]
+
+
+def _p263_candidate_match_for_trade(row: dict | None) -> dict:
+    trade = dict(row or {})
+    sym = str(trade.get("symbol") or "").strip().upper()
+    entry_dt = _p262_entry_dt(trade)
+    max_hours = max(1.0, float(SWING_ROLLBACK_LAB_ATTRIBUTION_MATCH_HOURS or 72.0))
+
+    if not sym:
+        return {}
+
+    matches = []
+
+    def add_candidate(candidate: dict | None, source: str, scan_ts: object = None, selected_symbols: set[str] | None = None, regime_mode: object = None):
+        candidate = dict(candidate or {})
+        if str(candidate.get("symbol") or "").strip().upper() != sym:
+            return
+
+        selected_symbols = selected_symbols or set()
+        enriched_candidate = dict(candidate)
+        if scan_ts not in (None, "", [], {}) and enriched_candidate.get("scan_ts_utc") in (None, "", [], {}):
+            enriched_candidate["scan_ts_utc"] = scan_ts
+        if regime_mode not in (None, "", [], {}) and enriched_candidate.get("regime_mode") in (None, "", [], {}):
+            enriched_candidate["regime_mode"] = regime_mode
+
+        candidate_dt = _p175_parse_dt(
+            enriched_candidate.get("scan_ts_utc")
+            or enriched_candidate.get("ts_utc")
+            or enriched_candidate.get("candidate_ts")
+        )
+
+        distance_hours = None
+        if entry_dt and candidate_dt:
+            distance_hours = abs((entry_dt - candidate_dt).total_seconds()) / 3600.0
+            if distance_hours > max_hours:
+                return
+
+        meta = _candidate_attribution_meta(enriched_candidate, source)
+        if not meta:
+            meta = {
+                "strategy_name": BREAKOUT_STRATEGY_NAME,
+                "signal": BREAKOUT_STRATEGY_NAME,
+                "attribution_source": source,
+            }
+
+        selected = sym in selected_symbols or bool(enriched_candidate.get("selected"))
+        score = 0.0
+        if distance_hours is not None:
+            score += max(0.0, 1000.0 - distance_hours)
+        else:
+            score += 25.0
+        if selected:
+            score += 100.0
+        if bool(enriched_candidate.get("eligible")):
+            score += 25.0
+        if _safe_float(enriched_candidate.get("rank_score"), 0.0) > 0:
+            score += 10.0
+
+        matches.append({
+            "score": round(score, 4),
+            "distance_hours": round(distance_hours, 4) if distance_hours is not None else None,
+            "source": source,
+            "selected": bool(selected),
+            "candidate": enriched_candidate,
+            "meta": meta,
+        })
+
+    for hist in reversed(list(CANDIDATE_HISTORY or [])):
+        if not isinstance(hist, dict):
+            continue
+        selected = {str(x or "").strip().upper() for x in list(hist.get("selected") or [])}
+        rows = []
+        rows.extend(list(hist.get("candidates") or []))
+        rows.extend(list(hist.get("adaptive_capacity_candidates") or []))
+        rows.extend(list(hist.get("shadow_candidates") or []))
+        rows.extend(list((hist.get("summary") or {}).get("top_candidates") or []))
+        for candidate in rows:
+            if isinstance(candidate, dict):
+                add_candidate(
+                    candidate,
+                    source="p263_candidate_history_selected" if sym in selected else "p263_candidate_history",
+                    scan_ts=hist.get("ts_utc") or hist.get("scan_ts_utc"),
+                    selected_symbols=selected,
+                    regime_mode=hist.get("regime_mode"),
+                )
+
+    for candidate in reversed(list(LAST_SWING_CANDIDATES or [])):
+        if isinstance(candidate, dict):
+            add_candidate(candidate, source="p263_last_swing_candidates")
+
+    for scan in reversed(list(SCAN_HISTORY or [])):
+        if not isinstance(scan, dict):
+            continue
+        rows = []
+        rows.extend(list(scan.get("would_submit") or []))
+        rows.extend(list(scan.get("results") or []))
+        rows.extend(list((scan.get("summary") or {}).get("top_candidates") or []))
+        selected = {str(x or "").strip().upper() for x in list(scan.get("selected") or [])}
+        for candidate in rows:
+            if isinstance(candidate, dict):
+                add_candidate(
+                    candidate,
+                    source="p263_scan_history_selected" if sym in selected else "p263_scan_history",
+                    scan_ts=scan.get("ts_utc") or scan.get("scan_ts_utc"),
+                    selected_symbols=selected,
+                    regime_mode=scan.get("regime_mode"),
+                )
+
+    if not matches:
+        return {}
+
+    matches.sort(
+        key=lambda item: (
+            float(item.get("score") or 0.0),
+            -float(item.get("distance_hours") if item.get("distance_hours") is not None else 999999.0),
+        ),
+        reverse=True,
+    )
+    return matches[0]
+
+
+def _p263_enrich_trade_attribution(row: dict | None) -> dict:
+    trade = dict(row or {})
+    before_missing = _p263_missing_attribution_fields(trade)
+    sources = []
+    recovered_fields = []
+
+    match = _p263_candidate_match_for_trade(trade)
+    inferred = dict((match or {}).get("meta") or {})
+    if inferred:
+        sources.append(str(inferred.get("attribution_source") or "p263_candidate_match"))
+
+    if not inferred:
+        fallback = _infer_recovered_plan_attribution(
+            str(trade.get("symbol") or ""),
+            str(trade.get("entry_order_id") or trade.get("order_id") or ""),
+        )
+        if fallback:
+            inferred = dict(fallback)
+            sources.append(str(inferred.get("attribution_source") or "p263_existing_recovered_plan_inference"))
+
+    for source_key, target_keys in {
+        "strategy_name": ["strategy_name"],
+        "signal": ["signal"],
+        "rank_score": ["rank_score"],
+        "selection_quality_score": ["selection_quality_score"],
+        "entry_type": ["entry_type"],
+        "regime_mode": ["entry_regime_mode", "regime_mode"],
+        "breakout_level": ["breakout_level"],
+        "stop_price": ["stop_price"],
+        "take_price": ["take_price", "target_price"],
+        "target_price": ["target_price"],
+        "risk_per_share": ["risk_per_share"],
+    }.items():
+        value = inferred.get(source_key)
+        if value in (None, "", [], {}):
+            continue
+
+        for target_key in target_keys:
+            current = trade.get(target_key)
+            if target_key in {"strategy_name", "signal"}:
+                if _valid_strategy_identity(current):
+                    continue
+                value = _valid_strategy_identity(value)
+                if not value:
+                    continue
+            elif current not in (None, "", [], {}):
+                continue
+
+            trade[target_key] = value
+            recovered_fields.append(target_key)
+
+    after_missing = _p263_missing_attribution_fields(trade)
+    trade["p263_attribution_recovered"] = bool(len(after_missing) < len(before_missing))
+    trade["p263_attribution_recovered_fields"] = sorted(set(recovered_fields))
+    trade["p263_attribution_missing_before"] = before_missing
+    trade["p263_attribution_missing_after"] = after_missing
+    trade["p263_attribution_source"] = ",".join(sorted(set(sources))) if sources else "none"
+    trade["p263_candidate_match"] = {
+        "source": match.get("source") if match else None,
+        "distance_hours": match.get("distance_hours") if match else None,
+        "selected": bool(match.get("selected")) if match else False,
+        "score": match.get("score") if match else None,
+    }
+
+    return trade
+
+
+def _p263_attribution_recovery_summary(before_rows: list[dict], after_rows: list[dict]) -> dict:
+    before = _p262_attribute_coverage(before_rows)
+    after = _p262_attribute_coverage(after_rows)
+    recovered_rows = [row for row in after_rows if bool(row.get("p263_attribution_recovered"))]
+
+    source_counts: dict[str, int] = {}
+    for row in after_rows:
+        source = str(row.get("p263_attribution_source") or "none")
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+    return {
+        "before": before,
+        "after": after,
+        "recovered_row_count": len(recovered_rows),
+        "recovered_symbols": sorted({
+            str(row.get("symbol") or "").strip().upper()
+            for row in recovered_rows
+            if str(row.get("symbol") or "").strip()
+        }),
+        "source_counts": source_counts,
+        "minimum_attribute_coverage": float(SWING_ROLLBACK_LAB_MIN_ATTRIBUTE_COVERAGE or 0.60),
+    }
+
+
+def _p263_entry_date_key(row: dict | None) -> str:
+    dt = _p262_entry_dt(row)
+    if not dt:
+        return "unknown"
+    return dt.astimezone(NY_TZ).date().isoformat()
+
+
+def _p263_filter_entry_time_daily_cap(rows: list[dict], cap: int) -> tuple[list[dict], list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for row in [dict(r) for r in list(rows or []) if isinstance(r, dict)]:
+        grouped.setdefault(_p263_entry_date_key(row), []).append(row)
+
+    kept = []
+    removed = []
+    for _, bucket in grouped.items():
+        bucket.sort(
+            key=lambda item: (
+                _p262_entry_dt(item) or _p212_closed_trade_ts(item) or datetime.min.replace(tzinfo=timezone.utc),
+                -_safe_float(item.get("rank_score"), 0.0),
+            )
+        )
+        kept.extend(bucket[:max(0, int(cap))])
+        removed.extend(bucket[max(0, int(cap)):])
+
+    return kept, removed
+
+
+def _p263_entry_time_cap_scenario(
+    name: str,
+    rows: list[dict],
+    start_dt,
+    pre_limit: int,
+    cap: int,
+) -> dict:
+    kept_rows, removed_rows = _p263_filter_entry_time_daily_cap(rows, cap)
+    removed_ids = {id(row) for row in removed_rows}
+    removed_fingerprints = {
+        (
+            str(row.get("symbol") or "").upper(),
+            str(row.get("entry_order_id") or row.get("entry_ts_utc") or row.get("ts_utc") or ""),
+        )
+        for row in removed_rows
+    }
+
+    scenario = _p262_filter_scenario(
+        name=name,
+        rows=rows,
+        start_dt=start_dt,
+        pre_limit=pre_limit,
+        keep_fn=lambda row: (
+            (
+                str(row.get("symbol") or "").upper(),
+                str(row.get("entry_order_id") or row.get("entry_ts_utc") or row.get("ts_utc") or ""),
+            )
+            not in removed_fingerprints
+        ),
+        rationale=f"Entry-time replay limiting daily breakout entries to {int(cap)} per NY trading day.",
+        env_hint=f"SWING_MAX_NEW_ENTRIES_PER_DAY={int(cap)}",
+    )
+    scenario["replay_basis"] = "entry_time_ny_date"
+    scenario["cap"] = int(cap)
+    scenario["removed_entry_dates"] = sorted({
+        _p263_entry_date_key(row)
+        for row in removed_rows
+    })
+    scenario["removed_post_rows"] = [
+        row for row in removed_rows
+        if _p262_entry_dt(row) and _p262_entry_dt(row) >= start_dt
+    ][-25:]
+    return scenario
+
+
+def _p263_rank_floor_scenario(
+    name: str,
+    rows: list[dict],
+    start_dt,
+    pre_limit: int,
+    floor: float,
+) -> dict:
+    return _p262_filter_scenario(
+        name=name,
+        rows=rows,
+        start_dt=start_dt,
+        pre_limit=pre_limit,
+        keep_fn=lambda row: (
+            _p262_rank(row) is None
+            or _p262_rank(row) >= float(floor)
+        ),
+        rationale=f"Recovered-attribution replay applying rank floor {float(floor):.1f}; unknown ranks remain included.",
+        env_hint=(
+            f"SWING_TREND_BREAKOUT_MIN_RANK_SCORE={float(floor):.0f};"
+            f"SWING_NEUTRAL_BREAKOUT_MIN_RANK_SCORE={float(floor):.0f};"
+            f"SWING_DEFENSIVE_BREAKOUT_MIN_RANK_SCORE={float(floor):.0f}"
+        ),
+        required_attribute="rank_score",
+    )
+
+
+def _p263_quality_filter_scenarios(rows: list[dict], start_dt, pre_limit: int) -> list[dict]:
+    return [
+        _p262_filter_scenario(
+            name="exclude_defensive_after_recovery",
+            rows=rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            keep_fn=lambda row: _p262_regime(row) != "defensive",
+            rationale="Recovered-attribution replay excluding defensive-regime daily breakout entries.",
+            env_hint="SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES=false",
+            required_attribute="regime_mode",
+        ),
+        _p262_filter_scenario(
+            name="exclude_recovered_after_recovery",
+            rows=rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            keep_fn=lambda row: not bool(row.get("recovered")),
+            rationale="Replay excluding recovered broker/order attributed rows.",
+            env_hint="diagnostic_only_no_direct_env_change",
+            required_attribute="recovered",
+        ),
+        _p263_rank_floor_scenario(
+            name="rank_floor_95_after_recovery",
+            rows=rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            floor=95.0,
+        ),
+        _p263_rank_floor_scenario(
+            name="rank_floor_100_after_recovery",
+            rows=rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            floor=100.0,
+        ),
+        _p263_rank_floor_scenario(
+            name="rank_floor_105_after_recovery",
+            rows=rows,
+            start_dt=start_dt,
+            pre_limit=pre_limit,
+            floor=105.0,
+        ),
+    ]
+
+
+def _p263_mark_scenario_support(scenarios: list[dict], coverage: dict) -> list[dict]:
+    minimum = float(SWING_ROLLBACK_LAB_MIN_ATTRIBUTE_COVERAGE or 0.60)
+
+    for scenario in scenarios:
+        required = str(scenario.get("required_attribute") or "").strip()
+        if required == "rank_score":
+            attribute_coverage = float(coverage.get("rank_coverage") or 0.0)
+        elif required == "regime_mode":
+            attribute_coverage = float(coverage.get("regime_coverage") or 0.0)
+        else:
+            attribute_coverage = 1.0
+
+        scenario["attribute_coverage"] = round(attribute_coverage, 4)
+        scenario["coverage_sufficient"] = bool(attribute_coverage >= minimum)
+        scenario["post_helpful"] = bool(float(scenario.get("post_gross_pnl_delta") or 0.0) > 0.0)
+        scenario["pre_helpful"] = bool(float(scenario.get("pre_gross_pnl_delta") or 0.0) > 0.0)
+
+    scenarios.sort(
+        key=lambda row: (
+            bool(row.get("coverage_sufficient")),
+            bool(row.get("post_helpful")),
+            _safe_float(row.get("post_gross_pnl_delta"), 0.0),
+            _safe_float(row.get("pre_gross_pnl_delta"), 0.0),
+        ),
+        reverse=True,
+    )
+    return scenarios
+
+
+def _p263_daily_breakout_attribution_recovery_lab() -> dict:
+    start_utc = str(SWING_STALL_TUNING_START_UTC or "").strip()
+    start_dt = _p175_parse_dt(start_utc) if start_utc else None
+    pre_limit = max(5, int(SWING_ROLLBACK_LAB_PRE_WINDOW_TRADES or 30))
+
+    attributed = _p261_broker_preferred_attributed_rows()
+    raw_rows = [
+        dict(row)
+        for row in list(attributed.get("rows") or [])
+        if isinstance(row, dict) and _p262_strategy(row) == "daily_breakout"
+    ]
+
+    if not start_dt:
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "daily_breakout_attribution_recovery_entry_time_replay",
+            "error": "SWING_STALL_TUNING_START_UTC_not_configured",
+            "recommended_action": "configure_post_change_start_utc",
+        }
+
+    enriched_rows = [_p263_enrich_trade_attribution(row) for row in raw_rows]
+    pre_rows, post_entry_rows, carried_rows = _p262_split_entry_cohorts(
+        enriched_rows,
+        start_dt,
+        pre_limit,
+    )
+    post_exit_rows = [
+        row for row in enriched_rows
+        if _p212_closed_trade_ts(row) and _p212_closed_trade_ts(row) >= start_dt
+    ]
+
+    recovery = _p263_attribution_recovery_summary(raw_rows, enriched_rows)
+    coverage_after = dict(recovery.get("after") or {})
+
+    scenarios = []
+    for cap in _p263_parse_entry_caps():
+        scenarios.append(
+            _p263_entry_time_cap_scenario(
+                name=f"entry_time_max_{int(cap)}_daily_breakout_entries",
+                rows=enriched_rows,
+                start_dt=start_dt,
+                pre_limit=pre_limit,
+                cap=int(cap),
+            )
+        )
+    scenarios.extend(_p263_quality_filter_scenarios(enriched_rows, start_dt, pre_limit))
+    scenarios = _p263_mark_scenario_support(scenarios, coverage_after)
+
+    supported = [
+        row for row in scenarios
+        if bool(row.get("coverage_sufficient"))
+        and (
+            float(row.get("post_gross_pnl_delta") or 0.0) > 0.0
+            or int(row.get("removed_post_count") or 0) > 0
+        )
+    ]
+    best_supported = supported[0] if supported else {}
+
+    conclusions = []
+    if float((recovery.get("after") or {}).get("rank_coverage") or 0.0) > float((recovery.get("before") or {}).get("rank_coverage") or 0.0):
+        conclusions.append("rank_attribution_improved")
+    if float((recovery.get("after") or {}).get("regime_coverage") or 0.0) > float((recovery.get("before") or {}).get("regime_coverage") or 0.0):
+        conclusions.append("regime_attribution_improved")
+    if carried_rows:
+        conclusions.append("post_change_losses_include_carried_positions")
+    if not best_supported:
+        conclusions.append("no_supported_rollback_selected_yet")
+    if best_supported:
+        conclusions.append("supported_rollback_candidate_available")
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "daily_breakout_attribution_recovery_entry_time_replay",
+        "read_only": True,
+        "live_entry_rules_changed": False,
+        "drawdown_circuit_remains_required": True,
+        "post_change_start_utc": start_utc,
+        "pre_window_trade_limit": pre_limit,
+        "attribution_match_hours": float(SWING_ROLLBACK_LAB_ATTRIBUTION_MATCH_HOURS or 72.0),
+        "entry_caps_tested": _p263_parse_entry_caps(),
+        "broker_preferred_source": {
+            "raw_count": attributed.get("raw_count"),
+            "kept_count": attributed.get("kept_count"),
+            "shadowed_worker_count": attributed.get("shadowed_worker_count"),
+            "attributed_exit_count": attributed.get("attributed_exit_count"),
+        },
+        "cohorts_after_recovery": {
+            "all_daily_breakout": _p261_cohort_summary(enriched_rows),
+            "pre_change_entry_window": _p261_cohort_summary(pre_rows),
+            "post_change_entries": _p261_cohort_summary(post_entry_rows),
+            "post_change_exits": _p261_cohort_summary(post_exit_rows),
+            "carried_into_post_change_window": _p261_cohort_summary(carried_rows),
+        },
+        "attribution_recovery": recovery,
+        "entry_time_cap_scenarios": [
+            row for row in scenarios
+            if str(row.get("scenario") or "").startswith("entry_time_max_")
+        ],
+        "quality_filter_scenarios": [
+            row for row in scenarios
+            if not str(row.get("scenario") or "").startswith("entry_time_max_")
+        ],
+        "all_scenarios_ranked": scenarios,
+        "best_supported_scenario": best_supported,
+        "recent_post_change_entries_after_recovery": post_entry_rows[-25:],
+        "carried_rows_after_recovery": carried_rows[-25:],
+        "conclusions": conclusions,
+        "recommended_action": (
+            "review_best_supported_rollback_before_env_change"
+            if best_supported
+            else "keep_drawdown_circuit_active_collect_more_or_improve_attribution"
+        ),
+        "operator_constraints": [
+            "read_only_no_live_rule_change",
+            "do_not_disable_drawdown_circuit_yet",
+            "do_not_change_exit_execution_from_this_lab",
+            "use_best_supported_scenario_only_after_review",
+        ],
+    }
+
 def _stall_exit_tuning_monitor(perf_state: dict | None = None) -> dict:
     state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
     state, _ = _patch175_enrich_state_if_needed(state)
@@ -24853,6 +25396,12 @@ def diagnostics_daily_breakout_rollback_lab():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
     return _p262_daily_breakout_rollback_lab()
+
+@app.get("/diagnostics/daily_breakout_attribution_recovery_lab")
+def diagnostics_daily_breakout_attribution_recovery_lab():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return _p263_daily_breakout_attribution_recovery_lab()
 
 @app.get("/diagnostics/current_open_stall_risk_preview")
 def diagnostics_current_open_stall_risk_preview(request: Request):
