@@ -912,6 +912,14 @@ SWING_WEAK_TAPE_MAX_NEW_ENTRIES = getenv_int_any("SWING_WEAK_TAPE_MAX_NEW_ENTRIE
 
 SWING_REGIME_MODE_SWITCHING_ENABLED = env_bool_any("SWING_REGIME_MODE_SWITCHING_ENABLED", default=True)
 SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES = env_bool_any("SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES", default=True)
+SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE = getenv_float_any(
+    "SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE",
+    default=0.80,
+)
+SWING_DAILY_BREAKOUT_RELEASE_REQUIRE_DEFENSIVE_ROLLBACK = env_bool_any(
+    "SWING_DAILY_BREAKOUT_RELEASE_REQUIRE_DEFENSIVE_ROLLBACK",
+    default=True,
+)
 SWING_REGIME_NEUTRAL_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_NEUTRAL_REQUIRE_INDEX_ALIGNMENT", default=False)
 SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT = env_bool_any("SWING_REGIME_DEFENSIVE_REQUIRE_INDEX_ALIGNMENT", default=False)
 SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT = getenv_float_any("SWING_TREND_BREAKOUT_MAX_DISTANCE_PCT", default=max(SWING_BREAKOUT_BUFFER_PCT, 0.02))
@@ -1412,7 +1420,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-263-daily-breakout-attribution-recovery-entry-time-replay-rollback-simulator"
+PATCH_VERSION = "patch-264-defensive-daily-breakout-rollback-mean-reversion-preservation-circuit-release-criteria"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -10340,6 +10348,30 @@ def _regime_mode_thresholds(mode: str) -> dict:
         "allow_entries_when_regime_unfavorable": bool(SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE),
     }
 
+def _p264_defensive_daily_breakout_rollback_snapshot(regime_mode: str | None = None) -> dict:
+    mode = str(regime_mode or "").strip().lower()
+    active = bool(not SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES)
+
+    blocked = bool(
+        STRATEGY_MODE == "swing"
+        and active
+        and mode == "defensive"
+    )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "defensive_daily_breakout_rollback",
+        "active": active,
+        "blocked": blocked,
+        "strategy_blocked": BREAKOUT_STRATEGY_NAME,
+        "regime_mode": mode or "unknown",
+        "mean_reversion_preserved": True,
+        "env": {
+            "SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES": bool(SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES),
+        },
+        "reason": "defensive_daily_breakout_rollback" if blocked else "none",
+    }
 
 def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None, regime_mode: str = 'trend') -> dict:
     candidate = {
@@ -10358,6 +10390,12 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         candidate['rejection_reasons'].append('insufficient_daily_bars')
         return candidate
     thresholds = _regime_mode_thresholds(regime_mode)
+    defensive_rollback = _p264_defensive_daily_breakout_rollback_snapshot(
+        thresholds.get("mode") or regime_mode
+    )
+    if defensive_rollback.get("blocked"):
+        candidate["rejection_reasons"].append("defensive_daily_breakout_rollback")
+        candidate["defensive_daily_breakout_rollback"] = defensive_rollback
     close = closes[-1]
     prev_close = closes[-2]
     high = highs[-1]
@@ -19710,6 +19748,7 @@ def _diagnostics_swing_blockers() -> dict:
     regime_data_complete = bool((LAST_REGIME_SNAPSHOT or {}).get('data_complete')) if isinstance(LAST_REGIME_SNAPSHOT, dict) else False
     regime_mode = _get_regime_mode(dict(LAST_REGIME_SNAPSHOT or {}), None)
     regime_thresholds = _regime_mode_thresholds(regime_mode)
+    defensive_breakout_rollback = _p264_defensive_daily_breakout_rollback_snapshot(regime_mode)
     regime_blocked = bool(regime_favorable is False and not bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')))
     daily_halt_blocked = bool(daily_halt_active() or daily_stop_hit())
     post_change_drawdown = _p261_post_change_drawdown_snapshot()
@@ -19759,6 +19798,8 @@ def _diagnostics_swing_blockers() -> dict:
             'allow_entries_when_regime_unfavorable': bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')),
         },
         'blocked_by_weak_regime': regime_blocked,
+        'blocked_by_defensive_daily_breakout_rollback': bool(defensive_breakout_rollback.get("blocked")),
+        'defensive_daily_breakout_rollback': defensive_breakout_rollback,
         'blocked_by_post_change_drawdown': breakout_drawdown_blocked,
         'post_change_drawdown_circuit': post_change_drawdown,
         'remaining_new_entries_today': int(remaining_today),
@@ -24904,6 +24945,88 @@ def _p263_daily_breakout_attribution_recovery_lab() -> dict:
         ],
     }
 
+def _p264_daily_breakout_circuit_release_criteria() -> dict:
+    p263 = _p263_daily_breakout_attribution_recovery_lab()
+    circuit = _p261_post_change_drawdown_snapshot()
+
+    attribution = dict((p263.get("attribution_recovery") or {}).get("after") or {})
+    best = dict(p263.get("best_supported_scenario") or {})
+    best_name = str(best.get("scenario") or "").strip()
+    best_supported = bool(best.get("coverage_sufficient")) and bool(best.get("post_helpful"))
+
+    rank_coverage = float(attribution.get("rank_coverage") or 0.0)
+    regime_coverage = float(attribution.get("regime_coverage") or 0.0)
+    min_coverage = float(SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE or 0.80)
+    defensive_rollback_active = bool(not SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES)
+
+    blockers = []
+    if not p263.get("ok"):
+        blockers.append("attribution_recovery_lab_not_ok")
+    if rank_coverage < min_coverage:
+        blockers.append("rank_attribution_coverage_below_release_min")
+    if regime_coverage < min_coverage:
+        blockers.append("regime_attribution_coverage_below_release_min")
+    if best_name != "exclude_defensive_after_recovery":
+        blockers.append("best_supported_scenario_not_defensive_rollback")
+    if not best_supported:
+        blockers.append("best_supported_scenario_not_post_helpful")
+    if (
+        SWING_DAILY_BREAKOUT_RELEASE_REQUIRE_DEFENSIVE_ROLLBACK
+        and not defensive_rollback_active
+    ):
+        blockers.append("defensive_rollback_env_not_active")
+    if not circuit.get("block_new_entries"):
+        blockers.append("drawdown_circuit_not_currently_blocking")
+
+    release_candidate = bool(
+        p263.get("ok")
+        and rank_coverage >= min_coverage
+        and regime_coverage >= min_coverage
+        and best_name == "exclude_defensive_after_recovery"
+        and best_supported
+        and (
+            defensive_rollback_active
+            or not SWING_DAILY_BREAKOUT_RELEASE_REQUIRE_DEFENSIVE_ROLLBACK
+        )
+        and circuit.get("block_new_entries")
+    )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "daily_breakout_circuit_release_criteria",
+        "read_only": True,
+        "release_candidate": release_candidate,
+        "blockers": blockers,
+        "defensive_daily_breakout_rollback_active": defensive_rollback_active,
+        "mean_reversion_preserved": True,
+        "drawdown_circuit": {
+            "triggered": bool(circuit.get("triggered")),
+            "block_new_entries": bool(circuit.get("block_new_entries")),
+            "guarded_strategies": list(circuit.get("guarded_strategies") or []),
+            "totals": dict(circuit.get("totals") or {}),
+        },
+        "best_supported_scenario": best,
+        "attribution_coverage_after_recovery": attribution,
+        "release_min_attribution_coverage": min_coverage,
+        "recommended_action": (
+            "review_release_of_post_change_drawdown_circuit_for_non_defensive_breakout"
+            if release_candidate
+            else "keep_post_change_drawdown_circuit_active"
+        ),
+        "operator_note": (
+            "This diagnostic does not change live rules. If release_candidate is true, "
+            "the next step is an operator-reviewed env release of the broad drawdown circuit "
+            "while keeping defensive daily breakout disabled."
+        ),
+        "env_for_targeted_rollback": {
+            "SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES": False,
+        },
+        "possible_future_release_env_after_review": {
+            "SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY": True,
+        },
+    }
+
 def _stall_exit_tuning_monitor(perf_state: dict | None = None) -> dict:
     state = perf_state if isinstance(perf_state, dict) else _recompute_strategy_performance_state()
     state, _ = _patch175_enrich_state_if_needed(state)
@@ -25402,6 +25525,12 @@ def diagnostics_daily_breakout_attribution_recovery_lab():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
     return _p263_daily_breakout_attribution_recovery_lab()
+
+@app.get("/diagnostics/daily_breakout_circuit_release_criteria")
+def diagnostics_daily_breakout_circuit_release_criteria():
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return _p264_daily_breakout_circuit_release_criteria()
 
 @app.get("/diagnostics/current_open_stall_risk_preview")
 def diagnostics_current_open_stall_risk_preview(request: Request):
@@ -26718,6 +26847,9 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         or blockers.get('post_change_drawdown_circuit')
         or {}
     )
+    defensive_breakout_rollback = dict(
+        blockers.get("defensive_daily_breakout_rollback") or {}
+    )
     payload = {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -26728,6 +26860,10 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         'post_change_drawdown_circuit': post_change_drawdown,
         'blocked_by_post_change_drawdown': bool(
             post_change_drawdown.get('block_new_entries')
+        ),
+        'defensive_daily_breakout_rollback': defensive_breakout_rollback,
+        'blocked_by_defensive_daily_breakout_rollback': bool(
+            defensive_breakout_rollback.get("blocked")
         ),
         'regime': {
             'ts_utc': (preview.get('regime') or LAST_REGIME_SNAPSHOT or {}).get('ts_utc'),
@@ -26740,6 +26876,9 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
             'market_open_now': bool((blockers or {}).get('market_open_now')),
             'blocked_by_market_hours': bool((blockers or {}).get('blocked_by_market_hours')),
             'blocked_by_weak_regime': bool((blockers or {}).get('blocked_by_weak_regime')),
+            'blocked_by_defensive_daily_breakout_rollback': bool(
+                (blockers or {}).get('blocked_by_defensive_daily_breakout_rollback')
+            ),
             'blocked_by_post_change_drawdown': bool(
                 (blockers or {}).get('blocked_by_post_change_drawdown')
             ),
