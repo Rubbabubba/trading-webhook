@@ -1440,7 +1440,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-267-hotfix-entry-strategy-name-scan-crash"
+PATCH_VERSION = "patch-268-scenario-diagnostic-bundles-no-trade-brief"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -26378,7 +26378,289 @@ def _swing_capacity_advisory(
         "note": "Prefer 10 or 12 first; reserve 15 for a larger strong-edge sample and proven exit/reconcile stability.",
     }
 
+def _p268_safe_section(name: str, fn) -> dict:
+    try:
+        payload = fn()
+        if isinstance(payload, dict):
+            return payload
+        return {"ok": True, "value": payload}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "section": name,
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+        }
 
+
+def _p268_release_snapshot() -> dict:
+    status = release_gate_status()
+    status.update({
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "dry_run": DRY_RUN,
+        "live_trading_enabled": LIVE_TRADING_ENABLED,
+        "scanner_allow_live": SCANNER_ALLOW_LIVE,
+        "kill_switch": KILL_SWITCH,
+        "daily_halt_active": daily_halt_active(),
+        "market_clock": _market_clock_snapshot(),
+    })
+    return status
+
+
+def _p268_no_trade_brief(sections: dict | None = None) -> dict:
+    sections = dict(sections or {})
+    scanner = dict(sections.get("scanner") or {})
+    scanner_summary = dict(scanner.get("summary") or {})
+    scanner_last = dict(scanner.get("last") or {})
+    candidates = dict(sections.get("candidates_full") or {})
+    live = dict(sections.get("live_positions") or {})
+    live_summary = dict(live.get("summary") or {})
+    loss_halt = dict(live.get("loss_halt") or {})
+    release = dict(sections.get("release") or {})
+    lifecycle = dict(sections.get("execution_lifecycle") or {})
+    lifecycle_issues = dict(lifecycle.get("issue_counts") or {})
+
+    selected_count = int(candidates.get("selected_total") or 0)
+    eligible_count = int(candidates.get("eligible_count") or 0)
+    open_orders = int(live_summary.get("open_order_count") or 0)
+    position_count = int(live_summary.get("broker_positions_count") or 0)
+    active_plan_count = int(live_summary.get("active_plan_count") or 0)
+    scanner_failures = int(scanner_summary.get("failure_today") or 0)
+    consecutive_failures = int(scanner_summary.get("consecutive_failures") or 0)
+    last_error = str(
+        scanner_last.get("last_error")
+        or (scanner_last.get("details") or {}).get("error")
+        or ""
+    ).strip()
+    last_event = str(scanner_summary.get("last_event") or scanner_last.get("event") or "").strip()
+    market_open = bool(live.get("market_open") or (release.get("market_clock") or {}).get("is_open"))
+    live_orders_permitted = bool(release.get("live_orders_permitted"))
+    dry_run = bool(release.get("dry_run"))
+    kill_switch = bool(release.get("kill_switch"))
+    daily_halt_active = bool(loss_halt.get("daily_halt_active") or release.get("daily_halt_active"))
+    new_entries_blocked = bool(loss_halt.get("new_entries_blocked"))
+    position_truth_status = str(live_summary.get("position_truth_status") or "")
+
+    top_rejections = []
+    for row in list(candidates.get("items") or [])[:15]:
+        if not isinstance(row, dict):
+            continue
+        reasons = list(row.get("rejection_reasons") or [])
+        if reasons:
+            top_rejections.append({
+                "symbol": row.get("symbol"),
+                "reasons": reasons,
+            })
+
+    root_cause = "unknown"
+    recommended_action = "review_bundle_sections"
+
+    if scanner_failures > 0 or consecutive_failures > 0 or last_error:
+        root_cause = "scanner_error"
+        recommended_action = "fix_scanner_error_before_strategy_tuning"
+    elif not market_open:
+        root_cause = "market_closed"
+        recommended_action = "wait_for_regular_market_hours"
+    elif kill_switch:
+        root_cause = "kill_switch_enabled"
+        recommended_action = "operator_review_kill_switch"
+    elif dry_run or not live_orders_permitted:
+        root_cause = "live_orders_not_permitted"
+        recommended_action = "review_release_gate_and_envs"
+    elif daily_halt_active or new_entries_blocked:
+        root_cause = "daily_loss_or_entry_halt"
+        recommended_action = "do_not_force_entries_review_loss_halt"
+    elif position_truth_status and position_truth_status != "aligned":
+        root_cause = "position_truth_not_aligned"
+        recommended_action = "run_reconcile_before_entries"
+    elif open_orders > 0:
+        root_cause = "open_orders_present"
+        recommended_action = "wait_or_review_open_orders"
+    elif eligible_count == 0 and selected_count == 0:
+        root_cause = "candidate_filters_no_eligible_symbols"
+        recommended_action = "review_top_rejection_reasons"
+    elif eligible_count > 0 and selected_count == 0:
+        root_cause = "eligible_but_not_selected"
+        recommended_action = "review_capacity_selection_and_correlation_gates"
+    elif selected_count > 0:
+        root_cause = "selected_candidates_present_check_submission_path"
+        recommended_action = "review_scanner_dispatch_and_execution_lifecycle"
+    elif position_count == active_plan_count and position_count > 0:
+        root_cause = "system_holding_existing_positions"
+        recommended_action = "monitor_existing_positions_and_next_scan"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "no_trade_root_cause_brief",
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "root_cause": root_cause,
+        "recommended_action": recommended_action,
+        "market_open": market_open,
+        "live_orders_permitted": live_orders_permitted,
+        "dry_run": dry_run,
+        "kill_switch": kill_switch,
+        "daily_halt_active": daily_halt_active,
+        "new_entries_blocked": new_entries_blocked,
+        "scanner": {
+            "last_event": last_event,
+            "last_error": last_error or None,
+            "failure_today": scanner_failures,
+            "consecutive_failures": consecutive_failures,
+            "active_warning_codes": list(scanner_summary.get("active_warning_codes") or []),
+        },
+        "candidates": {
+            "eligible_count": eligible_count,
+            "selected_total": selected_count,
+            "selected_symbols": list(candidates.get("selected_symbols") or []),
+            "blocked_by_post_change_drawdown": bool(candidates.get("blocked_by_post_change_drawdown")),
+            "top_rejections": top_rejections,
+        },
+        "live": {
+            "broker_positions_count": position_count,
+            "active_plan_count": active_plan_count,
+            "open_order_count": open_orders,
+            "position_truth_status": position_truth_status,
+            "account_daily_pnl": (live.get("today_pnl") or {}).get("account_daily_pnl"),
+            "today_realized_pnl": (live.get("today_pnl") or {}).get("today_realized_pnl"),
+            "today_unrealized_pnl": (live.get("today_pnl") or {}).get("today_unrealized_pnl"),
+        },
+        "execution_lifecycle": {
+            "plan_count": lifecycle.get("plan_count"),
+            "errors": lifecycle_issues.get("error"),
+            "warnings": lifecycle_issues.get("warn"),
+        },
+    }
+
+
+def _p268_bundle_sections(scope: str, limit: int = 25, refresh_live: bool = True) -> dict:
+    scope = str(scope or "all").strip().lower()
+    limit = max(1, min(int(limit or 25), 100))
+
+    sections: dict[str, dict] = {
+        "build": _p268_safe_section("build", _build_fingerprint_snapshot),
+        "release": _p268_safe_section("release", _p268_release_snapshot),
+        "scanner": _p268_safe_section("scanner", diagnostics_scanner),
+        "live_positions": _p268_safe_section("live_positions", lambda: _live_operator_snapshot(force=refresh_live)),
+        "execution_lifecycle": _p268_safe_section("execution_lifecycle", lambda: diagnostics_execution_lifecycle(limit=limit)),
+        "worker_exit_status": _p268_safe_section("worker_exit_status", lambda: _worker_exit_status_snapshot(limit=limit)),
+        "candidates_full": _p268_safe_section("candidates_full", lambda: _diagnostics_candidates_payload(limit=limit, full=True)),
+    }
+
+    if scope in {"all", "swing", "no_trade"}:
+        sections.update({
+            "swing_post_change_drawdown": _p268_safe_section("swing_post_change_drawdown", lambda: _p261_post_change_drawdown_snapshot(perf_state=_recompute_strategy_performance_state())),
+            "daily_breakout_circuit_release_criteria": _p268_safe_section("daily_breakout_circuit_release_criteria", _p264_daily_breakout_circuit_release_criteria),
+            "strategy_performance": _p268_safe_section("strategy_performance", lambda: diagnostics_strategy_performance(None)),
+            "broker_preferred_performance": _p268_safe_section("broker_preferred_performance", _p245_broker_preferred_performance_snapshot),
+            "entry_quality_exit_advisory": _p268_safe_section("entry_quality_exit_advisory", _p250_entry_quality_exit_advisory_snapshot),
+            "current_open_stall_risk_preview": _p268_safe_section("current_open_stall_risk_preview", _p257_current_open_stall_risk_preview),
+        })
+
+    if scope in {"all", "intraday"}:
+        sections.update({
+            "hybrid_proof": _p268_safe_section("hybrid_proof", lambda: _hybrid_proof_metrics()),
+            "intraday_shadow": _p268_safe_section("intraday_shadow", lambda: _intraday_shadow_diagnostics(limit=limit) if "_intraday_shadow_diagnostics" in globals() else diagnostics_intraday_shadow(None)),
+            "intraday_launch_readiness": _p268_safe_section("intraday_launch_readiness", lambda: diagnostics_intraday_launch_readiness(None)),
+            "intraday_paper_pilot_readiness": _p268_safe_section("intraday_paper_pilot_readiness", _intraday_paper_pilot_readiness),
+            "intraday_quality_scoped_live_promotion": _p268_safe_section("intraday_quality_scoped_live_promotion", lambda: {
+                "ok": True,
+                "patch_version": PATCH_VERSION,
+                "mode": "read_only_intraday_quality_scoped_live_promotion_bundle",
+                "proof_metrics": _hybrid_proof_metrics(),
+            }),
+            "eod_flatten_status": _p268_safe_section("eod_flatten_status", lambda: _eod_flatten_status_snapshot(live=True)),
+        })
+
+    if scope in {"all", "performance"}:
+        sections.update({
+            "strategy_performance": _p268_safe_section("strategy_performance", lambda: diagnostics_strategy_performance(None)),
+            "swing_performance_attribution": _p268_safe_section("swing_performance_attribution", _swing_performance_attribution),
+            "broker_preferred_performance": _p268_safe_section("broker_preferred_performance", _p245_broker_preferred_performance_snapshot),
+            "broker_preferred_daily_pnl_dedup": _p268_safe_section("broker_preferred_daily_pnl_dedup", lambda: {
+                "ok": True,
+                "patch_version": PATCH_VERSION,
+                "today_pnl_truth": today_pnl_truth_snapshot(),
+                "deduped_strategy_state_today": _p254_broker_preferred_today_strategy_realized_pnl(),
+            }),
+        })
+
+    if scope in {"all", "risk"}:
+        sections.update({
+            "loss_control_incident": _p268_safe_section("loss_control_incident", lambda: _loss_control_incident_summary(
+                daily_halt_truth=daily_halt_truth_snapshot(),
+                today_pnl_truth=today_pnl_truth_snapshot(),
+                flatten_decision={},
+                snapshot=read_positions_snapshot(),
+            )),
+            "swing_damage_guard": _p268_safe_section("swing_damage_guard", _swing_damage_guard_snapshot),
+            "stall_loss_guard_live_validation": _p268_safe_section("stall_loss_guard_live_validation", _p257_stall_loss_guard_live_validation),
+            "eod_flatten_status": _p268_safe_section("eod_flatten_status", lambda: _eod_flatten_status_snapshot(live=True)),
+        })
+
+    sections["no_trade_brief"] = _p268_no_trade_brief(sections)
+    return sections
+
+
+def _p268_operator_bundle(scope: str = "all", limit: int = 25, refresh_live: bool = True) -> dict:
+    _ensure_runtime_state_loaded()
+    sections = _p268_bundle_sections(scope=scope, limit=limit, refresh_live=refresh_live)
+    failed_sections = [
+        name for name, payload in sections.items()
+        if isinstance(payload, dict) and payload.get("ok") is False
+    ]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "scenario_diagnostic_bundle",
+        "scope": str(scope or "all").strip().lower(),
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_ny": now_ny().isoformat(),
+        "read_only": True,
+        "failed_section_count": len(failed_sections),
+        "failed_sections": failed_sections,
+        "brief": sections.get("no_trade_brief"),
+        "sections": sections,
+    }
+
+@app.get("/diagnostics/operator_bundle")
+def diagnostics_operator_bundle(
+    request: Request,
+    scope: str = "all",
+    limit: int = 25,
+    refresh_live: bool = True,
+):
+    require_admin_if_configured(request)
+    return _p268_operator_bundle(scope=scope, limit=limit, refresh_live=refresh_live)
+
+
+@app.get("/diagnostics/bundle/{scope}")
+def diagnostics_scenario_bundle(
+    request: Request,
+    scope: str,
+    limit: int = 25,
+    refresh_live: bool = True,
+):
+    require_admin_if_configured(request)
+    return _p268_operator_bundle(scope=scope, limit=limit, refresh_live=refresh_live)
+
+
+@app.get("/diagnostics/no_trade_brief")
+def diagnostics_no_trade_brief(
+    request: Request,
+    limit: int = 25,
+    refresh_live: bool = True,
+):
+    require_admin_if_configured(request)
+    bundle = _p268_operator_bundle(scope="no_trade", limit=limit, refresh_live=refresh_live)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "generated_utc": bundle.get("generated_utc"),
+        "brief": bundle.get("brief"),
+        "failed_sections": bundle.get("failed_sections"),
+    }
 
 @app.get("/diagnostics/live_positions")
 def diagnostics_live_positions(request: Request):
