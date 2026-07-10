@@ -1440,7 +1440,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-267-rollback-removed-row-evidence-defensive-release-recheck"
+PATCH_VERSION = "patch-267-hotfix-entry-strategy-name-scan-crash"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -18546,7 +18546,9 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
     if bool(realized_halt.get("active")):
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason=realized_halt.get("reason") or "realized_closed_trade_loss_halt", meta={**(meta or {}), "realized_closed_trade_loss_halt": realized_halt})
         return {"ok": False, "rejected": True, "reason": realized_halt.get("reason") or "realized_closed_trade_loss_halt", "realized_closed_trade_loss_halt": realized_halt}
-        strategy_name = str(
+
+    meta = dict(meta or {})
+    strategy_name = str(
         meta.get("strategy_name")
         or meta.get("strategy")
         or signal
