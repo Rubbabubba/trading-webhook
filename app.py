@@ -1440,7 +1440,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-268-scenario-diagnostic-bundles-no-trade-brief"
+PATCH_VERSION = "patch-268-hotfix-bundle-failure-semantics-active-scanner-error-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -26382,11 +26382,21 @@ def _p268_safe_section(name: str, fn) -> dict:
     try:
         payload = fn()
         if isinstance(payload, dict):
+            payload = dict(payload)
+            payload.setdefault("_bundle_section", name)
+            payload.setdefault("_bundle_collection_ok", True)
             return payload
-        return {"ok": True, "value": payload}
+        return {
+            "ok": True,
+            "_bundle_section": name,
+            "_bundle_collection_ok": True,
+            "value": payload,
+        }
     except Exception as exc:
         return {
             "ok": False,
+            "_bundle_section": name,
+            "_bundle_collection_ok": False,
             "section": name,
             "error": str(exc),
             "error_type": type(exc).__name__,
@@ -26407,12 +26417,91 @@ def _p268_release_snapshot() -> dict:
     })
     return status
 
+def _p268_active_scanner_error_truth(scanner: dict | None) -> dict:
+    scanner = dict(scanner or {})
+    summary = dict(scanner.get("summary") or {})
+    last = dict(scanner.get("last") or {})
+
+    last_event = str(summary.get("last_event") or last.get("event") or "").strip().lower()
+    last_status = str(summary.get("last_event_status") or last.get("status") or "").strip().lower()
+    last_closed_status = str(summary.get("last_closed_status") or last.get("last_closed_status") or "").strip().lower()
+    last_http_status = last.get("last_http_status")
+    last_error = str(
+        last.get("last_error")
+        or (last.get("details") or {}).get("error")
+        or ""
+    ).strip()
+
+    consecutive_failures = int(summary.get("consecutive_failures") or last.get("consecutive_failures") or 0)
+    failure_today = int(summary.get("failure_today") or last.get("failure_today") or 0)
+    success_today = int(summary.get("success_today") or last.get("success_today") or 0)
+
+    last_success_dt = _p175_parse_dt(summary.get("last_success_utc") or last.get("last_success_utc"))
+    last_failure_dt = _p175_parse_dt(summary.get("last_failure_utc") or last.get("last_failure_utc"))
+    failure_after_success = bool(
+        last_failure_dt
+        and (
+            not last_success_dt
+            or last_failure_dt > last_success_dt
+        )
+    )
+    recovered_after_failure = bool(
+        last_success_dt
+        and last_failure_dt
+        and last_success_dt >= last_failure_dt
+    )
+
+    active_warning_codes = list(summary.get("active_warning_codes") or last.get("active_warning_codes") or [])
+    current_event_error = bool(
+        last_event in {"scan_error", "scan_fail", "scan_dispatch_http_error"}
+        or last_status in {"exception", "failure", "http_error", "error"}
+        or str(last_http_status or "") in {"500", "502", "503", "504"}
+    )
+
+    active_error = bool(
+        consecutive_failures > 0
+        and (
+            current_event_error
+            or failure_after_success
+        )
+    )
+
+    if recovered_after_failure and consecutive_failures == 0:
+        active_error = False
+
+    historical_error = bool(
+        failure_today > 0
+        or last_error
+        or active_warning_codes
+    )
+
+    return {
+        "active_error": active_error,
+        "historical_error": historical_error,
+        "recovered_after_failure": recovered_after_failure,
+        "failure_after_success": failure_after_success,
+        "last_event": last_event,
+        "last_status": last_status,
+        "last_closed_status": last_closed_status,
+        "last_http_status": last_http_status,
+        "last_error": last_error or None,
+        "consecutive_failures": consecutive_failures,
+        "failure_today": failure_today,
+        "success_today": success_today,
+        "active_warning_codes": active_warning_codes,
+        "interpretation": (
+            "active_scanner_error"
+            if active_error
+            else "recovered_scanner_errors_present"
+            if historical_error
+            else "scanner_currently_healthy"
+        ),
+    }
 
 def _p268_no_trade_brief(sections: dict | None = None) -> dict:
     sections = dict(sections or {})
     scanner = dict(sections.get("scanner") or {})
-    scanner_summary = dict(scanner.get("summary") or {})
-    scanner_last = dict(scanner.get("last") or {})
+    scanner_truth = _p268_active_scanner_error_truth(scanner)
     candidates = dict(sections.get("candidates_full") or {})
     live = dict(sections.get("live_positions") or {})
     live_summary = dict(live.get("summary") or {})
@@ -26426,14 +26515,6 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
     open_orders = int(live_summary.get("open_order_count") or 0)
     position_count = int(live_summary.get("broker_positions_count") or 0)
     active_plan_count = int(live_summary.get("active_plan_count") or 0)
-    scanner_failures = int(scanner_summary.get("failure_today") or 0)
-    consecutive_failures = int(scanner_summary.get("consecutive_failures") or 0)
-    last_error = str(
-        scanner_last.get("last_error")
-        or (scanner_last.get("details") or {}).get("error")
-        or ""
-    ).strip()
-    last_event = str(scanner_summary.get("last_event") or scanner_last.get("event") or "").strip()
     market_open = bool(live.get("market_open") or (release.get("market_clock") or {}).get("is_open"))
     live_orders_permitted = bool(release.get("live_orders_permitted"))
     dry_run = bool(release.get("dry_run"))
@@ -26456,9 +26537,9 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
     root_cause = "unknown"
     recommended_action = "review_bundle_sections"
 
-    if scanner_failures > 0 or consecutive_failures > 0 or last_error:
+    if scanner_truth.get("active_error"):
         root_cause = "scanner_error"
-        recommended_action = "fix_scanner_error_before_strategy_tuning"
+        recommended_action = "fix_active_scanner_error_before_strategy_tuning"
     elif not market_open:
         root_cause = "market_closed"
         recommended_action = "wait_for_regular_market_hours"
@@ -26503,13 +26584,7 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
         "kill_switch": kill_switch,
         "daily_halt_active": daily_halt_active,
         "new_entries_blocked": new_entries_blocked,
-        "scanner": {
-            "last_event": last_event,
-            "last_error": last_error or None,
-            "failure_today": scanner_failures,
-            "consecutive_failures": consecutive_failures,
-            "active_warning_codes": list(scanner_summary.get("active_warning_codes") or []),
-        },
+        "scanner": scanner_truth,
         "candidates": {
             "eligible_count": eligible_count,
             "selected_total": selected_count,
@@ -26531,6 +26606,11 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
             "errors": lifecycle_issues.get("error"),
             "warnings": lifecycle_issues.get("warn"),
         },
+        "advisory_notes": [
+            "historical_scanner_errors_present"
+            if scanner_truth.get("historical_error") and not scanner_truth.get("active_error")
+            else "",
+        ],
     }
 
 
@@ -26608,7 +26688,7 @@ def _p268_operator_bundle(scope: str = "all", limit: int = 25, refresh_live: boo
     sections = _p268_bundle_sections(scope=scope, limit=limit, refresh_live=refresh_live)
     failed_sections = [
         name for name, payload in sections.items()
-        if isinstance(payload, dict) and payload.get("ok") is False
+        if isinstance(payload, dict) and payload.get("_bundle_collection_ok") is False
     ]
     return {
         "ok": True,
