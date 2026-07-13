@@ -1491,7 +1491,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-270-concurrent-swing-intraday-micro-live-readiness-gate"
+PATCH_VERSION = "patch-270-hotfix-lightweight-concurrent-readiness-response"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -26694,7 +26694,7 @@ def _p268_bundle_sections(scope: str, limit: int = 25, refresh_live: bool = True
             "hybrid_proof": _p268_safe_section("hybrid_proof", lambda: _hybrid_proof_metrics()),
             "intraday_shadow": _p268_safe_section("intraday_shadow", lambda: _intraday_shadow_diagnostics(limit=limit) if "_intraday_shadow_diagnostics" in globals() else diagnostics_intraday_shadow(None)),
             "intraday_launch_readiness": _p268_safe_section("intraday_launch_readiness", lambda: diagnostics_intraday_launch_readiness(None)),
-            "concurrent_intraday_live_readiness": _p268_safe_section("concurrent_intraday_live_readiness", _p270_concurrent_intraday_micro_live_readiness),
+            "concurrent_intraday_live_readiness": _p268_safe_section("concurrent_intraday_live_readiness", lambda: _p270_concurrent_intraday_micro_live_readiness(detail="summary")),
             "intraday_paper_pilot_readiness": _p268_safe_section("intraday_paper_pilot_readiness", _intraday_paper_pilot_readiness),
             "intraday_quality_scoped_live_promotion": _p268_safe_section("intraday_quality_scoped_live_promotion", lambda: {
                 "ok": True,
@@ -26828,9 +26828,114 @@ def _p270_intraday_gate_metrics(paper: dict | None, proof: dict | None) -> dict:
         },
     }
 
+def _p270_compact_live_summary(live: dict | None) -> dict:
+    live = dict(live or {})
+    summary = dict(live.get("summary") or {})
+    pnl = dict(live.get("today_pnl") or {})
+    loss_halt = dict(live.get("loss_halt") or {})
 
-def _p270_concurrent_intraday_micro_live_readiness() -> dict:
+    return {
+        "ok": bool(live.get("ok", True)),
+        "market_open": bool(live.get("market_open")),
+        "broker_positions_count": summary.get("broker_positions_count"),
+        "active_plan_count": summary.get("active_plan_count"),
+        "open_order_count": summary.get("open_order_count"),
+        "position_truth_status": summary.get("position_truth_status"),
+        "position_truth_mismatch_count": summary.get("position_truth_mismatch_count"),
+        "account_daily_pnl": pnl.get("account_daily_pnl"),
+        "today_realized_pnl": pnl.get("today_realized_pnl"),
+        "today_unrealized_pnl": pnl.get("today_unrealized_pnl"),
+        "daily_halt_active": loss_halt.get("daily_halt_active"),
+        "new_entries_blocked": loss_halt.get("new_entries_blocked"),
+        "daily_halt_reason": loss_halt.get("daily_halt_reason"),
+    }
+
+
+def _p270_compact_paper_summary(paper: dict | None) -> dict:
+    paper = dict(paper or {})
+
+    def gate_summary(row: dict | None) -> dict:
+        row = dict(row or {})
+        return {
+            "scenario": row.get("scenario"),
+            "ready": row.get("ready"),
+            "checked": row.get("checked"),
+            "accepted_count": row.get("accepted_count"),
+            "rejected_count": row.get("rejected_count"),
+            "avg_r": row.get("avg_r"),
+            "positive_rate": row.get("positive_rate"),
+            "stop_hit_rate": row.get("stop_hit_rate"),
+            "blockers": list(row.get("blockers") or []),
+        }
+
+    return {
+        "ok": bool(paper.get("ok")),
+        "ready": bool(paper.get("ready")),
+        "blockers": list(paper.get("blockers") or []),
+        "active_scenario": paper.get("active_scenario"),
+        "required_active_scenario": paper.get("required_active_scenario"),
+        "promoted_scenario": paper.get("promoted_scenario"),
+        "tournament_recommended_scenario": paper.get("tournament_recommended_scenario"),
+        "promoted_paper_gate": gate_summary(paper.get("promoted_paper_gate")),
+        "tournament_recommended_gate": gate_summary(paper.get("tournament_recommended_gate")),
+    }
+
+
+def _p270_compact_proof_summary(proof: dict | None) -> dict:
+    proof = dict(proof or {})
+    quality = dict(proof.get("quality_scoped_live_promotion_truth") or {})
+    raw = dict(proof.get("raw_live_promotion_truth") or {})
+
+    return {
+        "ok": bool(proof.get("ok", True)),
+        "proof_ready_for_paper": bool(proof.get("proof_ready_for_paper")),
+        "proof_ready_for_live": bool(proof.get("proof_ready_for_live")),
+        "live_promotion_ready": bool(proof.get("live_promotion_ready")),
+        "live_promotion_scope": proof.get("live_promotion_scope"),
+        "live_promotion_blockers": list(proof.get("live_promotion_blockers") or []),
+        "quality_scoped_open_shadow_count": proof.get("quality_scoped_open_shadow_count"),
+        "raw_open_shadow_count": proof.get("open_shadow_count"),
+        "quality_scoped": {
+            "scenario": quality.get("scenario"),
+            "ready": quality.get("ready"),
+            "blockers": list(quality.get("blockers") or []),
+            "settled_count": quality.get("settled_count"),
+            "settled_avg_r": quality.get("settled_avg_r"),
+            "settled_positive_rate": quality.get("settled_positive_rate"),
+            "settled_worst_r": quality.get("settled_worst_r"),
+            "open_shadow_count": quality.get("open_shadow_count"),
+            "raw_open_shadow_count": quality.get("raw_open_shadow_count"),
+            "irrelevant_open_shadow_count": quality.get("irrelevant_open_shadow_count"),
+        },
+        "raw": {
+            "ready": raw.get("ready"),
+            "blockers": list(raw.get("blockers") or []),
+            "settled_count": raw.get("settled_count"),
+            "open_shadow_count": raw.get("open_shadow_count"),
+            "settled_avg_r": raw.get("settled_avg_r"),
+            "settled_positive_rate": raw.get("settled_positive_rate"),
+            "settled_worst_r": raw.get("settled_worst_r"),
+        },
+    }
+
+
+def _p270_compact_eod_summary(eod: dict | None) -> dict:
+    eod = dict(eod or {})
+    return {
+        "ok": bool(eod.get("ok")),
+        "fully_flat": eod.get("fully_flat"),
+        "attempted_count": eod.get("attempted_count"),
+        "submitted_count": eod.get("submitted_count"),
+        "confirmed_closed_count": eod.get("confirmed_closed_count"),
+        "residual_count": eod.get("residual_count"),
+        "residual_symbols": list(eod.get("residual_symbols") or []),
+        "pending_close_order_symbols": list(eod.get("pending_close_order_symbols") or []),
+        "recommended_action": eod.get("recommended_action"),
+    }
+
+def _p270_concurrent_intraday_micro_live_readiness(detail: str = "summary") -> dict:
     _ensure_runtime_state_loaded()
+    include_full_detail = str(detail or "summary").strip().lower() in {"full", "debug", "all"}
 
     live = _p268_safe_section("live_positions", lambda: _live_operator_snapshot(force=True))
     scanner = _p268_safe_section("scanner", diagnostics_scanner)
@@ -27053,11 +27158,12 @@ def _p270_concurrent_intraday_micro_live_readiness() -> dict:
         "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": required_scenario,
     }
 
-    return {
+    response = {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "concurrent_swing_intraday_micro_live_readiness",
         "read_only": True,
+        "detail": "full" if include_full_detail else "summary",
         "strategy_mode": STRATEGY_MODE,
         "hybrid_mode": HYBRID_MODE,
         "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
@@ -27068,20 +27174,11 @@ def _p270_concurrent_intraday_micro_live_readiness() -> dict:
         "checks": checks,
         "profitability_gate": paper_gate,
         "scanner_truth": scanner_truth,
-        "swing_live_summary": {
-            "broker_positions_count": live_summary.get("broker_positions_count"),
-            "active_plan_count": live_summary.get("active_plan_count"),
-            "open_order_count": live_summary.get("open_order_count"),
-            "position_truth_status": live_summary.get("position_truth_status"),
-            "position_truth_mismatch_count": live_summary.get("position_truth_mismatch_count"),
-            "account_daily_pnl": (live.get("today_pnl") or {}).get("account_daily_pnl"),
-            "today_realized_pnl": (live.get("today_pnl") or {}).get("today_realized_pnl"),
-            "today_unrealized_pnl": (live.get("today_pnl") or {}).get("today_unrealized_pnl"),
-        },
-        "intraday_evidence": {
-            "paper_pilot_readiness": paper,
-            "hybrid_proof": proof,
-            "eod_flatten_status": eod,
+        "swing_live_summary": _p270_compact_live_summary(live),
+        "intraday_evidence_summary": {
+            "paper_pilot_readiness": _p270_compact_paper_summary(paper),
+            "hybrid_proof": _p270_compact_proof_summary(proof),
+            "eod_flatten_status": _p270_compact_eod_summary(eod),
         },
         "operator_next_action": (
             "enable_micro_live_after_operator_review"
@@ -27099,10 +27196,21 @@ def _p270_concurrent_intraday_micro_live_readiness() -> dict:
         },
         "notes": [
             "This endpoint is read-only and never submits orders.",
-            "It is intentionally stricter than paper readiness because it is checking real-money concurrent live operation.",
-            "Do not switch STRATEGY_MODE to intraday for concurrent launch; swing mode remains the primary live strategy mode.",
+            "Default response is compact to avoid Render timeout/bad gateway responses.",
+            "Use detail=full only for debugging if the compact response is not enough.",
         ],
     }
+
+    if include_full_detail:
+        response["intraday_evidence"] = {
+            "paper_pilot_readiness": paper,
+            "hybrid_proof": proof,
+            "eod_flatten_status": eod,
+            "execution_lifecycle": lifecycle,
+            "candidates_full": candidates,
+        }
+
+    return response
 
 @app.get("/diagnostics/operator_bundle")
 def diagnostics_operator_bundle(
@@ -28211,9 +28319,9 @@ def diagnostics_intraday_launch_readiness(request: Request):
     }
 
 @app.get("/diagnostics/concurrent_intraday_live_readiness")
-def diagnostics_concurrent_intraday_live_readiness(request: Request):
+def diagnostics_concurrent_intraday_live_readiness(request: Request, detail: str = "summary"):
     require_admin_if_configured(request)
-    return _p270_concurrent_intraday_micro_live_readiness()
+    return _p270_concurrent_intraday_micro_live_readiness(detail=detail)
 
 @app.get("/diagnostics/execution_lifecycle")
 def diagnostics_execution_lifecycle(limit: int = 100):
