@@ -1309,6 +1309,57 @@ INTRADAY_PAPER_GATE_TOURNAMENT_MIN_POSITIVE_RATE = float(getenv_any("INTRADAY_PA
 INTRADAY_PAPER_GATE_TOURNAMENT_MAX_STOP_HIT_RATE = float(getenv_any("INTRADAY_PAPER_GATE_TOURNAMENT_MAX_STOP_HIT_RATE", default="0.35"))
 SWING_SLEEVE_MAX_OPEN_POSITIONS = int(getenv_any("SWING_SLEEVE_MAX_OPEN_POSITIONS", default=str(MAX_OPEN_POSITIONS)))
 INTRADAY_SLEEVE_MAX_OPEN_POSITIONS = int(getenv_any("INTRADAY_SLEEVE_MAX_OPEN_POSITIONS", default=getenv_any("INTRADAY_MAX_OPEN_POSITIONS", default="7")))
+CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED = env_bool_any(
+    "CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED",
+    default=False,
+)
+CONCURRENT_INTRADAY_REQUIRED_QUALITY_SCENARIO = str(
+    getenv_any(
+        "CONCURRENT_INTRADAY_REQUIRED_QUALITY_SCENARIO",
+        default="rank_plus_no_bad_symbols",
+    )
+    or "rank_plus_no_bad_symbols"
+).strip().lower()
+CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS = getenv_int_any(
+    "CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS",
+    default=1,
+)
+CONCURRENT_INTRADAY_MAX_DAILY_TRADES = getenv_int_any(
+    "CONCURRENT_INTRADAY_MAX_DAILY_TRADES",
+    default=1,
+)
+CONCURRENT_INTRADAY_MAX_QUALITY_OPEN_SHADOW = getenv_int_any(
+    "CONCURRENT_INTRADAY_MAX_QUALITY_OPEN_SHADOW",
+    default=0,
+)
+CONCURRENT_INTRADAY_MIN_SETTLED = getenv_int_any(
+    "CONCURRENT_INTRADAY_MIN_SETTLED",
+    default=10,
+)
+CONCURRENT_INTRADAY_MIN_AVG_R = getenv_float_any(
+    "CONCURRENT_INTRADAY_MIN_AVG_R",
+    default=0.25,
+)
+CONCURRENT_INTRADAY_MIN_POSITIVE_RATE = getenv_float_any(
+    "CONCURRENT_INTRADAY_MIN_POSITIVE_RATE",
+    default=0.60,
+)
+CONCURRENT_INTRADAY_MAX_STOP_HIT_RATE = getenv_float_any(
+    "CONCURRENT_INTRADAY_MAX_STOP_HIT_RATE",
+    default=0.25,
+)
+CONCURRENT_INTRADAY_REQUIRE_REGIME_FAVORABLE = env_bool_any(
+    "CONCURRENT_INTRADAY_REQUIRE_REGIME_FAVORABLE",
+    default=True,
+)
+CONCURRENT_INTRADAY_REQUIRE_SCANNER_HEALTHY = env_bool_any(
+    "CONCURRENT_INTRADAY_REQUIRE_SCANNER_HEALTHY",
+    default=True,
+)
+CONCURRENT_INTRADAY_REQUIRE_LIVE_PROMOTION_READY = env_bool_any(
+    "CONCURRENT_INTRADAY_REQUIRE_LIVE_PROMOTION_READY",
+    default=True,
+)
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default=("daily_breakout" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "vwap_pullback")).strip().lower()
@@ -1440,7 +1491,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-268-hotfix-bundle-failure-semantics-active-scanner-error-truth"
+PATCH_VERSION = "patch-270-concurrent-swing-intraday-micro-live-readiness-gate"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -26643,6 +26694,7 @@ def _p268_bundle_sections(scope: str, limit: int = 25, refresh_live: bool = True
             "hybrid_proof": _p268_safe_section("hybrid_proof", lambda: _hybrid_proof_metrics()),
             "intraday_shadow": _p268_safe_section("intraday_shadow", lambda: _intraday_shadow_diagnostics(limit=limit) if "_intraday_shadow_diagnostics" in globals() else diagnostics_intraday_shadow(None)),
             "intraday_launch_readiness": _p268_safe_section("intraday_launch_readiness", lambda: diagnostics_intraday_launch_readiness(None)),
+            "concurrent_intraday_live_readiness": _p268_safe_section("concurrent_intraday_live_readiness", _p270_concurrent_intraday_micro_live_readiness),
             "intraday_paper_pilot_readiness": _p268_safe_section("intraday_paper_pilot_readiness", _intraday_paper_pilot_readiness),
             "intraday_quality_scoped_live_promotion": _p268_safe_section("intraday_quality_scoped_live_promotion", lambda: {
                 "ok": True,
@@ -26702,6 +26754,354 @@ def _p268_operator_bundle(scope: str = "all", limit: int = 25, refresh_live: boo
         "failed_sections": failed_sections,
         "brief": sections.get("no_trade_brief"),
         "sections": sections,
+    }
+
+def _p270_gate_result(name: str, ok: bool, value=None, required: bool = True, note: str = "") -> dict:
+    return {
+        "name": name,
+        "ok": bool(ok),
+        "required": bool(required),
+        "value": value,
+        "note": note,
+    }
+
+
+def _p270_intraday_gate_metrics(paper: dict | None, proof: dict | None) -> dict:
+    paper = dict(paper or {})
+    proof = dict(proof or {})
+    required = str(CONCURRENT_INTRADAY_REQUIRED_QUALITY_SCENARIO or "").strip().lower()
+
+    gate = {}
+    for key in [
+        "promoted_paper_gate",
+        "tournament_recommended_gate",
+        "replay_aligned_rank_gate",
+        "paper_pilot_conservative_gate",
+        "legacy_core_symbols_gate",
+    ]:
+        candidate = dict(paper.get(key) or {})
+        if str(candidate.get("scenario") or "").strip().lower() == required:
+            gate = candidate
+            break
+
+    quality_truth = dict(proof.get("quality_scoped_live_promotion_truth") or {})
+    if not gate and str(quality_truth.get("scenario") or "").strip().lower() == required:
+        gate = dict(quality_truth.get("active_filter_result") or {})
+
+    settled_count = int(
+        gate.get("accepted_count")
+        or gate.get("settled_count")
+        or quality_truth.get("settled_count")
+        or 0
+    )
+    avg_r = _safe_float(
+        gate.get("avg_r")
+        if gate.get("avg_r") is not None
+        else quality_truth.get("settled_avg_r"),
+        0.0,
+    )
+    positive_rate = _safe_float(
+        gate.get("positive_rate")
+        if gate.get("positive_rate") is not None
+        else quality_truth.get("settled_positive_rate"),
+        0.0,
+    )
+    stop_hit_rate = _safe_float(gate.get("stop_hit_rate"), None)
+    if stop_hit_rate is None:
+        stop_hit_count = int(gate.get("stop_hit_count") or 0)
+        stop_hit_rate = round(stop_hit_count / max(1, settled_count), 4) if settled_count else 0.0
+
+    return {
+        "required_scenario": required,
+        "gate": gate,
+        "scenario": str(gate.get("scenario") or "").strip().lower(),
+        "ready": bool(gate.get("ready")),
+        "settled_count": settled_count,
+        "avg_r": round(float(avg_r), 4),
+        "positive_rate": round(float(positive_rate), 4),
+        "stop_hit_rate": round(float(stop_hit_rate), 4),
+        "thresholds": {
+            "min_settled": int(CONCURRENT_INTRADAY_MIN_SETTLED),
+            "min_avg_r": float(CONCURRENT_INTRADAY_MIN_AVG_R),
+            "min_positive_rate": float(CONCURRENT_INTRADAY_MIN_POSITIVE_RATE),
+            "max_stop_hit_rate": float(CONCURRENT_INTRADAY_MAX_STOP_HIT_RATE),
+        },
+    }
+
+
+def _p270_concurrent_intraday_micro_live_readiness() -> dict:
+    _ensure_runtime_state_loaded()
+
+    live = _p268_safe_section("live_positions", lambda: _live_operator_snapshot(force=True))
+    scanner = _p268_safe_section("scanner", diagnostics_scanner)
+    scanner_truth = _p268_active_scanner_error_truth(scanner)
+    release = _p268_safe_section("release", _p268_release_snapshot)
+    paper = _p268_safe_section("intraday_paper_pilot_readiness", _intraday_paper_pilot_readiness)
+    proof = _p268_safe_section("hybrid_proof", _hybrid_proof_metrics)
+    eod = _p268_safe_section("eod_flatten_status", lambda: _eod_flatten_status_snapshot(live=True))
+    lifecycle = _p268_safe_section("execution_lifecycle", lambda: diagnostics_execution_lifecycle(limit=50))
+    candidates = _p268_safe_section("candidates_full", lambda: _diagnostics_candidates_payload(limit=50, full=True))
+
+    live_summary = dict(live.get("summary") or {})
+    loss_halt = dict(live.get("loss_halt") or {})
+    release_clock = dict(release.get("market_clock") or {})
+    regime = dict(candidates.get("regime") or LAST_REGIME_SNAPSHOT or {})
+    paper_gate = _p270_intraday_gate_metrics(paper, proof)
+
+    strategy_mode = str(STRATEGY_MODE or "").strip().lower()
+    hybrid_mode = str(HYBRID_MODE or "").strip().lower()
+    active_scenario = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "").strip().lower()
+    required_scenario = str(CONCURRENT_INTRADAY_REQUIRED_QUALITY_SCENARIO or "").strip().lower()
+
+    quality_open_shadow_count = int(proof.get("quality_scoped_open_shadow_count") or 0)
+    raw_open_shadow_count = int(proof.get("open_shadow_count") or 0)
+    live_promotion_ready = bool(proof.get("live_promotion_ready"))
+    paper_ready = bool(paper.get("ready"))
+    regime_favorable = bool(regime.get("favorable"))
+    market_open = bool(live.get("market_open") or release_clock.get("is_open") or in_market_hours())
+
+    checks = [
+        _p270_gate_result(
+            "swing_mode_preserved",
+            strategy_mode == "swing",
+            strategy_mode,
+            True,
+            "Concurrent launch keeps swing live; do not switch STRATEGY_MODE to intraday.",
+        ),
+        _p270_gate_result(
+            "swing_position_truth_aligned",
+            str(live_summary.get("position_truth_status") or "").lower() == "aligned"
+            and int(live_summary.get("position_truth_mismatch_count") or 0) == 0,
+            {
+                "status": live_summary.get("position_truth_status"),
+                "mismatch_count": live_summary.get("position_truth_mismatch_count"),
+            },
+            True,
+            "Do not add intraday live while broker/plans are mismatched.",
+        ),
+        _p270_gate_result(
+            "no_open_orders",
+            int(live_summary.get("open_order_count") or 0) == 0,
+            int(live_summary.get("open_order_count") or 0),
+            True,
+            "Micro-live launch should start with no pending broker orders.",
+        ),
+        _p270_gate_result(
+            "market_tradable_now",
+            market_open,
+            market_open,
+            True,
+            "Live intraday entries only make sense during regular market hours.",
+        ),
+        _p270_gate_result(
+            "live_orders_permitted",
+            bool(release.get("live_orders_permitted")) and bool(LIVE_TRADING_ENABLED) and bool(SCANNER_ALLOW_LIVE) and not bool(DRY_RUN),
+            {
+                "live_orders_permitted": release.get("live_orders_permitted"),
+                "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+                "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+                "dry_run": bool(DRY_RUN),
+            },
+            True,
+            "Base live order plumbing must be available.",
+        ),
+        _p270_gate_result(
+            "no_daily_or_realized_loss_halt",
+            not bool(loss_halt.get("daily_halt_active")) and not bool(loss_halt.get("new_entries_blocked")),
+            {
+                "daily_halt_active": loss_halt.get("daily_halt_active"),
+                "new_entries_blocked": loss_halt.get("new_entries_blocked"),
+                "daily_halt_reason": loss_halt.get("daily_halt_reason"),
+            },
+            True,
+            "Do not launch intraday while loss controls are blocking entries.",
+        ),
+        _p270_gate_result(
+            "scanner_currently_healthy",
+            not bool(scanner_truth.get("active_error")),
+            scanner_truth,
+            bool(CONCURRENT_INTRADAY_REQUIRE_SCANNER_HEALTHY),
+            "Shared scanner must be healthy before adding intraday live.",
+        ),
+        _p270_gate_result(
+            "regime_favorable",
+            regime_favorable,
+            {
+                "favorable": regime.get("favorable"),
+                "score": regime.get("score"),
+                "breadth": regime.get("breadth"),
+                "data_complete": regime.get("data_complete"),
+            },
+            bool(CONCURRENT_INTRADAY_REQUIRE_REGIME_FAVORABLE),
+            "Profit-first launch waits for favorable tape unless explicitly overridden.",
+        ),
+        _p270_gate_result(
+            "paper_gate_ready",
+            paper_ready,
+            {
+                "ready": paper.get("ready"),
+                "blockers": paper.get("blockers") or [],
+                "active_scenario": paper.get("active_scenario"),
+                "required_active_scenario": paper.get("required_active_scenario"),
+                "tournament_recommended_scenario": paper.get("tournament_recommended_scenario"),
+            },
+            True,
+            "Paper pilot must be clean under the promoted/recommended scenario.",
+        ),
+        _p270_gate_result(
+            "quality_scenario_aligned",
+            active_scenario == required_scenario
+            and str(paper.get("active_scenario") or "").strip().lower() == required_scenario
+            and str(paper.get("required_active_scenario") or "").strip().lower() == required_scenario
+            and str(paper.get("promoted_scenario") or "").strip().lower() == required_scenario,
+            {
+                "env_active_scenario": active_scenario,
+                "paper_active_scenario": paper.get("active_scenario"),
+                "paper_required_scenario": paper.get("required_active_scenario"),
+                "paper_promoted_scenario": paper.get("promoted_scenario"),
+                "required_scenario": required_scenario,
+            },
+            True,
+            "Live pilot must use the profitable gate, not a weaker allowlist.",
+        ),
+        _p270_gate_result(
+            "profitable_gate_thresholds",
+            paper_gate.get("scenario") == required_scenario
+            and int(paper_gate.get("settled_count") or 0) >= int(CONCURRENT_INTRADAY_MIN_SETTLED)
+            and float(paper_gate.get("avg_r") or 0.0) >= float(CONCURRENT_INTRADAY_MIN_AVG_R)
+            and float(paper_gate.get("positive_rate") or 0.0) >= float(CONCURRENT_INTRADAY_MIN_POSITIVE_RATE)
+            and float(paper_gate.get("stop_hit_rate") or 0.0) <= float(CONCURRENT_INTRADAY_MAX_STOP_HIT_RATE),
+            paper_gate,
+            True,
+            "This is the profitability check for micro-live.",
+        ),
+        _p270_gate_result(
+            "live_promotion_truth_ready",
+            live_promotion_ready,
+            {
+                "ready": live_promotion_ready,
+                "scope": proof.get("live_promotion_scope"),
+                "blockers": proof.get("live_promotion_blockers") or [],
+                "quality_scoped_live_promotion_truth": proof.get("quality_scoped_live_promotion_truth") or {},
+            },
+            bool(CONCURRENT_INTRADAY_REQUIRE_LIVE_PROMOTION_READY),
+            "Keep this strict unless deliberately running a tiny evidence-gathering pilot.",
+        ),
+        _p270_gate_result(
+            "quality_open_shadow_clean",
+            quality_open_shadow_count <= int(CONCURRENT_INTRADAY_MAX_QUALITY_OPEN_SHADOW),
+            {
+                "quality_scoped_open_shadow_count": quality_open_shadow_count,
+                "raw_open_shadow_count": raw_open_shadow_count,
+                "max_quality_open_shadow": int(CONCURRENT_INTRADAY_MAX_QUALITY_OPEN_SHADOW),
+            },
+            True,
+            "Open quality-scoped shadows must be settled/drained before live promotion.",
+        ),
+        _p270_gate_result(
+            "eod_flatten_ready",
+            bool(eod.get("ok")),
+            {
+                "ok": eod.get("ok"),
+                "residual_count": eod.get("residual_count"),
+                "residual_symbols": eod.get("residual_symbols") or [],
+                "recommended_action": eod.get("recommended_action"),
+            },
+            True,
+            "Intraday live requires proven same-day flatten discipline.",
+        ),
+        _p270_gate_result(
+            "micro_live_limits_configured",
+            int(CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS or 0) == 1
+            and int(CONCURRENT_INTRADAY_MAX_DAILY_TRADES or 0) == 1,
+            {
+                "CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS": int(CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS or 0),
+                "CONCURRENT_INTRADAY_MAX_DAILY_TRADES": int(CONCURRENT_INTRADAY_MAX_DAILY_TRADES or 0),
+                "INTRADAY_MAX_OPEN_POSITIONS": getenv_int_any("INTRADAY_MAX_OPEN_POSITIONS", default=0),
+                "INTRADAY_DAILY_STOP_DOLLARS": getenv_float_any("INTRADAY_DAILY_STOP_DOLLARS", default=0.0),
+                "INTRADAY_DAILY_LOSS_LIMIT": getenv_float_any("INTRADAY_DAILY_LOSS_LIMIT", default=0.0),
+            },
+            True,
+            "Pilot starts at one intraday position and one intraday trade per day.",
+        ),
+        _p270_gate_result(
+            "intraday_live_currently_disabled_until_final_operator_switch",
+            not bool(INTRADAY_LIVE_ENABLED),
+            bool(INTRADAY_LIVE_ENABLED),
+            False,
+            "This should remain false until this readiness gate passes.",
+        ),
+    ]
+
+    blockers = [
+        str(row.get("name"))
+        for row in checks
+        if bool(row.get("required")) and not bool(row.get("ok"))
+    ]
+    ready_for_operator_enable = not blockers
+    live_now_ready = bool(ready_for_operator_enable and INTRADAY_LIVE_ENABLED and CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED)
+
+    recommended_env_when_ready = {
+        "CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED": "true",
+        "INTRADAY_LIVE_ENABLED": "true",
+        "INTRADAY_MAX_OPEN_POSITIONS": "1",
+        "INTRADAY_DAILY_MAX_TRADES": "1",
+        "INTRADAY_DAILY_STOP_DOLLARS": "25",
+        "INTRADAY_DAILY_LOSS_LIMIT": "50",
+        "INTRADAY_QUALITY_ACTIVE_SCENARIO": required_scenario,
+        "INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO": required_scenario,
+        "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": required_scenario,
+    }
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "concurrent_swing_intraday_micro_live_readiness",
+        "read_only": True,
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "concurrent_micro_live_enabled": bool(CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED),
+        "ready_for_operator_enable": bool(ready_for_operator_enable),
+        "live_now_ready": bool(live_now_ready),
+        "blockers": blockers,
+        "checks": checks,
+        "profitability_gate": paper_gate,
+        "scanner_truth": scanner_truth,
+        "swing_live_summary": {
+            "broker_positions_count": live_summary.get("broker_positions_count"),
+            "active_plan_count": live_summary.get("active_plan_count"),
+            "open_order_count": live_summary.get("open_order_count"),
+            "position_truth_status": live_summary.get("position_truth_status"),
+            "position_truth_mismatch_count": live_summary.get("position_truth_mismatch_count"),
+            "account_daily_pnl": (live.get("today_pnl") or {}).get("account_daily_pnl"),
+            "today_realized_pnl": (live.get("today_pnl") or {}).get("today_realized_pnl"),
+            "today_unrealized_pnl": (live.get("today_pnl") or {}).get("today_unrealized_pnl"),
+        },
+        "intraday_evidence": {
+            "paper_pilot_readiness": paper,
+            "hybrid_proof": proof,
+            "eod_flatten_status": eod,
+        },
+        "operator_next_action": (
+            "enable_micro_live_after_operator_review"
+            if ready_for_operator_enable and not INTRADAY_LIVE_ENABLED
+            else "micro_live_ready_and_enabled"
+            if live_now_ready
+            else "do_not_enable_intraday_live_yet"
+        ),
+        "recommended_env_when_ready": recommended_env_when_ready,
+        "keep_unchanged": {
+            "STRATEGY_MODE": "swing",
+            "SWING_LIVE_ENABLED": True,
+            "SCANNER_ALLOW_LIVE": True,
+            "DRY_RUN": False,
+        },
+        "notes": [
+            "This endpoint is read-only and never submits orders.",
+            "It is intentionally stricter than paper readiness because it is checking real-money concurrent live operation.",
+            "Do not switch STRATEGY_MODE to intraday for concurrent launch; swing mode remains the primary live strategy mode.",
+        ],
     }
 
 @app.get("/diagnostics/operator_bundle")
@@ -27809,6 +28209,11 @@ def diagnostics_intraday_launch_readiness(request: Request):
         "recommended_followups": recommended_followups,
         "checks": checks,
     }
+
+@app.get("/diagnostics/concurrent_intraday_live_readiness")
+def diagnostics_concurrent_intraday_live_readiness(request: Request):
+    require_admin_if_configured(request)
+    return _p270_concurrent_intraday_micro_live_readiness()
 
 @app.get("/diagnostics/execution_lifecycle")
 def diagnostics_execution_lifecycle(limit: int = 100):
