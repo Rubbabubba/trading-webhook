@@ -1360,6 +1360,30 @@ CONCURRENT_INTRADAY_REQUIRE_LIVE_PROMOTION_READY = env_bool_any(
     "CONCURRENT_INTRADAY_REQUIRE_LIVE_PROMOTION_READY",
     default=True,
 )
+INTRADAY_PROFIT_ENGINE_RISK_DOLLARS = getenv_any(
+    "INTRADAY_PROFIT_ENGINE_RISK_DOLLARS",
+    default="25,50,75,100",
+)
+INTRADAY_PROFIT_ENGINE_DAILY_TARGETS = getenv_any(
+    "INTRADAY_PROFIT_ENGINE_DAILY_TARGETS",
+    default="100,200",
+)
+INTRADAY_PROFIT_ENGINE_MIN_TRADES = getenv_int_any(
+    "INTRADAY_PROFIT_ENGINE_MIN_TRADES",
+    default=10,
+)
+INTRADAY_PROFIT_ENGINE_MIN_AVG_R = getenv_float_any(
+    "INTRADAY_PROFIT_ENGINE_MIN_AVG_R",
+    default=0.40,
+)
+INTRADAY_PROFIT_ENGINE_MIN_WIN_RATE = getenv_float_any(
+    "INTRADAY_PROFIT_ENGINE_MIN_WIN_RATE",
+    default=0.60,
+)
+INTRADAY_PROFIT_ENGINE_MAX_STOP_HIT_RATE = getenv_float_any(
+    "INTRADAY_PROFIT_ENGINE_MAX_STOP_HIT_RATE",
+    default=0.25,
+)
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default=("daily_breakout" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "vwap_pullback")).strip().lower()
@@ -1491,7 +1515,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-270-hotfix-lightweight-concurrent-readiness-response"
+PATCH_VERSION = "patch-271-intraday-profit-engine-lab-time-symbol-selector"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -15008,10 +15032,39 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
             time_windows="12:00-13:59",
             blocked_symbols=blocked_symbols,
         ),
-        "score_100_plus_no_bad_symbols": _intraday_quality_config_from_values(
+                "score_100_plus_no_bad_symbols": _intraday_quality_config_from_values(
             name="score_100_plus_no_bad_symbols",
             blocked_symbols=blocked_symbols,
             min_score=100,
+        ),
+        "profit_engine_block_10am": _intraday_quality_config_from_values(
+            name="profit_engine_block_10am",
+            allowed_symbols="AMD,MRVL,PANW",
+            blocked_time_windows="10:00-10:59",
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
+        "profit_engine_reclaim_block_10am": _intraday_quality_config_from_values(
+            name="profit_engine_reclaim_block_10am",
+            allowed_symbols="AMD,MRVL,PANW",
+            blocked_time_windows="10:00-10:59",
+            min_rank_score=130,
+            max_rank_score=140,
+            allowed_signals="INTRADAY_VWAP_RECLAIM",
+        ),
+        "profit_engine_morning_or_late": _intraday_quality_config_from_values(
+            name="profit_engine_morning_or_late",
+            allowed_symbols="AMD,MRVL,PANW",
+            time_windows="09:30-09:59,14:00-14:59",
+            min_rank_score=130,
+            max_rank_score=140,
+        ),
+        "profit_engine_late_strength": _intraday_quality_config_from_values(
+            name="profit_engine_late_strength",
+            allowed_symbols="AMD,MRVL,PANW",
+            time_windows="14:00-14:59",
+            min_rank_score=130,
+            max_rank_score=140,
         ),
     }
 
@@ -26696,6 +26749,7 @@ def _p268_bundle_sections(scope: str, limit: int = 25, refresh_live: bool = True
             "intraday_launch_readiness": _p268_safe_section("intraday_launch_readiness", lambda: diagnostics_intraday_launch_readiness(None)),
             "concurrent_intraday_live_readiness": _p268_safe_section("concurrent_intraday_live_readiness", lambda: _p270_concurrent_intraday_micro_live_readiness(detail="summary")),
             "intraday_paper_pilot_readiness": _p268_safe_section("intraday_paper_pilot_readiness", _intraday_paper_pilot_readiness),
+            "intraday_profit_engine_lab": _p268_safe_section("intraday_profit_engine_lab", lambda: _p271_intraday_profit_engine_lab()),
             "intraday_quality_scoped_live_promotion": _p268_safe_section("intraday_quality_scoped_live_promotion", lambda: {
                 "ok": True,
                 "patch_version": PATCH_VERSION,
@@ -27211,6 +27265,279 @@ def _p270_concurrent_intraday_micro_live_readiness(detail: str = "summary") -> d
         }
 
     return response
+
+def _p271_float_list(raw: str, default: list[float]) -> list[float]:
+    values = []
+    for token in str(raw or "").split(","):
+        try:
+            value = float(str(token).strip())
+            if value > 0:
+                values.append(value)
+        except Exception:
+            continue
+    return values or list(default)
+
+
+def _p271_profit_row_metrics(row: dict | None) -> dict:
+    row = dict(row or {})
+    count = int(row.get("accepted_count") or row.get("count") or 0)
+    avg_r = _safe_float(row.get("avg_r") or 0.0)
+    win_rate = _safe_float(row.get("positive_rate") if row.get("positive_rate") is not None else row.get("win_rate"), 0.0)
+    stop_hit_rate = _safe_float(row.get("stop_hit_rate") or 0.0)
+    target_hit_count = int(row.get("target_hit_count") or 0)
+    eod_flat_count = int(row.get("eod_flat_count") or 0)
+    blockers = list(row.get("blockers") or [])
+
+    ready = (
+        count >= int(INTRADAY_PROFIT_ENGINE_MIN_TRADES)
+        and avg_r >= float(INTRADAY_PROFIT_ENGINE_MIN_AVG_R)
+        and win_rate >= float(INTRADAY_PROFIT_ENGINE_MIN_WIN_RATE)
+        and stop_hit_rate <= float(INTRADAY_PROFIT_ENGINE_MAX_STOP_HIT_RATE)
+    )
+    if count < int(INTRADAY_PROFIT_ENGINE_MIN_TRADES):
+        blockers.append("profit_engine_sample_below_min")
+    if avg_r < float(INTRADAY_PROFIT_ENGINE_MIN_AVG_R):
+        blockers.append("profit_engine_avg_r_below_min")
+    if win_rate < float(INTRADAY_PROFIT_ENGINE_MIN_WIN_RATE):
+        blockers.append("profit_engine_win_rate_below_min")
+    if stop_hit_rate > float(INTRADAY_PROFIT_ENGINE_MAX_STOP_HIT_RATE):
+        blockers.append("profit_engine_stop_hit_rate_above_max")
+
+    score = (
+        avg_r * 100.0
+        + win_rate * 35.0
+        - stop_hit_rate * 45.0
+        + min(count, 30) * 0.50
+    )
+
+    return {
+        "count": count,
+        "avg_r": round(avg_r, 4),
+        "win_rate": round(win_rate, 4),
+        "stop_hit_rate": round(stop_hit_rate, 4),
+        "target_hit_count": target_hit_count,
+        "eod_flat_count": eod_flat_count,
+        "ready": bool(ready),
+        "blockers": sorted(set(str(x) for x in blockers if str(x or "").strip())),
+        "profit_engine_score": round(score, 4),
+    }
+
+
+def _p271_expected_dollars(avg_r: float, risk_dollars: list[float], daily_targets: list[float]) -> dict:
+    rows = []
+    for risk in risk_dollars:
+        expected = float(avg_r or 0.0) * float(risk or 0.0)
+        target_rows = []
+        for target in daily_targets:
+            trades_needed = None
+            if expected > 0:
+                trades_needed = math.ceil(float(target) / expected)
+            target_rows.append({
+                "daily_target": round(float(target), 2),
+                "trades_needed": trades_needed,
+                "feasible_with_micro_limit": bool(trades_needed is not None and trades_needed <= int(CONCURRENT_INTRADAY_MAX_DAILY_TRADES or 1)),
+            })
+        rows.append({
+            "risk_dollars": round(float(risk), 2),
+            "expected_dollars_per_trade": round(expected, 2),
+            "targets": target_rows,
+        })
+    return {
+        "risk_table": rows,
+        "interpretation": "expected_value_not_guaranteed_profit",
+    }
+
+
+def _p271_attribution_rank(rows: list[dict], bucket_name: str, min_count: int = 2) -> list[dict]:
+    out = []
+    for row in rows or []:
+        metrics = _p271_profit_row_metrics({
+            "count": row.get("count"),
+            "avg_r": row.get("avg_r"),
+            "win_rate": row.get("win_rate"),
+            "stop_hit_rate": _safe_float((row.get("status_counts") or {}).get("shadow_stop_hit") or 0.0) / max(1, int(row.get("count") or 0)),
+        })
+        if metrics["count"] < int(min_count):
+            continue
+        out.append({
+            "bucket_type": bucket_name,
+            "bucket": row.get("key"),
+            **metrics,
+        })
+    out.sort(
+        key=lambda r: (
+            bool(r.get("ready")),
+            _safe_float(r.get("profit_engine_score") or 0.0),
+            _safe_float(r.get("avg_r") or 0.0),
+            _safe_float(r.get("win_rate") or 0.0),
+            -_safe_float(r.get("stop_hit_rate") or 0.0),
+        ),
+        reverse=True,
+    )
+    return out
+
+
+def _p271_intraday_profit_engine_lab(
+    symbols: str = "",
+    lookback_days: int = 30,
+    limit_per_symbol: int = 12000,
+    max_trades_per_symbol_session: int = 1,
+    risk_dollars: str = "",
+    daily_targets: str = "",
+) -> dict:
+    _ensure_runtime_state_loaded()
+    risks = _p271_float_list(risk_dollars or INTRADAY_PROFIT_ENGINE_RISK_DOLLARS, [25.0, 50.0, 75.0, 100.0])
+    targets = _p271_float_list(daily_targets or INTRADAY_PROFIT_ENGINE_DAILY_TARGETS, [100.0, 200.0])
+
+    filter_sim = _intraday_filter_simulation(limit=1000)
+    tournament = _intraday_paper_gate_tournament(filter_sim)
+    replay = _intraday_replay_backtest(
+        symbols=symbols,
+        lookback_days=int(lookback_days or 30),
+        scenario=str(INTRADAY_QUALITY_ACTIVE_SCENARIO or ""),
+        limit_per_symbol=int(limit_per_symbol or 12000),
+        max_trades_per_symbol_session=int(max_trades_per_symbol_session or 1),
+    )
+    replay_lab = replay.get("scenario_lab") or {}
+    proof = _hybrid_proof_metrics()
+    concurrent = _p270_concurrent_intraday_micro_live_readiness(detail="summary")
+
+    scenario_rows = []
+    replay_results_by_name = {
+        str((row or {}).get("scenario") or "").strip().lower(): row
+        for row in replay_lab.get("results") or []
+        if isinstance(row, dict)
+    }
+
+    for row in tournament.get("ranked") or []:
+        scenario = str(row.get("scenario") or "").strip().lower()
+        replay_row = replay_results_by_name.get(scenario) or {}
+        replay_summary = replay_row.get("summary") if isinstance(replay_row.get("summary"), dict) else {}
+        paper_metrics = _p271_profit_row_metrics(row)
+        replay_metrics = _p271_profit_row_metrics(replay_summary)
+        combined_score = round(
+            paper_metrics["profit_engine_score"] * 0.40
+            + replay_metrics["profit_engine_score"] * 0.60,
+            4,
+        )
+        scenario_rows.append({
+            "scenario": scenario,
+            "paper": paper_metrics,
+            "replay": replay_metrics,
+            "combined_score": combined_score,
+            "recommended_for_live_lab": bool(paper_metrics["ready"] and replay_metrics["ready"]),
+            "expected_dollars": _p271_expected_dollars(replay_metrics["avg_r"], risks, targets),
+            "config": row.get("config") or {},
+        })
+
+    for name, replay_row in replay_results_by_name.items():
+        if any(r.get("scenario") == name for r in scenario_rows):
+            continue
+        summary = replay_row.get("summary") if isinstance(replay_row.get("summary"), dict) else {}
+        replay_metrics = _p271_profit_row_metrics(summary)
+        scenario_rows.append({
+            "scenario": name,
+            "paper": {},
+            "replay": replay_metrics,
+            "combined_score": replay_metrics["profit_engine_score"],
+            "recommended_for_live_lab": bool(replay_metrics["ready"]),
+            "expected_dollars": _p271_expected_dollars(replay_metrics["avg_r"], risks, targets),
+            "config": {},
+        })
+
+    scenario_rows.sort(
+        key=lambda r: (
+            bool(r.get("recommended_for_live_lab")),
+            _safe_float(r.get("combined_score") or 0.0),
+            _safe_float((r.get("replay") or {}).get("avg_r") or 0.0),
+            _safe_float((r.get("replay") or {}).get("win_rate") or 0.0),
+            -_safe_float((r.get("replay") or {}).get("stop_hit_rate") or 0.0),
+        ),
+        reverse=True,
+    )
+
+    active_attr = ((filter_sim.get("active") or {}).get("quality_attribution") or {})
+    replay_attr = ((replay.get("all") or {}).get("quality_attribution") or {})
+
+    time_selector = _p271_attribution_rank(replay_attr.get("by_time_bucket") or [], "replay_time_bucket")
+    symbol_selector = _p271_attribution_rank(replay_attr.get("by_symbol") or [], "replay_symbol")
+    signal_selector = _p271_attribution_rank(replay_attr.get("by_signal") or [], "replay_signal")
+    paper_time_selector = _p271_attribution_rank(active_attr.get("by_time_bucket") or [], "paper_time_bucket")
+    paper_symbol_selector = _p271_attribution_rank(active_attr.get("by_symbol") or [], "paper_symbol")
+    paper_signal_selector = _p271_attribution_rank(active_attr.get("by_signal") or [], "paper_signal")
+
+    best = scenario_rows[0] if scenario_rows else {}
+    live_blockers = list(concurrent.get("blockers") or [])
+    recommended_env = {
+        "INTRADAY_LIVE_ENABLED": "false",
+        "CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED": "false",
+        "INTRADAY_QUALITY_ACTIVE_SCENARIO": str(best.get("scenario") or INTRADAY_QUALITY_ACTIVE_SCENARIO or ""),
+        "INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO": str(best.get("scenario") or INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO or ""),
+        "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": str(best.get("scenario") or INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO or ""),
+        "CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS": "1",
+        "CONCURRENT_INTRADAY_MAX_DAILY_TRADES": "1",
+    }
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "read_only_intraday_profit_engine_lab",
+        "read_only": True,
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "keep_intraday_live_disabled": True,
+        "thresholds": {
+            "min_trades": int(INTRADAY_PROFIT_ENGINE_MIN_TRADES),
+            "min_avg_r": float(INTRADAY_PROFIT_ENGINE_MIN_AVG_R),
+            "min_win_rate": float(INTRADAY_PROFIT_ENGINE_MIN_WIN_RATE),
+            "max_stop_hit_rate": float(INTRADAY_PROFIT_ENGINE_MAX_STOP_HIT_RATE),
+            "risk_dollars": risks,
+            "daily_targets": targets,
+        },
+        "current_live_readiness": {
+            "ready_for_operator_enable": bool(concurrent.get("ready_for_operator_enable")),
+            "operator_next_action": concurrent.get("operator_next_action"),
+            "blockers": live_blockers,
+            "profitability_gate": concurrent.get("profitability_gate") or {},
+        },
+        "best_scenario": best,
+        "scenario_rankings": scenario_rows[:20],
+        "selectors": {
+            "replay_time": time_selector[:10],
+            "replay_symbol": symbol_selector[:10],
+            "replay_signal": signal_selector[:10],
+            "paper_time": paper_time_selector[:10],
+            "paper_symbol": paper_symbol_selector[:10],
+            "paper_signal": paper_signal_selector[:10],
+        },
+        "replay_summary": {
+            "symbols": replay.get("symbols") or [],
+            "lookback_days": replay.get("lookback_days"),
+            "session_count": replay.get("session_count"),
+            "accepted_count": replay.get("accepted_count"),
+            "baseline": _p271_profit_row_metrics(replay.get("all") or {}),
+            "recommendations": replay_lab.get("recommendations") or {},
+        },
+        "paper_summary": {
+            "active_scenario": filter_sim.get("active_scenario"),
+            "source_settled_count": filter_sim.get("source_settled_count"),
+            "tournament_recommended_scenario": tournament.get("recommended_scenario"),
+            "tournament_recommended_ready": tournament.get("recommended_ready"),
+        },
+        "proof_summary": {
+            "settled_count": proof.get("settled_count"),
+            "open_shadow_count": proof.get("open_shadow_count"),
+            "quality_scoped_open_shadow_count": proof.get("quality_scoped_open_shadow_count"),
+            "live_promotion_ready": proof.get("live_promotion_ready"),
+            "live_promotion_blockers": proof.get("live_promotion_blockers") or [],
+        },
+        "recommended_env_for_next_paper_run": recommended_env,
+        "operator_read": {
+            "profit_target_reality": "The dollar target is a target, not a guarantee. This lab translates R expectancy into expected dollars by risk size.",
+            "next_step": "Use the top replay-confirmed scenario for another paper/shadow session; do not enable intraday live until live readiness blockers clear.",
+        },
+    }
 
 @app.get("/diagnostics/operator_bundle")
 def diagnostics_operator_bundle(
@@ -28322,6 +28649,26 @@ def diagnostics_intraday_launch_readiness(request: Request):
 def diagnostics_concurrent_intraday_live_readiness(request: Request, detail: str = "summary"):
     require_admin_if_configured(request)
     return _p270_concurrent_intraday_micro_live_readiness(detail=detail)
+
+@app.get("/diagnostics/intraday_profit_engine_lab")
+def diagnostics_intraday_profit_engine_lab(
+    request: Request,
+    symbols: str = "",
+    lookback_days: int = 30,
+    limit_per_symbol: int = 12000,
+    max_trades_per_symbol_session: int = 1,
+    risk_dollars: str = "",
+    daily_targets: str = "",
+):
+    require_admin_if_configured(request)
+    return _p271_intraday_profit_engine_lab(
+        symbols=symbols,
+        lookback_days=int(lookback_days or 30),
+        limit_per_symbol=int(limit_per_symbol or 12000),
+        max_trades_per_symbol_session=int(max_trades_per_symbol_session or 1),
+        risk_dollars=risk_dollars,
+        daily_targets=daily_targets,
+    )
 
 @app.get("/diagnostics/execution_lifecycle")
 def diagnostics_execution_lifecycle(limit: int = 100):
