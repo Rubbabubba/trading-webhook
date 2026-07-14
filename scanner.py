@@ -121,6 +121,7 @@ def main() -> None:
                     payload["reason"] = reason
                     payload["scan_attempt_id"] = scan_attempt_id
                     payload["timeout_sec"] = timeout
+                    payload["fast_response"] = True
                     status, body = post_json(url, payload, timeout=timeout)
                     body_prefix = body[:1000].replace("\n", " ")
                     state["success_total"] += 1

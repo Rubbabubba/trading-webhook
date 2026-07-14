@@ -1492,6 +1492,10 @@ def _count_forced_trades_today_ny() -> int:
 SCAN_HISTORY_SIZE = int(os.getenv("SCAN_HISTORY_SIZE", "50"))
 SCAN_HISTORY_STORE_FULL_RESULTS = env_bool_any("SCAN_HISTORY_STORE_FULL_RESULTS", default="false")
 SCAN_HISTORY_RESULT_LIMIT = max(0, int(getenv_any("SCAN_HISTORY_RESULT_LIMIT", default="25") or 25))
+SCAN_FAST_RESPONSE_ENABLED = env_bool_any("SCAN_FAST_RESPONSE_ENABLED", default="true")
+SCAN_FAST_RESPONSE_FOR_WORKER_ONLY = env_bool_any("SCAN_FAST_RESPONSE_FOR_WORKER_ONLY", default="true")
+SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", default=str(int(os.getenv("SCAN_TIMEOUT_SEC", "240") or 240) - 30)) or 210))
+SCAN_RUNTIME_WARN_RATIO = max(0.10, float(getenv_any("SCAN_RUNTIME_WARN_RATIO", default="0.85") or 0.85))
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 
 # Guards in-memory shared state when scan evaluation runs concurrently
@@ -1517,7 +1521,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-272-scanner-dispatch-timeout-idempotency-success-after-side-effect-truth"
+PATCH_VERSION = "patch-273-scanner-runtime-budget-fast-response-submission-summary"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2451,6 +2455,138 @@ def _p272_prune_scanner_dispatch_attempts() -> None:
             SCANNER_DISPATCH_ATTEMPTS.pop(key, None)
     except Exception:
         pass
+
+def _p273_runtime_budget_snapshot(duration_ms: int | float = 0, timing_ms: dict | None = None) -> dict:
+    duration_sec = max(0.0, float(duration_ms or 0) / 1000.0)
+    budget_sec = max(1.0, float(SCAN_RUNTIME_BUDGET_SEC or 1))
+    warn_sec = max(1.0, budget_sec * float(SCAN_RUNTIME_WARN_RATIO or 0.85))
+    over_budget = duration_sec > budget_sec
+    near_budget = duration_sec >= warn_sec
+    timing = dict(timing_ms or {})
+    slowest_stage = None
+    slowest_ms = 0
+    for key, value in timing.items():
+        try:
+            ms = int(value or 0)
+        except Exception:
+            ms = 0
+        if key != "total" and ms > slowest_ms:
+            slowest_stage = key
+            slowest_ms = ms
+    return {
+        "duration_ms": int(duration_ms or 0),
+        "duration_sec": round(duration_sec, 3),
+        "budget_sec": int(budget_sec),
+        "warn_sec": round(warn_sec, 3),
+        "near_budget": bool(near_budget),
+        "over_budget": bool(over_budget),
+        "runtime_over_timeout_risk": bool(over_budget or near_budget),
+        "slowest_stage": slowest_stage,
+        "slowest_stage_ms": int(slowest_ms),
+        "timing_ms": timing,
+    }
+
+
+def _p273_compact_would_submit(rows: list | None) -> list:
+    out = []
+    for row in list(rows or [])[:25]:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "symbol": row.get("symbol"),
+            "side": row.get("side"),
+            "signal": row.get("signal"),
+            "rank_score": row.get("rank_score"),
+            "signal_family": row.get("signal_family"),
+            "submit_state": row.get("submit_state"),
+            "submit_reason": row.get("submit_reason"),
+            "submit_attempted": row.get("submit_attempted"),
+            "order_id": row.get("order_id"),
+            "submitted": bool(row.get("submitted")),
+            "ignored": bool(row.get("ignored")),
+            "rejected": bool(row.get("rejected")),
+            "dry_run": bool(row.get("dry_run")),
+        })
+    return out
+
+
+def _p273_compact_scan_results(rows: list | None, limit: int = 10) -> list:
+    out = []
+    for row in list(rows or [])[:max(0, int(limit or 10))]:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "symbol": row.get("symbol"),
+            "action": row.get("action"),
+            "reason": row.get("reason"),
+            "signal": row.get("signal"),
+            "score": row.get("score"),
+            "rank_score": row.get("rank_score"),
+            "close": row.get("close"),
+        })
+    return out
+
+
+def _p273_should_fast_response(source_kind: str, body: dict | None = None) -> bool:
+    body = dict(body or {})
+    if str(body.get("full_response") or "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        return False
+    if str(body.get("fast_response") or "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        return True
+    if not bool(SCAN_FAST_RESPONSE_ENABLED):
+        return False
+    if bool(SCAN_FAST_RESPONSE_FOR_WORKER_ONLY):
+        return str(source_kind or "").strip().lower() == "worker"
+    return True
+
+
+def _p273_fast_scan_response(
+    *,
+    scan_attempt_id: str,
+    scanner_payload: dict,
+    reconcile_actions: list | None,
+    would_submit: list | None,
+    results: list | None,
+    timing_ms: dict | None,
+    duration_ms: int,
+    compact: bool,
+) -> dict:
+    runtime_budget = _p273_runtime_budget_snapshot(duration_ms, timing_ms)
+    submit_rows = _p273_compact_would_submit(would_submit)
+    submitted_symbols = [r.get("symbol") for r in submit_rows if r.get("submitted") or r.get("submit_state") == "submitted"]
+    attempted_symbols = [r.get("symbol") for r in submit_rows if r.get("submit_attempted")]
+    blocked_symbols = [r.get("symbol") for r in submit_rows if r.get("submit_state") in {"blocked", "error"}]
+
+    response = {
+        "ok": True,
+        "scan_attempt_id": scan_attempt_id,
+        "fast_response": bool(compact),
+        "scanner": scanner_payload,
+        "runtime_budget": runtime_budget,
+        "submission_summary": {
+            "would_submit_count": len(list(would_submit or [])),
+            "submitted_count": len(submitted_symbols),
+            "attempted_count": len(attempted_symbols),
+            "blocked_count": len(blocked_symbols),
+            "submitted_symbols": submitted_symbols,
+            "attempted_symbols": attempted_symbols,
+            "blocked_symbols": blocked_symbols,
+            "rows": submit_rows,
+        },
+        "reconcile_summary": {
+            "action_count": len(list(reconcile_actions or [])),
+            "actions": list(reconcile_actions or [])[:10],
+        },
+    }
+
+    if not compact:
+        response["reconcile"] = list(reconcile_actions or [])
+        response["would_submit"] = list(would_submit or [])
+        response["results"] = list(results or [])
+    else:
+        response["results_preview"] = _p273_compact_scan_results(results, limit=10)
+
+    return response
 
 def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | None = None) -> dict:
     rows = list(history if history is not None else (SCANNER_TELEMETRY_HISTORY or []))
@@ -22273,6 +22409,10 @@ def diagnostics_scanner():
         "state_restore": dict(globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}),
         "summary": summary,
         "side_effect_truth": dict(summary.get("side_effect_truth") or {}),
+        "latest_runtime_budget": _p273_runtime_budget_snapshot(
+            int((dict(LAST_SCAN or {}).get("duration_ms") or 0)),
+            dict(((dict(LAST_SCAN or {}).get("summary") or {}).get("timing_ms") or {}),
+        ),
         "last": last_view,
         "history_count": len(SCANNER_TELEMETRY_HISTORY),
         "history_limit": SCANNER_TELEMETRY_HISTORY_LIMIT,
@@ -22294,6 +22434,10 @@ def diagnostics_scanner():
             "scan_eval_concurrency": int(getenv_int("SCAN_EVAL_CONCURRENCY", 8)),
             "scan_history_store_full_results": bool(SCAN_HISTORY_STORE_FULL_RESULTS),
             "scan_history_result_limit": int(SCAN_HISTORY_RESULT_LIMIT),
+            "scan_fast_response_enabled": bool(SCAN_FAST_RESPONSE_ENABLED),
+            "scan_fast_response_for_worker_only": bool(SCAN_FAST_RESPONSE_FOR_WORKER_ONLY),
+            "scan_runtime_budget_sec": int(SCAN_RUNTIME_BUDGET_SEC),
+            "scan_runtime_warn_ratio": float(SCAN_RUNTIME_WARN_RATIO),
         },
         "intraday_candidate_path": {
             "strategy_mode": STRATEGY_MODE,
@@ -29720,6 +29864,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
 
     effective_dry_run = effective_entry_dry_run("worker_scan")
     requested_reason = str(body.get("reason") or "").strip() or None
+    fast_response = _p273_should_fast_response(source_kind, body)
 
     def _set_last_scan(**kwargs):
         LAST_SCAN.clear()
@@ -30383,6 +30528,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             except Exception:
                 pass
         pre_ranked_candidates.sort(key=lambda x: float(x.get("rank_score", 0.0) or 0.0), reverse=True)
+        timing_ms["total"] = duration_ms
+        runtime_budget = _p273_runtime_budget_snapshot(duration_ms, timing_ms)
 
         scan_summary = {
             "actions": dict(action_counts),
@@ -30406,6 +30553,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 {"symbol": s.get("symbol"), "signal": s.get("signal"), "score": s.get("score"), "price": s.get("price")}
                 for s in signals[: min(5, len(signals))]
             ],
+            "timing_ms": dict(timing_ms),
+            "runtime_budget": runtime_budget,
+            "fast_response_enabled": bool(fast_response),
         }
 
         _set_last_scan(
@@ -30529,32 +30679,47 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 _stage_end("persist")
                 try:
                     timing_ms["total"] = duration_ms
-                    _record_scanner_telemetry("scan_ok", "success", details={"status": 200, "symbols_scanned": len(syms), "signals": len(signals), "blocked": blocked, "duration_ms": duration_ms, "timing_ms": dict(timing_ms), "scan_reason": requested_reason or "scheduled", **source_meta})
+                    _record_scanner_telemetry("scan_ok", "success", details={
+                        "status": 200,
+                        "symbols_scanned": len(syms),
+                        "signals": len(signals),
+                        "blocked": blocked,
+                        "duration_ms": duration_ms,
+                        "timing_ms": dict(timing_ms),
+                        "runtime_budget": runtime_budget,
+                        "fast_response": bool(fast_response),
+                        "scan_reason": requested_reason or "scheduled",
+                        **source_meta,
+                    })
                 except Exception:
                     pass
         except Exception:
                 pass
 
-        response_payload = {
-                "ok": True,
-                "scan_attempt_id": scan_attempt_id,
-                "scanner": {
-                    "enabled": SCANNER_ENABLED,
-                    "dry_run": SCANNER_DRY_RUN,
-                    "allow_live": SCANNER_ALLOW_LIVE,
-                    "effective_dry_run": effective_dry_run,
-                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
-                    "symbols_scanned": len(syms),
-                    "signals": len(signals),
-                    "would_trade": len(signals),
-                    "blocked": blocked,
-                    "duration_ms": duration_ms,
-                    "summary": scan_summary,
-                },
-                "reconcile": reconcile_actions,
-                "would_submit": would_submit,
-                "results": results,
+        scanner_payload = {
+            "enabled": SCANNER_ENABLED,
+            "dry_run": SCANNER_DRY_RUN,
+            "allow_live": SCANNER_ALLOW_LIVE,
+            "effective_dry_run": effective_dry_run,
+            "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+            "symbols_scanned": len(syms),
+            "signals": len(signals),
+            "would_trade": len(signals),
+            "blocked": blocked,
+            "duration_ms": duration_ms,
+            "summary": scan_summary,
         }
+
+        response_payload = _p273_fast_scan_response(
+            scan_attempt_id=scan_attempt_id,
+            scanner_payload=scanner_payload,
+            reconcile_actions=reconcile_actions,
+            would_submit=would_submit,
+            results=results,
+            timing_ms=timing_ms,
+            duration_ms=duration_ms,
+            compact=bool(fast_response),
+        )
         SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
             "status": "completed",
             "started_utc": (SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {}).get("started_utc"),
@@ -30562,9 +30727,11 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "response": {
                 "ok": True,
                 "scan_attempt_id": scan_attempt_id,
+                "fast_response": True,
                 "scanner": response_payload["scanner"],
-                "reconcile": reconcile_actions,
-                "would_submit": would_submit,
+                "runtime_budget": response_payload.get("runtime_budget"),
+                "submission_summary": response_payload.get("submission_summary"),
+                "reconcile_summary": response_payload.get("reconcile_summary"),
             },
             "source_meta": dict(source_meta),
         }
