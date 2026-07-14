@@ -22411,7 +22411,7 @@ def diagnostics_scanner():
         "side_effect_truth": dict(summary.get("side_effect_truth") or {}),
         "latest_runtime_budget": _p273_runtime_budget_snapshot(
             int((dict(LAST_SCAN or {}).get("duration_ms") or 0)),
-            dict(((dict(LAST_SCAN or {}).get("summary") or {}).get("timing_ms") or {}),
+            dict(((dict(LAST_SCAN or {}).get("summary") or {}).get("timing_ms") or {})),
         ),
         "last": last_view,
         "history_count": len(SCANNER_TELEMETRY_HISTORY),
