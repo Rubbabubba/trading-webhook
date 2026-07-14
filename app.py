@@ -1450,6 +1450,8 @@ LAST_EXIT_HEARTBEAT: dict = {}
 LAST_EOD_FLATTEN_STATUS: dict = {}
 LAST_ALERT_HEARTBEAT: dict = {}
 LAST_SCANNER_TELEMETRY: dict = {}
+SCANNER_DISPATCH_ATTEMPTS: dict[str, dict] = {}
+SCANNER_DISPATCH_ATTEMPT_LIMIT = int(os.getenv("SCANNER_DISPATCH_ATTEMPT_LIMIT", "100") or 100)
 SCANNER_TELEMETRY_HISTORY: list[dict] = []
 HYBRID_PROOF_LEDGER: list[dict] = []
 RELEASE_STATE: dict = {}
@@ -1515,7 +1517,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-271-intraday-profit-engine-lab-time-symbol-selector"
+PATCH_VERSION = "patch-272-scanner-dispatch-timeout-idempotency-success-after-side-effect-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2325,12 +2327,18 @@ def _classify_scanner_warning_codes(state: dict) -> dict:
             _add_unique(active, "worker_status_unknown")
 
     if last_dispatch_failure_dt is not None:
+        side_effect_truth = dict(state.get("side_effect_truth") or {})
+        success_after_side_effect = bool(side_effect_truth.get("side_effect_detected"))
+
         dispatch_recovered = bool(
-            last_success_dt
-            and last_closed_dt
-            and last_closed_status in {"success", "skipped"}
-            and last_success_dt >= last_dispatch_failure_dt
-            and last_closed_dt >= last_dispatch_failure_dt
+            (
+                last_success_dt
+                and last_closed_dt
+                and last_closed_status in {"success", "skipped"}
+                and last_success_dt >= last_dispatch_failure_dt
+                and last_closed_dt >= last_dispatch_failure_dt
+            )
+            or success_after_side_effect
         )
         dispatch_late_timeout_after_success = bool(
             not dispatch_recovered
@@ -2354,6 +2362,95 @@ def _classify_scanner_warning_codes(state: dict) -> dict:
         "has_active_warnings": bool(active),
         "has_recovered_warnings": bool(recovered),
     }
+
+def _p272_recent_scanner_side_effects(since_utc: str | None = None, window_sec: int = 900) -> dict:
+    since_dt = _safe_parse_iso_utc(since_utc)
+    now_dt = datetime.now(timezone.utc)
+    rows = []
+
+    for sym, plan in (TRADE_PLAN or {}).items():
+        if not isinstance(plan, dict):
+            continue
+        symbol = str(sym or plan.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+
+        submitted_dt = _safe_parse_iso_utc(plan.get("submitted_at") or plan.get("opened_at") or plan.get("execution_updated_utc"))
+        updated_dt = _safe_parse_iso_utc(plan.get("execution_updated_utc") or plan.get("submitted_at") or plan.get("opened_at"))
+        ref_dt = updated_dt or submitted_dt
+
+        if since_dt and ref_dt and ref_dt < since_dt:
+            continue
+        if not since_dt and ref_dt and (now_dt - ref_dt).total_seconds() > max(60, int(window_sec or 900)):
+            continue
+
+        order_id = str(plan.get("order_id") or "").strip()
+        execution_state = str(plan.get("execution_state") or plan.get("lifecycle_state") or plan.get("order_status") or "").strip().lower()
+        active = bool(plan.get("active"))
+        side_effect = bool(active or order_id or execution_state in {"submitted", "acknowledged", "partially_filled", "filled"})
+
+        if not side_effect:
+            continue
+
+        rows.append({
+            "symbol": symbol,
+            "order_id": order_id or None,
+            "active": active,
+            "execution_state": execution_state or None,
+            "source": plan.get("source"),
+            "signal": plan.get("signal") or plan.get("strategy_name"),
+            "submitted_at": plan.get("submitted_at"),
+            "execution_updated_utc": plan.get("execution_updated_utc"),
+        })
+
+    return {
+        "ok": True,
+        "since_utc": since_utc,
+        "window_sec": int(window_sec or 900),
+        "count": len(rows),
+        "symbols": [r.get("symbol") for r in rows],
+        "rows": rows[-25:],
+        "side_effect_detected": bool(rows),
+    }
+
+
+def _p272_scanner_dispatch_attempt_key(body: dict | None, source_meta: dict | None = None) -> str:
+    body = dict(body or {})
+    source_meta = dict(source_meta or {})
+    raw = str(
+        body.get("scan_attempt_id")
+        or body.get("dispatch_id")
+        or body.get("idempotency_key")
+        or ""
+    ).strip()
+    if raw:
+        return raw[:120]
+
+    material = "|".join([
+        str(source_meta.get("source_kind") or "unknown"),
+        str(body.get("reason") or "scheduled"),
+        str(body.get("mode") or ""),
+        str(body.get("provider") or ""),
+        str(body.get("symbols_provider") or ""),
+        str(body.get("symbols") or ""),
+        datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat(),
+    ])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def _p272_prune_scanner_dispatch_attempts() -> None:
+    try:
+        limit = max(10, int(SCANNER_DISPATCH_ATTEMPT_LIMIT or 100))
+        if len(SCANNER_DISPATCH_ATTEMPTS) <= limit:
+            return
+        ordered = sorted(
+            SCANNER_DISPATCH_ATTEMPTS.items(),
+            key=lambda kv: str((kv[1] or {}).get("updated_utc") or (kv[1] or {}).get("started_utc") or ""),
+        )
+        for key, _row in ordered[: max(0, len(ordered) - limit)]:
+            SCANNER_DISPATCH_ATTEMPTS.pop(key, None)
+    except Exception:
+        pass
 
 def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | None = None) -> dict:
     rows = list(history if history is not None else (SCANNER_TELEMETRY_HISTORY or []))
@@ -2474,6 +2571,11 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
     worker = _worker_status_snapshot()
     worker_status = str(worker.get("scanner_status") or ("up" if worker.get("scanner_running") else "unknown"))
 
+    side_effect_truth = _p272_recent_scanner_side_effects(
+        since_utc=tel.get("last_dispatch_failure_utc"),
+        window_sec=max(int(tel.get("timeout_sec") or 0) + 300, 900),
+    )
+
     warning_state = _classify_scanner_warning_codes({
         "in_flight_run": active_incomplete_total > 0,
         "incomplete_runs_total": active_incomplete_total,
@@ -2485,6 +2587,7 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         "manual_request_today": manual_request_today,
         "external_request_today": external_request_today,
         "worker_status": worker_status,
+        "side_effect_truth": side_effect_truth,
     })
 
     return {
@@ -2529,6 +2632,7 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         "historical_warning_codes": list(warning_state.get("historical_warning_codes") or []),
         "has_active_warnings": warning_state.get("has_active_warnings"),
         "has_recovered_warnings": warning_state.get("has_recovered_warnings"),
+        "side_effect_truth": side_effect_truth,
         "history_count": len(rows),
     }
 
@@ -2593,6 +2697,11 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
     elif details.get("error") not in (None, ""):
         last_error = details.get("error")
 
+    side_effect_truth = _p272_recent_scanner_side_effects(
+        since_utc=now_utc_iso if is_dispatch_failure else prev.get("last_dispatch_failure_utc"),
+        window_sec=max(int(details.get("timeout_sec", prev.get("timeout_sec") or 0) or 0) + 300, 900),
+    )
+
     snapshot = {
         "ts_utc": now_utc_iso,
         "ts_ny": now_ny_ts,
@@ -2649,6 +2758,7 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
         "next_run_estimate_utc": details.get("next_run_estimate_utc", prev.get("next_run_estimate_utc")),
         "last_http_status": details.get("status", prev.get("last_http_status")),
         "last_error": last_error,
+        "side_effect_truth": side_effect_truth,
         "worker_pid": details.get("pid", prev.get("worker_pid")),
         "interval_sec": details.get("interval_sec", prev.get("interval_sec")),
         "timeout_sec": details.get("timeout_sec", prev.get("timeout_sec")),
@@ -22162,6 +22272,7 @@ def diagnostics_scanner():
         "telemetry_state_path": SCANNER_TELEMETRY_STATE_PATH,
         "state_restore": dict(globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}),
         "summary": summary,
+        "side_effect_truth": dict(summary.get("side_effect_truth") or {}),
         "last": last_view,
         "history_count": len(SCANNER_TELEMETRY_HISTORY),
         "history_limit": SCANNER_TELEMETRY_HISTORY_LIMIT,
@@ -26556,6 +26667,8 @@ def _p268_active_scanner_error_truth(scanner: dict | None) -> dict:
     )
 
     active_warning_codes = list(summary.get("active_warning_codes") or last.get("active_warning_codes") or [])
+    side_effect_truth = dict(summary.get("side_effect_truth") or last.get("side_effect_truth") or {})
+    success_after_side_effect = bool(side_effect_truth.get("side_effect_detected"))
     current_event_error = bool(
         last_event in {"scan_error", "scan_fail", "scan_dispatch_http_error"}
         or last_status in {"exception", "failure", "http_error", "error"}
@@ -26570,7 +26683,7 @@ def _p268_active_scanner_error_truth(scanner: dict | None) -> dict:
         )
     )
 
-    if recovered_after_failure and consecutive_failures == 0:
+    if (recovered_after_failure and consecutive_failures == 0) or success_after_side_effect:
         active_error = False
 
     historical_error = bool(
@@ -26592,9 +26705,13 @@ def _p268_active_scanner_error_truth(scanner: dict | None) -> dict:
         "consecutive_failures": consecutive_failures,
         "failure_today": failure_today,
         "success_today": success_today,
+        "success_after_side_effect": success_after_side_effect,
+        "side_effect_truth": side_effect_truth,
         "active_warning_codes": active_warning_codes,
         "interpretation": (
-            "active_scanner_error"
+            "scanner_timeout_but_side_effects_confirmed"
+            if success_after_side_effect
+            else "active_scanner_error"
             if active_error
             else "recovered_scanner_errors_present"
             if historical_error
@@ -26641,7 +26758,10 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
     root_cause = "unknown"
     recommended_action = "review_bundle_sections"
 
-    if scanner_truth.get("active_error"):
+    if scanner_truth.get("success_after_side_effect"):
+        root_cause = "scanner_timeout_after_confirmed_side_effect"
+        recommended_action = "review_reconcile_then_tune_scanner_timeout_or_runtime"
+    elif scanner_truth.get("active_error"):
         root_cause = "scanner_error"
         recommended_action = "fix_active_scanner_error_before_strategy_tuning"
     elif not market_open:
@@ -29554,6 +29674,44 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         source_kind = "external"
     worker_source = source_kind == "worker"
     source_meta = {"requested_reason": str(body.get("reason") or ""), "user_agent": user_agent, "source_ip": getattr(req.client, "host", ""), "source_kind": source_kind, "worker_source": worker_source}
+    scan_attempt_id = _p272_scanner_dispatch_attempt_key(body, source_meta)
+    source_meta["scan_attempt_id"] = scan_attempt_id
+    prior_attempt = dict(SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {})
+    if prior_attempt.get("status") == "completed" and isinstance(prior_attempt.get("response"), dict):
+        try:
+            _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "duplicate_scan_attempt_completed", **source_meta})
+        except Exception:
+            pass
+        cached_response = dict(prior_attempt.get("response") or {})
+        cached_response["duplicate_scan_attempt"] = True
+        cached_response["scan_attempt_id"] = scan_attempt_id
+        cached_response["idempotency_status"] = "completed_replay"
+        return cached_response
+    if prior_attempt.get("status") == "in_flight":
+        side_effect_truth = _p272_recent_scanner_side_effects(
+            since_utc=prior_attempt.get("started_utc"),
+            window_sec=max(int(body.get("timeout_sec") or 0) + 300, 900),
+        )
+        try:
+            _record_scanner_telemetry("scan_skip", "skipped", details={"reason": "duplicate_scan_attempt_in_flight", "side_effect_truth": side_effect_truth, **source_meta})
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "duplicate_scan_attempt_in_flight",
+            "scan_attempt_id": scan_attempt_id,
+            "idempotency_status": "in_flight",
+            "side_effect_truth": side_effect_truth,
+        }
+
+    SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
+        "status": "in_flight",
+        "started_utc": datetime.now(timezone.utc).isoformat(),
+        "updated_utc": datetime.now(timezone.utc).isoformat(),
+        "source_meta": dict(source_meta),
+    }
+    _p272_prune_scanner_dispatch_attempts()
 
     try:
         _record_scanner_telemetry("scan_request", "received", details=source_meta)
@@ -30377,8 +30535,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         except Exception:
                 pass
 
-        return {
+        response_payload = {
                 "ok": True,
+                "scan_attempt_id": scan_attempt_id,
                 "scanner": {
                     "enabled": SCANNER_ENABLED,
                     "dry_run": SCANNER_DRY_RUN,
@@ -30396,6 +30555,21 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 "would_submit": would_submit,
                 "results": results,
         }
+        SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
+            "status": "completed",
+            "started_utc": (SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {}).get("started_utc"),
+            "updated_utc": datetime.now(timezone.utc).isoformat(),
+            "response": {
+                "ok": True,
+                "scan_attempt_id": scan_attempt_id,
+                "scanner": response_payload["scanner"],
+                "reconcile": reconcile_actions,
+                "would_submit": would_submit,
+            },
+            "source_meta": dict(source_meta),
+        }
+        _p272_prune_scanner_dispatch_attempts()
+        return response_payload
     except Exception as e:
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
         try:
@@ -30411,6 +30585,17 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         except Exception:
             pass
         logger.exception('SCAN_FATAL error=%s', str(e))
+        try:
+            SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
+                "status": "error",
+                "started_utc": (SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {}).get("started_utc"),
+                "updated_utc": datetime.now(timezone.utc).isoformat(),
+                "error": str(e),
+                "source_meta": dict(source_meta),
+            }
+            _p272_prune_scanner_dispatch_attempts()
+        except Exception:
+            pass
         return JSONResponse(
             status_code=500,
             content={'ok': False, 'error': 'scan_exception', 'detail': str(e), **LAST_SCAN},

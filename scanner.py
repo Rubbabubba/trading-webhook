@@ -4,6 +4,7 @@ import time
 import urllib.request
 import urllib.error
 import random
+import uuid
 from datetime import datetime, timezone
 
 def getenv_int(name: str, default: int) -> int:
@@ -83,7 +84,8 @@ def main() -> None:
         v = os.getenv(envk)
         if v is not None and v != "":
             scan_payload[k] = v
-    state = {"boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec}
+    boot_id = str(uuid.uuid4())
+    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec}
     def heartbeat(event: str, status: str = "ok", details: dict | None = None) -> None:
         payload = {"worker_secret": worker_secret, "event": event, "status": status, "details": {**state, **(details or {})}}
         try:
@@ -106,16 +108,19 @@ def main() -> None:
         loop_n += 1
         if (not first) or run_on_start:
             retries = startup_retries if first else 1
+            reason = "startup" if first else "scheduled"
+            scan_attempt_id = f"{boot_id}:{loop_n}:{reason}"
             for attempt in range(1, retries + 1):
-                reason = "startup" if first else "scheduled"
                 state["attempts_total"] += 1
                 state["attempts_today"] += 1
                 state["last_attempt_utc"] = ts_utc()
                 log(f"scan_attempt loop={loop_n} attempt={attempt}/{retries} reason={reason} target={url}")
-                heartbeat("scan_attempt", "attempt", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "target": url})
+                heartbeat("scan_attempt", "attempt", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "target": url, "scan_attempt_id": scan_attempt_id})
                 try:
                     payload = dict(scan_payload)
                     payload["reason"] = reason
+                    payload["scan_attempt_id"] = scan_attempt_id
+                    payload["timeout_sec"] = timeout
                     status, body = post_json(url, payload, timeout=timeout)
                     body_prefix = body[:1000].replace("\n", " ")
                     state["success_total"] += 1
@@ -124,7 +129,7 @@ def main() -> None:
                     state["last_success_utc"] = ts_utc()
                     state["last_error"] = ""
                     log(f"scan_ok loop={loop_n} attempt={attempt}/{retries} reason={reason} status={status} body={body_prefix}")
-                    heartbeat("scan_dispatch_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix})
+                    heartbeat("scan_dispatch_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id})
                     break
                 except urllib.error.HTTPError as e:
                     try:
@@ -138,7 +143,7 @@ def main() -> None:
                     state["last_failure_utc"] = ts_utc()
                     state["last_error"] = f"HTTP {e.code} {e.reason}"
                     log(f"scan_http_error loop={loop_n} attempt={attempt}/{retries} reason={reason} status={e.code} err={e.reason} body={body_prefix}")
-                    heartbeat("scan_dispatch_http_error", "http_error", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": e.code, "error": f"{e.reason}", "body_prefix": body_prefix})
+                    heartbeat("scan_dispatch_http_error", "http_error", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": e.code, "error": f"{e.reason}", "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id})
                 except Exception as e:
                     state["failure_total"] += 1
                     state["failure_today"] += 1
@@ -148,8 +153,8 @@ def main() -> None:
                     timeout_failure = is_timeout_error(e)
                     failure_status = "timeout_failure" if timeout_failure else "exception"
                     log(f"scan_error loop={loop_n} attempt={attempt}/{retries} reason={reason} status={failure_status} err={e!r}")
-                    heartbeat("scan_dispatch_error", failure_status, {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e), "timeout_failure": timeout_failure})
-                    heartbeat("scan_fail", failure_status, {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e), "timeout_failure": timeout_failure})
+                    heartbeat("scan_dispatch_error", failure_status, {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e), "timeout_failure": timeout_failure, "scan_attempt_id": scan_attempt_id})
+                    heartbeat("scan_fail", failure_status, {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "error": repr(e), "timeout_failure": timeout_failure, "scan_attempt_id": scan_attempt_id})
                 if attempt < retries:
                     time.sleep(startup_retry_delay_sec)
         first = False
