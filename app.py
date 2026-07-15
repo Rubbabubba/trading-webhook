@@ -1498,6 +1498,7 @@ SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", defau
 SCAN_RUNTIME_WARN_RATIO = max(0.10, float(getenv_any("SCAN_RUNTIME_WARN_RATIO", default="0.85") or 0.85))
 DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT = env_bool_any("DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT", default="true")
 DIAGNOSTIC_BUNDLE_MAX_ROWS = max(1, int(getenv_any("DIAGNOSTIC_BUNDLE_MAX_ROWS", default="10") or 10))
+DIAGNOSTIC_SCANNER_HISTORY_LIMIT = max(0, int(getenv_any("DIAGNOSTIC_SCANNER_HISTORY_LIMIT", default="10") or 10))
 INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK = env_bool_any("INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK", default="true")
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 
@@ -1524,7 +1525,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-274-oom-safe-diagnostic-bundles-intraday-scanner-runtime-governor"
+PATCH_VERSION = "patch-274-hotfix-lazy-compact-bundle-scanner-history-cap-live-brief-quality-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2769,6 +2770,94 @@ def _p274_scanner_runtime_governor(scanner_payload: dict | None = None) -> dict:
         "in_flight_run": bool(summary.get("in_flight_run")),
         "block_on_runtime_risk": bool(INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK),
     }
+
+def _p274h_compact_scanner(history_limit: int | None = None) -> dict:
+    payload = diagnostics_scanner(history_limit=history_limit if history_limit is not None else DIAGNOSTIC_SCANNER_HISTORY_LIMIT)
+    return {
+        "ok": bool(payload.get("ok", True)),
+        "patch_version": payload.get("patch_version") or PATCH_VERSION,
+        "summary": dict(payload.get("summary") or {}),
+        "latest_runtime_budget": dict(payload.get("latest_runtime_budget") or {}),
+        "side_effect_truth": dict(payload.get("side_effect_truth") or {}),
+        "memory_profile": dict(payload.get("memory_profile") or {}),
+        "entry_controls": dict(payload.get("entry_controls") or {}),
+        "intraday_candidate_path": dict(payload.get("intraday_candidate_path") or {}),
+        "derived": dict(payload.get("derived") or {}),
+        "history_count": payload.get("history_count"),
+        "history_limit": payload.get("history_limit"),
+        "history": _p274_limit_rows(payload.get("history") or [], limit=history_limit if history_limit is not None else DIAGNOSTIC_SCANNER_HISTORY_LIMIT),
+    }
+
+
+def _p274h_latest_quality_summary_from_state() -> dict:
+    latest = _latest_scan_item()
+    summary = _scan_summary_payload(latest)
+    shadow = summary.get("intraday_shadow") if isinstance(summary.get("intraday_shadow"), dict) else {}
+    quality = {}
+    for key in ("quality_scoped_live_promotion_truth", "quality_promotion", "quality_scoped", "live_promotion_truth"):
+        if isinstance(shadow.get(key), dict):
+            quality = dict(shadow.get(key) or {})
+            break
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "lazy_intraday_quality_summary_from_latest_scan",
+        "latest_scan_ts_utc": (latest or {}).get("ts_utc"),
+        "latest_shadow_status": shadow.get("status"),
+        "latest_shadow_scenario": shadow.get("quality_gate_scenario") or shadow.get("active_scenario"),
+        "raw_would_trade": shadow.get("raw_would_trade"),
+        "would_trade": shadow.get("would_trade"),
+        "quality_accepted": shadow.get("quality_accepted") or shadow.get("quality_accepted_count"),
+        "quality_rejected": shadow.get("quality_rejected") or shadow.get("quality_rejected_count"),
+        "quality_summary": {
+            "scenario": quality.get("scenario"),
+            "ready": quality.get("ready"),
+            "blockers": list(quality.get("blockers") or []),
+            "settled_count": quality.get("settled_count"),
+            "settled_avg_r": quality.get("settled_avg_r"),
+            "settled_positive_rate": quality.get("settled_positive_rate"),
+            "open_shadow_count": quality.get("open_shadow_count"),
+            "raw_open_shadow_count": quality.get("raw_open_shadow_count"),
+        },
+    }
+
+
+def _p274h_lazy_intraday_bundle_summary() -> dict:
+    scanner = _p274h_compact_scanner(history_limit=DIAGNOSTIC_SCANNER_HISTORY_LIMIT)
+    scanner_governor = _p274_scanner_runtime_governor(scanner)
+    latest_quality = _p274h_latest_quality_summary_from_state()
+    freshness = _intraday_shadow_config_freshness_audit()
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "lazy_compact_intraday_bundle_summary",
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "scanner_runtime_governor": scanner_governor,
+        "shadow_config_freshness": {
+            "fresh": freshness.get("fresh"),
+            "reason": freshness.get("reason"),
+            "current_scenario": freshness.get("current_scenario"),
+            "latest_shadow_scenario": freshness.get("latest_shadow_scenario"),
+            "latest_shadow_status": freshness.get("latest_shadow_status"),
+            "latest_shadow_would_trade": freshness.get("latest_shadow_would_trade"),
+            "latest_shadow_quality_accepted": freshness.get("latest_shadow_quality_accepted"),
+            "latest_shadow_quality_rejected": freshness.get("latest_shadow_quality_rejected"),
+            "mismatches": list(freshness.get("mismatches") or []),
+        },
+        "latest_quality_summary": latest_quality,
+        "recommended_action": "keep_intraday_live_disabled" if scanner_governor.get("blocked") else "review_intraday_live_brief",
+    }
+
+
+def _p274h_compact_quality_payload(payload: dict | None) -> dict:
+    payload = dict(payload or {})
+    if payload.get("mode") == "compact_intraday_quality_scoped_live_promotion":
+        return payload
+    return _p274_compact_quality_promotion(payload)
 
 def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | None = None) -> dict:
     rows = list(history if history is not None else (SCANNER_TELEMETRY_HISTORY or []))
@@ -22521,7 +22610,7 @@ async def worker_scanner_heartbeat(req: Request):
 
 
 @app.get("/diagnostics/scanner")
-def diagnostics_scanner():
+def diagnostics_scanner(history_limit: int = DIAGNOSTIC_SCANNER_HISTORY_LIMIT):
     _ensure_runtime_state_loaded()
     now_utc = datetime.now(timezone.utc)
     tel = dict(LAST_SCANNER_TELEMETRY or {})
@@ -22598,7 +22687,7 @@ def diagnostics_scanner():
         "last": last_view,
         "history_count": len(SCANNER_TELEMETRY_HISTORY),
         "history_limit": SCANNER_TELEMETRY_HISTORY_LIMIT,
-        "history": list(SCANNER_TELEMETRY_HISTORY[-50:]),
+        "history": list(SCANNER_TELEMETRY_HISTORY[-max(0, min(int(history_limit or 0), 50)):]) if int(history_limit or 0) > 0 else [],
         "derived": {
             "last_event_age_sec": last_event_age_sec,
             "last_closed_age_sec": last_closed_age_sec,
@@ -22620,6 +22709,8 @@ def diagnostics_scanner():
             "scan_fast_response_for_worker_only": bool(SCAN_FAST_RESPONSE_FOR_WORKER_ONLY),
             "scan_runtime_budget_sec": int(SCAN_RUNTIME_BUDGET_SEC),
             "scan_runtime_warn_ratio": float(SCAN_RUNTIME_WARN_RATIO),
+            "diagnostic_scanner_history_limit": int(DIAGNOSTIC_SCANNER_HISTORY_LIMIT),
+            "scanner_max_symbols_per_cycle_env_active": int(SCANNER_MAX_SYMBOLS_PER_CYCLE),
         },
         "intraday_candidate_path": {
             "strategy_mode": STRATEGY_MODE,
@@ -22894,7 +22985,7 @@ def diagnostics_intraday_live_brief(request: Request):
     }
     quality_payload = diagnostics_intraday_quality_scoped_live_promotion(request, detail="compact")
     paper = _p274_compact_paper_readiness(paper_payload)
-    quality = _p274_compact_quality_promotion(quality_payload)
+    quality = _p274h_compact_quality_payload(quality_payload)
 
     live_ready = bool(
         paper.get("ready")
@@ -27229,7 +27320,7 @@ def _p268_bundle_sections(scope: str, limit: int = 25, refresh_live: bool = True
     sections: dict[str, dict] = {
         "build": _p268_safe_section("build", _build_fingerprint_snapshot),
         "release": _p268_safe_section("release", _p268_release_snapshot),
-        "scanner": _p268_safe_section("scanner", diagnostics_scanner),
+        "scanner": _p268_safe_section("scanner", lambda: _p274h_compact_scanner(history_limit=DIAGNOSTIC_SCANNER_HISTORY_LIMIT)),
         "live_positions": _p268_safe_section("live_positions", lambda: _live_operator_snapshot(force=refresh_live)),
         "execution_lifecycle": _p268_safe_section("execution_lifecycle", lambda: diagnostics_execution_lifecycle(limit=limit)),
         "worker_exit_status": _p268_safe_section("worker_exit_status", lambda: _worker_exit_status_snapshot(limit=limit)),
@@ -27248,26 +27339,8 @@ def _p268_bundle_sections(scope: str, limit: int = 25, refresh_live: bool = True
 
     if scope in {"all", "intraday"}:
         sections.update({
+            "intraday_bundle_summary": _p268_safe_section("intraday_bundle_summary", _p274h_lazy_intraday_bundle_summary),
             "intraday_live_brief": _p268_safe_section("intraday_live_brief", lambda: diagnostics_intraday_live_brief(None)),
-            "hybrid_proof": _p268_safe_section("hybrid_proof", lambda: _p270_compact_proof_summary(_hybrid_proof_metrics())),
-            "intraday_shadow": _p268_safe_section("intraday_shadow", lambda: {
-                "ok": True,
-                "patch_version": PATCH_VERSION,
-                "mode": "compact_intraday_shadow_bundle",
-                "latest_shadow": dict((_scan_summary_payload(_latest_scan_item()).get("intraday_shadow") or {})) if isinstance(_scan_summary_payload(_latest_scan_item()).get("intraday_shadow"), dict) else {},
-            }),
-            "intraday_launch_readiness": _p268_safe_section("intraday_launch_readiness", lambda: diagnostics_intraday_launch_readiness(None)),
-            "concurrent_intraday_live_readiness": _p268_safe_section("concurrent_intraday_live_readiness", lambda: _p270_concurrent_intraday_micro_live_readiness(detail="summary")),
-            "intraday_paper_pilot_readiness": _p268_safe_section("intraday_paper_pilot_readiness", lambda: _p274_compact_paper_readiness({
-                "ok": True,
-                "patch_version": PATCH_VERSION,
-                "strategy_mode": STRATEGY_MODE,
-                "hybrid_mode": HYBRID_MODE,
-                "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
-                "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
-                "paper_pilot_readiness": _intraday_paper_pilot_readiness(),
-            })),
-            "intraday_profit_engine_lab": _p268_safe_section("intraday_profit_engine_lab", lambda: _p274_compact_profit_engine(_p271_intraday_profit_engine_lab())),
             "intraday_quality_scoped_live_promotion": _p268_safe_section("intraday_quality_scoped_live_promotion", lambda: diagnostics_intraday_quality_scoped_live_promotion(None, detail="compact")),
             "eod_flatten_status": _p268_safe_section("eod_flatten_status", lambda: _p270_compact_eod_summary(_eod_flatten_status_snapshot(live=True))),
         })
@@ -28066,6 +28139,10 @@ def diagnostics_operator_bundle(
     require_admin_if_configured(request)
     return _p268_operator_bundle(scope=scope, limit=limit, refresh_live=refresh_live)
 
+@app.get("/diagnostics/operator_bundle_intraday_light")
+def diagnostics_operator_bundle_intraday_light(request: Request):
+    require_admin_if_configured(request)
+    return _p268_operator_bundle(scope="intraday", limit=10, refresh_live=False)
 
 @app.get("/diagnostics/bundle/{scope}")
 def diagnostics_scenario_bundle(
