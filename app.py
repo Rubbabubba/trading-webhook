@@ -1496,6 +1496,9 @@ SCAN_FAST_RESPONSE_ENABLED = env_bool_any("SCAN_FAST_RESPONSE_ENABLED", default=
 SCAN_FAST_RESPONSE_FOR_WORKER_ONLY = env_bool_any("SCAN_FAST_RESPONSE_FOR_WORKER_ONLY", default="true")
 SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", default=str(int(os.getenv("SCAN_TIMEOUT_SEC", "240") or 240) - 30)) or 210))
 SCAN_RUNTIME_WARN_RATIO = max(0.10, float(getenv_any("SCAN_RUNTIME_WARN_RATIO", default="0.85") or 0.85))
+DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT = env_bool_any("DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT", default="true")
+DIAGNOSTIC_BUNDLE_MAX_ROWS = max(1, int(getenv_any("DIAGNOSTIC_BUNDLE_MAX_ROWS", default="10") or 10))
+INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK = env_bool_any("INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK", default="true")
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 
 # Guards in-memory shared state when scan evaluation runs concurrently
@@ -1521,7 +1524,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-273-scanner-runtime-budget-fast-response-submission-summary"
+PATCH_VERSION = "patch-274-oom-safe-diagnostic-bundles-intraday-scanner-runtime-governor"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2587,6 +2590,185 @@ def _p273_fast_scan_response(
         response["results_preview"] = _p273_compact_scan_results(results, limit=10)
 
     return response
+
+def _p274_limit_rows(rows, limit: int | None = None) -> list:
+    lim = max(1, int(limit or DIAGNOSTIC_BUNDLE_MAX_ROWS or 10))
+    if not isinstance(rows, list):
+        return []
+    return [dict(r or {}) if isinstance(r, dict) else r for r in rows[:lim]]
+
+
+def _p274_compact_filter_result(row: dict | None) -> dict:
+    row = dict(row or {})
+    return {
+        "scenario": row.get("scenario"),
+        "ready": row.get("ready"),
+        "blockers": list(row.get("blockers") or []),
+        "checked": row.get("checked"),
+        "accepted_count": row.get("accepted_count"),
+        "rejected_count": row.get("rejected_count"),
+        "avg_r": row.get("avg_r"),
+        "avg_return_pct": row.get("avg_return_pct"),
+        "positive_rate": row.get("positive_rate"),
+        "stop_hit_count": row.get("stop_hit_count"),
+        "stop_hit_rate": row.get("stop_hit_rate"),
+        "score": row.get("score") or row.get("tournament_score"),
+        "config": {
+            "name": (row.get("config") or {}).get("name"),
+            "time_windows": (row.get("config") or {}).get("time_windows"),
+            "blocked_time_windows": (row.get("config") or {}).get("blocked_time_windows"),
+            "min_rank_score": (row.get("config") or {}).get("min_rank_score"),
+            "max_rank_score": (row.get("config") or {}).get("max_rank_score"),
+            "allowed_symbols": list((row.get("config") or {}).get("allowed_symbols") or [])[:20],
+            "blocked_symbols": list((row.get("config") or {}).get("blocked_symbols") or [])[:30],
+        },
+    }
+
+
+def _p274_compact_paper_readiness(payload: dict | None) -> dict:
+    payload = dict(payload or {})
+    paper = dict(payload.get("paper_pilot_readiness") or payload or {})
+    freshness = dict(paper.get("shadow_config_freshness") or {})
+    return {
+        "ok": bool(payload.get("ok", True)),
+        "patch_version": payload.get("patch_version") or PATCH_VERSION,
+        "strategy_mode": payload.get("strategy_mode") or STRATEGY_MODE,
+        "hybrid_mode": payload.get("hybrid_mode") or HYBRID_MODE,
+        "intraday_paper_enabled": payload.get("intraday_paper_enabled", INTRADAY_PAPER_ENABLED),
+        "intraday_live_enabled": payload.get("intraday_live_enabled", INTRADAY_LIVE_ENABLED),
+        "ready": bool(paper.get("ready")),
+        "blockers": list(paper.get("blockers") or []),
+        "active_scenario": paper.get("active_scenario"),
+        "required_active_scenario": paper.get("required_active_scenario"),
+        "promoted_scenario": paper.get("promoted_scenario"),
+        "tournament_recommended_scenario": paper.get("tournament_recommended_scenario"),
+        "promoted_paper_gate": _p274_compact_filter_result(paper.get("promoted_paper_gate") or {}),
+        "tournament_recommended_gate": _p274_compact_filter_result(paper.get("tournament_recommended_gate") or {}),
+        "shadow_config_freshness": {
+            "fresh": freshness.get("fresh"),
+            "reason": freshness.get("reason"),
+            "current_scenario": freshness.get("current_scenario"),
+            "latest_shadow_scenario": freshness.get("latest_shadow_scenario"),
+            "latest_shadow_status": freshness.get("latest_shadow_status"),
+            "latest_shadow_would_trade": freshness.get("latest_shadow_would_trade"),
+            "latest_shadow_quality_accepted": freshness.get("latest_shadow_quality_accepted"),
+            "latest_shadow_quality_rejected": freshness.get("latest_shadow_quality_rejected"),
+            "mismatches": list(freshness.get("mismatches") or []),
+        },
+        "required_env": dict(paper.get("required_env") or {}),
+        "recommended_env": dict(paper.get("recommended_env") or {}),
+    }
+
+
+def _p274_compact_quality_promotion(payload: dict | None) -> dict:
+    payload = dict(payload or {})
+    q = dict(payload.get("quality_scoped_live_promotion_truth") or {})
+    raw = dict(payload.get("raw_live_promotion_truth") or {})
+    drain = dict(payload.get("open_shadow_drain_audit") or {})
+    preflight = dict(payload.get("intraday_live_preflight") or {})
+    return {
+        "ok": bool(payload.get("ok", True)),
+        "patch_version": payload.get("patch_version") or PATCH_VERSION,
+        "mode": "compact_intraday_quality_scoped_live_promotion",
+        "strategy_mode": payload.get("strategy_mode") or STRATEGY_MODE,
+        "hybrid_mode": payload.get("hybrid_mode") or HYBRID_MODE,
+        "intraday_live_enabled": bool(payload.get("intraday_live_enabled", INTRADAY_LIVE_ENABLED)),
+        "live_promotion_scope": payload.get("live_promotion_scope"),
+        "live_promotion_ready": bool(payload.get("live_promotion_ready")),
+        "live_promotion_blockers": list(payload.get("live_promotion_blockers") or []),
+        "quality_scoped": {
+            "scenario": q.get("scenario"),
+            "ready": q.get("ready"),
+            "blockers": list(q.get("blockers") or []),
+            "accepted_total_count": q.get("accepted_total_count"),
+            "settled_count": q.get("settled_count"),
+            "settled_sample_ready": q.get("settled_sample_ready"),
+            "settled_avg_r": q.get("settled_avg_r"),
+            "settled_positive_rate": q.get("settled_positive_rate"),
+            "settled_worst_r": q.get("settled_worst_r"),
+            "open_shadow_count": q.get("open_shadow_count"),
+            "open_shadow_ready": q.get("open_shadow_ready"),
+            "raw_open_shadow_count": q.get("raw_open_shadow_count"),
+            "irrelevant_open_shadow_count": q.get("irrelevant_open_shadow_count"),
+            "open_shadow_rows": _p274_limit_rows(q.get("open_shadow_rows") or []),
+        },
+        "raw": {
+            "ready": raw.get("ready"),
+            "blockers": list(raw.get("blockers") or []),
+            "settled_count": raw.get("settled_count"),
+            "open_shadow_count": raw.get("open_shadow_count"),
+            "settled_avg_r": raw.get("settled_avg_r"),
+            "settled_positive_rate": raw.get("settled_positive_rate"),
+        },
+        "open_shadow_drain_audit": {
+            "recommended_action": drain.get("recommended_action"),
+            "open_shadow_count": drain.get("open_shadow_count"),
+            "settleable_count": drain.get("settleable_count"),
+            "non_settleable_count": drain.get("non_settleable_count"),
+            "rows": _p274_limit_rows(drain.get("rows") or []),
+        },
+        "intraday_live_preflight": {
+            "ok": preflight.get("ok"),
+            "allowed": preflight.get("allowed"),
+            "blockers": list(preflight.get("blockers") or []),
+            "open_shadow_count": preflight.get("open_shadow_count"),
+            "realized_closed_trade_loss_halt_active": preflight.get("realized_closed_trade_loss_halt_active"),
+        },
+    }
+
+
+def _p274_compact_profit_engine(payload: dict | None) -> dict:
+    payload = dict(payload or {})
+    best = dict(payload.get("best_scenario") or {})
+    replay = dict(best.get("replay") or {})
+    return {
+        "ok": bool(payload.get("ok", True)),
+        "patch_version": payload.get("patch_version") or PATCH_VERSION,
+        "mode": "compact_intraday_profit_engine_lab",
+        "strategy_mode": payload.get("strategy_mode") or STRATEGY_MODE,
+        "hybrid_mode": payload.get("hybrid_mode") or HYBRID_MODE,
+        "intraday_live_enabled": bool(payload.get("intraday_live_enabled", INTRADAY_LIVE_ENABLED)),
+        "best_scenario": {
+            "scenario": best.get("scenario"),
+            "recommended_for_live_lab": best.get("recommended_for_live_lab"),
+            "combined_score": best.get("combined_score"),
+            "replay": {
+                "count": replay.get("count"),
+                "avg_r": replay.get("avg_r"),
+                "win_rate": replay.get("win_rate"),
+                "stop_hit_rate": replay.get("stop_hit_rate"),
+                "ready": replay.get("ready"),
+                "blockers": list(replay.get("blockers") or []),
+                "profit_engine_score": replay.get("profit_engine_score"),
+            },
+            "expected_dollars": best.get("expected_dollars"),
+        },
+        "recommended_env_for_next_paper_run": dict(payload.get("recommended_env_for_next_paper_run") or {}),
+        "operator_read": dict(payload.get("operator_read") or {}),
+    }
+
+
+def _p274_scanner_runtime_governor(scanner_payload: dict | None = None) -> dict:
+    scanner_payload = dict(scanner_payload or diagnostics_scanner())
+    latest = dict(scanner_payload.get("latest_runtime_budget") or {})
+    summary = dict(scanner_payload.get("summary") or {})
+    duration_sec = _safe_float(latest.get("duration_sec"), 0.0)
+    budget_sec = _safe_float(latest.get("budget_sec"), float(SCAN_RUNTIME_BUDGET_SEC or 0))
+    active_warnings = list(summary.get("active_warning_codes") or [])
+    runtime_risk = bool(latest.get("runtime_over_timeout_risk") or latest.get("over_budget") or latest.get("near_budget"))
+    blocked = bool(INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK and (runtime_risk or "dispatch_failure" in active_warnings or "partial_run_open" in active_warnings))
+    return {
+        "ok": True,
+        "blocked": blocked,
+        "reason": "scanner_runtime_over_budget_or_unstable" if blocked else "scanner_runtime_within_budget",
+        "duration_sec": duration_sec,
+        "budget_sec": budget_sec,
+        "runtime_over_timeout_risk": runtime_risk,
+        "active_warning_codes": active_warnings,
+        "worker_status": summary.get("worker_status"),
+        "in_flight_run": bool(summary.get("in_flight_run")),
+        "block_on_runtime_risk": bool(INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK),
+    }
 
 def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | None = None) -> dict:
     rows = list(history if history is not None else (SCANNER_TELEMETRY_HISTORY or []))
@@ -22666,13 +22848,13 @@ def diagnostics_intraday_shadow_config_freshness(request: Request):
     }
 
 @app.get("/diagnostics/intraday_quality_scoped_live_promotion")
-def diagnostics_intraday_quality_scoped_live_promotion(request: Request):
+def diagnostics_intraday_quality_scoped_live_promotion(request: Request, detail: str = "compact"):
     require_admin_if_configured(request)
     _ensure_runtime_state_loaded()
     capacity_plan = _hybrid_capacity_plan()
     proof_metrics = _hybrid_proof_metrics(capacity_plan=capacity_plan)
     live_preflight = _intraday_live_preflight(proof_metrics=proof_metrics)
-    return {
+    payload = {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "read_only_intraday_quality_scoped_live_promotion",
@@ -22689,6 +22871,64 @@ def diagnostics_intraday_quality_scoped_live_promotion(request: Request):
         "quality_filter_active": (proof_metrics.get("quality_filter_simulation") or {}).get("active") or {},
         "quality_filter_promoted_paper": (proof_metrics.get("quality_filter_simulation") or {}).get("promoted_paper_scenario") or {},
         "intraday_live_preflight": live_preflight,
+    }
+    if str(detail or "compact").strip().lower() not in {"full", "debug", "all"}:
+        return _p274_compact_quality_promotion(payload)
+    return payload
+
+@app.get("/diagnostics/intraday_live_brief")
+def diagnostics_intraday_live_brief(request: Request):
+    require_admin_if_configured(request)
+    _ensure_runtime_state_loaded()
+
+    scanner = diagnostics_scanner()
+    scanner_governor = _p274_scanner_runtime_governor(scanner)
+    paper_payload = {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "paper_pilot_readiness": _intraday_paper_pilot_readiness(),
+    }
+    quality_payload = diagnostics_intraday_quality_scoped_live_promotion(request, detail="compact")
+    paper = _p274_compact_paper_readiness(paper_payload)
+    quality = _p274_compact_quality_promotion(quality_payload)
+
+    live_ready = bool(
+        paper.get("ready")
+        and quality.get("live_promotion_ready")
+        and not scanner_governor.get("blocked")
+    )
+    blockers = []
+    if not paper.get("ready"):
+        blockers.extend([f"paper:{b}" for b in paper.get("blockers") or ["not_ready"]])
+    if not quality.get("live_promotion_ready"):
+        blockers.extend(list(quality.get("live_promotion_blockers") or ["live_promotion_not_ready"]))
+    if scanner_governor.get("blocked"):
+        blockers.append("scanner_runtime_governor_blocked")
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "intraday_live_brief",
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "ready_for_intraday_live": live_ready,
+        "ready_for_micro_live": live_ready,
+        "blockers": sorted(set(str(b) for b in blockers if str(b or "").strip())),
+        "scanner_runtime_governor": scanner_governor,
+        "paper_pilot": paper,
+        "quality_promotion": quality,
+        "recommended_action": (
+            "keep_intraday_live_disabled"
+            if blockers
+            else "eligible_for_operator_reviewed_micro_live"
+        ),
     }
 
 @app.get("/diagnostics/intraday_replay_backtest")
@@ -27008,19 +27248,28 @@ def _p268_bundle_sections(scope: str, limit: int = 25, refresh_live: bool = True
 
     if scope in {"all", "intraday"}:
         sections.update({
-            "hybrid_proof": _p268_safe_section("hybrid_proof", lambda: _hybrid_proof_metrics()),
-            "intraday_shadow": _p268_safe_section("intraday_shadow", lambda: _intraday_shadow_diagnostics(limit=limit) if "_intraday_shadow_diagnostics" in globals() else diagnostics_intraday_shadow(None)),
-            "intraday_launch_readiness": _p268_safe_section("intraday_launch_readiness", lambda: diagnostics_intraday_launch_readiness(None)),
-            "concurrent_intraday_live_readiness": _p268_safe_section("concurrent_intraday_live_readiness", lambda: _p270_concurrent_intraday_micro_live_readiness(detail="summary")),
-            "intraday_paper_pilot_readiness": _p268_safe_section("intraday_paper_pilot_readiness", _intraday_paper_pilot_readiness),
-            "intraday_profit_engine_lab": _p268_safe_section("intraday_profit_engine_lab", lambda: _p271_intraday_profit_engine_lab()),
-            "intraday_quality_scoped_live_promotion": _p268_safe_section("intraday_quality_scoped_live_promotion", lambda: {
+            "intraday_live_brief": _p268_safe_section("intraday_live_brief", lambda: diagnostics_intraday_live_brief(None)),
+            "hybrid_proof": _p268_safe_section("hybrid_proof", lambda: _p270_compact_proof_summary(_hybrid_proof_metrics())),
+            "intraday_shadow": _p268_safe_section("intraday_shadow", lambda: {
                 "ok": True,
                 "patch_version": PATCH_VERSION,
-                "mode": "read_only_intraday_quality_scoped_live_promotion_bundle",
-                "proof_metrics": _hybrid_proof_metrics(),
+                "mode": "compact_intraday_shadow_bundle",
+                "latest_shadow": dict((_scan_summary_payload(_latest_scan_item()).get("intraday_shadow") or {})) if isinstance(_scan_summary_payload(_latest_scan_item()).get("intraday_shadow"), dict) else {},
             }),
-            "eod_flatten_status": _p268_safe_section("eod_flatten_status", lambda: _eod_flatten_status_snapshot(live=True)),
+            "intraday_launch_readiness": _p268_safe_section("intraday_launch_readiness", lambda: diagnostics_intraday_launch_readiness(None)),
+            "concurrent_intraday_live_readiness": _p268_safe_section("concurrent_intraday_live_readiness", lambda: _p270_concurrent_intraday_micro_live_readiness(detail="summary")),
+            "intraday_paper_pilot_readiness": _p268_safe_section("intraday_paper_pilot_readiness", lambda: _p274_compact_paper_readiness({
+                "ok": True,
+                "patch_version": PATCH_VERSION,
+                "strategy_mode": STRATEGY_MODE,
+                "hybrid_mode": HYBRID_MODE,
+                "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+                "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+                "paper_pilot_readiness": _intraday_paper_pilot_readiness(),
+            })),
+            "intraday_profit_engine_lab": _p268_safe_section("intraday_profit_engine_lab", lambda: _p274_compact_profit_engine(_p271_intraday_profit_engine_lab())),
+            "intraday_quality_scoped_live_promotion": _p268_safe_section("intraday_quality_scoped_live_promotion", lambda: diagnostics_intraday_quality_scoped_live_promotion(None, detail="compact")),
+            "eod_flatten_status": _p268_safe_section("eod_flatten_status", lambda: _p270_compact_eod_summary(_eod_flatten_status_snapshot(live=True))),
         })
 
     if scope in {"all", "performance"}:
@@ -27258,6 +27507,7 @@ def _p270_concurrent_intraday_micro_live_readiness(detail: str = "summary") -> d
     live = _p268_safe_section("live_positions", lambda: _live_operator_snapshot(force=True))
     scanner = _p268_safe_section("scanner", diagnostics_scanner)
     scanner_truth = _p268_active_scanner_error_truth(scanner)
+    scanner_governor = _p274_scanner_runtime_governor(scanner)
     release = _p268_safe_section("release", _p268_release_snapshot)
     paper = _p268_safe_section("intraday_paper_pilot_readiness", _intraday_paper_pilot_readiness)
     proof = _p268_safe_section("hybrid_proof", _hybrid_proof_metrics)
@@ -27291,6 +27541,7 @@ def _p270_concurrent_intraday_micro_live_readiness(detail: str = "summary") -> d
             True,
             "Concurrent launch keeps swing live; do not switch STRATEGY_MODE to intraday.",
         ),
+        _p270_gate_result("scanner_runtime_within_budget", not bool(scanner_governor.get("blocked")), scanner_governor),
         _p270_gate_result(
             "swing_position_truth_aligned",
             str(live_summary.get("position_truth_status") or "").lower() == "aligned"
@@ -27492,6 +27743,7 @@ def _p270_concurrent_intraday_micro_live_readiness(detail: str = "summary") -> d
         "checks": checks,
         "profitability_gate": paper_gate,
         "scanner_truth": scanner_truth,
+        "scanner_runtime_governor": scanner_governor,
         "swing_live_summary": _p270_compact_live_summary(live),
         "intraday_evidence_summary": {
             "paper_pilot_readiness": _p270_compact_paper_summary(paper),
@@ -27809,6 +28061,7 @@ def diagnostics_operator_bundle(
     scope: str = "all",
     limit: int = 25,
     refresh_live: bool = True,
+    detail: str = "compact",
 ):
     require_admin_if_configured(request)
     return _p268_operator_bundle(scope=scope, limit=limit, refresh_live=refresh_live)
