@@ -28343,6 +28343,7 @@ def _swing_performance_attribution(perf_state: dict | None = None) -> dict:
     }
 
 
+
 @app.get("/diagnostics/swing_performance_attribution")
 def diagnostics_swing_performance_attribution(request: Request):
     require_admin_if_configured(request)
