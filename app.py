@@ -716,6 +716,19 @@ RECONCILE_CANCELED_ENTRY_TERMINAL_STATUSES = {
     if value.strip()
 }
 
+RECONCILE_SELF_HEAL_TERMINAL_ENTRY_PLANS = env_bool_any(
+    "RECONCILE_SELF_HEAL_TERMINAL_ENTRY_PLANS",
+    default=True,
+)
+RECONCILE_SELF_HEAL_PERSIST_SNAPSHOT = env_bool_any(
+    "RECONCILE_SELF_HEAL_PERSIST_SNAPSHOT",
+    default=True,
+)
+SWING_AWAY_BRIEF_INCLUDE_CANDIDATE_ROWS = env_bool_any(
+    "SWING_AWAY_BRIEF_INCLUDE_CANDIDATE_ROWS",
+    default=False,
+)
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1629,7 +1642,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-278-canceled-entry-plan-reconcile-cleanup-pending-plan-truth"
+PATCH_VERSION = "patch-279-swing-self-healing-reconcile-away-mode-operator-brief-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5970,6 +5983,13 @@ def _adopt_open_broker_order_as_plan(symbol: str, broker_order: dict, source: st
 
 
 def build_reconcile_snapshot() -> dict:
+    self_heal = {}
+    if bool(RECONCILE_SELF_HEAL_TERMINAL_ENTRY_PLANS):
+        try:
+            self_heal = _p279_self_heal_terminal_entry_plans(source="build_reconcile_snapshot")
+        except Exception as exc:
+            self_heal = {"ok": False, "error": str(exc), "applied_count": 0, "applied": []}
+
     active_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")}
     authoritative_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active") or _plan_is_pending_entry(plan)}
     broker_positions = list_open_positions_details_allowed()
@@ -5997,6 +6017,7 @@ def build_reconcile_snapshot() -> dict:
         "plans_missing_open_order": plans_missing_open_order,
         "partial_fill_plan_symbols": partial_fill_plan_symbols,
         "open_orders": open_orders[:25],
+        "self_heal": self_heal,
     }
     snap.update(_build_reconcile_assessment(snap))
     return snap
@@ -6592,6 +6613,23 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
     Returns a list of reconcile actions.
     """
     actions: list[dict] = []
+
+    try:
+        self_heal = _p279_self_heal_terminal_entry_plans(source="reconcile_trade_plans_from_alpaca")
+        for row in list(self_heal.get("applied") or []):
+            actions.append({
+                "symbol": row.get("symbol"),
+                "action": "self_healed_terminal_entry_plan",
+                "reason": row.get("reason") or "entry_order_canceled_no_fill",
+                "order_id": row.get("order_id"),
+                "order_status": row.get("order_status"),
+            })
+    except Exception as exc:
+        actions.append({
+            "symbol": "",
+            "action": "self_heal_terminal_entry_plan_failed",
+            "reason": str(exc),
+        })
     for order in list_open_orders_safe():
         sym = str(order.get("symbol") or "").upper()
         if not sym:
@@ -6841,6 +6879,46 @@ def _p278_cleanup_terminal_entry_plans(apply: bool = False) -> dict:
         ),
     }
 
+def _p279_self_heal_terminal_entry_plans(source: str = "reconcile_self_heal") -> dict:
+    """Automatically deactivate terminal pending-entry plans with no broker position/order."""
+    if not bool(RECONCILE_SELF_HEAL_TERMINAL_ENTRY_PLANS):
+        return {
+            "ok": True,
+            "enabled": False,
+            "applied_count": 0,
+            "applied": [],
+            "candidate_count": 0,
+            "eligible_count": 0,
+            "reason": "self_heal_disabled",
+        }
+
+    cleanup = _p278_cleanup_terminal_entry_plans(apply=True)
+    applied = list(cleanup.get("applied") or [])
+
+    if applied:
+        record_decision(
+            "RECONCILE",
+            source,
+            "",
+            action="self_heal_terminal_entry_plans",
+            reason="terminal_entry_order_without_fill_or_position",
+            meta={
+                "applied_count": len(applied),
+                "symbols": [row.get("symbol") for row in applied],
+                "patch_version": PATCH_VERSION,
+            },
+        )
+
+    return {
+        "ok": True,
+        "enabled": True,
+        "source": source,
+        "candidate_count": cleanup.get("candidate_count"),
+        "eligible_count": cleanup.get("eligible_count"),
+        "applied_count": len(applied),
+        "applied": applied,
+        "post_cleanup_reconcile": cleanup.get("post_cleanup_reconcile"),
+    }
 
 def _p278_pending_plan_truth() -> dict:
     _ensure_runtime_state_loaded()
@@ -6873,6 +6951,124 @@ def _p278_pending_plan_truth() -> dict:
             else ("inspect_reconcile" if bool(reconcile.get("trading_blocked")) else "none")
         ),
     }
+
+def _p279_swing_away_mode_brief() -> dict:
+    _ensure_runtime_state_loaded()
+
+    reconcile = build_reconcile_snapshot()
+    position_truth = _position_truth_snapshot(
+        snapshot=read_positions_snapshot(),
+        reconcile=reconcile,
+        live=True,
+    )
+    live = _live_operator_snapshot(force=True)
+    health = _p277_swing_daily_health_brief()
+    current_scan = _p277h_current_scan_suppression_truth(limit=50)
+    cleanup = _p278_cleanup_terminal_entry_plans(apply=False)
+
+    live_summary = dict(live.get("summary") or {})
+    pnl = dict(live.get("today_pnl") or {})
+    loss_halt = dict(live.get("loss_halt") or {})
+
+    selected_symbols = list(current_scan.get("selected_symbols") or [])
+    open_slots = int(health.get("open_slots") or 0)
+    mismatch_count = int(position_truth.get("mismatch_count") or 0)
+    cleanup_eligible = int(cleanup.get("eligible_count") or 0)
+    daily_halt_active = bool(loss_halt.get("daily_halt_active"))
+
+    action_needed = []
+    if mismatch_count > 0:
+        action_needed.append("position_truth_mismatch")
+    if cleanup_eligible > 0:
+        action_needed.append("terminal_entry_cleanup_available")
+    if daily_halt_active:
+        action_needed.append("daily_halt_active")
+    if bool(reconcile.get("trading_blocked")):
+        action_needed.append("reconcile_blocking")
+    if not action_needed and selected_symbols:
+        action_needed.append("monitor_selected_entries")
+    if not action_needed and open_slots > 0 and int(current_scan.get("eligible_count") or 0) == 0:
+        action_needed.append("wait_for_quality_setup")
+    if not action_needed:
+        action_needed.append("monitor")
+
+    if mismatch_count == 0 and not bool(reconcile.get("trading_blocked")) and not daily_halt_active:
+        can_trade = True
+    else:
+        can_trade = False
+
+    brief = {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_away_mode_operator_brief",
+        "read_only": True,
+        "can_trade": can_trade,
+        "status": (
+            "blocked_needs_attention"
+            if not can_trade
+            else ("alive_selecting" if selected_symbols else "alive_waiting_for_quality")
+        ),
+        "action_needed": action_needed,
+        "recommended_action": (
+            "inspect_position_truth_or_reconcile"
+            if mismatch_count > 0 or bool(reconcile.get("trading_blocked"))
+            else (
+                "run_canceled_entry_plan_cleanup_apply_true"
+                if cleanup_eligible > 0
+                else ("monitor_entries_and_fills" if selected_symbols else "monitor_daily")
+            )
+        ),
+        "positions": {
+            "broker_positions_count": live_summary.get("broker_positions_count"),
+            "active_plan_count": live_summary.get("active_plan_count"),
+            "open_order_count": live_summary.get("open_order_count"),
+            "position_truth_status": live_summary.get("position_truth_status") or position_truth.get("status"),
+            "mismatch_count": mismatch_count,
+            "symbols": list(position_truth.get("broker_symbols") or []),
+        },
+        "pnl": {
+            "today_realized_pnl": pnl.get("today_realized_pnl"),
+            "today_unrealized_pnl": pnl.get("today_unrealized_pnl"),
+            "today_net_pnl": pnl.get("today_net_pnl"),
+            "accounting_source": pnl.get("accounting_source"),
+            "closed_trades_today": pnl.get("closed_trades_today"),
+        },
+        "protection": {
+            "daily_halt_active": daily_halt_active,
+            "daily_halt_reason": loss_halt.get("daily_halt_reason"),
+            "new_entries_blocked": loss_halt.get("new_entries_blocked"),
+            "reconcile_health_grade": reconcile.get("health_grade"),
+            "reconcile_trading_blocked": bool(reconcile.get("trading_blocked")),
+            "self_heal_applied_count": int((reconcile.get("self_heal") or {}).get("applied_count") or 0),
+            "terminal_cleanup_eligible_count": cleanup_eligible,
+            "terminal_cleanup_eligible_symbols": list(cleanup.get("eligible_symbols") or []),
+        },
+        "capacity": {
+            "effective_max_open_positions": health.get("effective_max_open_positions"),
+            "open_slots": open_slots,
+            "current_selected_total": current_scan.get("selected_total"),
+            "current_eligible_count": current_scan.get("eligible_count"),
+            "remaining_new_entries_today": current_scan.get("remaining_new_entries_today"),
+            "portfolio_exposure_remaining": current_scan.get("portfolio_exposure_remaining"),
+        },
+        "current_scan": {
+            "status": current_scan.get("status"),
+            "recommended_action": current_scan.get("recommended_action"),
+            "regime_mode": current_scan.get("regime_mode"),
+            "regime_favorable": current_scan.get("regime_favorable"),
+            "market_open": current_scan.get("market_open"),
+            "candidate_count": current_scan.get("candidate_count"),
+            "eligible_count": current_scan.get("eligible_count"),
+            "selected_total": current_scan.get("selected_total"),
+            "selected_symbols": selected_symbols,
+            "top_reasons": list((current_scan.get("reason_counts") or {}).items())[:8],
+        },
+    }
+
+    if bool(SWING_AWAY_BRIEF_INCLUDE_CANDIDATE_ROWS):
+        brief["current_scan"]["top_candidates"] = list(current_scan.get("top_candidates") or [])[:10]
+
+    return brief
 
 def _restore_snapshot_plan_classification(plan: dict) -> dict:
     plan = dict(plan or {})
@@ -19268,11 +19464,6 @@ def diagnostics_orders(request: Request, limit: int = 50, include_broker_status:
     reconcile_snapshot = build_reconcile_snapshot()
     return {"ok": True, "count": len(rows), "orders": rows, "reconcile_snapshot": reconcile_snapshot}
 
-
-
-
-
-
 @app.get("/diagnostics/reconcile")
 def diagnostics_reconcile(request: Request):
     require_admin_if_configured(request)
@@ -28168,6 +28359,11 @@ def diagnostics_swing_stall_exit_drilldown(request: Request):
     payload = _swing_stall_exit_drilldown()
     payload["patch256_profit_leak_drilldown"] = _p256_stall_exit_profit_leak_drilldown()
     return payload
+
+@app.get("/diagnostics/swing_away_mode_brief")
+def diagnostics_swing_away_mode_brief():
+    _ensure_runtime_state_loaded()
+    return _p279_swing_away_mode_brief()
 
 @app.get("/diagnostics/stall_exit_profit_leak_drilldown")
 def diagnostics_stall_exit_profit_leak_drilldown(request: Request):
