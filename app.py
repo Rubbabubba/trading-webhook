@@ -969,6 +969,38 @@ SWING_DEFENSIVE_TIER_EVIDENCE_HISTORY_SCANS = getenv_int_any(
     "SWING_DEFENSIVE_TIER_EVIDENCE_HISTORY_SCANS",
     default=5,
 )
+SWING_AWAY_MODE_PROFIT_TARGET_DOLLARS = getenv_float_any(
+    "SWING_AWAY_MODE_PROFIT_TARGET_DOLLARS",
+    default=100.0,
+)
+SWING_AWAY_MODE_WARN_DAILY_NET_BELOW = getenv_float_any(
+    "SWING_AWAY_MODE_WARN_DAILY_NET_BELOW",
+    default=-50.0,
+)
+SWING_AWAY_MODE_MIN_OPEN_POSITIONS = getenv_int_any(
+    "SWING_AWAY_MODE_MIN_OPEN_POSITIONS",
+    default=3,
+)
+SWING_AWAY_MODE_TARGET_OPEN_POSITIONS = getenv_int_any(
+    "SWING_AWAY_MODE_TARGET_OPEN_POSITIONS",
+    default=8,
+)
+SWING_AWAY_MODE_QUIET_SCAN_WINDOW = getenv_int_any(
+    "SWING_AWAY_MODE_QUIET_SCAN_WINDOW",
+    default=6,
+)
+SWING_AWAY_MODE_SUPPRESSION_HISTORY_SCANS = getenv_int_any(
+    "SWING_AWAY_MODE_SUPPRESSION_HISTORY_SCANS",
+    default=12,
+)
+SWING_AWAY_MODE_MIN_CANDIDATES_PER_SCAN = getenv_int_any(
+    "SWING_AWAY_MODE_MIN_CANDIDATES_PER_SCAN",
+    default=5,
+)
+SWING_AWAY_MODE_MAX_QUALITY_REJECTION_RATE = getenv_float_any(
+    "SWING_AWAY_MODE_MAX_QUALITY_REJECTION_RATE",
+    default=0.90,
+)
 SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE = getenv_float_any(
     "SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE",
     default=0.80,
@@ -1566,7 +1598,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-276-timestamp-aware-entry-attribution-audit-defensive-tier-evidence-report"
+PATCH_VERSION = "patch-277-swing-away-mode-profit-monitor-daily-health-brief-auto-suppression-evidence"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -18400,6 +18432,297 @@ def _p276_defensive_tier_evidence_report(limit: int = 50) -> dict:
         ),
     }
 
+def _p277_recent_swing_scan_rows(limit: int | None = None) -> list[dict]:
+    scan_limit = max(1, int(limit or SWING_AWAY_MODE_SUPPRESSION_HISTORY_SCANS or 12))
+    rows = []
+    for payload in list(CANDIDATE_HISTORY or [])[-scan_limit:]:
+        if not isinstance(payload, dict):
+            continue
+        candidates = [
+            dict(row)
+            for row in list(payload.get("candidates") or payload.get("items") or [])
+            if isinstance(row, dict)
+        ]
+        selected_symbols = {
+            str(sym or "").strip().upper()
+            for sym in list(payload.get("selected") or payload.get("selected_symbols") or [])
+            if str(sym or "").strip()
+        }
+        rows.append({
+            "ts_utc": payload.get("ts_utc") or payload.get("scan_ts_utc"),
+            "regime_mode": payload.get("regime_mode"),
+            "regime_favorable": (payload.get("regime") or {}).get("favorable"),
+            "candidate_count": len(candidates),
+            "eligible_count": sum(1 for row in candidates if bool(row.get("eligible"))),
+            "selected_count": len(selected_symbols),
+            "selected_symbols": sorted(selected_symbols),
+            "candidates": candidates,
+        })
+    return rows
+
+
+def _p277_reason_family(reason: str) -> str:
+    reason = str(reason or "").strip()
+    protective = {
+        "daily_halt_active",
+        "daily_stop_hit",
+        "swing_loss_day_entry_throttle",
+        "same_day_symbol_loss_cooldown",
+        "strategy_kill_switch_active",
+        "swing_post_change_drawdown_circuit",
+        "defensive_daily_breakout_rollback",
+        "weak_tape",
+    }
+    capacity = {
+        "position_already_open",
+        "plan_or_pending_entry_exists",
+        "selection_capacity_exhausted",
+        "entry_capacity_exhausted",
+        "portfolio_exposure_limit",
+        "symbol_exposure_limit",
+        "correlation_group_limit",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+    }
+    if reason in protective:
+        return "protective"
+    if reason in capacity:
+        return "capacity_or_existing_exposure"
+    if reason:
+        return "quality"
+    return "unknown"
+
+
+def _p277_auto_suppression_evidence(limit: int | None = None) -> dict:
+    scans = _p277_recent_swing_scan_rows(limit=limit)
+    reason_counts: dict[str, int] = {}
+    family_counts: dict[str, int] = {}
+    symbol_counts: dict[str, int] = {}
+    sample_rows = []
+
+    total_candidates = 0
+    total_eligible = 0
+    total_selected = 0
+
+    for scan in scans:
+        candidates = list(scan.get("candidates") or [])
+        total_candidates += len(candidates)
+        total_eligible += int(scan.get("eligible_count") or 0)
+        total_selected += int(scan.get("selected_count") or 0)
+
+        for row in candidates:
+            sym = str(row.get("symbol") or "").strip().upper()
+            reasons = [str(r) for r in list(row.get("rejection_reasons") or []) if str(r).strip()]
+            if not reasons:
+                continue
+            for reason in reasons:
+                reason_counts[reason] = int(reason_counts.get(reason) or 0) + 1
+                family = _p277_reason_family(reason)
+                family_counts[family] = int(family_counts.get(family) or 0) + 1
+            if sym:
+                symbol_counts[sym] = int(symbol_counts.get(sym) or 0) + 1
+            if len(sample_rows) < 25:
+                sample_rows.append({
+                    "symbol": sym,
+                    "scan_ts_utc": scan.get("ts_utc"),
+                    "regime_mode": row.get("regime_mode") or scan.get("regime_mode"),
+                    "eligible": bool(row.get("eligible")),
+                    "rank_score": row.get("rank_score"),
+                    "selection_quality_score": row.get("selection_quality_score"),
+                    "rejection_reasons": reasons,
+                    "reason_families": sorted({_p277_reason_family(reason) for reason in reasons}),
+                })
+
+    quality_rejections = int(family_counts.get("quality") or 0)
+    protective_rejections = int(family_counts.get("protective") or 0)
+    capacity_rejections = int(family_counts.get("capacity_or_existing_exposure") or 0)
+    rejection_total = max(1, quality_rejections + protective_rejections + capacity_rejections)
+    quality_rejection_rate = round(quality_rejections / rejection_total, 4)
+
+    if protective_rejections > 0:
+        recommended_action = "review_protective_suppression_before_relaxing"
+    elif capacity_rejections > quality_rejections and total_selected == 0:
+        recommended_action = "review_capacity_or_existing_exposure"
+    elif total_selected == 0 and quality_rejection_rate >= float(SWING_AWAY_MODE_MAX_QUALITY_REJECTION_RATE):
+        recommended_action = "no_action_quality_filters_are_doing_their_job"
+    elif total_selected == 0:
+        recommended_action = "monitor_for_next_scan"
+    else:
+        recommended_action = "healthy_scanner_is_selecting"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_auto_suppression_evidence",
+        "read_only": True,
+        "scan_window": len(scans),
+        "total_candidates": total_candidates,
+        "total_eligible": total_eligible,
+        "total_selected": total_selected,
+        "selected_symbols": sorted({
+            sym
+            for scan in scans
+            for sym in list(scan.get("selected_symbols") or [])
+        }),
+        "reason_counts": dict(sorted(reason_counts.items(), key=lambda item: item[1], reverse=True)),
+        "reason_family_counts": dict(sorted(family_counts.items(), key=lambda item: item[1], reverse=True)),
+        "quality_rejection_rate": quality_rejection_rate,
+        "top_suppressed_symbols": [
+            {"symbol": sym, "count": count}
+            for sym, count in sorted(symbol_counts.items(), key=lambda item: item[1], reverse=True)[:15]
+        ],
+        "sample_rows": sample_rows,
+        "recommended_action": recommended_action,
+    }
+
+
+def _p277_swing_away_mode_profit_monitor() -> dict:
+    _ensure_runtime_state_loaded()
+    snap = dict(read_positions_snapshot() or {})
+    pnl = today_pnl_truth_snapshot()
+    halt = daily_halt_truth_snapshot()
+    suppression = _p277_auto_suppression_evidence()
+    capacity = _p255_corrected_swing_capacity_truth_snapshot()
+    post_change = _p261_post_change_drawdown_snapshot()
+    release = _p264_daily_breakout_circuit_release_criteria()
+    entry_audit = _p275_executed_entry_eligibility_audit(limit=25)
+
+    positions = list(snap.get("positions") or [])
+    active_plans = dict(snap.get("active_plans") or {})
+    broker_position_count = len(positions)
+    active_plan_count = len([
+        plan for plan in active_plans.values()
+        if isinstance(plan, dict) and bool(plan.get("active"))
+    ])
+
+    effective_max = int(_effective_max_open_positions() or 0)
+    open_slots = max(0, effective_max - max(broker_position_count, active_plan_count))
+    today_net = _safe_float(pnl.get("today_net_pnl"), 0.0)
+    selected_recent = int(suppression.get("total_selected") or 0)
+    candidate_total = int(suppression.get("total_candidates") or 0)
+
+    alerts = []
+    if bool(halt.get("daily_halt_active")):
+        alerts.append("daily_halt_active")
+    if today_net <= float(SWING_AWAY_MODE_WARN_DAILY_NET_BELOW):
+        alerts.append("daily_net_below_away_mode_warning")
+    if broker_position_count < int(SWING_AWAY_MODE_MIN_OPEN_POSITIONS) and selected_recent == 0 and open_slots > 0:
+        alerts.append("underinvested_with_open_slots")
+    if candidate_total < int(SWING_AWAY_MODE_MIN_CANDIDATES_PER_SCAN):
+        alerts.append("candidate_flow_low")
+    if int(entry_audit.get("conflict_count") or 0) > 0:
+        alerts.append("entry_attribution_conflict")
+    if bool(post_change.get("block_new_entries")):
+        alerts.append("post_change_drawdown_circuit_blocking")
+    if bool(release.get("broad_circuit_currently_blocking")) and not bool(release.get("release_candidate")):
+        alerts.append("daily_breakout_release_not_ready")
+
+    if bool(halt.get("daily_halt_active")):
+        status = "protected_halt"
+        recommended_action = "monitor_existing_positions_no_new_entries"
+    elif "entry_attribution_conflict" in alerts:
+        status = "needs_operator_review"
+        recommended_action = "inspect_executed_entry_eligibility_audit"
+    elif "post_change_drawdown_circuit_blocking" in alerts:
+        status = "protected_by_drawdown_circuit"
+        recommended_action = "keep_circuit_active_until_release_criteria_pass"
+    elif broker_position_count >= int(SWING_AWAY_MODE_TARGET_OPEN_POSITIONS):
+        status = "fully_alive"
+        recommended_action = "monitor_profit_and_exits"
+    elif selected_recent > 0:
+        status = "alive_selecting"
+        recommended_action = "monitor_entries_and_fills"
+    elif open_slots > 0 and suppression.get("recommended_action") == "no_action_quality_filters_are_doing_their_job":
+        status = "alive_waiting_for_quality"
+        recommended_action = "do_not_loosen_quality_filters_yet"
+    elif open_slots > 0:
+        status = "available_but_quiet"
+        recommended_action = "review_auto_suppression_evidence_after_next_scan"
+    else:
+        status = "at_capacity"
+        recommended_action = "monitor_exits_before_new_entries"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_away_mode_profit_monitor",
+        "read_only": True,
+        "status": status,
+        "recommended_action": recommended_action,
+        "alerts": alerts,
+        "profit": {
+            "target_daily_profit_dollars": float(SWING_AWAY_MODE_PROFIT_TARGET_DOLLARS),
+            "today_realized_pnl": pnl.get("today_realized_pnl"),
+            "today_unrealized_pnl": pnl.get("today_unrealized_pnl"),
+            "today_net_pnl": pnl.get("today_net_pnl"),
+            "closed_trades_today": pnl.get("closed_trades_today"),
+            "accounting_source": pnl.get("accounting_source"),
+        },
+        "exposure": {
+            "broker_position_count": broker_position_count,
+            "active_plan_count": active_plan_count,
+            "effective_max_open_positions": effective_max,
+            "open_slots": open_slots,
+            "min_open_positions": int(SWING_AWAY_MODE_MIN_OPEN_POSITIONS),
+            "target_open_positions": int(SWING_AWAY_MODE_TARGET_OPEN_POSITIONS),
+            "capacity_truth": capacity,
+        },
+        "protection": {
+            "daily_halt": halt,
+            "post_change_drawdown": post_change,
+            "daily_breakout_release": release,
+            "entry_eligibility_audit": {
+                "conflict_count": entry_audit.get("conflict_count"),
+                "conflict_symbols": entry_audit.get("conflict_symbols"),
+                "unresolved_count": entry_audit.get("unresolved_count"),
+                "recommended_action": entry_audit.get("recommended_action"),
+            },
+        },
+        "suppression": {
+            "scan_window": suppression.get("scan_window"),
+            "total_candidates": suppression.get("total_candidates"),
+            "total_eligible": suppression.get("total_eligible"),
+            "total_selected": suppression.get("total_selected"),
+            "reason_family_counts": suppression.get("reason_family_counts"),
+            "top_suppressed_symbols": suppression.get("top_suppressed_symbols"),
+            "recommended_action": suppression.get("recommended_action"),
+        },
+    }
+
+
+def _p277_swing_daily_health_brief() -> dict:
+    monitor = _p277_swing_away_mode_profit_monitor()
+    suppression = _p277_auto_suppression_evidence(limit=SWING_AWAY_MODE_QUIET_SCAN_WINDOW)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_daily_health_brief",
+        "read_only": True,
+        "status": monitor.get("status"),
+        "recommended_action": monitor.get("recommended_action"),
+        "alerts": monitor.get("alerts"),
+        "today_net_pnl": (monitor.get("profit") or {}).get("today_net_pnl"),
+        "today_realized_pnl": (monitor.get("profit") or {}).get("today_realized_pnl"),
+        "today_unrealized_pnl": (monitor.get("profit") or {}).get("today_unrealized_pnl"),
+        "broker_position_count": (monitor.get("exposure") or {}).get("broker_position_count"),
+        "effective_max_open_positions": (monitor.get("exposure") or {}).get("effective_max_open_positions"),
+        "open_slots": (monitor.get("exposure") or {}).get("open_slots"),
+        "recent_selected_count": suppression.get("total_selected"),
+        "recent_eligible_count": suppression.get("total_eligible"),
+        "recent_candidate_count": suppression.get("total_candidates"),
+        "recent_selected_symbols": suppression.get("selected_symbols"),
+        "top_suppression_reasons": list((suppression.get("reason_counts") or {}).items())[:10],
+        "suppression_recommended_action": suppression.get("recommended_action"),
+        "daily_checklist": [
+            "confirm_status_not_protected_halt",
+            "confirm_position_truth_aligned_on_live_positions",
+            "confirm_no_entry_attribution_conflicts",
+            "confirm_open_slots_exist_or_positions_are_at_target",
+            "review_top_suppression_reasons_before_changing_envs",
+        ],
+    }
+
 @app.get("/state")
 def state(request: Request):
     require_admin_if_configured(request)
@@ -30561,6 +30884,23 @@ def diagnostics_executed_entry_eligibility_audit(limit: int = 25):
 def diagnostics_defensive_tier_evidence_report(limit: int = 50):
     _ensure_runtime_state_loaded()
     return _p276_defensive_tier_evidence_report(limit=limit)
+
+@app.get("/diagnostics/swing_auto_suppression_evidence")
+def diagnostics_swing_auto_suppression_evidence(limit: int = 12):
+    _ensure_runtime_state_loaded()
+    return _p277_auto_suppression_evidence(limit=limit)
+
+
+@app.get("/diagnostics/swing_away_mode_profit_monitor")
+def diagnostics_swing_away_mode_profit_monitor():
+    _ensure_runtime_state_loaded()
+    return _p277_swing_away_mode_profit_monitor()
+
+
+@app.get("/diagnostics/swing_daily_health_brief")
+def diagnostics_swing_daily_health_brief():
+    _ensure_runtime_state_loaded()
+    return _p277_swing_daily_health_brief()
 
 @app.get("/diagnostics/entry_snapshot_guard")
 def diagnostics_entry_snapshot_guard():
