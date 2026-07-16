@@ -1001,6 +1001,22 @@ SWING_AWAY_MODE_MAX_QUALITY_REJECTION_RATE = getenv_float_any(
     "SWING_AWAY_MODE_MAX_QUALITY_REJECTION_RATE",
     default=0.90,
 )
+SWING_DEFENSIVE_TIER_NEAR_MISS_RANK_DELTA = getenv_float_any(
+    "SWING_DEFENSIVE_TIER_NEAR_MISS_RANK_DELTA",
+    default=5.0,
+)
+SWING_DEFENSIVE_TIER_NEAR_MISS_CLOSE_TO_HIGH_DELTA = getenv_float_any(
+    "SWING_DEFENSIVE_TIER_NEAR_MISS_CLOSE_TO_HIGH_DELTA",
+    default=0.005,
+)
+SWING_DEFENSIVE_TIER_NEAR_MISS_BREAKOUT_EXTENSION_DELTA = getenv_float_any(
+    "SWING_DEFENSIVE_TIER_NEAR_MISS_BREAKOUT_EXTENSION_DELTA",
+    default=0.010,
+)
+SWING_DEFENSIVE_TIER_NEAR_MISS_RISK_DELTA = getenv_float_any(
+    "SWING_DEFENSIVE_TIER_NEAR_MISS_RISK_DELTA",
+    default=0.020,
+)
 SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE = getenv_float_any(
     "SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE",
     default=0.80,
@@ -1598,7 +1614,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-277-swing-away-mode-profit-monitor-daily-health-brief-auto-suppression-evidence"
+PATCH_VERSION = "patch-277-hotfix-current-scan-suppression-truth-defensive-tier-near-miss-report"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -18693,15 +18709,36 @@ def _p277_swing_away_mode_profit_monitor() -> dict:
 def _p277_swing_daily_health_brief() -> dict:
     monitor = _p277_swing_away_mode_profit_monitor()
     suppression = _p277_auto_suppression_evidence(limit=SWING_AWAY_MODE_QUIET_SCAN_WINDOW)
+    current_scan = _p277h_current_scan_suppression_truth(limit=50)
+    near_miss = _p277h_defensive_tier_near_miss_report(limit=50)
+
+    status = monitor.get("status")
+    recommended_action = monitor.get("recommended_action")
+    alerts = list(monitor.get("alerts") or [])
+
+    if current_scan.get("status") == "suppressed_by_protection":
+        status = "current_scan_suppressed_by_protection"
+        recommended_action = "review_current_scan_suppression_truth"
+        if "current_scan_protective_suppression" not in alerts:
+            alerts.append("current_scan_protective_suppression")
+
+    if int(near_miss.get("tier_passed_count") or 0) > 0:
+        status = "defensive_tier_candidate_available"
+        recommended_action = "monitor_next_scanner_submission"
+        if "defensive_tier_candidate_available" not in alerts:
+            alerts.append("defensive_tier_candidate_available")
+    elif int(near_miss.get("near_miss_count") or 0) > 0:
+        if "defensive_tier_near_miss" not in alerts:
+            alerts.append("defensive_tier_near_miss")
 
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "swing_daily_health_brief",
         "read_only": True,
-        "status": monitor.get("status"),
-        "recommended_action": monitor.get("recommended_action"),
-        "alerts": monitor.get("alerts"),
+        "status": status,
+        "recommended_action": recommended_action,
+        "alerts": alerts,
         "today_net_pnl": (monitor.get("profit") or {}).get("today_net_pnl"),
         "today_realized_pnl": (monitor.get("profit") or {}).get("today_realized_pnl"),
         "today_unrealized_pnl": (monitor.get("profit") or {}).get("today_unrealized_pnl"),
@@ -18714,13 +18751,243 @@ def _p277_swing_daily_health_brief() -> dict:
         "recent_selected_symbols": suppression.get("selected_symbols"),
         "top_suppression_reasons": list((suppression.get("reason_counts") or {}).items())[:10],
         "suppression_recommended_action": suppression.get("recommended_action"),
+        "current_scan": {
+            "status": current_scan.get("status"),
+            "recommended_action": current_scan.get("recommended_action"),
+            "candidate_count": current_scan.get("candidate_count"),
+            "eligible_count": current_scan.get("eligible_count"),
+            "selected_total": current_scan.get("selected_total"),
+            "selected_symbols": current_scan.get("selected_symbols"),
+            "regime_mode": current_scan.get("regime_mode"),
+            "protective_reason_counts": current_scan.get("protective_reason_counts"),
+            "defensive_rollback_blocked_count": current_scan.get("defensive_rollback_blocked_count"),
+        },
+        "defensive_tier": {
+            "tier_passed_count": near_miss.get("tier_passed_count"),
+            "tier_passed_symbols": near_miss.get("tier_passed_symbols"),
+            "near_miss_count": near_miss.get("near_miss_count"),
+            "near_miss_symbols": near_miss.get("near_miss_symbols"),
+            "recommended_action": near_miss.get("recommended_action"),
+        },
         "daily_checklist": [
             "confirm_status_not_protected_halt",
             "confirm_position_truth_aligned_on_live_positions",
             "confirm_no_entry_attribution_conflicts",
-            "confirm_open_slots_exist_or_positions_are_at_target",
-            "review_top_suppression_reasons_before_changing_envs",
+            "confirm_current_scan_not_unexpectedly_suppressed",
+            "review_defensive_tier_near_misses_before_changing_envs",
         ],
+    }
+
+def _p277h_candidate_reason_counts(items: list[dict]) -> dict:
+    reason_counts: dict[str, int] = {}
+    family_counts: dict[str, int] = {}
+
+    for row in items:
+        reasons = [str(r) for r in list((row or {}).get("rejection_reasons") or []) if str(r).strip()]
+        for reason in reasons:
+            reason_counts[reason] = int(reason_counts.get(reason) or 0) + 1
+            family = _p277_reason_family(reason)
+            family_counts[family] = int(family_counts.get(family) or 0) + 1
+
+    return {
+        "reason_counts": dict(sorted(reason_counts.items(), key=lambda item: item[1], reverse=True)),
+        "reason_family_counts": dict(sorted(family_counts.items(), key=lambda item: item[1], reverse=True)),
+    }
+
+
+def _p277h_defensive_tier_near_miss_row(row: dict | None) -> dict:
+    row = dict(row or {})
+    rollback = _p264_defensive_daily_breakout_rollback_snapshot(
+        str(row.get("regime_mode") or ""),
+        candidate=row,
+    )
+    tier = dict(rollback.get("tier_gate") or {})
+    checks = list(tier.get("checks") or [])
+
+    deltas = {}
+    near_miss_blockers = []
+
+    for check in checks:
+        check = dict(check or {})
+        name = str(check.get("name") or "")
+        value = _safe_float(check.get("value"), 0.0)
+
+        if "min" in check:
+            threshold = _safe_float(check.get("min"), 0.0)
+            miss = round(threshold - value, 6)
+            deltas[name] = miss
+            if name == "rank_score" and 0 < miss <= float(SWING_DEFENSIVE_TIER_NEAR_MISS_RANK_DELTA):
+                near_miss_blockers.append(name)
+            elif name == "close_to_high_pct" and 0 < miss <= float(SWING_DEFENSIVE_TIER_NEAR_MISS_CLOSE_TO_HIGH_DELTA):
+                near_miss_blockers.append(name)
+
+        if "max" in check:
+            threshold = _safe_float(check.get("max"), 0.0)
+            miss = round(value - threshold, 6)
+            deltas[name] = miss
+            if name == "breakout_extension_pct" and 0 < miss <= float(SWING_DEFENSIVE_TIER_NEAR_MISS_BREAKOUT_EXTENSION_DELTA):
+                near_miss_blockers.append(name)
+            elif name == "risk_per_share_pct" and 0 < miss <= float(SWING_DEFENSIVE_TIER_NEAR_MISS_RISK_DELTA):
+                near_miss_blockers.append(name)
+
+    blockers = [str(b) for b in list(tier.get("blockers") or [])]
+    near_miss = bool(blockers and len(set(blockers) - set(near_miss_blockers)) == 0)
+
+    return {
+        "symbol": str(row.get("symbol") or "").strip().upper(),
+        "eligible": bool(row.get("eligible")),
+        "regime_mode": str(row.get("regime_mode") or "").strip().lower(),
+        "rank_score": row.get("rank_score"),
+        "selection_quality_score": row.get("selection_quality_score"),
+        "close_to_high_pct": row.get("close_to_high_pct"),
+        "breakout_distance_pct": row.get("breakout_distance_pct"),
+        "risk_per_share_pct": row.get("risk_per_share_pct"),
+        "rejection_reasons": list(row.get("rejection_reasons") or []),
+        "rollback_blocked": bool(rollback.get("blocked")),
+        "rollback_broad_blocked": bool(rollback.get("broad_blocked")),
+        "tier_gate_passed": bool(tier.get("passed")),
+        "tier_gate_blockers": blockers,
+        "tier_gate_checks": checks,
+        "near_miss": near_miss,
+        "near_miss_blockers": near_miss_blockers,
+        "tier_gate_deltas": deltas,
+    }
+
+
+def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
+    payload = _diagnostics_candidates_payload(limit=max(1, min(int(limit or 50), 100)), full=True)
+    items = [
+        dict(row)
+        for row in list(payload.get("items") or [])
+        if isinstance(row, dict)
+    ]
+
+    reason_summary = _p277h_candidate_reason_counts(items)
+    selected_symbols = [
+        str(sym or "").strip().upper()
+        for sym in list(payload.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ]
+
+    defensive_blocked = [
+        row for row in items
+        if "defensive_daily_breakout_rollback" in [str(r) for r in list(row.get("rejection_reasons") or [])]
+    ]
+    protective_reasons = {
+        reason: count
+        for reason, count in dict(reason_summary.get("reason_counts") or {}).items()
+        if _p277_reason_family(reason) == "protective"
+    }
+
+    if selected_symbols:
+        status = "selecting"
+        recommended_action = "monitor_submissions"
+    elif protective_reasons:
+        status = "suppressed_by_protection"
+        recommended_action = "review_protective_reasons_before_relaxing"
+    elif int(payload.get("eligible_count") or 0) > 0:
+        status = "eligible_but_not_selected"
+        recommended_action = "inspect_selection_capacity"
+    elif items:
+        status = "quality_wait"
+        recommended_action = "wait_for_better_setup_or_review_near_misses"
+    else:
+        status = "no_candidate_flow"
+        recommended_action = "inspect_scanner_runtime"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "current_scan_suppression_truth",
+        "read_only": True,
+        "status": status,
+        "recommended_action": recommended_action,
+        "candidate_count": len(items),
+        "eligible_count": int(payload.get("eligible_count") or 0),
+        "selected_total": int(payload.get("selected_total") or 0),
+        "selected_symbols": selected_symbols,
+        "regime_mode": (payload.get("blockers") or {}).get("regime_mode"),
+        "regime_favorable": (payload.get("blockers") or {}).get("regime_favorable"),
+        "market_open": (payload.get("blockers") or {}).get("market_open_now"),
+        "remaining_new_entries_today": (payload.get("blockers") or {}).get("remaining_new_entries_today"),
+        "portfolio_exposure_remaining": (payload.get("blockers") or {}).get("portfolio_exposure_remaining"),
+        "blocked_by_post_change_drawdown": bool(payload.get("blocked_by_post_change_drawdown")),
+        "blocked_by_defensive_daily_breakout_rollback": bool(payload.get("blocked_by_defensive_daily_breakout_rollback")),
+        "reason_counts": reason_summary.get("reason_counts"),
+        "reason_family_counts": reason_summary.get("reason_family_counts"),
+        "protective_reason_counts": protective_reasons,
+        "defensive_rollback_blocked_count": len(defensive_blocked),
+        "top_candidates": [
+            {
+                "symbol": str(row.get("symbol") or "").strip().upper(),
+                "eligible": bool(row.get("eligible")),
+                "regime_mode": row.get("regime_mode"),
+                "rank_score": row.get("rank_score"),
+                "selection_quality_score": row.get("selection_quality_score"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+            }
+            for row in items[:15]
+        ],
+    }
+
+
+def _p277h_defensive_tier_near_miss_report(limit: int = 50) -> dict:
+    payload = _diagnostics_candidates_payload(limit=max(1, min(int(limit or 50), 100)), full=True)
+    items = [
+        dict(row)
+        for row in list(payload.get("items") or [])
+        if isinstance(row, dict)
+    ]
+
+    defensive_rows = [
+        row for row in items
+        if str(row.get("regime_mode") or "").strip().lower() == "defensive"
+    ]
+    evaluated = [_p277h_defensive_tier_near_miss_row(row) for row in defensive_rows]
+
+    blocked = [row for row in evaluated if bool(row.get("rollback_blocked"))]
+    passable = [row for row in evaluated if bool(row.get("tier_gate_passed"))]
+    near_misses = [row for row in evaluated if bool(row.get("near_miss"))]
+
+    near_misses.sort(
+        key=lambda row: (
+            len(list(row.get("tier_gate_blockers") or [])),
+            -_safe_float(row.get("rank_score"), 0.0),
+        )
+    )
+
+    if passable:
+        recommended_action = "tier_has_passable_defensive_candidates"
+    elif near_misses:
+        recommended_action = "review_near_miss_env_delta"
+    elif blocked:
+        recommended_action = "keep_defensive_tier_blocking"
+    else:
+        recommended_action = "observe_next_defensive_scan"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "defensive_tier_near_miss_report",
+        "read_only": True,
+        "current_env": {
+            "SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED": bool(SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE": float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN": int(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN),
+        },
+        "candidate_count": len(items),
+        "defensive_rows": len(defensive_rows),
+        "rollback_blocked_count": len(blocked),
+        "tier_passed_count": len(passable),
+        "tier_passed_symbols": [row.get("symbol") for row in passable],
+        "near_miss_count": len(near_misses),
+        "near_miss_symbols": [row.get("symbol") for row in near_misses[:25]],
+        "near_misses": near_misses[:25],
+        "top_defensive_rows": evaluated[:25],
+        "recommended_action": recommended_action,
     }
 
 @app.get("/state")
@@ -30890,17 +31157,26 @@ def diagnostics_swing_auto_suppression_evidence(limit: int = 12):
     _ensure_runtime_state_loaded()
     return _p277_auto_suppression_evidence(limit=limit)
 
-
 @app.get("/diagnostics/swing_away_mode_profit_monitor")
 def diagnostics_swing_away_mode_profit_monitor():
     _ensure_runtime_state_loaded()
     return _p277_swing_away_mode_profit_monitor()
 
-
 @app.get("/diagnostics/swing_daily_health_brief")
 def diagnostics_swing_daily_health_brief():
     _ensure_runtime_state_loaded()
     return _p277_swing_daily_health_brief()
+
+@app.get("/diagnostics/current_scan_suppression_truth")
+def diagnostics_current_scan_suppression_truth(limit: int = 50):
+    _ensure_runtime_state_loaded()
+    return _p277h_current_scan_suppression_truth(limit=limit)
+
+
+@app.get("/diagnostics/defensive_tier_near_miss_report")
+def diagnostics_defensive_tier_near_miss_report(limit: int = 50):
+    _ensure_runtime_state_loaded()
+    return _p277h_defensive_tier_near_miss_report(limit=limit)
 
 @app.get("/diagnostics/entry_snapshot_guard")
 def diagnostics_entry_snapshot_guard():
