@@ -932,6 +932,32 @@ SWING_WEAK_TAPE_MAX_NEW_ENTRIES = getenv_int_any("SWING_WEAK_TAPE_MAX_NEW_ENTRIE
 
 SWING_REGIME_MODE_SWITCHING_ENABLED = env_bool_any("SWING_REGIME_MODE_SWITCHING_ENABLED", default=True)
 SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES = env_bool_any("SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES", default=True)
+
+SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED = env_bool_any(
+    "SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED",
+    default=True,
+)
+SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE",
+    default=108.0,
+)
+SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
+    "SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT",
+    default=0.990,
+)
+SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT = getenv_float_any(
+    "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT",
+    default=0.020,
+)
+SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT",
+    default=0.080,
+)
+SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN",
+    default=1,
+)
+
 SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE = getenv_float_any(
     "SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE",
     default=0.80,
@@ -1019,6 +1045,10 @@ SWING_ADAPTIVE_CAPACITY_MAX_BREAKOUT_GAP_PCT = getenv_float_any("SWING_ADAPTIVE_
 ADAPTIVE_CAPACITY_SOURCE = "worker_scan_adaptive_capacity"
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE", default=0.35)
 SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R = getenv_float_any("SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R", default=-0.15)
+SWING_MEAN_REVERSION_KILL_SWITCH_REQUIRE_BOTH_WIN_RATE_AND_AVG_R = env_bool_any(
+    "SWING_MEAN_REVERSION_KILL_SWITCH_REQUIRE_BOTH_WIN_RATE_AND_AVG_R",
+    default=True,
+)
 STRATEGY_PERFORMANCE_STATE_PATH = getenv_any("STRATEGY_PERFORMANCE_STATE_PATH", default="/var/data/strategy_performance_state.json")
 STRATEGY_PERFORMANCE_QUARANTINE_SOURCES = {"broker_truth_sync", "broker_truth_reconcile", "manual_exit_reconciled", "broker_rebuild", "broker_manual_exit", "manual_broker_exit"}
 STRATEGY_PERFORMANCE_QUARANTINE_PATH = getenv_any("STRATEGY_PERFORMANCE_QUARANTINE_PATH", default="/var/data/strategy_performance_state.quarantine.json")
@@ -1525,7 +1555,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-274-hotfix-lazy-compact-bundle-scanner-history-cap-live-brief-quality-fix"
+PATCH_VERSION = "patch-275-swing-profit-path-restoration-defensive-breakout-tier-gate"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7037,11 +7067,28 @@ def _recompute_strategy_performance_state() -> dict:
     mr_win_rate = (sum(1 for r in mr_recent if float(r.get("pnl_r") or 0.0) > 0.0) / mr_count) if mr_count else 0.0
     mr_avg_r = (sum(float(r.get("pnl_r") or 0.0) for r in mr_recent) / mr_count) if mr_count else 0.0
     active = False; reasons = []
+    active = False; reasons = []
     if SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED and mr_count >= max(1, int(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES or 1)):
-        if mr_win_rate < float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE): active = True; reasons.append("win_rate_below_min")
-        if mr_avg_r < float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R): active = True; reasons.append("avg_r_below_min")
+        win_rate_bad = mr_win_rate < float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE)
+        avg_r_bad = mr_avg_r < float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R)
+
+        if bool(SWING_MEAN_REVERSION_KILL_SWITCH_REQUIRE_BOTH_WIN_RATE_AND_AVG_R):
+            if win_rate_bad and avg_r_bad:
+                active = True
+                reasons.extend(["win_rate_below_min", "avg_r_below_min"])
+            elif win_rate_bad:
+                reasons.append("win_rate_below_min_but_avg_r_ok")
+            elif avg_r_bad:
+                reasons.append("avg_r_below_min_but_win_rate_ok")
+        else:
+            if win_rate_bad:
+                active = True
+                reasons.append("win_rate_below_min")
+            if avg_r_bad:
+                active = True
+                reasons.append("avg_r_below_min")
     kill_switch = dict(state.get("kill_switch") or {})
-    kill_switch[MEAN_REVERSION_STRATEGY_NAME] = {"enabled": bool(SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED), "active": bool(active), "reasons": reasons, "sample_trades": mr_count, "lookback_trades": int(SWING_MEAN_REVERSION_KILL_SWITCH_LOOKBACK_TRADES or 0), "min_trades": int(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES or 0), "win_rate": round(mr_win_rate, 4), "avg_r": round(mr_avg_r, 4), "min_win_rate": float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE), "min_avg_r": float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R)}
+    kill_switch[MEAN_REVERSION_STRATEGY_NAME] = {"enabled": bool(SWING_MEAN_REVERSION_KILL_SWITCH_ENABLED), "active": bool(active), "reasons": reasons, "sample_trades": mr_count, "lookback_trades": int(SWING_MEAN_REVERSION_KILL_SWITCH_LOOKBACK_TRADES or 0), "min_trades": int(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_TRADES or 0), "win_rate": round(mr_win_rate, 4), "avg_r": round(mr_avg_r, 4), "min_win_rate": float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_WIN_RATE), "min_avg_r": float(SWING_MEAN_REVERSION_KILL_SWITCH_MIN_AVG_R), "require_both_win_rate_and_avg_r": bool(SWING_MEAN_REVERSION_KILL_SWITCH_REQUIRE_BOTH_WIN_RATE_AND_AVG_R)}
     globals()["STRATEGY_PERFORMANCE_STATE"] = {"closed_trades": closed, "by_strategy": by_strategy, "kill_switch": kill_switch}
     return globals()["STRATEGY_PERFORMANCE_STATE"]
 
@@ -10960,15 +11007,66 @@ def _regime_mode_thresholds(mode: str) -> dict:
         "allow_entries_when_regime_unfavorable": bool(SWING_ALLOW_NEW_ENTRIES_IN_WEAK_TAPE),
     }
 
-def _p264_defensive_daily_breakout_rollback_snapshot(regime_mode: str | None = None) -> dict:
+def _p275_defensive_breakout_tier_gate(candidate: dict | None) -> dict:
+    row = dict(candidate or {})
+    rank_score = _safe_float(row.get("rank_score"))
+    close_to_high_pct = _safe_float(row.get("close_to_high_pct")) / 100.0
+    breakout_distance_pct = _safe_float(row.get("breakout_distance_pct")) / 100.0
+    risk_per_share_pct = _safe_float(row.get("risk_per_share_pct")) / 100.0
+
+    checks = [
+        {
+            "name": "rank_score",
+            "ok": rank_score >= float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE),
+            "value": round(rank_score, 4),
+            "min": float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE),
+        },
+        {
+            "name": "close_to_high",
+            "ok": close_to_high_pct >= float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT),
+            "value": round(close_to_high_pct, 5),
+            "min": float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT),
+        },
+        {
+            "name": "breakout_extension",
+            "ok": breakout_distance_pct <= float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT),
+            "value": round(breakout_distance_pct, 5),
+            "max": float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT),
+        },
+        {
+            "name": "risk_per_share",
+            "ok": risk_per_share_pct <= float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT),
+            "value": round(risk_per_share_pct, 5),
+            "max": float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT),
+        },
+    ]
+    blockers = [str(c.get("name")) for c in checks if not c.get("ok")]
+    return {
+        "enabled": bool(SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED),
+        "passed": bool(SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED and not blockers),
+        "blockers": blockers,
+        "checks": checks,
+        "max_new_entries_per_scan": int(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN),
+    }
+
+
+def _p264_defensive_daily_breakout_rollback_snapshot(regime_mode: str | None = None, candidate: dict | None = None) -> dict:
     mode = str(regime_mode or "").strip().lower()
     active = bool(not SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES)
+    tier_gate = _p275_defensive_breakout_tier_gate(candidate) if candidate else {
+        "enabled": bool(SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED),
+        "passed": False,
+        "blockers": ["candidate_not_scored_yet"],
+        "checks": [],
+        "max_new_entries_per_scan": int(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN),
+    }
 
-    blocked = bool(
+    broad_blocked = bool(
         STRATEGY_MODE == "swing"
         and active
         and mode == "defensive"
     )
+    blocked = bool(broad_blocked and not tier_gate.get("passed"))
 
     return {
         "ok": True,
@@ -10976,11 +11074,20 @@ def _p264_defensive_daily_breakout_rollback_snapshot(regime_mode: str | None = N
         "mode": "defensive_daily_breakout_rollback",
         "active": active,
         "blocked": blocked,
+        "broad_blocked": broad_blocked,
+        "tier_gate_enabled": bool(tier_gate.get("enabled")),
+        "tier_gate_passed": bool(tier_gate.get("passed")),
+        "tier_gate": tier_gate,
         "strategy_blocked": BREAKOUT_STRATEGY_NAME,
         "regime_mode": mode or "unknown",
         "mean_reversion_preserved": True,
         "env": {
             "SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES": bool(SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED": bool(SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE": float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT),
         },
         "reason": "defensive_daily_breakout_rollback" if blocked else "none",
     }
@@ -11002,12 +11109,10 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         candidate['rejection_reasons'].append('insufficient_daily_bars')
         return candidate
     thresholds = _regime_mode_thresholds(regime_mode)
-    defensive_rollback = _p264_defensive_daily_breakout_rollback_snapshot(
-        thresholds.get("mode") or regime_mode
-    )
-    if defensive_rollback.get("blocked"):
-        candidate["rejection_reasons"].append("defensive_daily_breakout_rollback")
-        candidate["defensive_daily_breakout_rollback"] = defensive_rollback
+    defensive_rollback = {
+        "blocked": False,
+        "reason": "pending_scored_candidate",
+    }
     close = closes[-1]
     prev_close = closes[-2]
     high = highs[-1]
@@ -11129,6 +11234,16 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
             'require_index_alignment': bool(thresholds.get('require_index_alignment')),
         },
     })
+    defensive_rollback = _p264_defensive_daily_breakout_rollback_snapshot(
+        thresholds.get("mode") or regime_mode,
+        candidate=candidate,
+    )
+    candidate["defensive_daily_breakout_rollback"] = defensive_rollback
+    if defensive_rollback.get("blocked"):
+        candidate['rejection_reasons'].append('defensive_daily_breakout_rollback')
+    elif defensive_rollback.get("broad_blocked") and defensive_rollback.get("tier_gate_passed"):
+        candidate["defensive_breakout_tier_approved"] = True
+
     if score < min_rank_score:
         candidate['rejection_reasons'].append('rank_score_below_min')
     candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
@@ -12765,7 +12880,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         max_new_entries = min(max_new_entries, int(loss_day_throttle.get("max_new_entries_after_trigger") or 0))
     if breakout_approved:
         if regime_mode == 'defensive':
-            max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
+            defensive_tier_cap = max(0, int(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN or 1))
+            weak_tape_cap = max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1))
+            max_new_entries = min(max_new_entries, defensive_tier_cap, weak_tape_cap)
         elif regime.get('favorable') is False:
             max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
     elif mean_reversion_approved:
@@ -18062,6 +18179,61 @@ def scanner_status():
         "last_scan": LAST_SCAN,
     }
 
+def _p275_executed_entry_eligibility_audit(limit: int = 25) -> dict:
+    snap = dict(read_positions_snapshot() or {})
+    plans = dict(snap.get("active_plans") or {})
+    if not plans:
+        plans = {
+            str(sym or "").upper(): dict(plan or {})
+            for sym, plan in dict(TRADE_PLAN or {}).items()
+            if isinstance(plan, dict) and bool(plan.get("active"))
+        }
+
+    rows = []
+    suspicious = []
+    for sym, plan in sorted(plans.items()):
+        row = dict(plan or {})
+        strategy = str(row.get("strategy_name") or row.get("signal") or "").strip().lower()
+        if strategy != BREAKOUT_STRATEGY_NAME:
+            continue
+
+        probe = _p247_entry_quality_backfill_probe_for_position(sym, row)
+        recovered = dict(probe.get("recovered_snapshot_preview") or {})
+        existing = dict(probe.get("existing_snapshot") or {})
+        recovered_reasons = [str(r) for r in recovered.get("rejection_reasons_at_entry") or []]
+        existing_reasons = [str(r) for r in existing.get("rejection_reasons_at_entry") or []]
+        conflict = bool(
+            "defensive_daily_breakout_rollback" in recovered_reasons
+            and "defensive_daily_breakout_rollback" not in existing_reasons
+        )
+
+        item = {
+            "symbol": str(sym or "").upper(),
+            "strategy": strategy,
+            "opened_at": row.get("opened_at"),
+            "source": row.get("source"),
+            "entry_type": row.get("entry_type"),
+            "has_existing_snapshot": bool(probe.get("has_existing_entry_quality_snapshot")),
+            "can_backfill": bool(probe.get("can_backfill")),
+            "existing_rejection_reasons": existing_reasons,
+            "matched_candidate_rejection_reasons": recovered_reasons,
+            "candidate_match_conflicts_with_live_entry": conflict,
+            "recommended_action": "inspect_entry_attribution_match" if conflict else "none",
+        }
+        rows.append(item)
+        if conflict:
+            suspicious.append(item)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "executed_entry_eligibility_audit",
+        "active_breakout_plan_count": len(rows),
+        "conflict_count": len(suspicious),
+        "conflict_symbols": [r.get("symbol") for r in suspicious],
+        "rows": rows[: max(1, min(int(limit or 25), 100))],
+        "recommended_action": "inspect_entry_attribution_match" if suspicious else "none",
+    }
 
 @app.get("/state")
 def state(request: Request):
@@ -30064,6 +30236,11 @@ def diagnostics_swing_simplification_audit():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
     return _p253_swing_simplification_audit_snapshot()
+
+@app.get("/diagnostics/executed_entry_eligibility_audit")
+def diagnostics_executed_entry_eligibility_audit(limit: int = 25):
+    _ensure_runtime_state_loaded()
+    return _p275_executed_entry_eligibility_audit(limit=limit)
 
 @app.get("/diagnostics/entry_snapshot_guard")
 def diagnostics_entry_snapshot_guard():
