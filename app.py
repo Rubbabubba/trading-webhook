@@ -957,7 +957,18 @@ SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN = getenv_int_any(
     "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN",
     default=1,
 )
-
+SWING_ENTRY_ATTRIBUTION_MATCH_BEFORE_HOURS = getenv_float_any(
+    "SWING_ENTRY_ATTRIBUTION_MATCH_BEFORE_HOURS",
+    default=8.0,
+)
+SWING_ENTRY_ATTRIBUTION_MATCH_AFTER_MINUTES = getenv_float_any(
+    "SWING_ENTRY_ATTRIBUTION_MATCH_AFTER_MINUTES",
+    default=10.0,
+)
+SWING_DEFENSIVE_TIER_EVIDENCE_HISTORY_SCANS = getenv_int_any(
+    "SWING_DEFENSIVE_TIER_EVIDENCE_HISTORY_SCANS",
+    default=5,
+)
 SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE = getenv_float_any(
     "SWING_DAILY_BREAKOUT_RELEASE_MIN_ATTRIBUTION_COVERAGE",
     default=0.80,
@@ -1555,7 +1566,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-275-swing-profit-path-restoration-defensive-breakout-tier-gate"
+PATCH_VERSION = "patch-276-timestamp-aware-entry-attribution-audit-defensive-tier-evidence-report"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -18191,20 +18202,29 @@ def _p275_executed_entry_eligibility_audit(limit: int = 25) -> dict:
 
     rows = []
     suspicious = []
+    unresolved = []
+
     for sym, plan in sorted(plans.items()):
         row = dict(plan or {})
         strategy = str(row.get("strategy_name") or row.get("signal") or "").strip().lower()
         if strategy != BREAKOUT_STRATEGY_NAME:
             continue
 
-        probe = _p247_entry_quality_backfill_probe_for_position(sym, row)
-        recovered = dict(probe.get("recovered_snapshot_preview") or {})
-        existing = dict(probe.get("existing_snapshot") or {})
-        recovered_reasons = [str(r) for r in recovered.get("rejection_reasons_at_entry") or []]
+        thesis = dict(row.get("thesis") or {}) if isinstance(row.get("thesis"), dict) else {}
+        existing = dict(thesis.get("entry_quality_snapshot") or {}) if isinstance(thesis.get("entry_quality_snapshot"), dict) else {}
         existing_reasons = [str(r) for r in existing.get("rejection_reasons_at_entry") or []]
+
+        match_payload = _p276_entry_quality_match_for_plan(sym, row)
+        recovered = dict(match_payload.get("recovered_snapshot") or {})
+        recovered_reasons = [str(r) for r in recovered.get("rejection_reasons_at_entry") or []]
+        match = dict(match_payload.get("match") or {})
+
+        timestamp_match_available = bool(match.get("timestamp_eligible_count"))
         conflict = bool(
-            "defensive_daily_breakout_rollback" in recovered_reasons
+            timestamp_match_available
+            and "defensive_daily_breakout_rollback" in recovered_reasons
             and "defensive_daily_breakout_rollback" not in existing_reasons
+            and not bool(recovered.get("defensive_breakout_tier_approved"))
         )
 
         item = {
@@ -18213,26 +18233,171 @@ def _p275_executed_entry_eligibility_audit(limit: int = 25) -> dict:
             "opened_at": row.get("opened_at"),
             "source": row.get("source"),
             "entry_type": row.get("entry_type"),
-            "has_existing_snapshot": bool(probe.get("has_existing_entry_quality_snapshot")),
-            "can_backfill": bool(probe.get("can_backfill")),
+            "has_existing_snapshot": bool(_p249_snapshot_has_useful_values(existing)),
+            "timestamp_match_available": timestamp_match_available,
+            "timestamp_match_count": int(match.get("timestamp_eligible_count") or 0),
+            "all_match_count": int(match.get("all_match_count") or 0),
+            "missing_ts_count": int(match.get("missing_ts_count") or 0),
+            "excluded_after_entry_count": int(match.get("excluded_after_entry_count") or 0),
+            "excluded_too_old_count": int(match.get("excluded_too_old_count") or 0),
+            "match_window": dict(match.get("window") or {}),
             "existing_rejection_reasons": existing_reasons,
             "matched_candidate_rejection_reasons": recovered_reasons,
+            "matched_candidate_ts_utc": recovered.get("candidate_context_ts_utc"),
+            "entry_match_delta_sec": recovered.get("entry_match_delta_sec"),
+            "defensive_breakout_tier_approved": bool(recovered.get("defensive_breakout_tier_approved")),
             "candidate_match_conflicts_with_live_entry": conflict,
-            "recommended_action": "inspect_entry_attribution_match" if conflict else "none",
+            "recommended_action": (
+                "inspect_timestamp_matched_entry_attribution"
+                if conflict
+                else ("no_timestamp_matched_candidate" if not timestamp_match_available else "none")
+            ),
         }
         rows.append(item)
+
         if conflict:
             suspicious.append(item)
+        elif not timestamp_match_available:
+            unresolved.append(item)
 
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
-        "mode": "executed_entry_eligibility_audit",
+        "mode": "timestamp_aware_executed_entry_eligibility_audit",
         "active_breakout_plan_count": len(rows),
         "conflict_count": len(suspicious),
         "conflict_symbols": [r.get("symbol") for r in suspicious],
+        "unresolved_count": len(unresolved),
+        "unresolved_symbols": [r.get("symbol") for r in unresolved],
         "rows": rows[: max(1, min(int(limit or 25), 100))],
-        "recommended_action": "inspect_entry_attribution_match" if suspicious else "none",
+        "recommended_action": (
+            "inspect_timestamp_matched_entry_attribution"
+            if suspicious
+            else ("collect_more_timestamped_candidate_history" if unresolved else "none")
+        ),
+    }
+
+def _p276_latest_swing_candidate_rows(limit: int = 100) -> list[dict]:
+    payloads: list[tuple[dict, str | None, str]] = []
+
+    try:
+        if LAST_SWING_CANDIDATES:
+            payloads.append(({"items": list(LAST_SWING_CANDIDATES or [])}, None, "last_swing_candidates"))
+    except Exception:
+        pass
+
+    try:
+        if CANDIDATE_HISTORY:
+            for payload in list(CANDIDATE_HISTORY or [])[-max(1, int(SWING_DEFENSIVE_TIER_EVIDENCE_HISTORY_SCANS or 5)):]:
+                if isinstance(payload, dict):
+                    payloads.append((dict(payload), payload.get("ts_utc") or payload.get("scan_ts_utc"), "candidate_history"))
+    except Exception:
+        pass
+
+    rows = []
+    seen = set()
+    for payload, fallback_ts, source in reversed(payloads):
+        for row in _p247_candidate_like_rows_from_payload(payload, limit=limit):
+            strategy = str(row.get("strategy") or row.get("strategy_name") or row.get("signal") or "").strip().lower()
+            signal = str(row.get("signal") or "").strip().lower()
+            if strategy != BREAKOUT_STRATEGY_NAME and signal != "daily_breakout":
+                continue
+
+            sym = str(row.get("symbol") or "").strip().upper()
+            row_dt = _p276_candidate_row_ts(row, fallback_ts=fallback_ts)
+            key = (
+                sym,
+                row_dt.isoformat() if row_dt else "",
+                str(row.get("rank_score") or ""),
+                str(row.get("regime_mode") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+
+            copy = dict(row)
+            copy["candidate_context_source"] = source
+            copy["candidate_context_ts_utc"] = row_dt.isoformat() if row_dt else None
+            rows.append(copy)
+
+    rows.sort(
+        key=lambda r: (
+            str(r.get("candidate_context_ts_utc") or ""),
+            _safe_float(r.get("rank_score"), 0.0),
+        ),
+        reverse=True,
+    )
+    return rows[:max(1, int(limit or 100))]
+
+
+def _p276_defensive_tier_evidence_report(limit: int = 50) -> dict:
+    rows = _p276_latest_swing_candidate_rows(limit=max(50, int(limit or 50)))
+    evidence = []
+
+    for row in rows:
+        regime_mode = str(row.get("regime_mode") or "").strip().lower()
+        rollback = _p264_defensive_daily_breakout_rollback_snapshot(regime_mode, candidate=row)
+        tier = dict(rollback.get("tier_gate") or {})
+        rejection_reasons = [str(r) for r in row.get("rejection_reasons") or []]
+
+        item = {
+            "symbol": str(row.get("symbol") or "").strip().upper(),
+            "candidate_ts_utc": row.get("candidate_context_ts_utc") or row.get("scan_ts_utc"),
+            "regime_mode": regime_mode or "unknown",
+            "rank_score": row.get("rank_score"),
+            "min_rank_score": row.get("min_rank_score"),
+            "close_to_high_pct": row.get("close_to_high_pct"),
+            "breakout_distance_pct": row.get("breakout_distance_pct"),
+            "risk_per_share_pct": row.get("risk_per_share_pct"),
+            "eligible": bool(row.get("eligible")),
+            "rejection_reasons": rejection_reasons,
+            "rollback_broad_blocked": bool(rollback.get("broad_blocked")),
+            "rollback_blocked": bool(rollback.get("blocked")),
+            "tier_gate_enabled": bool(rollback.get("tier_gate_enabled")),
+            "tier_gate_passed": bool(rollback.get("tier_gate_passed")),
+            "tier_gate_blockers": list(tier.get("blockers") or []),
+            "tier_gate_checks": list(tier.get("checks") or []),
+            "would_be_allowed_by_defensive_tier": bool(
+                rollback.get("broad_blocked")
+                and rollback.get("tier_gate_passed")
+            ),
+            "would_be_blocked_by_defensive_tier": bool(
+                rollback.get("broad_blocked")
+                and rollback.get("blocked")
+            ),
+        }
+        evidence.append(item)
+
+    defensive_rows = [r for r in evidence if str(r.get("regime_mode") or "") == "defensive"]
+    tier_allowed = [r for r in defensive_rows if r.get("would_be_allowed_by_defensive_tier")]
+    tier_blocked = [r for r in defensive_rows if r.get("would_be_blocked_by_defensive_tier")]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "defensive_breakout_tier_evidence_report",
+        "read_only": True,
+        "total_rows": len(evidence),
+        "defensive_rows": len(defensive_rows),
+        "tier_allowed_count": len(tier_allowed),
+        "tier_allowed_symbols": [r.get("symbol") for r in tier_allowed],
+        "tier_blocked_count": len(tier_blocked),
+        "tier_blocked_symbols": [r.get("symbol") for r in tier_blocked[:25]],
+        "current_env": {
+            "SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES": bool(SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED": bool(SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE": float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_RANK_SCORE),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MIN_CLOSE_TO_HIGH_PCT),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_BREAKOUT_EXTENSION_PCT),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT": float(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_RISK_PER_SHARE_PCT),
+            "SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN": int(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN),
+        },
+        "rows": evidence[: max(1, min(int(limit or 50), 200))],
+        "recommended_action": (
+            "observe_next_defensive_scan"
+            if not defensive_rows
+            else ("tier_gate_has_allowed_candidates" if tier_allowed else "tier_gate_currently_blocks_all_defensive_candidates")
+        ),
     }
 
 @app.get("/state")
@@ -21960,6 +22125,156 @@ def _p247_recent_candidate_rows_for_symbol(symbol: str, limit: int = 200) -> lis
                 matches.append(row)
 
     return matches[:max(1, int(limit or 200))]
+
+def _p276_candidate_row_ts(row: dict | None, fallback_ts: str | None = None):
+    r = dict(row or {})
+    raw = (
+        r.get("scan_ts_utc")
+        or r.get("active_scan_ts_utc")
+        or r.get("ts_utc")
+        or fallback_ts
+    )
+    return _p175_parse_dt(raw)
+
+
+def _p276_plan_opened_dt(plan: dict | None):
+    p = dict(plan or {})
+    return _p175_parse_dt(
+        p.get("opened_at")
+        or p.get("submitted_at")
+        or p.get("created_at")
+        or p.get("entry_ts_utc")
+    )
+
+
+def _p276_timestamped_candidate_rows_for_symbol(symbol: str, limit: int = 300) -> list[dict]:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return []
+
+    payloads: list[tuple[dict, str | None, str]] = []
+    try:
+        for payload in list(CANDIDATE_HISTORY or [])[-max(1, int(SWING_DEFENSIVE_TIER_EVIDENCE_HISTORY_SCANS or 5)):]:
+            if isinstance(payload, dict):
+                payloads.append((dict(payload), payload.get("ts_utc") or payload.get("scan_ts_utc"), "candidate_history"))
+    except Exception:
+        pass
+
+    try:
+        if LAST_SCAN:
+            payloads.append((dict(LAST_SCAN), (LAST_SCAN or {}).get("ts_utc") or (LAST_SCAN or {}).get("scan_ts_utc"), "last_scan"))
+    except Exception:
+        pass
+
+    try:
+        if LAST_SWING_CANDIDATES:
+            payloads.append(({"items": list(LAST_SWING_CANDIDATES or [])}, None, "last_swing_candidates"))
+    except Exception:
+        pass
+
+    matches = []
+    for payload, fallback_ts, source in reversed(payloads):
+        for row in _p247_candidate_like_rows_from_payload(payload, limit=limit):
+            if str(row.get("symbol") or "").strip().upper() != sym:
+                continue
+            copy = dict(row)
+            row_dt = _p276_candidate_row_ts(copy, fallback_ts=fallback_ts)
+            copy["candidate_context_source"] = source
+            copy["candidate_context_ts_utc"] = row_dt.isoformat() if row_dt else None
+            copy["candidate_context_has_ts"] = bool(row_dt)
+            matches.append(copy)
+
+    return matches[:max(1, int(limit or 300))]
+
+
+def _p276_candidate_rows_near_entry(symbol: str, plan: dict | None, limit: int = 200) -> dict:
+    opened_dt = _p276_plan_opened_dt(plan)
+    rows = _p276_timestamped_candidate_rows_for_symbol(symbol, limit=limit)
+    before_sec = max(0.0, float(SWING_ENTRY_ATTRIBUTION_MATCH_BEFORE_HOURS or 0.0) * 3600.0)
+    after_sec = max(0.0, float(SWING_ENTRY_ATTRIBUTION_MATCH_AFTER_MINUTES or 0.0) * 60.0)
+
+    eligible = []
+    excluded_after = 0
+    excluded_before = 0
+    missing_ts = 0
+
+    for row in rows:
+        row_dt = _p276_candidate_row_ts(row)
+        if not opened_dt or not row_dt:
+            missing_ts += 1
+            continue
+
+        delta = (row_dt - opened_dt).total_seconds()
+        copy = dict(row)
+        copy["entry_match_delta_sec"] = round(delta, 3)
+
+        if delta > after_sec:
+            excluded_after += 1
+            continue
+        if delta < -before_sec:
+            excluded_before += 1
+            continue
+        eligible.append(copy)
+
+    eligible.sort(
+        key=lambda r: (
+            abs(float(r.get("entry_match_delta_sec") or 999999.0)),
+            -_safe_float(r.get("rank_score"), 0.0),
+            -_safe_float(r.get("selection_quality_score"), 0.0),
+        )
+    )
+
+    return {
+        "opened_at": opened_dt.isoformat() if opened_dt else None,
+        "all_match_count": len(rows),
+        "timestamp_eligible_count": len(eligible),
+        "missing_ts_count": missing_ts,
+        "excluded_after_entry_count": excluded_after,
+        "excluded_too_old_count": excluded_before,
+        "window": {
+            "before_hours": float(SWING_ENTRY_ATTRIBUTION_MATCH_BEFORE_HOURS or 0.0),
+            "after_minutes": float(SWING_ENTRY_ATTRIBUTION_MATCH_AFTER_MINUTES or 0.0),
+        },
+        "rows": eligible[:max(1, int(limit or 200))],
+    }
+
+
+def _p276_snapshot_from_candidate(symbol: str, candidate: dict | None) -> dict:
+    best = dict(candidate or {})
+    if not best:
+        return {}
+
+    return {
+        "symbol": str(symbol or "").strip().upper(),
+        "strategy": best.get("strategy") or best.get("strategy_name") or best.get("signal"),
+        "rank_score": best.get("rank_score"),
+        "min_rank_score": best.get("min_rank_score"),
+        "selection_quality_score": best.get("selection_quality_score"),
+        "regime_mode": best.get("regime_mode"),
+        "return_20d_pct": best.get("return_20d_pct"),
+        "risk_per_share_pct": best.get("risk_per_share_pct"),
+        "breakout_distance_pct": best.get("breakout_distance_pct"),
+        "close_to_high_pct": best.get("close_to_high_pct"),
+        "strong_atr_relax_applied": best.get("strong_atr_relax_applied"),
+        "defensive_tightening_enabled": best.get("defensive_tightening_enabled"),
+        "defensive_breakout_tier_approved": best.get("defensive_breakout_tier_approved"),
+        "defensive_daily_breakout_rollback": best.get("defensive_daily_breakout_rollback"),
+        "rejection_reasons_at_entry": list(best.get("rejection_reasons") or []),
+        "candidate_context_ts_utc": best.get("candidate_context_ts_utc"),
+        "entry_match_delta_sec": best.get("entry_match_delta_sec"),
+    }
+
+
+def _p276_entry_quality_match_for_plan(symbol: str, plan: dict | None) -> dict:
+    matched = _p276_candidate_rows_near_entry(symbol, plan, limit=250)
+    rows = list(matched.get("rows") or [])
+    best = rows[0] if rows else {}
+
+    return {
+        "match": matched,
+        "best_candidate": dict(best or {}),
+        "recovered_snapshot": _p276_snapshot_from_candidate(symbol, best),
+    }
 
 def _p251_entry_snapshot_completeness(snapshot: dict | None) -> dict:
     snap = dict(snapshot or {})
@@ -30241,6 +30556,11 @@ def diagnostics_swing_simplification_audit():
 def diagnostics_executed_entry_eligibility_audit(limit: int = 25):
     _ensure_runtime_state_loaded()
     return _p275_executed_entry_eligibility_audit(limit=limit)
+
+@app.get("/diagnostics/defensive_tier_evidence_report")
+def diagnostics_defensive_tier_evidence_report(limit: int = 50):
+    _ensure_runtime_state_loaded()
+    return _p276_defensive_tier_evidence_report(limit=limit)
 
 @app.get("/diagnostics/entry_snapshot_guard")
 def diagnostics_entry_snapshot_guard():
