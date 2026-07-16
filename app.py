@@ -700,6 +700,21 @@ MARKET_CLOCK_CACHE_TTL_SEC = int(getenv_any("MARKET_CLOCK_CACHE_TTL_SEC", defaul
 MARKET_CLOCK_FAIL_OPEN = env_bool("MARKET_CLOCK_FAIL_OPEN", "false")
 MARKET_CLOSED_DATES_NY = {s.strip() for s in str(getenv_any("MARKET_CLOSED_DATES_NY", default="2026-07-03") or "").split(",") if s.strip()}
 PENDING_ORDER_ENTRY_FREEZE_ENABLE = env_bool("PENDING_ORDER_ENTRY_FREEZE_ENABLE", "true")
+RECONCILE_DEACTIVATE_CANCELED_ENTRY_PLANS = env_bool_any(
+    "RECONCILE_DEACTIVATE_CANCELED_ENTRY_PLANS",
+    default=True,
+)
+RECONCILE_CANCELED_ENTRY_TERMINAL_STATUSES = {
+    value.strip().lower()
+    for value in str(
+        getenv_any(
+            "RECONCILE_CANCELED_ENTRY_TERMINAL_STATUSES",
+            default="canceled,cancelled,rejected,expired",
+        )
+        or ""
+    ).split(",")
+    if value.strip()
+}
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -1614,7 +1629,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-277-hotfix-current-scan-suppression-truth-defensive-tier-near-miss-report"
+PATCH_VERSION = "patch-278-canceled-entry-plan-reconcile-cleanup-pending-plan-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -6461,9 +6476,25 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
             return out
         if order_status_lc in terminal:
             plan["active"] = False
+            plan["execution_state"] = "entry_canceled"
+            plan["lifecycle_state"] = "entry_canceled"
+            plan["execution_state_reason"] = "entry_order_canceled_no_fill"
+            plan["canceled_entry_cleanup_at"] = now_ny().isoformat()
+            plan["canceled_entry_cleanup_patch"] = PATCH_VERSION
             out["changes"].append("deactivated_terminal_order_without_position")
             _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
-            record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="terminal_order_without_position", meta={"order_status": order_status})
+            try:
+                _transition_execution_lifecycle(
+                    plan,
+                    symbol,
+                    "entry_canceled",
+                    reason="entry_order_canceled_no_fill",
+                    details={"order_status": order_status, "source": "sync_trade_plan_with_broker"},
+                    allow_illegal=True,
+                )
+            except Exception:
+                pass
+            record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="entry_order_canceled_no_fill", meta={"order_status": order_status})
             return out
         orphan_status = bool(order_id and order_status.get("status_error")) or (order_id and not order_status)
         if RECONCILE_DEACTIVATE_ORPHAN_PLANS and orphan_status and age_sec is not None and age_sec >= RECONCILE_ORPHAN_ORDER_MAX_AGE_SEC:
@@ -6628,8 +6659,220 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
         persist_positions_snapshot(reason="reconcile_trade_plans", extra={"actions": actions})
     return actions
 
+def _p278_terminal_entry_plan_cleanup_candidates() -> list[dict]:
+    """Find pending entry plans whose broker order is terminal and has no fill/position."""
+    broker_positions = {
+        str(pos.get("symbol") or "").strip().upper()
+        for pos in list_open_positions_details_allowed()
+        if str(pos.get("symbol") or "").strip()
+    }
+    open_orders = {
+        str(order.get("symbol") or "").strip().upper(): dict(order)
+        for order in list_open_orders_safe()
+        if str(order.get("symbol") or "").strip()
+    }
+
+    rows = []
+    for sym, plan in sorted(dict(TRADE_PLAN or {}).items()):
+        sym = str(sym or "").strip().upper()
+        if not sym or not isinstance(plan, dict):
+            continue
+        if not bool(plan.get("active")):
+            continue
+        if sym in broker_positions:
+            continue
+
+        order_id = str(plan.get("order_id") or plan.get("entry_order_id") or "").strip()
+        plan_status = str(plan.get("order_status") or "").strip().lower()
+        broker_order = {}
+        if order_id:
+            try:
+                broker_order = dict(get_order_status(order_id) or {})
+            except Exception as exc:
+                broker_order = {"status_error": str(exc)}
+        broker_status = str(broker_order.get("status") or plan_status or "").strip().lower()
+        filled_qty = _safe_float(
+            broker_order.get("filled_qty")
+            if broker_order.get("filled_qty") is not None
+            else plan.get("filled_qty"),
+            0.0,
+        )
+
+        terminal = broker_status in set(RECONCILE_CANCELED_ENTRY_TERMINAL_STATUSES)
+        missing_open_order = sym not in open_orders
+        pending_entry = bool(_plan_is_pending_entry(plan))
+        execution_state = str(plan.get("execution_state") or plan.get("lifecycle_state") or "").strip().lower()
+
+        should_cleanup = bool(
+            RECONCILE_DEACTIVATE_CANCELED_ENTRY_PLANS
+            and pending_entry
+            and terminal
+            and missing_open_order
+            and filled_qty <= 0
+        )
+
+        if should_cleanup or (
+            pending_entry
+            and missing_open_order
+            and sym not in broker_positions
+            and broker_status in set(RECONCILE_CANCELED_ENTRY_TERMINAL_STATUSES)
+        ):
+            rows.append({
+                "symbol": sym,
+                "order_id": order_id,
+                "order_status": broker_status,
+                "plan_order_status": plan_status,
+                "execution_state": execution_state,
+                "pending_entry": pending_entry,
+                "active": bool(plan.get("active")),
+                "missing_open_order": missing_open_order,
+                "broker_position_present": sym in broker_positions,
+                "filled_qty": filled_qty,
+                "opened_at": plan.get("opened_at"),
+                "submitted_at": plan.get("submitted_at"),
+                "recovered": bool(plan.get("recovered")),
+                "startup_restore_classification": plan.get("startup_restore_classification"),
+                "cleanup_eligible": should_cleanup,
+                "reason": "terminal_entry_order_without_fill_or_position",
+            })
+
+    return rows
 
 
+def _p278_cleanup_terminal_entry_plans(apply: bool = False) -> dict:
+    _ensure_runtime_state_loaded()
+    rows = _p278_terminal_entry_plan_cleanup_candidates()
+    eligible = [row for row in rows if bool(row.get("cleanup_eligible"))]
+    applied = []
+
+    if apply:
+        with STATE_LOCK:
+            for row in eligible:
+                sym = str(row.get("symbol") or "").strip().upper()
+                plan = TRADE_PLAN.get(sym)
+                if not isinstance(plan, dict) or not bool(plan.get("active")):
+                    continue
+
+                plan["active"] = False
+                plan["execution_state"] = "entry_canceled"
+                plan["lifecycle_state"] = "entry_canceled"
+                plan["execution_state_reason"] = "entry_order_canceled_no_fill"
+                plan["order_status"] = str(row.get("order_status") or plan.get("order_status") or "canceled").lower()
+                plan["canceled_entry_cleanup_at"] = now_ny().isoformat()
+                plan["canceled_entry_cleanup_patch"] = PATCH_VERSION
+
+                try:
+                    _transition_execution_lifecycle(
+                        plan,
+                        sym,
+                        "entry_canceled",
+                        reason="entry_order_canceled_no_fill",
+                        details={
+                            "order_id": row.get("order_id"),
+                            "order_status": row.get("order_status"),
+                            "filled_qty": row.get("filled_qty"),
+                            "source": "p278_cleanup_terminal_entry_plans",
+                        },
+                        allow_illegal=True,
+                    )
+                except Exception:
+                    pass
+
+                record_decision(
+                    "RECONCILE",
+                    "p278_terminal_entry_cleanup",
+                    sym,
+                    action="deactivated",
+                    reason="entry_order_canceled_no_fill",
+                    order_id=str(row.get("order_id") or ""),
+                    meta=row,
+                )
+                applied.append({
+                    "symbol": sym,
+                    "action": "deactivated_terminal_entry_plan",
+                    "reason": "entry_order_canceled_no_fill",
+                    "order_id": row.get("order_id"),
+                    "order_status": row.get("order_status"),
+                })
+
+            if applied:
+                persist_positions_snapshot(
+                    reason="p278_terminal_entry_cleanup",
+                    extra={
+                        "p278_terminal_entry_cleanup": {
+                            "applied": applied,
+                            "candidate_count": len(rows),
+                            "eligible_count": len(eligible),
+                        }
+                    },
+                )
+
+    after_reconcile = build_reconcile_snapshot()
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "canceled_entry_plan_reconcile_cleanup",
+        "read_only": not bool(apply),
+        "apply": bool(apply),
+        "enabled": bool(RECONCILE_DEACTIVATE_CANCELED_ENTRY_PLANS),
+        "terminal_statuses": sorted(RECONCILE_CANCELED_ENTRY_TERMINAL_STATUSES),
+        "candidate_count": len(rows),
+        "eligible_count": len(eligible),
+        "eligible_symbols": [row.get("symbol") for row in eligible],
+        "applied_count": len(applied),
+        "applied": applied,
+        "rows": rows,
+        "post_cleanup_reconcile": {
+            "broker_positions_count": after_reconcile.get("broker_positions_count"),
+            "active_plan_count": after_reconcile.get("active_plan_count"),
+            "open_order_count": after_reconcile.get("open_order_count"),
+            "stale_active_plans": list(after_reconcile.get("stale_active_plans") or []),
+            "pending_entry_plan_symbols": list(after_reconcile.get("pending_entry_plan_symbols") or []),
+            "plans_missing_open_order": list(after_reconcile.get("plans_missing_open_order") or []),
+            "health_grade": after_reconcile.get("health_grade"),
+            "trading_blocked": bool(after_reconcile.get("trading_blocked")),
+            "issue_total": after_reconcile.get("issue_total"),
+        },
+        "recommended_action": (
+            "run_apply_true_to_deactivate_terminal_entry_plans"
+            if eligible and not apply
+            else ("verify_position_truth_and_live_positions" if applied else "none")
+        ),
+    }
+
+
+def _p278_pending_plan_truth() -> dict:
+    _ensure_runtime_state_loaded()
+    reconcile = build_reconcile_snapshot()
+    cleanup = _p278_cleanup_terminal_entry_plans(apply=False)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "pending_plan_truth",
+        "read_only": True,
+        "broker_positions_count": reconcile.get("broker_positions_count"),
+        "active_plan_count": reconcile.get("active_plan_count"),
+        "open_order_count": reconcile.get("open_order_count"),
+        "pending_entry_plan_symbols": list(reconcile.get("pending_entry_plan_symbols") or []),
+        "plans_missing_open_order": list(reconcile.get("plans_missing_open_order") or []),
+        "stale_active_plans": list(reconcile.get("stale_active_plans") or []),
+        "terminal_entry_cleanup": {
+            "candidate_count": cleanup.get("candidate_count"),
+            "eligible_count": cleanup.get("eligible_count"),
+            "eligible_symbols": cleanup.get("eligible_symbols"),
+            "rows": cleanup.get("rows"),
+        },
+        "health_grade": reconcile.get("health_grade"),
+        "trading_blocked": bool(reconcile.get("trading_blocked")),
+        "issue_total": reconcile.get("issue_total"),
+        "recommended_action": (
+            "run_canceled_entry_plan_cleanup_apply_true"
+            if int(cleanup.get("eligible_count") or 0) > 0
+            else ("inspect_reconcile" if bool(reconcile.get("trading_blocked")) else "none")
+        ),
+    }
 
 def _restore_snapshot_plan_classification(plan: dict) -> dict:
     plan = dict(plan or {})
@@ -19054,6 +19297,16 @@ def diagnostics_reconcile(request: Request):
         **snap,
     }
 
+@app.get("/diagnostics/pending_plan_truth")
+def diagnostics_pending_plan_truth():
+    _ensure_runtime_state_loaded()
+    return _p278_pending_plan_truth()
+
+
+@app.get("/diagnostics/canceled_entry_plan_cleanup")
+def diagnostics_canceled_entry_plan_cleanup(apply: bool = False):
+    _ensure_runtime_state_loaded()
+    return _p278_cleanup_terminal_entry_plans(apply=bool(apply))
 
 @app.get("/diagnostics/journal")
 def diagnostics_journal(request: Request, limit: int = 100, event: str = "", symbol: str = ""):
