@@ -753,6 +753,28 @@ SWING_PROFIT_REGRESSION_SCAN_HISTORY = getenv_int_any(
     default=30,
 )
 
+# Patch 281 - Target path restoration diagnostics
+SWING_FIRST_PROFIT_WINDOW_TARGET_DOLLARS = getenv_float_any(
+    "SWING_FIRST_PROFIT_WINDOW_TARGET_DOLLARS",
+    default=2000.0,
+)
+SWING_FIRST_PROFIT_WINDOW_MAX_TRADES = getenv_int_any(
+    "SWING_FIRST_PROFIT_WINDOW_MAX_TRADES",
+    default=100,
+)
+SWING_RECENT_REGRESSION_WINDOW_TRADES = getenv_int_any(
+    "SWING_RECENT_REGRESSION_WINDOW_TRADES",
+    default=40,
+)
+SWING_TARGET_PATH_MIN_TARGET_EXIT_RATE = getenv_float_any(
+    "SWING_TARGET_PATH_MIN_TARGET_EXIT_RATE",
+    default=0.20,
+)
+SWING_STALL_CONTAINMENT_MAX_RECENT_STALL_SHARE = getenv_float_any(
+    "SWING_STALL_CONTAINMENT_MAX_RECENT_STALL_SHARE",
+    default=0.20,
+)
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1666,7 +1688,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-280-hotfix-swing-profit-regression-utc-compatibility"
+PATCH_VERSION = "patch-281-target-path-restoration-stall-exit-containment-first-profit-window"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7685,6 +7707,383 @@ def _p280_swing_profit_regression_forensics() -> dict:
         "candidate_flow": scan_summary,
         "culprit_flags": culprit_flags,
         "recommendation": recommendation,
+    }
+
+# ---------------------------------------------------------------------
+# Patch 281 - Target Path Restoration + Stall Exit Containment
+# ---------------------------------------------------------------------
+
+def _p281_attributed_closed_rows() -> list[dict]:
+    _ensure_runtime_state_loaded()
+    try:
+        _recompute_strategy_performance_state()
+    except Exception:
+        pass
+
+    perf_state = dict(STRATEGY_PERFORMANCE_STATE or {})
+
+    try:
+        attributed = _p261_broker_preferred_attributed_rows(perf_state=perf_state)
+        rows = [
+            dict(row)
+            for row in list(attributed.get("rows") or [])
+            if isinstance(row, dict)
+        ]
+    except Exception:
+        rows = [
+            dict(row)
+            for row in list(perf_state.get("closed_trades") or [])
+            if isinstance(row, dict)
+        ]
+
+    rows = [row for row in rows if _p280_trade_dt(row) is not None]
+    rows.sort(key=lambda row: _p280_trade_dt(row) or datetime.min.replace(tzinfo=timezone.utc))
+    return rows
+
+
+def _p281_exit_reason(row: dict) -> str:
+    try:
+        return _p261_exit_reason(row)
+    except Exception:
+        return _p280_exit_reason(row)
+
+
+def _p281_is_target(row: dict) -> bool:
+    reason = _p281_exit_reason(row)
+    return reason in {"target", "target_hit", "take_profit", "take_price"}
+
+
+def _p281_is_stall_family(row: dict) -> bool:
+    reason = _p281_exit_reason(row)
+    return reason in {"stall_exit", "stall_loss_guard"}
+
+
+def _p281_first_profit_window(rows: list[dict]) -> dict:
+    target = float(SWING_FIRST_PROFIT_WINDOW_TARGET_DOLLARS or 2000.0)
+    max_trades = max(1, int(SWING_FIRST_PROFIT_WINDOW_MAX_TRADES or 100))
+
+    window = []
+    cumulative = 0.0
+    target_reached = False
+
+    for row in rows:
+        window.append(row)
+        cumulative += float(_p175_closed_trade_pnl(row) or 0.0)
+
+        if cumulative >= target:
+            target_reached = True
+            break
+
+        if len(window) >= max_trades:
+            break
+
+    return {
+        "target_dollars": round(target, 2),
+        "target_reached": bool(target_reached),
+        "window_gross_pnl": round(cumulative, 4),
+        "window_trade_count": len(window),
+        "rows": window,
+    }
+
+
+def _p281_recent_window(rows: list[dict]) -> dict:
+    n = max(1, int(SWING_RECENT_REGRESSION_WINDOW_TRADES or 40))
+    window = list(rows)[-n:]
+    return {
+        "window_trade_count": len(window),
+        "rows": window,
+    }
+
+
+def _p281_window_summary(rows: list[dict]) -> dict:
+    rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
+
+    target_rows = [row for row in rows if _p281_is_target(row)]
+    stall_rows = [row for row in rows if _p281_is_stall_family(row)]
+
+    summary = _p280_trade_summary(rows)
+    target_summary = _p280_trade_summary(target_rows)
+    stall_summary = _p280_trade_summary(stall_rows)
+
+    return {
+        "summary": summary,
+        "target_path": {
+            "count": len(target_rows),
+            "share": round(len(target_rows) / max(1, len(rows)), 4),
+            "summary": target_summary,
+            "by_symbol": _p280_group_summary(target_rows, _p280_symbol, limit=12),
+            "by_strategy": _p280_group_summary(target_rows, _p280_strategy, limit=12),
+            "by_entry_type": _p280_group_summary(target_rows, _p280_entry_type, limit=12),
+            "by_regime": _p280_group_summary(target_rows, _p280_regime, limit=12),
+            "by_rank_bucket": _p280_group_summary(target_rows, _p280_rank_bucket, limit=12),
+            "by_holding_bucket": _p280_group_summary(target_rows, _p280_holding_bucket, limit=12),
+        },
+        "stall_family": {
+            "count": len(stall_rows),
+            "share": round(len(stall_rows) / max(1, len(rows)), 4),
+            "summary": stall_summary,
+            "by_symbol": _p280_group_summary(stall_rows, _p280_symbol, limit=12),
+            "by_strategy": _p280_group_summary(stall_rows, _p280_strategy, limit=12),
+            "by_exit_reason": _p280_group_summary(stall_rows, _p281_exit_reason, limit=12),
+            "by_holding_bucket": _p280_group_summary(stall_rows, _p280_holding_bucket, limit=12),
+        },
+        "by_exit_reason": _p280_group_summary(rows, _p281_exit_reason, limit=20),
+        "by_symbol": _p280_group_summary(rows, _p280_symbol, limit=20),
+        "by_strategy": _p280_group_summary(rows, _p280_strategy, limit=20),
+        "by_holding_bucket": _p280_group_summary(rows, _p280_holding_bucket, limit=20),
+        "worst_trades": _p281_trade_examples(rows, worst=True, limit=10),
+        "best_trades": _p281_trade_examples(rows, worst=False, limit=10),
+    }
+
+
+def _p281_trade_examples(rows: list[dict], worst: bool = True, limit: int = 10) -> list[dict]:
+    clean = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
+    clean.sort(
+        key=lambda row: float(_p175_closed_trade_pnl(row) or 0.0),
+        reverse=not bool(worst),
+    )
+
+    out = []
+    for row in clean[:max(1, int(limit or 10))]:
+        out.append({
+            "ts_utc": (_p280_trade_dt(row).isoformat() if _p280_trade_dt(row) else None),
+            "symbol": _p280_symbol(row),
+            "strategy": _p280_strategy(row),
+            "entry_type": _p280_entry_type(row),
+            "exit_reason": _p281_exit_reason(row),
+            "gross_pnl": round(float(_p175_closed_trade_pnl(row) or 0.0), 4),
+            "pnl_r": _p175_closed_trade_r(row),
+            "rank_score": _p175_rank_score(row),
+            "holding_days": _p175_holding_days(row),
+            "regime": _p280_regime(row),
+        })
+    return out
+
+
+def _p281_delta(first_summary: dict, recent_summary: dict) -> dict:
+    first = dict(first_summary.get("summary") or {})
+    recent = dict(recent_summary.get("summary") or {})
+
+    first_target = dict(first_summary.get("target_path") or {})
+    recent_target = dict(recent_summary.get("target_path") or {})
+
+    first_stall = dict(first_summary.get("stall_family") or {})
+    recent_stall = dict(recent_summary.get("stall_family") or {})
+
+    return {
+        "gross_pnl_delta": round(
+            float(recent.get("gross_pnl") or 0.0) - float(first.get("gross_pnl") or 0.0),
+            4,
+        ),
+        "win_rate_delta": round(
+            float(recent.get("win_rate") or 0.0) - float(first.get("win_rate") or 0.0),
+            4,
+        ),
+        "avg_r_delta": round(
+            float(recent.get("avg_r") or 0.0) - float(first.get("avg_r") or 0.0),
+            4,
+        ),
+        "avg_holding_days_delta": round(
+            float(recent.get("avg_holding_days") or 0.0) - float(first.get("avg_holding_days") or 0.0),
+            4,
+        ),
+        "target_exit_share_delta": round(
+            float(recent_target.get("share") or 0.0) - float(first_target.get("share") or 0.0),
+            4,
+        ),
+        "stall_family_share_delta": round(
+            float(recent_stall.get("share") or 0.0) - float(first_stall.get("share") or 0.0),
+            4,
+        ),
+    }
+
+
+def _p281_restoration_flags(first_window: dict, recent_window: dict, delta: dict) -> list[dict]:
+    flags = []
+
+    recent_target_share = float((recent_window.get("target_path") or {}).get("share") or 0.0)
+    recent_stall_share = float((recent_window.get("stall_family") or {}).get("share") or 0.0)
+
+    if recent_target_share < float(SWING_TARGET_PATH_MIN_TARGET_EXIT_RATE or 0.20):
+        flags.append({
+            "name": "target_path_missing",
+            "severity": "high",
+            "evidence": {
+                "recent_target_exit_share": round(recent_target_share, 4),
+                "minimum_expected_share": float(SWING_TARGET_PATH_MIN_TARGET_EXIT_RATE or 0.20),
+            },
+            "interpretation": "Recent trades are not reaching the original profit-taking path often enough.",
+        })
+
+    if recent_stall_share > float(SWING_STALL_CONTAINMENT_MAX_RECENT_STALL_SHARE or 0.20):
+        flags.append({
+            "name": "stall_family_too_dominant",
+            "severity": "high",
+            "evidence": {
+                "recent_stall_family_share": round(recent_stall_share, 4),
+                "maximum_expected_share": float(SWING_STALL_CONTAINMENT_MAX_RECENT_STALL_SHARE or 0.20),
+            },
+            "interpretation": "Stall exits are dominating the lifecycle and should be contained before broad entry loosening.",
+        })
+
+    if float(delta.get("avg_holding_days_delta") or 0.0) < -0.50:
+        flags.append({
+            "name": "holding_period_compressed",
+            "severity": "medium",
+            "evidence": {
+                "avg_holding_days_delta": delta.get("avg_holding_days_delta"),
+            },
+            "interpretation": "Recent trades are being closed faster than the original profit path.",
+        })
+
+    if float(delta.get("win_rate_delta") or 0.0) < -0.10:
+        flags.append({
+            "name": "win_rate_regression",
+            "severity": "medium",
+            "evidence": {
+                "win_rate_delta": delta.get("win_rate_delta"),
+            },
+            "interpretation": "Recent trade selection or exit behavior is not converting enough winners.",
+        })
+
+    if not flags:
+        flags.append({
+            "name": "no_major_target_path_regression_detected",
+            "severity": "info",
+            "interpretation": "No dominant target-path regression flag detected in this comparison window.",
+        })
+
+    return flags
+
+
+def _p281_target_path_restoration() -> dict:
+    rows = _p281_attributed_closed_rows()
+
+    first = _p281_first_profit_window(rows)
+    recent = _p281_recent_window(rows)
+
+    first_summary = _p281_window_summary(first.get("rows") or [])
+    recent_summary = _p281_window_summary(recent.get("rows") or [])
+
+    delta = _p281_delta(first_summary, recent_summary)
+    flags = _p281_restoration_flags(first_summary, recent_summary, delta)
+
+    target_rows_all = [row for row in rows if _p281_is_target(row)]
+    stall_rows_all = [row for row in rows if _p281_is_stall_family(row)]
+
+    recommended_action = "restore_target_path_before_increasing_risk"
+    if any(flag.get("name") == "stall_family_too_dominant" for flag in flags):
+        recommended_action = "contain_stall_exit_family_before_loosening_entries"
+    if any(flag.get("name") == "target_path_missing" for flag in flags):
+        recommended_action = "favor_setups_matching_historical_target_winners"
+
+    return {
+        "ok": True,
+        "patch": PATCH_VERSION,
+        "mode": "target_path_restoration",
+        "read_only": True,
+        "trade_source": "broker_preferred_with_worker_decision_attribution",
+        "closed_trade_count": len(rows),
+        "first_profit_window": {
+            "target_dollars": first.get("target_dollars"),
+            "target_reached": first.get("target_reached"),
+            "window_gross_pnl": first.get("window_gross_pnl"),
+            "window_trade_count": first.get("window_trade_count"),
+            "summary": first_summary,
+        },
+        "recent_regression_window": {
+            "window_trade_count": recent.get("window_trade_count"),
+            "summary": recent_summary,
+        },
+        "all_target_path": {
+            "summary": _p280_trade_summary(target_rows_all),
+            "by_symbol": _p280_group_summary(target_rows_all, _p280_symbol, limit=20),
+            "by_strategy": _p280_group_summary(target_rows_all, _p280_strategy, limit=20),
+            "by_entry_type": _p280_group_summary(target_rows_all, _p280_entry_type, limit=20),
+            "by_regime": _p280_group_summary(target_rows_all, _p280_regime, limit=20),
+            "by_rank_bucket": _p280_group_summary(target_rows_all, _p280_rank_bucket, limit=20),
+            "by_holding_bucket": _p280_group_summary(target_rows_all, _p280_holding_bucket, limit=20),
+        },
+        "all_stall_family": {
+            "summary": _p280_trade_summary(stall_rows_all),
+            "by_symbol": _p280_group_summary(stall_rows_all, _p280_symbol, limit=20),
+            "by_strategy": _p280_group_summary(stall_rows_all, _p280_strategy, limit=20),
+            "by_exit_reason": _p280_group_summary(stall_rows_all, _p281_exit_reason, limit=20),
+            "by_holding_bucket": _p280_group_summary(stall_rows_all, _p280_holding_bucket, limit=20),
+        },
+        "delta": delta,
+        "flags": flags,
+        "recommended_action": recommended_action,
+        "next_patch_direction": [
+            "restore_target_like_entry_selection",
+            "reduce_stall_family_exit_dominance",
+            "preserve_daily_mean_reversion",
+            "avoid_broad_entry_loosening_until_target_path_returns",
+        ],
+    }
+
+
+def _p281_stall_exit_containment() -> dict:
+    payload = _p281_target_path_restoration()
+
+    recent = dict(payload.get("recent_regression_window") or {})
+    recent_summary = dict(recent.get("summary") or {})
+    stall = dict(recent_summary.get("stall_family") or {})
+
+    all_stall = dict(payload.get("all_stall_family") or {})
+    all_stall_summary = dict(all_stall.get("summary") or {})
+
+    env_snapshot = {
+        "SWING_STALL_EXIT_DAYS": int(SWING_STALL_EXIT_DAYS or 0),
+        "SWING_STALL_MIN_R": float(SWING_STALL_MIN_R or 0.0),
+        "SWING_STALL_LOSS_GUARD_ENABLED": bool(SWING_STALL_LOSS_GUARD_ENABLED),
+        "SWING_STALL_LOSS_GUARD_DAYS": int(SWING_STALL_LOSS_GUARD_DAYS or 0),
+        "SWING_STALL_MAX_LOSS_R": float(SWING_STALL_MAX_LOSS_R or 0.0),
+        "SWING_STALL_TUNING_START_UTC": str(SWING_STALL_TUNING_START_UTC or ""),
+    }
+
+    recent_stall_share = float(stall.get("share") or 0.0)
+    recent_stall_pnl = float((stall.get("summary") or {}).get("gross_pnl") or 0.0)
+
+    containment_needed = bool(
+        recent_stall_share > float(SWING_STALL_CONTAINMENT_MAX_RECENT_STALL_SHARE or 0.20)
+        or recent_stall_pnl < 0
+    )
+
+    return {
+        "ok": True,
+        "patch": PATCH_VERSION,
+        "mode": "stall_exit_containment",
+        "read_only": True,
+        "containment_needed": containment_needed,
+        "env_snapshot": env_snapshot,
+        "recent_stall_family": stall,
+        "all_stall_family_summary": all_stall_summary,
+        "all_stall_family_by_symbol": all_stall.get("by_symbol"),
+        "all_stall_family_by_exit_reason": all_stall.get("by_exit_reason"),
+        "recommended_action": (
+            "contain_stall_family_before_entry_expansion"
+            if containment_needed
+            else "continue_current_stall_settings_and_monitor"
+        ),
+        "operator_note": (
+            "This endpoint does not change exits. It identifies whether stall exits are still acting as a profit leak versus a useful damage limiter."
+        ),
+    }
+
+
+def _p281_first_profit_window_comparison() -> dict:
+    payload = _p281_target_path_restoration()
+    return {
+        "ok": True,
+        "patch": PATCH_VERSION,
+        "mode": "first_profit_window_comparison",
+        "read_only": True,
+        "first_profit_window": payload.get("first_profit_window"),
+        "recent_regression_window": payload.get("recent_regression_window"),
+        "delta": payload.get("delta"),
+        "flags": payload.get("flags"),
+        "recommended_action": payload.get("recommended_action"),
     }
 
 def _restore_snapshot_plan_classification(plan: dict) -> dict:
@@ -20757,6 +21156,23 @@ def diagnostics_swing_pre_post_change_performance(request: Request):
         "culprit_flags": data.get("culprit_flags"),
         "recommendation": data.get("recommendation"),
     }
+
+@app.get("/diagnostics/target_path_restoration")
+def diagnostics_target_path_restoration(request: Request):
+    require_admin_if_configured(request)
+    return _p281_target_path_restoration()
+
+
+@app.get("/diagnostics/stall_exit_containment")
+def diagnostics_stall_exit_containment(request: Request):
+    require_admin_if_configured(request)
+    return _p281_stall_exit_containment()
+
+
+@app.get("/diagnostics/first_profit_window_comparison")
+def diagnostics_first_profit_window_comparison(request: Request):
+    require_admin_if_configured(request)
+    return _p281_first_profit_window_comparison()
 
 @app.post("/kill")
 async def kill_on(request: Request):
