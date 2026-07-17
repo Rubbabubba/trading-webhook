@@ -1666,7 +1666,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-280-swing-profit-regression-forensics-pre-post-change-performance-split"
+PATCH_VERSION = "patch-280-hotfix-swing-profit-regression-utc-compatibility"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7616,7 +7616,7 @@ def _p280_swing_profit_regression_forensics() -> dict:
     delta = _p280_delta(pre_summary, post_summary)
 
     recent_days = max(1, int(SWING_PROFIT_REGRESSION_RECENT_DAYS or 30))
-    now_dt = utc_now()
+    now_dt = datetime.now(timezone.utc)
     recent_cutoff = now_dt - timedelta(days=recent_days)
     recent_rows = [r for r in rows if (_p280_trade_dt(r) and _p280_trade_dt(r) >= recent_cutoff)]
 
