@@ -731,6 +731,28 @@ SWING_AWAY_BRIEF_INCLUDE_CANDIDATE_ROWS = env_bool_any(
 
 P279_SELF_HEAL_IN_PROGRESS = False
 
+# Patch 280 - Swing profit regression forensics
+SWING_PROFIT_REGRESSION_SPLIT_UTC = getenv_any(
+    "SWING_PROFIT_REGRESSION_SPLIT_UTC",
+    default="",
+)
+SWING_PROFIT_REGRESSION_PRE_TRADES = getenv_int_any(
+    "SWING_PROFIT_REGRESSION_PRE_TRADES",
+    default=40,
+)
+SWING_PROFIT_REGRESSION_POST_TRADES = getenv_int_any(
+    "SWING_PROFIT_REGRESSION_POST_TRADES",
+    default=40,
+)
+SWING_PROFIT_REGRESSION_RECENT_DAYS = getenv_int_any(
+    "SWING_PROFIT_REGRESSION_RECENT_DAYS",
+    default=30,
+)
+SWING_PROFIT_REGRESSION_SCAN_HISTORY = getenv_int_any(
+    "SWING_PROFIT_REGRESSION_SCAN_HISTORY",
+    default=30,
+)
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1644,7 +1666,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-279-hotfix-reconcile-self-heal-recursion-guard-startup-port-unblock"
+PATCH_VERSION = "patch-280-swing-profit-regression-forensics-pre-post-change-performance-split"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7099,6 +7121,571 @@ def _p279_swing_away_mode_brief() -> dict:
         brief["current_scan"]["top_candidates"] = list(current_scan.get("top_candidates") or [])[:10]
 
     return brief
+
+# ---------------------------------------------------------------------
+# Patch 280 - Swing Profit Regression Forensics
+# ---------------------------------------------------------------------
+
+def _p280_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _p280_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _p280_pct(value):
+    try:
+        return round(float(value), 4)
+    except Exception:
+        return 0.0
+
+
+def _p280_nested(row: dict, *keys):
+    cur = row
+    for key in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _p280_trade_dt(row: dict):
+    raw = _p175_first(
+        row,
+        "exit_ts_utc",
+        "closed_at",
+        "filled_at",
+        "updated_at",
+        "ts_utc",
+        "timestamp",
+        "created_at",
+    )
+    return _p175_parse_dt(raw)
+
+
+def _p280_entry_dt(row: dict):
+    raw = _p175_first(
+        row,
+        "entry_ts_utc",
+        "entry_filled_at",
+        "submitted_at",
+        "created_at",
+        "ts_utc",
+    )
+    return _p175_parse_dt(raw)
+
+
+def _p280_symbol(row: dict):
+    return str(_p175_first(row, "symbol", "ticker", default="UNKNOWN") or "UNKNOWN").upper()
+
+
+def _p280_strategy(row: dict):
+    value = _p175_first(
+        row,
+        "strategy",
+        "strategy_name",
+        "signal",
+        "entry_signal",
+        default=None,
+    )
+    if not value:
+        value = _p280_nested(row, "thesis", "strategy") or _p280_nested(row, "entry_snapshot", "strategy")
+    return str(value or "unknown").strip().lower()
+
+
+def _p280_entry_type(row: dict):
+    value = _p175_first(
+        row,
+        "entry_type",
+        "entry_source",
+        "source",
+        default=None,
+    )
+    if not value:
+        value = _p280_nested(row, "entry_snapshot", "entry_type")
+    return str(value or "unknown").strip().lower()
+
+
+def _p280_exit_reason(row: dict):
+    try:
+        value = _p261_exit_reason(row)
+    except Exception:
+        value = None
+    if not value:
+        value = _p175_first(
+            row,
+            "exit_reason",
+            "reason",
+            "close_reason",
+            "status",
+            default=None,
+        )
+    return str(value or "unknown").strip().lower()
+
+
+def _p280_regime(row: dict):
+    value = _p175_first(
+        row,
+        "entry_regime_mode",
+        "regime_mode",
+        "market_regime",
+        default=None,
+    )
+    if not value:
+        value = (
+            _p280_nested(row, "thesis", "regime_mode")
+            or _p280_nested(row, "entry_snapshot", "regime_mode")
+            or _p280_nested(row, "meta", "regime_mode")
+        )
+    return str(value or "unknown").strip().lower()
+
+
+def _p280_rank_bucket(row: dict):
+    try:
+        return str(_p175_rank_bucket(_p175_rank_score(row)))
+    except Exception:
+        rank = _p175_rank_score(row)
+        if rank is None:
+            return "unknown"
+        if rank >= 120:
+            return "120+"
+        if rank >= 110:
+            return "110-119"
+        if rank >= 100:
+            return "100-109"
+        return "below_100"
+
+
+def _p280_holding_bucket(row: dict):
+    try:
+        return str(_p175_holding_bucket(row))
+    except Exception:
+        days = _p175_holding_days(row)
+        if days is None:
+            return "unknown"
+        if days <= 1:
+            return "1 day"
+        if days <= 3:
+            return "2-3 days"
+        if days <= 7:
+            return "4-7 days"
+        return "8+ days"
+
+
+def _p280_avg(values):
+    clean = []
+    for value in values:
+        try:
+            if value is not None:
+                clean.append(float(value))
+        except Exception:
+            continue
+    if not clean:
+        return 0.0
+    return sum(clean) / len(clean)
+
+
+def _p280_trade_summary(rows: list[dict]) -> dict:
+    clean = [r for r in rows if isinstance(r, dict)]
+    pnl_values = [_p175_closed_trade_pnl(r) for r in clean]
+    r_values = [_p175_closed_trade_r(r) for r in clean]
+    rank_values = [_p175_rank_score(r) for r in clean]
+    hold_values = [_p175_holding_days(r) for r in clean]
+
+    pnl_values = [float(v) for v in pnl_values if v is not None]
+    r_values = [float(v) for v in r_values if v is not None]
+    rank_values = [float(v) for v in rank_values if v is not None]
+    hold_values = [float(v) for v in hold_values if v is not None]
+
+    wins = sum(1 for v in pnl_values if v > 0)
+    losses = sum(1 for v in pnl_values if v < 0)
+    flat = sum(1 for v in pnl_values if v == 0)
+
+    dated = [(r, _p280_trade_dt(r)) for r in clean]
+    dated = [(r, dt) for r, dt in dated if dt is not None]
+    first_ts = min((dt for _, dt in dated), default=None)
+    last_ts = max((dt for _, dt in dated), default=None)
+
+    span_days = 0
+    trades_per_day = 0.0
+    if first_ts and last_ts:
+        span_days = max(1, int((last_ts - first_ts).days) + 1)
+        trades_per_day = len(clean) / span_days
+
+    gross_pnl = sum(pnl_values) if pnl_values else 0.0
+
+    return {
+        "count": len(clean),
+        "wins": wins,
+        "losses": losses,
+        "flat": flat,
+        "win_rate": round(wins / max(1, wins + losses), 4),
+        "gross_pnl": round(gross_pnl, 4),
+        "avg_pnl": round(gross_pnl / max(1, len(pnl_values)), 4),
+        "avg_r": round(_p280_avg(r_values), 4),
+        "best_r": round(max(r_values), 4) if r_values else None,
+        "worst_r": round(min(r_values), 4) if r_values else None,
+        "avg_rank_score": round(_p280_avg(rank_values), 4),
+        "avg_holding_days": round(_p280_avg(hold_values), 4),
+        "first_ts": first_ts.isoformat() if first_ts else None,
+        "last_ts": last_ts.isoformat() if last_ts else None,
+        "span_days": span_days,
+        "trades_per_day": round(trades_per_day, 4),
+    }
+
+
+def _p280_group_summary(rows: list[dict], key_fn, limit: int = 12) -> list[dict]:
+    buckets = {}
+    for row in rows:
+        try:
+            key = str(key_fn(row) or "unknown")
+        except Exception:
+            key = "unknown"
+        buckets.setdefault(key, []).append(row)
+
+    output = []
+    for key, bucket_rows in buckets.items():
+        summary = _p280_trade_summary(bucket_rows)
+        output.append({
+            "key": key,
+            "count": summary.get("count"),
+            "wins": summary.get("wins"),
+            "losses": summary.get("losses"),
+            "win_rate": summary.get("win_rate"),
+            "gross_pnl": summary.get("gross_pnl"),
+            "avg_r": summary.get("avg_r"),
+            "worst_r": summary.get("worst_r"),
+        })
+
+    output.sort(key=lambda x: (_p280_float(x.get("gross_pnl")), _p280_int(x.get("count"))), reverse=True)
+    return output[:limit]
+
+
+def _p280_reason_counts_from_rows(rows: list[dict], limit: int = 20) -> list[dict]:
+    counts = {}
+    for row in rows:
+        reasons = row.get("reasons")
+        if reasons is None:
+            reasons = row.get("reject_reasons")
+        if reasons is None:
+            reasons = row.get("blockers")
+        if isinstance(reasons, str):
+            reasons = [reasons]
+        if not isinstance(reasons, list):
+            continue
+        for reason in reasons:
+            key = str(reason or "").strip()
+            if not key:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+
+    items = [{"reason": k, "count": v} for k, v in counts.items()]
+    items.sort(key=lambda x: x.get("count", 0), reverse=True)
+    return items[:limit]
+
+
+def _p280_candidate_history_summary(limit: int | None = None) -> dict:
+    limit = int(limit or SWING_PROFIT_REGRESSION_SCAN_HISTORY or 30)
+    history = list(CANDIDATE_HISTORY or [])[-limit:]
+
+    scan_count = len(history)
+    candidate_count = 0
+    selected_count = 0
+    eligible_count = 0
+    reason_rows = []
+    regime_counts = {}
+
+    for scan in history:
+        if not isinstance(scan, dict):
+            continue
+
+        candidates = scan.get("candidates") or scan.get("rows") or scan.get("candidate_rows") or []
+        selected = scan.get("selected") or scan.get("selected_symbols") or scan.get("final_symbols") or []
+        eligible = scan.get("eligible") or scan.get("eligible_symbols") or []
+
+        if isinstance(candidates, dict):
+            candidates = list(candidates.values())
+        if not isinstance(candidates, list):
+            candidates = []
+
+        candidate_count += len(candidates)
+
+        if isinstance(selected, list):
+            selected_count += len(selected)
+        elif selected:
+            selected_count += 1
+
+        if isinstance(eligible, list):
+            eligible_count += len(eligible)
+
+        regime = scan.get("regime") or scan.get("regime_mode") or scan.get("market_regime")
+        if regime:
+            key = str(regime).strip().lower()
+            regime_counts[key] = regime_counts.get(key, 0) + 1
+
+        for row in candidates:
+            if isinstance(row, dict):
+                reason_rows.append(row)
+
+    top_reasons = _p280_reason_counts_from_rows(reason_rows, limit=20)
+
+    return {
+        "scan_count": scan_count,
+        "candidate_count": candidate_count,
+        "eligible_count": eligible_count,
+        "selected_count": selected_count,
+        "avg_candidates_per_scan": round(candidate_count / max(1, scan_count), 4),
+        "avg_selected_per_scan": round(selected_count / max(1, scan_count), 4),
+        "regime_counts": regime_counts,
+        "top_rejection_reasons": top_reasons,
+    }
+
+
+def _p280_split_rows(rows: list[dict]) -> dict:
+    rows = [r for r in rows if isinstance(r, dict)]
+    rows = sorted(rows, key=lambda r: _p280_trade_dt(r) or datetime.min.replace(tzinfo=timezone.utc))
+
+    split_raw = str(SWING_PROFIT_REGRESSION_SPLIT_UTC or "").strip()
+    split_dt = _p175_parse_dt(split_raw) if split_raw else None
+
+    if split_dt:
+        pre_rows = [r for r in rows if (_p280_trade_dt(r) and _p280_trade_dt(r) < split_dt)]
+        post_rows = [r for r in rows if (_p280_trade_dt(r) and _p280_trade_dt(r) >= split_dt)]
+        split_source = "env_SWING_PROFIT_REGRESSION_SPLIT_UTC"
+    else:
+        post_n = max(1, int(SWING_PROFIT_REGRESSION_POST_TRADES or 40))
+        pre_n = max(1, int(SWING_PROFIT_REGRESSION_PRE_TRADES or 40))
+        post_rows = rows[-post_n:]
+        pre_rows = rows[max(0, len(rows) - post_n - pre_n):max(0, len(rows) - post_n)]
+        split_source = "rolling_trade_window"
+
+    return {
+        "split_source": split_source,
+        "split_utc": split_dt.isoformat() if split_dt else None,
+        "pre_rows": pre_rows,
+        "post_rows": post_rows,
+    }
+
+
+def _p280_delta(pre: dict, post: dict) -> dict:
+    return {
+        "count_delta": _p280_int(post.get("count")) - _p280_int(pre.get("count")),
+        "gross_pnl_delta": round(_p280_float(post.get("gross_pnl")) - _p280_float(pre.get("gross_pnl")), 4),
+        "avg_pnl_delta": round(_p280_float(post.get("avg_pnl")) - _p280_float(pre.get("avg_pnl")), 4),
+        "avg_r_delta": round(_p280_float(post.get("avg_r")) - _p280_float(pre.get("avg_r")), 4),
+        "win_rate_delta": round(_p280_float(post.get("win_rate")) - _p280_float(pre.get("win_rate")), 4),
+        "trades_per_day_delta": round(_p280_float(post.get("trades_per_day")) - _p280_float(pre.get("trades_per_day")), 4),
+        "avg_rank_score_delta": round(_p280_float(post.get("avg_rank_score")) - _p280_float(pre.get("avg_rank_score")), 4),
+        "avg_holding_days_delta": round(_p280_float(post.get("avg_holding_days")) - _p280_float(pre.get("avg_holding_days")), 4),
+    }
+
+
+def _p280_culprit_flags(pre_summary: dict, post_summary: dict, scan_summary: dict, post_rows: list[dict]) -> list[dict]:
+    flags = []
+
+    pre_tpd = _p280_float(pre_summary.get("trades_per_day"))
+    post_tpd = _p280_float(post_summary.get("trades_per_day"))
+    if pre_tpd > 0 and post_tpd < pre_tpd * 0.65:
+        flags.append({
+            "name": "entry_frequency_declined",
+            "severity": "high",
+            "evidence": {
+                "pre_trades_per_day": round(pre_tpd, 4),
+                "post_trades_per_day": round(post_tpd, 4),
+            },
+        })
+
+    pre_avg_r = _p280_float(pre_summary.get("avg_r"))
+    post_avg_r = _p280_float(post_summary.get("avg_r"))
+    if post_avg_r < pre_avg_r - 0.25:
+        flags.append({
+            "name": "trade_quality_declined",
+            "severity": "high",
+            "evidence": {
+                "pre_avg_r": round(pre_avg_r, 4),
+                "post_avg_r": round(post_avg_r, 4),
+            },
+        })
+
+    pre_wr = _p280_float(pre_summary.get("win_rate"))
+    post_wr = _p280_float(post_summary.get("win_rate"))
+    if post_wr < pre_wr - 0.12:
+        flags.append({
+            "name": "win_rate_declined",
+            "severity": "medium",
+            "evidence": {
+                "pre_win_rate": round(pre_wr, 4),
+                "post_win_rate": round(post_wr, 4),
+            },
+        })
+
+    pre_hold = _p280_float(pre_summary.get("avg_holding_days"))
+    post_hold = _p280_float(post_summary.get("avg_holding_days"))
+    if pre_hold > 0 and post_hold < pre_hold * 0.65:
+        flags.append({
+            "name": "holding_period_compressed",
+            "severity": "medium",
+            "evidence": {
+                "pre_avg_holding_days": round(pre_hold, 4),
+                "post_avg_holding_days": round(post_hold, 4),
+            },
+        })
+
+    pre_rank = _p280_float(pre_summary.get("avg_rank_score"))
+    post_rank = _p280_float(post_summary.get("avg_rank_score"))
+    if pre_rank > 0 and post_rank < pre_rank - 5:
+        flags.append({
+            "name": "entry_rank_quality_declined",
+            "severity": "medium",
+            "evidence": {
+                "pre_avg_rank_score": round(pre_rank, 4),
+                "post_avg_rank_score": round(post_rank, 4),
+            },
+        })
+
+    post_exit = _p280_group_summary(post_rows, _p280_exit_reason, limit=20)
+    exit_drag = [
+        row for row in post_exit
+        if row.get("key") in {"stall_exit", "stall_loss_guard", "opening_damage_exit", "profit_lock_stop"}
+        and _p280_float(row.get("gross_pnl")) < 0
+    ]
+    if exit_drag:
+        flags.append({
+            "name": "exit_logic_profit_drag",
+            "severity": "high",
+            "evidence": exit_drag[:8],
+        })
+
+    rejection_reasons = scan_summary.get("top_rejection_reasons") or []
+    protection_reasons = [
+        row for row in rejection_reasons
+        if any(token in str(row.get("reason", "")) for token in [
+            "defensive",
+            "rollback",
+            "cooldown",
+            "halt",
+            "suppression",
+            "rank_score_below_min",
+        ])
+    ]
+    if protection_reasons:
+        flags.append({
+            "name": "candidate_flow_suppressed_by_protection",
+            "severity": "medium",
+            "evidence": protection_reasons[:8],
+        })
+
+    if not flags:
+        flags.append({
+            "name": "no_single_dominant_regression_flag",
+            "severity": "info",
+            "evidence": "Performance shift appears distributed across market regime, entry flow, and exit mix.",
+        })
+
+    return flags
+
+
+def _p280_swing_profit_regression_forensics() -> dict:
+    _ensure_runtime_state_loaded()
+    try:
+        _recompute_strategy_performance_state()
+    except Exception:
+        pass
+
+    perf_state = dict(STRATEGY_PERFORMANCE_STATE or {})
+    rows = [dict(r) for r in (perf_state.get("closed_trades") or []) if isinstance(r, dict)]
+    rows = [r for r in rows if _p280_trade_dt(r) is not None]
+
+    split = _p280_split_rows(rows)
+    pre_rows = split.get("pre_rows") or []
+    post_rows = split.get("post_rows") or []
+
+    pre_summary = _p280_trade_summary(pre_rows)
+    post_summary = _p280_trade_summary(post_rows)
+    delta = _p280_delta(pre_summary, post_summary)
+
+    recent_days = max(1, int(SWING_PROFIT_REGRESSION_RECENT_DAYS or 30))
+    now_dt = utc_now()
+    recent_cutoff = now_dt - timedelta(days=recent_days)
+    recent_rows = [r for r in rows if (_p280_trade_dt(r) and _p280_trade_dt(r) >= recent_cutoff)]
+
+    scan_summary = _p280_candidate_history_summary(SWING_PROFIT_REGRESSION_SCAN_HISTORY)
+    culprit_flags = _p280_culprit_flags(pre_summary, post_summary, scan_summary, post_rows)
+
+    post_exit_summary = _p280_group_summary(post_rows, _p280_exit_reason, limit=20)
+    post_strategy_summary = _p280_group_summary(post_rows, _p280_strategy, limit=20)
+
+    recommendation = "review_flags_before_changing_envs"
+    if any(f.get("name") == "candidate_flow_suppressed_by_protection" for f in culprit_flags):
+        recommendation = "inspect_current_scan_suppression_before_tightening_more"
+    if any(f.get("name") == "exit_logic_profit_drag" for f in culprit_flags):
+        recommendation = "inspect_stall_and_opening_damage_exits_before_entry_changes"
+    if any(f.get("name") == "entry_frequency_declined" for f in culprit_flags):
+        recommendation = "restore_profitable_entry_flow_carefully_with_tiered_release"
+
+    return {
+        "ok": True,
+        "patch": PATCH_VERSION,
+        "mode": "swing_profit_regression_forensics",
+        "trade_source": "strategy_performance_state.closed_trades",
+        "closed_trade_count": len(rows),
+        "split": {
+            "source": split.get("split_source"),
+            "split_utc": split.get("split_utc"),
+            "pre_count": len(pre_rows),
+            "post_count": len(post_rows),
+            "pre_trade_window": {
+                "first_ts": pre_summary.get("first_ts"),
+                "last_ts": pre_summary.get("last_ts"),
+            },
+            "post_trade_window": {
+                "first_ts": post_summary.get("first_ts"),
+                "last_ts": post_summary.get("last_ts"),
+            },
+        },
+        "pre_change": {
+            "summary": pre_summary,
+            "by_strategy": _p280_group_summary(pre_rows, _p280_strategy, limit=20),
+            "by_exit_reason": _p280_group_summary(pre_rows, _p280_exit_reason, limit=20),
+            "by_entry_type": _p280_group_summary(pre_rows, _p280_entry_type, limit=20),
+            "by_symbol": _p280_group_summary(pre_rows, _p280_symbol, limit=20),
+            "by_regime": _p280_group_summary(pre_rows, _p280_regime, limit=20),
+            "by_rank_bucket": _p280_group_summary(pre_rows, _p280_rank_bucket, limit=20),
+            "by_holding_bucket": _p280_group_summary(pre_rows, _p280_holding_bucket, limit=20),
+        },
+        "post_change": {
+            "summary": post_summary,
+            "by_strategy": post_strategy_summary,
+            "by_exit_reason": post_exit_summary,
+            "by_entry_type": _p280_group_summary(post_rows, _p280_entry_type, limit=20),
+            "by_symbol": _p280_group_summary(post_rows, _p280_symbol, limit=20),
+            "by_regime": _p280_group_summary(post_rows, _p280_regime, limit=20),
+            "by_rank_bucket": _p280_group_summary(post_rows, _p280_rank_bucket, limit=20),
+            "by_holding_bucket": _p280_group_summary(post_rows, _p280_holding_bucket, limit=20),
+        },
+        "recent": {
+            "days": recent_days,
+            "summary": _p280_trade_summary(recent_rows),
+            "by_strategy": _p280_group_summary(recent_rows, _p280_strategy, limit=20),
+            "by_exit_reason": _p280_group_summary(recent_rows, _p280_exit_reason, limit=20),
+            "by_symbol": _p280_group_summary(recent_rows, _p280_symbol, limit=20),
+        },
+        "delta": delta,
+        "candidate_flow": scan_summary,
+        "culprit_flags": culprit_flags,
+        "recommendation": recommendation,
+    }
 
 def _restore_snapshot_plan_classification(plan: dict) -> dict:
     plan = dict(plan or {})
@@ -19477,7 +20064,6 @@ def diagnostics_positions(request: Request):
         "active_plans": active_plans,
     }
 
-
 @app.get("/diagnostics/orders")
 def diagnostics_orders(request: Request, limit: int = 50, include_broker_status: bool = True):
     require_admin_if_configured(request)
@@ -19535,7 +20121,6 @@ def diagnostics_journal(request: Request, limit: int = 100, event: str = "", sym
     rows = _read_journal(limit=limit, event=event, symbol=symbol)
     return {"ok": True, "count": len(rows), "items": rows}
 
-
 @app.get("/diagnostics/execution")
 def diagnostics_execution(request: Request, limit: int = 100):
     require_admin_if_configured(request)
@@ -19562,7 +20147,6 @@ def diagnostics_execution(request: Request, limit: int = 100):
         "latest_snapshot": latest_snapshot,
     }
 
-
 @app.get("/diagnostics/state")
 def diagnostics_state(request: Request):
     require_admin_if_configured(request)
@@ -19577,7 +20161,6 @@ def diagnostics_state(request: Request):
         "latest_snapshot": latest_snapshot,
         **snap,
     }
-
 
 @app.get("/diagnostics/rejections")
 def diagnostics_rejections(request: Request, limit: int = 100):
@@ -19844,21 +20427,17 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         "healthy": len(validation.get('invalid_runtime_symbols') or []) == 0,
     }
 
-
 @app.get("/diagnostics/universe_validation")
 def diagnostics_universe_validation():
     return _universe_validation_snapshot()
-
 
 @app.get("/diagnostics/current_runtime_preview")
 def diagnostics_current_runtime_preview(limit: int = 25):
     return _current_runtime_preview_snapshot(limit=limit)
 
-
 @app.get("/diagnostics/runtime_preview")
 def diagnostics_runtime_preview(limit: int = 25):
     return _current_runtime_preview_snapshot(limit=limit)
-
 
 @app.get("/diagnostics/runtime_truth")
 def diagnostics_runtime_truth(limit: int = 25):
@@ -19875,7 +20454,6 @@ def diagnostics_runtime_truth(limit: int = 25):
         "history_matches_current_runtime": bool(matched),
     }
 
-
 @app.get("/diagnostics/regime_mode")
 def diagnostics_regime_mode():
     _ensure_runtime_state_loaded()
@@ -19890,8 +20468,6 @@ def diagnostics_regime_mode():
         "current_runtime_symbols": universe_symbols(),
         "last_scan_summary": dict((LAST_SCAN.get("summary") or {})),
     }
-
-
 
 @app.get("/diagnostics/readiness")
 def diagnostics_readiness(request: Request):
@@ -20083,16 +20659,13 @@ def diagnostics_readiness(request: Request):
 def diagnostics_execution_visibility(limit: int = 10):
     return _execution_visibility_snapshot(limit=limit)
 
-
 @app.get("/diagnostics/live_readiness_gate")
 def diagnostics_live_readiness_gate(limit: int = 10):
     return _live_readiness_gate_snapshot(limit=limit)
 
-
 @app.get("/diagnostics/proof_capture_plan")
 def diagnostics_proof_capture_plan(limit: int = 10):
     return _proof_capture_plan_snapshot(limit=limit)
-
 
 @app.get("/diagnostics/decisions")
 def diagnostics_decisions(request: Request, symbol: str = "", limit: int = 200):
@@ -20104,7 +20677,6 @@ def diagnostics_decisions(request: Request, symbol: str = "", limit: int = 200):
     if sym:
         items = [d for d in items if d.get("symbol") == sym]
     return {"ok": True, "count": len(items), "items": items[-lim:]}
-
 
 @app.get("/diagnostics/scans")
 def diagnostics_scans(request: Request, limit: int = 50, symbol: str = ""):
@@ -20132,7 +20704,6 @@ def diagnostics_scans(request: Request, limit: int = 50, symbol: str = ""):
         scans = filtered
     return {"ok": True, "count": len(scans), "items": scans}
 
-
 @app.get("/diagnostics/last_scan")
 def diagnostics_last_scan(request: Request, symbol: str = ""):
     require_admin_if_configured(request)
@@ -20154,20 +20725,38 @@ def diagnostics_last_scan(request: Request, symbol: str = ""):
     copy_item.setdefault("boot_id", SYSTEM_BOOT_ID if current_boot_scan_available else copy_item.get("boot_id"))
     return {"ok": True, "item": copy_item, "current_boot_scan_available": current_boot_scan_available, "current_boot_id": SYSTEM_BOOT_ID, "patch_version": PATCH_VERSION}
 
-
 @app.get("/diagnostics/scans/latest")
 def diagnostics_scans_latest(request: Request, symbol: str = ""):
     """Compatibility alias for clients expecting /diagnostics/scans/latest."""
     require_admin_if_configured(request)
     return diagnostics_last_scan(request=request, symbol=symbol)
 
-
 @app.get("/diagnostics/intraday_signal_debug")
 def diagnostics_intraday_signal_debug(request: Request):
     require_admin_if_configured(request)
     return _intraday_signal_debug_from_scan(_latest_scan_item())
 
+@app.get("/diagnostics/swing_profit_regression_forensics")
+def diagnostics_swing_profit_regression_forensics(request: Request):
+    require_admin_if_configured(request)
+    return _p280_swing_profit_regression_forensics()
 
+
+@app.get("/diagnostics/swing_pre_post_change_performance")
+def diagnostics_swing_pre_post_change_performance(request: Request):
+    require_admin_if_configured(request)
+    data = _p280_swing_profit_regression_forensics()
+    return {
+        "ok": data.get("ok"),
+        "patch": data.get("patch"),
+        "mode": "swing_pre_post_change_performance",
+        "split": data.get("split"),
+        "pre_change": data.get("pre_change", {}).get("summary"),
+        "post_change": data.get("post_change", {}).get("summary"),
+        "delta": data.get("delta"),
+        "culprit_flags": data.get("culprit_flags"),
+        "recommendation": data.get("recommendation"),
+    }
 
 @app.post("/kill")
 async def kill_on(request: Request):
