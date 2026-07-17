@@ -729,6 +729,8 @@ SWING_AWAY_BRIEF_INCLUDE_CANDIDATE_ROWS = env_bool_any(
     default=False,
 )
 
+P279_SELF_HEAL_IN_PROGRESS = False
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1642,7 +1644,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-279-swing-self-healing-reconcile-away-mode-operator-brief-cleanup"
+PATCH_VERSION = "patch-279-hotfix-reconcile-self-heal-recursion-guard-startup-port-unblock"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -6777,7 +6779,7 @@ def _p278_terminal_entry_plan_cleanup_candidates() -> list[dict]:
     return rows
 
 
-def _p278_cleanup_terminal_entry_plans(apply: bool = False) -> dict:
+def _p278_cleanup_terminal_entry_plans(apply: bool = False, include_post_reconcile: bool = True) -> dict:
     _ensure_runtime_state_loaded()
     rows = _p278_terminal_entry_plan_cleanup_candidates()
     eligible = [row for row in rows if bool(row.get("cleanup_eligible"))]
@@ -6845,7 +6847,7 @@ def _p278_cleanup_terminal_entry_plans(apply: bool = False) -> dict:
                     },
                 )
 
-    after_reconcile = build_reconcile_snapshot()
+    after_reconcile = build_reconcile_snapshot() if bool(include_post_reconcile) else {}
 
     return {
         "ok": True,
@@ -6861,17 +6863,24 @@ def _p278_cleanup_terminal_entry_plans(apply: bool = False) -> dict:
         "applied_count": len(applied),
         "applied": applied,
         "rows": rows,
-        "post_cleanup_reconcile": {
-            "broker_positions_count": after_reconcile.get("broker_positions_count"),
-            "active_plan_count": after_reconcile.get("active_plan_count"),
-            "open_order_count": after_reconcile.get("open_order_count"),
-            "stale_active_plans": list(after_reconcile.get("stale_active_plans") or []),
-            "pending_entry_plan_symbols": list(after_reconcile.get("pending_entry_plan_symbols") or []),
-            "plans_missing_open_order": list(after_reconcile.get("plans_missing_open_order") or []),
-            "health_grade": after_reconcile.get("health_grade"),
-            "trading_blocked": bool(after_reconcile.get("trading_blocked")),
-            "issue_total": after_reconcile.get("issue_total"),
-        },
+        "post_cleanup_reconcile": (
+            {
+                "broker_positions_count": after_reconcile.get("broker_positions_count"),
+                "active_plan_count": after_reconcile.get("active_plan_count"),
+                "open_order_count": after_reconcile.get("open_order_count"),
+                "stale_active_plans": list(after_reconcile.get("stale_active_plans") or []),
+                "pending_entry_plan_symbols": list(after_reconcile.get("pending_entry_plan_symbols") or []),
+                "plans_missing_open_order": list(after_reconcile.get("plans_missing_open_order") or []),
+                "health_grade": after_reconcile.get("health_grade"),
+                "trading_blocked": bool(after_reconcile.get("trading_blocked")),
+                "issue_total": after_reconcile.get("issue_total"),
+            }
+            if after_reconcile
+            else {
+                "skipped": True,
+                "reason": "post_reconcile_skipped_to_avoid_self_heal_recursion",
+            }
+        ),
         "recommended_action": (
             "run_apply_true_to_deactivate_terminal_entry_plans"
             if eligible and not apply
@@ -6881,6 +6890,8 @@ def _p278_cleanup_terminal_entry_plans(apply: bool = False) -> dict:
 
 def _p279_self_heal_terminal_entry_plans(source: str = "reconcile_self_heal") -> dict:
     """Automatically deactivate terminal pending-entry plans with no broker position/order."""
+    global P279_SELF_HEAL_IN_PROGRESS
+
     if not bool(RECONCILE_SELF_HEAL_TERMINAL_ENTRY_PLANS):
         return {
             "ok": True,
@@ -6892,7 +6903,26 @@ def _p279_self_heal_terminal_entry_plans(source: str = "reconcile_self_heal") ->
             "reason": "self_heal_disabled",
         }
 
-    cleanup = _p278_cleanup_terminal_entry_plans(apply=True)
+    if bool(P279_SELF_HEAL_IN_PROGRESS):
+        return {
+            "ok": True,
+            "enabled": True,
+            "applied_count": 0,
+            "applied": [],
+            "candidate_count": 0,
+            "eligible_count": 0,
+            "reason": "self_heal_already_in_progress",
+        }
+
+    P279_SELF_HEAL_IN_PROGRESS = True
+    try:
+        cleanup = _p278_cleanup_terminal_entry_plans(
+            apply=True,
+            include_post_reconcile=False,
+        )
+    finally:
+        P279_SELF_HEAL_IN_PROGRESS = False
+
     applied = list(cleanup.get("applied") or [])
 
     if applied:
