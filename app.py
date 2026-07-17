@@ -775,6 +775,66 @@ SWING_STALL_CONTAINMENT_MAX_RECENT_STALL_SHARE = getenv_float_any(
     default=0.20,
 )
 
+# Patch 282 - Target-profile breakout restoration
+SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED = env_bool_any(
+    "SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED",
+    default=True,
+)
+SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_RANK_SCORE",
+    default=106.0,
+)
+SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
+    "SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_CLOSE_TO_HIGH_PCT",
+    default=0.985,
+)
+SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_BREAKOUT_DISTANCE_PCT = getenv_float_any(
+    "SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_BREAKOUT_DISTANCE_PCT",
+    default=0.015,
+)
+SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT",
+    default=0.035,
+)
+SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_POSITIVE_20D = env_bool_any(
+    "SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_POSITIVE_20D",
+    default=True,
+)
+SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_TARGET_SYMBOL = env_bool_any(
+    "SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_TARGET_SYMBOL",
+    default=False,
+)
+SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_TARGET_SYMBOL_WINS = getenv_int_any(
+    "SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_TARGET_SYMBOL_WINS",
+    default=1,
+)
+
+# Patch 282 - Stall-loss entry feedback
+SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED = env_bool_any(
+    "SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED",
+    default=True,
+)
+SWING_STALL_LOSS_ENTRY_FEEDBACK_LOOKBACK_TRADES = getenv_int_any(
+    "SWING_STALL_LOSS_ENTRY_FEEDBACK_LOOKBACK_TRADES",
+    default=40,
+)
+SWING_STALL_LOSS_ENTRY_FEEDBACK_BLOCK_SYMBOL_LOSSES = getenv_int_any(
+    "SWING_STALL_LOSS_ENTRY_FEEDBACK_BLOCK_SYMBOL_LOSSES",
+    default=2,
+)
+SWING_STALL_LOSS_ENTRY_FEEDBACK_PENALTY_PER_LOSS = getenv_float_any(
+    "SWING_STALL_LOSS_ENTRY_FEEDBACK_PENALTY_PER_LOSS",
+    default=5.0,
+)
+SWING_STALL_LOSS_ENTRY_FEEDBACK_MAX_PENALTY = getenv_float_any(
+    "SWING_STALL_LOSS_ENTRY_FEEDBACK_MAX_PENALTY",
+    default=15.0,
+)
+SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION = env_bool_any(
+    "SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION",
+    default=False,
+)
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1688,7 +1748,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-281-hotfix-p175-first-compatibility"
+PATCH_VERSION = "patch-282-target-profile-breakout-gate-mean-reversion-preserve-stall-feedback"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8082,6 +8142,398 @@ def _p281_first_profit_window_comparison() -> dict:
         "recommended_action": payload.get("recommended_action"),
     }
 
+# ---------------------------------------------------------------------
+# Patch 282 - Target-Profile Breakout Gate + Stall-Loss Feedback
+# ---------------------------------------------------------------------
+
+def _p282_strategy(row: dict | None) -> str:
+    row = dict(row or {})
+    return str(
+        row.get("strategy")
+        or row.get("strategy_name")
+        or row.get("signal")
+        or ""
+    ).strip().lower()
+
+
+def _p282_symbol(row: dict | None) -> str:
+    row = dict(row or {})
+    return str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+
+
+def _p282_recent_attributed_rows() -> list[dict]:
+    try:
+        rows = _p281_attributed_closed_rows()
+    except Exception:
+        rows = [
+            dict(row)
+            for row in list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or [])
+            if isinstance(row, dict)
+        ]
+
+    rows = [row for row in rows if _p280_trade_dt(row) is not None]
+    rows.sort(key=lambda row: _p280_trade_dt(row) or datetime.min.replace(tzinfo=timezone.utc))
+    return rows
+
+
+def _p282_target_winner_profile() -> dict:
+    rows = _p282_recent_attributed_rows()
+    target_rows = [
+        row for row in rows
+        if _p281_is_target(row)
+        and _p282_strategy(row) in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    ]
+
+    symbol_counts: dict[str, int] = {}
+    symbol_pnl: dict[str, float] = {}
+
+    for row in target_rows:
+        sym = _p282_symbol(row)
+        if not sym:
+            continue
+        symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
+        symbol_pnl[sym] = symbol_pnl.get(sym, 0.0) + float(_p175_closed_trade_pnl(row) or 0.0)
+
+    target_symbols = [
+        sym for sym, count in symbol_counts.items()
+        if count >= int(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_TARGET_SYMBOL_WINS or 1)
+    ]
+
+    target_symbols.sort(
+        key=lambda sym: (
+            int(symbol_counts.get(sym, 0)),
+            float(symbol_pnl.get(sym, 0.0)),
+            sym,
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "target_trade_count": len(target_rows),
+        "target_symbols": target_symbols,
+        "target_symbol_stats": [
+            {
+                "symbol": sym,
+                "target_wins": int(symbol_counts.get(sym, 0)),
+                "target_gross_pnl": round(float(symbol_pnl.get(sym, 0.0)), 4),
+            }
+            for sym in target_symbols[:25]
+        ],
+        "summary": _p280_trade_summary(target_rows),
+    }
+
+
+def _p282_target_profile_breakout_gate(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    strategy = _p282_strategy(c)
+
+    if strategy not in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}:
+        return {
+            "enabled": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+            "applies": False,
+            "passed": True,
+            "blockers": [],
+            "reason": "non_breakout_strategy_preserved",
+        }
+
+    if not bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED):
+        return {
+            "enabled": False,
+            "applies": True,
+            "passed": True,
+            "blockers": [],
+            "reason": "target_profile_gate_disabled",
+        }
+
+    profile = _p282_target_winner_profile()
+    target_symbols = set(profile.get("target_symbols") or [])
+
+    sym = _p282_symbol(c)
+    rank_score = float(_safe_float(c.get("rank_score")))
+    close_to_high = float(_safe_float(c.get("close_to_high_pct"))) / 100.0
+    breakout_distance = float(_safe_float(c.get("breakout_distance_pct"))) / 100.0
+    risk_per_share = float(_safe_float(c.get("risk_per_share_pct"))) / 100.0
+    return_20d = float(_safe_float(c.get("return_20d_pct"))) / 100.0
+
+    checks = [
+        {
+            "name": "rank_score",
+            "ok": rank_score >= float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_RANK_SCORE),
+            "value": round(rank_score, 4),
+            "min": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_RANK_SCORE),
+        },
+        {
+            "name": "close_to_high",
+            "ok": close_to_high >= float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_CLOSE_TO_HIGH_PCT),
+            "value": round(close_to_high, 5),
+            "min": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_CLOSE_TO_HIGH_PCT),
+        },
+        {
+            "name": "breakout_distance",
+            "ok": breakout_distance >= -float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_BREAKOUT_DISTANCE_PCT),
+            "value": round(breakout_distance, 5),
+            "min": -float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_BREAKOUT_DISTANCE_PCT),
+        },
+        {
+            "name": "risk_per_share",
+            "ok": risk_per_share <= float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT),
+            "value": round(risk_per_share, 5),
+            "max": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT),
+        },
+    ]
+
+    if bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_POSITIVE_20D):
+        checks.append({
+            "name": "positive_20d_return",
+            "ok": return_20d > 0,
+            "value": round(return_20d, 5),
+            "min": 0.0,
+        })
+
+    if bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_TARGET_SYMBOL):
+        checks.append({
+            "name": "historical_target_symbol",
+            "ok": sym in target_symbols,
+            "value": sym,
+            "target_symbols_count": len(target_symbols),
+        })
+
+    blockers = [str(item.get("name")) for item in checks if not item.get("ok")]
+
+    return {
+        "enabled": True,
+        "applies": True,
+        "passed": not blockers,
+        "blockers": blockers,
+        "checks": checks,
+        "target_symbol_match": sym in target_symbols,
+        "target_symbols_sample": list(sorted(target_symbols))[:25],
+        "reason": "target_profile_breakout_gate_passed" if not blockers else "target_profile_breakout_gate_blocked",
+    }
+
+
+def _p282_stall_loss_feedback_index() -> dict:
+    rows = _p282_recent_attributed_rows()
+    lookback = max(1, int(SWING_STALL_LOSS_ENTRY_FEEDBACK_LOOKBACK_TRADES or 40))
+    recent = rows[-lookback:]
+
+    by_symbol: dict[str, dict] = {}
+
+    for row in recent:
+        sym = _p282_symbol(row)
+        if not sym:
+            continue
+
+        reason = _p281_exit_reason(row)
+        pnl = float(_p175_closed_trade_pnl(row) or 0.0)
+        pnl_r = _p175_closed_trade_r(row)
+
+        item = by_symbol.setdefault(sym, {
+            "symbol": sym,
+            "closed_trades": 0,
+            "stall_family_losses": 0,
+            "stall_family_gross_pnl": 0.0,
+            "worst_stall_r": None,
+            "recent_exit_reasons": {},
+        })
+
+        item["closed_trades"] += 1
+        item["recent_exit_reasons"][reason] = int(item["recent_exit_reasons"].get(reason, 0)) + 1
+
+        if reason in {"stall_exit", "stall_loss_guard"} and pnl < 0:
+            item["stall_family_losses"] += 1
+            item["stall_family_gross_pnl"] += pnl
+            if pnl_r is not None:
+                rv = float(pnl_r)
+                item["worst_stall_r"] = rv if item.get("worst_stall_r") is None else min(float(item["worst_stall_r"]), rv)
+
+    for item in by_symbol.values():
+        item["stall_family_gross_pnl"] = round(float(item.get("stall_family_gross_pnl") or 0.0), 4)
+        if item.get("worst_stall_r") is not None:
+            item["worst_stall_r"] = round(float(item["worst_stall_r"]), 4)
+
+    return {
+        "ok": True,
+        "lookback_trades": lookback,
+        "symbols": by_symbol,
+        "ranked": sorted(
+            list(by_symbol.values()),
+            key=lambda item: (
+                int(item.get("stall_family_losses") or 0),
+                abs(float(item.get("stall_family_gross_pnl") or 0.0)),
+            ),
+            reverse=True,
+        ),
+    }
+
+
+def _p282_stall_loss_entry_feedback(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    strategy = _p282_strategy(c)
+
+    applies = bool(
+        strategy in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+        or bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION)
+    )
+
+    if not bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED):
+        return {
+            "enabled": False,
+            "applies": applies,
+            "blocked": False,
+            "rank_penalty": 0.0,
+            "reason": "stall_loss_feedback_disabled",
+        }
+
+    if not applies:
+        return {
+            "enabled": True,
+            "applies": False,
+            "blocked": False,
+            "rank_penalty": 0.0,
+            "reason": "mean_reversion_preserved",
+        }
+
+    sym = _p282_symbol(c)
+    index = _p282_stall_loss_feedback_index()
+    item = dict((index.get("symbols") or {}).get(sym) or {})
+    loss_count = int(item.get("stall_family_losses") or 0)
+
+    penalty = min(
+        float(SWING_STALL_LOSS_ENTRY_FEEDBACK_MAX_PENALTY or 0.0),
+        loss_count * float(SWING_STALL_LOSS_ENTRY_FEEDBACK_PENALTY_PER_LOSS or 0.0),
+    )
+
+    blocked = bool(
+        loss_count >= max(1, int(SWING_STALL_LOSS_ENTRY_FEEDBACK_BLOCK_SYMBOL_LOSSES or 2))
+    )
+
+    return {
+        "enabled": True,
+        "applies": True,
+        "symbol": sym,
+        "blocked": blocked,
+        "rank_penalty": round(float(penalty), 4),
+        "stall_family_losses": loss_count,
+        "recent_symbol_stats": item,
+        "reason": "stall_loss_feedback_blocked" if blocked else (
+            "stall_loss_feedback_penalty_applied" if penalty > 0 else "no_recent_stall_loss_feedback"
+        ),
+    }
+
+
+def _p282_apply_breakout_restoration_controls(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    strategy = _p282_strategy(c)
+
+    if strategy not in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}:
+        c["target_profile_breakout_gate"] = {
+            "enabled": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+            "applies": False,
+            "passed": True,
+            "reason": "non_breakout_strategy_preserved",
+        }
+        c["stall_loss_entry_feedback"] = _p282_stall_loss_entry_feedback(c)
+        return c
+
+    gate = _p282_target_profile_breakout_gate(c)
+    feedback = _p282_stall_loss_entry_feedback(c)
+
+    c["target_profile_breakout_gate"] = gate
+    c["stall_loss_entry_feedback"] = feedback
+
+    if gate.get("enabled") and gate.get("applies") and not gate.get("passed"):
+        c["eligible"] = False
+        c.setdefault("rejection_reasons", []).append("target_profile_breakout_gate")
+
+    penalty = float(feedback.get("rank_penalty") or 0.0)
+    if penalty > 0:
+        original_rank = float(_safe_float(c.get("rank_score")))
+        c["rank_score_before_stall_feedback"] = round(original_rank, 4)
+        c["rank_score"] = round(max(0.0, original_rank - penalty), 4)
+
+    if feedback.get("blocked"):
+        c["eligible"] = False
+        c.setdefault("rejection_reasons", []).append("stall_loss_entry_feedback")
+
+    c["rejection_reasons"] = _dedupe_candidate_reasons(c.get("rejection_reasons") or [])
+    return c
+
+
+def _p282_profit_restoration_control_surface() -> dict:
+    profile = _p282_target_winner_profile()
+    feedback = _p282_stall_loss_feedback_index()
+
+    latest = dict(LAST_SCAN or {})
+    summary = dict(latest.get("summary") or {})
+    candidates = [
+        dict(row)
+        for row in list(summary.get("top_candidates") or [])
+        if isinstance(row, dict)
+    ]
+
+    breakout_rows = [
+        row for row in candidates
+        if _p282_strategy(row) in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    ]
+    mean_reversion_rows = [
+        row for row in candidates
+        if _p282_strategy(row) == MEAN_REVERSION_STRATEGY_NAME
+    ]
+
+    target_profile_rows = []
+    stall_feedback_rows = []
+
+    for row in breakout_rows[:25]:
+        target_profile_rows.append({
+            "symbol": _p282_symbol(row),
+            "eligible": bool(row.get("eligible")),
+            "rank_score": row.get("rank_score"),
+            "selection_quality_score": row.get("selection_quality_score"),
+            "rejection_reasons": list(row.get("rejection_reasons") or []),
+            "target_profile_breakout_gate": row.get("target_profile_breakout_gate"),
+            "stall_loss_entry_feedback": row.get("stall_loss_entry_feedback"),
+        })
+
+    for item in list(feedback.get("ranked") or [])[:20]:
+        if int(item.get("stall_family_losses") or 0) > 0:
+            stall_feedback_rows.append(item)
+
+    return {
+        "ok": True,
+        "patch": PATCH_VERSION,
+        "mode": "swing_profit_restoration_control_surface",
+        "read_only": True,
+        "target_profile_gate_enabled": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+        "stall_loss_feedback_enabled": bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED),
+        "mean_reversion_preserved": not bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION),
+        "target_winner_profile": profile,
+        "latest_scan": {
+            "selected_symbols": list(summary.get("selected_symbols") or []),
+            "selected_strategy": summary.get("selected_strategy"),
+            "breakout_candidate_count": len(breakout_rows),
+            "mean_reversion_candidate_count": len(mean_reversion_rows),
+            "top_rejection_reasons": list(summary.get("top_rejection_reasons") or []),
+            "target_profile_breakout_rows": target_profile_rows,
+            "mean_reversion_rows": [
+                {
+                    "symbol": _p282_symbol(row),
+                    "eligible": bool(row.get("eligible")),
+                    "rank_score": row.get("rank_score"),
+                    "selection_quality_score": row.get("selection_quality_score"),
+                    "rejection_reasons": list(row.get("rejection_reasons") or []),
+                }
+                for row in mean_reversion_rows[:10]
+            ],
+        },
+        "stall_loss_feedback": {
+            "lookback_trades": feedback.get("lookback_trades"),
+            "ranked_symbols": stall_feedback_rows,
+        },
+        "recommended_action": "monitor_target_profile_gate_and_preserve_mean_reversion",
+    }
+
 def _restore_snapshot_plan_classification(plan: dict) -> dict:
     plan = dict(plan or {})
     signal = str(plan.get("signal") or "").strip().upper()
@@ -12754,11 +13206,19 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
     elif defensive_rollback.get("broad_blocked") and defensive_rollback.get("tier_gate_passed"):
         candidate["defensive_breakout_tier_approved"] = True
 
+    candidate = _p282_apply_breakout_restoration_controls(candidate)
+    score = float(_safe_float(candidate.get("rank_score")))
+
     if score < min_rank_score:
         candidate['rejection_reasons'].append('rank_score_below_min')
+
+    candidate['rejection_reasons'] = _dedupe_candidate_reasons(candidate.get('rejection_reasons') or [])
     candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
+
     if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
         candidate['rejection_reasons'].append('insufficient_buying_power')
+        candidate['rejection_reasons'] = _dedupe_candidate_reasons(candidate.get('rejection_reasons') or [])
+
     return candidate
 
 def _index_alignment_ok(index_bars: list[dict]) -> bool | None:
@@ -14588,6 +15048,17 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'top_rejection_reasons': [{
             'reason': k, 'count': int(v)
         } for k, v in rejection_counts.most_common(10)],
+        'target_profile_breakout_gate_enabled': bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+        'stall_loss_entry_feedback_enabled': bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED),
+        'mean_reversion_preserved_by_p282': not bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION),
+        'target_profile_breakout_gate_blocked': sum(
+            1 for c in candidates
+            if 'target_profile_breakout_gate' in list(c.get('rejection_reasons') or [])
+        ),
+        'stall_loss_entry_feedback_blocked': sum(
+            1 for c in candidates
+            if 'stall_loss_entry_feedback' in list(c.get('rejection_reasons') or [])
+        ),
         'top_shadow_rejection_reasons': [{
             'reason': k, 'count': int(v)
         } for k, v in shadow_rejection_counts.most_common(10)],
@@ -21169,6 +21640,56 @@ def diagnostics_stall_exit_containment(request: Request):
 def diagnostics_first_profit_window_comparison(request: Request):
     require_admin_if_configured(request)
     return _p281_first_profit_window_comparison()
+
+@app.get("/diagnostics/swing_profit_restoration_control")
+def diagnostics_swing_profit_restoration_control(request: Request):
+    require_admin_if_configured(request)
+    return _p282_profit_restoration_control_surface()
+
+
+@app.get("/diagnostics/target_profile_breakout_gate")
+def diagnostics_target_profile_breakout_gate(request: Request):
+    require_admin_if_configured(request)
+    profile = _p282_target_winner_profile()
+    control = _p282_profit_restoration_control_surface()
+    return {
+        "ok": True,
+        "patch": PATCH_VERSION,
+        "mode": "target_profile_breakout_gate",
+        "read_only": True,
+        "enabled": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+        "env": {
+            "SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_RANK_SCORE": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_RANK_SCORE),
+            "SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_CLOSE_TO_HIGH_PCT": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_CLOSE_TO_HIGH_PCT),
+            "SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_BREAKOUT_DISTANCE_PCT": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_BREAKOUT_DISTANCE_PCT),
+            "SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT),
+            "SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_POSITIVE_20D": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_POSITIVE_20D),
+            "SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_TARGET_SYMBOL": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_TARGET_SYMBOL),
+        },
+        "target_winner_profile": profile,
+        "latest_scan": control.get("latest_scan"),
+    }
+
+
+@app.get("/diagnostics/stall_loss_entry_feedback")
+def diagnostics_stall_loss_entry_feedback(request: Request):
+    require_admin_if_configured(request)
+    return {
+        "ok": True,
+        "patch": PATCH_VERSION,
+        "mode": "stall_loss_entry_feedback",
+        "read_only": True,
+        "enabled": bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED),
+        "mean_reversion_preserved": not bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION),
+        "env": {
+            "SWING_STALL_LOSS_ENTRY_FEEDBACK_LOOKBACK_TRADES": int(SWING_STALL_LOSS_ENTRY_FEEDBACK_LOOKBACK_TRADES),
+            "SWING_STALL_LOSS_ENTRY_FEEDBACK_BLOCK_SYMBOL_LOSSES": int(SWING_STALL_LOSS_ENTRY_FEEDBACK_BLOCK_SYMBOL_LOSSES),
+            "SWING_STALL_LOSS_ENTRY_FEEDBACK_PENALTY_PER_LOSS": float(SWING_STALL_LOSS_ENTRY_FEEDBACK_PENALTY_PER_LOSS),
+            "SWING_STALL_LOSS_ENTRY_FEEDBACK_MAX_PENALTY": float(SWING_STALL_LOSS_ENTRY_FEEDBACK_MAX_PENALTY),
+            "SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION": bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION),
+        },
+        "feedback": _p282_stall_loss_feedback_index(),
+    }
 
 @app.post("/kill")
 async def kill_on(request: Request):
