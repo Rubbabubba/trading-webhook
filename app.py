@@ -1688,7 +1688,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-281-target-path-restoration-stall-exit-containment-first-profit-window"
+PATCH_VERSION = "patch-281-hotfix-p175-first-compatibility"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7209,7 +7209,7 @@ def _p280_entry_dt(row: dict):
 
 
 def _p280_symbol(row: dict):
-    return str(_p175_first(row, "symbol", "ticker", default="UNKNOWN") or "UNKNOWN").upper()
+    return str(_p175_first(row, "symbol", "ticker") or "UNKNOWN").upper()
 
 
 def _p280_strategy(row: dict):
@@ -7219,7 +7219,6 @@ def _p280_strategy(row: dict):
         "strategy_name",
         "signal",
         "entry_signal",
-        default=None,
     )
     if not value:
         value = _p280_nested(row, "thesis", "strategy") or _p280_nested(row, "entry_snapshot", "strategy")
@@ -7232,7 +7231,6 @@ def _p280_entry_type(row: dict):
         "entry_type",
         "entry_source",
         "source",
-        default=None,
     )
     if not value:
         value = _p280_nested(row, "entry_snapshot", "entry_type")
@@ -7251,7 +7249,6 @@ def _p280_exit_reason(row: dict):
             "reason",
             "close_reason",
             "status",
-            default=None,
         )
     return str(value or "unknown").strip().lower()
 
@@ -7262,7 +7259,6 @@ def _p280_regime(row: dict):
         "entry_regime_mode",
         "regime_mode",
         "market_regime",
-        default=None,
     )
     if not value:
         value = (
