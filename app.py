@@ -835,6 +835,40 @@ SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION = env_bool_any(
     default=False,
 )
 
+# Patch 283 - Swing target-path profit engine
+SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED = env_bool_any(
+    "SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED",
+    default=True,
+)
+SWING_TARGET_PATH_MIN_SCORE = getenv_float_any(
+    "SWING_TARGET_PATH_MIN_SCORE",
+    default=72.0,
+)
+SWING_TARGET_PATH_STRONG_SCORE = getenv_float_any(
+    "SWING_TARGET_PATH_STRONG_SCORE",
+    default=86.0,
+)
+SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED = env_bool_any(
+    "SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED",
+    default=True,
+)
+SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED = env_bool_any(
+    "SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED",
+    default=True,
+)
+SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP = getenv_int_any(
+    "SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP",
+    default=4,
+)
+SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES = getenv_int_any(
+    "SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES",
+    default=2,
+)
+SWING_THRIVE_BRIEF_LIMIT = getenv_int_any(
+    "SWING_THRIVE_BRIEF_LIMIT",
+    default=10,
+)
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1748,7 +1782,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-282-target-profile-breakout-gate-mean-reversion-preserve-stall-feedback"
+PATCH_VERSION = "patch-283-swing-target-path-profit-engine-dynamic-entry-cap-thrive-brief"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8534,6 +8568,256 @@ def _p282_profit_restoration_control_surface() -> dict:
         "recommended_action": "monitor_target_profile_gate_and_preserve_mean_reversion",
     }
 
+def _p283_target_symbol_win_count(symbol: str) -> int:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return 0
+    profile = _p282_target_winner_profile()
+    for row in list(profile.get("target_symbol_stats") or []):
+        if str(row.get("symbol") or "").strip().upper() == sym:
+            return int(row.get("target_wins") or 0)
+    return 0
+
+
+def _p283_gate_check_value(candidate: dict, name: str, default: float = 0.0) -> float:
+    gate = dict((candidate or {}).get("target_profile_breakout_gate") or {})
+    for row in list(gate.get("checks") or []):
+        if str((row or {}).get("name") or "") == str(name):
+            return float(_safe_float((row or {}).get("value"), default))
+    return float(default)
+
+
+def _p283_target_path_profit_score(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    strategy = str(c.get("strategy") or "").strip().lower()
+    sym = str(c.get("symbol") or "").strip().upper()
+
+    if strategy == MEAN_REVERSION_STRATEGY_NAME:
+        rank = float(_safe_float(c.get("rank_score")))
+        quality = float(_safe_float(c.get("selection_quality_score")))
+        score = min(100.0, max(0.0, (quality * 0.35) + (rank * 0.35) + 12.0))
+        return {
+            "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+            "applies": False,
+            "strategy": strategy,
+            "score": round(score, 4),
+            "passed": True,
+            "tier": "mean_reversion_fallback",
+            "reason": "mean_reversion_preserved_as_profit_fallback",
+        }
+
+    if strategy not in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}:
+        return {
+            "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+            "applies": False,
+            "strategy": strategy,
+            "score": 0.0,
+            "passed": True,
+            "tier": "non_swing_breakout",
+            "reason": "non_breakout_strategy",
+        }
+
+    rank = float(_safe_float(c.get("rank_score")))
+    gate = dict(c.get("target_profile_breakout_gate") or {})
+    gate_passed = bool(gate.get("passed"))
+    gate_blockers = list(gate.get("blockers") or [])
+
+    close_to_high = _p283_gate_check_value(c, "close_to_high", 0.0)
+    breakout_distance = _p283_gate_check_value(c, "breakout_distance", -1.0)
+    risk_per_share = _p283_gate_check_value(c, "risk_per_share", 1.0)
+    return_20d = _p283_gate_check_value(c, "positive_20d_return", float(_safe_float(c.get("return_20d_pct"))))
+
+    target_wins = _p283_target_symbol_win_count(sym)
+    stall_feedback = dict(c.get("stall_loss_entry_feedback") or {})
+    stall_penalty = float(_safe_float(stall_feedback.get("rank_penalty")))
+    if bool(stall_feedback.get("blocked")):
+        stall_penalty += 25.0
+
+    rank_component = min(32.0, max(0.0, (rank - 90.0) * 1.6))
+    close_component = min(16.0, max(0.0, (close_to_high - 0.965) / 0.035 * 16.0))
+    proximity_component = min(16.0, max(0.0, (1.0 - abs(breakout_distance) / 0.05) * 16.0))
+    risk_component = min(14.0, max(0.0, (1.0 - risk_per_share / max(0.001, float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT))) * 14.0))
+    target_history_bonus = min(14.0, float(target_wins) * 3.5)
+    gate_bonus = 18.0 if gate_passed else 0.0
+    trend_bonus = 6.0 if return_20d > 0 else 0.0
+    blocker_penalty = float(len(gate_blockers)) * 8.0
+
+    score = (
+        rank_component
+        + close_component
+        + proximity_component
+        + risk_component
+        + target_history_bonus
+        + gate_bonus
+        + trend_bonus
+        - stall_penalty
+        - blocker_penalty
+    )
+    score = min(120.0, max(0.0, score))
+    passed = bool(score >= float(SWING_TARGET_PATH_MIN_SCORE) and gate_passed)
+
+    if score >= float(SWING_TARGET_PATH_STRONG_SCORE):
+        tier = "strong_target_path"
+    elif passed:
+        tier = "target_path"
+    else:
+        tier = "not_target_path"
+
+    return {
+        "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+        "applies": True,
+        "strategy": strategy,
+        "symbol": sym,
+        "score": round(score, 4),
+        "passed": passed,
+        "tier": tier,
+        "target_wins": int(target_wins),
+        "gate_passed": gate_passed,
+        "gate_blockers": gate_blockers,
+        "stall_penalty": round(stall_penalty, 4),
+        "components": {
+            "rank": round(rank_component, 4),
+            "close_to_high": round(close_component, 4),
+            "breakout_proximity": round(proximity_component, 4),
+            "risk": round(risk_component, 4),
+            "target_history": round(target_history_bonus, 4),
+            "gate_bonus": round(gate_bonus, 4),
+            "trend_bonus": round(trend_bonus, 4),
+            "blocker_penalty": round(blocker_penalty, 4),
+        },
+        "checks": {
+            "rank_score": round(rank, 4),
+            "close_to_high": round(close_to_high, 5),
+            "breakout_distance": round(breakout_distance, 5),
+            "risk_per_share": round(risk_per_share, 5),
+            "return_20d": round(return_20d, 5),
+        },
+        "reason": "target_path_profit_score_passed" if passed else "target_path_profit_score_not_ready",
+    }
+
+
+def _p283_candidate_sort_key(candidate: dict | None) -> tuple:
+    c = dict(candidate or {})
+    target_path = dict(c.get("target_path_profit") or {})
+    return (
+        float(_safe_float(target_path.get("score"))),
+        float(_safe_float(c.get("selection_quality_score"))),
+        float(_safe_float(c.get("rank_score"))),
+    )
+
+
+def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
+    lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
+    rows = [dict(c) for c in list(LAST_SWING_CANDIDATES or []) if isinstance(c, dict)]
+    for row in rows:
+        if "target_path_profit" not in row:
+            row["target_path_profit"] = _p283_target_path_profit_score(row)
+
+    target_rows = [
+        row for row in rows
+        if str(row.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    ]
+    mean_reversion_rows = [
+        row for row in rows
+        if str(row.get("strategy") or "").strip().lower() == MEAN_REVERSION_STRATEGY_NAME
+    ]
+
+    target_rows.sort(key=_p283_candidate_sort_key, reverse=True)
+    mean_reversion_rows.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    return {
+        "target_path_candidates": target_rows[:lim],
+        "mean_reversion_candidates": mean_reversion_rows[:lim],
+        "target_path_pass_count": sum(1 for row in target_rows if bool((row.get("target_path_profit") or {}).get("passed"))),
+        "target_path_strong_count": sum(1 for row in target_rows if float(_safe_float((row.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)),
+        "mean_reversion_eligible_count": sum(1 for row in mean_reversion_rows if bool(row.get("eligible"))),
+    }
+
+
+def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
+    lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
+    latest = dict(LAST_SCAN or {})
+    summary = dict(latest.get("summary") or {})
+    control = _p282_profit_restoration_control_surface()
+    candidates = _p283_latest_thrive_candidates(limit=lim)
+
+    selected_symbols = list(summary.get("selected_symbols") or [])
+    target_pass = int(candidates.get("target_path_pass_count") or 0)
+    target_strong = int(candidates.get("target_path_strong_count") or 0)
+    mr_eligible = int(candidates.get("mean_reversion_eligible_count") or 0)
+
+    if selected_symbols:
+        status = "thriving_selected"
+        action = "monitor_entries_and_fills"
+    elif target_pass > 0:
+        status = "profit_candidates_available_not_selected"
+        action = "inspect_capacity_or_submission_path"
+    elif mr_eligible > 0:
+        status = "mean_reversion_fallback_available"
+        action = "allow_mean_reversion_fallback"
+    else:
+        status = "waiting_for_profit_path"
+        action = "wait_for_target_path_or_mean_reversion_setup"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_thrive_brief",
+        "read_only": True,
+        "status": status,
+        "recommended_action": action,
+        "profit_engine": {
+            "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+            "min_score": float(SWING_TARGET_PATH_MIN_SCORE),
+            "strong_score": float(SWING_TARGET_PATH_STRONG_SCORE),
+            "target_path_pass_count": target_pass,
+            "target_path_strong_count": target_strong,
+            "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
+            "mean_reversion_eligible_count": mr_eligible,
+        },
+        "dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {}),
+        "selected": {
+            "selected_total": int(summary.get("selected_total") or 0),
+            "selected_symbols": selected_symbols,
+            "selected_strategy": summary.get("selected_strategy"),
+        },
+        "capacity": {
+            "remaining_new_entries_today": summary.get("remaining_new_entries_today"),
+            "max_new_entries_effective": summary.get("max_new_entries_effective"),
+            "open_slots": candidate_slots_available(),
+            "portfolio_exposure_remaining": summary.get("portfolio_exposure_remaining"),
+        },
+        "protection": {
+            "daily_halt_active": bool((today_pnl_truth_snapshot() or {}).get("daily_halt_active")),
+            "new_entries_globally_blocked": bool(summary.get("new_entries_globally_blocked")),
+            "global_block_reasons": list(summary.get("global_block_reasons") or []),
+            "top_rejection_reasons": list(summary.get("top_rejection_reasons") or [])[:lim],
+        },
+        "target_path_top": [
+            {
+                "symbol": row.get("symbol"),
+                "eligible": bool(row.get("eligible")),
+                "rank_score": row.get("rank_score"),
+                "selection_quality_score": row.get("selection_quality_score"),
+                "target_path_profit": row.get("target_path_profit"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+            }
+            for row in list(candidates.get("target_path_candidates") or [])[:lim]
+        ],
+        "mean_reversion_top": [
+            {
+                "symbol": row.get("symbol"),
+                "eligible": bool(row.get("eligible")),
+                "rank_score": row.get("rank_score"),
+                "selection_quality_score": row.get("selection_quality_score"),
+                "target_path_profit": row.get("target_path_profit"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+            }
+            for row in list(candidates.get("mean_reversion_candidates") or [])[:lim]
+        ],
+        "target_winner_profile": control.get("target_winner_profile"),
+    }
+
 def _restore_snapshot_plan_classification(plan: dict) -> dict:
     plan = dict(plan or {})
     signal = str(plan.get("signal") or "").strip().upper()
@@ -14776,6 +15060,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         c['correlation_group_id'] = _symbol_group_id(sym)
         c['correlation_group_open_count'] = int(group_count)
         c['selection_quality_score'] = _candidate_selection_quality_score(c)
+        c['target_path_profit'] = _p283_target_path_profit_score(c)
+        c['target_path_score'] = (c.get('target_path_profit') or {}).get('score')
         local_symbol_cap = float(symbol_cap)
         if strategy_name == MEAN_REVERSION_STRATEGY_NAME and local_symbol_cap > 0:
             local_symbol_cap = local_symbol_cap * max(0.0, float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER))
@@ -14836,12 +15122,61 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             )
             candidate["post_change_drawdown_circuit"] = post_change_drawdown
         breakout_approved = []
-    breakout_approved.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
-    mean_reversion_approved.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
-    approved = breakout_approved if breakout_approved else mean_reversion_approved
+    breakout_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+    mean_reversion_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    target_path_approved = [
+        c for c in breakout_approved
+        if bool((c.get("target_path_profit") or {}).get("passed"))
+        and float(_safe_float((c.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
+    ]
+    target_path_strong = [
+        c for c in target_path_approved
+        if float(_safe_float((c.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
+    ]
+
+    if bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED):
+        if target_path_approved:
+            approved = target_path_approved
+        elif bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED) and mean_reversion_approved:
+            approved = mean_reversion_approved
+        else:
+            approved = []
+    else:
+        approved = breakout_approved if breakout_approved else mean_reversion_approved
+
     adaptive_capacity_candidates = []
     adaptive_capacity_selected = []
-    max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
+
+    same_day_stats = _same_day_entry_stats()
+    base_daily_entry_cap = int(SWING_MAX_NEW_ENTRIES_PER_DAY)
+    effective_daily_entry_cap = base_daily_entry_cap
+    dynamic_entry_cap_applied = False
+    dynamic_entry_cap_reasons = []
+
+    if (
+        bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED)
+        and target_path_approved
+        and len(target_path_strong) >= max(1, int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES))
+        and not bool(loss_day_throttle.get("active"))
+        and not bool(post_change_drawdown.get("block_new_entries"))
+    ):
+        effective_daily_entry_cap = max(
+            effective_daily_entry_cap,
+            int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP or base_daily_entry_cap),
+        )
+        dynamic_entry_cap_applied = effective_daily_entry_cap > base_daily_entry_cap
+        dynamic_entry_cap_reasons.append("strong_target_path_candidates_available")
+
+    remaining_today = max(0, effective_daily_entry_cap - int(same_day_stats.get('counted') or 0))
+    max_new_entries = max(
+        0,
+        min(
+            int(effective_daily_entry_cap),
+            int(candidate_slots_available()),
+            int(SCANNER_MAX_ENTRIES_PER_SCAN),
+        ),
+    )
     if (
         loss_day_throttle.get("active")
         and not loss_day_throttle.get("advisory_only")
@@ -14857,13 +15192,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
     elif mean_reversion_approved:
         max_new_entries = min(max_new_entries, max(0, int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
-    same_day_stats = _same_day_entry_stats()
-    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
     max_new_entries = min(max_new_entries, remaining_today)
     if (
         not approved
         and max_new_entries > 0
         and bool(SWING_ADAPTIVE_CAPACITY_ENABLED)
+        and not bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED)
         and not post_change_drawdown.get("block_new_entries")
     ):
         for c in breakout_candidates:
@@ -14924,6 +15258,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         meta = {
             'rank_score': c.get('rank_score'),
             'selection_quality_score': c.get('selection_quality_score'),
+            'target_path_score': c.get('target_path_score'),
+            'target_path_profit': c.get('target_path_profit'),
             'avg_dollar_volume_20d': c.get('avg_dollar_volume_20d'),
             'strategy_name': c.get('strategy'),
             'breakout_level': c.get('breakout_level'),
@@ -15051,6 +15387,25 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'target_profile_breakout_gate_enabled': bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
         'stall_loss_entry_feedback_enabled': bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED),
         'mean_reversion_preserved_by_p282': not bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION),
+        'target_path_profit_engine': {
+            'enabled': bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+            'min_score': float(SWING_TARGET_PATH_MIN_SCORE),
+            'strong_score': float(SWING_TARGET_PATH_STRONG_SCORE),
+            'target_path_approved_count': len(target_path_approved),
+            'target_path_strong_count': len(target_path_strong),
+            'target_path_approved_symbols': [c.get('symbol') for c in target_path_approved],
+            'target_path_strong_symbols': [c.get('symbol') for c in target_path_strong],
+            'mean_reversion_fallback_enabled': bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
+        },
+        'target_path_dynamic_entry_cap': {
+            'enabled': bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED),
+            'base_daily_entry_cap': int(base_daily_entry_cap),
+            'effective_daily_entry_cap': int(effective_daily_entry_cap),
+            'applied': bool(dynamic_entry_cap_applied),
+            'configured_dynamic_cap': int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP),
+            'min_strong_candidates': int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES),
+            'reasons': list(dynamic_entry_cap_reasons),
+        },
         'target_profile_breakout_gate_blocked': sum(
             1 for c in candidates
             if 'target_profile_breakout_gate' in list(c.get('rejection_reasons') or [])
@@ -15077,6 +15432,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'symbol_exposure_cap': round(symbol_cap, 2),
         'portfolio_cap_block_mode': SWING_PORTFOLIO_CAP_BLOCK_MODE,
         'remaining_new_entries_today': int(remaining_today),
+        'max_new_entries_effective': int(max_new_entries),
         'new_entries_globally_blocked': bool(new_entries_globally_blocked),
         'global_block_reasons': list(dict.fromkeys(global_block_reasons)),
         'recovered_symbols': list(exposure.get('recovered_symbols') or []),
@@ -21690,6 +22046,34 @@ def diagnostics_stall_loss_entry_feedback(request: Request):
         },
         "feedback": _p282_stall_loss_feedback_index(),
     }
+
+@app.get("/diagnostics/swing_thrive_brief")
+def diagnostics_swing_thrive_brief(request: Request, limit: int = 10):
+    require_admin_if_configured(request)
+    return _p283_swing_thrive_brief(limit=limit)
+
+
+@app.get("/diagnostics/target_path_profit_engine")
+def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
+    require_admin_if_configured(request)
+    brief = _p283_swing_thrive_brief(limit=limit)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "target_path_profit_engine",
+        "read_only": True,
+        "profit_engine": brief.get("profit_engine"),
+        "dynamic_entry_cap": brief.get("dynamic_entry_cap"),
+        "target_path_top": brief.get("target_path_top"),
+        "selected": brief.get("selected"),
+        "recommended_action": brief.get("recommended_action"),
+    }
+
+
+@app.get("/diagnostics/mean_reversion_status")
+def diagnostics_mean_reversion_status(request: Request):
+    require_admin_if_configured(request)
+    return diagnostics_regime_b(request)
 
 @app.post("/kill")
 async def kill_on(request: Request):
