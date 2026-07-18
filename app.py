@@ -1782,7 +1782,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-283-swing-target-path-profit-engine-dynamic-entry-cap-thrive-brief"
+PATCH_VERSION = "patch-283-hotfix-thrive-score-persistence-current-runtime-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5046,6 +5046,8 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
             preview.get('blocked_by_post_change_drawdown')
         ),
         'top_candidates': top_candidates[:max(5, min(int(limit or 25), 100))],
+        'target_path_profit_engine': dict(preview.get("target_path_profit_engine") or {}),
+        'target_path_dynamic_entry_cap': dict(preview.get("target_path_dynamic_entry_cap") or {}),
         'preview_plans': dict(preview_plans),
     })
     scan = {
@@ -8501,11 +8503,23 @@ def _p282_profit_restoration_control_surface() -> dict:
 
     latest = dict(LAST_SCAN or {})
     summary = dict(latest.get("summary") or {})
+    source = "last_scan_summary"
+
     candidates = [
         dict(row)
         for row in list(summary.get("top_candidates") or [])
         if isinstance(row, dict)
     ]
+
+    if not candidates:
+        runtime_truth = _active_truth_scan(limit=max(25, int(SWING_THRIVE_BRIEF_LIMIT or 10)))
+        summary = dict((runtime_truth.get("summary") if isinstance(runtime_truth, dict) else {}) or {})
+        candidates = [
+            dict(row)
+            for row in list(summary.get("top_candidates") or [])
+            if isinstance(row, dict)
+        ]
+        source = str((runtime_truth or {}).get("_scan_source") or "current_runtime_truth")
 
     breakout_rows = [
         row for row in candidates
@@ -8544,6 +8558,7 @@ def _p282_profit_restoration_control_surface() -> dict:
         "mean_reversion_preserved": not bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION),
         "target_winner_profile": profile,
         "latest_scan": {
+            "source": source,
             "selected_symbols": list(summary.get("selected_symbols") or []),
             "selected_strategy": summary.get("selected_strategy"),
             "breakout_candidate_count": len(breakout_rows),
@@ -8705,6 +8720,12 @@ def _p283_candidate_sort_key(candidate: dict | None) -> tuple:
         float(_safe_float(c.get("rank_score"))),
     )
 
+def _p283_enrich_candidate_profit_truth(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    c["selection_quality_score"] = _candidate_selection_quality_score(c)
+    c["target_path_profit"] = _p283_target_path_profit_score(c)
+    c["target_path_score"] = (c.get("target_path_profit") or {}).get("score")
+    return c
 
 def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
     lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
@@ -8736,8 +8757,8 @@ def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
 
 def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
     lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
-    latest = dict(LAST_SCAN or {})
-    summary = dict(latest.get("summary") or {})
+    active_scan = _active_truth_scan(limit=max(25, int(limit or SWING_THRIVE_BRIEF_LIMIT or 10)))
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
     control = _p282_profit_restoration_control_surface()
     candidates = _p283_latest_thrive_candidates(limit=lim)
 
@@ -8764,6 +8785,7 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
         "patch_version": PATCH_VERSION,
         "mode": "swing_thrive_brief",
         "read_only": True,
+        "truth_source": str((active_scan or {}).get("_scan_source") or "current_runtime_truth"),
         "status": status,
         "recommended_action": action,
         "profit_engine": {
@@ -8775,7 +8797,15 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
             "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
             "mean_reversion_eligible_count": mr_eligible,
         },
-        "dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {}),
+        "dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {
+            "enabled": bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED),
+            "base_daily_entry_cap": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+            "effective_daily_entry_cap": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+            "applied": False,
+            "configured_dynamic_cap": int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP),
+            "min_strong_candidates": int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES),
+            "reasons": [],
+        }),
         "selected": {
             "selected_total": int(summary.get("selected_total") or 0),
             "selected_symbols": selected_symbols,
@@ -21552,13 +21582,13 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
     portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
     symbol_cap = equity * SWING_MAX_SYMBOL_EXPOSURE_PCT if equity > 0 else 0.0
     same_day_stats = _same_day_entry_stats()
-    remaining_today = max(0, SWING_MAX_NEW_ENTRIES_PER_DAY - int(same_day_stats.get('counted') or 0))
-    max_new_entries = max(0, min(int(SWING_MAX_NEW_ENTRIES_PER_DAY), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
-    if regime_mode == 'defensive':
-        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
-    elif regime.get('favorable') is False:
-        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
-    max_new_entries = min(max_new_entries, remaining_today)
+    base_daily_entry_cap = int(SWING_MAX_NEW_ENTRIES_PER_DAY)
+    effective_daily_entry_cap = base_daily_entry_cap
+    dynamic_entry_cap_applied = False
+    dynamic_entry_cap_reasons = []
+    remaining_today = max(0, effective_daily_entry_cap - int(same_day_stats.get('counted') or 0))
+    max_new_entries = max(0, min(int(effective_daily_entry_cap), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
+    
 
     rows = []
     for sym in runtime_syms:
@@ -21605,10 +21635,58 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             selection_blockers.append('symbol_exposure_limit')
         _canonical_portfolio_cap_gate(c, projected_notional, exposure, portfolio_cap, selection_blockers=selection_blockers, restore_eligibility=True)
         c['selection_blockers'] = list(dict.fromkeys([str(r) for r in selection_blockers if str(r)]))
+        c = _p283_enrich_candidate_profit_truth(c)
         rows.append(c)
 
-    rows.sort(key=lambda x: float(x.get('rank_score', 0.0) or 0.0), reverse=True)
-    approved = [r for r in rows if r.get('eligible')]
+    rows.sort(key=_p283_candidate_sort_key, reverse=True)
+    breakout_approved = [
+        r for r in rows
+        if r.get('eligible')
+        and str(r.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    ]
+    mean_reversion_approved = [
+        r for r in rows
+        if r.get('eligible')
+        and str(r.get("strategy") or "").strip().lower() == MEAN_REVERSION_STRATEGY_NAME
+    ]
+    target_path_approved = [
+        r for r in breakout_approved
+        if bool((r.get("target_path_profit") or {}).get("passed"))
+        and float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
+    ]
+    target_path_strong = [
+        r for r in target_path_approved
+        if float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
+    ]
+
+    if (
+        bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED)
+        and target_path_approved
+        and len(target_path_strong) >= max(1, int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES))
+        and not bool(post_change_drawdown.get("block_new_entries"))
+    ):
+        effective_daily_entry_cap = max(effective_daily_entry_cap, int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP or base_daily_entry_cap))
+        dynamic_entry_cap_applied = effective_daily_entry_cap > base_daily_entry_cap
+        dynamic_entry_cap_reasons.append("strong_target_path_candidates_available")
+
+    remaining_today = max(0, effective_daily_entry_cap - int(same_day_stats.get('counted') or 0))
+    max_new_entries = max(0, min(int(effective_daily_entry_cap), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
+    if regime_mode == 'defensive':
+        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
+    elif regime.get('favorable') is False:
+        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
+    max_new_entries = min(max_new_entries, remaining_today)
+
+    if bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED):
+        if target_path_approved:
+            approved = target_path_approved
+        elif bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED) and mean_reversion_approved:
+            approved = mean_reversion_approved
+        else:
+            approved = []
+    else:
+        approved = breakout_approved if breakout_approved else mean_reversion_approved
+
     selected = approved[:max_new_entries]
     selected_symbols = [str((r or {}).get('symbol') or '').upper() for r in selected if str((r or {}).get('symbol') or '').strip()]
     eligible_but_not_selected = []
@@ -21638,6 +21716,25 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         "selected_symbols": selected_symbols,
         "remaining_new_entries_today": int(remaining_today),
         "max_new_entries_effective": int(max_new_entries),
+        "target_path_profit_engine": {
+            "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+            "min_score": float(SWING_TARGET_PATH_MIN_SCORE),
+            "strong_score": float(SWING_TARGET_PATH_STRONG_SCORE),
+            "target_path_approved_count": len(target_path_approved),
+            "target_path_strong_count": len(target_path_strong),
+            "target_path_approved_symbols": [r.get("symbol") for r in target_path_approved],
+            "target_path_strong_symbols": [r.get("symbol") for r in target_path_strong],
+            "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
+        },
+        "target_path_dynamic_entry_cap": {
+            "enabled": bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED),
+            "base_daily_entry_cap": int(base_daily_entry_cap),
+            "effective_daily_entry_cap": int(effective_daily_entry_cap),
+            "applied": bool(dynamic_entry_cap_applied),
+            "configured_dynamic_cap": int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP),
+            "min_strong_candidates": int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES),
+            "reasons": list(dynamic_entry_cap_reasons),
+        },
         "portfolio_exposure": round(open_total, 2),
         "strategy_portfolio_exposure": round(open_strategy, 2),
         "portfolio_exposure_cap": round(portfolio_cap, 2),
@@ -22074,6 +22171,36 @@ def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
 def diagnostics_mean_reversion_status(request: Request):
     require_admin_if_configured(request)
     return diagnostics_regime_b(request)
+
+@app.get("/diagnostics/swing_current_profit_truth")
+def diagnostics_swing_current_profit_truth(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    active_scan = _active_truth_scan(limit=max(5, min(int(limit or 25), 100)))
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    rows = [dict(r) for r in list(summary.get("top_candidates") or []) if isinstance(r, dict)]
+    rows.sort(key=_p283_candidate_sort_key, reverse=True)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_current_profit_truth",
+        "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
+        "selected_symbols": list(summary.get("selected_symbols") or []),
+        "target_path_profit_engine": dict(summary.get("target_path_profit_engine") or {}),
+        "target_path_dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {}),
+        "top": [
+            {
+                "symbol": row.get("symbol"),
+                "eligible": bool(row.get("eligible")),
+                "rank_score": row.get("rank_score"),
+                "selection_quality_score": row.get("selection_quality_score"),
+                "target_path_score": row.get("target_path_score"),
+                "target_path_profit": row.get("target_path_profit"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+                "selection_blockers": list(row.get("selection_blockers") or []),
+            }
+            for row in rows[:max(1, min(int(limit or 25), 100))]
+        ],
+    }
 
 @app.post("/kill")
 async def kill_on(request: Request):
@@ -32842,6 +32969,10 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         'selection_blocked_items': selection_blocked_items[:lim],
         'invalid_runtime_symbols': list(runtime_validation.get('invalid_runtime_symbols') or []),
         'adaptive_capacity': dict((active_summary.get('adaptive_capacity') or {})),
+        'target_path_profit_engine': dict((active_summary.get('target_path_profit_engine') or {})),
+        'target_path_dynamic_entry_cap': dict((active_summary.get('target_path_dynamic_entry_cap') or {})),
+        'target_path_pass_count': int((active_summary.get('target_path_profit_engine') or {}).get('target_path_approved_count') or 0),
+        'target_path_strong_count': int((active_summary.get('target_path_profit_engine') or {}).get('target_path_strong_count') or 0),
     }
     if full:
         shadow_items = [dict(item) for item in items if bool((item or {}).get('shadow_regime_candidate'))]
