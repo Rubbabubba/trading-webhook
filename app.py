@@ -1808,7 +1808,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-285-pure-json-diagnostic-cleanup-target-path-opportunity-expansion-lab"
+PATCH_VERSION = "patch-285-hotfix-saved-scan-target-path-diagnostics"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5109,6 +5109,60 @@ def _active_truth_scan(limit: int = 25) -> dict:
         return runtime_truth
     return _latest_completed_scan_record() or dict(LAST_SCAN or {})
 
+def _p285_saved_truth_scan(limit: int = 25) -> dict:
+    current_runtime = [
+        str(s).strip().upper()
+        for s in (universe_symbols() or [])
+        if str(s).strip()
+    ]
+
+    try:
+        matched_scan = _latest_matching_scan_record(current_runtime)
+        if isinstance(matched_scan, dict) and matched_scan:
+            matched_scan["_scan_source"] = matched_scan.get("_scan_source") or "saved_matching_scan"
+            return matched_scan
+    except Exception:
+        logger.exception("P285_SAVED_MATCHING_SCAN_FAILED")
+
+    try:
+        latest = _latest_completed_scan_record()
+        if isinstance(latest, dict) and latest:
+            latest["_scan_source"] = latest.get("_scan_source") or "saved_latest_completed_scan"
+            return latest
+    except Exception:
+        logger.exception("P285_LATEST_COMPLETED_SCAN_FAILED")
+
+    if isinstance(LAST_SCAN, dict) and LAST_SCAN:
+        rec = dict(LAST_SCAN)
+        rec["_scan_source"] = rec.get("_scan_source") or "last_scan_memory"
+        return rec
+
+    rows = [dict(r) for r in list(LAST_SWING_CANDIDATES or []) if isinstance(r, dict)]
+    if rows:
+        summary = _scan_summary_from_candidates(
+            candidates=rows,
+            symbols=current_runtime,
+            regime=dict(LAST_REGIME_SNAPSHOT or {}),
+            global_block_reasons=[],
+            selected_symbols=[],
+        )
+        summary["top_candidates"] = rows[:max(5, min(int(limit or 25), 100))]
+        return {
+            "ok": True,
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "reason": "last_swing_candidates_fallback",
+            "symbols": current_runtime,
+            "summary": summary,
+            "_scan_source": "last_swing_candidates_fallback",
+        }
+
+    return {
+        "ok": False,
+        "reason": "no_saved_scan_available",
+        "symbols": current_runtime,
+        "summary": {},
+        "_scan_source": "empty_saved_scan",
+    }
 
 def _matching_candidate_history(runtime_symbols: list[str] | None = None, limit: int = 5) -> list[dict]:
     target = _dedupe_keep_order([str(s).strip().upper() for s in (runtime_symbols or universe_symbols() or []) if str(s).strip()])
@@ -9012,9 +9066,16 @@ def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
 
 def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
     lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
-    active_scan = _active_truth_scan(limit=max(25, int(limit or SWING_THRIVE_BRIEF_LIMIT or 10)))
+    active_scan = _p285_saved_truth_scan(limit=max(25, int(limit or SWING_THRIVE_BRIEF_LIMIT or 10)))
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
-    control = _p282_profit_restoration_control_surface()
+    try:
+        control = _p282_profit_restoration_control_surface()
+    except Exception as exc:
+        logger.exception("P285_THRIVE_CONTROL_SURFACE_FAILED")
+        control = {
+            "control_error": str(exc),
+            "target_winner_profile": _p282_target_winner_profile(),
+        }
     candidates = _p283_latest_thrive_candidates(limit=lim)
 
     selected_symbols = list(summary.get("selected_symbols") or [])
@@ -22513,7 +22574,7 @@ def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
 @app.get("/diagnostics/target_path_opportunity_expansion_lab")
 def diagnostics_target_path_opportunity_expansion_lab(request: Request, limit: int = 15):
     require_admin_if_configured(request)
-    active_scan = _active_truth_scan(limit=max(25, min(int(limit or 15), 100)))
+    active_scan = _p285_saved_truth_scan(limit=max(25, min(int(limit or 15), 100)))
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
     rows = [dict(r) for r in list(summary.get("top_candidates") or []) if isinstance(r, dict)]
     payload = {
@@ -22538,7 +22599,7 @@ def diagnostics_mean_reversion_status(request: Request):
 @app.get("/diagnostics/swing_current_profit_truth")
 def diagnostics_swing_current_profit_truth(request: Request, limit: int = 25):
     require_admin_if_configured(request)
-    active_scan = _active_truth_scan(limit=max(5, min(int(limit or 25), 100)))
+    active_scan = _p285_saved_truth_scan(limit=max(5, min(int(limit or 25), 100)))
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
     rows = [dict(r) for r in list(summary.get("top_candidates") or []) if isinstance(r, dict)]
     rows.sort(key=_p283_candidate_sort_key, reverse=True)
@@ -33262,7 +33323,7 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
     current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
     runtime_validation = _universe_validation_snapshot()
     preview = _current_runtime_preview_snapshot(limit=lim)
-    active_scan = _active_truth_scan(limit=lim)
+    active_scan = _p285_saved_truth_scan(limit=lim)
     active_summary = (active_scan.get('summary') if isinstance(active_scan, dict) else {}) or {}
     items = [dict(item) for item in (active_summary.get('top_candidates') or [])[:lim] if isinstance(item, dict)]
     source = active_scan.get('_scan_source') if isinstance(active_scan, dict) else None
