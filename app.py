@@ -868,6 +868,24 @@ SWING_THRIVE_BRIEF_LIMIT = getenv_int_any(
     "SWING_THRIVE_BRIEF_LIMIT",
     default=10,
 )
+# Patch 284 - Strong target-path weak-tape override
+SWING_STRONG_TARGET_PATH_WEAK_TAPE_OVERRIDE_ENABLED = env_bool_any(
+    "SWING_STRONG_TARGET_PATH_WEAK_TAPE_OVERRIDE_ENABLED",
+    default=True,
+)
+SWING_STRONG_TARGET_PATH_WEAK_TAPE_MAX_ENTRIES = getenv_int_any(
+    "SWING_STRONG_TARGET_PATH_WEAK_TAPE_MAX_ENTRIES",
+    default=3,
+)
+SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_SCORE = getenv_float_any(
+    "SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_SCORE",
+    default=86.0,
+)
+SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_COUNT = getenv_int_any(
+    "SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_COUNT",
+    default=1,
+)
+
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -1782,7 +1800,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-283-hotfix-thrive-score-persistence-current-runtime-truth"
+PATCH_VERSION = "patch-284-strong-target-path-weak-tape-override-thrive-capacity-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5048,6 +5066,8 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
         'top_candidates': top_candidates[:max(5, min(int(limit or 25), 100))],
         'target_path_profit_engine': dict(preview.get("target_path_profit_engine") or {}),
         'target_path_dynamic_entry_cap': dict(preview.get("target_path_dynamic_entry_cap") or {}),
+        'strong_target_path_weak_tape_override': dict(preview.get("strong_target_path_weak_tape_override") or {}),
+        'thrive_capacity_truth': dict(preview.get("thrive_capacity_truth") or {}),
         'preview_plans': dict(preview_plans),
     })
     scan = {
@@ -8727,6 +8747,51 @@ def _p283_enrich_candidate_profit_truth(candidate: dict | None) -> dict:
     c["target_path_score"] = (c.get("target_path_profit") or {}).get("score")
     return c
 
+def _p284_strong_target_path_weak_tape_capacity(
+    *,
+    regime: dict | None,
+    regime_mode: str | None,
+    target_path_strong: list | None,
+    current_cap: int,
+) -> dict:
+    regime = dict(regime or {})
+    strong_rows = [dict(r) for r in list(target_path_strong or []) if isinstance(r, dict)]
+    weak_tape = bool(str(regime_mode or "").strip().lower() == "defensive" or regime.get("favorable") is False)
+    enabled = bool(SWING_STRONG_TARGET_PATH_WEAK_TAPE_OVERRIDE_ENABLED)
+    min_score = float(SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_SCORE)
+    min_count = max(1, int(SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_COUNT or 1))
+    max_entries = max(0, int(SWING_STRONG_TARGET_PATH_WEAK_TAPE_MAX_ENTRIES or 0))
+
+    qualified = [
+        row for row in strong_rows
+        if float(_safe_float((row.get("target_path_profit") or {}).get("score"))) >= min_score
+    ]
+
+    applies = bool(enabled and weak_tape and len(qualified) >= min_count and max_entries > int(current_cap or 0))
+    effective_cap = max(int(current_cap or 0), max_entries) if applies else int(current_cap or 0)
+
+    return {
+        "enabled": enabled,
+        "weak_tape": weak_tape,
+        "applies": applies,
+        "base_cap_before_override": int(current_cap or 0),
+        "effective_cap_after_override": int(effective_cap),
+        "configured_max_entries": int(max_entries),
+        "min_score": float(min_score),
+        "min_count": int(min_count),
+        "qualified_count": len(qualified),
+        "qualified_symbols": [row.get("symbol") for row in qualified],
+        "reason": (
+            "strong_target_path_weak_tape_override_applied"
+            if applies
+            else (
+                "no_strong_target_path_candidates"
+                if not qualified
+                else ("not_weak_tape" if not weak_tape else "override_not_needed")
+            )
+        ),
+    }
+
 def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
     lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
     rows = [dict(c) for c in list(LAST_SWING_CANDIDATES or []) if isinstance(c, dict)]
@@ -8806,6 +8871,13 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
             "min_strong_candidates": int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES),
             "reasons": [],
         }),
+        "strong_target_path_weak_tape_override": dict(summary.get("strong_target_path_weak_tape_override") or {
+            "enabled": bool(SWING_STRONG_TARGET_PATH_WEAK_TAPE_OVERRIDE_ENABLED),
+            "weak_tape": None,
+            "applies": False,
+            "reason": "no_capacity_truth_available",
+        }),
+        "thrive_capacity_truth": dict(summary.get("thrive_capacity_truth") or {}),
         "selected": {
             "selected_total": int(summary.get("selected_total") or 0),
             "selected_symbols": selected_symbols,
@@ -15213,6 +15285,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         and int(loss_day_throttle.get("max_new_entries_after_trigger") or 0) >= 0
     ):
         max_new_entries = min(max_new_entries, int(loss_day_throttle.get("max_new_entries_after_trigger") or 0))
+    weak_tape_capacity_override = {
+        "enabled": bool(SWING_STRONG_TARGET_PATH_WEAK_TAPE_OVERRIDE_ENABLED),
+        "weak_tape": bool(regime_mode == "defensive" or regime.get("favorable") is False),
+        "applies": False,
+        "base_cap_before_override": int(max_new_entries),
+        "effective_cap_after_override": int(max_new_entries),
+        "reason": "not_evaluated",
+    }
+
     if breakout_approved:
         if regime_mode == 'defensive':
             defensive_tier_cap = max(0, int(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN or 1))
@@ -15220,6 +15301,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             max_new_entries = min(max_new_entries, defensive_tier_cap, weak_tape_cap)
         elif regime.get('favorable') is False:
             max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
+
+        weak_tape_capacity_override = _p284_strong_target_path_weak_tape_capacity(
+            regime=regime,
+            regime_mode=regime_mode,
+            target_path_strong=target_path_strong,
+            current_cap=max_new_entries,
+        )
+        max_new_entries = int(weak_tape_capacity_override.get("effective_cap_after_override") or max_new_entries)
+
     elif mean_reversion_approved:
         max_new_entries = min(max_new_entries, max(0, int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
     max_new_entries = min(max_new_entries, remaining_today)
@@ -15427,14 +15517,21 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'target_path_strong_symbols': [c.get('symbol') for c in target_path_strong],
             'mean_reversion_fallback_enabled': bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
         },
-        'target_path_dynamic_entry_cap': {
-            'enabled': bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED),
+        'strong_target_path_weak_tape_override': dict(weak_tape_capacity_override),
+        'thrive_capacity_truth': {
             'base_daily_entry_cap': int(base_daily_entry_cap),
             'effective_daily_entry_cap': int(effective_daily_entry_cap),
-            'applied': bool(dynamic_entry_cap_applied),
-            'configured_dynamic_cap': int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP),
-            'min_strong_candidates': int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES),
-            'reasons': list(dynamic_entry_cap_reasons),
+            'remaining_new_entries_today': int(remaining_today),
+            'max_new_entries_effective': int(max_new_entries),
+            'candidate_slots_available': int(candidate_slots_available()),
+            'scanner_max_entries_per_scan': int(SCANNER_MAX_ENTRIES_PER_SCAN),
+            'weak_tape': bool(regime_mode == "defensive" or regime.get("favorable") is False),
+            'weak_tape_override_applied': bool(weak_tape_capacity_override.get("applies")),
+            'selected_total': len(selected),
+            'selected_symbols': [c.get('symbol') for c in selected],
+            'target_path_approved_count': len(target_path_approved),
+            'target_path_strong_count': len(target_path_strong),
+            'mean_reversion_eligible_total': len(mean_reversion_approved),
         },
         'target_profile_breakout_gate_blocked': sum(
             1 for c in candidates
@@ -21668,13 +21765,34 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         effective_daily_entry_cap = max(effective_daily_entry_cap, int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP or base_daily_entry_cap))
         dynamic_entry_cap_applied = effective_daily_entry_cap > base_daily_entry_cap
         dynamic_entry_cap_reasons.append("strong_target_path_candidates_available")
-
+    weak_tape_capacity_override = {
+        "enabled": bool(SWING_STRONG_TARGET_PATH_WEAK_TAPE_OVERRIDE_ENABLED),
+        "weak_tape": bool(regime_mode == "defensive" or regime.get("favorable") is False),
+        "applies": False,
+        "base_cap_before_override": 0,
+        "effective_cap_after_override": 0,
+        "reason": "not_evaluated",
+    }
+    
     remaining_today = max(0, effective_daily_entry_cap - int(same_day_stats.get('counted') or 0))
     max_new_entries = max(0, min(int(effective_daily_entry_cap), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
-    if regime_mode == 'defensive':
-        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
-    elif regime.get('favorable') is False:
-        max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
+    if breakout_approved:
+        if regime_mode == 'defensive':
+            max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
+        elif regime.get('favorable') is False:
+            max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
+
+        weak_tape_capacity_override = _p284_strong_target_path_weak_tape_capacity(
+            regime=regime,
+            regime_mode=regime_mode,
+            target_path_strong=target_path_strong,
+            current_cap=max_new_entries,
+        )
+        max_new_entries = int(weak_tape_capacity_override.get("effective_cap_after_override") or max_new_entries)
+
+    elif mean_reversion_approved:
+        max_new_entries = min(max_new_entries, max(0, int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
+
     max_new_entries = min(max_new_entries, remaining_today)
 
     if bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED):
@@ -21734,6 +21852,22 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "configured_dynamic_cap": int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP),
             "min_strong_candidates": int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES),
             "reasons": list(dynamic_entry_cap_reasons),
+        },
+        "strong_target_path_weak_tape_override": dict(weak_tape_capacity_override),
+        "thrive_capacity_truth": {
+            "base_daily_entry_cap": int(base_daily_entry_cap),
+            "effective_daily_entry_cap": int(effective_daily_entry_cap),
+            "remaining_new_entries_today": int(remaining_today),
+            "max_new_entries_effective": int(max_new_entries),
+            "candidate_slots_available": int(candidate_slots_available()),
+            "scanner_max_entries_per_scan": int(SCANNER_MAX_ENTRIES_PER_SCAN),
+            "weak_tape": bool(regime_mode == "defensive" or regime.get("favorable") is False),
+            "weak_tape_override_applied": bool(weak_tape_capacity_override.get("applies")),
+            "selected_total": len(selected),
+            "selected_symbols": list(selected_symbols),
+            "target_path_approved_count": len(target_path_approved),
+            "target_path_strong_count": len(target_path_strong),
+            "mean_reversion_eligible_total": len(mean_reversion_approved),
         },
         "portfolio_exposure": round(open_total, 2),
         "strategy_portfolio_exposure": round(open_strategy, 2),
@@ -22161,6 +22295,8 @@ def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
         "read_only": True,
         "profit_engine": brief.get("profit_engine"),
         "dynamic_entry_cap": brief.get("dynamic_entry_cap"),
+        "strong_target_path_weak_tape_override": brief.get("strong_target_path_weak_tape_override"),
+        "thrive_capacity_truth": brief.get("thrive_capacity_truth"),
         "target_path_top": brief.get("target_path_top"),
         "selected": brief.get("selected"),
         "recommended_action": brief.get("recommended_action"),
@@ -22187,6 +22323,8 @@ def diagnostics_swing_current_profit_truth(request: Request, limit: int = 25):
         "selected_symbols": list(summary.get("selected_symbols") or []),
         "target_path_profit_engine": dict(summary.get("target_path_profit_engine") or {}),
         "target_path_dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {}),
+        "strong_target_path_weak_tape_override": dict(summary.get("strong_target_path_weak_tape_override") or {}),
+        "thrive_capacity_truth": dict(summary.get("thrive_capacity_truth") or {}),
         "top": [
             {
                 "symbol": row.get("symbol"),
@@ -32971,6 +33109,8 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         'adaptive_capacity': dict((active_summary.get('adaptive_capacity') or {})),
         'target_path_profit_engine': dict((active_summary.get('target_path_profit_engine') or {})),
         'target_path_dynamic_entry_cap': dict((active_summary.get('target_path_dynamic_entry_cap') or {})),
+        'strong_target_path_weak_tape_override': dict((active_summary.get('strong_target_path_weak_tape_override') or {})),
+        'thrive_capacity_truth': dict((active_summary.get('thrive_capacity_truth') or {})),
         'target_path_pass_count': int((active_summary.get('target_path_profit_engine') or {}).get('target_path_approved_count') or 0),
         'target_path_strong_count': int((active_summary.get('target_path_profit_engine') or {}).get('target_path_strong_count') or 0),
     }
