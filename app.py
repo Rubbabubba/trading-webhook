@@ -885,7 +885,15 @@ SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_COUNT = getenv_int_any(
     "SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_COUNT",
     default=1,
 )
-
+# Patch 285 - Target-path opportunity expansion lab
+SWING_TARGET_PATH_OPPORTUNITY_LAB_NEAR_MISS_GAP = getenv_float_any(
+    "SWING_TARGET_PATH_OPPORTUNITY_LAB_NEAR_MISS_GAP",
+    default=18.0,
+)
+SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT = getenv_int_any(
+    "SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT",
+    default=15,
+)
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -1800,7 +1808,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-284-strong-target-path-weak-tape-override-thrive-capacity-truth"
+PATCH_VERSION = "patch-285-pure-json-diagnostic-cleanup-target-path-opportunity-expansion-lab"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8792,6 +8800,188 @@ def _p284_strong_target_path_weak_tape_capacity(
         ),
     }
 
+def _p285_target_path_opportunity_expansion_lab(
+    rows: list | None = None,
+    *,
+    summary: dict | None = None,
+    limit: int | None = None,
+) -> dict:
+    lim = max(1, min(int(limit or SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT or 15), 50))
+    source_summary = dict(summary or {})
+    source_rows = rows
+    if source_rows is None:
+        source_rows = list(source_summary.get("top_candidates") or [])
+
+    candidates = [dict(r) for r in list(source_rows or []) if isinstance(r, dict)]
+    breakout_rows = [
+        r for r in candidates
+        if str(r.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    ]
+
+    near_miss_gap = float(SWING_TARGET_PATH_OPPORTUNITY_LAB_NEAR_MISS_GAP)
+    min_score = float(SWING_TARGET_PATH_MIN_SCORE)
+    strong_score = float(SWING_TARGET_PATH_STRONG_SCORE)
+    reason_counts = Counter()
+    blocker_counts = Counter()
+    expansion_rows = []
+
+    for row in breakout_rows:
+        row = dict(row)
+        sym = str(row.get("symbol") or "").strip().upper()
+        target_path = dict(row.get("target_path_profit") or _p283_target_path_profit_score(row))
+        gate = dict(row.get("target_profile_breakout_gate") or {})
+        checks = dict(target_path.get("checks") or {})
+        gate_blockers = [
+            str(x) for x in list(target_path.get("gate_blockers") or gate.get("blockers") or [])
+            if str(x)
+        ]
+        rejection_reasons = [
+            str(x) for x in list(row.get("rejection_reasons") or [])
+            if str(x)
+        ]
+
+        for reason in rejection_reasons:
+            reason_counts[reason] += 1
+        for blocker in gate_blockers:
+            blocker_counts[blocker] += 1
+
+        score = float(_safe_float(target_path.get("score")))
+        score_gap = round(max(0.0, min_score - score), 4)
+        already_open_or_pending = bool(
+            "position_already_open" in rejection_reasons
+            or "plan_or_pending_entry_exists" in rejection_reasons
+        )
+        protective_blocked = bool(
+            "defensive_daily_breakout_rollback" in rejection_reasons
+            or "swing_post_change_drawdown_circuit" in rejection_reasons
+            or "target_profile_breakout_gate" in rejection_reasons
+        )
+
+        expansion_paths = []
+        if already_open_or_pending:
+            expansion_paths.append("already_captured_or_pending")
+        if "risk_per_share" in gate_blockers:
+            expansion_paths.append("risk_too_wide_wait_or_smaller_size")
+        if "close_to_high" in gate_blockers:
+            expansion_paths.append("wait_for_close_near_high")
+        if "breakout_distance" in gate_blockers:
+            expansion_paths.append("wait_for_breakout_proximity")
+        if "rank_score" in gate_blockers or "rank_score_below_min" in rejection_reasons:
+            expansion_paths.append("rank_not_strong_enough")
+        if "positive_20d_return" in gate_blockers or "return_20d_below_min" in rejection_reasons:
+            expansion_paths.append("trend_confirmation_missing")
+        if "portfolio_exposure_limit" in rejection_reasons or "symbol_exposure_limit" in rejection_reasons:
+            expansion_paths.append("capacity_or_exposure_limited")
+        if not expansion_paths:
+            expansion_paths.append("score_gap_or_non_gate_blocker")
+
+        near_miss = bool(
+            not bool(target_path.get("passed"))
+            and score >= (min_score - near_miss_gap)
+            and not already_open_or_pending
+        )
+        strong_near_miss = bool(
+            score >= (strong_score - near_miss_gap)
+            and not already_open_or_pending
+        )
+
+        if bool(target_path.get("passed")):
+            action = "eligible_target_path_if_capacity_allows"
+        elif already_open_or_pending:
+            action = "monitor_existing_position_or_pending_plan"
+        elif near_miss and not protective_blocked:
+            action = "watch_next_scan"
+        elif near_miss:
+            action = "watch_but_do_not_relax_without_confirmation"
+        else:
+            action = "ignore_for_now"
+
+        expansion_rows.append({
+            "symbol": sym,
+            "eligible": bool(row.get("eligible")),
+            "selected": bool(row.get("selected")),
+            "rank_score": row.get("rank_score"),
+            "selection_quality_score": row.get("selection_quality_score"),
+            "target_path_score": round(score, 4),
+            "score_gap_to_pass": score_gap,
+            "target_path_passed": bool(target_path.get("passed")),
+            "target_path_tier": target_path.get("tier"),
+            "near_miss": near_miss,
+            "strong_near_miss": strong_near_miss,
+            "target_wins": int(target_path.get("target_wins") or 0),
+            "gate_passed": bool(target_path.get("gate_passed")),
+            "gate_blockers": gate_blockers,
+            "rejection_reasons": rejection_reasons,
+            "checks": {
+                "rank_score": checks.get("rank_score"),
+                "close_to_high": checks.get("close_to_high"),
+                "breakout_distance": checks.get("breakout_distance"),
+                "risk_per_share": checks.get("risk_per_share"),
+                "return_20d": checks.get("return_20d"),
+            },
+            "expansion_paths": list(dict.fromkeys(expansion_paths)),
+            "recommended_action": action,
+        })
+
+    expansion_rows.sort(
+        key=lambda r: (
+            bool(r.get("target_path_passed")),
+            bool(r.get("near_miss")),
+            bool(r.get("strong_near_miss")),
+            float(_safe_float(r.get("target_path_score"))),
+            float(_safe_float(r.get("rank_score"))),
+        ),
+        reverse=True,
+    )
+
+    near_misses = [r for r in expansion_rows if bool(r.get("near_miss"))]
+    strong_near_misses = [r for r in expansion_rows if bool(r.get("strong_near_miss"))]
+    passed = [r for r in expansion_rows if bool(r.get("target_path_passed"))]
+
+    if passed:
+        assessment = "target_path_available"
+        recommended_action = "inspect_capacity_or_submission_path"
+    elif strong_near_misses:
+        assessment = "strong_near_misses_available"
+        recommended_action = "watch_next_scan_before_relaxing"
+    elif near_misses:
+        assessment = "near_misses_available"
+        recommended_action = "monitor_for_breakout_confirmation"
+    else:
+        assessment = "no_quality_expansion_available"
+        recommended_action = "do_not_relax_gates_blindly"
+
+    return {
+        "enabled": True,
+        "mode": "target_path_opportunity_expansion_lab",
+        "read_only": True,
+        "candidate_count": len(candidates),
+        "breakout_candidate_count": len(breakout_rows),
+        "target_path_pass_count": len(passed),
+        "near_miss_count": len(near_misses),
+        "strong_near_miss_count": len(strong_near_misses),
+        "assessment": assessment,
+        "recommended_action": recommended_action,
+        "config": {
+            "min_score": float(min_score),
+            "strong_score": float(strong_score),
+            "near_miss_gap": float(near_miss_gap),
+            "target_profile_min_rank_score": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_RANK_SCORE),
+            "target_profile_min_close_to_high_pct": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_CLOSE_TO_HIGH_PCT),
+            "target_profile_max_breakout_distance_pct": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_BREAKOUT_DISTANCE_PCT),
+            "target_profile_max_risk_per_share_pct": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT),
+        },
+        "top_rejection_reasons": [
+            {"reason": reason, "count": int(count)}
+            for reason, count in reason_counts.most_common(12)
+        ],
+        "top_gate_blockers": [
+            {"blocker": blocker, "count": int(count)}
+            for blocker, count in blocker_counts.most_common(12)
+        ],
+        "top_opportunities": expansion_rows[:lim],
+    }
+
 def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
     lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
     rows = [dict(c) for c in list(LAST_SWING_CANDIDATES or []) if isinstance(c, dict)]
@@ -8877,6 +9067,14 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
             "applies": False,
             "reason": "no_capacity_truth_available",
         }),
+        "target_path_opportunity_expansion_lab": dict(
+            summary.get("target_path_opportunity_expansion_lab")
+            or _p285_target_path_opportunity_expansion_lab(
+                list(summary.get("top_candidates") or []),
+                summary=summary,
+                limit=lim,
+            )
+        ),
         "thrive_capacity_truth": dict(summary.get("thrive_capacity_truth") or {}),
         "selected": {
             "selected_total": int(summary.get("selected_total") or 0),
@@ -15518,6 +15716,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'mean_reversion_fallback_enabled': bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
         },
         'strong_target_path_weak_tape_override': dict(weak_tape_capacity_override),
+        'target_path_opportunity_expansion_lab': _p285_target_path_opportunity_expansion_lab(
+            candidates,
+            limit=SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT,
+        ),
         'thrive_capacity_truth': {
             'base_daily_entry_cap': int(base_daily_entry_cap),
             'effective_daily_entry_cap': int(effective_daily_entry_cap),
@@ -21854,6 +22056,10 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "reasons": list(dynamic_entry_cap_reasons),
         },
         "strong_target_path_weak_tape_override": dict(weak_tape_capacity_override),
+        "target_path_opportunity_expansion_lab": _p285_target_path_opportunity_expansion_lab(
+            rows,
+            limit=SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT,
+        ),
         "thrive_capacity_truth": {
             "base_daily_entry_cap": int(base_daily_entry_cap),
             "effective_daily_entry_cap": int(effective_daily_entry_cap),
@@ -22288,7 +22494,7 @@ def diagnostics_swing_thrive_brief(request: Request, limit: int = 10):
 def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
     require_admin_if_configured(request)
     brief = _p283_swing_thrive_brief(limit=limit)
-    return {
+    payload = {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "target_path_profit_engine",
@@ -22296,12 +22502,33 @@ def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
         "profit_engine": brief.get("profit_engine"),
         "dynamic_entry_cap": brief.get("dynamic_entry_cap"),
         "strong_target_path_weak_tape_override": brief.get("strong_target_path_weak_tape_override"),
+        "target_path_opportunity_expansion_lab": brief.get("target_path_opportunity_expansion_lab"),
         "thrive_capacity_truth": brief.get("thrive_capacity_truth"),
         "target_path_top": brief.get("target_path_top"),
         "selected": brief.get("selected"),
         "recommended_action": brief.get("recommended_action"),
     }
+    return JSONResponse(content=payload)
 
+@app.get("/diagnostics/target_path_opportunity_expansion_lab")
+def diagnostics_target_path_opportunity_expansion_lab(request: Request, limit: int = 15):
+    require_admin_if_configured(request)
+    active_scan = _active_truth_scan(limit=max(25, min(int(limit or 15), 100)))
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    rows = [dict(r) for r in list(summary.get("top_candidates") or []) if isinstance(r, dict)]
+    payload = {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "target_path_opportunity_expansion_lab",
+        "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
+        "read_only": True,
+        "lab": _p285_target_path_opportunity_expansion_lab(
+            rows,
+            summary=summary,
+            limit=limit,
+        ),
+    }
+    return JSONResponse(content=payload)
 
 @app.get("/diagnostics/mean_reversion_status")
 def diagnostics_mean_reversion_status(request: Request):
@@ -22324,6 +22551,14 @@ def diagnostics_swing_current_profit_truth(request: Request, limit: int = 25):
         "target_path_profit_engine": dict(summary.get("target_path_profit_engine") or {}),
         "target_path_dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {}),
         "strong_target_path_weak_tape_override": dict(summary.get("strong_target_path_weak_tape_override") or {}),
+        "target_path_opportunity_expansion_lab": dict(
+            summary.get("target_path_opportunity_expansion_lab")
+            or _p285_target_path_opportunity_expansion_lab(
+                rows,
+                summary=summary,
+                limit=limit,
+            )
+        ),
         "thrive_capacity_truth": dict(summary.get("thrive_capacity_truth") or {}),
         "top": [
             {
@@ -33110,6 +33345,14 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         'target_path_profit_engine': dict((active_summary.get('target_path_profit_engine') or {})),
         'target_path_dynamic_entry_cap': dict((active_summary.get('target_path_dynamic_entry_cap') or {})),
         'strong_target_path_weak_tape_override': dict((active_summary.get('strong_target_path_weak_tape_override') or {})),
+        'target_path_opportunity_expansion_lab': dict(
+            active_summary.get('target_path_opportunity_expansion_lab')
+            or _p285_target_path_opportunity_expansion_lab(
+                items,
+                summary=active_summary,
+                limit=lim,
+            )
+        ),
         'thrive_capacity_truth': dict((active_summary.get('thrive_capacity_truth') or {})),
         'target_path_pass_count': int((active_summary.get('target_path_profit_engine') or {}).get('target_path_approved_count') or 0),
         'target_path_strong_count': int((active_summary.get('target_path_profit_engine') or {}).get('target_path_strong_count') or 0),
