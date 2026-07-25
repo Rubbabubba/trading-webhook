@@ -885,6 +885,39 @@ SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_COUNT = getenv_int_any(
     "SWING_STRONG_TARGET_PATH_WEAK_TAPE_MIN_COUNT",
     default=1,
 )
+
+# Patch 286 - Target-path recovery mode
+SWING_TARGET_PATH_RECOVERY_MODE_ENABLED = env_bool_any(
+    "SWING_TARGET_PATH_RECOVERY_MODE_ENABLED",
+    default=True,
+)
+SWING_TARGET_PATH_RECOVERY_MIN_SCORE = getenv_float_any(
+    "SWING_TARGET_PATH_RECOVERY_MIN_SCORE",
+    default=85.0,
+)
+SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY = env_bool_any(
+    "SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY",
+    default=True,
+)
+SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN",
+    default=2,
+)
+
+# Patch 286 - Contain stall-loss exits for target-path trades
+SWING_TARGET_PATH_STALL_CONTAINMENT_ENABLED = env_bool_any(
+    "SWING_TARGET_PATH_STALL_CONTAINMENT_ENABLED",
+    default=True,
+)
+SWING_TARGET_PATH_STALL_LOSS_GUARD_MIN_DAYS = getenv_int_any(
+    "SWING_TARGET_PATH_STALL_LOSS_GUARD_MIN_DAYS",
+    default=3,
+)
+SWING_TARGET_PATH_STALL_LOSS_GUARD_MAX_LOSS_R = getenv_float_any(
+    "SWING_TARGET_PATH_STALL_LOSS_GUARD_MAX_LOSS_R",
+    default=-0.90,
+)
+
 # Patch 285 - Target-path opportunity expansion lab
 SWING_TARGET_PATH_OPPORTUNITY_LAB_NEAR_MISS_GAP = getenv_float_any(
     "SWING_TARGET_PATH_OPPORTUNITY_LAB_NEAR_MISS_GAP",
@@ -1808,7 +1841,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-285-hotfix-2-saved-candidate-row-fallback"
+PATCH_VERSION = "patch-286-target-path-recovery-mode-stall-loss-containment-weak-tape-target-override"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8877,6 +8910,152 @@ def _p284_strong_target_path_weak_tape_capacity(
         ),
     }
 
+def _p286_target_path_recovery_decision(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    reasons = [str(r) for r in list(c.get("rejection_reasons") or []) if str(r)]
+    blockers = set(reasons)
+    global_reasons = {str(r) for r in list(global_block_reasons or []) if str(r)}
+    target_path = dict(c.get("target_path_profit") or {})
+    score = float(_safe_float(target_path.get("score")))
+    strategy = str(c.get("strategy") or "").strip().lower()
+
+    hard_blockers = {
+        "daily_halt_active",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+        "swing_loss_day_entry_throttle",
+        "same_day_symbol_loss_cooldown",
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "strategy_kill_switch_active",
+        "correlation_group_limit",
+        "symbol_exposure_limit",
+        "portfolio_exposure_limit",
+        "swing_post_change_drawdown_circuit",
+    }
+    non_weak_blockers = sorted([r for r in blockers if r != "weak_tape"])
+    hard_present = sorted([r for r in blockers if r in hard_blockers])
+
+    enabled = bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED)
+    weak_tape_only = bool("weak_tape" in blockers and not non_weak_blockers)
+    score_ok = score >= float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE)
+    target_ok = bool(target_path.get("passed")) and score >= float(SWING_TARGET_PATH_MIN_SCORE)
+    strategy_ok = strategy in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    weak_tape_recovery_ok = bool(
+        SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY
+        and weak_tape_only
+        and "weak_tape" in global_reasons.union(blockers)
+    )
+
+    applies = bool(
+        enabled
+        and strategy_ok
+        and target_ok
+        and score_ok
+        and weak_tape_recovery_ok
+        and not hard_present
+    )
+
+    if applies:
+        reason = "target_path_weak_tape_recovery_applied"
+    elif not enabled:
+        reason = "target_path_recovery_disabled"
+    elif not strategy_ok:
+        reason = "not_daily_breakout"
+    elif not target_ok:
+        reason = "target_path_not_passed"
+    elif not score_ok:
+        reason = "target_path_score_below_recovery_min"
+    elif hard_present:
+        reason = "hard_blocker_present"
+    elif not weak_tape_recovery_ok:
+        reason = "not_weak_tape_only"
+    else:
+        reason = "not_recovered"
+
+    return {
+        "enabled": enabled,
+        "applies": applies,
+        "reason": reason,
+        "score": round(score, 4),
+        "min_score": float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE),
+        "weak_tape_only": weak_tape_only,
+        "target_path_passed": bool(target_path.get("passed")),
+        "target_path_tier": target_path.get("tier"),
+        "hard_blockers": hard_present,
+        "non_weak_blockers": non_weak_blockers,
+        "original_rejection_reasons": reasons,
+    }
+
+
+def _p286_apply_target_path_recovery(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    decision = _p286_target_path_recovery_decision(c, global_block_reasons)
+    c["target_path_recovery"] = dict(decision)
+    if decision.get("applies"):
+        reasons = [str(r) for r in list(c.get("rejection_reasons") or []) if str(r) and str(r) != "weak_tape"]
+        c["rejection_reasons"] = reasons
+        c["eligible"] = True
+        c["target_path_recovery_mode"] = True
+        c["weak_tape_target_override"] = True
+        c["recovered_from_reasons"] = list(decision.get("original_rejection_reasons") or [])
+    return c
+
+
+def _p286_plan_is_target_path_recovery(plan: dict | None) -> bool:
+    p = dict(plan or {})
+    thesis = dict(p.get("thesis") or {})
+    target_path = dict(p.get("target_path_profit") or thesis.get("target_path_profit") or {})
+    score = float(_safe_float(
+        p.get("target_path_score")
+        or thesis.get("target_path_score")
+        or target_path.get("score")
+    ))
+    return bool(
+        p.get("target_path_recovery_mode")
+        or p.get("weak_tape_target_override")
+        or (
+            bool(target_path.get("passed"))
+            and score >= float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE)
+        )
+    )
+
+
+def _p286_target_path_stall_containment(plan: dict | None, hold_days: int | float | None, current_r: float | None) -> dict:
+    is_target_path = _p286_plan_is_target_path_recovery(plan)
+    enabled = bool(SWING_TARGET_PATH_STALL_CONTAINMENT_ENABLED)
+    base_days = int(SWING_STALL_LOSS_GUARD_DAYS or 0)
+    base_loss_r = float(SWING_STALL_MAX_LOSS_R or -0.60)
+    effective_days = base_days
+    effective_loss_r = base_loss_r
+
+    if enabled and is_target_path:
+        effective_days = max(base_days, int(SWING_TARGET_PATH_STALL_LOSS_GUARD_MIN_DAYS or base_days))
+        effective_loss_r = min(base_loss_r, float(SWING_TARGET_PATH_STALL_LOSS_GUARD_MAX_LOSS_R or base_loss_r))
+
+    due = bool(
+        enabled
+        and current_r is not None
+        and int(hold_days or 0) >= int(effective_days or 0)
+        and float(current_r) <= float(effective_loss_r)
+    )
+
+    return {
+        "enabled": enabled,
+        "target_path_recovery_trade": bool(is_target_path),
+        "base_guard_days": int(base_days),
+        "base_max_loss_r": float(base_loss_r),
+        "effective_guard_days": int(effective_days),
+        "effective_max_loss_r": float(effective_loss_r),
+        "contained": bool(enabled and is_target_path and (effective_days != base_days or effective_loss_r != base_loss_r)),
+        "due": due,
+        "reason": (
+            "target_path_stall_loss_guard_contained"
+            if enabled and is_target_path and not due
+            else ("target_path_stall_loss_guard_due" if due and is_target_path else "normal_stall_loss_guard")
+        ),
+    }
+
 def _p285_target_path_opportunity_expansion_lab(
     rows: list | None = None,
     *,
@@ -9519,6 +9698,11 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "selection_quality_score": meta.get("selection_quality_score"),
         "entry_type": meta.get("entry_type"),
         "regime_mode": meta.get("regime_mode"),
+        "target_path_score": meta.get("target_path_score"),
+        "target_path_profit": meta.get("target_path_profit"),
+        "target_path_recovery": meta.get("target_path_recovery"),
+        "target_path_recovery_mode": bool(meta.get("target_path_recovery_mode")),
+        "weak_tape_target_override": bool(meta.get("weak_tape_target_override")),
     }
     plan["thesis"] = {
         "candidate_rank_score": meta.get("rank_score"),
@@ -9531,6 +9715,11 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "stop_basis": meta.get("stop_basis") or SWING_STOP_MODE,
         "target_r_mult": meta.get("target_r_mult") or SWING_TARGET_R_MULT,
         "candidate_ts": meta.get("scan_ts") or now_ny().isoformat(),
+        "target_path_score": meta.get("target_path_score"),
+        "target_path_profit": meta.get("target_path_profit"),
+        "target_path_recovery": meta.get("target_path_recovery"),
+        "target_path_recovery_mode": bool(meta.get("target_path_recovery_mode")),
+        "weak_tape_target_override": bool(meta.get("weak_tape_target_override")),
         "entry_quality_snapshot": {
             "symbol": meta.get("symbol"),
             "strategy": meta.get("strategy") or meta.get("strategy_name") or signal,
@@ -15446,6 +15635,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         c['selection_quality_score'] = _candidate_selection_quality_score(c)
         c['target_path_profit'] = _p283_target_path_profit_score(c)
         c['target_path_score'] = (c.get('target_path_profit') or {}).get('score')
+        c = _p286_apply_target_path_recovery(c, global_block_reasons)
         local_symbol_cap = float(symbol_cap)
         if strategy_name == MEAN_REVERSION_STRATEGY_NAME and local_symbol_cap > 0:
             local_symbol_cap = local_symbol_cap * max(0.0, float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER))
@@ -15615,6 +15805,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if adaptive_capacity_selected:
             approved = adaptive_capacity_candidates
     selected = approved[:max_new_entries] if approved is not adaptive_capacity_candidates else adaptive_capacity_selected
+    if bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED) and selected:
+        recovery_rows = [c for c in selected if bool(c.get("target_path_recovery_mode"))]
+        if len(recovery_rows) > int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN or 0):
+            allowed_recovery_symbols = {
+                str(c.get("symbol") or "").upper()
+                for c in recovery_rows[:max(0, int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN or 0))]
+            }
+            selected = [
+                c for c in selected
+                if not bool(c.get("target_path_recovery_mode"))
+                or str(c.get("symbol") or "").upper() in allowed_recovery_symbols
+            ]
     shadow_selected = shadow_candidates[:max_new_entries]
     shadow_alignment_selected = shadow_alignment_candidates[:max_new_entries]
     override_candidates = []
@@ -15662,6 +15864,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'selection_quality_score': c.get('selection_quality_score'),
             'target_path_score': c.get('target_path_score'),
             'target_path_profit': c.get('target_path_profit'),
+            'target_path_recovery': c.get('target_path_recovery'),
+            'target_path_recovery_mode': bool(c.get('target_path_recovery_mode')),
+            'weak_tape_target_override': bool(c.get('weak_tape_target_override')),
             'avg_dollar_volume_20d': c.get('avg_dollar_volume_20d'),
             'strategy_name': c.get('strategy'),
             'breakout_level': c.get('breakout_level'),
@@ -15788,6 +15993,14 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         } for k, v in rejection_counts.most_common(10)],
         'target_profile_breakout_gate_enabled': bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
         'stall_loss_entry_feedback_enabled': bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED),
+        'target_path_recovery_mode': {
+            'enabled': bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED),
+            'min_score': float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE),
+            'allow_weak_tape_only': bool(SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY),
+            'max_entries_per_scan': int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN),
+            'recovered_count': sum(1 for c in candidates if bool(c.get('target_path_recovery_mode'))),
+            'recovered_symbols': [c.get('symbol') for c in candidates if bool(c.get('target_path_recovery_mode'))],
+        },
         'mean_reversion_preserved_by_p282': not bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_APPLY_TO_MEAN_REVERSION),
         'target_path_profit_engine': {
             'enabled': bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
@@ -22019,6 +22232,7 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         _canonical_portfolio_cap_gate(c, projected_notional, exposure, portfolio_cap, selection_blockers=selection_blockers, restore_eligibility=True)
         c['selection_blockers'] = list(dict.fromkeys([str(r) for r in selection_blockers if str(r)]))
         c = _p283_enrich_candidate_profit_truth(c)
+        c = _p286_apply_target_path_recovery(c, global_block_reasons)
         rows.append(c)
 
     rows.sort(key=_p283_candidate_sort_key, reverse=True)
@@ -22120,6 +22334,14 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         "selected_symbols": selected_symbols,
         "remaining_new_entries_today": int(remaining_today),
         "max_new_entries_effective": int(max_new_entries),
+        "target_path_recovery_mode": {
+            "enabled": bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED),
+            "min_score": float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE),
+            "allow_weak_tape_only": bool(SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY),
+            "max_entries_per_scan": int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN),
+            "recovered_count": sum(1 for r in rows if bool(r.get("target_path_recovery_mode"))),
+            "recovered_symbols": [r.get("symbol") for r in rows if bool(r.get("target_path_recovery_mode"))],
+        },
         "target_path_profit_engine": {
             "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
             "min_score": float(SWING_TARGET_PATH_MIN_SCORE),
@@ -22995,12 +23217,20 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
 
     stall_guard_days = max(0, int(SWING_STALL_LOSS_GUARD_DAYS or 0))
     stall_max_loss_r = float(SWING_STALL_MAX_LOSS_R or 0.0)
+    stall_containment = _p286_target_path_stall_containment(plan, hold_days, unrealized_r)
+    out["target_path_stall_containment"] = dict(stall_containment)
+    effective_stall_guard_days = int(stall_containment.get("effective_guard_days") or stall_guard_days)
+    effective_stall_max_loss_r = float(stall_containment.get("effective_max_loss_r") or stall_max_loss_r)
+
+    if bool(stall_containment.get("contained")):
+        out["flags"].append("target_path_stall_loss_guard_contained")
+
     if (
         bool(SWING_STALL_LOSS_GUARD_ENABLED)
-        and stall_guard_days > 0
-        and hold_days >= stall_guard_days
-        and stall_max_loss_r < 0.0
-        and unrealized_r <= stall_max_loss_r
+        and effective_stall_guard_days > 0
+        and hold_days >= effective_stall_guard_days
+        and effective_stall_max_loss_r < 0.0
+        and unrealized_r <= effective_stall_max_loss_r
         and not out.get("time_exit_grace")
     ):
         out["stall_exit"] = True
@@ -24776,11 +25006,12 @@ def _p250_entry_quality_exit_advisory(symbol: str, plan: dict | None, pos: dict 
     days_held = plan_days_held(p)
     memory_guard = _p246_entry_quality_memory_guard(sym, p, broker)
 
+    stall_containment = _p286_target_path_stall_containment(p, days_held, current_r)
     stall_loss_guard_due = (
         bool(SWING_STALL_LOSS_GUARD_ENABLED)
         and current_r is not None
-        and int(days_held or 0) >= int(SWING_STALL_LOSS_GUARD_DAYS or 0)
-        and float(current_r) <= float(SWING_STALL_MAX_LOSS_R or -0.60)
+        and int(days_held or 0) >= int(stall_containment.get("effective_guard_days") or SWING_STALL_LOSS_GUARD_DAYS or 0)
+        and float(current_r) <= float(stall_containment.get("effective_max_loss_r") or SWING_STALL_MAX_LOSS_R or -0.60)
     )
     stall_exit_due = (
         current_r is not None
@@ -24840,6 +25071,7 @@ def _p250_entry_quality_exit_advisory(symbol: str, plan: dict | None, pos: dict 
             "stall_loss_guard_enabled": bool(SWING_STALL_LOSS_GUARD_ENABLED),
             "stall_loss_guard_days": int(SWING_STALL_LOSS_GUARD_DAYS or 0),
             "stall_max_loss_r": float(SWING_STALL_MAX_LOSS_R or 0.0),
+            "target_path_stall_containment": dict(stall_containment),
             "stall_exit_days": int(SWING_STALL_EXIT_DAYS or 0),
             "stall_min_r": float(SWING_STALL_MIN_R or 0.0),
             "stall_loss_guard_due": bool(stall_loss_guard_due),
@@ -30895,6 +31127,65 @@ def diagnostics_stall_exit_profit_leak_drilldown(request: Request):
 def diagnostics_swing_damage_guard(request: Request):
     require_admin_if_configured(request)
     return _swing_damage_guard_snapshot()
+
+@app.get("/diagnostics/target_path_recovery_mode")
+def diagnostics_target_path_recovery_mode(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    active_scan = _p285_saved_truth_scan(limit=max(10, min(int(limit or 25), 100)))
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(10, min(int(limit or 25), 100)))
+    for row in rows:
+        if "target_path_profit" not in row:
+            row["target_path_profit"] = _p283_target_path_profit_score(row)
+        row["target_path_recovery"] = _p286_target_path_recovery_decision(
+            row,
+            summary.get("global_block_reasons") or [],
+        )
+
+    recovered = [r for r in rows if bool((r.get("target_path_recovery") or {}).get("applies"))]
+    target_path_passed = [
+        r for r in rows
+        if bool((r.get("target_path_profit") or {}).get("passed"))
+    ]
+
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "target_path_recovery_mode",
+        "read_only": True,
+        "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
+        "config": {
+            "SWING_TARGET_PATH_RECOVERY_MODE_ENABLED": bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED),
+            "SWING_TARGET_PATH_RECOVERY_MIN_SCORE": float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE),
+            "SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY": bool(SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY),
+            "SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN": int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN),
+            "SWING_TARGET_PATH_STALL_CONTAINMENT_ENABLED": bool(SWING_TARGET_PATH_STALL_CONTAINMENT_ENABLED),
+            "SWING_TARGET_PATH_STALL_LOSS_GUARD_MIN_DAYS": int(SWING_TARGET_PATH_STALL_LOSS_GUARD_MIN_DAYS),
+            "SWING_TARGET_PATH_STALL_LOSS_GUARD_MAX_LOSS_R": float(SWING_TARGET_PATH_STALL_LOSS_GUARD_MAX_LOSS_R),
+        },
+        "candidate_count": len(rows),
+        "target_path_passed_count": len(target_path_passed),
+        "recovery_count": len(recovered),
+        "recovery_symbols": [r.get("symbol") for r in recovered],
+        "target_path_passed_symbols": [r.get("symbol") for r in target_path_passed],
+        "top": [
+            {
+                "symbol": r.get("symbol"),
+                "eligible": bool(r.get("eligible")),
+                "rank_score": r.get("rank_score"),
+                "target_path_score": (r.get("target_path_profit") or {}).get("score"),
+                "target_path_passed": bool((r.get("target_path_profit") or {}).get("passed")),
+                "rejection_reasons": list(r.get("rejection_reasons") or []),
+                "target_path_recovery": dict(r.get("target_path_recovery") or {}),
+            }
+            for r in rows[:max(1, min(int(limit or 25), 100))]
+        ],
+        "recommended_action": (
+            "allow_recovered_target_path_entries"
+            if recovered
+            else "wait_for_target_path_recovery_candidate"
+        ),
+    })
 
 @app.get("/diagnostics/stall_exit_tuning_monitor")
 def diagnostics_stall_exit_tuning_monitor(request: Request):
