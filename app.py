@@ -1841,7 +1841,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-286-target-path-recovery-mode-stall-loss-containment-weak-tape-target-override"
+PATCH_VERSION = "patch-286-hotfix-recovery-rollup-truth-saved-candidate-enrichment"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5197,26 +5197,54 @@ def _p285_saved_truth_scan(limit: int = 25) -> dict:
         "_scan_source": "empty_saved_scan",
     }
 
+def _p286_enrich_saved_candidate_rows(rows: list[dict] | None, scan: dict | None = None, limit: int = 25) -> list[dict]:
+    lim = max(1, min(int(limit or 25), 200))
+    summary = dict(((scan or {}).get("summary") if isinstance(scan, dict) else {}) or {})
+    global_reasons = list(summary.get("global_block_reasons") or summary.get("blockers") or [])
+
+    enriched: list[dict] = []
+    for row in list(rows or [])[:lim]:
+        if not isinstance(row, dict):
+            continue
+        candidate = dict(row)
+        original_eligible = bool(candidate.get("eligible"))
+
+        if "selection_quality_score" not in candidate:
+            candidate["selection_quality_score"] = _candidate_selection_quality_score(candidate)
+
+        candidate["target_path_profit"] = _p283_target_path_profit_score(candidate)
+        candidate["target_path_score"] = (candidate.get("target_path_profit") or {}).get("score")
+        candidate = _p286_apply_target_path_recovery(candidate, global_reasons)
+
+        recovery = dict(candidate.get("target_path_recovery") or {})
+        if recovery.get("applies"):
+            candidate["saved_candidate_recovery_enriched"] = True
+            candidate["saved_candidate_original_eligible"] = original_eligible
+
+        enriched.append(candidate)
+
+    return enriched
+
 def _p285_saved_candidate_rows(scan: dict | None = None, limit: int = 25) -> list[dict]:
     lim = max(1, min(int(limit or 25), 200))
     summary = dict(((scan or {}).get("summary") if isinstance(scan, dict) else {}) or {})
 
     rows = [dict(r) for r in list(summary.get("top_candidates") or []) if isinstance(r, dict)]
     if rows:
-        return rows[:lim]
+        return _p286_enrich_saved_candidate_rows(rows, scan=scan, limit=lim)
 
     rows = [dict(r) for r in list((scan or {}).get("results") or []) if isinstance(r, dict)]
     if rows:
-        return rows[:lim]
+        return _p286_enrich_saved_candidate_rows(rows, scan=scan, limit=lim)
 
     rows = [dict(r) for r in list(LAST_SWING_CANDIDATES or []) if isinstance(r, dict)]
     if rows:
-        return rows[:lim]
+        return _p286_enrich_saved_candidate_rows(rows, scan=scan, limit=lim)
 
     for hist in reversed(list(CANDIDATE_HISTORY or [])):
         hist_rows = [dict(r) for r in list((hist or {}).get("candidates") or []) if isinstance(r, dict)]
         if hist_rows:
-            return hist_rows[:lim]
+            return _p286_enrich_saved_candidate_rows(hist_rows, scan=scan, limit=lim)
 
     return []
 
@@ -9240,10 +9268,8 @@ def _p285_target_path_opportunity_expansion_lab(
 
 def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
     lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
-    rows = [dict(c) for c in list(LAST_SWING_CANDIDATES or []) if isinstance(c, dict)]
-    for row in rows:
-        if "target_path_profit" not in row:
-            row["target_path_profit"] = _p283_target_path_profit_score(row)
+    active_scan = _p285_saved_truth_scan(limit=max(25, lim))
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, lim))
 
     target_rows = [
         row for row in rows
@@ -9257,14 +9283,24 @@ def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
     target_rows.sort(key=_p283_candidate_sort_key, reverse=True)
     mean_reversion_rows.sort(key=_p283_candidate_sort_key, reverse=True)
 
+    recovery_rows = [
+        row for row in target_rows
+        if bool((row.get("target_path_recovery") or {}).get("applies"))
+    ]
+
     return {
         "target_path_candidates": target_rows[:lim],
         "mean_reversion_candidates": mean_reversion_rows[:lim],
         "target_path_pass_count": sum(1 for row in target_rows if bool((row.get("target_path_profit") or {}).get("passed"))),
         "target_path_strong_count": sum(1 for row in target_rows if float(_safe_float((row.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)),
+        "target_path_recovery_count": len(recovery_rows),
+        "target_path_recovery_symbols": sorted({
+            str(row.get("symbol") or "").upper()
+            for row in recovery_rows
+            if row.get("symbol")
+        }),
         "mean_reversion_eligible_count": sum(1 for row in mean_reversion_rows if bool(row.get("eligible"))),
     }
-
 
 def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
     lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
@@ -9283,11 +9319,16 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
     selected_symbols = list(summary.get("selected_symbols") or [])
     target_pass = int(candidates.get("target_path_pass_count") or 0)
     target_strong = int(candidates.get("target_path_strong_count") or 0)
+    target_recovery_count = int(candidates.get("target_path_recovery_count") or 0)
+    target_recovery_symbols = list(candidates.get("target_path_recovery_symbols") or [])
     mr_eligible = int(candidates.get("mean_reversion_eligible_count") or 0)
 
     if selected_symbols:
         status = "thriving_selected"
         action = "monitor_entries_and_fills"
+    elif target_recovery_count > 0:
+        status = "target_path_recovery_available"
+        action = "allow_recovered_target_path_entries"
     elif target_pass > 0:
         status = "profit_candidates_available_not_selected"
         action = "inspect_capacity_or_submission_path"
@@ -9314,6 +9355,13 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
             "target_path_strong_count": target_strong,
             "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
             "mean_reversion_eligible_count": mr_eligible,
+        },
+        "target_path_recovery_mode": {
+            "enabled": bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED),
+            "recovered_count": target_recovery_count,
+            "recovered_symbols": target_recovery_symbols,
+            "min_score": float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE),
+            "allow_weak_tape_only": bool(SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY),
         },
         "dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {
             "enabled": bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED),
@@ -22806,6 +22854,7 @@ def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
         "mode": "target_path_profit_engine",
         "read_only": True,
         "profit_engine": brief.get("profit_engine"),
+        "target_path_recovery_mode": brief.get("target_path_recovery_mode"),
         "dynamic_entry_cap": brief.get("dynamic_entry_cap"),
         "strong_target_path_weak_tape_override": brief.get("strong_target_path_weak_tape_override"),
         "target_path_opportunity_expansion_lab": brief.get("target_path_opportunity_expansion_lab"),
@@ -22848,13 +22897,42 @@ def diagnostics_swing_current_profit_truth(request: Request, limit: int = 25):
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
     rows = _p285_saved_candidate_rows(active_scan, limit=max(5, min(int(limit or 25), 100)))
     rows.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    target_path_pass_rows = [
+        row for row in rows
+        if bool((row.get("target_path_profit") or {}).get("passed"))
+    ]
+    target_path_strong_rows = [
+        row for row in target_path_pass_rows
+        if _safe_float((row.get("target_path_profit") or {}).get("score"), 0.0) >= float(SWING_TARGET_PATH_STRONG_SCORE)
+    ]
+    recovery_rows = [
+        row for row in rows
+        if bool((row.get("target_path_recovery") or {}).get("applies"))
+    ]
+
+    target_path_engine = dict(summary.get("target_path_profit_engine") or {})
+    target_path_engine["target_path_approved_count"] = len(target_path_pass_rows)
+    target_path_engine["target_path_strong_count"] = len(target_path_strong_rows)
+    target_path_engine["recovered_target_path_count"] = len(recovery_rows)
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "swing_current_profit_truth",
         "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
         "selected_symbols": list(summary.get("selected_symbols") or []),
-        "target_path_profit_engine": dict(summary.get("target_path_profit_engine") or {}),
+        "target_path_profit_engine": target_path_engine,
+        "target_path_recovery_mode": {
+            "enabled": bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED),
+            "recovered_count": len(recovery_rows),
+            "recovered_symbols": sorted({
+                str(row.get("symbol") or "").upper()
+                for row in recovery_rows
+                if row.get("symbol")
+            }),
+            "min_score": float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE),
+        },
         "target_path_dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {}),
         "strong_target_path_weak_tape_override": dict(summary.get("strong_target_path_weak_tape_override") or {}),
         "target_path_opportunity_expansion_lab": dict(
@@ -22874,6 +22952,8 @@ def diagnostics_swing_current_profit_truth(request: Request, limit: int = 25):
                 "selection_quality_score": row.get("selection_quality_score"),
                 "target_path_score": row.get("target_path_score"),
                 "target_path_profit": row.get("target_path_profit"),
+                "target_path_recovery": row.get("target_path_recovery"),
+                "target_path_recovery_mode": bool(row.get("target_path_recovery_mode")),
                 "rejection_reasons": list(row.get("rejection_reasons") or []),
                 "selection_blockers": list(row.get("selection_blockers") or []),
             }
@@ -33644,6 +33724,18 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
     matching_history = _matching_candidate_history(current_runtime, limit=5)
     active_symbols = [str(s).strip().upper() for s in (active_summary.get('symbols') or active_scan.get('symbols') or []) if str(s).strip()]
     eligible_items = [dict(item) for item in items if bool((item or {}).get('eligible'))]
+    target_path_pass_items = [
+        dict(item) for item in items
+        if bool(((item.get("target_path_profit") or {}).get("passed")))
+    ]
+    target_path_strong_items = [
+        dict(item) for item in target_path_pass_items
+        if _safe_float((item.get("target_path_profit") or {}).get("score"), 0.0) >= float(SWING_TARGET_PATH_STRONG_SCORE)
+    ]
+    target_path_recovery_items = [
+        dict(item) for item in items
+        if bool((item.get("target_path_recovery") or {}).get("applies"))
+    ]
     selection_blocked_items = [
         {
             'symbol': str((item or {}).get('symbol') or '').upper(),
@@ -33729,8 +33821,14 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
             )
         ),
         'thrive_capacity_truth': dict((active_summary.get('thrive_capacity_truth') or {})),
-        'target_path_pass_count': int((active_summary.get('target_path_profit_engine') or {}).get('target_path_approved_count') or 0),
-        'target_path_strong_count': int((active_summary.get('target_path_profit_engine') or {}).get('target_path_strong_count') or 0),
+        'target_path_pass_count': len(target_path_pass_items),
+        'target_path_strong_count': len(target_path_strong_items),
+        'target_path_recovery_count': len(target_path_recovery_items),
+        'target_path_recovery_symbols': sorted({
+            str(item.get("symbol") or "").upper()
+            for item in target_path_recovery_items
+            if item.get("symbol")
+        }),
     }
     if full:
         shadow_items = [dict(item) for item in items if bool((item or {}).get('shadow_regime_candidate'))]
