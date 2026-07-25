@@ -1808,7 +1808,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-285-hotfix-saved-scan-target-path-diagnostics"
+PATCH_VERSION = "patch-285-hotfix-2-saved-candidate-row-fallback"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5163,6 +5163,29 @@ def _p285_saved_truth_scan(limit: int = 25) -> dict:
         "summary": {},
         "_scan_source": "empty_saved_scan",
     }
+
+def _p285_saved_candidate_rows(scan: dict | None = None, limit: int = 25) -> list[dict]:
+    lim = max(1, min(int(limit or 25), 200))
+    summary = dict(((scan or {}).get("summary") if isinstance(scan, dict) else {}) or {})
+
+    rows = [dict(r) for r in list(summary.get("top_candidates") or []) if isinstance(r, dict)]
+    if rows:
+        return rows[:lim]
+
+    rows = [dict(r) for r in list((scan or {}).get("results") or []) if isinstance(r, dict)]
+    if rows:
+        return rows[:lim]
+
+    rows = [dict(r) for r in list(LAST_SWING_CANDIDATES or []) if isinstance(r, dict)]
+    if rows:
+        return rows[:lim]
+
+    for hist in reversed(list(CANDIDATE_HISTORY or [])):
+        hist_rows = [dict(r) for r in list((hist or {}).get("candidates") or []) if isinstance(r, dict)]
+        if hist_rows:
+            return hist_rows[:lim]
+
+    return []
 
 def _matching_candidate_history(runtime_symbols: list[str] | None = None, limit: int = 5) -> list[dict]:
     target = _dedupe_keep_order([str(s).strip().upper() for s in (runtime_symbols or universe_symbols() or []) if str(s).strip()])
@@ -22576,7 +22599,7 @@ def diagnostics_target_path_opportunity_expansion_lab(request: Request, limit: i
     require_admin_if_configured(request)
     active_scan = _p285_saved_truth_scan(limit=max(25, min(int(limit or 15), 100)))
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
-    rows = [dict(r) for r in list(summary.get("top_candidates") or []) if isinstance(r, dict)]
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 15), 100)))
     payload = {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -22601,7 +22624,7 @@ def diagnostics_swing_current_profit_truth(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     active_scan = _p285_saved_truth_scan(limit=max(5, min(int(limit or 25), 100)))
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
-    rows = [dict(r) for r in list(summary.get("top_candidates") or []) if isinstance(r, dict)]
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(5, min(int(limit or 25), 100)))
     rows.sort(key=_p283_candidate_sort_key, reverse=True)
     return {
         "ok": True,
@@ -33325,7 +33348,7 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
     preview = _current_runtime_preview_snapshot(limit=lim)
     active_scan = _p285_saved_truth_scan(limit=lim)
     active_summary = (active_scan.get('summary') if isinstance(active_scan, dict) else {}) or {}
-    items = [dict(item) for item in (active_summary.get('top_candidates') or [])[:lim] if isinstance(item, dict)]
+    items = _p285_saved_candidate_rows(active_scan, limit=lim)
     source = active_scan.get('_scan_source') if isinstance(active_scan, dict) else None
     matching_history = _matching_candidate_history(current_runtime, limit=5)
     active_symbols = [str(s).strip().upper() for s in (active_summary.get('symbols') or active_scan.get('symbols') or []) if str(s).strip()]
