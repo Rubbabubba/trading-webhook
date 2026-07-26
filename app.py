@@ -1841,7 +1841,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-286-hotfix-recovery-rollup-truth-saved-candidate-enrichment"
+PATCH_VERSION = "patch-287-target-path-recovery-truth-normalization-market-open-selection-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -9015,11 +9015,66 @@ def _p286_target_path_recovery_decision(candidate: dict | None, global_block_rea
         "original_rejection_reasons": reasons,
     }
 
+def _p287_normalized_target_path_recovery(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    existing = dict(c.get("target_path_recovery") or {})
+    target_path = dict(c.get("target_path_profit") or {})
+    if not target_path:
+        target_path = _p283_target_path_profit_score(c)
+        c["target_path_profit"] = target_path
+
+    score = float(_safe_float(
+        c.get("target_path_score")
+        or target_path.get("score")
+        or 0.0
+    ))
+    saved_recovery_truth = bool(
+        c.get("target_path_recovery_mode")
+        or c.get("weak_tape_target_override")
+        or existing.get("applies")
+        or c.get("saved_candidate_recovery_enriched")
+    )
+    target_ok = bool(target_path.get("passed")) and score >= float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE)
+
+    if saved_recovery_truth and target_ok:
+        normalized = dict(existing)
+        normalized.update({
+            "enabled": bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED),
+            "applies": True,
+            "reason": normalized.get("reason") or "saved_target_path_recovery_preserved",
+            "score": round(score, 4),
+            "min_score": float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE),
+            "weak_tape_only": bool(normalized.get("weak_tape_only", True)),
+            "target_path_passed": bool(target_path.get("passed")),
+            "target_path_tier": target_path.get("tier"),
+            "hard_blockers": list(normalized.get("hard_blockers") or []),
+            "non_weak_blockers": list(normalized.get("non_weak_blockers") or []),
+            "original_rejection_reasons": list(
+                normalized.get("original_rejection_reasons")
+                or c.get("recovered_from_reasons")
+                or ["weak_tape"]
+            ),
+            "normalized_from_saved_truth": True,
+        })
+        c["target_path_recovery"] = normalized
+        c["target_path_recovery_mode"] = True
+        c["weak_tape_target_override"] = True
+        c["eligible"] = True
+        c["rejection_reasons"] = [
+            str(r) for r in list(c.get("rejection_reasons") or [])
+            if str(r) and str(r) != "weak_tape"
+        ]
+        return c
+
+    c["target_path_recovery"] = _p286_target_path_recovery_decision(
+        c,
+        global_block_reasons or [],
+    )
+    return c
 
 def _p286_apply_target_path_recovery(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
-    c = dict(candidate or {})
-    decision = _p286_target_path_recovery_decision(c, global_block_reasons)
-    c["target_path_recovery"] = dict(decision)
+    c = _p287_normalized_target_path_recovery(candidate, global_block_reasons)
+    decision = dict(c.get("target_path_recovery") or {})
     if decision.get("applies"):
         reasons = [str(r) for r in list(c.get("rejection_reasons") or []) if str(r) and str(r) != "weak_tape"]
         c["rejection_reasons"] = reasons
@@ -9381,7 +9436,8 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
         "target_path_opportunity_expansion_lab": dict(
             summary.get("target_path_opportunity_expansion_lab")
             or _p285_target_path_opportunity_expansion_lab(
-                list(summary.get("top_candidates") or []),
+                list(candidates.get("target_path_candidates") or [])
+                + list(candidates.get("mean_reversion_candidates") or []),
                 summary=summary,
                 limit=lim,
             )
@@ -22847,21 +22903,104 @@ def diagnostics_swing_thrive_brief(request: Request, limit: int = 10):
 @app.get("/diagnostics/target_path_profit_engine")
 def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
     require_admin_if_configured(request)
-    brief = _p283_swing_thrive_brief(limit=limit)
+    lim = max(1, min(int(limit or 10), 100))
+    active_scan = _p285_saved_truth_scan(limit=max(25, lim))
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, lim))
+    rows = [_p287_normalized_target_path_recovery(row, summary.get("global_block_reasons") or []) for row in rows]
+    rows.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    target_rows = [
+        row for row in rows
+        if str(row.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    ]
+    target_path_passed = [
+        row for row in target_rows
+        if bool((row.get("target_path_profit") or {}).get("passed"))
+    ]
+    target_path_strong = [
+        row for row in target_path_passed
+        if _safe_float((row.get("target_path_profit") or {}).get("score"), 0.0) >= float(SWING_TARGET_PATH_STRONG_SCORE)
+    ]
+    recovered = [
+        row for row in target_rows
+        if bool((row.get("target_path_recovery") or {}).get("applies"))
+    ]
+    mean_reversion_rows = [
+        row for row in rows
+        if str(row.get("strategy") or "").strip().lower() == MEAN_REVERSION_STRATEGY_NAME
+        and bool(row.get("eligible"))
+    ]
+    selected_symbols = list(summary.get("selected_symbols") or [])
+
+    if selected_symbols:
+        recommended_action = "monitor_entries_and_fills"
+    elif recovered:
+        recommended_action = "allow_recovered_target_path_entries"
+    elif target_path_passed:
+        recommended_action = "inspect_capacity_or_submission_path"
+    elif mean_reversion_rows:
+        recommended_action = "allow_mean_reversion_fallback"
+    else:
+        recommended_action = "wait_for_target_path_or_mean_reversion_setup"
+
     payload = {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "target_path_profit_engine",
         "read_only": True,
-        "profit_engine": brief.get("profit_engine"),
-        "target_path_recovery_mode": brief.get("target_path_recovery_mode"),
-        "dynamic_entry_cap": brief.get("dynamic_entry_cap"),
-        "strong_target_path_weak_tape_override": brief.get("strong_target_path_weak_tape_override"),
-        "target_path_opportunity_expansion_lab": brief.get("target_path_opportunity_expansion_lab"),
-        "thrive_capacity_truth": brief.get("thrive_capacity_truth"),
-        "target_path_top": brief.get("target_path_top"),
-        "selected": brief.get("selected"),
-        "recommended_action": brief.get("recommended_action"),
+        "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
+        "profit_engine": {
+            "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+            "min_score": float(SWING_TARGET_PATH_MIN_SCORE),
+            "strong_score": float(SWING_TARGET_PATH_STRONG_SCORE),
+            "target_path_candidate_count": len(target_rows),
+            "target_path_pass_count": len(target_path_passed),
+            "target_path_strong_count": len(target_path_strong),
+            "recovered_target_path_count": len(recovered),
+            "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
+            "mean_reversion_eligible_count": len(mean_reversion_rows),
+        },
+        "target_path_recovery_mode": {
+            "enabled": bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED),
+            "recovered_count": len(recovered),
+            "recovered_symbols": sorted({
+                str(row.get("symbol") or "").upper()
+                for row in recovered
+                if row.get("symbol")
+            }),
+            "min_score": float(SWING_TARGET_PATH_RECOVERY_MIN_SCORE),
+            "allow_weak_tape_only": bool(SWING_TARGET_PATH_RECOVERY_ALLOW_WEAK_TAPE_ONLY),
+        },
+        "dynamic_entry_cap": dict(summary.get("target_path_dynamic_entry_cap") or {}),
+        "strong_target_path_weak_tape_override": dict(summary.get("strong_target_path_weak_tape_override") or {}),
+        "target_path_opportunity_expansion_lab": _p285_target_path_opportunity_expansion_lab(
+            rows,
+            summary=summary,
+            limit=lim,
+        ),
+        "thrive_capacity_truth": dict(summary.get("thrive_capacity_truth") or {}),
+        "target_path_top": [
+            {
+                "symbol": row.get("symbol"),
+                "eligible": bool(row.get("eligible")),
+                "selected": bool(row.get("selected")),
+                "rank_score": row.get("rank_score"),
+                "selection_quality_score": row.get("selection_quality_score"),
+                "target_path_score": (row.get("target_path_profit") or {}).get("score"),
+                "target_path_profit": row.get("target_path_profit"),
+                "target_path_recovery": row.get("target_path_recovery"),
+                "target_path_recovery_mode": bool(row.get("target_path_recovery_mode")),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+            }
+            for row in target_rows[:lim]
+        ],
+        "selected": {
+            "selected_total": int(summary.get("selected_total") or 0),
+            "selected_symbols": selected_symbols,
+            "selected_strategy": summary.get("selected_strategy"),
+        },
+        "recommended_action": recommended_action,
     }
     return JSONResponse(content=payload)
 
@@ -31211,16 +31350,11 @@ def diagnostics_swing_damage_guard(request: Request):
 @app.get("/diagnostics/target_path_recovery_mode")
 def diagnostics_target_path_recovery_mode(request: Request, limit: int = 25):
     require_admin_if_configured(request)
-    active_scan = _p285_saved_truth_scan(limit=max(10, min(int(limit or 25), 100)))
+    lim = max(10, min(int(limit or 25), 100))
+    active_scan = _p285_saved_truth_scan(limit=lim)
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
-    rows = _p285_saved_candidate_rows(active_scan, limit=max(10, min(int(limit or 25), 100)))
-    for row in rows:
-        if "target_path_profit" not in row:
-            row["target_path_profit"] = _p283_target_path_profit_score(row)
-        row["target_path_recovery"] = _p286_target_path_recovery_decision(
-            row,
-            summary.get("global_block_reasons") or [],
-        )
+    rows = _p285_saved_candidate_rows(active_scan, limit=lim)
+    rows = [_p287_normalized_target_path_recovery(row, summary.get("global_block_reasons") or []) for row in rows]
 
     recovered = [r for r in rows if bool((r.get("target_path_recovery") or {}).get("applies"))]
     target_path_passed = [
@@ -31255,16 +31389,116 @@ def diagnostics_target_path_recovery_mode(request: Request, limit: int = 25):
                 "rank_score": r.get("rank_score"),
                 "target_path_score": (r.get("target_path_profit") or {}).get("score"),
                 "target_path_passed": bool((r.get("target_path_profit") or {}).get("passed")),
+                "target_path_recovery_mode": bool(r.get("target_path_recovery_mode")),
                 "rejection_reasons": list(r.get("rejection_reasons") or []),
                 "target_path_recovery": dict(r.get("target_path_recovery") or {}),
             }
-            for r in rows[:max(1, min(int(limit or 25), 100))]
+            for r in rows[:lim]
         ],
         "recommended_action": (
             "allow_recovered_target_path_entries"
             if recovered
             else "wait_for_target_path_recovery_candidate"
         ),
+    })
+
+@app.get("/diagnostics/market_open_selection_audit")
+def diagnostics_market_open_selection_audit(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    lim = max(5, min(int(limit or 25), 100))
+    active_scan = _p285_saved_truth_scan(limit=lim)
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    rows = _p285_saved_candidate_rows(active_scan, limit=lim)
+    rows = [_p287_normalized_target_path_recovery(row, summary.get("global_block_reasons") or []) for row in rows]
+    rows.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    blockers = _diagnostics_swing_blockers()
+    selected_symbols = [str(s or "").upper() for s in list(summary.get("selected_symbols") or []) if str(s or "").strip()]
+    eligible_rows = [row for row in rows if bool(row.get("eligible"))]
+    target_path_rows = [
+        row for row in rows
+        if bool((row.get("target_path_profit") or {}).get("passed"))
+    ]
+    recovered_rows = [
+        row for row in rows
+        if bool((row.get("target_path_recovery") or {}).get("applies"))
+    ]
+
+    market_open = bool(in_market_hours())
+    market_hours_required = bool((blockers or {}).get("market_hours_required", True))
+    blocked_by_market_hours = bool((blockers or {}).get("blocked_by_market_hours"))
+
+    if selected_symbols:
+        selection_status = "selected"
+        recommended_action = "monitor_order_submission_and_fills"
+    elif not market_open and market_hours_required:
+        selection_status = "waiting_for_market_open"
+        recommended_action = "rerun_during_regular_market_hours"
+    elif not eligible_rows:
+        selection_status = "no_eligible_candidates"
+        recommended_action = "wait_for_candidate_or_review_gates"
+    elif target_path_rows or recovered_rows:
+        selection_status = "eligible_profit_candidate_not_selected"
+        recommended_action = "inspect_submission_path_capacity_and_global_blocks"
+    else:
+        selection_status = "eligible_non_target_candidate_available"
+        recommended_action = "inspect_strategy_priority_and_candidate_sort"
+
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "market_open_selection_audit",
+        "read_only": True,
+        "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
+        "market": {
+            "market_open_now": market_open,
+            "market_hours_required": market_hours_required,
+            "blocked_by_market_hours": blocked_by_market_hours,
+            "last_scan_ts": (blockers or {}).get("last_scan_ts"),
+            "last_scan_reason": (blockers or {}).get("last_scan_reason"),
+        },
+        "selection": {
+            "status": selection_status,
+            "selected_total": int(summary.get("selected_total") or 0),
+            "selected_symbols": selected_symbols,
+            "eligible_count": len(eligible_rows),
+            "eligible_symbols": [str(row.get("symbol") or "").upper() for row in eligible_rows if row.get("symbol")],
+            "target_path_pass_count": len(target_path_rows),
+            "target_path_pass_symbols": [str(row.get("symbol") or "").upper() for row in target_path_rows if row.get("symbol")],
+            "recovered_count": len(recovered_rows),
+            "recovered_symbols": [str(row.get("symbol") or "").upper() for row in recovered_rows if row.get("symbol")],
+        },
+        "capacity": {
+            "remaining_new_entries_today": int((blockers or {}).get("remaining_new_entries_today") or 0),
+            "blocked_by_entry_cap": bool((blockers or {}).get("blocked_by_entry_cap")),
+            "blocked_by_portfolio_cap": bool((blockers or {}).get("blocked_by_portfolio_cap")),
+            "portfolio_exposure": (blockers or {}).get("portfolio_exposure"),
+            "portfolio_exposure_cap": (blockers or {}).get("portfolio_exposure_cap"),
+        },
+        "global_blocks": {
+            "daily_halt_active": bool((today_pnl_truth_snapshot() or {}).get("daily_halt_active")),
+            "blocked_by_weak_regime": bool((blockers or {}).get("blocked_by_weak_regime")),
+            "blocked_by_defensive_daily_breakout_rollback": bool((blockers or {}).get("blocked_by_defensive_daily_breakout_rollback")),
+            "blocked_by_post_change_drawdown": bool((blockers or {}).get("blocked_by_post_change_drawdown")),
+            "blockers": blockers,
+        },
+        "top": [
+            {
+                "symbol": row.get("symbol"),
+                "eligible": bool(row.get("eligible")),
+                "selected": bool(row.get("selected")),
+                "rank_score": row.get("rank_score"),
+                "selection_quality_score": row.get("selection_quality_score"),
+                "target_path_score": (row.get("target_path_profit") or {}).get("score"),
+                "target_path_passed": bool((row.get("target_path_profit") or {}).get("passed")),
+                "target_path_recovery_mode": bool(row.get("target_path_recovery_mode")),
+                "target_path_recovery": row.get("target_path_recovery"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+                "selection_blockers": list(row.get("selection_blockers") or []),
+            }
+            for row in rows[:lim]
+        ],
+        "recommended_action": recommended_action,
     })
 
 @app.get("/diagnostics/stall_exit_tuning_monitor")
