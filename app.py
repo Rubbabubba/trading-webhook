@@ -32127,10 +32127,12 @@ def _p270_intraday_gate_metrics(paper: dict | None, proof: dict | None) -> dict:
         else quality_truth.get("settled_positive_rate"),
         0.0,
     )
-    stop_hit_rate = _safe_float(gate.get("stop_hit_rate"), None)
-    if stop_hit_rate is None:
+    raw_stop_hit_rate = gate.get("stop_hit_rate")
+    if raw_stop_hit_rate is None:
         stop_hit_count = int(gate.get("stop_hit_count") or 0)
         stop_hit_rate = round(stop_hit_count / max(1, settled_count), 4) if settled_count else 0.0
+    else:
+        stop_hit_rate = _safe_float(raw_stop_hit_rate, 0.0)
 
     return {
         "required_scenario": required,
