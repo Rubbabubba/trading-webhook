@@ -1700,6 +1700,35 @@ INTRADAY_PROFIT_ENGINE_MAX_STOP_HIT_RATE = getenv_float_any(
     "INTRADAY_PROFIT_ENGINE_MAX_STOP_HIT_RATE",
     default=0.25,
 )
+INTRADAY_SCENARIO_RECONCILE_PAPER_WEIGHT = getenv_float_any(
+    "INTRADAY_SCENARIO_RECONCILE_PAPER_WEIGHT",
+    default=0.45,
+)
+INTRADAY_SCENARIO_RECONCILE_REPLAY_WEIGHT = getenv_float_any(
+    "INTRADAY_SCENARIO_RECONCILE_REPLAY_WEIGHT",
+    default=0.55,
+)
+INTRADAY_SMALL_SAMPLE_MIN_TRADES = getenv_int_any(
+    "INTRADAY_SMALL_SAMPLE_MIN_TRADES",
+    default=5,
+)
+INTRADAY_SMALL_SAMPLE_MIN_AVG_R = getenv_float_any(
+    "INTRADAY_SMALL_SAMPLE_MIN_AVG_R",
+    default=0.45,
+)
+INTRADAY_SMALL_SAMPLE_MIN_WIN_RATE = getenv_float_any(
+    "INTRADAY_SMALL_SAMPLE_MIN_WIN_RATE",
+    default=0.55,
+)
+INTRADAY_SMALL_SAMPLE_MAX_STOP_HIT_RATE = getenv_float_any(
+    "INTRADAY_SMALL_SAMPLE_MAX_STOP_HIT_RATE",
+    default=0.30,
+)
+INTRADAY_SMALL_SAMPLE_REQUIRED_NEXT_SETTLED = getenv_int_any(
+    "INTRADAY_SMALL_SAMPLE_REQUIRED_NEXT_SETTLED",
+    default=5,
+)
+
 SCANNER_LOOKBACK_DAYS = int(getenv_any("SCANNER_LOOKBACK_DAYS", default="3"))
 SCANNER_REQUIRE_MARKET_HOURS = env_bool("SCANNER_REQUIRE_MARKET_HOURS", "true")
 SCANNER_PRIMARY_STRATEGY = getenv_any("SCANNER_PRIMARY_STRATEGY", default=("daily_breakout" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "vwap_pullback")).strip().lower()
@@ -1841,7 +1870,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-287-target-path-recovery-truth-normalization-market-open-selection-audit"
+PATCH_VERSION = "patch-288-intraday-scenario-promotion-reconciliation-small-sample-expansion-lab"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -32563,6 +32592,167 @@ def _p271_profit_row_metrics(row: dict | None) -> dict:
         "profit_engine_score": round(score, 4),
     }
 
+def _p288_intraday_small_sample_assessment(metrics: dict | None) -> dict:
+    m = dict(metrics or {})
+    count = int(m.get("count") or 0)
+    avg_r = _safe_float(m.get("avg_r") or 0.0)
+    win_rate = _safe_float(m.get("win_rate") or 0.0)
+    stop_hit_rate = _safe_float(m.get("stop_hit_rate") or 0.0)
+
+    blockers = []
+    if count < int(INTRADAY_SMALL_SAMPLE_MIN_TRADES):
+        blockers.append("small_sample_count_below_min")
+    if avg_r < float(INTRADAY_SMALL_SAMPLE_MIN_AVG_R):
+        blockers.append("small_sample_avg_r_below_min")
+    if win_rate < float(INTRADAY_SMALL_SAMPLE_MIN_WIN_RATE):
+        blockers.append("small_sample_win_rate_below_min")
+    if stop_hit_rate > float(INTRADAY_SMALL_SAMPLE_MAX_STOP_HIT_RATE):
+        blockers.append("small_sample_stop_hit_rate_above_max")
+
+    expansion_needed = max(0, int(INTRADAY_PROFIT_ENGINE_MIN_TRADES) - count)
+    next_settled_needed = max(int(INTRADAY_SMALL_SAMPLE_REQUIRED_NEXT_SETTLED), expansion_needed)
+
+    return {
+        "count": count,
+        "avg_r": round(avg_r, 4),
+        "win_rate": round(win_rate, 4),
+        "stop_hit_rate": round(stop_hit_rate, 4),
+        "small_sample_promising": not blockers,
+        "blockers": blockers,
+        "next_settled_needed": next_settled_needed,
+        "full_profit_gate_min_trades": int(INTRADAY_PROFIT_ENGINE_MIN_TRADES),
+    }
+
+
+def _p288_intraday_scenario_promotion_reconciliation(
+    tournament: dict | None,
+    scenario_rows: list[dict] | None,
+    current_scenario: str | None = None,
+) -> dict:
+    tournament = dict(tournament or {})
+    rows = [dict(r or {}) for r in list(scenario_rows or []) if isinstance(r, dict)]
+
+    by_name = {
+        str(r.get("scenario") or "").strip().lower(): r
+        for r in rows
+        if str(r.get("scenario") or "").strip()
+    }
+
+    tournament_name = str(tournament.get("recommended_scenario") or "").strip().lower()
+    tournament_ready = bool(tournament.get("recommended_ready"))
+    tournament_row = by_name.get(tournament_name) or {}
+
+    profit_row = rows[0] if rows else {}
+    profit_name = str(profit_row.get("scenario") or "").strip().lower()
+    profit_metrics = dict(profit_row.get("replay") or profit_row.get("paper") or {})
+    small_sample = _p288_intraday_small_sample_assessment(profit_metrics)
+
+    paper_weight = float(INTRADAY_SCENARIO_RECONCILE_PAPER_WEIGHT)
+    replay_weight = float(INTRADAY_SCENARIO_RECONCILE_REPLAY_WEIGHT)
+    weight_total = paper_weight + replay_weight
+    if weight_total <= 0:
+        paper_weight = 0.45
+        replay_weight = 0.55
+        weight_total = 1.0
+
+    reconciled = profit_name or tournament_name or str(current_scenario or "").strip().lower()
+
+    reasons = []
+    if tournament_name and profit_name and tournament_name != profit_name:
+        reasons.append("tournament_profit_lab_disagree")
+    if not tournament_ready:
+        reasons.append("tournament_recommendation_not_ready")
+    if small_sample.get("small_sample_promising"):
+        reasons.append("profit_lab_small_sample_promising")
+    else:
+        reasons.extend(small_sample.get("blockers") or [])
+
+    promote_for_next_paper = bool(
+        reconciled
+        and small_sample.get("small_sample_promising")
+        and not bool(INTRADAY_LIVE_ENABLED)
+    )
+
+    return {
+        "ok": True,
+        "mode": "intraday_scenario_promotion_reconciliation",
+        "current_scenario": str(current_scenario or "").strip().lower(),
+        "tournament_recommended_scenario": tournament_name,
+        "tournament_recommended_ready": tournament_ready,
+        "profit_engine_best_scenario": profit_name,
+        "reconciled_next_paper_scenario": reconciled,
+        "promote_for_next_paper": promote_for_next_paper,
+        "keep_intraday_live_disabled": True,
+        "reason_codes": sorted(set(str(r) for r in reasons if str(r or "").strip())),
+        "weights": {
+            "paper": round(paper_weight / weight_total, 4),
+            "replay": round(replay_weight / weight_total, 4),
+        },
+        "small_sample_assessment": small_sample,
+        "recommended_env": {
+            "INTRADAY_LIVE_ENABLED": "false",
+            "CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED": "false",
+            "INTRADAY_QUALITY_ACTIVE_SCENARIO": reconciled,
+            "INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO": reconciled,
+            "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": reconciled,
+            "CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS": "1",
+            "CONCURRENT_INTRADAY_MAX_DAILY_TRADES": "1",
+        } if reconciled else {},
+    }
+
+
+def _p288_intraday_small_sample_expansion_lab(scenario_rows: list[dict] | None) -> dict:
+    rows = []
+    for row in list(scenario_rows or []):
+        if not isinstance(row, dict):
+            continue
+        scenario = str(row.get("scenario") or "").strip().lower()
+        metrics = dict(row.get("replay") or row.get("paper") or {})
+        assessment = _p288_intraday_small_sample_assessment(metrics)
+        if assessment.get("small_sample_promising") or int(metrics.get("count") or 0) > 0:
+            rows.append({
+                "scenario": scenario,
+                "combined_score": row.get("combined_score"),
+                "recommended_for_live_lab": bool(row.get("recommended_for_live_lab")),
+                "paper": row.get("paper") or {},
+                "replay": row.get("replay") or {},
+                "small_sample_assessment": assessment,
+                "expected_dollars": row.get("expected_dollars") or {},
+                "config": row.get("config") or {},
+            })
+
+    rows.sort(
+        key=lambda r: (
+            bool((r.get("small_sample_assessment") or {}).get("small_sample_promising")),
+            _safe_float(r.get("combined_score") or 0.0),
+            _safe_float(((r.get("replay") or {}).get("avg_r")) or 0.0),
+            _safe_float(((r.get("replay") or {}).get("win_rate")) or 0.0),
+            -_safe_float(((r.get("replay") or {}).get("stop_hit_rate")) or 0.0),
+        ),
+        reverse=True,
+    )
+
+    best = rows[0] if rows else {}
+    return {
+        "ok": True,
+        "mode": "intraday_small_sample_expansion_lab",
+        "read_only": True,
+        "thresholds": {
+            "small_sample_min_trades": int(INTRADAY_SMALL_SAMPLE_MIN_TRADES),
+            "small_sample_min_avg_r": float(INTRADAY_SMALL_SAMPLE_MIN_AVG_R),
+            "small_sample_min_win_rate": float(INTRADAY_SMALL_SAMPLE_MIN_WIN_RATE),
+            "small_sample_max_stop_hit_rate": float(INTRADAY_SMALL_SAMPLE_MAX_STOP_HIT_RATE),
+            "required_next_settled": int(INTRADAY_SMALL_SAMPLE_REQUIRED_NEXT_SETTLED),
+            "full_profit_gate_min_trades": int(INTRADAY_PROFIT_ENGINE_MIN_TRADES),
+        },
+        "best_small_sample": best,
+        "rows": rows[:20],
+        "recommended_action": (
+            "promote_best_small_sample_to_next_paper_run"
+            if bool((best.get("small_sample_assessment") or {}).get("small_sample_promising"))
+            else "continue_shadow_collection_no_live"
+        ),
+    }
 
 def _p271_expected_dollars(avg_r: float, risk_dollars: list[float], daily_targets: list[float]) -> dict:
     rows = []
@@ -32709,7 +32899,13 @@ def _p271_intraday_profit_engine_lab(
 
     best = scenario_rows[0] if scenario_rows else {}
     live_blockers = list(concurrent.get("blockers") or [])
-    recommended_env = {
+    promotion_reconciliation = _p288_intraday_scenario_promotion_reconciliation(
+        tournament=tournament,
+        scenario_rows=scenario_rows,
+        current_scenario=str(INTRADAY_QUALITY_ACTIVE_SCENARIO or ""),
+    )
+    small_sample_expansion_lab = _p288_intraday_small_sample_expansion_lab(scenario_rows)
+    recommended_env = dict(promotion_reconciliation.get("recommended_env") or {
         "INTRADAY_LIVE_ENABLED": "false",
         "CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED": "false",
         "INTRADAY_QUALITY_ACTIVE_SCENARIO": str(best.get("scenario") or INTRADAY_QUALITY_ACTIVE_SCENARIO or ""),
@@ -32717,7 +32913,7 @@ def _p271_intraday_profit_engine_lab(
         "INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO": str(best.get("scenario") or INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO or ""),
         "CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS": "1",
         "CONCURRENT_INTRADAY_MAX_DAILY_TRADES": "1",
-    }
+    })
 
     return {
         "ok": True,
@@ -32743,6 +32939,8 @@ def _p271_intraday_profit_engine_lab(
             "profitability_gate": concurrent.get("profitability_gate") or {},
         },
         "best_scenario": best,
+        "scenario_promotion_reconciliation": promotion_reconciliation,
+        "small_sample_expansion_lab": small_sample_expansion_lab,
         "scenario_rankings": scenario_rows[:20],
         "selectors": {
             "replay_time": time_selector[:10],
@@ -33895,6 +34093,62 @@ def diagnostics_intraday_launch_readiness(request: Request):
 def diagnostics_concurrent_intraday_live_readiness(request: Request, detail: str = "summary"):
     require_admin_if_configured(request)
     return _p270_concurrent_intraday_micro_live_readiness(detail=detail)
+
+@app.get("/diagnostics/intraday_scenario_promotion_reconciliation")
+def diagnostics_intraday_scenario_promotion_reconciliation(
+    request: Request,
+    symbols: str = "",
+    lookback_days: int = 30,
+    limit_per_symbol: int = 12000,
+    max_trades_per_symbol_session: int = 1,
+):
+    require_admin_if_configured(request)
+    lab = _p271_intraday_profit_engine_lab(
+        symbols=symbols,
+        lookback_days=int(lookback_days or 30),
+        limit_per_symbol=int(limit_per_symbol or 12000),
+        max_trades_per_symbol_session=int(max_trades_per_symbol_session or 1),
+    )
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "intraday_scenario_promotion_reconciliation",
+        "read_only": True,
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "reconciliation": lab.get("scenario_promotion_reconciliation") or {},
+        "recommended_env_for_next_paper_run": lab.get("recommended_env_for_next_paper_run") or {},
+        "operator_read": {
+            "live_decision": "keep_intraday_live_disabled",
+            "next_step": "run the reconciled scenario in paper/shadow until full proof gates clear",
+        },
+    })
+
+
+@app.get("/diagnostics/intraday_small_sample_expansion_lab")
+def diagnostics_intraday_small_sample_expansion_lab(
+    request: Request,
+    symbols: str = "",
+    lookback_days: int = 30,
+    limit_per_symbol: int = 12000,
+    max_trades_per_symbol_session: int = 1,
+):
+    require_admin_if_configured(request)
+    lab = _p271_intraday_profit_engine_lab(
+        symbols=symbols,
+        lookback_days=int(lookback_days or 30),
+        limit_per_symbol=int(limit_per_symbol or 12000),
+        max_trades_per_symbol_session=int(max_trades_per_symbol_session or 1),
+    )
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "intraday_small_sample_expansion_lab",
+        "read_only": True,
+        "small_sample_expansion_lab": lab.get("small_sample_expansion_lab") or {},
+        "recommended_env_for_next_paper_run": lab.get("recommended_env_for_next_paper_run") or {},
+    })
 
 @app.get("/diagnostics/intraday_profit_engine_lab")
 def diagnostics_intraday_profit_engine_lab(
