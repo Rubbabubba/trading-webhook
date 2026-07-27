@@ -22652,8 +22652,23 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
     target_path_approved = [
         r for r in breakout_approved
         if bool((r.get("target_path_profit") or {}).get("passed"))
-        and float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
+        and (
+            float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
+            or bool(r.get("risk_adjusted_near_miss_entry"))
+        )
     ]
+
+    risk_adjusted_near_miss_approved = [
+        r for r in target_path_approved
+        if bool(r.get("risk_adjusted_near_miss_entry"))
+    ]
+    if risk_adjusted_near_miss_approved:
+        regular_target_path_approved = [
+            r for r in target_path_approved
+            if not bool(r.get("risk_adjusted_near_miss_entry"))
+        ]
+        risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        target_path_approved = regular_target_path_approved + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
     target_path_strong = [
         r for r in target_path_approved
         if float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
