@@ -995,6 +995,36 @@ SWING_PROFIT_MODEL_DAILY_TARGET_HIGH = getenv_float_any(
     default=200.0,
 )
 
+# Patch 292 - First-$2K similarity revival / exploratory entry
+SWING_FIRST_2K_SIMILARITY_REVIVAL_ENABLED = env_bool_any(
+    "SWING_FIRST_2K_SIMILARITY_REVIVAL_ENABLED",
+    default=True,
+)
+SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_SCORE = getenv_float_any(
+    "SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_SCORE",
+    default=52.0,
+)
+SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_RANK_SCORE",
+    default=108.0,
+)
+SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_RISK_PER_SHARE_PCT",
+    default=0.12,
+)
+SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN",
+    default=1,
+)
+SWING_FIRST_2K_SIMILARITY_REVIVAL_RISK_MULTIPLIER = getenv_float_any(
+    "SWING_FIRST_2K_SIMILARITY_REVIVAL_RISK_MULTIPLIER",
+    default=0.50,
+)
+SWING_FIRST_2K_SIMILARITY_REVIVAL_REQUIRE_NO_TARGET_WINS = env_bool_any(
+    "SWING_FIRST_2K_SIMILARITY_REVIVAL_REQUIRE_NO_TARGET_WINS",
+    default=True,
+)
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1951,7 +1981,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-291-swing-profit-model-reset-first-2k-revival-sleeve-risk-adjusted-entry-sizer"
+PATCH_VERSION = "patch-292-first-2k-similarity-revival-reduced-risk-exploratory-entry-gate"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -9428,6 +9458,111 @@ def _p291_first_2k_revival_decision(candidate: dict | None, global_block_reasons
         "original_rejection_reasons": reasons,
     }
 
+def _p292_first_2k_similarity_revival_decision(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    reasons = [str(r) for r in list(c.get("rejection_reasons") or []) if str(r)]
+    blockers = set(reasons)
+    global_reasons = {str(r) for r in list(global_block_reasons or []) if str(r)}
+    target_path = dict(c.get("target_path_profit") or {})
+    gate = dict(c.get("target_profile_breakout_gate") or {})
+    gate_blockers = {str(r) for r in list(gate.get("blockers") or []) if str(r)}
+    strategy = str(c.get("strategy") or "").strip().lower()
+    symbol = str(c.get("symbol") or "").strip().upper()
+
+    score = float(_safe_float(target_path.get("score")))
+    rank_score = float(_safe_float(c.get("rank_score")))
+    risk_per_share_pct = float(_safe_float(c.get("risk_per_share_pct"))) / 100.0
+    target_wins = int((target_path.get("target_wins") if target_path.get("target_wins") is not None else _p283_target_symbol_win_count(symbol)) or 0)
+
+    hard_blockers = {
+        "daily_halt_active",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+        "swing_loss_day_entry_throttle",
+        "same_day_symbol_loss_cooldown",
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "strategy_kill_switch_active",
+        "correlation_group_limit",
+        "symbol_exposure_limit",
+        "portfolio_exposure_limit",
+        "swing_post_change_drawdown_circuit",
+        "insufficient_buying_power",
+    }
+    hard_present = sorted([r for r in blockers.union(global_reasons) if r in hard_blockers])
+
+    acceptable_reasons = {
+        "target_profile_breakout_gate",
+        "defensive_daily_breakout_rollback",
+        "defensive_risk_per_share_too_wide",
+        "weak_tape",
+    }
+    unacceptable_reasons = sorted([r for r in blockers if r not in acceptable_reasons])
+
+    allowed_gate_blockers = {"risk_per_share"}
+    disallowed_gate_blockers = sorted([r for r in gate_blockers if r not in allowed_gate_blockers])
+
+    require_no_target_wins = bool(SWING_FIRST_2K_SIMILARITY_REVIVAL_REQUIRE_NO_TARGET_WINS)
+    target_history_ok = bool(target_wins == 0 if require_no_target_wins else True)
+
+    applies = bool(
+        SWING_FIRST_2K_SIMILARITY_REVIVAL_ENABLED
+        and strategy in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+        and target_history_ok
+        and score >= float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_SCORE)
+        and rank_score >= float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_RANK_SCORE)
+        and risk_per_share_pct <= float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_RISK_PER_SHARE_PCT)
+        and "risk_per_share" in gate_blockers
+        and not hard_present
+        and not unacceptable_reasons
+        and not disallowed_gate_blockers
+    )
+
+    if applies:
+        reason = "first_2k_similarity_revival_applied"
+    elif not bool(SWING_FIRST_2K_SIMILARITY_REVIVAL_ENABLED):
+        reason = "first_2k_similarity_revival_disabled"
+    elif strategy not in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}:
+        reason = "not_daily_breakout"
+    elif not target_history_ok:
+        reason = "target_wins_present_use_revival_or_target_path_instead"
+    elif score < float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_SCORE):
+        reason = "target_path_score_below_similarity_min"
+    elif rank_score < float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_RANK_SCORE):
+        reason = "rank_score_below_similarity_min"
+    elif "risk_per_share" not in gate_blockers:
+        reason = "risk_per_share_not_gate_blocker"
+    elif risk_per_share_pct > float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_RISK_PER_SHARE_PCT):
+        reason = "risk_per_share_above_similarity_cap"
+    elif hard_present:
+        reason = "hard_blocker_present"
+    elif unacceptable_reasons:
+        reason = "unacceptable_rejection_reasons_present"
+    elif disallowed_gate_blockers:
+        reason = "disallowed_gate_blockers_present"
+    else:
+        reason = "not_recovered"
+
+    return {
+        "enabled": bool(SWING_FIRST_2K_SIMILARITY_REVIVAL_ENABLED),
+        "applies": applies,
+        "reason": reason,
+        "symbol": symbol,
+        "score": round(score, 4),
+        "min_score": float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_SCORE),
+        "rank_score": round(rank_score, 4),
+        "min_rank_score": float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MIN_RANK_SCORE),
+        "target_wins": int(target_wins),
+        "require_no_target_wins": bool(require_no_target_wins),
+        "risk_per_share_pct": round(risk_per_share_pct, 5),
+        "max_risk_per_share_pct": float(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_RISK_PER_SHARE_PCT),
+        "gate_blockers": sorted(gate_blockers),
+        "hard_blockers": hard_present,
+        "unacceptable_rejection_reasons": unacceptable_reasons,
+        "disallowed_gate_blockers": disallowed_gate_blockers,
+        "original_rejection_reasons": reasons,
+        "risk_multiplier": float(SWING_FIRST_2K_SIMILARITY_REVIVAL_RISK_MULTIPLIER),
+    }
 
 def _p291_profit_model_reset_lab(rows: list | None = None, summary: dict | None = None) -> dict:
     source_rows = [dict(r) for r in list(rows or []) if isinstance(r, dict)]
@@ -9458,6 +9593,11 @@ def _p291_profit_model_reset_lab(rows: list | None = None, summary: dict | None 
         r for r in target_rows
         if bool(r.get("risk_adjusted_near_miss_entry"))
     ]
+    similarity_rows = [
+        r for r in target_rows
+        if bool((r.get("first_2k_similarity_revival") or {}).get("applies"))
+        or bool(r.get("first_2k_similarity_revival_entry"))
+    ]
 
     return {
         "enabled": True,
@@ -9470,9 +9610,11 @@ def _p291_profit_model_reset_lab(rows: list | None = None, summary: dict | None 
             "target_path_passed": sum(1 for r in target_rows if bool((r.get("target_path_profit") or {}).get("passed"))),
             "risk_adjusted_near_miss": len(risk_adjusted_rows),
             "first_2k_revival": len(revival_rows),
+            "first_2k_similarity_revival": len(similarity_rows),
             "selected_total": int((summary or {}).get("selected_total") or 0),
         },
         "first_2k_revival_symbols": [r.get("symbol") for r in revival_rows],
+        "first_2k_similarity_revival_symbols": [r.get("symbol") for r in similarity_rows],
         "risk_adjusted_symbols": [r.get("symbol") for r in risk_adjusted_rows],
         "assessment": (
             "current_risk_can_reach_daily_target_only_with_multiple_winners"
@@ -9579,10 +9721,44 @@ def _p286_apply_target_path_recovery(candidate: dict | None, global_block_reason
         c["target_path_score"] = target_path.get("score")
         c = _p291_apply_risk_adjusted_entry_sizing(
             c,
-            sleeve="risk_adjusted_near_miss",
+            sleeve="first_2k_revival",
             risk_multiplier=SWING_FIRST_2K_REVIVAL_RISK_MULTIPLIER,
         )
         return c
+
+    similarity = _p292_first_2k_similarity_revival_decision(c, global_block_reasons or [])
+    c["first_2k_similarity_revival"] = similarity
+    if similarity.get("applies"):
+        removable = {
+            "target_profile_breakout_gate",
+            "defensive_daily_breakout_rollback",
+            "defensive_risk_per_share_too_wide",
+            "weak_tape",
+        }
+        reasons = [
+            str(r) for r in list(c.get("rejection_reasons") or [])
+            if str(r) and str(r) not in removable
+        ]
+        c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+        c["eligible"] = len(c["rejection_reasons"]) == 0
+        c["target_path_recovery_mode"] = True
+        c["weak_tape_target_override"] = True
+        c["first_2k_similarity_revival_entry"] = True
+        c["entry_type"] = "first_2k_similarity_revival"
+        c["recovered_from_reasons"] = list(similarity.get("original_rejection_reasons") or [])
+        target_path = dict(c.get("target_path_profit") or {})
+        target_path["first_2k_similarity_revival"] = True
+        target_path["passed"] = True
+        target_path["tier"] = "first_2k_similarity_revival"
+        target_path["reason"] = "first_2k_similarity_revival_profile_passed"
+        c["target_path_profit"] = target_path
+        c["target_path_score"] = target_path.get("score")
+        c = _p291_apply_risk_adjusted_entry_sizing(
+            c,
+            sleeve="first_2k_similarity_revival",
+            risk_multiplier=SWING_FIRST_2K_SIMILARITY_REVIVAL_RISK_MULTIPLIER,
+        )
+    return c
 
     revival = _p291_first_2k_revival_decision(c, global_block_reasons or [])
     c["first_2k_revival"] = revival
@@ -16348,6 +16524,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         and (
             float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
             or bool(r.get("risk_adjusted_near_miss_entry"))
+            or bool(r.get("first_2k_revival_entry"))
+            or bool(r.get("first_2k_similarity_revival_entry"))
         )
     ]
 
@@ -16359,18 +16537,25 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         r for r in target_path_approved
         if bool(r.get("first_2k_revival_entry"))
     ]
-    if risk_adjusted_near_miss_approved or first_2k_revival_approved:
+    first_2k_similarity_revival_approved = [
+        r for r in target_path_approved
+        if bool(r.get("first_2k_similarity_revival_entry"))
+    ]
+    if risk_adjusted_near_miss_approved or first_2k_revival_approved or first_2k_similarity_revival_approved:
         regular_target_path_approved = [
             r for r in target_path_approved
             if not bool(r.get("risk_adjusted_near_miss_entry"))
             and not bool(r.get("first_2k_revival_entry"))
+            and not bool(r.get("first_2k_similarity_revival_entry"))
         ]
         risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        first_2k_similarity_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         target_path_approved = (
             regular_target_path_approved
             + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
             + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
+            + first_2k_similarity_revival_approved[:max(0, int(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
         )
     target_path_strong = [
         c for c in target_path_approved
@@ -22943,6 +23128,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         and (
             float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
             or bool(r.get("risk_adjusted_near_miss_entry"))
+            or bool(r.get("first_2k_revival_entry"))
+            or bool(r.get("first_2k_similarity_revival_entry"))
         )
     ]
 
@@ -22954,18 +23141,25 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         r for r in target_path_approved
         if bool(r.get("first_2k_revival_entry"))
     ]
-    if risk_adjusted_near_miss_approved or first_2k_revival_approved:
+    first_2k_similarity_revival_approved = [
+        r for r in target_path_approved
+        if bool(r.get("first_2k_similarity_revival_entry"))
+    ]
+    if risk_adjusted_near_miss_approved or first_2k_revival_approved or first_2k_similarity_revival_approved:
         regular_target_path_approved = [
             r for r in target_path_approved
             if not bool(r.get("risk_adjusted_near_miss_entry"))
             and not bool(r.get("first_2k_revival_entry"))
+            and not bool(r.get("first_2k_similarity_revival_entry"))
         ]
         risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        first_2k_similarity_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         target_path_approved = (
             regular_target_path_approved
             + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
             + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
+            + first_2k_similarity_revival_approved[:max(0, int(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
         )
     target_path_strong = [
         r for r in target_path_approved
@@ -23063,6 +23257,9 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "first_2k_revival_enabled": bool(SWING_FIRST_2K_REVIVAL_ENABLED),
             "first_2k_revival_count": sum(1 for r in rows if bool(r.get("first_2k_revival_entry"))),
             "first_2k_revival_symbols": [r.get("symbol") for r in rows if bool(r.get("first_2k_revival_entry"))],
+            "first_2k_similarity_revival_enabled": bool(SWING_FIRST_2K_SIMILARITY_REVIVAL_ENABLED),
+            "first_2k_similarity_revival_count": sum(1 for r in rows if bool(r.get("first_2k_similarity_revival_entry"))),
+            "first_2k_similarity_revival_symbols": [r.get("symbol") for r in rows if bool(r.get("first_2k_similarity_revival_entry"))],
         },
         "target_path_profit_engine": {
             "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
@@ -23076,6 +23273,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "risk_adjusted_near_miss_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("risk_adjusted_near_miss_entry"))],
             "first_2k_revival_approved_count": len([r for r in target_path_approved if bool(r.get("first_2k_revival_entry"))]),
             "first_2k_revival_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("first_2k_revival_entry"))],
+            "first_2k_similarity_revival_approved_count": len([r for r in target_path_approved if bool(r.get("first_2k_similarity_revival_entry"))]),
+            "first_2k_similarity_revival_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("first_2k_similarity_revival_entry"))],
             "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
         },
         "target_path_dynamic_entry_cap": {
@@ -23109,6 +23308,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "risk_adjusted_near_miss_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("risk_adjusted_near_miss_entry"))],
             "first_2k_revival_selected_count": len([r for r in selected if bool(r.get("first_2k_revival_entry"))]),
             "first_2k_revival_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("first_2k_revival_entry"))],
+            "first_2k_similarity_revival_selected_count": len([r for r in selected if bool(r.get("first_2k_similarity_revival_entry"))]),
+            "first_2k_similarity_revival_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("first_2k_similarity_revival_entry"))],
             "mean_reversion_eligible_total": len(mean_reversion_approved),
         },
         "portfolio_exposure": round(open_total, 2),
@@ -23675,6 +23876,8 @@ def diagnostics_swing_profit_model_reset(request: Request, limit: int = 25):
                 "target_wins": (row.get("target_path_profit") or {}).get("target_wins"),
                 "first_2k_revival": row.get("first_2k_revival"),
                 "first_2k_revival_entry": bool(row.get("first_2k_revival_entry")),
+                "first_2k_similarity_revival": row.get("first_2k_similarity_revival"),
+                "first_2k_similarity_revival_entry": bool(row.get("first_2k_similarity_revival_entry")),
                 "risk_adjusted_entry_sizer": row.get("risk_adjusted_entry_sizer"),
                 "rejection_reasons": list(row.get("rejection_reasons") or []),
             }
