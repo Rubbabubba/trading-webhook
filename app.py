@@ -957,6 +957,44 @@ SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_REQUIRE_ONLY_RISK_BLOCKER = env_bool_a
     default=True,
 )
 
+# Patch 291 - Swing profit model reset / first-$2K revival sleeve
+SWING_FIRST_2K_REVIVAL_ENABLED = env_bool_any(
+    "SWING_FIRST_2K_REVIVAL_ENABLED",
+    default=True,
+)
+SWING_FIRST_2K_REVIVAL_MIN_SCORE = getenv_float_any(
+    "SWING_FIRST_2K_REVIVAL_MIN_SCORE",
+    default=52.0,
+)
+SWING_FIRST_2K_REVIVAL_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_FIRST_2K_REVIVAL_MIN_RANK_SCORE",
+    default=104.0,
+)
+SWING_FIRST_2K_REVIVAL_MIN_TARGET_WINS = getenv_int_any(
+    "SWING_FIRST_2K_REVIVAL_MIN_TARGET_WINS",
+    default=1,
+)
+SWING_FIRST_2K_REVIVAL_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_FIRST_2K_REVIVAL_MAX_RISK_PER_SHARE_PCT",
+    default=0.12,
+)
+SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN",
+    default=1,
+)
+SWING_FIRST_2K_REVIVAL_RISK_MULTIPLIER = getenv_float_any(
+    "SWING_FIRST_2K_REVIVAL_RISK_MULTIPLIER",
+    default=0.65,
+)
+SWING_PROFIT_MODEL_DAILY_TARGET_LOW = getenv_float_any(
+    "SWING_PROFIT_MODEL_DAILY_TARGET_LOW",
+    default=100.0,
+)
+SWING_PROFIT_MODEL_DAILY_TARGET_HIGH = getenv_float_any(
+    "SWING_PROFIT_MODEL_DAILY_TARGET_HIGH",
+    default=200.0,
+)
+
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1913,7 +1951,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-290-risk-adjusted-target-path-near-miss-entry-profit-winner-profile-revival"
+PATCH_VERSION = "patch-291-swing-profit-model-reset-first-2k-revival-sleeve-risk-adjusted-entry-sizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -9248,6 +9286,202 @@ def _p290_target_path_risk_adjusted_near_miss_decision(candidate: dict | None, g
         "sizing_note": "existing_risk_dollar_qty_sizing_reduces_shares_when_risk_per_share_is_wider",
     }
 
+def _p291_apply_risk_adjusted_entry_sizing(candidate: dict | None, *, sleeve: str, risk_multiplier: float | None = None) -> dict:
+    c = dict(candidate or {})
+    close = float(_safe_float(c.get("close") or c.get("entry") or c.get("last")))
+    risk_per_share = float(_safe_float(c.get("risk_per_share")))
+    multiplier = max(0.05, min(1.0, float(risk_multiplier if risk_multiplier is not None else 1.0)))
+    base_risk = float(RISK_DOLLARS or 0.0)
+    effective_risk = max(0.01, base_risk * multiplier)
+
+    if close <= 0 or risk_per_share <= 0:
+        c["risk_adjusted_entry_sizer"] = {
+            "enabled": True,
+            "applied": False,
+            "sleeve": sleeve,
+            "reason": "missing_close_or_risk_per_share",
+            "base_risk_dollars": round(base_risk, 2),
+            "risk_multiplier": round(multiplier, 4),
+            "effective_risk_dollars": round(effective_risk, 2),
+        }
+        return c
+
+    requested_qty = min(MAX_QTY, max(MIN_QTY, round(effective_risk / max(risk_per_share, 1e-9), 2)))
+    affordable = clip_qty_for_affordability(close, requested_qty)
+    estimated_qty = float(affordable.get("submitted_qty") or 0.0)
+
+    c["requested_qty"] = round(requested_qty, 2)
+    c["estimated_qty"] = round(estimated_qty, 2)
+    c["risk_budget_dollars"] = round(effective_risk, 2)
+    c["risk_adjusted_entry_sizer"] = {
+        "enabled": True,
+        "applied": True,
+        "sleeve": sleeve,
+        "base_risk_dollars": round(base_risk, 2),
+        "risk_multiplier": round(multiplier, 4),
+        "effective_risk_dollars": round(effective_risk, 2),
+        "risk_per_share": round(risk_per_share, 4),
+        "requested_qty": round(requested_qty, 2),
+        "estimated_qty": round(estimated_qty, 2),
+        "notional_estimate": round(estimated_qty * close, 2),
+        "reason": "risk_adjusted_sizing_applied",
+    }
+    return c
+
+
+def _p291_first_2k_revival_decision(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    reasons = [str(r) for r in list(c.get("rejection_reasons") or []) if str(r)]
+    blockers = set(reasons)
+    global_reasons = {str(r) for r in list(global_block_reasons or []) if str(r)}
+    target_path = dict(c.get("target_path_profit") or {})
+    gate = dict(c.get("target_profile_breakout_gate") or {})
+    gate_blockers = {str(r) for r in list(gate.get("blockers") or []) if str(r)}
+    strategy = str(c.get("strategy") or "").strip().lower()
+    symbol = str(c.get("symbol") or "").strip().upper()
+
+    score = float(_safe_float(target_path.get("score")))
+    rank_score = float(_safe_float(c.get("rank_score")))
+    risk_per_share_pct = float(_safe_float(c.get("risk_per_share_pct"))) / 100.0
+    target_wins = int((target_path.get("target_wins") if target_path.get("target_wins") is not None else _p283_target_symbol_win_count(symbol)) or 0)
+
+    hard_blockers = {
+        "daily_halt_active",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+        "swing_loss_day_entry_throttle",
+        "same_day_symbol_loss_cooldown",
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "strategy_kill_switch_active",
+        "correlation_group_limit",
+        "symbol_exposure_limit",
+        "portfolio_exposure_limit",
+        "swing_post_change_drawdown_circuit",
+        "insufficient_buying_power",
+    }
+    hard_present = sorted([r for r in blockers.union(global_reasons) if r in hard_blockers])
+
+    acceptable_reasons = {
+        "target_profile_breakout_gate",
+        "defensive_daily_breakout_rollback",
+        "defensive_risk_per_share_too_wide",
+        "weak_tape",
+    }
+    unacceptable_reasons = sorted([r for r in blockers if r not in acceptable_reasons])
+
+    allowed_gate_blockers = {"risk_per_share", "breakout_distance"}
+    disallowed_gate_blockers = sorted([r for r in gate_blockers if r not in allowed_gate_blockers])
+
+    applies = bool(
+        SWING_FIRST_2K_REVIVAL_ENABLED
+        and strategy in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+        and target_wins >= int(SWING_FIRST_2K_REVIVAL_MIN_TARGET_WINS or 1)
+        and score >= float(SWING_FIRST_2K_REVIVAL_MIN_SCORE)
+        and rank_score >= float(SWING_FIRST_2K_REVIVAL_MIN_RANK_SCORE)
+        and risk_per_share_pct <= float(SWING_FIRST_2K_REVIVAL_MAX_RISK_PER_SHARE_PCT)
+        and not hard_present
+        and not unacceptable_reasons
+        and not disallowed_gate_blockers
+    )
+
+    if applies:
+        reason = "first_2k_revival_sleeve_applied"
+    elif not bool(SWING_FIRST_2K_REVIVAL_ENABLED):
+        reason = "first_2k_revival_disabled"
+    elif strategy not in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}:
+        reason = "not_daily_breakout"
+    elif target_wins < int(SWING_FIRST_2K_REVIVAL_MIN_TARGET_WINS or 1):
+        reason = "target_wins_below_revival_min"
+    elif score < float(SWING_FIRST_2K_REVIVAL_MIN_SCORE):
+        reason = "target_path_score_below_revival_min"
+    elif rank_score < float(SWING_FIRST_2K_REVIVAL_MIN_RANK_SCORE):
+        reason = "rank_score_below_revival_min"
+    elif risk_per_share_pct > float(SWING_FIRST_2K_REVIVAL_MAX_RISK_PER_SHARE_PCT):
+        reason = "risk_per_share_above_revival_cap"
+    elif hard_present:
+        reason = "hard_blocker_present"
+    elif unacceptable_reasons:
+        reason = "unacceptable_rejection_reasons_present"
+    elif disallowed_gate_blockers:
+        reason = "disallowed_gate_blockers_present"
+    else:
+        reason = "not_recovered"
+
+    return {
+        "enabled": bool(SWING_FIRST_2K_REVIVAL_ENABLED),
+        "applies": applies,
+        "reason": reason,
+        "symbol": symbol,
+        "score": round(score, 4),
+        "min_score": float(SWING_FIRST_2K_REVIVAL_MIN_SCORE),
+        "rank_score": round(rank_score, 4),
+        "min_rank_score": float(SWING_FIRST_2K_REVIVAL_MIN_RANK_SCORE),
+        "target_wins": int(target_wins),
+        "min_target_wins": int(SWING_FIRST_2K_REVIVAL_MIN_TARGET_WINS),
+        "risk_per_share_pct": round(risk_per_share_pct, 5),
+        "max_risk_per_share_pct": float(SWING_FIRST_2K_REVIVAL_MAX_RISK_PER_SHARE_PCT),
+        "gate_blockers": sorted(gate_blockers),
+        "hard_blockers": hard_present,
+        "unacceptable_rejection_reasons": unacceptable_reasons,
+        "disallowed_gate_blockers": disallowed_gate_blockers,
+        "original_rejection_reasons": reasons,
+    }
+
+
+def _p291_profit_model_reset_lab(rows: list | None = None, summary: dict | None = None) -> dict:
+    source_rows = [dict(r) for r in list(rows or []) if isinstance(r, dict)]
+    target_rows = [
+        r for r in source_rows
+        if str(r.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    ]
+    scenarios = []
+    current_risk = float(RISK_DOLLARS or 0.0)
+    for risk in [current_risk, 40.0, 50.0, 75.0, 100.0]:
+        if risk <= 0:
+            continue
+        scenarios.append({
+            "risk_dollars": round(risk, 2),
+            "one_r_winner": round(risk, 2),
+            "two_r_winner": round(risk * 2.0, 2),
+            "three_r_winner": round(risk * 3.0, 2),
+            "winners_needed_for_100_at_2r": int(math.ceil(float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW) / max(risk * 2.0, 1e-9))),
+            "winners_needed_for_200_at_2r": int(math.ceil(float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH) / max(risk * 2.0, 1e-9))),
+        })
+
+    revival_rows = [
+        r for r in target_rows
+        if bool((r.get("first_2k_revival") or {}).get("applies"))
+        or bool(r.get("first_2k_revival_entry"))
+    ]
+    risk_adjusted_rows = [
+        r for r in target_rows
+        if bool(r.get("risk_adjusted_near_miss_entry"))
+    ]
+
+    return {
+        "enabled": True,
+        "daily_profit_target_low": float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW),
+        "daily_profit_target_high": float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH),
+        "current_risk_dollars": round(current_risk, 2),
+        "risk_scenarios": scenarios,
+        "candidate_counts": {
+            "target_candidates": len(target_rows),
+            "target_path_passed": sum(1 for r in target_rows if bool((r.get("target_path_profit") or {}).get("passed"))),
+            "risk_adjusted_near_miss": len(risk_adjusted_rows),
+            "first_2k_revival": len(revival_rows),
+            "selected_total": int((summary or {}).get("selected_total") or 0),
+        },
+        "first_2k_revival_symbols": [r.get("symbol") for r in revival_rows],
+        "risk_adjusted_symbols": [r.get("symbol") for r in risk_adjusted_rows],
+        "assessment": (
+            "current_risk_can_reach_daily_target_only_with_multiple_winners"
+            if current_risk and current_risk * 2.0 < float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW)
+            else "current_risk_can_reach_low_target_with_one_two_r_winner"
+        ),
+    }
+
+
 def _p287_normalized_target_path_recovery(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
     c = dict(candidate or {})
     existing = dict(c.get("target_path_recovery") or {})
@@ -9343,6 +9577,45 @@ def _p286_apply_target_path_recovery(candidate: dict | None, global_block_reason
         target_path["reason"] = "risk_adjusted_target_path_near_miss_passed"
         c["target_path_profit"] = target_path
         c["target_path_score"] = target_path.get("score")
+        c = _p291_apply_risk_adjusted_entry_sizing(
+            c,
+            sleeve="risk_adjusted_near_miss",
+            risk_multiplier=SWING_FIRST_2K_REVIVAL_RISK_MULTIPLIER,
+        )
+        return c
+
+    revival = _p291_first_2k_revival_decision(c, global_block_reasons or [])
+    c["first_2k_revival"] = revival
+    if revival.get("applies"):
+        removable = {
+            "target_profile_breakout_gate",
+            "defensive_daily_breakout_rollback",
+            "defensive_risk_per_share_too_wide",
+            "weak_tape",
+        }
+        reasons = [
+            str(r) for r in list(c.get("rejection_reasons") or [])
+            if str(r) and str(r) not in removable
+        ]
+        c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+        c["eligible"] = len(c["rejection_reasons"]) == 0
+        c["target_path_recovery_mode"] = True
+        c["weak_tape_target_override"] = True
+        c["first_2k_revival_entry"] = True
+        c["entry_type"] = "first_2k_revival"
+        c["recovered_from_reasons"] = list(revival.get("original_rejection_reasons") or [])
+        target_path = dict(c.get("target_path_profit") or {})
+        target_path["first_2k_revival"] = True
+        target_path["passed"] = True
+        target_path["tier"] = "first_2k_revival"
+        target_path["reason"] = "first_2k_revival_profit_window_profile_passed"
+        c["target_path_profit"] = target_path
+        c["target_path_score"] = target_path.get("score")
+        c = _p291_apply_risk_adjusted_entry_sizing(
+            c,
+            sleeve="first_2k_revival",
+            risk_multiplier=SWING_FIRST_2K_REVIVAL_RISK_MULTIPLIER,
+        )
     return c
 
 
@@ -9702,6 +9975,11 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
                 summary=summary,
                 limit=lim,
             )
+        ),
+        "profit_model_reset": _p291_profit_model_reset_lab(
+            list(candidates.get("target_path_candidates") or [])
+            + list(candidates.get("mean_reversion_candidates") or []),
+            summary,
         ),
         "thrive_capacity_truth": dict(summary.get("thrive_capacity_truth") or {}),
         "selected": {
@@ -16077,13 +16355,23 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         r for r in target_path_approved
         if bool(r.get("risk_adjusted_near_miss_entry"))
     ]
-    if risk_adjusted_near_miss_approved:
+    first_2k_revival_approved = [
+        r for r in target_path_approved
+        if bool(r.get("first_2k_revival_entry"))
+    ]
+    if risk_adjusted_near_miss_approved or first_2k_revival_approved:
         regular_target_path_approved = [
             r for r in target_path_approved
             if not bool(r.get("risk_adjusted_near_miss_entry"))
+            and not bool(r.get("first_2k_revival_entry"))
         ]
         risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        target_path_approved = regular_target_path_approved + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
+        first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        target_path_approved = (
+            regular_target_path_approved
+            + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
+            + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
+        )
     target_path_strong = [
         c for c in target_path_approved
         if float(_safe_float((c.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
@@ -22662,13 +22950,23 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         r for r in target_path_approved
         if bool(r.get("risk_adjusted_near_miss_entry"))
     ]
-    if risk_adjusted_near_miss_approved:
+    first_2k_revival_approved = [
+        r for r in target_path_approved
+        if bool(r.get("first_2k_revival_entry"))
+    ]
+    if risk_adjusted_near_miss_approved or first_2k_revival_approved:
         regular_target_path_approved = [
             r for r in target_path_approved
             if not bool(r.get("risk_adjusted_near_miss_entry"))
+            and not bool(r.get("first_2k_revival_entry"))
         ]
         risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        target_path_approved = regular_target_path_approved + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
+        first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        target_path_approved = (
+            regular_target_path_approved
+            + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
+            + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
+        )
     target_path_strong = [
         r for r in target_path_approved
         if float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
@@ -22762,6 +23060,9 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "risk_adjusted_near_miss_enabled": bool(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED),
             "risk_adjusted_near_miss_count": sum(1 for r in rows if bool(r.get("risk_adjusted_near_miss_entry"))),
             "risk_adjusted_near_miss_symbols": [r.get("symbol") for r in rows if bool(r.get("risk_adjusted_near_miss_entry"))],
+            "first_2k_revival_enabled": bool(SWING_FIRST_2K_REVIVAL_ENABLED),
+            "first_2k_revival_count": sum(1 for r in rows if bool(r.get("first_2k_revival_entry"))),
+            "first_2k_revival_symbols": [r.get("symbol") for r in rows if bool(r.get("first_2k_revival_entry"))],
         },
         "target_path_profit_engine": {
             "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
@@ -22773,6 +23074,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "target_path_strong_symbols": [r.get("symbol") for r in target_path_strong],
             "risk_adjusted_near_miss_approved_count": len([r for r in target_path_approved if bool(r.get("risk_adjusted_near_miss_entry"))]),
             "risk_adjusted_near_miss_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("risk_adjusted_near_miss_entry"))],
+            "first_2k_revival_approved_count": len([r for r in target_path_approved if bool(r.get("first_2k_revival_entry"))]),
+            "first_2k_revival_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("first_2k_revival_entry"))],
             "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
         },
         "target_path_dynamic_entry_cap": {
@@ -22804,6 +23107,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "target_path_strong_count": len(target_path_strong),
             "risk_adjusted_near_miss_selected_count": len([r for r in selected if bool(r.get("risk_adjusted_near_miss_entry"))]),
             "risk_adjusted_near_miss_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("risk_adjusted_near_miss_entry"))],
+            "first_2k_revival_selected_count": len([r for r in selected if bool(r.get("first_2k_revival_entry"))]),
+            "first_2k_revival_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("first_2k_revival_entry"))],
             "mean_reversion_eligible_total": len(mean_reversion_approved),
         },
         "portfolio_exposure": round(open_total, 2),
@@ -23330,6 +23635,53 @@ def diagnostics_target_path_profit_engine(request: Request, limit: int = 10):
         "recommended_action": recommended_action,
     }
     return JSONResponse(content=payload)
+
+@app.get("/diagnostics/swing_profit_model_reset")
+def diagnostics_swing_profit_model_reset(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    lim = max(5, min(int(limit or 25), 100))
+    active_scan = _p285_saved_truth_scan(limit=lim)
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    rows = _p285_saved_candidate_rows(active_scan, limit=lim)
+    rows = [_p287_normalized_target_path_recovery(row, summary.get("global_block_reasons") or []) for row in rows]
+    rows = [_p286_apply_target_path_recovery(row, summary.get("global_block_reasons") or []) for row in rows]
+    rows.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_profit_model_reset",
+        "read_only": True,
+        "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
+        "profit_model_reset": _p291_profit_model_reset_lab(rows, summary),
+        "config": {
+            "SWING_FIRST_2K_REVIVAL_ENABLED": bool(SWING_FIRST_2K_REVIVAL_ENABLED),
+            "SWING_FIRST_2K_REVIVAL_MIN_SCORE": float(SWING_FIRST_2K_REVIVAL_MIN_SCORE),
+            "SWING_FIRST_2K_REVIVAL_MIN_RANK_SCORE": float(SWING_FIRST_2K_REVIVAL_MIN_RANK_SCORE),
+            "SWING_FIRST_2K_REVIVAL_MIN_TARGET_WINS": int(SWING_FIRST_2K_REVIVAL_MIN_TARGET_WINS),
+            "SWING_FIRST_2K_REVIVAL_MAX_RISK_PER_SHARE_PCT": float(SWING_FIRST_2K_REVIVAL_MAX_RISK_PER_SHARE_PCT),
+            "SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN": int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN),
+            "SWING_FIRST_2K_REVIVAL_RISK_MULTIPLIER": float(SWING_FIRST_2K_REVIVAL_RISK_MULTIPLIER),
+            "SWING_PROFIT_MODEL_DAILY_TARGET_LOW": float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW),
+            "SWING_PROFIT_MODEL_DAILY_TARGET_HIGH": float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH),
+        },
+        "top_candidates": [
+            {
+                "symbol": row.get("symbol"),
+                "eligible": bool(row.get("eligible")),
+                "selected": bool(row.get("selected")),
+                "rank_score": row.get("rank_score"),
+                "target_path_score": (row.get("target_path_profit") or {}).get("score"),
+                "target_wins": (row.get("target_path_profit") or {}).get("target_wins"),
+                "first_2k_revival": row.get("first_2k_revival"),
+                "first_2k_revival_entry": bool(row.get("first_2k_revival_entry")),
+                "risk_adjusted_entry_sizer": row.get("risk_adjusted_entry_sizer"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+            }
+            for row in rows[:lim]
+        ],
+        "recommended_action": "use_profit_model_reset_to_compare_risk_budget_and_revival_sleeve_before_raising_live_risk",
+    })
 
 @app.get("/diagnostics/target_path_opportunity_expansion_lab")
 def diagnostics_target_path_opportunity_expansion_lab(request: Request, limit: int = 15):
