@@ -1615,6 +1615,10 @@ INTRADAY_QUALITY_FILTER_MIN_SETTLED = int(getenv_any("INTRADAY_QUALITY_FILTER_MI
 INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY = env_bool("INTRADAY_QUALITY_REQUIRE_FILTER_PROOF_READY", "true")
 INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO = getenv_any("INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO", default="replay_aligned_paper_pilot").strip().lower()
 INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO = getenv_any("INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO", default=INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO).strip().lower()
+INTRADAY_PROMOTION_SOURCE_OF_TRUTH = getenv_any(
+    "INTRADAY_PROMOTION_SOURCE_OF_TRUTH",
+    default="promoted_env",
+).strip().lower()
 INTRADAY_PAPER_GATE_TOURNAMENT_CANDIDATES = getenv_any(
     "INTRADAY_PAPER_GATE_TOURNAMENT_CANDIDATES",
     default="symbol_allowlist_only,score_100_plus_no_bad_symbols,rank_plus_no_bad_symbols,replay_aligned_rank_132_140,replay_aligned_paper_pilot",
@@ -1632,9 +1636,15 @@ CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED = env_bool_any(
 CONCURRENT_INTRADAY_REQUIRED_QUALITY_SCENARIO = str(
     getenv_any(
         "CONCURRENT_INTRADAY_REQUIRED_QUALITY_SCENARIO",
-        default="rank_plus_no_bad_symbols",
+        default=INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO
+        or INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO
+        or INTRADAY_QUALITY_ACTIVE_SCENARIO
+        or "replay_aligned_paper_pilot",
     )
-    or "rank_plus_no_bad_symbols"
+    or INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO
+    or INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO
+    or INTRADAY_QUALITY_ACTIVE_SCENARIO
+    or "replay_aligned_paper_pilot"
 ).strip().lower()
 CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS = getenv_int_any(
     "CONCURRENT_INTRADAY_MAX_LIVE_POSITIONS",
@@ -1845,6 +1855,10 @@ DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT = env_bool_any("DIAGNOSTIC_BUNDLE_COMPACT_DEFA
 DIAGNOSTIC_BUNDLE_MAX_ROWS = max(1, int(getenv_any("DIAGNOSTIC_BUNDLE_MAX_ROWS", default="10") or 10))
 DIAGNOSTIC_SCANNER_HISTORY_LIMIT = max(0, int(getenv_any("DIAGNOSTIC_SCANNER_HISTORY_LIMIT", default="10") or 10))
 INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK = env_bool_any("INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK", default="true")
+SCANNER_DISPATCH_FAILURE_BLOCK_SEC = getenv_int_any(
+    "SCANNER_DISPATCH_FAILURE_BLOCK_SEC",
+    default=300,
+)
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 
 # Guards in-memory shared state when scan evaluation runs concurrently
@@ -1870,7 +1884,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-288-intraday-scenario-promotion-reconciliation-small-sample-expansion-lab"
+PATCH_VERSION = "patch-289-intraday-promotion-source-of-truth-alignment-dispatch-failure-readiness-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -3102,15 +3116,53 @@ def _p274_scanner_runtime_governor(scanner_payload: dict | None = None) -> dict:
     budget_sec = _safe_float(latest.get("budget_sec"), float(SCAN_RUNTIME_BUDGET_SEC or 0))
     active_warnings = list(summary.get("active_warning_codes") or [])
     runtime_risk = bool(latest.get("runtime_over_timeout_risk") or latest.get("over_budget") or latest.get("near_budget"))
-    blocked = bool(INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK and (runtime_risk or "dispatch_failure" in active_warnings or "partial_run_open" in active_warnings))
+
+    dispatch_warning_active = "dispatch_failure" in active_warnings
+    dispatch_failure_recent = False
+    dispatch_failure_age_sec = None
+    last_failure_dt = _safe_parse_iso_utc(summary.get("last_dispatch_failure_utc"))
+    last_success_dt = _safe_parse_iso_utc(summary.get("last_success_utc") or summary.get("last_scan_success_utc") or summary.get("last_scan_ts"))
+
+    if dispatch_warning_active and last_failure_dt is not None:
+        dispatch_failure_age_sec = max(0.0, (datetime.now(timezone.utc) - last_failure_dt).total_seconds())
+        success_recovered = bool(last_success_dt is not None and last_success_dt >= last_failure_dt)
+        dispatch_failure_recent = bool(
+            not success_recovered
+            and dispatch_failure_age_sec <= max(1, int(SCANNER_DISPATCH_FAILURE_BLOCK_SEC or 300))
+        )
+    elif dispatch_warning_active:
+        dispatch_failure_recent = True
+
+    partial_run_open = "partial_run_open" in active_warnings
+    blocked = bool(
+        INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK
+        and (
+            runtime_risk
+            or dispatch_failure_recent
+            or partial_run_open
+        )
+    )
+
+    if runtime_risk:
+        reason = "scanner_runtime_over_budget_or_unstable"
+    elif dispatch_failure_recent:
+        reason = "recent_unrecovered_dispatch_failure"
+    elif partial_run_open:
+        reason = "partial_scanner_run_open"
+    else:
+        reason = "scanner_runtime_within_budget"
+
     return {
         "ok": True,
         "blocked": blocked,
-        "reason": "scanner_runtime_over_budget_or_unstable" if blocked else "scanner_runtime_within_budget",
+        "reason": reason,
         "duration_sec": duration_sec,
         "budget_sec": budget_sec,
         "runtime_over_timeout_risk": runtime_risk,
         "active_warning_codes": active_warnings,
+        "dispatch_failure_recent": dispatch_failure_recent,
+        "dispatch_failure_age_sec": round(dispatch_failure_age_sec, 2) if dispatch_failure_age_sec is not None else None,
+        "dispatch_failure_block_sec": int(SCANNER_DISPATCH_FAILURE_BLOCK_SEC or 300),
         "worker_status": summary.get("worker_status"),
         "in_flight_run": bool(summary.get("in_flight_run")),
         "block_on_runtime_risk": bool(INTRADAY_LIVE_BLOCK_ON_SCANNER_RUNTIME_RISK),
@@ -18798,11 +18850,32 @@ def _intraday_quality_scenario_configs() -> dict[str, dict]:
         ),
     }
 
+def _intraday_promotion_source_of_truth_scenario(fallback: str | None = None) -> str:
+    source = str(INTRADAY_PROMOTION_SOURCE_OF_TRUTH or "promoted_env").strip().lower()
+    promoted = str(INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO or "").strip().lower()
+    required = str(INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO or "").strip().lower()
+    active = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "").strip().lower()
+    concurrent = str(CONCURRENT_INTRADAY_REQUIRED_QUALITY_SCENARIO or "").strip().lower()
+    fallback_name = str(fallback or "").strip().lower()
+
+    if source in {"required_env", "required"}:
+        ordered = [required, promoted, active, concurrent, fallback_name]
+    elif source in {"active_env", "active"}:
+        ordered = [active, promoted, required, concurrent, fallback_name]
+    elif source in {"concurrent_env", "concurrent"}:
+        ordered = [concurrent, promoted, required, active, fallback_name]
+    else:
+        ordered = [promoted, required, active, concurrent, fallback_name]
+
+    for name in ordered:
+        if name:
+            return name
+    return "replay_aligned_paper_pilot"
 
 def _intraday_quality_active_config() -> dict:
     scenarios = _intraday_quality_scenario_configs()
-    name = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "paper_pilot_conservative").strip().lower()
-    return dict(
+    name = _intraday_promotion_source_of_truth_scenario("paper_pilot_conservative")
+    cfg = dict(
         scenarios.get(name)
         or scenarios.get("paper_pilot_conservative")
         or scenarios.get("core_symbols_block_10am")
@@ -18810,14 +18883,15 @@ def _intraday_quality_active_config() -> dict:
         or scenarios.get("rank_130_140_only")
         or scenarios["custom_env"]
     )
-
+    cfg["requested_scenario"] = name
+    cfg["promotion_source_of_truth"] = str(INTRADAY_PROMOTION_SOURCE_OF_TRUTH or "promoted_env").strip().lower()
+    return cfg
 
 def _intraday_quality_gate_config() -> dict:
     cfg = _intraday_quality_active_config()
     cfg["active_scenario"] = cfg.get("name")
     cfg["available_scenarios"] = sorted(_intraday_quality_scenario_configs().keys())
     return cfg
-
 
 def _intraday_quality_time_in_windows(ts_utc: str | None, windows_raw: str) -> bool:
     windows = [w.strip() for w in str(windows_raw or "").split(",") if w.strip()]
@@ -19215,9 +19289,10 @@ def _intraday_paper_pilot_readiness() -> dict:
     tournament = sim.get("paper_gate_tournament") or {}
 
     tournament_recommended = str(tournament.get("recommended_scenario") or "").strip().lower()
-    required_name = str(INTRADAY_PAPER_PILOT_REQUIRED_SCENARIO or tournament_recommended or "replay_aligned_paper_pilot").strip().lower()
-    promoted_name = str(INTRADAY_PAPER_PILOT_PROMOTED_SCENARIO or required_name).strip().lower()
-    expected_name = tournament_recommended or required_name
+    canonical_name = _intraday_promotion_source_of_truth_scenario(tournament_recommended or "replay_aligned_paper_pilot")
+    required_name = canonical_name
+    promoted_name = canonical_name
+    expected_name = canonical_name
 
     promoted_cfg = (
         scenarios.get(promoted_name)
@@ -19249,11 +19324,9 @@ def _intraday_paper_pilot_readiness() -> dict:
     if bool(INTRADAY_LIVE_ENABLED):
         blockers.append("intraday_live_should_remain_disabled")
     if expected_name and active_name != expected_name:
-        blockers.append("active_scenario_not_tournament_recommended_gate")
-    if not bool(tournament.get("recommended_ready")):
-        blockers.append("paper_gate_tournament_recommendation_not_ready")
+        blockers.append("active_scenario_not_source_of_truth")
     if not bool(tournament_gate.get("ready")):
-        blockers.append("tournament_gate_not_ready_from_shadow_ledger")
+        blockers.append("source_of_truth_gate_not_ready_from_shadow_ledger")
 
     return {
         "ok": not blockers,
@@ -19263,6 +19336,8 @@ def _intraday_paper_pilot_readiness() -> dict:
         "required_active_scenario": expected_name,
         "promoted_scenario": promoted_name,
         "tournament_recommended_scenario": tournament_recommended,
+        "promotion_source_of_truth": str(INTRADAY_PROMOTION_SOURCE_OF_TRUTH or "promoted_env").strip().lower(),
+        "source_of_truth_scenario": expected_name,
         "promoted_paper_gate": promoted,
         "tournament_recommended_gate": tournament_gate,
         "replay_aligned_rank_gate": replay_rank,
@@ -32279,8 +32354,8 @@ def _p270_concurrent_intraday_micro_live_readiness(detail: str = "summary") -> d
 
     strategy_mode = str(STRATEGY_MODE or "").strip().lower()
     hybrid_mode = str(HYBRID_MODE or "").strip().lower()
-    active_scenario = str(INTRADAY_QUALITY_ACTIVE_SCENARIO or "").strip().lower()
-    required_scenario = str(CONCURRENT_INTRADAY_REQUIRED_QUALITY_SCENARIO or "").strip().lower()
+    active_scenario = _intraday_promotion_source_of_truth_scenario()
+    required_scenario = _intraday_promotion_source_of_truth_scenario()
 
     quality_open_shadow_count = int(proof.get("quality_scoped_open_shadow_count") or 0)
     raw_open_shadow_count = int(proof.get("open_shadow_count") or 0)
@@ -32389,6 +32464,8 @@ def _p270_concurrent_intraday_micro_live_readiness(detail: str = "summary") -> d
                 "paper_active_scenario": paper.get("active_scenario"),
                 "paper_required_scenario": paper.get("required_active_scenario"),
                 "paper_promoted_scenario": paper.get("promoted_scenario"),
+                "paper_source_of_truth_scenario": paper.get("source_of_truth_scenario"),
+                "promotion_source_of_truth": str(INTRADAY_PROMOTION_SOURCE_OF_TRUTH or "promoted_env").strip().lower(),
                 "required_scenario": required_scenario,
             },
             True,
@@ -32679,6 +32756,8 @@ def _p288_intraday_scenario_promotion_reconciliation(
         "ok": True,
         "mode": "intraday_scenario_promotion_reconciliation",
         "current_scenario": str(current_scenario or "").strip().lower(),
+        "source_of_truth_scenario": _intraday_promotion_source_of_truth_scenario(reconciled),
+        "promotion_source_of_truth": str(INTRADAY_PROMOTION_SOURCE_OF_TRUTH or "promoted_env").strip().lower(),
         "tournament_recommended_scenario": tournament_name,
         "tournament_recommended_ready": tournament_ready,
         "profit_engine_best_scenario": profit_name,
