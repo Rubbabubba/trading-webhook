@@ -927,6 +927,35 @@ SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT = getenv_int_any(
     "SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT",
     default=15,
 )
+# Patch 290 - Risk-adjusted target-path near-miss revival
+SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED = env_bool_any(
+    "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED",
+    default=True,
+)
+SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_SCORE = getenv_float_any(
+    "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_SCORE",
+    default=55.0,
+)
+SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_RANK_SCORE",
+    default=106.0,
+)
+SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_RISK_PER_SHARE_PCT",
+    default=0.065,
+)
+SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_TARGET_WINNER_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_TARGET_WINNER_MAX_RISK_PER_SHARE_PCT",
+    default=0.11,
+)
+SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN",
+    default=1,
+)
+SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_REQUIRE_ONLY_RISK_BLOCKER = env_bool_any(
+    "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_REQUIRE_ONLY_RISK_BLOCKER",
+    default=True,
+)
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -1884,7 +1913,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-289-intraday-promotion-source-of-truth-alignment-dispatch-failure-readiness-fix"
+PATCH_VERSION = "patch-290-risk-adjusted-target-path-near-miss-entry-profit-winner-profile-revival"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5115,10 +5144,17 @@ def _preview_plan_from_candidate(candidate: dict | None = None) -> dict:
         'stop_price': row.get('stop_price'),
         'target_price': row.get('target_price'),
         'risk_per_share': row.get('risk_per_share'),
+        'risk_per_share_pct': row.get('risk_per_share_pct'),
         'scan_ts': row.get('scan_ts_utc') or row.get('ts_utc') or datetime.now(timezone.utc).isoformat(),
         'breakout_lookback_days': SWING_BREAKOUT_LOOKBACK_DAYS,
         'stop_basis': SWING_STOP_MODE,
         'target_r_mult': SWING_TARGET_R_MULT,
+        'entry_type': row.get('entry_type'),
+        'risk_adjusted_near_miss_entry': bool(row.get('risk_adjusted_near_miss_entry')),
+        'target_path_risk_adjusted_near_miss': row.get('target_path_risk_adjusted_near_miss'),
+        'target_path_profit': row.get('target_path_profit'),
+        'target_path_recovery': row.get('target_path_recovery'),
+        'target_path_recovery_mode': bool(row.get('target_path_recovery_mode')),
     }
     try:
         plan = build_trade_plan(symbol, side, qty, price, signal, meta=meta)
@@ -9096,6 +9132,122 @@ def _p286_target_path_recovery_decision(candidate: dict | None, global_block_rea
         "original_rejection_reasons": reasons,
     }
 
+def _p290_target_path_risk_adjusted_near_miss_decision(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    reasons = [str(r) for r in list(c.get("rejection_reasons") or []) if str(r)]
+    blockers = set(reasons)
+    global_reasons = {str(r) for r in list(global_block_reasons or []) if str(r)}
+    target_path = dict(c.get("target_path_profit") or {})
+    gate = dict(c.get("target_profile_breakout_gate") or {})
+    gate_blockers = {str(r) for r in list(gate.get("blockers") or []) if str(r)}
+    strategy = str(c.get("strategy") or "").strip().lower()
+    symbol = str(c.get("symbol") or "").strip().upper()
+
+    score = float(_safe_float(target_path.get("score")))
+    rank_score = float(_safe_float(c.get("rank_score")))
+    risk_per_share_pct = float(_safe_float(c.get("risk_per_share_pct"))) / 100.0
+    target_wins = int((target_path.get("target_wins") if target_path.get("target_wins") is not None else _p283_target_symbol_win_count(symbol)) or 0)
+
+    hard_blockers = {
+        "daily_halt_active",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+        "swing_loss_day_entry_throttle",
+        "same_day_symbol_loss_cooldown",
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "strategy_kill_switch_active",
+        "correlation_group_limit",
+        "symbol_exposure_limit",
+        "portfolio_exposure_limit",
+        "swing_post_change_drawdown_circuit",
+        "insufficient_buying_power",
+    }
+    hard_present = sorted([r for r in blockers.union(global_reasons) if r in hard_blockers])
+
+    acceptable_reasons = {
+        "target_profile_breakout_gate",
+        "defensive_daily_breakout_rollback",
+        "weak_tape",
+    }
+    unacceptable_reasons = sorted([
+        r for r in blockers
+        if r not in acceptable_reasons
+    ])
+
+    non_risk_gate_blockers = sorted([r for r in gate_blockers if r != "risk_per_share"])
+    risk_limit = (
+        float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_TARGET_WINNER_MAX_RISK_PER_SHARE_PCT)
+        if target_wins >= max(1, int(SWING_TARGET_PROFILE_BREAKOUT_GATE_MIN_TARGET_SYMBOL_WINS or 1))
+        else float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_RISK_PER_SHARE_PCT)
+    )
+
+    only_risk_blocker_ok = bool(
+        "risk_per_share" in gate_blockers
+        and not non_risk_gate_blockers
+    )
+    if not bool(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_REQUIRE_ONLY_RISK_BLOCKER):
+        only_risk_blocker_ok = bool("risk_per_share" in gate_blockers)
+
+    applies = bool(
+        SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED
+        and strategy in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+        and not bool(target_path.get("passed"))
+        and score >= float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_SCORE)
+        and rank_score >= float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_RANK_SCORE)
+        and risk_per_share_pct > float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT)
+        and risk_per_share_pct <= risk_limit
+        and only_risk_blocker_ok
+        and not hard_present
+        and not unacceptable_reasons
+    )
+
+    if applies:
+        reason = "risk_adjusted_target_path_near_miss_applied"
+    elif not bool(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED):
+        reason = "risk_adjusted_near_miss_disabled"
+    elif strategy not in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}:
+        reason = "not_daily_breakout"
+    elif bool(target_path.get("passed")):
+        reason = "already_target_path_passed"
+    elif score < float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_SCORE):
+        reason = "target_path_score_below_near_miss_min"
+    elif rank_score < float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_RANK_SCORE):
+        reason = "rank_score_below_near_miss_min"
+    elif "risk_per_share" not in gate_blockers:
+        reason = "risk_per_share_not_gate_blocker"
+    elif non_risk_gate_blockers and bool(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_REQUIRE_ONLY_RISK_BLOCKER):
+        reason = "non_risk_gate_blockers_present"
+    elif risk_per_share_pct > risk_limit:
+        reason = "risk_per_share_above_adjusted_limit"
+    elif hard_present:
+        reason = "hard_blocker_present"
+    elif unacceptable_reasons:
+        reason = "unacceptable_rejection_reasons_present"
+    else:
+        reason = "not_recovered"
+
+    return {
+        "enabled": bool(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED),
+        "applies": applies,
+        "reason": reason,
+        "symbol": symbol,
+        "score": round(score, 4),
+        "min_score": float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_SCORE),
+        "rank_score": round(rank_score, 4),
+        "min_rank_score": float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_RANK_SCORE),
+        "risk_per_share_pct": round(risk_per_share_pct, 5),
+        "profile_risk_cap": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT),
+        "adjusted_risk_cap": round(float(risk_limit), 5),
+        "target_wins": int(target_wins),
+        "gate_blockers": sorted(gate_blockers),
+        "non_risk_gate_blockers": non_risk_gate_blockers,
+        "hard_blockers": hard_present,
+        "unacceptable_rejection_reasons": unacceptable_reasons,
+        "original_rejection_reasons": reasons,
+        "sizing_note": "existing_risk_dollar_qty_sizing_reduces_shares_when_risk_per_share_is_wider",
+    }
+
 def _p287_normalized_target_path_recovery(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
     c = dict(candidate or {})
     existing = dict(c.get("target_path_recovery") or {})
@@ -9163,6 +9315,34 @@ def _p286_apply_target_path_recovery(candidate: dict | None, global_block_reason
         c["target_path_recovery_mode"] = True
         c["weak_tape_target_override"] = True
         c["recovered_from_reasons"] = list(decision.get("original_rejection_reasons") or [])
+        return c
+
+    near_miss = _p290_target_path_risk_adjusted_near_miss_decision(c, global_block_reasons or [])
+    c["target_path_risk_adjusted_near_miss"] = near_miss
+    if near_miss.get("applies"):
+        removable = {
+            "target_profile_breakout_gate",
+            "defensive_daily_breakout_rollback",
+            "weak_tape",
+        }
+        reasons = [
+            str(r) for r in list(c.get("rejection_reasons") or [])
+            if str(r) and str(r) not in removable
+        ]
+        c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+        c["eligible"] = len(c["rejection_reasons"]) == 0
+        c["target_path_recovery_mode"] = True
+        c["weak_tape_target_override"] = True
+        c["risk_adjusted_near_miss_entry"] = True
+        c["entry_type"] = "target_path_risk_adjusted_near_miss"
+        c["recovered_from_reasons"] = list(near_miss.get("original_rejection_reasons") or [])
+        target_path = dict(c.get("target_path_profit") or {})
+        target_path["risk_adjusted_near_miss"] = True
+        target_path["passed"] = True
+        target_path["tier"] = "risk_adjusted_near_miss"
+        target_path["reason"] = "risk_adjusted_target_path_near_miss_passed"
+        c["target_path_profit"] = target_path
+        c["target_path_score"] = target_path.get("score")
     return c
 
 
@@ -15885,10 +16065,25 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     mean_reversion_approved.sort(key=_p283_candidate_sort_key, reverse=True)
 
     target_path_approved = [
-        c for c in breakout_approved
-        if bool((c.get("target_path_profit") or {}).get("passed"))
-        and float(_safe_float((c.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
+        r for r in breakout_approved
+        if bool((r.get("target_path_profit") or {}).get("passed"))
+        and (
+            float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
+            or bool(r.get("risk_adjusted_near_miss_entry"))
+        )
     ]
+
+    risk_adjusted_near_miss_approved = [
+        r for r in target_path_approved
+        if bool(r.get("risk_adjusted_near_miss_entry"))
+    ]
+    if risk_adjusted_near_miss_approved:
+        regular_target_path_approved = [
+            r for r in target_path_approved
+            if not bool(r.get("risk_adjusted_near_miss_entry"))
+        ]
+        risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        target_path_approved = regular_target_path_approved + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
     target_path_strong = [
         c for c in target_path_approved
         if float(_safe_float((c.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
@@ -22549,6 +22744,9 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "max_entries_per_scan": int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN),
             "recovered_count": sum(1 for r in rows if bool(r.get("target_path_recovery_mode"))),
             "recovered_symbols": [r.get("symbol") for r in rows if bool(r.get("target_path_recovery_mode"))],
+            "risk_adjusted_near_miss_enabled": bool(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED),
+            "risk_adjusted_near_miss_count": sum(1 for r in rows if bool(r.get("risk_adjusted_near_miss_entry"))),
+            "risk_adjusted_near_miss_symbols": [r.get("symbol") for r in rows if bool(r.get("risk_adjusted_near_miss_entry"))],
         },
         "target_path_profit_engine": {
             "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
@@ -22558,6 +22756,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "target_path_strong_count": len(target_path_strong),
             "target_path_approved_symbols": [r.get("symbol") for r in target_path_approved],
             "target_path_strong_symbols": [r.get("symbol") for r in target_path_strong],
+            "risk_adjusted_near_miss_approved_count": len([r for r in target_path_approved if bool(r.get("risk_adjusted_near_miss_entry"))]),
+            "risk_adjusted_near_miss_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("risk_adjusted_near_miss_entry"))],
             "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
         },
         "target_path_dynamic_entry_cap": {
@@ -22587,6 +22787,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "selected_symbols": list(selected_symbols),
             "target_path_approved_count": len(target_path_approved),
             "target_path_strong_count": len(target_path_strong),
+            "risk_adjusted_near_miss_selected_count": len([r for r in selected if bool(r.get("risk_adjusted_near_miss_entry"))]),
+            "risk_adjusted_near_miss_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("risk_adjusted_near_miss_entry"))],
             "mean_reversion_eligible_total": len(mean_reversion_approved),
         },
         "portfolio_exposure": round(open_total, 2),
@@ -22972,6 +23174,12 @@ def diagnostics_target_profile_breakout_gate(request: Request):
             "SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT),
             "SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_POSITIVE_20D": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_POSITIVE_20D),
             "SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_TARGET_SYMBOL": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_REQUIRE_TARGET_SYMBOL),
+            "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED": bool(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_ENABLED),
+            "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_SCORE": float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_SCORE),
+            "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_RANK_SCORE": float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MIN_RANK_SCORE),
+            "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_RISK_PER_SHARE_PCT": float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_RISK_PER_SHARE_PCT),
+            "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_TARGET_WINNER_MAX_RISK_PER_SHARE_PCT": float(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_TARGET_WINNER_MAX_RISK_PER_SHARE_PCT),
+            "SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN": int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN),
         },
         "target_winner_profile": profile,
         "latest_scan": control.get("latest_scan"),
