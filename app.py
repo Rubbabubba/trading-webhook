@@ -9969,7 +9969,75 @@ def _p294_defensive_near_miss_simulation_lab(
         "read_only": True,
         "ts_utc": datetime.now(timezone.utc).isoformat(),
         "runtime_symbols_count": len(runtime_syms),
-        "expanded_symbols_count": len(expanded
+        "expanded_symbols_count": len(expanded_syms),
+        "expanded_only_symbols_count": len([s for s in expanded_syms if s not in runtime_set]),
+        "regime": regime,
+        "regime_mode": regime_mode,
+        "mode_thresholds": thresholds,
+        "global_block_reasons": global_block_reasons,
+        "config": {
+            "SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_SCORE": float(SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_SCORE),
+            "SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_RANK_SCORE": float(SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_RANK_SCORE),
+            "SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_RISK_PER_SHARE_PCT": float(SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_RISK_PER_SHARE_PCT),
+            "SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER": float(SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER),
+            "SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_ENTRIES": int(SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_ENTRIES),
+            "SWING_DEFENSIVE_NEAR_MISS_LAB_ALLOWED_GATE_BLOCKERS": sorted(SWING_DEFENSIVE_NEAR_MISS_LAB_ALLOWED_GATE_BLOCKERS),
+        },
+        "simulation": {
+            "would_select_total": len(would_select),
+            "selected_total": len(selected),
+            "selected_symbols": [r.get("symbol") for r in selected],
+            "runtime_would_select_total": len(runtime_would_select),
+            "runtime_would_select_symbols": [r.get("symbol") for r in runtime_would_select],
+            "expanded_only_would_select_total": len(expanded_only_would_select),
+            "expanded_only_would_select_symbols": [r.get("symbol") for r in expanded_only_would_select],
+            "assessment": (
+                "controlled_relaxation_finds_candidates"
+                if selected
+                else "controlled_relaxation_still_finds_no_candidates"
+            ),
+        },
+        "selected_simulated_entries": [
+            {
+                "symbol": r.get("symbol"),
+                "in_runtime_universe": bool(r.get("in_runtime_universe")),
+                "rank_score": r.get("rank_score"),
+                "target_path_score": (r.get("target_path_profit") or {}).get("score"),
+                "target_path_tier": (r.get("target_path_profit") or {}).get("tier"),
+                "decision": r.get("defensive_near_miss_relaxation"),
+                "simulated_entry": r.get("simulated_entry"),
+                "rejection_reasons": list(r.get("rejection_reasons") or []),
+                "gate_blockers": list((r.get("target_profile_breakout_gate") or {}).get("blockers") or []),
+            }
+            for r in selected
+        ],
+        "near_miss_candidates": [
+            {
+                "symbol": r.get("symbol"),
+                "in_runtime_universe": bool(r.get("in_runtime_universe")),
+                "eligible": bool(r.get("eligible")),
+                "rank_score": r.get("rank_score"),
+                "target_path_score": (r.get("target_path_profit") or {}).get("score"),
+                "decision": r.get("defensive_near_miss_relaxation"),
+                "rejection_reasons": list(r.get("rejection_reasons") or []),
+                "gate_blockers": list((r.get("target_profile_breakout_gate") or {}).get("blockers") or []),
+            }
+            for r in rows[:lim]
+        ],
+        "decision_reason_counts": [
+            {"reason": reason, "count": int(count)}
+            for reason, count in block_reason_counts.most_common(15)
+        ],
+        "top_rejection_reasons": [
+            {"reason": reason, "count": int(count)}
+            for reason, count in reason_counts.most_common(15)
+        ],
+        "recommended_action": (
+            "review_selected_simulated_entries_before_live_relaxation"
+            if selected
+            else "do_not_relax_rank_or_risk_yet"
+        ),
+    }
 
 def _p293_expanded_swing_universe_discovery_lab(
     *,
