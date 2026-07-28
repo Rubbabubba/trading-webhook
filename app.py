@@ -1639,6 +1639,40 @@ SWING_EXPANDED_DISCOVERY_MIN_RANK_TO_FLAG = getenv_float_any(
     default=100.0,
 )
 
+# Patch 294 - Defensive near-miss simulation / controlled relaxation lab
+SWING_DEFENSIVE_NEAR_MISS_LAB_ENABLED = env_bool_any(
+    "SWING_DEFENSIVE_NEAR_MISS_LAB_ENABLED",
+    default=True,
+)
+SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_SCORE = getenv_float_any(
+    "SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_SCORE",
+    default=45.0,
+)
+SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_RANK_SCORE",
+    default=100.0,
+)
+SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_RISK_PER_SHARE_PCT",
+    default=0.12,
+)
+SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER = getenv_float_any(
+    "SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER",
+    default=0.50,
+)
+SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_ENTRIES = getenv_int_any(
+    "SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_ENTRIES",
+    default=2,
+)
+SWING_DEFENSIVE_NEAR_MISS_LAB_ALLOWED_GATE_BLOCKERS = {
+    s.strip()
+    for s in str(getenv_any(
+        "SWING_DEFENSIVE_NEAR_MISS_LAB_ALLOWED_GATE_BLOCKERS",
+        default="rank_score,risk_per_share"
+    ) or "").split(",")
+    if s.strip()
+}
+
 # 5m resampling / strategy tuning
 RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
 
@@ -2009,7 +2043,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-293-expanded-swing-universe-discovery-missed-opportunity-replay-lab"
+PATCH_VERSION = "patch-294-defensive-near-miss-simulation-controlled-rank-risk-relaxation-lab"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -9748,6 +9782,194 @@ def _p293_replay_selection_from_rows(rows: list[dict], max_new_entries: int | No
         ],
     }
 
+def _p294_defensive_near_miss_decision(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    symbol = str(c.get("symbol") or "").strip().upper()
+    reasons = [str(r) for r in list(c.get("rejection_reasons") or []) if str(r)]
+    blockers = set(reasons)
+    global_reasons = {str(r) for r in list(global_block_reasons or []) if str(r)}
+    gate = dict(c.get("target_profile_breakout_gate") or {})
+    gate_blockers = {str(r) for r in list(gate.get("blockers") or []) if str(r)}
+    target_path = dict(c.get("target_path_profit") or {})
+
+    score = float(_safe_float(target_path.get("score")))
+    rank_score = float(_safe_float(c.get("rank_score")))
+    risk_per_share_pct = float(_safe_float(c.get("risk_per_share_pct"))) / 100.0
+    strategy = str(c.get("strategy") or "").strip().lower()
+
+    hard_blockers = {
+        "daily_halt_active",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+        "swing_loss_day_entry_throttle",
+        "same_day_symbol_loss_cooldown",
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "strategy_kill_switch_active",
+        "correlation_group_limit",
+        "symbol_exposure_limit",
+        "portfolio_exposure_limit",
+        "swing_post_change_drawdown_circuit",
+        "insufficient_buying_power",
+    }
+    hard_present = sorted([r for r in blockers.union(global_reasons) if r in hard_blockers])
+
+    acceptable_reasons = {
+        "target_profile_breakout_gate",
+        "defensive_daily_breakout_rollback",
+        "defensive_risk_per_share_too_wide",
+        "weak_tape",
+    }
+    unacceptable_reasons = sorted([r for r in blockers if r not in acceptable_reasons])
+
+    allowed_gate_blockers = set(SWING_DEFENSIVE_NEAR_MISS_LAB_ALLOWED_GATE_BLOCKERS or set())
+    disallowed_gate_blockers = sorted([r for r in gate_blockers if r not in allowed_gate_blockers])
+
+    applies = bool(
+        SWING_DEFENSIVE_NEAR_MISS_LAB_ENABLED
+        and strategy in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+        and score >= float(SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_SCORE)
+        and rank_score >= float(SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_RANK_SCORE)
+        and risk_per_share_pct <= float(SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_RISK_PER_SHARE_PCT)
+        and gate_blockers
+        and not hard_present
+        and not unacceptable_reasons
+        and not disallowed_gate_blockers
+    )
+
+    if applies:
+        reason = "defensive_near_miss_relaxation_would_select"
+    elif not bool(SWING_DEFENSIVE_NEAR_MISS_LAB_ENABLED):
+        reason = "defensive_near_miss_lab_disabled"
+    elif strategy not in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}:
+        reason = "not_daily_breakout"
+    elif score < float(SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_SCORE):
+        reason = "target_path_score_below_relaxed_min"
+    elif rank_score < float(SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_RANK_SCORE):
+        reason = "rank_score_below_relaxed_min"
+    elif risk_per_share_pct > float(SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_RISK_PER_SHARE_PCT):
+        reason = "risk_per_share_above_relaxed_cap"
+    elif not gate_blockers:
+        reason = "not_a_gate_blocked_near_miss"
+    elif hard_present:
+        reason = "hard_blocker_present"
+    elif unacceptable_reasons:
+        reason = "unacceptable_rejection_reasons_present"
+    elif disallowed_gate_blockers:
+        reason = "disallowed_gate_blockers_present"
+    else:
+        reason = "not_selected_by_relaxed_rules"
+
+    return {
+        "enabled": bool(SWING_DEFENSIVE_NEAR_MISS_LAB_ENABLED),
+        "applies": applies,
+        "reason": reason,
+        "symbol": symbol,
+        "score": round(score, 4),
+        "min_score": float(SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_SCORE),
+        "rank_score": round(rank_score, 4),
+        "min_rank_score": float(SWING_DEFENSIVE_NEAR_MISS_LAB_MIN_RANK_SCORE),
+        "risk_per_share_pct": round(risk_per_share_pct, 5),
+        "max_risk_per_share_pct": float(SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_RISK_PER_SHARE_PCT),
+        "risk_multiplier": float(SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER),
+        "gate_blockers": sorted(gate_blockers),
+        "allowed_gate_blockers": sorted(allowed_gate_blockers),
+        "disallowed_gate_blockers": disallowed_gate_blockers,
+        "hard_blockers": hard_present,
+        "unacceptable_rejection_reasons": unacceptable_reasons,
+        "original_rejection_reasons": reasons,
+    }
+
+
+def _p294_defensive_near_miss_simulation_lab(
+    *,
+    limit: int | None = None,
+    max_symbols: int | None = None,
+    symbols: str | None = None,
+) -> dict:
+    lim = max(5, min(int(limit or 15), 50))
+    if not bool(SWING_DEFENSIVE_NEAR_MISS_LAB_ENABLED):
+        return {
+            "ok": True,
+            "enabled": False,
+            "reason": "defensive_near_miss_lab_disabled",
+        }
+
+    runtime_syms = _dedupe_keep_order([str(s).strip().upper() for s in list(universe_symbols() or []) if str(s).strip()])
+    runtime_set = set(runtime_syms)
+    expanded_syms = _p293_expanded_swing_discovery_symbols(symbols, max_symbols)
+
+    syms_for_fetch = list(expanded_syms)
+    if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms_for_fetch:
+        syms_for_fetch.append(SWING_INDEX_SYMBOL)
+
+    lookback_days = max(
+        int(SCANNER_LOOKBACK_DAYS or 20) + 40,
+        SWING_REGIME_SLOW_MA_DAYS + REGIME_BREADTH_RETURN_LOOKBACK_DAYS + 30,
+        SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 20,
+    )
+    daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days) if expanded_syms else {}
+    index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
+    regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, expanded_syms) if expanded_syms else {}
+    regime_mode = _get_regime_mode(regime, index_ok) if SWING_REGIME_MODE_SWITCHING_ENABLED else ("trend" if regime.get("favorable") else "defensive")
+    thresholds = _regime_mode_thresholds(regime_mode)
+
+    global_block_reasons = []
+    if regime.get("favorable") is False and not bool(thresholds.get("allow_entries_when_regime_unfavorable")):
+        global_block_reasons.append("weak_tape")
+
+    rows = []
+    for sym in expanded_syms:
+        raw = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode)
+        row = _p293_apply_selection_truth_for_lab(raw, global_block_reasons)
+        row["in_runtime_universe"] = sym in runtime_set
+        row["in_expanded_only"] = sym not in runtime_set
+        decision = _p294_defensive_near_miss_decision(row, global_block_reasons)
+        row["defensive_near_miss_relaxation"] = decision
+        if decision.get("applies"):
+            simulated = dict(row)
+            simulated["defensive_near_miss_relaxation_entry"] = True
+            simulated["entry_type"] = "defensive_near_miss_relaxation"
+            simulated = _p291_apply_risk_adjusted_entry_sizing(
+                simulated,
+                sleeve="defensive_near_miss_relaxation",
+                risk_multiplier=SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER,
+            )
+            row["simulated_entry"] = {
+                "symbol": simulated.get("symbol"),
+                "entry_type": simulated.get("entry_type"),
+                "rank_score": simulated.get("rank_score"),
+                "target_path_score": (simulated.get("target_path_profit") or {}).get("score"),
+                "risk_adjusted_entry_sizer": simulated.get("risk_adjusted_entry_sizer"),
+            }
+        rows.append(row)
+
+    rows.sort(key=_p283_candidate_sort_key, reverse=True)
+    would_select = [r for r in rows if bool((r.get("defensive_near_miss_relaxation") or {}).get("applies"))]
+    would_select.sort(key=_p283_candidate_sort_key, reverse=True)
+    max_entries = max(0, min(int(SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_ENTRIES or 2), int(SCANNER_MAX_ENTRIES_PER_SCAN or 1)))
+    selected = would_select[:max_entries]
+
+    runtime_would_select = [r for r in would_select if bool(r.get("in_runtime_universe"))]
+    expanded_only_would_select = [r for r in would_select if bool(r.get("in_expanded_only"))]
+
+    reason_counts = Counter()
+    block_reason_counts = Counter()
+    for row in rows:
+        decision = dict(row.get("defensive_near_miss_relaxation") or {})
+        block_reason_counts[str(decision.get("reason") or "unknown")] += 1
+        for reason in list(row.get("rejection_reasons") or []):
+            reason_counts[str(reason)] += 1
+
+    return {
+        "ok": True,
+        "enabled": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "defensive_near_miss_simulation_lab",
+        "read_only": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "runtime_symbols_count": len(runtime_syms),
+        "expanded_symbols_count": len(expanded
 
 def _p293_expanded_swing_universe_discovery_lab(
     *,
@@ -24247,6 +24469,20 @@ def diagnostics_swing_profit_model_reset(request: Request, limit: int = 25):
         ],
         "recommended_action": "use_profit_model_reset_to_compare_risk_budget_and_revival_sleeve_before_raising_live_risk",
     })
+
+@app.get("/diagnostics/defensive_near_miss_simulation")
+def diagnostics_defensive_near_miss_simulation(
+    request: Request,
+    limit: int = 20,
+    max_symbols: int = 60,
+    symbols: str = "",
+):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p294_defensive_near_miss_simulation_lab(
+        limit=limit,
+        max_symbols=max_symbols,
+        symbols=symbols,
+    ))
 
 @app.get("/diagnostics/expanded_swing_universe_discovery")
 def diagnostics_expanded_swing_universe_discovery(
