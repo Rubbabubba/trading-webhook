@@ -1673,6 +1673,32 @@ SWING_DEFENSIVE_NEAR_MISS_LAB_ALLOWED_GATE_BLOCKERS = {
     if s.strip()
 }
 
+# Patch 295 - Broker daily goal truth + MA pilot promotion
+SWING_BROKER_DAILY_GOAL_TRUTH_ENABLED = env_bool_any(
+    "SWING_BROKER_DAILY_GOAL_TRUTH_ENABLED",
+    default=True,
+)
+SWING_PILOT_UNIVERSE_ENABLED = env_bool_any(
+    "SWING_PILOT_UNIVERSE_ENABLED",
+    default=True,
+)
+SWING_PILOT_UNIVERSE_SYMBOLS = getenv_any(
+    "SWING_PILOT_UNIVERSE_SYMBOLS",
+    default="MA",
+)
+SWING_PILOT_UNIVERSE_MAX_SYMBOLS = getenv_int_any(
+    "SWING_PILOT_UNIVERSE_MAX_SYMBOLS",
+    default=3,
+)
+SWING_DEFENSIVE_RELAXATION_PILOT_ONLY = env_bool_any(
+    "SWING_DEFENSIVE_RELAXATION_PILOT_ONLY",
+    default=True,
+)
+SWING_DEFENSIVE_RELAXATION_PILOT_SYMBOLS = getenv_any(
+    "SWING_DEFENSIVE_RELAXATION_PILOT_SYMBOLS",
+    default="MA",
+)
+
 # 5m resampling / strategy tuning
 RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
 
@@ -2043,7 +2069,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-294-defensive-near-miss-simulation-controlled-rank-risk-relaxation-lab"
+PATCH_VERSION = "patch-295-broker-daily-goal-truth-ma-pilot-universe-promotion-defensive-relaxation-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -9639,7 +9665,8 @@ def _p293_expanded_swing_discovery_symbols(extra_symbols: str | None = None, max
     ]
     runtime = [str(s).strip().upper() for s in list(universe_symbols() or []) if str(s).strip()]
     allowed = sorted([str(s).strip().upper() for s in ALLOWED_SYMBOLS if str(s).strip()])
-    pool = _dedupe_keep_order(runtime + allowed + configured + extras + list(DEFAULT_DYNAMIC_POOL or []))
+    pilots = _p295_swing_pilot_symbols()
+    pool = _dedupe_keep_order(runtime + pilots + allowed + configured + extras + list(DEFAULT_DYNAMIC_POOL or []))
     max_n = max(5, min(int(max_symbols or SWING_EXPANDED_DISCOVERY_MAX_SYMBOLS or 60), 150))
     return pool[:max_n]
 
@@ -9947,8 +9974,16 @@ def _p294_defensive_near_miss_simulation_lab(
     rows.sort(key=_p283_candidate_sort_key, reverse=True)
     would_select = [r for r in rows if bool((r.get("defensive_near_miss_relaxation") or {}).get("applies"))]
     would_select.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    pilot_symbols = set(_p295_defensive_relaxation_pilot_symbols())
+    live_guarded_would_select = [
+        r for r in would_select
+        if not bool(SWING_DEFENSIVE_RELAXATION_PILOT_ONLY)
+        or str(r.get("symbol") or "").strip().upper() in pilot_symbols
+    ]
+
     max_entries = max(0, min(int(SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_ENTRIES or 2), int(SCANNER_MAX_ENTRIES_PER_SCAN or 1)))
-    selected = would_select[:max_entries]
+    selected = live_guarded_would_select[:max_entries]
 
     runtime_would_select = [r for r in would_select if bool(r.get("in_runtime_universe"))]
     expanded_only_would_select = [r for r in would_select if bool(r.get("in_expanded_only"))]
@@ -9982,9 +10017,12 @@ def _p294_defensive_near_miss_simulation_lab(
             "SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER": float(SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER),
             "SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_ENTRIES": int(SWING_DEFENSIVE_NEAR_MISS_LAB_MAX_ENTRIES),
             "SWING_DEFENSIVE_NEAR_MISS_LAB_ALLOWED_GATE_BLOCKERS": sorted(SWING_DEFENSIVE_NEAR_MISS_LAB_ALLOWED_GATE_BLOCKERS),
+            "SWING_DEFENSIVE_RELAXATION_PILOT_ONLY": bool(SWING_DEFENSIVE_RELAXATION_PILOT_ONLY),
+            "SWING_DEFENSIVE_RELAXATION_PILOT_SYMBOLS": sorted(_p295_defensive_relaxation_pilot_symbols()),
         },
         "simulation": {
             "would_select_total": len(would_select),
+            "live_guarded_would_select_total": len(live_guarded_would_select),
             "selected_total": len(selected),
             "selected_symbols": [r.get("symbol") for r in selected],
             "runtime_would_select_total": len(runtime_would_select),
@@ -13921,6 +13959,13 @@ def today_pnl_truth_snapshot() -> dict:
         "today_realized_pnl": round(realized_value, 4),
         "today_unrealized_pnl": round(unrealized, 4),
         "today_net_pnl": round(realized_value + unrealized, 4),
+        "strategy_attribution_pnl": round(realized_value + unrealized, 4),
+        "daily_goal_progress": _p295_broker_daily_goal_progress({
+            "account_daily_pnl": account_pnl.get("account_daily_pnl"),
+            "today_net_pnl": round(realized_value + unrealized, 4),
+            "today_realized_pnl": round(realized_value, 4),
+            "today_unrealized_pnl": round(unrealized, 4),
+        }),
         "closed_trades_today": int(realized.get("closed_trades_today") or 0),
         "raw_strategy_closed_rows_today": int(deduped_strategy_realized.get("raw_closed_rows_today") or strategy_count),
         "duplicate_worker_rows_removed": int(deduped_strategy_realized.get("duplicate_worker_rows_removed") or 0),
@@ -13940,6 +13985,41 @@ def today_pnl_truth_snapshot() -> dict:
         "broker_strategy_sync": broker_strategy_sync,
         "error": str(realized.get("error") or ""),
     }
+
+def _p295_broker_daily_goal_progress(pnl_truth: dict | None = None) -> dict:
+    pnl = dict(pnl_truth or today_pnl_truth_snapshot() or {})
+    account_daily = pnl.get("account_daily_pnl")
+    attribution = _safe_float(pnl.get("today_net_pnl"), 0.0)
+    low = float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW or 100.0)
+    high = float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH or 200.0)
+
+    broker_available = account_daily not in (None, "")
+    broker_value = _safe_float(account_daily, 0.0) if broker_available else None
+    primary = broker_value if broker_available and bool(SWING_BROKER_DAILY_GOAL_TRUTH_ENABLED) else attribution
+    source = "broker_account_daily_change" if broker_available and bool(SWING_BROKER_DAILY_GOAL_TRUTH_ENABLED) else "strategy_realized_plus_unrealized"
+
+    remaining_low = None if primary is None else max(0.0, low - float(primary))
+    remaining_high = None if primary is None else max(0.0, high - float(primary))
+
+    return {
+        "enabled": bool(SWING_BROKER_DAILY_GOAL_TRUTH_ENABLED),
+        "primary_source": source,
+        "primary_daily_pnl": round(float(primary), 4) if primary is not None else None,
+        "broker_account_daily_pnl": round(float(broker_value), 4) if broker_value is not None else None,
+        "strategy_realized_plus_unrealized": round(float(attribution), 4),
+        "today_realized_pnl": pnl.get("today_realized_pnl"),
+        "today_unrealized_pnl": pnl.get("today_unrealized_pnl"),
+        "target_low": round(low, 2),
+        "target_high": round(high, 2),
+        "progress_to_low_pct": round((float(primary) / low) * 100.0, 2) if primary is not None and low > 0 else None,
+        "progress_to_high_pct": round((float(primary) / high) * 100.0, 2) if primary is not None and high > 0 else None,
+        "remaining_to_low": round(remaining_low, 4) if remaining_low is not None else None,
+        "remaining_to_high": round(remaining_high, 4) if remaining_high is not None else None,
+        "low_target_hit": bool(primary is not None and float(primary) >= low),
+        "high_target_hit": bool(primary is not None and float(primary) >= high),
+        "note": "Use broker/account daily change for the operator daily goal; realized+unrealized remains strategy attribution.",
+    }
+
 
 def _p228_dt_utc(ts: object):
     try:
@@ -14467,6 +14547,35 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
         out.append(sym)
     return out
 
+def _p295_csv_symbols(value: object, limit: int | None = None) -> list[str]:
+    raw = str(value or "")
+    symbols = _dedupe_keep_order([s.strip().upper() for s in raw.split(",") if s.strip()])
+    if limit is not None:
+        symbols = symbols[:max(0, int(limit or 0))]
+    return symbols
+
+
+def _p295_swing_pilot_symbols() -> list[str]:
+    if not bool(SWING_PILOT_UNIVERSE_ENABLED):
+        return []
+    return _p295_csv_symbols(
+        SWING_PILOT_UNIVERSE_SYMBOLS,
+        limit=max(0, int(SWING_PILOT_UNIVERSE_MAX_SYMBOLS or 0)),
+    )
+
+
+def _p295_defensive_relaxation_pilot_symbols() -> list[str]:
+    return _p295_csv_symbols(SWING_DEFENSIVE_RELAXATION_PILOT_SYMBOLS)
+
+
+def _p295_apply_swing_pilot_symbols(symbols: list[str]) -> list[str]:
+    base = _dedupe_keep_order([str(s).strip().upper() for s in list(symbols or []) if str(s).strip()])
+    pilots = _p295_swing_pilot_symbols()
+    if not pilots:
+        return base
+    max_total = max(len(base), int(SCANNER_MAX_SYMBOLS_PER_CYCLE or len(base) or 1))
+    merged = _dedupe_keep_order(base + pilots)
+    return merged[:max_total]
 
 def _base_scanner_pool() -> list[str]:
     if SCANNER_POOL_SYMBOLS:
@@ -14486,28 +14595,29 @@ def universe_symbols() -> list[str]:
     static: fixed configured list. Prefer SCANNER_UNIVERSE_SYMBOLS when present.
     env: explicit env-driven list.
     dynamic: ranked/fetched pool.
+    Patch 295 appends a tiny swing pilot list, currently MA, without broadening rules.
     """
     if SCANNER_UNIVERSE_PROVIDER == "static":
         if SCANNER_UNIVERSE_SYMBOLS:
             syms = [s.strip().upper() for s in SCANNER_UNIVERSE_SYMBOLS.split(",") if s.strip()]
             if syms:
-                return _dedupe_keep_order(syms)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
-        return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+                return _p295_apply_swing_pilot_symbols(_dedupe_keep_order(syms)[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
+        return _p295_apply_swing_pilot_symbols(sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
 
     if SCANNER_UNIVERSE_PROVIDER == "env":
         raw = getenv_any("SCANNER_UNIVERSE_SYMBOLS", "SCANNER_SYMBOLS", default="")
         if not raw:
-            return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+            return _p295_apply_swing_pilot_symbols(sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
         syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
-        return syms[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+        return _p295_apply_swing_pilot_symbols(syms[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
 
     if SCANNER_UNIVERSE_PROVIDER == "dynamic":
         base = _base_scanner_pool()
         top_n = max(1, int(SCANNER_DYNAMIC_TOP_N or SCANNER_MAX_SYMBOLS_PER_CYCLE or 20))
         fetch_n = min(len(base), max(top_n * 2, top_n))
-        return base[:fetch_n]
+        return _p295_apply_swing_pilot_symbols(base[:fetch_n])
 
-    return sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE]
+    return _p295_apply_swing_pilot_symbols(sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
 
 def _bars_for_today_regular_session(bars: list[dict]) -> list[dict]:
     if not bars:
@@ -34589,6 +34699,29 @@ def diagnostics_no_trade_brief(
         "failed_sections": bundle.get("failed_sections"),
     }
 
+@app.get("/diagnostics/broker_daily_goal_truth")
+def diagnostics_broker_daily_goal_truth(request: Request):
+    require_admin_if_configured(request)
+    pnl = today_pnl_truth_snapshot()
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_daily_goal_truth",
+        "daily_goal_progress": pnl.get("daily_goal_progress") or _p295_broker_daily_goal_progress(pnl),
+        "today_pnl_truth": pnl,
+        "pilot_universe": {
+            "enabled": bool(SWING_PILOT_UNIVERSE_ENABLED),
+            "symbols": _p295_swing_pilot_symbols(),
+            "runtime_symbols": universe_symbols(),
+            "ma_in_runtime": "MA" in set(universe_symbols()),
+        },
+        "defensive_relaxation_guard": {
+            "pilot_only": bool(SWING_DEFENSIVE_RELAXATION_PILOT_ONLY),
+            "pilot_symbols": _p295_defensive_relaxation_pilot_symbols(),
+        },
+        "recommended_action": "use_broker_daily_goal_truth_for_daily_target_tracking",
+    }
+
 @app.get("/diagnostics/live_positions")
 def diagnostics_live_positions(request: Request):
     require_admin_if_configured(request)
@@ -34662,7 +34795,7 @@ def dashboard_live(request: Request):
     html_doc = f'''<!doctype html><html><head><meta charset="utf-8"><title>Live Operator Dashboard</title>{refresh_meta}<style>
     body{{font-family:Inter,system-ui,Arial,sans-serif;background:#0b0b16;color:#f6f4ff;margin:18px}} a{{color:#b9a7ff}} .muted{{color:#a9a1c4;font-size:12px}} .top{{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}} .grid{{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:12px;margin:14px 0}} .card{{background:#151522;border:1px solid #30245a;border-radius:10px;padding:14px}} .metric{{font-size:28px;font-weight:800}} .good{{color:#61f2a9}} .bad{{color:#ff5c8a}} .neutral{{color:#ffd36a}} .signed-value{{font-weight:800}} table{{width:100%;border-collapse:collapse;font-size:12px}} th,td{{border-bottom:1px solid #2a2540;padding:7px;text-align:left;vertical-align:top}} th{{color:#d7cbff}} .badge{{border:1px solid #49368a;border-radius:999px;padding:3px 7px;background:#24164c;font-size:11px}} .actions a{{display:inline-block;margin-left:8px;padding:7px 10px;border:1px solid #4c3d89;border-radius:8px;text-decoration:none}}</style></head><body>
     <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Broker-backed live view. This page intentionally makes live broker/account calls and caches for {int(data.get('cache_ttl_sec') or 0)}s. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}.</p></div><div class="actions"><a href="/dashboard/live?refresh=1">Refresh now</a><a href="/diagnostics/live_positions?refresh=1">JSON</a><a href="/dashboard">Research dashboard</a><a href="/dashboard?detail=full">Full diagnostics</a></div></div>
-    <div class="grid"><div class="card"><div class="muted">Broker Positions</div><div class="metric good">{_dashboard_fmt(summary.get('broker_positions_count'))}</div><table>{_dashboard_rows([('active_plans', summary.get('active_plan_count')),('open_orders', summary.get('open_order_count'))])}</table></div><div class="card"><div class="muted">Trust</div><div class="metric {'bad' if int(summary.get('bad_count') or 0) else 'good'}">{_dashboard_fmt(summary.get('bad_count'))}</div><table>{_dashboard_rows([('warning_count', summary.get('warning_count')),('short_count', summary.get('short_count')),('truth_status', summary.get('position_truth_status')),('mismatches', summary.get('position_truth_mismatch_count'))])}</table></div><div class="card"><div class="muted">Today P&amp;L</div><div class="metric {'good' if _safe_float(pnl.get('today_net_pnl'),0)>=0 else 'bad'}">{_dashboard_money(pnl.get('today_net_pnl'))}</div><table>{_dashboard_rows([('realized', pnl.get('today_realized_pnl')),('unrealized', pnl.get('today_unrealized_pnl')),('closed_trades_today', pnl.get('closed_trades_today')),('source', pnl.get('accounting_source'))])}</table></div><div class="card"><div class="muted">Performance</div><div class="metric good">{_dashboard_fmt(perf.get('closed_trades'))}</div><table>{_dashboard_rows([('wins', perf.get('wins')),('losses', perf.get('losses')),('win_rate', _dashboard_pct(_safe_float(perf.get('win_rate'),0)*100.0)),('gross_pnl', _dashboard_money(perf.get('gross_pnl'))),('avg_r', perf.get('avg_r')),('sample', perf.get('sample_maturity'))])}</table></div></div>
+    <div class="card"><div class="muted">Broker Daily Goal</div><div class="metric {'good' if _safe_float((pnl.get('daily_goal_progress') or {}).get('primary_daily_pnl'),0)>=0 else 'bad'}">{_dashboard_money((pnl.get('daily_goal_progress') or {}).get('primary_daily_pnl'))}</div><table>{_dashboard_rows([('goal_source', (pnl.get('daily_goal_progress') or {}).get('primary_source')),('low_target', _dashboard_money((pnl.get('daily_goal_progress') or {}).get('target_low'))),('progress_to_low', _dashboard_pct((pnl.get('daily_goal_progress') or {}).get('progress_to_low_pct'))),('remaining_to_low', _dashboard_money((pnl.get('daily_goal_progress') or {}).get('remaining_to_low'))),('strategy_attribution', _dashboard_money(pnl.get('strategy_attribution_pnl') or pnl.get('today_net_pnl')))])}</table></div>
     <div class="card"><h2>Active Positions Audit</h2><table><thead><tr><th>Symbol</th><th>Trust</th><th>Side</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>U P&amp;L %</th><th>Stop</th><th>Target</th><th>Signal</th><th>Warnings</th></tr></thead><tbody>{pos_rows}</tbody></table><p class="muted">Trust is based on live broker positions, in-memory/persisted active plans, and open orders. Any missing plan, stale plan, short position, or quantity mismatch is highlighted before you rely on the row.</p></div>
     <div class="card" style="margin-top:14px"><h2>Open Orders</h2><table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Filled</th><th>Status</th><th>Submitted</th></tr></thead><tbody>{order_rows}</tbody></table></div>
     <div class="card" style="margin-top:14px"><h2>Loss Halt Checklist</h2><div class="metric {halt_class}">{'LOSS HALT ACTIVE' if halt.get('daily_halt_active') else 'NO LOSS HALT'}</div><table>{halt_rows}</table><p class="muted">When halted, keep entries blocked, monitor existing positions, verify open orders, and review after the close unless you deliberately override risk policy.</p></div>
