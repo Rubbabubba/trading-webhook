@@ -1611,6 +1611,34 @@ DEFAULT_DYNAMIC_POOL = [
     "BAC","JPM","GS","XLF","SMH","XLK","XLE","XLI","JNJ","UNH","PFE","WMT","COST","HD","LOW"
 ]
 
+# Patch 293 - Expanded swing universe discovery lab
+SWING_EXPANDED_DISCOVERY_ENABLED = env_bool_any(
+    "SWING_EXPANDED_DISCOVERY_ENABLED",
+    default=True,
+)
+SWING_EXPANDED_DISCOVERY_MAX_SYMBOLS = getenv_int_any(
+    "SWING_EXPANDED_DISCOVERY_MAX_SYMBOLS",
+    default=60,
+)
+SWING_EXPANDED_DISCOVERY_SYMBOLS = getenv_any(
+    "SWING_EXPANDED_DISCOVERY_SYMBOLS",
+    default=(
+        "SPY,QQQ,IWM,DIA,SMH,XLK,XLF,XLE,XLI,ARKK,"
+        "AAPL,MSFT,NVDA,AMD,AVGO,AMZN,META,GOOGL,TSLA,NFLX,"
+        "CRM,ORCL,ADBE,NOW,SNOW,SHOP,UBER,PLTR,DDOG,NET,CRWD,PANW,"
+        "MU,AMAT,LRCX,QCOM,TSM,INTC,MRVL,ARM,ANET,COIN,HOOD,"
+        "JPM,BAC,GS,V,MA,COST,WMT,HD,LOW,UNH,LLY,NVO,DE,GE,BA,CAT"
+    ),
+)
+SWING_EXPANDED_DISCOVERY_MIN_SCORE_TO_FLAG = getenv_float_any(
+    "SWING_EXPANDED_DISCOVERY_MIN_SCORE_TO_FLAG",
+    default=45.0,
+)
+SWING_EXPANDED_DISCOVERY_MIN_RANK_TO_FLAG = getenv_float_any(
+    "SWING_EXPANDED_DISCOVERY_MIN_RANK_TO_FLAG",
+    default=100.0,
+)
+
 # 5m resampling / strategy tuning
 RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
 
@@ -1981,7 +2009,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-292-first-2k-similarity-revival-reduced-risk-exploratory-entry-gate"
+PATCH_VERSION = "patch-293-expanded-swing-universe-discovery-missed-opportunity-replay-lab"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -9564,6 +9592,336 @@ def _p292_first_2k_similarity_revival_decision(candidate: dict | None, global_bl
         "risk_multiplier": float(SWING_FIRST_2K_SIMILARITY_REVIVAL_RISK_MULTIPLIER),
     }
 
+def _p293_expanded_swing_discovery_symbols(extra_symbols: str | None = None, max_symbols: int | None = None) -> list[str]:
+    configured = [
+        s.strip().upper()
+        for s in str(SWING_EXPANDED_DISCOVERY_SYMBOLS or "").split(",")
+        if s.strip()
+    ]
+    extras = [
+        s.strip().upper()
+        for s in str(extra_symbols or "").split(",")
+        if s.strip()
+    ]
+    runtime = [str(s).strip().upper() for s in list(universe_symbols() or []) if str(s).strip()]
+    allowed = sorted([str(s).strip().upper() for s in ALLOWED_SYMBOLS if str(s).strip()])
+    pool = _dedupe_keep_order(runtime + allowed + configured + extras + list(DEFAULT_DYNAMIC_POOL or []))
+    max_n = max(5, min(int(max_symbols or SWING_EXPANDED_DISCOVERY_MAX_SYMBOLS or 60), 150))
+    return pool[:max_n]
+
+
+def _p293_candidate_live_book_blockers(symbol: str) -> list[str]:
+    sym = str(symbol or "").strip().upper()
+    blockers = []
+    if not sym:
+        return ["missing_symbol"]
+    try:
+        if _has_pending_entry_plan(sym):
+            blockers.append("plan_or_pending_entry_exists")
+    except Exception:
+        pass
+    try:
+        qty_signed, _ = get_position(sym)
+        if float(qty_signed or 0.0) != 0.0:
+            blockers.append("position_already_open")
+    except Exception:
+        pass
+    return blockers
+
+
+def _p293_apply_selection_truth_for_lab(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    sym = str(c.get("symbol") or "").strip().upper()
+    selection_blockers = []
+
+    for reason in _p293_candidate_live_book_blockers(sym):
+        c["eligible"] = False
+        c.setdefault("rejection_reasons", []).append(reason)
+        selection_blockers.append(reason)
+
+    if c.get("eligible") and global_block_reasons:
+        c["eligible"] = False
+        c.setdefault("rejection_reasons", []).extend([str(r) for r in global_block_reasons if str(r)])
+        selection_blockers.extend([str(r) for r in global_block_reasons if str(r)])
+
+    c["selection_blockers"] = _dedupe_candidate_reasons(selection_blockers)
+    c["rejection_reasons"] = _dedupe_candidate_reasons(c.get("rejection_reasons") or [])
+    c = _p283_enrich_candidate_profit_truth(c)
+    c = _p286_apply_target_path_recovery(c, global_block_reasons or [])
+    c["lab_live_book_blockers"] = _p293_candidate_live_book_blockers(sym)
+    return c
+
+
+def _p293_replay_selection_from_rows(rows: list[dict], max_new_entries: int | None = None) -> dict:
+    source_rows = [dict(r) for r in list(rows or []) if isinstance(r, dict)]
+    source_rows.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    breakout_approved = [
+        r for r in source_rows
+        if bool(r.get("eligible"))
+        and str(r.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+    ]
+    mean_reversion_approved = [
+        r for r in source_rows
+        if bool(r.get("eligible"))
+        and str(r.get("strategy") or "").strip().lower() == MEAN_REVERSION_STRATEGY_NAME
+    ]
+    target_path_approved = [
+        r for r in breakout_approved
+        if bool((r.get("target_path_profit") or {}).get("passed"))
+        and (
+            float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
+            or bool(r.get("risk_adjusted_near_miss_entry"))
+            or bool(r.get("first_2k_revival_entry"))
+            or bool(r.get("first_2k_similarity_revival_entry"))
+        )
+    ]
+
+    risk_adjusted_near_miss_approved = [
+        r for r in target_path_approved
+        if bool(r.get("risk_adjusted_near_miss_entry"))
+    ]
+    first_2k_revival_approved = [
+        r for r in target_path_approved
+        if bool(r.get("first_2k_revival_entry"))
+    ]
+    first_2k_similarity_revival_approved = [
+        r for r in target_path_approved
+        if bool(r.get("first_2k_similarity_revival_entry"))
+    ]
+
+    if risk_adjusted_near_miss_approved or first_2k_revival_approved or first_2k_similarity_revival_approved:
+        regular_target_path_approved = [
+            r for r in target_path_approved
+            if not bool(r.get("risk_adjusted_near_miss_entry"))
+            and not bool(r.get("first_2k_revival_entry"))
+            and not bool(r.get("first_2k_similarity_revival_entry"))
+        ]
+        risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        first_2k_similarity_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        target_path_approved = (
+            regular_target_path_approved
+            + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
+            + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
+            + first_2k_similarity_revival_approved[:max(0, int(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
+        )
+
+    if target_path_approved:
+        approved = target_path_approved
+        selected_strategy = "target_path"
+    elif bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED) and mean_reversion_approved:
+        approved = mean_reversion_approved
+        selected_strategy = "mean_reversion_fallback"
+    else:
+        approved = []
+        selected_strategy = "none"
+
+    effective_max = max(0, int(max_new_entries if max_new_entries is not None else SCANNER_MAX_ENTRIES_PER_SCAN or 1))
+    selected = approved[:effective_max]
+
+    return {
+        "approved_total": len(approved),
+        "selected_total": len(selected),
+        "selected_symbols": [r.get("symbol") for r in selected],
+        "selected_strategy": selected_strategy,
+        "target_path_approved_count": len(target_path_approved),
+        "target_path_approved_symbols": [r.get("symbol") for r in target_path_approved],
+        "risk_adjusted_near_miss_count": len(risk_adjusted_near_miss_approved),
+        "risk_adjusted_near_miss_symbols": [r.get("symbol") for r in risk_adjusted_near_miss_approved],
+        "first_2k_revival_count": len(first_2k_revival_approved),
+        "first_2k_revival_symbols": [r.get("symbol") for r in first_2k_revival_approved],
+        "first_2k_similarity_revival_count": len(first_2k_similarity_revival_approved),
+        "first_2k_similarity_revival_symbols": [r.get("symbol") for r in first_2k_similarity_revival_approved],
+        "mean_reversion_approved_count": len(mean_reversion_approved),
+        "mean_reversion_approved_symbols": [r.get("symbol") for r in mean_reversion_approved],
+        "selected": [
+            {
+                "symbol": r.get("symbol"),
+                "rank_score": r.get("rank_score"),
+                "target_path_score": (r.get("target_path_profit") or {}).get("score"),
+                "target_path_tier": (r.get("target_path_profit") or {}).get("tier"),
+                "entry_type": r.get("entry_type"),
+                "risk_adjusted_entry_sizer": r.get("risk_adjusted_entry_sizer"),
+            }
+            for r in selected
+        ],
+    }
+
+
+def _p293_expanded_swing_universe_discovery_lab(
+    *,
+    limit: int | None = None,
+    max_symbols: int | None = None,
+    symbols: str | None = None,
+) -> dict:
+    lim = max(5, min(int(limit or 15), 50))
+    if not bool(SWING_EXPANDED_DISCOVERY_ENABLED):
+        return {
+            "ok": True,
+            "enabled": False,
+            "reason": "expanded_swing_discovery_disabled",
+        }
+
+    runtime_syms = _dedupe_keep_order([str(s).strip().upper() for s in list(universe_symbols() or []) if str(s).strip()])
+    expanded_syms = _p293_expanded_swing_discovery_symbols(symbols, max_symbols)
+    runtime_set = set(runtime_syms)
+
+    syms_for_fetch = list(expanded_syms)
+    if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms_for_fetch:
+        syms_for_fetch.append(SWING_INDEX_SYMBOL)
+
+    lookback_days = max(
+        int(SCANNER_LOOKBACK_DAYS or 20) + 40,
+        SWING_REGIME_SLOW_MA_DAYS + REGIME_BREADTH_RETURN_LOOKBACK_DAYS + 30,
+        SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 20,
+    )
+    daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days) if expanded_syms else {}
+    index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
+    regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, expanded_syms) if expanded_syms else {}
+    regime_mode = _get_regime_mode(regime, index_ok) if SWING_REGIME_MODE_SWITCHING_ENABLED else ("trend" if regime.get("favorable") else "defensive")
+    thresholds = _regime_mode_thresholds(regime_mode)
+
+    global_block_reasons = []
+    if regime.get("favorable") is False and not bool(thresholds.get("allow_entries_when_regime_unfavorable")):
+        global_block_reasons.append("weak_tape")
+
+    rows = []
+    for sym in expanded_syms:
+        raw = evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode)
+        row = _p293_apply_selection_truth_for_lab(raw, global_block_reasons)
+        row["in_runtime_universe"] = sym in runtime_set
+        row["in_expanded_only"] = sym not in runtime_set
+        rows.append(row)
+
+    rows.sort(key=_p283_candidate_sort_key, reverse=True)
+    runtime_rows = [r for r in rows if bool(r.get("in_runtime_universe"))]
+    expanded_only_rows = [r for r in rows if bool(r.get("in_expanded_only"))]
+
+    max_new_entries = max(
+        0,
+        min(
+            int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+            int(candidate_slots_available()),
+            int(SCANNER_MAX_ENTRIES_PER_SCAN),
+        ),
+    )
+
+    runtime_replay = _p293_replay_selection_from_rows(runtime_rows, max_new_entries=max_new_entries)
+    expanded_replay = _p293_replay_selection_from_rows(rows, max_new_entries=max_new_entries)
+    expanded_only_replay = _p293_replay_selection_from_rows(expanded_only_rows, max_new_entries=max_new_entries)
+
+    interesting = [
+        r for r in rows
+        if (
+            bool(r.get("in_expanded_only"))
+            and (
+                bool(r.get("eligible"))
+                or bool(r.get("risk_adjusted_near_miss_entry"))
+                or bool(r.get("first_2k_revival_entry"))
+                or bool(r.get("first_2k_similarity_revival_entry"))
+                or float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_EXPANDED_DISCOVERY_MIN_SCORE_TO_FLAG)
+                or float(_safe_float(r.get("rank_score"))) >= float(SWING_EXPANDED_DISCOVERY_MIN_RANK_TO_FLAG)
+            )
+        )
+    ]
+    interesting.sort(key=_p283_candidate_sort_key, reverse=True)
+
+    missed_symbols = [
+        s for s in list(expanded_replay.get("selected_symbols") or [])
+        if s and s not in runtime_set
+    ]
+
+    reason_counts = Counter()
+    for row in rows:
+        for reason in list(row.get("rejection_reasons") or []):
+            reason_counts[str(reason)] += 1
+
+    return {
+        "ok": True,
+        "enabled": True,
+        "mode": "expanded_swing_universe_discovery_lab",
+        "read_only": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "runtime_symbols": runtime_syms,
+        "runtime_symbols_count": len(runtime_syms),
+        "expanded_symbols": expanded_syms,
+        "expanded_symbols_count": len(expanded_syms),
+        "expanded_only_symbols_count": len([s for s in expanded_syms if s not in runtime_set]),
+        "index_alignment_ok": index_ok,
+        "regime": regime,
+        "regime_mode": regime_mode,
+        "mode_thresholds": thresholds,
+        "global_block_reasons": global_block_reasons,
+        "max_new_entries_effective_for_replay": int(max_new_entries),
+        "runtime_replay": runtime_replay,
+        "expanded_replay": expanded_replay,
+        "expanded_only_replay": expanded_only_replay,
+        "missed_opportunity": {
+            "missed_selected_total": len(missed_symbols),
+            "missed_selected_symbols": missed_symbols,
+            "runtime_selected_total": int(runtime_replay.get("selected_total") or 0),
+            "expanded_selected_total": int(expanded_replay.get("selected_total") or 0),
+            "assessment": (
+                "expanded_universe_has_live_selectable_candidates"
+                if missed_symbols
+                else "no_expanded_live_selectable_candidates_under_current_rules"
+            ),
+        },
+        "recommended_symbol_additions": [
+            {
+                "symbol": r.get("symbol"),
+                "rank_score": r.get("rank_score"),
+                "target_path_score": (r.get("target_path_profit") or {}).get("score"),
+                "target_path_tier": (r.get("target_path_profit") or {}).get("tier"),
+                "target_wins": (r.get("target_path_profit") or {}).get("target_wins"),
+                "entry_type": r.get("entry_type"),
+                "eligible": bool(r.get("eligible")),
+                "rejection_reasons": list(r.get("rejection_reasons") or []),
+                "gate_blockers": list((r.get("target_profile_breakout_gate") or {}).get("blockers") or []),
+                "risk_adjusted_entry_sizer": r.get("risk_adjusted_entry_sizer"),
+            }
+            for r in interesting[:lim]
+        ],
+        "top_runtime_candidates": [
+            {
+                "symbol": r.get("symbol"),
+                "eligible": bool(r.get("eligible")),
+                "rank_score": r.get("rank_score"),
+                "target_path_score": (r.get("target_path_profit") or {}).get("score"),
+                "rejection_reasons": list(r.get("rejection_reasons") or []),
+            }
+            for r in runtime_rows[:lim]
+        ],
+        "top_expanded_candidates": [
+            {
+                "symbol": r.get("symbol"),
+                "in_runtime_universe": bool(r.get("in_runtime_universe")),
+                "eligible": bool(r.get("eligible")),
+                "rank_score": r.get("rank_score"),
+                "target_path_score": (r.get("target_path_profit") or {}).get("score"),
+                "target_path_tier": (r.get("target_path_profit") or {}).get("tier"),
+                "entry_type": r.get("entry_type"),
+                "rejection_reasons": list(r.get("rejection_reasons") or []),
+            }
+            for r in rows[:lim]
+        ],
+        "top_rejection_reasons": [
+            {"reason": reason, "count": int(count)}
+            for reason, count in reason_counts.most_common(15)
+        ],
+        "config": {
+            "SWING_EXPANDED_DISCOVERY_MAX_SYMBOLS": int(SWING_EXPANDED_DISCOVERY_MAX_SYMBOLS),
+            "SWING_EXPANDED_DISCOVERY_MIN_SCORE_TO_FLAG": float(SWING_EXPANDED_DISCOVERY_MIN_SCORE_TO_FLAG),
+            "SWING_EXPANDED_DISCOVERY_MIN_RANK_TO_FLAG": float(SWING_EXPANDED_DISCOVERY_MIN_RANK_TO_FLAG),
+        },
+        "recommended_action": (
+            "promote_missed_symbols_only_after_review"
+            if missed_symbols
+            else "keep_current_universe_or_expand_pool_then_retest"
+        ),
+    }
+
 def _p291_profit_model_reset_lab(rows: list | None = None, summary: dict | None = None) -> dict:
     source_rows = [dict(r) for r in list(rows or []) if isinstance(r, dict)]
     target_rows = [
@@ -10156,6 +10514,10 @@ def _p283_swing_thrive_brief(limit: int | None = None) -> dict:
             list(candidates.get("target_path_candidates") or [])
             + list(candidates.get("mean_reversion_candidates") or []),
             summary,
+        ),
+        "expanded_swing_universe_discovery": _p293_expanded_swing_universe_discovery_lab(
+            limit=min(lim, 10),
+            max_symbols=min(int(SWING_EXPANDED_DISCOVERY_MAX_SYMBOLS or 60), 60),
         ),
         "thrive_capacity_truth": dict(summary.get("thrive_capacity_truth") or {}),
         "selected": {
@@ -23884,6 +24246,49 @@ def diagnostics_swing_profit_model_reset(request: Request, limit: int = 25):
             for row in rows[:lim]
         ],
         "recommended_action": "use_profit_model_reset_to_compare_risk_budget_and_revival_sleeve_before_raising_live_risk",
+    })
+
+@app.get("/diagnostics/expanded_swing_universe_discovery")
+def diagnostics_expanded_swing_universe_discovery(
+    request: Request,
+    limit: int = 15,
+    max_symbols: int = 60,
+    symbols: str = "",
+):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p293_expanded_swing_universe_discovery_lab(
+        limit=limit,
+        max_symbols=max_symbols,
+        symbols=symbols,
+    ))
+
+
+@app.get("/diagnostics/missed_opportunity_replay_lab")
+def diagnostics_missed_opportunity_replay_lab(
+    request: Request,
+    limit: int = 15,
+    max_symbols: int = 60,
+    symbols: str = "",
+):
+    require_admin_if_configured(request)
+    lab = _p293_expanded_swing_universe_discovery_lab(
+        limit=limit,
+        max_symbols=max_symbols,
+        symbols=symbols,
+    )
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "missed_opportunity_replay_lab",
+        "read_only": True,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "missed_opportunity": dict(lab.get("missed_opportunity") or {}),
+        "runtime_replay": dict(lab.get("runtime_replay") or {}),
+        "expanded_replay": dict(lab.get("expanded_replay") or {}),
+        "expanded_only_replay": dict(lab.get("expanded_only_replay") or {}),
+        "recommended_symbol_additions": list(lab.get("recommended_symbol_additions") or [])[:max(1, min(int(limit or 15), 50))],
+        "top_rejection_reasons": list(lab.get("top_rejection_reasons") or []),
+        "recommended_action": lab.get("recommended_action"),
     })
 
 @app.get("/diagnostics/target_path_opportunity_expansion_lab")
