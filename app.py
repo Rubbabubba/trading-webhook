@@ -1533,6 +1533,14 @@ SELECTED_ENTRY_INTENT_QUEUE_PATH = getenv_any(
     "SELECTED_ENTRY_INTENT_QUEUE_PATH",
     default="/var/data/selected_entry_intent_queue.json",
 )
+SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED = env_bool_any(
+    "SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED",
+    default=True,
+)
+SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
+    "SWING_EXECUTABLE_SELECTION_MIN_QTY",
+    default=1.0,
+)
 
 # --- Trades-Today forcing (emergency mode) ---
 TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
@@ -2120,7 +2128,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-299-selected-entry-intent-queue-lightweight-submission-finalizer"
+PATCH_VERSION = "patch-300-executable-sizing-truth-broker-buying-power-label-fix-selection-contract-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -15276,6 +15284,174 @@ def _cap_adjust_candidate_qty(close: float, estimated_qty: float, open_symbol_no
         'qty_clipped_to_symbol_cap': bool(clipped_symbol),
     }
 
+def _p300_broker_can_afford_one_share(close: float, broker_snapshot: dict | None = None) -> bool:
+    close = float(close or 0.0)
+    snap = dict(broker_snapshot or get_buying_power_snapshot() or {})
+    buying_power = float(snap.get("buying_power") or 0.0)
+    cash = float(snap.get("cash") or 0.0)
+    if close <= 0:
+        return False
+    return bool(max(buying_power, cash) >= close)
+
+
+def _p300_executable_sizing_truth(candidate: dict | None, cap_truth: dict | None = None) -> dict:
+    c = dict(candidate or {})
+    cap = dict(cap_truth or c.get("sizing_truth") or {})
+    affordability = dict(c.get("affordability") or {})
+    broker_snapshot = dict(
+        affordability.get("buying_power_snapshot")
+        or get_buying_power_snapshot()
+        or {}
+    )
+
+    close = float(_safe_float(c.get("close") or c.get("price") or 0.0))
+    requested_qty = float(_safe_float(c.get("requested_qty") or 0.0))
+    raw_estimated_qty = float(_safe_float(cap.get("raw_estimated_qty") if cap.get("raw_estimated_qty") is not None else c.get("estimated_qty")))
+    effective_estimated_qty = float(_safe_float(cap.get("effective_estimated_qty") if cap.get("effective_estimated_qty") is not None else c.get("estimated_qty")))
+    min_qty = max(float(SWING_EXECUTABLE_SELECTION_MIN_QTY or 1.0), float(MIN_AFFORDABLE_QTY), float(MIN_QTY))
+
+    broker_can_afford_one = _p300_broker_can_afford_one_share(close, broker_snapshot)
+    executable = bool(effective_estimated_qty >= min_qty)
+
+    sizing_block_reason = "none"
+    broker_label_valid = False
+    if not executable:
+        if close <= 0:
+            sizing_block_reason = "missing_price"
+        elif requested_qty <= 0 and raw_estimated_qty <= 0:
+            sizing_block_reason = "internal_sizing_qty_zero"
+        elif broker_can_afford_one:
+            sizing_block_reason = "internal_sizing_qty_zero"
+        else:
+            sizing_block_reason = "broker_insufficient_buying_power"
+            broker_label_valid = True
+
+    return {
+        "enabled": bool(SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED),
+        "executable": executable,
+        "sizing_block_reason": sizing_block_reason,
+        "broker_buying_power_label_valid": broker_label_valid,
+        "min_executable_qty": round(min_qty, 4),
+        "close": round(close, 4),
+        "requested_qty": round(requested_qty, 4),
+        "raw_estimated_qty": round(raw_estimated_qty, 4),
+        "effective_estimated_qty": round(effective_estimated_qty, 4),
+        "raw_projected_notional": cap.get("raw_projected_notional"),
+        "effective_projected_notional": cap.get("effective_projected_notional"),
+        "risk_per_share": c.get("risk_per_share"),
+        "risk_per_share_pct": c.get("risk_per_share_pct"),
+        "broker_buying_power": broker_snapshot.get("buying_power"),
+        "broker_cash": broker_snapshot.get("cash"),
+        "broker_can_afford_one_share": broker_can_afford_one,
+        "affordability_reason": affordability.get("reason"),
+        "portfolio_remaining": cap.get("portfolio_remaining"),
+        "symbol_remaining": cap.get("symbol_remaining"),
+        "portfolio_basis": cap.get("portfolio_basis"),
+        "portfolio_qty_cap": cap.get("portfolio_qty_cap"),
+        "symbol_qty_cap": cap.get("symbol_qty_cap"),
+        "qty_clipped_to_portfolio_cap": bool(cap.get("qty_clipped_to_portfolio_cap")),
+        "qty_clipped_to_symbol_cap": bool(cap.get("qty_clipped_to_symbol_cap")),
+    }
+
+
+def _p300_apply_executable_selection_contract(candidate: dict | None, cap_truth: dict | None = None) -> dict:
+    c = dict(candidate or {})
+    if not bool(SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED):
+        return c
+
+    truth = _p300_executable_sizing_truth(c, cap_truth=cap_truth)
+    c["executable_sizing_truth"] = truth
+    c["estimated_qty"] = round(float(truth.get("effective_estimated_qty") or 0.0), 2)
+
+    reasons = [
+        str(r)
+        for r in list(c.get("rejection_reasons") or [])
+        if str(r)
+    ]
+
+    if "insufficient_buying_power" in reasons and not bool(truth.get("broker_buying_power_label_valid")):
+        reasons = [r for r in reasons if r != "insufficient_buying_power"]
+        if "internal_sizing_qty_zero" not in reasons:
+            reasons.append("internal_sizing_qty_zero")
+
+    if not bool(truth.get("executable")):
+        c["eligible"] = False
+        reason = str(truth.get("sizing_block_reason") or "internal_sizing_qty_zero")
+        if reason not in reasons:
+            reasons.append(reason)
+
+    c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+    return c
+
+
+def _p300_selection_contract_cleanup(rows: list | None) -> list[dict]:
+    cleaned = []
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        c = _p300_apply_executable_selection_contract(row)
+        if bool(c.get("eligible")) and not bool((c.get("executable_sizing_truth") or {}).get("executable")):
+            c["eligible"] = False
+            c.setdefault("rejection_reasons", []).append("internal_sizing_qty_zero")
+            c["rejection_reasons"] = _dedupe_candidate_reasons(c.get("rejection_reasons") or [])
+        cleaned.append(c)
+    return cleaned
+
+
+def _p300_executable_sizing_audit(limit: int = 25) -> dict:
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    rows = list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
+    checked = [_p300_apply_executable_selection_contract(dict(r or {})) for r in rows if isinstance(r, dict)]
+    selected_symbols = [
+        str(s or "").strip().upper()
+        for s in list(summary.get("selected_symbols") or [])
+        if str(s or "").strip()
+    ]
+    broken_selected = [
+        r for r in checked
+        if str(r.get("symbol") or "").strip().upper() in selected_symbols
+        and not bool((r.get("executable_sizing_truth") or {}).get("executable"))
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "executable_sizing_truth_audit",
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "latest_scan_reason": latest_scan.get("reason"),
+        "selected_symbols": selected_symbols,
+        "broken_selected_symbols": [r.get("symbol") for r in broken_selected],
+        "broken_selected_count": len(broken_selected),
+        "zero_qty_symbols": [
+            r.get("symbol")
+            for r in checked
+            if float((r.get("executable_sizing_truth") or {}).get("effective_estimated_qty") or 0.0) <= 0
+        ],
+        "misleading_buying_power_labels": [
+            r.get("symbol")
+            for r in checked
+            if "insufficient_buying_power" in list(r.get("rejection_reasons") or [])
+            and not bool((r.get("executable_sizing_truth") or {}).get("broker_buying_power_label_valid"))
+        ],
+        "rows": [
+            {
+                "symbol": r.get("symbol"),
+                "eligible": bool(r.get("eligible")),
+                "selected": str(r.get("symbol") or "").strip().upper() in selected_symbols,
+                "rank_score": r.get("rank_score"),
+                "estimated_qty": r.get("estimated_qty"),
+                "requested_qty": r.get("requested_qty"),
+                "rejection_reasons": list(r.get("rejection_reasons") or []),
+                "executable_sizing_truth": r.get("executable_sizing_truth"),
+            }
+            for r in checked[: max(1, min(int(limit or 25), 50))]
+        ],
+        "recommended_action": (
+            "fix_selection_contract_before_forcing_entries"
+            if broken_selected
+            else "selection_contract_clean"
+        ),
+    }
 
 def _same_day_entry_stats() -> dict:
     today = now_ny().date()
@@ -15831,6 +16007,7 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         'risk_per_share': round(risk_per_share, 4),
         'requested_qty': round(requested_qty, 2),
         'estimated_qty': round(est_qty, 2),
+        'affordability': dict(affordable),
         'rank_score': round(score, 4),
         'min_rank_score': round(min_rank_score, 4),
         'signal': 'daily_breakout',
@@ -15870,9 +16047,16 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
     candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
 
     if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
-        candidate['rejection_reasons'].append('insufficient_buying_power')
+        sizing_truth = _p300_executable_sizing_truth(candidate)
+        candidate['executable_sizing_truth'] = sizing_truth
+        candidate['rejection_reasons'].append(
+            "broker_insufficient_buying_power"
+            if sizing_truth.get("broker_buying_power_label_valid")
+            else "internal_sizing_qty_zero"
+        )
         candidate['rejection_reasons'] = _dedupe_candidate_reasons(candidate.get('rejection_reasons') or [])
 
+    candidate = _p300_apply_executable_selection_contract(candidate)
     return candidate
 
 def _index_alignment_ok(index_bars: list[dict]) -> bool | None:
@@ -15940,9 +16124,17 @@ def evaluate_daily_mean_reversion_candidate(symbol: str, bars: list[dict], regim
     if range_pct >= float(SWING_MEAN_REVERSION_MIN_RANGE_PCT): score += max(0.0, min(10.0, range_pct * 100.0))
     else: candidate['rejection_reasons'].append('insufficient_range')
     if slow_ma and close >= slow_ma: score += 8.0
-    candidate.update({'close': round(close,4), 'prev_close': round(prev_close,4), 'high': round(high,4), 'low': round(low,4), 'fast_ma': round(fast_ma,4) if fast_ma else None, 'slow_ma': round(slow_ma,4) if slow_ma else None, 'avg_dollar_volume_20d': round(avg_dollar_vol_20,2), 'return_5d_pct': round((ret_5 or 0.0) * 100.0,3) if ret_5 is not None else None, 'return_20d_pct': round((ret_20 or 0.0) * 100.0,3) if ret_20 is not None else None, 'close_to_high_pct': round(close_to_high * 100.0,3), 'distance_to_slow_ma_pct': round((dist_to_slow or 0.0) * 100.0,3) if dist_to_slow is not None else None, 'mean_anchor': round(mean_anchor,4) if mean_anchor else None, 'breakout_level': round((slow_ma or high),4) if (slow_ma or high) else None, 'breakout_distance_pct': round((((close / max(mean_anchor, 1e-9)) - 1.0) if mean_anchor else 0.0) * 100.0,3), 'range_pct': round(range_pct * 100.0,3), 'stop_price': round(stop_price,4), 'target_price': round(target_price,4), 'risk_per_share': round(risk_per_share,4), 'requested_qty': round(requested_qty,2), 'estimated_qty': round(est_qty,2), 'rank_score': round(score,4), 'signal': MEAN_REVERSION_STRATEGY_NAME, 'side': 'buy', 'regime_mode': regime_mode, 'max_hold_days': int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), 'strategy_priority': 50, 'mode_thresholds': {'close_to_high_min_pct': round(float(SWING_MEAN_REVERSION_MIN_CLOSE_TO_HIGH_PCT) * 100.0,3), 'return_5d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_5D_RETURN_PCT) * 100.0,3), 'return_5d_max_pct': round(float(SWING_MEAN_REVERSION_MAX_5D_RETURN_PCT) * 100.0,3), 'return_20d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_20D_RETURN_PCT) * 100.0,3), 'max_dist_to_slow_ma_pct': round(float(SWING_MEAN_REVERSION_MAX_DIST_TO_SLOW_MA_PCT) * 100.0,3), 'target_pct': round(float(SWING_MEAN_REVERSION_TARGET_PCT) * 100.0,3), 'stop_pct': round(float(SWING_MEAN_REVERSION_STOP_PCT) * 100.0,3)}})
+    candidate.update({'close': round(close,4), 'prev_close': round(prev_close,4), 'high': round(high,4), 'low': round(low,4), 'fast_ma': round(fast_ma,4) if fast_ma else None, 'slow_ma': round(slow_ma,4) if slow_ma else None, 'avg_dollar_volume_20d': round(avg_dollar_vol_20,2), 'return_5d_pct': round((ret_5 or 0.0) * 100.0,3) if ret_5 is not None else None, 'return_20d_pct': round((ret_20 or 0.0) * 100.0,3) if ret_20 is not None else None, 'close_to_high_pct': round(close_to_high * 100.0,3), 'distance_to_slow_ma_pct': round((dist_to_slow or 0.0) * 100.0,3) if dist_to_slow is not None else None, 'mean_anchor': round(mean_anchor,4) if mean_anchor else None, 'breakout_level': round((slow_ma or high),4) if (slow_ma or high) else None, 'breakout_distance_pct': round((((close / max(mean_anchor, 1e-9)) - 1.0) if mean_anchor else 0.0) * 100.0,3), 'range_pct': round(range_pct * 100.0,3), 'stop_price': round(stop_price,4), 'target_price': round(target_price,4), 'risk_per_share': round(risk_per_share,4), 'requested_qty': round(requested_qty,2), 'estimated_qty': round(est_qty,2), 'affordability': dict(affordable), 'rank_score': round(score,4), 'signal': MEAN_REVERSION_STRATEGY_NAME, 'side': 'buy', 'regime_mode': regime_mode, 'max_hold_days': int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), 'strategy_priority': 50, 'mode_thresholds': {'close_to_high_min_pct': round(float(SWING_MEAN_REVERSION_MIN_CLOSE_TO_HIGH_PCT) * 100.0,3), 'return_5d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_5D_RETURN_PCT) * 100.0,3), 'return_5d_max_pct': round(float(SWING_MEAN_REVERSION_MAX_5D_RETURN_PCT) * 100.0,3), 'return_20d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_20D_RETURN_PCT) * 100.0,3), 'max_dist_to_slow_ma_pct': round(float(SWING_MEAN_REVERSION_MAX_DIST_TO_SLOW_MA_PCT) * 100.0,3), 'target_pct': round(float(SWING_MEAN_REVERSION_TARGET_PCT) * 100.0,3), 'stop_pct': round(float(SWING_MEAN_REVERSION_STOP_PCT) * 100.0,3)}})
     candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
-    if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY): candidate['rejection_reasons'].append('insufficient_buying_power')
+    if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
+        sizing_truth = _p300_executable_sizing_truth(candidate)
+        candidate['executable_sizing_truth'] = sizing_truth
+        candidate['rejection_reasons'].append(
+            "broker_insufficient_buying_power"
+            if sizing_truth.get("broker_buying_power_label_valid")
+            else "internal_sizing_qty_zero"
+        )
+    candidate = _p300_apply_executable_selection_contract(candidate)
     return candidate
 
 def _shadow_market_gate_reasons() -> set[str]:
@@ -17453,8 +17645,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         c['sizing_truth'] = dict(cap_truth)
         c['raw_estimated_qty'] = cap_truth.get('raw_estimated_qty')
         effective_est_qty = float(cap_truth.get('effective_estimated_qty') or 0.0)
-        if effective_est_qty > 0 and effective_est_qty < float(c.get('estimated_qty') or 0.0):
-            c['estimated_qty'] = round(effective_est_qty, 2)
+        c['estimated_qty'] = round(effective_est_qty, 2)
+        c = _p300_apply_executable_selection_contract(c, cap_truth=cap_truth)
         projected_notional = float(cap_truth.get('effective_projected_notional') or 0.0)
         if c.get('eligible') and local_symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > local_symbol_cap:
             c['eligible'] = False
@@ -17485,8 +17677,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     candidates.sort(key=lambda x: (1 if str(x.get('strategy') or '').strip().lower() == BREAKOUT_STRATEGY_NAME else 0, float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     shadow_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     shadow_alignment_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
-    breakout_approved = [c for c in breakout_candidates if c.get('eligible')]
-    mean_reversion_approved = [c for c in mean_reversion_candidates if c.get('eligible')]
+    breakout_candidates = _p300_selection_contract_cleanup(breakout_candidates)
+    mean_reversion_candidates = _p300_selection_contract_cleanup(mean_reversion_candidates)
+    candidates = _p300_selection_contract_cleanup(candidates)
+
+    breakout_approved = [
+        c for c in breakout_candidates
+        if c.get('eligible') and bool((c.get("executable_sizing_truth") or {}).get("executable"))
+    ]
+    mean_reversion_approved = [
+        c for c in mean_reversion_candidates
+        if c.get('eligible') and bool((c.get("executable_sizing_truth") or {}).get("executable"))
+    ]
     if (
         post_change_drawdown.get("block_new_entries")
         and BREAKOUT_STRATEGY_NAME
@@ -17654,7 +17856,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         adaptive_capacity_selected = adaptive_capacity_candidates[: max(0, min(int(SWING_ADAPTIVE_CAPACITY_MAX_ENTRIES_PER_SCAN), int(max_new_entries)))]
         if adaptive_capacity_selected:
             approved = adaptive_capacity_candidates
-    selected = approved[:max_new_entries] if approved is not adaptive_capacity_candidates else adaptive_capacity_selected
+    approved = [
+        c for c in list(approved or [])
+        if bool(c.get("eligible"))
+        and bool((c.get("executable_sizing_truth") or _p300_executable_sizing_truth(c)).get("executable"))
+    ]
+    selected = approved[:max_new_entries] if approved is not adaptive_capacity_candidates else [
+        c for c in adaptive_capacity_selected
+        if bool((c.get("executable_sizing_truth") or _p300_executable_sizing_truth(c)).get("executable"))
+    ]
     if bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED) and selected:
         recovery_rows = [c for c in selected if bool(c.get("target_path_recovery_mode"))]
         if len(recovery_rows) > int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN or 0):
@@ -26281,6 +26491,14 @@ def _p299_queue_selected_entry_intent(candidate: dict, meta: dict | None = None,
     sym = str(candidate.get("symbol") or "").strip().upper()
     if not sym:
         return {"queued": False, "reason": "missing_symbol"}
+    sizing_truth = _p300_executable_sizing_truth(candidate)
+    if bool(SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED) and not bool(sizing_truth.get("executable")):
+        return {
+            "queued": False,
+            "reason": "non_executable_sizing",
+            "symbol": sym,
+            "executable_sizing_truth": sizing_truth,
+        }
 
     signal = str(candidate.get("signal") or "daily_breakout").strip() or "daily_breakout"
     selected_ts = datetime.now(timezone.utc).isoformat()
@@ -26420,6 +26638,15 @@ def _p299_backfill_latest_selected_entry_intents(apply: bool = False) -> dict:
             {"symbol": sym, "signal": "daily_breakout"},
         )
 
+        sizing_truth = _p300_executable_sizing_truth(candidate)
+        if bool(SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED) and not bool(sizing_truth.get("executable")):
+            rows.append({
+                "symbol": sym,
+                "action": "skip_non_executable_sizing",
+                "executable_sizing_truth": sizing_truth,
+                "candidate": candidate,
+            })
+            continue
         meta = {
             "selected_entry_intent_backfill": True,
             "backfilled_from_latest_selected": True,
@@ -36087,6 +36314,11 @@ def diagnostics_reconcile_light(request: Request):
 def diagnostics_selected_entry_intent_queue(request: Request):
     require_admin_if_configured(request)
     return _p299_selected_entry_finalizer_status()
+
+@app.get("/diagnostics/executable_sizing_truth")
+def diagnostics_executable_sizing_truth(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return _p300_executable_sizing_audit(limit=limit)
 
 @app.get("/diagnostics/selected_entry_intent_backfill")
 def diagnostics_selected_entry_intent_backfill(
