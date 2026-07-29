@@ -1515,11 +1515,11 @@ PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true"
 
 SELECTED_ENTRY_INTENT_QUEUE_ENABLED = env_bool_any(
     "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
-    default=True,
+    default=False,
 )
 SELECTED_ENTRY_FINALIZER_ENABLED = env_bool_any(
     "SELECTED_ENTRY_FINALIZER_ENABLED",
-    default=True,
+    default=False,
 )
 SELECTED_ENTRY_FINALIZER_MAX_PER_RUN = getenv_int_any(
     "SELECTED_ENTRY_FINALIZER_MAX_PER_RUN",
@@ -1598,6 +1598,10 @@ SWING_SCAN_RUN_INTRADAY_SHADOW = env_bool_any(
 SWING_SELECTED_SYMBOL_SOURCE_STRICT_SCAN = env_bool_any(
     "SWING_SELECTED_SYMBOL_SOURCE_STRICT_SCAN",
     default=True,
+)
+HEAVY_DIAGNOSTICS_ENABLED = env_bool_any(
+    "HEAVY_DIAGNOSTICS_ENABLED",
+    default=False,
 )
 # --- Trades-Today forcing (emergency mode) ---
 TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
@@ -2185,7 +2189,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-303-swing-production-core-cleanup-strategy-separation-prep"
+PATCH_VERSION = "patch-304-swing-dead-path-quarantine-diagnostic-diet-repo-hygiene"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -4400,7 +4404,7 @@ def _ensure_runtime_state_loaded():
     except Exception:
         pass
     try:
-        if not SELECTED_ENTRY_INTENT_QUEUE:
+        if bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED) and not SELECTED_ENTRY_INTENT_QUEUE:
             SELECTED_ENTRY_INTENT_QUEUE_RESTORE.update(_p299_restore_selected_entry_intent_queue())
     except Exception:
         pass
@@ -27037,6 +27041,19 @@ def _p299_selected_entry_finalizer_status() -> dict:
     }
 
 def _p299_backfill_latest_selected_entry_intents(apply: bool = False) -> dict:
+    if not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED):
+        return {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "selected_entry_intent_backfill",
+            "enabled": False,
+            "applied": bool(apply),
+            "reason": "selected_entry_intent_queue_disabled_for_swing_core_cleanup",
+            "selected_symbols": [],
+            "queued": [],
+            "rows": [],
+        }
+
     latest_scan, summary = _p298_latest_scan_summary_light()
     lifecycle_items = _p298_recent_lifecycle_items(limit=100)
     selected_symbols = _p298_selected_symbols_light(summary, lifecycle_items)
@@ -27133,20 +27150,32 @@ def _p299_backfill_latest_selected_entry_intents(apply: bool = False) -> dict:
     }
 
 def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | None = None) -> dict:
-    _p299_restore_selected_entry_intent_queue()
-    backfill = _p299_backfill_latest_selected_entry_intents(apply=bool(apply))
-    max_run = max(1, min(int(max_items or SELECTED_ENTRY_FINALIZER_MAX_PER_RUN or 1), 5))
     rows = []
     finalized_symbols = []
 
     if not bool(SELECTED_ENTRY_FINALIZER_ENABLED):
         return {
             "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "selected_entry_finalizer",
             "enabled": False,
             "applied": bool(apply),
-            "reason": "selected_entry_finalizer_disabled",
+            "reason": "selected_entry_finalizer_disabled_for_swing_core_cleanup",
+            "processed": 0,
+            "finalized_symbols": finalized_symbols,
             "rows": rows,
         }
+
+    if bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED):
+        _p299_restore_selected_entry_intent_queue()
+        backfill = _p299_backfill_latest_selected_entry_intents(apply=bool(apply))
+    else:
+        backfill = {
+            "enabled": False,
+            "reason": "selected_entry_intent_queue_disabled_for_swing_core_cleanup",
+        }
+
+    max_run = max(1, min(int(max_items or SELECTED_ENTRY_FINALIZER_MAX_PER_RUN or 1), 5))
 
     live_allowed_now = bool(
         LIVE_TRADING_ENABLED
@@ -36652,6 +36681,22 @@ def diagnostics_operator_bundle(
     detail: str = "compact",
 ):
     require_admin_if_configured(request)
+    if not bool(HEAVY_DIAGNOSTICS_ENABLED):
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "operator_bundle",
+            "disabled": True,
+            "reason": "heavy_diagnostics_disabled_for_swing_core_cleanup",
+            "use_light_endpoints": [
+                "/diagnostics/scanner_light",
+                "/diagnostics/market_open_selection_audit_light",
+                "/diagnostics/selected_submission_truth_light",
+                "/diagnostics/live_positions_light",
+                "/diagnostics/reconcile_light",
+                "/diagnostics/no_trade_brief?refresh_live=false&limit=10",
+            ],
+        }
     return _p268_operator_bundle(scope=scope, limit=limit, refresh_live=refresh_live)
 
 @app.get("/diagnostics/operator_bundle_intraday_light")
@@ -36681,6 +36726,23 @@ def diagnostics_scenario_bundle(
     refresh_live: bool = True,
 ):
     require_admin_if_configured(request)
+    if not bool(HEAVY_DIAGNOSTICS_ENABLED):
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "scenario_bundle",
+            "scope": scope,
+            "disabled": True,
+            "reason": "heavy_diagnostics_disabled_for_swing_core_cleanup",
+            "use_light_endpoints": [
+                "/diagnostics/scanner_light",
+                "/diagnostics/market_open_selection_audit_light",
+                "/diagnostics/selected_submission_truth_light",
+                "/diagnostics/live_positions_light",
+                "/diagnostics/reconcile_light",
+                "/diagnostics/no_trade_brief?refresh_live=false&limit=10",
+            ],
+        }
     return _p268_operator_bundle(scope=scope, limit=limit, refresh_live=refresh_live)
 
 @app.get("/diagnostics/selected_submission_truth")
@@ -36770,6 +36832,15 @@ def diagnostics_no_trade_brief_full(
     refresh_live: bool = True,
 ):
     require_admin_if_configured(request)
+    if not bool(HEAVY_DIAGNOSTICS_ENABLED):
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "full_bundle_no_trade_brief",
+            "disabled": True,
+            "reason": "heavy_diagnostics_disabled_for_swing_core_cleanup",
+            "use_endpoint": "/diagnostics/no_trade_brief?refresh_live=false&limit=10",
+        }
     bundle = _p268_operator_bundle(scope="no_trade", limit=limit, refresh_live=refresh_live)
     return {
         "ok": True,

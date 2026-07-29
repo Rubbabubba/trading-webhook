@@ -25,24 +25,28 @@ if (-not [string]::IsNullOrWhiteSpace($AdminSecret)) {
 
 $targets = @(
     @{
-        Name = "swing"
-        Url = "$BaseUrl/diagnostics/operator_bundle?scope=swing&refresh_live=true&limit=50"
+        Name = "scanner_light"
+        Url = "$BaseUrl/diagnostics/scanner_light"
     },
     @{
-        Name = "intraday"
-        Url = "$BaseUrl/diagnostics/operator_bundle?scope=intraday&refresh_live=true&limit=50"
+        Name = "market_open_selection_audit_light"
+        Url = "$BaseUrl/diagnostics/market_open_selection_audit_light?limit=10"
     },
     @{
-        Name = "performance"
-        Url = "$BaseUrl/diagnostics/operator_bundle?scope=performance&refresh_live=true&limit=50"
+        Name = "selected_submission_truth_light"
+        Url = "$BaseUrl/diagnostics/selected_submission_truth_light"
     },
     @{
-        Name = "risk"
-        Url = "$BaseUrl/diagnostics/operator_bundle?scope=risk&refresh_live=true&limit=50"
+        Name = "live_positions_light"
+        Url = "$BaseUrl/diagnostics/live_positions_light"
     },
     @{
-        Name = "no_trade"
-        Url = "$BaseUrl/diagnostics/no_trade_brief?refresh_live=true&limit=50"
+        Name = "reconcile_light"
+        Url = "$BaseUrl/diagnostics/reconcile_light"
+    },
+    @{
+        Name = "no_trade_brief"
+        Url = "$BaseUrl/diagnostics/no_trade_brief?refresh_live=false&limit=10"
     }
 )
 
