@@ -26374,9 +26374,96 @@ def _p299_selected_entry_finalizer_status() -> dict:
         "items": list(SELECTED_ENTRY_INTENT_QUEUE or [])[-25:],
     }
 
+def _p299_backfill_latest_selected_entry_intents(apply: bool = False) -> dict:
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    lifecycle_items = _p298_recent_lifecycle_items(limit=100)
+    selected_symbols = _p298_selected_symbols_light(summary, lifecycle_items)
+
+    candidate_rows = [
+        dict(r or {})
+        for r in list(summary.get("top_candidates") or [])
+        if isinstance(r, dict)
+    ]
+
+    rows = []
+    queued = []
+
+    for sym in selected_symbols:
+        side_effect = _p297_symbol_entry_side_effect(sym)
+        if bool(side_effect.get("side_effect_detected")):
+            rows.append({
+                "symbol": sym,
+                "action": "skip_side_effect_exists",
+                "side_effect": side_effect,
+            })
+            continue
+
+        existing_pending = [
+            row for row in SELECTED_ENTRY_INTENT_QUEUE
+            if str(row.get("symbol") or "").strip().upper() == sym
+            and str(row.get("status") or "") == "pending"
+        ]
+        if existing_pending:
+            rows.append({
+                "symbol": sym,
+                "action": "skip_pending_intent_exists",
+                "intent_key": existing_pending[-1].get("intent_key"),
+            })
+            continue
+
+        candidate = next(
+            (
+                dict(r)
+                for r in candidate_rows
+                if str(r.get("symbol") or "").strip().upper() == sym
+            ),
+            {"symbol": sym, "signal": "daily_breakout"},
+        )
+
+        meta = {
+            "selected_entry_intent_backfill": True,
+            "backfilled_from_latest_selected": True,
+            "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+            "latest_scan_reason": latest_scan.get("reason"),
+            "patch_version": PATCH_VERSION,
+        }
+
+        if not apply:
+            rows.append({
+                "symbol": sym,
+                "action": "would_queue_missing_side_effect_intent",
+                "candidate": candidate,
+            })
+            continue
+
+        queued_result = _p299_queue_selected_entry_intent(
+            candidate,
+            meta=meta,
+            source_name="selected_entry_intent_backfill",
+            live_allowed=bool(SCANNER_ALLOW_LIVE and not SCANNER_DRY_RUN and not DRY_RUN),
+        )
+        queued.append(queued_result)
+        rows.append({
+            "symbol": sym,
+            "action": "queued_missing_side_effect_intent",
+            "queue_result": queued_result,
+        })
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "selected_entry_intent_backfill",
+        "applied": bool(apply),
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "latest_scan_reason": latest_scan.get("reason"),
+        "selected_symbols": selected_symbols,
+        "queued": queued,
+        "rows": rows,
+    }
 
 def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | None = None) -> dict:
     _p299_restore_selected_entry_intent_queue()
+    backfill = _p299_backfill_latest_selected_entry_intents(apply=bool(apply))
     max_run = max(1, min(int(max_items or SELECTED_ENTRY_FINALIZER_MAX_PER_RUN or 1), 5))
     rows = []
     finalized_symbols = []
@@ -26547,6 +26634,7 @@ def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | 
         "live_allowed_now": bool(live_allowed_now),
         "processed": processed,
         "finalized_symbols": finalized_symbols,
+        "backfill": backfill,
         "rows": rows,
         "queue": _p299_selected_entry_finalizer_status(),
     }
@@ -36000,6 +36088,14 @@ def diagnostics_selected_entry_intent_queue(request: Request):
     require_admin_if_configured(request)
     return _p299_selected_entry_finalizer_status()
 
+@app.get("/diagnostics/selected_entry_intent_backfill")
+def diagnostics_selected_entry_intent_backfill(
+    request: Request,
+    apply: bool = False,
+):
+    require_admin_if_configured(request)
+    _p299_restore_selected_entry_intent_queue()
+    return _p299_backfill_latest_selected_entry_intents(apply=bool(apply))
 
 @app.get("/diagnostics/selected_entry_finalizer")
 def diagnostics_selected_entry_finalizer(
