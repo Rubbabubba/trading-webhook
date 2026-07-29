@@ -2189,7 +2189,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-304-swing-dead-path-quarantine-diagnostic-diet-repo-hygiene"
+PATCH_VERSION = "patch-305-scanner-truth-cleanup-disabled-diagnostic-semantics"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2969,6 +2969,15 @@ def _classify_scanner_warning_codes(state: dict) -> dict:
     historical_incomplete_runs_total = int(state.get("historical_incomplete_runs_total") or 0)
 
     worker_status = str(state.get("worker_status") or "unknown").strip().lower()
+    latest_status = str(state.get("status") or state.get("last_status") or "").strip().lower()
+    last_worker_event_dt = _safe_parse_iso_utc(state.get("last_worker_event_utc") or state.get("last_event_utc"))
+    recent_worker_event = bool(
+        last_worker_event_dt
+        and (datetime.now(timezone.utc) - last_worker_event_dt).total_seconds()
+        <= max(int(state.get("interval_sec") or SCAN_INTERVAL_SEC or 300) + 180, 300)
+    )
+    if worker_status == "unknown" and recent_worker_event and latest_status in {"ok", "success", "skipped"}:
+        worker_status = "up"
 
     last_dispatch_failure_dt = _safe_parse_iso_utc(state.get("last_dispatch_failure_utc"))
     last_success_dt = _safe_parse_iso_utc(state.get("last_success_utc"))
@@ -2986,9 +2995,9 @@ def _classify_scanner_warning_codes(state: dict) -> dict:
         _add_unique(historical, "restored_partial_run_history")
 
     if manual_request_today > 0:
-        _add_unique(active, "manual_scan_request_observed")
+        _add_unique(historical, "manual_scan_request_observed")
     if external_request_today > 0:
-        _add_unique(active, "external_scan_request_observed")
+        _add_unique(historical, "external_scan_request_observed")
 
     if worker_status != "up":
         if worker_status == "late":
@@ -3803,6 +3812,8 @@ def _record_scanner_telemetry(event: str, status: str, details: dict | None = No
     last_error = prev.get("last_error")
     if is_dispatch_failure or is_run_failure:
         last_error = details.get("error") or prev.get("last_error")
+    elif is_run_success or is_run_skip or (is_worker_event and status_l in {"ok", "success", "skipped"}):
+        last_error = None
     elif details.get("error") not in (None, ""):
         last_error = details.get("error")
 
@@ -26724,6 +26735,19 @@ def _p298_selected_submission_truth_light() -> dict:
 def _p298_scanner_light() -> dict:
     tel = dict(LAST_SCANNER_TELEMETRY or {})
     latest_scan, summary = _p298_latest_scan_summary_light()
+    today_prefix = str(now_ny().date())
+    telemetry_summary = _scanner_telemetry_summary(today_prefix=today_prefix)
+
+    active_warning_codes = list(telemetry_summary.get("active_warning_codes") or [])
+    recovered_warning_codes = list(telemetry_summary.get("recovered_warning_codes") or [])
+    historical_warning_codes = list(telemetry_summary.get("historical_warning_codes") or [])
+    current_error = tel.get("last_error") or tel.get("error")
+    scanner_currently_ok = bool(
+        not active_warning_codes
+        and not bool(telemetry_summary.get("in_flight_run"))
+        and str(tel.get("status") or tel.get("last_status") or "").strip().lower() in {"ok", "success", "skipped", ""}
+    )
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -26732,13 +26756,22 @@ def _p298_scanner_light() -> dict:
         "last_event": tel.get("event") or tel.get("last_event"),
         "last_status": tel.get("status") or tel.get("last_status"),
         "last_event_utc": tel.get("last_event_utc"),
-        "last_closed_utc": tel.get("last_closed_utc"),
-        "last_error": tel.get("last_error") or tel.get("error"),
-        "in_flight_run": bool(tel.get("in_flight_run")),
-        "attempts_today": tel.get("attempts_today"),
-        "success_today": tel.get("success_today"),
-        "failure_today": tel.get("failure_today"),
-        "active_warning_codes": list(tel.get("active_warning_codes") or []),
+        "last_closed_utc": telemetry_summary.get("last_closed_utc") or tel.get("last_closed_utc"),
+        "last_error": None if scanner_currently_ok else current_error,
+        "last_error_historical": current_error if scanner_currently_ok else None,
+        "in_flight_run": bool(telemetry_summary.get("in_flight_run")),
+        "attempts_today": telemetry_summary.get("attempts_today"),
+        "success_today": telemetry_summary.get("success_today"),
+        "failure_today": telemetry_summary.get("failure_today"),
+        "active_warning_codes": active_warning_codes,
+        "recovered_warning_codes": recovered_warning_codes,
+        "historical_warning_codes": historical_warning_codes,
+        "cleanup_status": {
+            "scanner_currently_ok": scanner_currently_ok,
+            "stale_errors_suppressed": bool(scanner_currently_ok and current_error),
+            "manual_requests_are_historical": True,
+            "worker_unknown_can_be_cleared_by_recent_heartbeat": True,
+        },
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),
             "reason": latest_scan.get("reason"),
@@ -36683,7 +36716,7 @@ def diagnostics_operator_bundle(
     require_admin_if_configured(request)
     if not bool(HEAVY_DIAGNOSTICS_ENABLED):
         return {
-            "ok": False,
+            "ok": True,
             "patch_version": PATCH_VERSION,
             "mode": "operator_bundle",
             "disabled": True,
@@ -36728,7 +36761,7 @@ def diagnostics_scenario_bundle(
     require_admin_if_configured(request)
     if not bool(HEAVY_DIAGNOSTICS_ENABLED):
         return {
-            "ok": False,
+            "ok": True,
             "patch_version": PATCH_VERSION,
             "mode": "scenario_bundle",
             "scope": scope,
@@ -36834,7 +36867,7 @@ def diagnostics_no_trade_brief_full(
     require_admin_if_configured(request)
     if not bool(HEAVY_DIAGNOSTICS_ENABLED):
         return {
-            "ok": False,
+            "ok": True,
             "patch_version": PATCH_VERSION,
             "mode": "full_bundle_no_trade_brief",
             "disabled": True,
