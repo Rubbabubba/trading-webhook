@@ -1815,14 +1815,14 @@ SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE = getenv_any(
     default="defensive_near_miss_relaxation",
 ).strip().lower()
 
-# Patch 297 - selected candidate submission finalizer
+# Retired by Patch 307 hotfix. Direct swing scanner submit is the production path.
 SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED = env_bool_any(
     "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
-    default=True,
+    default=False,
 )
 SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED = env_bool_any(
     "SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED",
-    default=True,
+    default=False,
 )
 
 # 5m resampling / strategy tuning
@@ -2195,7 +2195,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-307-retired-intraday-bundle-automation-removal-from-swing-runtime"
+PATCH_VERSION = "patch-307-hotfix-selected-submission-finalizer-default-off-dispatch-recovery-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -3017,14 +3017,21 @@ def _classify_scanner_warning_codes(state: dict) -> dict:
         side_effect_truth = dict(state.get("side_effect_truth") or {})
         success_after_side_effect = bool(side_effect_truth.get("side_effect_detected"))
 
+        dispatch_recovered_by_success = bool(
+            last_success_dt
+            and last_closed_dt
+            and last_closed_status in {"success", "skipped"}
+            and last_success_dt >= last_dispatch_failure_dt
+            and last_closed_dt >= last_dispatch_failure_dt
+        )
+        dispatch_recovered_by_closed_scan = bool(
+            last_closed_dt
+            and last_closed_status in {"success", "skipped"}
+            and last_closed_dt >= last_dispatch_failure_dt
+        )
         dispatch_recovered = bool(
-            (
-                last_success_dt
-                and last_closed_dt
-                and last_closed_status in {"success", "skipped"}
-                and last_success_dt >= last_dispatch_failure_dt
-                and last_closed_dt >= last_dispatch_failure_dt
-            )
+            dispatch_recovered_by_success
+            or dispatch_recovered_by_closed_scan
             or success_after_side_effect
         )
         dispatch_late_timeout_after_success = bool(
@@ -3036,7 +3043,10 @@ def _classify_scanner_warning_codes(state: dict) -> dict:
             and (last_dispatch_failure_dt - last_closed_dt).total_seconds() <= max(timeout_sec + 30, 120)
         )
         if dispatch_recovered or dispatch_late_timeout_after_success:
-            _add_unique(recovered, "dispatch_failure_recovered")
+            if dispatch_recovered_by_closed_scan and not dispatch_recovered_by_success:
+                _add_unique(recovered, "dispatch_failure_recovered_by_closed_scan")
+            else:
+                _add_unique(recovered, "dispatch_failure_recovered")
         else:
             _add_unique(active, "dispatch_failure")
 
@@ -26748,6 +26758,7 @@ def _p298_scanner_light() -> dict:
     recovered_warning_codes = list(telemetry_summary.get("recovered_warning_codes") or [])
     historical_warning_codes = list(telemetry_summary.get("historical_warning_codes") or [])
     current_error = tel.get("last_error") or tel.get("error")
+    dispatch_failure_recovered_by_closed_scan = "dispatch_failure_recovered_by_closed_scan" in recovered_warning_codes
     scanner_currently_ok = bool(
         not active_warning_codes
         and not bool(telemetry_summary.get("in_flight_run"))
@@ -26777,6 +26788,7 @@ def _p298_scanner_light() -> dict:
             "stale_errors_suppressed": bool(scanner_currently_ok and current_error),
             "manual_requests_are_historical": True,
             "worker_unknown_can_be_cleared_by_recent_heartbeat": True,
+            "dispatch_failure_recovered_by_closed_scan": bool(dispatch_failure_recovered_by_closed_scan),
         },
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),
