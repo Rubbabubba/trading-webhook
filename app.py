@@ -1513,6 +1513,27 @@ SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must 
 NEW_ENTRIES_ENABLED = env_bool_any("NEW_ENTRIES_ENABLED", "ENTRIES_ENABLED", default="true")
 PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
 
+SELECTED_ENTRY_INTENT_QUEUE_ENABLED = env_bool_any(
+    "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
+    default=True,
+)
+SELECTED_ENTRY_FINALIZER_ENABLED = env_bool_any(
+    "SELECTED_ENTRY_FINALIZER_ENABLED",
+    default=True,
+)
+SELECTED_ENTRY_FINALIZER_MAX_PER_RUN = getenv_int_any(
+    "SELECTED_ENTRY_FINALIZER_MAX_PER_RUN",
+    default=1,
+)
+SELECTED_ENTRY_FINALIZER_MAX_INTENT_AGE_SEC = getenv_int_any(
+    "SELECTED_ENTRY_FINALIZER_MAX_INTENT_AGE_SEC",
+    default=900,
+)
+SELECTED_ENTRY_INTENT_QUEUE_PATH = getenv_any(
+    "SELECTED_ENTRY_INTENT_QUEUE_PATH",
+    default="/var/data/selected_entry_intent_queue.json",
+)
+
 # --- Trades-Today forcing (emergency mode) ---
 TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
 TRADES_TODAY_TARGET_TRADES = int(getenv_any("TRADES_TODAY_TARGET_TRADES", default="1"))
@@ -1528,6 +1549,8 @@ REGIME_HISTORY: list[dict] = []
 PAPER_LIFECYCLE_STATE_RESTORE: dict = {}
 LAST_PAPER_LIFECYCLE: dict = {}
 PAPER_LIFECYCLE_HISTORY: list[dict] = []
+SELECTED_ENTRY_INTENT_QUEUE: list[dict] = []
+SELECTED_ENTRY_INTENT_QUEUE_RESTORE: dict = {}
 CANDIDATE_HISTORY_SIZE = int(os.getenv("CANDIDATE_HISTORY_SIZE", "100"))
 CANDIDATE_HISTORY: list[dict] = []
 COHORT_EVIDENCE_HISTORY: list[dict] = []
@@ -2097,7 +2120,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-298-market-hours-light-diagnostic-endpoints"
+PATCH_VERSION = "patch-299-selected-entry-intent-queue-lightweight-submission-finalizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -4309,6 +4332,11 @@ def _ensure_runtime_state_loaded():
     try:
         if (not LAST_PAPER_LIFECYCLE) and (not PAPER_LIFECYCLE_HISTORY):
             restore_paper_lifecycle_state()
+    except Exception:
+        pass
+    try:
+        if not SELECTED_ENTRY_INTENT_QUEUE:
+            SELECTED_ENTRY_INTENT_QUEUE_RESTORE.update(_p299_restore_selected_entry_intent_queue())
     except Exception:
         pass
     try:
@@ -11022,12 +11050,15 @@ def startup_restore_state() -> dict:
     scan_restore = restore_scan_runtime_state()
     regime_restore = restore_regime_runtime_state()
     paper_restore = restore_paper_lifecycle_state()
+    selected_entry_intent_restore = _p299_restore_selected_entry_intent_queue()
+    SELECTED_ENTRY_INTENT_QUEUE_RESTORE.update(selected_entry_intent_restore)
     cohort_restore = restore_cohort_evidence_state()
     strategy_perf_restore = restore_strategy_performance_state()
     hybrid_proof_restore = restore_hybrid_proof_ledger_state()
     state["scan_state_restore"] = scan_restore
     state["regime_state_restore"] = regime_restore
     state["paper_lifecycle_state_restore"] = paper_restore
+    state["selected_entry_intent_queue_restore"] = selected_entry_intent_restore
     state["cohort_evidence_state_restore"] = cohort_restore
     state["strategy_performance_state_restore"] = strategy_perf_restore
     state["hybrid_proof_ledger_state_restore"] = hybrid_proof_restore
@@ -17717,6 +17748,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "entry_type": entry_type,
             "live_allowed": bool(live_allowed),
         })
+        selected_entry_intent = _p299_queue_selected_entry_intent(
+            c,
+            meta=meta,
+            source_name=source_name,
+            live_allowed=bool(live_allowed),
+        )
         if live_allowed:
             resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta, source=source_name)
             submit_meta = _classify_scan_submit_response(resp)
@@ -17729,6 +17766,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "submit_state": submit_meta.get("state"),
                 "submit_reason": submit_meta.get("reason"),
                 "submit_attempted": bool(submit_meta.get("attempted")),
+                "selected_entry_intent": dict(selected_entry_intent),
             })
         else:
             resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', source_name, meta=meta)
@@ -17742,10 +17780,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "submit_state": submit_meta.get("state"),
                 "submit_reason": submit_meta.get("reason"),
                 "submit_attempted": bool(submit_meta.get("attempted")),
+                "selected_entry_intent": dict(selected_entry_intent),
             })
     selected_submission_finalizer = _p297_finalize_selected_submissions(
         selected_submission_payloads,
         would_submit,
+    )
+    selected_entry_intent_finalizer = _p299_finalize_selected_entry_intents(
+        apply=bool(SCANNER_ALLOW_LIVE and not SCANNER_DRY_RUN and not effective_dry_run),
+        max_items=SELECTED_ENTRY_FINALIZER_MAX_PER_RUN,
     )
 
     LAST_SWING_CANDIDATES.clear()
@@ -17771,6 +17814,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
         'selected_submission_finalizer': dict(selected_submission_finalizer),
+        'selected_entry_intent_finalizer': dict(selected_entry_intent_finalizer),
+        'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
         'adaptive_capacity_candidates': [dict(c) for c in adaptive_capacity_candidates[:5]],
         'adaptive_capacity_selected': [c.get('symbol') for c in adaptive_capacity_selected],
         'shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
@@ -17802,6 +17847,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'selected_strategy': (selected[0].get('strategy') if selected else None),
         'selected_symbols': [c.get('symbol') for c in selected],
         'selected_submission_finalizer': dict(selected_submission_finalizer),
+        'selected_entry_intent_finalizer': dict(selected_entry_intent_finalizer),
+        'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
         'selected_submission_truth': _p297_selected_submission_truth([c.get('symbol') for c in selected]),
         'adaptive_capacity': {
             'enabled': bool(SWING_ADAPTIVE_CAPACITY_ENABLED),
@@ -18055,6 +18102,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'reconcile': reconcile_actions,
         'would_submit': would_submit,
         'selected_submission_finalizer': selected_submission_finalizer,
+        'selected_entry_intent_finalizer': selected_entry_intent_finalizer,
+        'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
         'selected_submission_truth': _p297_selected_submission_truth([c.get('symbol') for c in selected]),
         'results': LAST_SWING_CANDIDATES[:SWING_MAX_CANDIDATES],
     }
@@ -26178,6 +26227,323 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             if isinstance(row, dict)
         ],
         "recommended_action": recommended_action,
+    }
+
+def _p299_persist_selected_entry_intent_queue(reason: str = "") -> bool:
+    payload = {
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "patch_version": PATCH_VERSION,
+        "items": list(SELECTED_ENTRY_INTENT_QUEUE or []),
+    }
+    return _safe_json_write(SELECTED_ENTRY_INTENT_QUEUE_PATH, payload)
+
+
+def _p299_restore_selected_entry_intent_queue() -> dict:
+    payload = _safe_json_read(SELECTED_ENTRY_INTENT_QUEUE_PATH)
+    restored = {
+        "path": SELECTED_ENTRY_INTENT_QUEUE_PATH,
+        "loaded": False,
+        "count": 0,
+    }
+    if not payload:
+        return restored
+    try:
+        items = payload.get("items") or []
+        if isinstance(items, list):
+            SELECTED_ENTRY_INTENT_QUEUE.clear()
+            SELECTED_ENTRY_INTENT_QUEUE.extend([dict(x or {}) for x in items if isinstance(x, dict)][-100:])
+            restored["loaded"] = True
+            restored["count"] = len(SELECTED_ENTRY_INTENT_QUEUE)
+    except Exception as exc:
+        restored["error"] = str(exc)
+    return restored
+
+
+def _p299_intent_key(symbol: str, signal: str, selected_ts_utc: str = "") -> str:
+    sym = str(symbol or "").strip().upper()
+    sig = str(signal or "").strip().lower()
+    day = str((selected_ts_utc or datetime.now(timezone.utc).isoformat())[:10])
+    return f"{day}:{sym}:{sig}"
+
+
+def _p299_queue_selected_entry_intent(candidate: dict, meta: dict | None = None, source_name: str = "worker_scan", live_allowed: bool = False) -> dict:
+    if not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED):
+        return {"queued": False, "reason": "selected_entry_intent_queue_disabled"}
+
+    candidate = dict(candidate or {})
+    meta = dict(meta or {})
+    sym = str(candidate.get("symbol") or "").strip().upper()
+    if not sym:
+        return {"queued": False, "reason": "missing_symbol"}
+
+    signal = str(candidate.get("signal") or "daily_breakout").strip() or "daily_breakout"
+    selected_ts = datetime.now(timezone.utc).isoformat()
+    key = _p299_intent_key(sym, signal, selected_ts)
+
+    for row in SELECTED_ENTRY_INTENT_QUEUE:
+        if str(row.get("intent_key") or "") == key and str(row.get("status") or "") in {"pending", "submitted", "finalized"}:
+            return {
+                "queued": False,
+                "reason": "intent_already_exists",
+                "intent_key": key,
+                "status": row.get("status"),
+            }
+
+    intent = {
+        "intent_key": key,
+        "status": "pending",
+        "symbol": sym,
+        "side": "buy",
+        "signal": signal,
+        "source": str(source_name or "worker_scan"),
+        "selected_ts_utc": selected_ts,
+        "created_utc": selected_ts,
+        "updated_utc": selected_ts,
+        "attempt_count": 0,
+        "last_attempt_utc": None,
+        "last_result": None,
+        "live_allowed_at_selection": bool(live_allowed),
+        "candidate": {
+            "symbol": sym,
+            "signal": signal,
+            "rank_score": candidate.get("rank_score"),
+            "selection_quality_score": candidate.get("selection_quality_score"),
+            "entry_type": candidate.get("entry_type"),
+            "strategy": candidate.get("strategy"),
+            "close": candidate.get("close"),
+            "price": candidate.get("price") or candidate.get("close"),
+            "target_path_profit": candidate.get("target_path_profit"),
+            "target_path_recovery": candidate.get("target_path_recovery"),
+            "defensive_near_miss_relaxation_entry": bool(candidate.get("defensive_near_miss_relaxation_entry")),
+        },
+        "meta": meta,
+    }
+
+    SELECTED_ENTRY_INTENT_QUEUE.append(intent)
+    if len(SELECTED_ENTRY_INTENT_QUEUE) > 100:
+        del SELECTED_ENTRY_INTENT_QUEUE[: len(SELECTED_ENTRY_INTENT_QUEUE) - 100]
+    _p299_persist_selected_entry_intent_queue(reason="queue_selected_entry_intent")
+    try:
+        record_decision(
+            "SCAN",
+            "selected_entry_intent_queue",
+            symbol=sym,
+            side="buy",
+            signal=signal,
+            action="selected_entry_intent_queued",
+            reason="selected_candidate_queued_for_lightweight_finalizer",
+            meta={"intent_key": key, "source": source_name},
+        )
+    except Exception:
+        pass
+    return {"queued": True, "intent_key": key, "symbol": sym, "status": "pending"}
+
+
+def _p299_intent_age_sec(intent: dict) -> float:
+    try:
+        ts = str(intent.get("selected_ts_utc") or intent.get("created_utc") or "")
+        if not ts:
+            return 0.0
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _p299_selected_entry_finalizer_status() -> dict:
+    _p299_restore_selected_entry_intent_queue()
+    pending = [dict(x or {}) for x in SELECTED_ENTRY_INTENT_QUEUE if str((x or {}).get("status") or "") == "pending"]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "selected_entry_intent_queue",
+        "enabled": bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED),
+        "finalizer_enabled": bool(SELECTED_ENTRY_FINALIZER_ENABLED),
+        "path": SELECTED_ENTRY_INTENT_QUEUE_PATH,
+        "queue_count": len(SELECTED_ENTRY_INTENT_QUEUE),
+        "pending_count": len(pending),
+        "pending_symbols": [str(x.get("symbol") or "").strip().upper() for x in pending],
+        "items": list(SELECTED_ENTRY_INTENT_QUEUE or [])[-25:],
+    }
+
+
+def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | None = None) -> dict:
+    _p299_restore_selected_entry_intent_queue()
+    max_run = max(1, min(int(max_items or SELECTED_ENTRY_FINALIZER_MAX_PER_RUN or 1), 5))
+    rows = []
+    finalized_symbols = []
+
+    if not bool(SELECTED_ENTRY_FINALIZER_ENABLED):
+        return {
+            "ok": True,
+            "enabled": False,
+            "applied": bool(apply),
+            "reason": "selected_entry_finalizer_disabled",
+            "rows": rows,
+        }
+
+    live_allowed_now = bool(
+        LIVE_TRADING_ENABLED
+        and SCANNER_ALLOW_LIVE
+        and not DRY_RUN
+        and not SCANNER_DRY_RUN
+        and not KILL_SWITCH
+        and not daily_halt_active()
+        and not daily_stop_hit()
+        and in_market_hours()
+    )
+
+    processed = 0
+    for intent in SELECTED_ENTRY_INTENT_QUEUE:
+        if processed >= max_run:
+            break
+        if str(intent.get("status") or "") != "pending":
+            continue
+
+        sym = str(intent.get("symbol") or "").strip().upper()
+        signal = str(intent.get("signal") or "daily_breakout").strip() or "daily_breakout"
+        age_sec = _p299_intent_age_sec(intent)
+        side_effect = _p297_symbol_entry_side_effect(sym)
+
+        row = {
+            "intent_key": intent.get("intent_key"),
+            "symbol": sym,
+            "status_before": intent.get("status"),
+            "age_sec": round(age_sec, 2),
+            "side_effect_before": side_effect,
+            "apply": bool(apply),
+            "live_allowed_now": bool(live_allowed_now),
+            "action": "inspect",
+            "result": None,
+        }
+
+        if not sym:
+            intent["status"] = "expired"
+            intent["updated_utc"] = datetime.now(timezone.utc).isoformat()
+            intent["last_result"] = {"reason": "missing_symbol"}
+            row["action"] = "expired_missing_symbol"
+            rows.append(row)
+            processed += 1
+            continue
+
+        if age_sec > float(SELECTED_ENTRY_FINALIZER_MAX_INTENT_AGE_SEC):
+            intent["status"] = "expired"
+            intent["updated_utc"] = datetime.now(timezone.utc).isoformat()
+            intent["last_result"] = {"reason": "intent_too_old", "age_sec": age_sec}
+            row["action"] = "expired_intent_too_old"
+            rows.append(row)
+            processed += 1
+            continue
+
+        if bool(side_effect.get("side_effect_detected")):
+            intent["status"] = "finalized"
+            intent["updated_utc"] = datetime.now(timezone.utc).isoformat()
+            intent["last_result"] = {"reason": "side_effect_already_present", "side_effect": side_effect}
+            row["action"] = "finalized_existing_side_effect"
+            row["result"] = intent["last_result"]
+            finalized_symbols.append(sym)
+            rows.append(row)
+            processed += 1
+            continue
+
+        if not live_allowed_now:
+            row["action"] = "blocked_live_not_allowed"
+            row["result"] = {
+                "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+                "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+                "dry_run": bool(DRY_RUN),
+                "scanner_dry_run": bool(SCANNER_DRY_RUN),
+                "kill_switch": bool(KILL_SWITCH),
+                "daily_halt_active": bool(daily_halt_active()),
+                "market_open": bool(in_market_hours()),
+            }
+            rows.append(row)
+            processed += 1
+            continue
+
+        if not apply:
+            row["action"] = "would_submit"
+            rows.append(row)
+            processed += 1
+            continue
+
+        meta = dict(intent.get("meta") or {})
+        meta["selected_entry_intent_finalizer"] = True
+        meta["selected_entry_intent_key"] = intent.get("intent_key")
+        meta["selected_entry_intent_patch"] = PATCH_VERSION
+
+        intent["attempt_count"] = int(intent.get("attempt_count") or 0) + 1
+        intent["last_attempt_utc"] = datetime.now(timezone.utc).isoformat()
+        intent["updated_utc"] = intent["last_attempt_utc"]
+
+        try:
+            resp = submit_scan_trade(
+                sym,
+                "buy",
+                signal,
+                meta=meta,
+                source=str(intent.get("source") or "worker_scan"),
+            )
+        except Exception as exc:
+            resp = {
+                "ok": False,
+                "rejected": True,
+                "reason": f"selected_entry_finalizer_exception:{exc}",
+                "symbol": sym,
+            }
+
+        submit_meta = _classify_scan_submit_response(resp)
+        intent["last_result"] = {
+            "response": resp,
+            "submit_state": submit_meta.get("state"),
+            "submit_reason": submit_meta.get("reason"),
+            "submit_attempted": bool(submit_meta.get("attempted")),
+        }
+
+        after = _p297_symbol_entry_side_effect(sym)
+        row["action"] = "submitted" if submit_meta.get("state") == "submitted" else "submit_attempted"
+        row["result"] = intent["last_result"]
+        row["side_effect_after"] = after
+
+        if submit_meta.get("state") == "submitted" or bool(after.get("side_effect_detected")):
+            intent["status"] = "submitted"
+            finalized_symbols.append(sym)
+        elif submit_meta.get("state") in {"blocked", "ignored", "preview_only"}:
+            intent["status"] = "blocked"
+        else:
+            intent["status"] = "pending"
+
+        try:
+            record_decision(
+                "ENTRY",
+                "selected_entry_finalizer",
+                symbol=sym,
+                side="buy",
+                signal=signal,
+                action=row["action"],
+                reason=str(submit_meta.get("reason") or resp.get("reason") or ""),
+                meta={"intent_key": intent.get("intent_key"), "submit_meta": submit_meta},
+            )
+        except Exception:
+            pass
+
+        rows.append(row)
+        processed += 1
+
+    _p299_persist_selected_entry_intent_queue(reason="finalize_selected_entry_intents")
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "selected_entry_finalizer",
+        "applied": bool(apply),
+        "live_allowed_now": bool(live_allowed_now),
+        "processed": processed,
+        "finalized_symbols": finalized_symbols,
+        "rows": rows,
+        "queue": _p299_selected_entry_finalizer_status(),
     }
 
 def _p297_finalize_selected_submissions(selected_payloads: list | None, would_submit: list | None) -> dict:
@@ -35623,6 +35989,44 @@ def diagnostics_live_positions_light(request: Request):
 def diagnostics_reconcile_light(request: Request):
     require_admin_if_configured(request)
     return _p298_reconcile_light()
+
+@app.get("/diagnostics/selected_entry_intent_queue")
+def diagnostics_selected_entry_intent_queue(request: Request):
+    require_admin_if_configured(request)
+    return _p299_selected_entry_finalizer_status()
+
+
+@app.get("/diagnostics/selected_entry_finalizer")
+def diagnostics_selected_entry_finalizer(
+    request: Request,
+    apply: bool = False,
+    max_items: int = 1,
+):
+    require_admin_if_configured(request)
+    return _p299_finalize_selected_entry_intents(
+        apply=bool(apply),
+        max_items=max_items,
+    )
+
+
+@app.post("/worker/selected_entry_finalizer")
+async def worker_selected_entry_finalizer(req: Request):
+    body = {}
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+
+    if WORKER_SECRET:
+        if str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid worker secret")
+
+    apply = str(body.get("apply") or "true").strip().lower() not in {"0", "false", "no", "off"}
+    max_items = int(body.get("max_items") or SELECTED_ENTRY_FINALIZER_MAX_PER_RUN or 1)
+    return _p299_finalize_selected_entry_intents(
+        apply=bool(apply),
+        max_items=max_items,
+    )
 
 @app.get("/diagnostics/broker_daily_goal_truth")
 def diagnostics_broker_daily_goal_truth(request: Request):
