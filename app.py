@@ -1565,6 +1565,22 @@ SWING_EXECUTABLE_NEAR_MISS_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
     "SWING_EXECUTABLE_NEAR_MISS_MAX_RISK_PER_SHARE_PCT",
     default=0.20,
 )
+SWING_FAST_SCAN_TRIGGER_ENABLED = env_bool_any(
+    "SWING_FAST_SCAN_TRIGGER_ENABLED",
+    default=True,
+)
+SWING_FAST_SCAN_TRIGGER_APPLY_DEFAULT = env_bool_any(
+    "SWING_FAST_SCAN_TRIGGER_APPLY_DEFAULT",
+    default=False,
+)
+SWING_FAST_SCAN_TRIGGER_MAX_SCAN_AGE_SEC = getenv_int_any(
+    "SWING_FAST_SCAN_TRIGGER_MAX_SCAN_AGE_SEC",
+    default=7200,
+)
+SWING_FAST_SCAN_TRIGGER_MAX_FINALIZE = getenv_int_any(
+    "SWING_FAST_SCAN_TRIGGER_MAX_FINALIZE",
+    default=1,
+)
 
 # --- Trades-Today forcing (emergency mode) ---
 TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
@@ -2152,7 +2168,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-301-executable-near-miss-entry-sleeve-simplified-swing-selection-path"
+PATCH_VERSION = "patch-302-main-web-fast-swing-scan-trigger-near-miss-finalizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -15578,6 +15594,183 @@ def _p301_apply_executable_near_miss_entry(candidate: dict | None, daily_goal_pr
         c["rejection_reasons"] = []
         c["selection_blockers"] = []
     return c
+
+def _p302_fast_swing_scan_trigger(apply: bool = False, finalize: bool = True, limit: int = 25) -> dict:
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    generated_utc = datetime.now(timezone.utc).isoformat()
+
+    rows = _p300_selection_contract_cleanup(
+        list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
+    )
+    daily_goal_progress = _p295_broker_daily_goal_progress()
+
+    scan_ts = str(latest_scan.get("ts_utc") or "")
+    scan_age_sec = None
+    scan_fresh_enough = False
+    try:
+        if scan_ts:
+            dt = datetime.fromisoformat(scan_ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            scan_age_sec = max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+            scan_fresh_enough = scan_age_sec <= float(SWING_FAST_SCAN_TRIGGER_MAX_SCAN_AGE_SEC)
+    except Exception:
+        scan_age_sec = None
+        scan_fresh_enough = False
+
+    blockers = []
+    if not bool(SWING_FAST_SCAN_TRIGGER_ENABLED):
+        blockers.append("fast_scan_trigger_disabled")
+    if not bool(in_market_hours()):
+        blockers.append("market_closed")
+    if not bool(LIVE_TRADING_ENABLED):
+        blockers.append("live_trading_disabled")
+    if bool(DRY_RUN):
+        blockers.append("dry_run_enabled")
+    if not bool(SCANNER_ALLOW_LIVE):
+        blockers.append("scanner_live_not_allowed")
+    if bool(SCANNER_DRY_RUN):
+        blockers.append("scanner_dry_run_enabled")
+    if bool(KILL_SWITCH):
+        blockers.append("kill_switch_enabled")
+    if bool(daily_halt_active()) or bool(daily_stop_hit()):
+        blockers.append("daily_halt_or_stop_active")
+    if not scan_fresh_enough:
+        blockers.append("latest_scan_too_stale")
+    if not rows:
+        blockers.append("no_cached_candidate_rows")
+
+    candidates = []
+    for row in rows:
+        candidate = _p301_apply_executable_near_miss_entry(
+            row,
+            daily_goal_progress=daily_goal_progress,
+        )
+        if bool((candidate.get("executable_near_miss_entry") or {}).get("applies")):
+            candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda x: (
+            float(_safe_float((x.get("target_path_profit") or {}).get("score") or x.get("target_path_score") or 0.0)),
+            float(_safe_float(x.get("selection_quality_score") or 0.0)),
+            float(_safe_float(x.get("rank_score") or 0.0)),
+        ),
+        reverse=True,
+    )
+
+    selected = candidates[:1]
+    if not selected:
+        blockers.append("no_executable_near_miss_candidate")
+
+    rows_out = []
+    queued = []
+    finalizer = None
+
+    can_apply = bool(apply) and not blockers
+    for candidate in selected:
+        sym = str(candidate.get("symbol") or "").strip().upper()
+        side_effect = _p297_symbol_entry_side_effect(sym)
+        row = {
+            "symbol": sym,
+            "action": "inspect",
+            "side_effect_before": side_effect,
+            "candidate": {
+                "symbol": sym,
+                "signal": candidate.get("signal"),
+                "rank_score": candidate.get("rank_score"),
+                "target_path_score": (candidate.get("target_path_profit") or {}).get("score") or candidate.get("target_path_score"),
+                "estimated_qty": candidate.get("estimated_qty"),
+                "entry_type": candidate.get("entry_type"),
+                "near_miss_original_rejection_reasons": list(candidate.get("near_miss_original_rejection_reasons") or []),
+                "executable_near_miss_entry": candidate.get("executable_near_miss_entry"),
+                "executable_sizing_truth": candidate.get("executable_sizing_truth"),
+            },
+        }
+
+        if bool(side_effect.get("side_effect_detected")):
+            row["action"] = "skip_side_effect_exists"
+            rows_out.append(row)
+            continue
+
+        if not can_apply:
+            row["action"] = "would_queue"
+            rows_out.append(row)
+            continue
+
+        meta = {
+            "fast_swing_scan_trigger": True,
+            "fast_swing_scan_patch": PATCH_VERSION,
+            "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+            "latest_scan_reason": latest_scan.get("reason"),
+            "executable_near_miss_entry": candidate.get("executable_near_miss_entry"),
+            "near_miss_original_rejection_reasons": list(candidate.get("near_miss_original_rejection_reasons") or []),
+            "rank_score": candidate.get("rank_score"),
+            "selection_quality_score": candidate.get("selection_quality_score"),
+            "target_path_score": (candidate.get("target_path_profit") or {}).get("score") or candidate.get("target_path_score"),
+            "risk_per_share": candidate.get("risk_per_share"),
+            "risk_per_share_pct": candidate.get("risk_per_share_pct"),
+            "stop_price": candidate.get("stop_price"),
+            "target_price": candidate.get("target_price"),
+            "close": candidate.get("close"),
+            "strategy_name": candidate.get("strategy") or candidate.get("signal") or "daily_breakout",
+            "entry_type": "executable_near_miss",
+        }
+
+        queue_result = _p299_queue_selected_entry_intent(
+            candidate,
+            meta=meta,
+            source_name="fast_swing_scan_trigger",
+            live_allowed=True,
+        )
+        queued.append(queue_result)
+        row["action"] = "queued"
+        row["queue_result"] = queue_result
+        rows_out.append(row)
+
+    if can_apply and bool(finalize):
+        finalizer = _p299_finalize_selected_entry_intents(
+            apply=True,
+            max_items=max(1, min(int(SWING_FAST_SCAN_TRIGGER_MAX_FINALIZE or 1), 5)),
+        )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "main_web_fast_swing_scan_trigger",
+        "generated_utc": generated_utc,
+        "applied": bool(apply),
+        "finalize": bool(finalize),
+        "can_apply": bool(can_apply),
+        "blockers": blockers,
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "age_sec": round(scan_age_sec, 2) if scan_age_sec is not None else None,
+            "fresh_enough": bool(scan_fresh_enough),
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+            "would_trade": latest_scan.get("would_trade"),
+            "blocked": latest_scan.get("blocked"),
+            "duration_ms": latest_scan.get("duration_ms"),
+        },
+        "daily_goal_progress": daily_goal_progress,
+        "candidate_count": len(candidates),
+        "candidate_symbols": [c.get("symbol") for c in candidates],
+        "selected_symbols": [c.get("symbol") for c in selected],
+        "queued": queued,
+        "rows": rows_out[: max(1, min(int(limit or 25), 50))],
+        "finalizer": finalizer,
+        "queue": _p299_selected_entry_finalizer_status(),
+        "recommended_action": (
+            "apply_true_available"
+            if candidates and not apply and not blockers
+            else "queued_and_finalizer_ran"
+            if can_apply and finalizer
+            else "blocked_review_reasons"
+            if blockers
+            else "no_candidate_available"
+        ),
+    }
 
 def _same_day_entry_stats() -> dict:
     today = now_ny().date()
@@ -36392,6 +36585,20 @@ def diagnostics_operator_bundle_intraday_light(request: Request):
     require_admin_if_configured(request)
     return _p268_operator_bundle(scope="intraday", limit=10, refresh_live=False)
 
+@app.get("/diagnostics/swing_fast_scan_trigger")
+def diagnostics_swing_fast_scan_trigger(
+    request: Request,
+    apply: bool = False,
+    finalize: bool = True,
+    limit: int = 25,
+):
+    require_admin_if_configured(request)
+    return _p302_fast_swing_scan_trigger(
+        apply=bool(apply),
+        finalize=bool(finalize),
+        limit=limit,
+    )
+
 @app.get("/diagnostics/bundle/{scope}")
 def diagnostics_scenario_bundle(
     request: Request,
@@ -38715,6 +38922,32 @@ def diagnostics_policy_shadow(limit: int = 10):
 def diagnostics_universe_recommendation(limit: int = 10, target_size: int | None = None):
     return _universe_redesign_snapshot(limit=limit, target_size=target_size)
 
+@app.post("/worker/swing_fast_scan")
+async def worker_swing_fast_scan(req: Request):
+    body = {}
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+
+    if WORKER_SECRET:
+        if str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid worker secret")
+
+    apply = bool(SWING_FAST_SCAN_TRIGGER_APPLY_DEFAULT)
+    if "apply" in body:
+        apply = str(body.get("apply") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    finalize = True
+    if "finalize" in body:
+        finalize = str(body.get("finalize") or "").strip().lower() not in {"0", "false", "no", "off"}
+
+    limit = int(body.get("limit") or 25)
+    return _p302_fast_swing_scan_trigger(
+        apply=bool(apply),
+        finalize=bool(finalize),
+        limit=limit,
+    )
 
 @app.post("/worker/scan_entries")
 def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
