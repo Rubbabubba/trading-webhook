@@ -1567,7 +1567,7 @@ SWING_EXECUTABLE_NEAR_MISS_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
 )
 SWING_FAST_SCAN_TRIGGER_ENABLED = env_bool_any(
     "SWING_FAST_SCAN_TRIGGER_ENABLED",
-    default=True,
+    default=False,
 )
 SWING_FAST_SCAN_TRIGGER_APPLY_DEFAULT = env_bool_any(
     "SWING_FAST_SCAN_TRIGGER_APPLY_DEFAULT",
@@ -1582,6 +1582,23 @@ SWING_FAST_SCAN_TRIGGER_MAX_FINALIZE = getenv_int_any(
     default=1,
 )
 
+# Patch 303 - keep swing live execution direct while intraday is paused.
+SWING_PRODUCTION_CORE_CLEANUP_ENABLED = env_bool_any(
+    "SWING_PRODUCTION_CORE_CLEANUP_ENABLED",
+    default=True,
+)
+SWING_LIVE_USE_SELECTED_INTENT_QUEUE = env_bool_any(
+    "SWING_LIVE_USE_SELECTED_INTENT_QUEUE",
+    default=False,
+)
+SWING_SCAN_RUN_INTRADAY_SHADOW = env_bool_any(
+    "SWING_SCAN_RUN_INTRADAY_SHADOW",
+    default=False,
+)
+SWING_SELECTED_SYMBOL_SOURCE_STRICT_SCAN = env_bool_any(
+    "SWING_SELECTED_SYMBOL_SOURCE_STRICT_SCAN",
+    default=True,
+)
 # --- Trades-Today forcing (emergency mode) ---
 TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
 TRADES_TODAY_TARGET_TRADES = int(getenv_any("TRADES_TODAY_TARGET_TRADES", default="1"))
@@ -2168,7 +2185,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-302-main-web-fast-swing-scan-trigger-near-miss-finalizer"
+PATCH_VERSION = "patch-303-swing-production-core-cleanup-strategy-separation-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -18313,12 +18330,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "entry_type": entry_type,
             "live_allowed": bool(live_allowed),
         })
-        selected_entry_intent = _p299_queue_selected_entry_intent(
-            c,
-            meta=meta,
-            source_name=source_name,
-            live_allowed=bool(live_allowed),
-        )
+        selected_entry_intent = {
+            "queued": False,
+            "reason": "swing_production_core_direct_submit",
+            "production_core_cleanup_enabled": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
+        }
+        if (not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)) or bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE):
+            selected_entry_intent = _p299_queue_selected_entry_intent(
+                c,
+                meta=meta,
+                source_name=source_name,
+                live_allowed=bool(live_allowed),
+            )
         if live_allowed:
             resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta, source=source_name)
             submit_meta = _classify_scan_submit_response(resp)
@@ -18347,14 +18370,28 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "submit_attempted": bool(submit_meta.get("attempted")),
                 "selected_entry_intent": dict(selected_entry_intent),
             })
-    selected_submission_finalizer = _p297_finalize_selected_submissions(
-        selected_submission_payloads,
-        would_submit,
-    )
-    selected_entry_intent_finalizer = _p299_finalize_selected_entry_intents(
-        apply=bool(SCANNER_ALLOW_LIVE and not SCANNER_DRY_RUN and not effective_dry_run),
-        max_items=SELECTED_ENTRY_FINALIZER_MAX_PER_RUN,
-    )
+    selected_submission_finalizer = {
+        "enabled": False,
+        "reason": "swing_production_core_direct_submit",
+        "rows": [],
+        "finalized_symbols": [],
+    }
+    selected_entry_intent_finalizer = {
+        "enabled": False,
+        "reason": "swing_production_core_direct_submit",
+        "applied": False,
+        "processed": 0,
+        "rows": [],
+    }
+    if (not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)) or bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE):
+        selected_submission_finalizer = _p297_finalize_selected_submissions(
+            selected_submission_payloads,
+            would_submit,
+        )
+        selected_entry_intent_finalizer = _p299_finalize_selected_entry_intents(
+            apply=bool(SCANNER_ALLOW_LIVE and not SCANNER_DRY_RUN and not effective_dry_run),
+            max_items=SELECTED_ENTRY_FINALIZER_MAX_PER_RUN,
+        )
 
     LAST_SWING_CANDIDATES.clear()
     LAST_SWING_CANDIDATES.extend(candidates[: max(1, min(len(candidates), SWING_MAX_CANDIDATES))])
@@ -18561,8 +18598,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     if len(shadow_symbols) < max(1, int(INTRADAY_SHADOW_MAX_SYMBOLS or 1)):
         shadow_symbols.extend([str(c.get('symbol') or '').upper() for c in candidates if str(c.get('symbol') or '').strip() and str(c.get('symbol') or '').upper() not in shadow_symbols])
     shadow_symbols = _dedupe_keep_order(shadow_symbols)[: max(1, int(INTRADAY_SHADOW_MAX_SYMBOLS or 1))]
-    intraday_shadow = {"enabled": bool(INTRADAY_SHADOW_EVALUATION_ENABLE), "status": "not_run"}
-    if bool(INTRADAY_SHADOW_EVALUATION_ENABLE):
+    intraday_shadow_enabled_for_swing = bool(
+        INTRADAY_SHADOW_EVALUATION_ENABLE
+        and ((not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)) or bool(SWING_SCAN_RUN_INTRADAY_SHADOW))
+    )
+    intraday_shadow = {
+        "enabled": intraday_shadow_enabled_for_swing,
+        "configured": bool(INTRADAY_SHADOW_EVALUATION_ENABLE),
+        "status": "not_run" if intraday_shadow_enabled_for_swing else "disabled_for_swing_production_core",
+    }
+    if intraday_shadow_enabled_for_swing:
         try:
             intraday_shadow = _run_intraday_shadow_scan(shadow_symbols, lookback_days=SCANNER_LOOKBACK_DAYS)
         except Exception as exc:
@@ -26591,7 +26636,11 @@ def _p298_selected_symbols_light(summary: dict | None = None, lifecycle_items: l
                 if sym:
                     symbols.append(sym)
 
-    if not symbols and not explicit_selected_symbols_present:
+    if (
+        not symbols
+        and not explicit_selected_symbols_present
+        and not (bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and bool(SWING_SELECTED_SYMBOL_SOURCE_STRICT_SCAN))
+    ):
         for row in reversed(list(lifecycle_items or [])):
             if not isinstance(row, dict):
                 continue
@@ -27185,6 +27234,23 @@ def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | 
             continue
 
         meta = dict(intent.get("meta") or {})
+        candidate_meta = dict(intent.get("candidate") or {})
+        for key in (
+            "avg_dollar_volume_20d",
+            "rank_score",
+            "selection_quality_score",
+            "entry_type",
+            "strategy",
+            "close",
+            "price",
+            "target_path_profit",
+            "target_path_recovery",
+            "close_to_high_pct",
+            "breakout_distance_pct",
+            "return_20d_pct",
+        ):
+            if meta.get(key) in (None, "", 0, 0.0) and candidate_meta.get(key) not in (None, ""):
+                meta[key] = candidate_meta.get(key)
         meta["selected_entry_intent_finalizer"] = True
         meta["selected_entry_intent_key"] = intent.get("intent_key")
         meta["selected_entry_intent_patch"] = PATCH_VERSION
