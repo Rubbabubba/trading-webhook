@@ -2097,7 +2097,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-297-selected-candidate-submission-finalizer-no-trade-side-effect-symbol-truth"
+PATCH_VERSION = "patch-298-market-hours-light-diagnostic-endpoints"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -25909,6 +25909,276 @@ def _p297_selected_submission_truth(selected_symbols: list[str] | None = None, s
         ),
     }
 
+def _p298_latest_scan_summary_light() -> tuple[dict, dict]:
+    latest_scan = dict(LAST_SCAN or {})
+    summary = dict(latest_scan.get("summary") or {})
+    if not summary and CANDIDATE_HISTORY:
+        latest_candidate = dict((CANDIDATE_HISTORY or [])[-1] or {})
+        summary = dict(latest_candidate.get("summary") or latest_candidate or {})
+    return latest_scan, summary
+
+
+def _p298_recent_lifecycle_items(limit: int = 100) -> list[dict]:
+    lim = max(1, min(int(limit or 100), 250))
+    rows = [dict(r or {}) for r in list(PAPER_LIFECYCLE_HISTORY or [])[-lim:] if isinstance(r, dict)]
+    if LAST_PAPER_LIFECYCLE and (not rows or rows[-1] != LAST_PAPER_LIFECYCLE):
+        rows.append(dict(LAST_PAPER_LIFECYCLE or {}))
+    return rows[-lim:]
+
+
+def _p298_selected_symbols_light(summary: dict | None = None, lifecycle_items: list | None = None) -> list[str]:
+    summary = dict(summary or {})
+    symbols = [
+        str(s or "").strip().upper()
+        for s in list(summary.get("selected_symbols") or [])
+        if str(s or "").strip()
+    ]
+    if not symbols:
+        for row in list(summary.get("top_candidates") or []):
+            if isinstance(row, dict) and bool(row.get("selected")):
+                sym = str(row.get("symbol") or "").strip().upper()
+                if sym:
+                    symbols.append(sym)
+    if not symbols:
+        for row in reversed(list(lifecycle_items or [])):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("stage") or "").lower() == "candidate" and str(row.get("status") or "").lower() == "selected":
+                sym = str(row.get("symbol") or "").strip().upper()
+                if sym:
+                    symbols.append(sym)
+                    break
+    return _dedupe_keep_order(symbols)
+
+
+def _p298_selected_submission_truth_light() -> dict:
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    lifecycle_items = _p298_recent_lifecycle_items(limit=100)
+    selected_symbols = _p298_selected_symbols_light(summary, lifecycle_items)
+
+    rows = []
+    for sym in selected_symbols:
+        plan = dict((TRADE_PLAN or {}).get(sym) or {})
+        lifecycle_matches = [
+            dict(row or {})
+            for row in lifecycle_items
+            if str((row or {}).get("symbol") or "").strip().upper() == sym
+        ]
+        submit_events = [
+            row for row in lifecycle_matches
+            if str(row.get("stage") or "").lower() in {"entry", "submit", "order", "scanner"}
+            or "submit" in str(row.get("status") or "").lower()
+            or "order" in str(row.get("status") or "").lower()
+        ]
+        side_effect_reasons = []
+        if bool(plan.get("active")):
+            side_effect_reasons.append("active_plan")
+        if _plan_is_pending_entry(plan):
+            side_effect_reasons.append("pending_entry_plan")
+        if submit_events:
+            side_effect_reasons.append("lifecycle_submit_event")
+
+        rows.append({
+            "symbol": sym,
+            "side_effect_detected_light": bool(side_effect_reasons),
+            "reasons": _dedupe_candidate_reasons(side_effect_reasons),
+            "active_plan": bool(plan.get("active")),
+            "pending_entry_plan": bool(_plan_is_pending_entry(plan)),
+            "plan_status": plan.get("execution_state") or plan.get("lifecycle_state") or plan.get("status"),
+            "plan_source": plan.get("source"),
+            "recent_lifecycle_count": len(lifecycle_matches),
+            "recent_submit_event_count": len(submit_events),
+            "last_lifecycle_event": lifecycle_matches[-1] if lifecycle_matches else None,
+        })
+
+    missing = [row.get("symbol") for row in rows if row.get("symbol") and not row.get("side_effect_detected_light")]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "selected_submission_truth_light",
+        "source": "runtime_memory_no_broker_no_bundle",
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "latest_scan_reason": latest_scan.get("reason"),
+        "selected_symbols": selected_symbols,
+        "selected_count": len(selected_symbols),
+        "side_effect_symbols": [row.get("symbol") for row in rows if row.get("side_effect_detected_light")],
+        "missing_side_effect_symbols": missing,
+        "selected_without_side_effect": bool(missing),
+        "rows": rows,
+        "recommended_action": (
+            "investigate_submit_path_for_selected_symbols"
+            if missing
+            else "selected_symbols_have_runtime_plan_or_submit_event"
+            if selected_symbols
+            else "no_selected_symbols_found"
+        ),
+    }
+
+
+def _p298_scanner_light() -> dict:
+    tel = dict(LAST_SCANNER_TELEMETRY or {})
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "scanner_light",
+        "source": "runtime_memory",
+        "last_event": tel.get("event") or tel.get("last_event"),
+        "last_status": tel.get("status") or tel.get("last_status"),
+        "last_event_utc": tel.get("last_event_utc"),
+        "last_closed_utc": tel.get("last_closed_utc"),
+        "last_error": tel.get("last_error") or tel.get("error"),
+        "in_flight_run": bool(tel.get("in_flight_run")),
+        "attempts_today": tel.get("attempts_today"),
+        "success_today": tel.get("success_today"),
+        "failure_today": tel.get("failure_today"),
+        "active_warning_codes": list(tel.get("active_warning_codes") or []),
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+            "would_trade": latest_scan.get("would_trade"),
+            "blocked": latest_scan.get("blocked"),
+            "duration_ms": latest_scan.get("duration_ms"),
+            "selected_total": int(summary.get("selected_total") or 0),
+            "selected_symbols": list(summary.get("selected_symbols") or []),
+            "eligible_total": int(summary.get("eligible_total") or summary.get("eligible_count") or 0),
+        },
+    }
+
+
+def _p298_live_positions_light() -> dict:
+    latest_snapshot = {}
+    try:
+        latest_snapshot = read_positions_snapshot()
+    except Exception:
+        latest_snapshot = {}
+
+    snapshot_positions = []
+    if isinstance(latest_snapshot, dict):
+        snapshot_positions = list(latest_snapshot.get("positions") or latest_snapshot.get("items") or [])
+
+    active_plans = [
+        {"symbol": sym, "status": plan.get("status"), "source": plan.get("source")}
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if isinstance(plan, dict) and bool(plan.get("active"))
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "live_positions_light",
+        "source": "positions_snapshot_and_memory_no_broker_refresh",
+        "summary": {
+            "snapshot_position_count": len(snapshot_positions),
+            "active_plan_count": len(active_plans),
+            "open_order_count": None,
+            "position_truth_status": "light_snapshot_only",
+        },
+        "positions": snapshot_positions[:25],
+        "active_plans": active_plans[:25],
+        "snapshot_meta": {
+            "path": POSITION_SNAPSHOT_PATH,
+            "ts_utc": latest_snapshot.get("ts_utc") if isinstance(latest_snapshot, dict) else None,
+            "source": latest_snapshot.get("source") if isinstance(latest_snapshot, dict) else None,
+        },
+    }
+
+
+def _p298_reconcile_light() -> dict:
+    latest_snapshot = {}
+    try:
+        latest_snapshot = read_positions_snapshot()
+    except Exception:
+        latest_snapshot = {}
+
+    snapshot_positions = []
+    if isinstance(latest_snapshot, dict):
+        snapshot_positions = list(latest_snapshot.get("positions") or latest_snapshot.get("items") or [])
+
+    snapshot_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in snapshot_positions
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    active_plan_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if isinstance(plan, dict) and bool(plan.get("active"))
+    }
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "reconcile_light",
+        "source": "positions_snapshot_and_memory_no_broker_refresh",
+        "summary": {
+            "snapshot_position_count": len(snapshot_symbols),
+            "active_plan_count": len(active_plan_symbols),
+            "symbols_without_active_plan": sorted(snapshot_symbols - active_plan_symbols),
+            "active_plans_without_snapshot_position": sorted(active_plan_symbols - snapshot_symbols),
+            "aligned_light": snapshot_symbols == active_plan_symbols,
+        },
+        "snapshot_symbols": sorted(snapshot_symbols),
+        "active_plan_symbols": sorted(active_plan_symbols),
+        "startup_state": STARTUP_STATE,
+    }
+
+
+def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
+    lim = max(1, min(int(limit or 10), 25))
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    rows = list(summary.get("top_candidates") or summary.get("items") or [])[:lim]
+    selected_symbols = _p298_selected_symbols_light(summary, _p298_recent_lifecycle_items(limit=50))
+    eligible_rows = [row for row in rows if isinstance(row, dict) and bool(row.get("eligible"))]
+
+    if selected_symbols:
+        selection_status = "selected"
+        recommended_action = "check_selected_submission_truth_light"
+    elif int(summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0) <= 0:
+        selection_status = "no_eligible_candidates"
+        recommended_action = "review_top_rejection_reasons"
+    else:
+        selection_status = "eligible_not_selected"
+        recommended_action = "review_capacity_or_selection_blocks"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "market_open_selection_audit_light",
+        "source": "last_scan_summary_no_saved_scan_enrichment",
+        "market_open_now": bool(in_market_hours()),
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+            "would_trade": latest_scan.get("would_trade"),
+            "blocked": latest_scan.get("blocked"),
+            "duration_ms": latest_scan.get("duration_ms"),
+        },
+        "selection": {
+            "status": selection_status,
+            "selected_total": int(summary.get("selected_total") or len(selected_symbols) or 0),
+            "selected_symbols": selected_symbols,
+            "eligible_count": int(summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0),
+        },
+        "top": [
+            {
+                "symbol": row.get("symbol"),
+                "eligible": bool(row.get("eligible")),
+                "selected": bool(row.get("selected")),
+                "rank_score": row.get("rank_score"),
+                "target_path_score": (row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else row.get("target_path_score"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+                "selection_blockers": list(row.get("selection_blockers") or []),
+            }
+            for row in rows
+            if isinstance(row, dict)
+        ],
+        "recommended_action": recommended_action,
+    }
 
 def _p297_finalize_selected_submissions(selected_payloads: list | None, would_submit: list | None) -> dict:
     payloads = [dict(p or {}) for p in list(selected_payloads or []) if isinstance(p, dict)]
@@ -35324,6 +35594,35 @@ def diagnostics_no_trade_brief_full(
         "failed_sections": bundle.get("failed_sections"),
         "mode": "full_bundle_no_trade_brief",
     }
+
+@app.get("/diagnostics/selected_submission_truth_light")
+def diagnostics_selected_submission_truth_light(request: Request):
+    require_admin_if_configured(request)
+    return _p298_selected_submission_truth_light()
+
+
+@app.get("/diagnostics/scanner_light")
+def diagnostics_scanner_light(request: Request):
+    require_admin_if_configured(request)
+    return _p298_scanner_light()
+
+
+@app.get("/diagnostics/market_open_selection_audit_light")
+def diagnostics_market_open_selection_audit_light(request: Request, limit: int = 10):
+    require_admin_if_configured(request)
+    return _p298_market_open_selection_audit_light(limit=limit)
+
+
+@app.get("/diagnostics/live_positions_light")
+def diagnostics_live_positions_light(request: Request):
+    require_admin_if_configured(request)
+    return _p298_live_positions_light()
+
+
+@app.get("/diagnostics/reconcile_light")
+def diagnostics_reconcile_light(request: Request):
+    require_admin_if_configured(request)
+    return _p298_reconcile_light()
 
 @app.get("/diagnostics/broker_daily_goal_truth")
 def diagnostics_broker_daily_goal_truth(request: Request):
