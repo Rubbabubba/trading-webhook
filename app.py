@@ -2195,7 +2195,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-306-swing-core-file-split-prep"
+PATCH_VERSION = "patch-307-retired-intraday-bundle-automation-removal-from-swing-runtime"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -29233,20 +29233,11 @@ def _p253_swing_control_surface_snapshot() -> dict:
         _p253_control_row("portfolio_exposure_cap", float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT or 0) > 0, "entry", "limits_total_exposure", "SWING_MAX_PORTFOLIO_EXPOSURE_PCT", float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT or 0), "keep"),
     ]
 
-    enabled = [c for c in controls if c.get("enabled")]
-    entry_blocking = [c for c in enabled if c.get("category") == "entry"]
-    exit_active = [c for c in enabled if c.get("category") == "exit"]
-    simplify = [c for c in controls if str(c.get("recommendation") or "").startswith("disable")]
-
     return swing_core_control_surface_snapshot(
         patch_version=PATCH_VERSION,
         controls=controls,
-        recommended_env_updates=[
-            "SWING_ADAPTIVE_CAPACITY_ENABLED=false",
-            "SWING_EARLY_ENTRY_OVERRIDE_ENABLED=false",
-            "SWING_MAX_NEW_ENTRIES_PER_DAY=3",
-        ],
-        recommended_action="disable_expansion_controls_then_observe_core_strategy",
+        recommended_env_updates=[],
+        recommended_action="core_swing_runtime_cleaned_observe_live_scans",
     )
 
 
@@ -36735,6 +36726,24 @@ def diagnostics_operator_bundle(
 @app.get("/diagnostics/operator_bundle_intraday_light")
 def diagnostics_operator_bundle_intraday_light(request: Request):
     require_admin_if_configured(request)
+    if str(STRATEGY_MODE or "").strip().lower() == "swing" and not bool(INTRADAY_LIVE_ENABLED):
+        return {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "operator_bundle_intraday_light",
+            "disabled": True,
+            "reason": "intraday_runtime_retired_while_strategy_mode_is_swing",
+            "strategy_mode": STRATEGY_MODE,
+            "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+            "recommended_action": "use_swing_light_endpoints",
+            "use_light_endpoints": [
+                "/diagnostics/scanner_light",
+                "/diagnostics/market_open_selection_audit_light",
+                "/diagnostics/selected_submission_truth_light",
+                "/diagnostics/live_positions_light",
+                "/diagnostics/reconcile_light",
+            ],
+        }
     return _p268_operator_bundle(scope="intraday", limit=10, refresh_live=False)
 
 @app.get("/diagnostics/swing_fast_scan_trigger")
@@ -36745,6 +36754,19 @@ def diagnostics_swing_fast_scan_trigger(
     limit: int = 25,
 ):
     require_admin_if_configured(request)
+    if not bool(SWING_FAST_SCAN_TRIGGER_ENABLED):
+        return {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "main_web_fast_swing_scan_trigger",
+            "disabled": True,
+            "reason": "retired_fast_scan_trigger_disabled_for_direct_swing_runtime",
+            "applied": False,
+            "finalize": bool(finalize),
+            "queued": [],
+            "rows": [],
+            "recommended_action": "use_scheduled_scanner_direct_submit_path",
+        }
     return _p302_fast_swing_scan_trigger(
         apply=bool(apply),
         finalize=bool(finalize),
@@ -38530,6 +38552,61 @@ def diagnostics_swing_core_status():
         "execution_moved": False,
         "diagnostics_moved": ["swing_control_surface"],
         "next_split_candidate": "swing_light_diagnostics",
+    }
+
+@app.get("/diagnostics/swing_cleanup_status")
+def diagnostics_swing_cleanup_status():
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_cleanup_status",
+        "strategy_mode": STRATEGY_MODE,
+        "live_swing_runtime": bool(
+            str(STRATEGY_MODE or "").strip().lower() == "swing"
+            and LIVE_TRADING_ENABLED
+            and SCANNER_ALLOW_LIVE
+            and not DRY_RUN
+            and not SCANNER_DRY_RUN
+        ),
+        "retired_paths": {
+            "heavy_operator_bundle": {
+                "disabled": not bool(HEAVY_DIAGNOSTICS_ENABLED),
+                "env": "HEAVY_DIAGNOSTICS_ENABLED",
+            },
+            "selected_entry_intent_queue": {
+                "disabled": not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED),
+                "env": "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
+            },
+            "selected_entry_finalizer": {
+                "disabled": not bool(SELECTED_ENTRY_FINALIZER_ENABLED),
+                "env": "SELECTED_ENTRY_FINALIZER_ENABLED",
+            },
+            "selected_submission_finalizer": {
+                "disabled": not bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED),
+                "env": "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
+            },
+            "fast_swing_scan_trigger": {
+                "disabled": not bool(SWING_FAST_SCAN_TRIGGER_ENABLED),
+                "env": "SWING_FAST_SCAN_TRIGGER_ENABLED",
+            },
+            "intraday_shadow_inside_swing_scan": {
+                "disabled": not bool(SWING_SCAN_RUN_INTRADAY_SHADOW),
+                "env": "SWING_SCAN_RUN_INTRADAY_SHADOW",
+            },
+            "intraday_live": {
+                "disabled": not bool(INTRADAY_LIVE_ENABLED),
+                "env": "INTRADAY_LIVE_ENABLED",
+            },
+        },
+        "active_light_endpoints": [
+            "/diagnostics/scanner_light",
+            "/diagnostics/market_open_selection_audit_light",
+            "/diagnostics/selected_submission_truth_light",
+            "/diagnostics/live_positions_light",
+            "/diagnostics/reconcile_light",
+            "/diagnostics/no_trade_brief?refresh_live=false&limit=10",
+        ],
+        "next_cleanup_patch": "patch-308-swing-light-diagnostics-module-split",
     }
 
 @app.get("/diagnostics/build")
