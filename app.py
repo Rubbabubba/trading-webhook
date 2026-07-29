@@ -66,6 +66,12 @@ from urllib.request import Request as UrlRequest, urlopen
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 
+from swing_core import (
+    SWING_CORE_MODULE_VERSION,
+    control_row as swing_control_row,
+    swing_control_surface_snapshot as swing_core_control_surface_snapshot,
+)
+
 @dataclass(frozen=True)
 class Bar:
     ts_utc: datetime
@@ -2189,7 +2195,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-305-scanner-truth-cleanup-disabled-diagnostic-semantics"
+PATCH_VERSION = "patch-306-swing-core-file-split-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2391,7 +2397,7 @@ def _intraday_launch_action_plan(
         "optional_scaling": _unique_nonempty_actions(optional_scaling_actions),
         "recommended_env": env,
     }
-EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
+EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "swing_core.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 BROKER_TRUTH_SYNC_LAST_TS = 0.0
 BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC = 60.0
 
@@ -29197,15 +29203,15 @@ def _p252_swing_loss_day_entry_throttle_snapshot() -> dict:
     }
 
 def _p253_control_row(name: str, enabled: bool, category: str, live_effect: str, env_name: str = "", value: object = None, recommendation: str = "keep") -> dict:
-    return {
-        "name": name,
-        "enabled": bool(enabled),
-        "category": category,
-        "live_effect": live_effect,
-        "env": env_name or None,
-        "value": value,
-        "recommendation": recommendation,
-    }
+    return swing_control_row(
+        name=name,
+        enabled=enabled,
+        category=category,
+        live_effect=live_effect,
+        env_name=env_name,
+        value=value,
+        recommendation=recommendation,
+    )
 
 
 def _p253_swing_control_surface_snapshot() -> dict:
@@ -29232,22 +29238,16 @@ def _p253_swing_control_surface_snapshot() -> dict:
     exit_active = [c for c in enabled if c.get("category") == "exit"]
     simplify = [c for c in controls if str(c.get("recommendation") or "").startswith("disable")]
 
-    return {
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "swing_control_surface_audit",
-        "enabled_control_count": len(enabled),
-        "entry_control_count": len(entry_blocking),
-        "exit_control_count": len(exit_active),
-        "controls": controls,
-        "recommended_env_updates": [
+    return swing_core_control_surface_snapshot(
+        patch_version=PATCH_VERSION,
+        controls=controls,
+        recommended_env_updates=[
             "SWING_ADAPTIVE_CAPACITY_ENABLED=false",
             "SWING_EARLY_ENTRY_OVERRIDE_ENABLED=false",
             "SWING_MAX_NEW_ENTRIES_PER_DAY=3",
         ],
-        "simplification_candidates": [c.get("name") for c in simplify],
-        "recommended_action": "disable_expansion_controls_then_observe_core_strategy",
-    }
+        recommended_action="disable_expansion_controls_then_observe_core_strategy",
+    )
 
 
 def _p253_broker_backed_exposure_truth_snapshot() -> dict:
@@ -38519,6 +38519,18 @@ def diagnostics_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAUL
     _refresh_regime_snapshot_if_needed()
     return _build_actionable_watchlist(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct, limit=limit)
 
+@app.get("/diagnostics/swing_core_status")
+def diagnostics_swing_core_status():
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "module": "swing_core",
+        "swing_core_module_version": SWING_CORE_MODULE_VERSION,
+        "broker_free": True,
+        "execution_moved": False,
+        "diagnostics_moved": ["swing_control_surface"],
+        "next_split_candidate": "swing_light_diagnostics",
+    }
 
 @app.get("/diagnostics/build")
 def diagnostics_build():
