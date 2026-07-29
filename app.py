@@ -1699,6 +1699,24 @@ SWING_DEFENSIVE_RELAXATION_PILOT_SYMBOLS = getenv_any(
     default="MA",
 )
 
+# Patch 296 - MA pilot defensive relaxation promotion
+SWING_DEFENSIVE_RELAXATION_LIVE_ENABLED = env_bool_any(
+    "SWING_DEFENSIVE_RELAXATION_LIVE_ENABLED",
+    default=True,
+)
+SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY = getenv_int_any(
+    "SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY",
+    default=1,
+)
+SWING_DEFENSIVE_RELAXATION_REQUIRE_DAILY_GOAL_BELOW_LOW = env_bool_any(
+    "SWING_DEFENSIVE_RELAXATION_REQUIRE_DAILY_GOAL_BELOW_LOW",
+    default=True,
+)
+SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE = getenv_any(
+    "SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE",
+    default="defensive_near_miss_relaxation",
+).strip().lower()
+
 # 5m resampling / strategy tuning
 RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
 
@@ -2069,7 +2087,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-295-broker-daily-goal-truth-ma-pilot-universe-promotion-defensive-relaxation-guard"
+PATCH_VERSION = "patch-296-ma-pilot-defensive-relaxation-promotion-broker-daily-goal-aware-entry-slot"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14577,6 +14595,158 @@ def _p295_apply_swing_pilot_symbols(symbols: list[str]) -> list[str]:
     merged = _dedupe_keep_order(base + pilots)
     return merged[:max_total]
 
+
+def _p296_defensive_relaxation_entries_today() -> dict:
+    today = now_ny().date()
+    entry_type = str(SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE or "defensive_near_miss_relaxation").strip().lower()
+    seen: set[str] = set()
+    items = []
+
+    for symbol, plan in (TRADE_PLAN or {}).items():
+        p = dict(plan or {})
+        if not bool(p.get("active")):
+            continue
+        dt = _parse_plan_opened_dt(p)
+        if not dt or dt.date() != today:
+            continue
+        plan_entry_type = str(
+            p.get("entry_type")
+            or (p.get("thesis") or {}).get("entry_type")
+            or ""
+        ).strip().lower()
+        if plan_entry_type != entry_type:
+            continue
+        key = f"plan:{str(symbol or '').upper()}:{dt.isoformat()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            "source": "trade_plan",
+            "symbol": str(symbol or "").upper(),
+            "opened_at": dt.isoformat(),
+            "entry_type": plan_entry_type,
+        })
+
+    events = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not events or events[-1] != LAST_PAPER_LIFECYCLE):
+        events.append(dict(LAST_PAPER_LIFECYCLE))
+    for ev in events:
+        row = dict(ev or {})
+        if str(row.get("stage") or "").strip().lower() != "entry":
+            continue
+        if str(row.get("status") or "").strip().lower() not in {"planned", "submitted", "filled"}:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(row.get("ts_ny") or row.get("ts_utc") or ""))
+            ts_ny = ts.astimezone(NY_TZ) if ts.tzinfo else ts.replace(tzinfo=timezone.utc).astimezone(NY_TZ)
+        except Exception:
+            continue
+        if ts_ny.date() != today:
+            continue
+        details = dict(row.get("details") or {})
+        event_entry_type = str(details.get("entry_type") or "").strip().lower()
+        if event_entry_type != entry_type:
+            continue
+        symbol = str(row.get("symbol") or details.get("symbol") or "").upper()
+        key = f"lifecycle:{symbol}:{ts_ny.isoformat()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            "source": "paper_lifecycle",
+            "symbol": symbol,
+            "opened_at": ts_ny.isoformat(),
+            "entry_type": event_entry_type,
+        })
+
+    return {
+        "today_ny": today.isoformat(),
+        "entry_type": entry_type,
+        "count": len(items),
+        "max_entries_per_day": int(SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY),
+        "items": items[:20],
+    }
+
+
+def _p296_apply_defensive_relaxation_promotion(
+    candidate: dict | None,
+    global_block_reasons: list | None = None,
+    *,
+    daily_goal_progress: dict | None = None,
+) -> dict:
+    c = dict(candidate or {})
+    symbol = str(c.get("symbol") or "").strip().upper()
+    decision = _p294_defensive_near_miss_decision(c, global_block_reasons or [])
+    c["defensive_near_miss_relaxation"] = decision
+
+    blockers = []
+    if not bool(SWING_DEFENSIVE_RELAXATION_LIVE_ENABLED):
+        blockers.append("live_promotion_disabled")
+    if not bool(decision.get("applies")):
+        blockers.append(str(decision.get("reason") or "defensive_near_miss_not_applicable"))
+
+    pilot_symbols = set(_p295_defensive_relaxation_pilot_symbols())
+    if bool(SWING_DEFENSIVE_RELAXATION_PILOT_ONLY) and symbol not in pilot_symbols:
+        blockers.append("symbol_not_in_defensive_relaxation_pilot")
+
+    goal = dict(daily_goal_progress or _p295_broker_daily_goal_progress())
+    if bool(SWING_DEFENSIVE_RELAXATION_REQUIRE_DAILY_GOAL_BELOW_LOW) and bool(goal.get("low_target_hit")):
+        blockers.append("broker_daily_low_goal_already_hit")
+
+    today = _p296_defensive_relaxation_entries_today()
+    if int(today.get("count") or 0) >= max(0, int(SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY or 0)):
+        blockers.append("defensive_relaxation_daily_slot_used")
+
+    c["defensive_near_miss_live_promotion"] = {
+        "enabled": bool(SWING_DEFENSIVE_RELAXATION_LIVE_ENABLED),
+        "applies": len(blockers) == 0,
+        "symbol": symbol,
+        "pilot_only": bool(SWING_DEFENSIVE_RELAXATION_PILOT_ONLY),
+        "pilot_symbols": sorted(pilot_symbols),
+        "daily_goal_progress": goal,
+        "daily_slot": today,
+        "blockers": blockers,
+        "decision": decision,
+        "entry_type": str(SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE or "defensive_near_miss_relaxation"),
+    }
+
+    if blockers:
+        return c
+
+    removable = {
+        "target_profile_breakout_gate",
+        "defensive_daily_breakout_rollback",
+        "defensive_risk_per_share_too_wide",
+        "weak_tape",
+    }
+    reasons = [
+        str(r) for r in list(c.get("rejection_reasons") or [])
+        if str(r) and str(r) not in removable
+    ]
+    c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+    c["eligible"] = len(c["rejection_reasons"]) == 0
+    c["defensive_near_miss_relaxation_entry"] = True
+    c["target_path_recovery_mode"] = True
+    c["weak_tape_target_override"] = True
+    c["entry_type"] = str(SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE or "defensive_near_miss_relaxation")
+    c["recovered_from_reasons"] = list(decision.get("original_rejection_reasons") or [])
+
+    target_path = dict(c.get("target_path_profit") or {})
+    target_path["defensive_near_miss_relaxation"] = True
+    target_path["passed"] = True
+    target_path["tier"] = "defensive_near_miss_relaxation"
+    target_path["reason"] = "ma_pilot_defensive_near_miss_relaxation_promoted"
+    c["target_path_profit"] = target_path
+    c["target_path_score"] = target_path.get("score")
+
+    c = _p291_apply_risk_adjusted_entry_sizing(
+        c,
+        sleeve=str(SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE or "defensive_near_miss_relaxation"),
+        risk_multiplier=SWING_DEFENSIVE_NEAR_MISS_LAB_RISK_MULTIPLIER,
+    )
+    return c
+
+
 def _base_scanner_pool() -> list[str]:
     if SCANNER_POOL_SYMBOLS:
         return _dedupe_keep_order([s for s in SCANNER_POOL_SYMBOLS.split(",") if s.strip()])
@@ -17156,6 +17326,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     global_block_reasons = []
     loss_day_throttle = _p252_swing_loss_day_entry_throttle_snapshot()
     post_change_drawdown = _p261_post_change_drawdown_snapshot()
+    daily_goal_progress = _p295_broker_daily_goal_progress()
     if daily_halt_active() or daily_stop_hit():
         new_entries_globally_blocked = True
         global_block_reasons.append('daily_halt_active')
@@ -17217,6 +17388,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         c['target_path_profit'] = _p283_target_path_profit_score(c)
         c['target_path_score'] = (c.get('target_path_profit') or {}).get('score')
         c = _p286_apply_target_path_recovery(c, global_block_reasons)
+        c = _p296_apply_defensive_relaxation_promotion(
+            c,
+            global_block_reasons,
+            daily_goal_progress=daily_goal_progress,
+        )
         local_symbol_cap = float(symbol_cap)
         if strategy_name == MEAN_REVERSION_STRATEGY_NAME and local_symbol_cap > 0:
             local_symbol_cap = local_symbol_cap * max(0.0, float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER))
@@ -17288,6 +17464,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             or bool(r.get("risk_adjusted_near_miss_entry"))
             or bool(r.get("first_2k_revival_entry"))
             or bool(r.get("first_2k_similarity_revival_entry"))
+            or bool(r.get("defensive_near_miss_relaxation_entry"))
         )
     ]
 
@@ -17303,21 +17480,33 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         r for r in target_path_approved
         if bool(r.get("first_2k_similarity_revival_entry"))
     ]
-    if risk_adjusted_near_miss_approved or first_2k_revival_approved or first_2k_similarity_revival_approved:
+    defensive_near_miss_relaxation_approved = [
+        r for r in target_path_approved
+        if bool(r.get("defensive_near_miss_relaxation_entry"))
+    ]
+    if (
+        risk_adjusted_near_miss_approved
+        or first_2k_revival_approved
+        or first_2k_similarity_revival_approved
+        or defensive_near_miss_relaxation_approved
+    ):
         regular_target_path_approved = [
             r for r in target_path_approved
             if not bool(r.get("risk_adjusted_near_miss_entry"))
             and not bool(r.get("first_2k_revival_entry"))
             and not bool(r.get("first_2k_similarity_revival_entry"))
+            and not bool(r.get("defensive_near_miss_relaxation_entry"))
         ]
         risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         first_2k_similarity_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        defensive_near_miss_relaxation_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         target_path_approved = (
             regular_target_path_approved
             + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
             + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
             + first_2k_similarity_revival_approved[:max(0, int(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
+            + defensive_near_miss_relaxation_approved[:max(0, int(SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY or 1))]
         )
     target_path_strong = [
         c for c in target_path_approved
@@ -17459,7 +17648,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 override_source = EARLY_ENTRY_OVERRIDE_SOURCE
     would_submit = []
     for c in selected:
-        entry_type = 'standard'
+        entry_type = str(c.get('entry_type') or 'standard').strip() or 'standard'
         source_name = 'worker_scan'
         live_allowed = SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run)
         if c.get('adaptive_capacity_candidate'):
@@ -17482,6 +17671,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'target_path_recovery': c.get('target_path_recovery'),
             'target_path_recovery_mode': bool(c.get('target_path_recovery_mode')),
             'weak_tape_target_override': bool(c.get('weak_tape_target_override')),
+            'defensive_near_miss_relaxation': c.get('defensive_near_miss_relaxation'),
+            'defensive_near_miss_live_promotion': c.get('defensive_near_miss_live_promotion'),
+            'defensive_near_miss_relaxation_entry': bool(c.get('defensive_near_miss_relaxation_entry')),
             'avg_dollar_volume_20d': c.get('avg_dollar_volume_20d'),
             'strategy_name': c.get('strategy'),
             'breakout_level': c.get('breakout_level'),
@@ -17625,7 +17817,22 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'target_path_strong_count': len(target_path_strong),
             'target_path_approved_symbols': [c.get('symbol') for c in target_path_approved],
             'target_path_strong_symbols': [c.get('symbol') for c in target_path_strong],
+            'defensive_near_miss_relaxation_approved_count': len([c for c in target_path_approved if bool(c.get('defensive_near_miss_relaxation_entry'))]),
+            'defensive_near_miss_relaxation_approved_symbols': [c.get('symbol') for c in target_path_approved if bool(c.get('defensive_near_miss_relaxation_entry'))],
             'mean_reversion_fallback_enabled': bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
+        },
+        'defensive_near_miss_live_promotion': {
+            'enabled': bool(SWING_DEFENSIVE_RELAXATION_LIVE_ENABLED),
+            'pilot_only': bool(SWING_DEFENSIVE_RELAXATION_PILOT_ONLY),
+            'pilot_symbols': sorted(_p295_defensive_relaxation_pilot_symbols()),
+            'max_entries_per_day': int(SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY),
+            'require_daily_goal_below_low': bool(SWING_DEFENSIVE_RELAXATION_REQUIRE_DAILY_GOAL_BELOW_LOW),
+            'daily_goal_progress': daily_goal_progress,
+            'daily_slot': _p296_defensive_relaxation_entries_today(),
+            'candidate_count': sum(1 for c in candidates if bool(c.get('defensive_near_miss_relaxation_entry'))),
+            'candidate_symbols': [c.get('symbol') for c in candidates if bool(c.get('defensive_near_miss_relaxation_entry'))],
+            'selected_count': len([c for c in selected if bool(c.get('defensive_near_miss_relaxation_entry'))]),
+            'selected_symbols': [c.get('symbol') for c in selected if bool(c.get('defensive_near_miss_relaxation_entry'))],
         },
         'strong_target_path_weak_tape_override': dict(weak_tape_capacity_override),
         'target_path_opportunity_expansion_lab': _p285_target_path_opportunity_expansion_lab(
@@ -23797,6 +24004,7 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         global_block_reasons.append('weak_tape')
 
     post_change_drawdown = _p261_post_change_drawdown_snapshot()
+    daily_goal_progress = _p295_broker_daily_goal_progress()
     breakout_drawdown_blocked = bool(
         STRATEGY_MODE == "swing"
         and post_change_drawdown.get("block_new_entries")
@@ -23871,6 +24079,11 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         c['selection_blockers'] = list(dict.fromkeys([str(r) for r in selection_blockers if str(r)]))
         c = _p283_enrich_candidate_profit_truth(c)
         c = _p286_apply_target_path_recovery(c, global_block_reasons)
+        c = _p296_apply_defensive_relaxation_promotion(
+            c,
+            global_block_reasons,
+            daily_goal_progress=daily_goal_progress,
+        )
         rows.append(c)
 
     rows.sort(key=_p283_candidate_sort_key, reverse=True)
@@ -23892,6 +24105,7 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             or bool(r.get("risk_adjusted_near_miss_entry"))
             or bool(r.get("first_2k_revival_entry"))
             or bool(r.get("first_2k_similarity_revival_entry"))
+            or bool(r.get("defensive_near_miss_relaxation_entry"))
         )
     ]
 
@@ -23907,21 +24121,33 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         r for r in target_path_approved
         if bool(r.get("first_2k_similarity_revival_entry"))
     ]
-    if risk_adjusted_near_miss_approved or first_2k_revival_approved or first_2k_similarity_revival_approved:
+    defensive_near_miss_relaxation_approved = [
+        r for r in target_path_approved
+        if bool(r.get("defensive_near_miss_relaxation_entry"))
+    ]
+    if (
+        risk_adjusted_near_miss_approved
+        or first_2k_revival_approved
+        or first_2k_similarity_revival_approved
+        or defensive_near_miss_relaxation_approved
+    ):
         regular_target_path_approved = [
             r for r in target_path_approved
             if not bool(r.get("risk_adjusted_near_miss_entry"))
             and not bool(r.get("first_2k_revival_entry"))
             and not bool(r.get("first_2k_similarity_revival_entry"))
+            and not bool(r.get("defensive_near_miss_relaxation_entry"))
         ]
         risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         first_2k_similarity_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
+        defensive_near_miss_relaxation_approved.sort(key=_p283_candidate_sort_key, reverse=True)
         target_path_approved = (
             regular_target_path_approved
             + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
             + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
             + first_2k_similarity_revival_approved[:max(0, int(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
+            + defensive_near_miss_relaxation_approved[:max(0, int(SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY or 1))]
         )
     target_path_strong = [
         r for r in target_path_approved
@@ -24022,6 +24248,9 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "first_2k_similarity_revival_enabled": bool(SWING_FIRST_2K_SIMILARITY_REVIVAL_ENABLED),
             "first_2k_similarity_revival_count": sum(1 for r in rows if bool(r.get("first_2k_similarity_revival_entry"))),
             "first_2k_similarity_revival_symbols": [r.get("symbol") for r in rows if bool(r.get("first_2k_similarity_revival_entry"))],
+            "defensive_near_miss_relaxation_enabled": bool(SWING_DEFENSIVE_RELAXATION_LIVE_ENABLED),
+            "defensive_near_miss_relaxation_count": sum(1 for r in rows if bool(r.get("defensive_near_miss_relaxation_entry"))),
+            "defensive_near_miss_relaxation_symbols": [r.get("symbol") for r in rows if bool(r.get("defensive_near_miss_relaxation_entry"))],
         },
         "target_path_profit_engine": {
             "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
@@ -24037,6 +24266,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "first_2k_revival_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("first_2k_revival_entry"))],
             "first_2k_similarity_revival_approved_count": len([r for r in target_path_approved if bool(r.get("first_2k_similarity_revival_entry"))]),
             "first_2k_similarity_revival_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("first_2k_similarity_revival_entry"))],
+            "defensive_near_miss_relaxation_approved_count": len([r for r in target_path_approved if bool(r.get("defensive_near_miss_relaxation_entry"))]),
+            "defensive_near_miss_relaxation_approved_symbols": [r.get("symbol") for r in target_path_approved if bool(r.get("defensive_near_miss_relaxation_entry"))],
             "mean_reversion_fallback_enabled": bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED),
         },
         "target_path_dynamic_entry_cap": {
@@ -24072,6 +24303,8 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             "first_2k_revival_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("first_2k_revival_entry"))],
             "first_2k_similarity_revival_selected_count": len([r for r in selected if bool(r.get("first_2k_similarity_revival_entry"))]),
             "first_2k_similarity_revival_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("first_2k_similarity_revival_entry"))],
+            "defensive_near_miss_relaxation_selected_count": len([r for r in selected if bool(r.get("defensive_near_miss_relaxation_entry"))]),
+            "defensive_near_miss_relaxation_selected_symbols": [r.get("symbol") for r in selected if bool(r.get("defensive_near_miss_relaxation_entry"))],
             "mean_reversion_eligible_total": len(mean_reversion_approved),
         },
         "portfolio_exposure": round(open_total, 2),
