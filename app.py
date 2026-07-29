@@ -35243,6 +35243,75 @@ def diagnostics_selected_submission_truth(request: Request):
 def diagnostics_no_trade_brief(
     request: Request,
     limit: int = 25,
+    refresh_live: bool = False,
+):
+    require_admin_if_configured(request)
+
+    latest_scan = dict(LAST_SCAN or {})
+    scan_summary = dict(latest_scan.get("summary") or {})
+    scanner = diagnostics_scanner(history_limit=0)
+
+    lifecycle_items = list(PAPER_LIFECYCLE_HISTORY or [])
+    if LAST_PAPER_LIFECYCLE and (not lifecycle_items or lifecycle_items[-1] != LAST_PAPER_LIFECYCLE):
+        lifecycle_items.append(dict(LAST_PAPER_LIFECYCLE))
+
+    sections = {
+        "scanner": scanner,
+        "candidates_full": {
+            "selected_total": int(scan_summary.get("selected_total") or 0),
+            "selected_symbols": list(scan_summary.get("selected_symbols") or []),
+            "eligible_count": int(scan_summary.get("eligible_total") or scan_summary.get("eligible_count") or 0),
+            "items": list(scan_summary.get("top_candidates") or [])[: max(1, min(int(limit or 25), 25))],
+            "blocked_by_post_change_drawdown": bool(scan_summary.get("blocked_by_post_change_drawdown")),
+        },
+        "live_positions": {
+            "summary": {
+                "broker_positions_count": int(scan_summary.get("broker_positions_count") or len(TRADE_PLAN or {}) or 0),
+                "active_plan_count": len([p for p in (TRADE_PLAN or {}).values() if isinstance(p, dict) and p.get("active")]),
+                "open_order_count": 0,
+                "position_truth_status": "snapshot_not_refreshed",
+            },
+            "loss_halt": {
+                "daily_halt_active": False,
+                "new_entries_blocked": False,
+            },
+            "market_open": bool(in_market_hours()),
+        },
+        "release": {
+            "live_orders_permitted": bool(LIVE_TRADING_ENABLED and SCANNER_ALLOW_LIVE and not DRY_RUN),
+            "dry_run": bool(DRY_RUN),
+            "kill_switch": bool(KILL_SWITCH),
+            "daily_halt_active": False,
+            "market_clock": {
+                "is_open": bool(in_market_hours()),
+            },
+        },
+        "execution_lifecycle": {
+            "items": lifecycle_items[-max(1, min(int(limit or 25), 100)):],
+            "plan_count": len(TRADE_PLAN or {}),
+            "issue_counts": {},
+        },
+    }
+
+    brief = _p268_no_trade_brief(sections=sections)
+    brief["fast_mode"] = True
+    brief["refresh_live"] = False
+    brief["source"] = "runtime_memory_no_bundle"
+    brief["latest_scan"] = {
+        "ts_utc": latest_scan.get("ts_utc"),
+        "reason": latest_scan.get("reason"),
+        "scanned": latest_scan.get("scanned"),
+        "signals": latest_scan.get("signals"),
+        "would_trade": latest_scan.get("would_trade"),
+        "blocked": latest_scan.get("blocked"),
+        "duration_ms": latest_scan.get("duration_ms"),
+    }
+    return brief
+
+@app.get("/diagnostics/no_trade_brief_full")
+def diagnostics_no_trade_brief_full(
+    request: Request,
+    limit: int = 25,
     refresh_live: bool = True,
 ):
     require_admin_if_configured(request)
@@ -35253,6 +35322,7 @@ def diagnostics_no_trade_brief(
         "generated_utc": bundle.get("generated_utc"),
         "brief": bundle.get("brief"),
         "failed_sections": bundle.get("failed_sections"),
+        "mode": "full_bundle_no_trade_brief",
     }
 
 @app.get("/diagnostics/broker_daily_goal_truth")
