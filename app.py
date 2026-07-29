@@ -35234,8 +35234,8 @@ def diagnostics_scenario_bundle(
 def diagnostics_selected_submission_truth(request: Request):
     require_admin_if_configured(request)
     sections = {
-        "candidates_full": diagnostics_candidates_full(request, limit=25),
-        "execution_lifecycle": diagnostics_execution_lifecycle(request),
+        "candidates_full": diagnostics_candidates_full(limit=25),
+        "execution_lifecycle": diagnostics_execution_lifecycle(limit=100),
     }
     return _p297_selected_submission_truth(sections=sections)
 
