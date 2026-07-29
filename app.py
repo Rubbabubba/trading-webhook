@@ -35242,10 +35242,25 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
         dict((sections.get("candidates_full") or {})),
         list(((sections.get("execution_lifecycle") or {}).get("items") or [])),
     )
-    selected_submission_truth = _p297_selected_submission_truth(
-        selected_symbols=selected_symbols_for_truth,
-        sections=sections,
-    )
+    if selected_symbols_for_truth:
+        selected_submission_truth = _p297_selected_submission_truth(
+            selected_symbols=selected_symbols_for_truth,
+            sections=sections,
+        )
+    else:
+        selected_submission_truth = {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "selected_candidate_submission_truth",
+            "selected_symbols": [],
+            "selected_count": 0,
+            "side_effect_symbols": [],
+            "missing_side_effect_symbols": [],
+            "selected_side_effect_detected": False,
+            "selected_without_side_effect": False,
+            "rows": [],
+            "recommended_action": "no_selected_symbols_found",
+        }
     candidates = dict(sections.get("candidates_full") or {})
     live = dict(sections.get("live_positions") or {})
     live_summary = dict(live.get("summary") or {})
