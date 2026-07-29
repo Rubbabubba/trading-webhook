@@ -1541,6 +1541,30 @@ SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
     "SWING_EXECUTABLE_SELECTION_MIN_QTY",
     default=1.0,
 )
+SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED = env_bool_any(
+    "SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED",
+    default=True,
+)
+SWING_EXECUTABLE_NEAR_MISS_REQUIRE_DAILY_GOAL_BELOW_LOW = env_bool_any(
+    "SWING_EXECUTABLE_NEAR_MISS_REQUIRE_DAILY_GOAL_BELOW_LOW",
+    default=True,
+)
+SWING_EXECUTABLE_NEAR_MISS_MAX_PER_SCAN = getenv_int_any(
+    "SWING_EXECUTABLE_NEAR_MISS_MAX_PER_SCAN",
+    default=1,
+)
+SWING_EXECUTABLE_NEAR_MISS_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_EXECUTABLE_NEAR_MISS_MIN_RANK_SCORE",
+    default=108.0,
+)
+SWING_EXECUTABLE_NEAR_MISS_MIN_TARGET_PATH_SCORE = getenv_float_any(
+    "SWING_EXECUTABLE_NEAR_MISS_MIN_TARGET_PATH_SCORE",
+    default=55.0,
+)
+SWING_EXECUTABLE_NEAR_MISS_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_EXECUTABLE_NEAR_MISS_MAX_RISK_PER_SHARE_PCT",
+    default=0.20,
+)
 
 # --- Trades-Today forcing (emergency mode) ---
 TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
@@ -2128,7 +2152,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-300-executable-sizing-truth-broker-buying-power-label-fix-selection-contract-cleanup"
+PATCH_VERSION = "patch-301-executable-near-miss-entry-sleeve-simplified-swing-selection-path"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -15453,6 +15477,108 @@ def _p300_executable_sizing_audit(limit: int = 25) -> dict:
         ),
     }
 
+def _p301_executable_near_miss_decision(candidate: dict | None, daily_goal_progress: dict | None = None) -> dict:
+    c = dict(candidate or {})
+    reasons = _dedupe_candidate_reasons(c.get("rejection_reasons") or [])
+    sizing = dict(c.get("executable_sizing_truth") or _p300_executable_sizing_truth(c))
+    target_path = dict(c.get("target_path_profit") or {})
+    daily_goal = dict(daily_goal_progress or _p295_broker_daily_goal_progress() or {})
+
+    symbol = str(c.get("symbol") or "").strip().upper()
+    rank_score = float(_safe_float(c.get("rank_score") or 0.0))
+    target_score = float(_safe_float(target_path.get("score") or c.get("target_path_score") or 0.0))
+    risk_pct = float(_safe_float(c.get("risk_per_share_pct") or 0.0)) / 100.0
+
+    allowed_reasons = {
+        "target_profile_breakout_gate",
+        "defensive_risk_per_share_too_wide",
+        "defensive_daily_breakout_rollback",
+        "rank_score_below_min",
+    }
+    hard_blockers = {
+        "internal_sizing_qty_zero",
+        "broker_insufficient_buying_power",
+        "insufficient_buying_power",
+        "daily_halt_active",
+        "daily_stop_hit",
+        "kill_switch_enabled",
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "pending_order_entry_freeze",
+        "same_day_symbol_loss_cooldown",
+        "strategy_kill_switch_active",
+        "correlation_group_limit",
+        "symbol_exposure_limit",
+        "portfolio_exposure_limit",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+        "swing_post_change_drawdown_circuit",
+        "swing_loss_day_entry_throttle",
+        "stall_loss_entry_feedback",
+    }
+
+    disallowed_reasons = sorted([r for r in reasons if r not in allowed_reasons])
+    hard_present = sorted([r for r in reasons if r in hard_blockers])
+
+    daily_goal_ok = True
+    if bool(SWING_EXECUTABLE_NEAR_MISS_REQUIRE_DAILY_GOAL_BELOW_LOW):
+        daily_goal_ok = not bool(daily_goal.get("low_target_hit"))
+
+    blockers = []
+    if not bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED):
+        blockers.append("near_miss_sleeve_disabled")
+    if not bool(sizing.get("executable")):
+        blockers.append("not_executable")
+    if hard_present:
+        blockers.append("hard_blocker_present")
+    if disallowed_reasons:
+        blockers.append("disallowed_rejection_reason")
+    if rank_score < float(SWING_EXECUTABLE_NEAR_MISS_MIN_RANK_SCORE):
+        blockers.append("rank_score_below_near_miss_min")
+    if target_score < float(SWING_EXECUTABLE_NEAR_MISS_MIN_TARGET_PATH_SCORE):
+        blockers.append("target_path_score_below_near_miss_min")
+    if risk_pct > float(SWING_EXECUTABLE_NEAR_MISS_MAX_RISK_PER_SHARE_PCT):
+        blockers.append("risk_per_share_above_near_miss_cap")
+    if not daily_goal_ok:
+        blockers.append("daily_goal_low_already_hit")
+
+    applies = not blockers
+    return {
+        "enabled": bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED),
+        "applies": applies,
+        "symbol": symbol,
+        "blockers": blockers,
+        "original_rejection_reasons": reasons,
+        "allowed_reasons": sorted(allowed_reasons),
+        "hard_blockers": hard_present,
+        "disallowed_reasons": disallowed_reasons,
+        "rank_score": round(rank_score, 4),
+        "min_rank_score": float(SWING_EXECUTABLE_NEAR_MISS_MIN_RANK_SCORE),
+        "target_path_score": round(target_score, 4),
+        "min_target_path_score": float(SWING_EXECUTABLE_NEAR_MISS_MIN_TARGET_PATH_SCORE),
+        "risk_per_share_pct": round(risk_pct, 5),
+        "max_risk_per_share_pct": float(SWING_EXECUTABLE_NEAR_MISS_MAX_RISK_PER_SHARE_PCT),
+        "daily_goal_ok": bool(daily_goal_ok),
+        "daily_goal_progress": daily_goal,
+        "executable_sizing_truth": sizing,
+        "reason": "near_miss_entry_approved" if applies else ",".join(blockers),
+    }
+
+
+def _p301_apply_executable_near_miss_entry(candidate: dict | None, daily_goal_progress: dict | None = None) -> dict:
+    c = dict(candidate or {})
+    decision = _p301_executable_near_miss_decision(c, daily_goal_progress=daily_goal_progress)
+    c["executable_near_miss_entry"] = decision
+
+    if decision.get("applies"):
+        c["eligible"] = True
+        c["entry_type"] = "executable_near_miss"
+        c["selected_source"] = "executable_near_miss_sleeve"
+        c["near_miss_original_rejection_reasons"] = list(c.get("rejection_reasons") or [])
+        c["rejection_reasons"] = []
+        c["selection_blockers"] = []
+    return c
+
 def _same_day_entry_stats() -> dict:
     today = now_ny().date()
     counted = 0
@@ -17771,6 +17897,28 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     else:
         approved = breakout_approved if breakout_approved else mean_reversion_approved
 
+    executable_near_miss_candidates = []
+    if bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED) and not approved:
+        for row in list(candidates or []):
+            candidate = _p301_apply_executable_near_miss_entry(
+                row,
+                daily_goal_progress=daily_goal_progress,
+            )
+            if bool((candidate.get("executable_near_miss_entry") or {}).get("applies")):
+                executable_near_miss_candidates.append(candidate)
+
+        executable_near_miss_candidates.sort(
+            key=lambda x: (
+                float(_safe_float((x.get("target_path_profit") or {}).get("score") or x.get("target_path_score") or 0.0)),
+                float(_safe_float(x.get("selection_quality_score") or 0.0)),
+                float(_safe_float(x.get("rank_score") or 0.0)),
+            ),
+            reverse=True,
+        )
+        approved = executable_near_miss_candidates[
+            : max(0, int(SWING_EXECUTABLE_NEAR_MISS_MAX_PER_SCAN or 1))
+        ]
+
     adaptive_capacity_candidates = []
     adaptive_capacity_selected = []
 
@@ -17911,6 +18059,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if c.get('adaptive_capacity_candidate'):
             entry_type = 'adaptive_capacity'
             source_name = ADAPTIVE_CAPACITY_SOURCE
+        if bool(c.get("executable_near_miss_entry", {}).get("applies")):
+            entry_type = "executable_near_miss"
+            source_name = "executable_near_miss_sleeve"
         if override_live_permitted and override_symbol and str(c.get('symbol') or '').upper() == override_symbol:
             entry_type = 'early_override'
             source_name = override_source or EARLY_ENTRY_OVERRIDE_SOURCE
@@ -17954,6 +18105,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'swing_loss_day_entry_throttle': loss_day_throttle,
             'swing_quarantine': quarantine_decision,
             'same_day_symbol_loss_cooldown': c.get('same_day_symbol_loss_cooldown'),
+            'executable_near_miss_entry': c.get('executable_near_miss_entry'),
+            'near_miss_original_rejection_reasons': list(c.get('near_miss_original_rejection_reasons') or []),
         }
         selected_submission_payloads.append({
             "symbol": c.get("symbol"),
@@ -18031,6 +18184,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'selected_submission_finalizer': dict(selected_submission_finalizer),
         'selected_entry_intent_finalizer': dict(selected_entry_intent_finalizer),
         'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
+        'executable_near_miss_candidates': [dict(c) for c in executable_near_miss_candidates[:5]],
         'adaptive_capacity_candidates': [dict(c) for c in adaptive_capacity_candidates[:5]],
         'adaptive_capacity_selected': [c.get('symbol') for c in adaptive_capacity_selected],
         'shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
@@ -18064,6 +18218,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'selected_submission_finalizer': dict(selected_submission_finalizer),
         'selected_entry_intent_finalizer': dict(selected_entry_intent_finalizer),
         'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
+        'executable_near_miss_entry_sleeve': {
+            'enabled': bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED),
+            'candidate_count': len(executable_near_miss_candidates),
+            'candidate_symbols': [c.get('symbol') for c in executable_near_miss_candidates],
+            'selected_count': len([c for c in selected if bool((c.get('executable_near_miss_entry') or {}).get('applies'))]),
+            'selected_symbols': [c.get('symbol') for c in selected if bool((c.get('executable_near_miss_entry') or {}).get('applies'))],
+            'max_per_scan': int(SWING_EXECUTABLE_NEAR_MISS_MAX_PER_SCAN),
+            'min_rank_score': float(SWING_EXECUTABLE_NEAR_MISS_MIN_RANK_SCORE),
+            'min_target_path_score': float(SWING_EXECUTABLE_NEAR_MISS_MIN_TARGET_PATH_SCORE),
+        },
         'selected_submission_truth': _p297_selected_submission_truth([c.get('symbol') for c in selected]),
         'adaptive_capacity': {
             'enabled': bool(SWING_ADAPTIVE_CAPACITY_ENABLED),
@@ -18319,6 +18483,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'selected_submission_finalizer': selected_submission_finalizer,
         'selected_entry_intent_finalizer': selected_entry_intent_finalizer,
         'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
+        'executable_near_miss_entry_sleeve': {
+            'enabled': bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED),
+            'candidate_count': len(executable_near_miss_candidates),
+            'candidate_symbols': [c.get('symbol') for c in executable_near_miss_candidates],
+            'selected_symbols': [c.get('symbol') for c in selected if bool((c.get('executable_near_miss_entry') or {}).get('applies'))],
+        },
         'selected_submission_truth': _p297_selected_submission_truth([c.get('symbol') for c in selected]),
         'results': LAST_SWING_CANDIDATES[:SWING_MAX_CANDIDATES],
     }
@@ -36319,6 +36489,57 @@ def diagnostics_selected_submission_truth_light(request: Request):
     require_admin_if_configured(request)
     return _p298_selected_submission_truth_light()
 
+@app.get("/diagnostics/executable_near_miss_entry_sleeve")
+def diagnostics_executable_near_miss_entry_sleeve(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    rows = _p300_selection_contract_cleanup(
+        list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
+    )
+    daily_goal_progress = _p295_broker_daily_goal_progress()
+    candidates = []
+    for row in rows:
+        candidate = _p301_apply_executable_near_miss_entry(row, daily_goal_progress=daily_goal_progress)
+        if bool((candidate.get("executable_near_miss_entry") or {}).get("applies")):
+            candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda x: (
+            float(_safe_float((x.get("target_path_profit") or {}).get("score") or x.get("target_path_score") or 0.0)),
+            float(_safe_float(x.get("selection_quality_score") or 0.0)),
+            float(_safe_float(x.get("rank_score") or 0.0)),
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "executable_near_miss_entry_sleeve",
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "latest_scan_reason": latest_scan.get("reason"),
+        "daily_goal_progress": daily_goal_progress,
+        "candidate_count": len(candidates),
+        "candidate_symbols": [c.get("symbol") for c in candidates],
+        "rows": [
+            {
+                "symbol": c.get("symbol"),
+                "rank_score": c.get("rank_score"),
+                "target_path_score": (c.get("target_path_profit") or {}).get("score") or c.get("target_path_score"),
+                "estimated_qty": c.get("estimated_qty"),
+                "entry_type": c.get("entry_type"),
+                "near_miss_original_rejection_reasons": list(c.get("near_miss_original_rejection_reasons") or []),
+                "executable_near_miss_entry": c.get("executable_near_miss_entry"),
+                "executable_sizing_truth": c.get("executable_sizing_truth"),
+            }
+            for c in candidates[: max(1, min(int(limit or 25), 50))]
+        ],
+        "recommended_action": (
+            "near_miss_candidate_available_for_next_scan"
+            if candidates
+            else "no_executable_near_miss_candidate_available"
+        ),
+    }
 
 @app.get("/diagnostics/scanner_light")
 def diagnostics_scanner_light(request: Request):
