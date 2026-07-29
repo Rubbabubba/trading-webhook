@@ -35068,7 +35068,14 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
     sections = dict(sections or {})
     scanner = dict(sections.get("scanner") or {})
     scanner_truth = _p268_active_scanner_error_truth(scanner)
-    selected_submission_truth = _p297_selected_submission_truth(sections=sections)
+    selected_symbols_for_truth = _p298_selected_symbols_light(
+        dict((sections.get("candidates_full") or {})),
+        list(((sections.get("execution_lifecycle") or {}).get("items") or [])),
+    )
+    selected_submission_truth = _p297_selected_submission_truth(
+        selected_symbols=selected_symbols_for_truth,
+        sections=sections,
+    )
     candidates = dict(sections.get("candidates_full") or {})
     live = dict(sections.get("live_positions") or {})
     live_summary = dict(live.get("summary") or {})
