@@ -11050,8 +11050,13 @@ def startup_restore_state() -> dict:
     scan_restore = restore_scan_runtime_state()
     regime_restore = restore_regime_runtime_state()
     paper_restore = restore_paper_lifecycle_state()
-    selected_entry_intent_restore = _p299_restore_selected_entry_intent_queue()
-    SELECTED_ENTRY_INTENT_QUEUE_RESTORE.update(selected_entry_intent_restore)
+    selected_entry_intent_restore = {
+        "path": SELECTED_ENTRY_INTENT_QUEUE_PATH,
+        "loaded": False,
+        "count": 0,
+        "deferred": True,
+        "reason": "p299_helper_defined_after_startup_restore_state",
+    }
     cohort_restore = restore_cohort_evidence_state()
     strategy_perf_restore = restore_strategy_performance_state()
     hybrid_proof_restore = restore_hybrid_proof_ledger_state()
