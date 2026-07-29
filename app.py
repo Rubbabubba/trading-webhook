@@ -26192,18 +26192,39 @@ def _p298_recent_lifecycle_items(limit: int = 100) -> list[dict]:
 
 def _p298_selected_symbols_light(summary: dict | None = None, lifecycle_items: list | None = None) -> list[str]:
     summary = dict(summary or {})
+
+    explicit_selected_total = summary.get("selected_total")
+    explicit_would_trade = summary.get("would_trade")
+    explicit_selected_symbols_present = "selected_symbols" in summary
+
     symbols = [
         str(s or "").strip().upper()
         for s in list(summary.get("selected_symbols") or [])
         if str(s or "").strip()
     ]
+
+    # If the latest scan explicitly says nothing was selected, do not resurrect stale lifecycle selections.
+    if (
+        explicit_selected_symbols_present
+        and not symbols
+        and int(explicit_selected_total or 0) <= 0
+    ):
+        return []
+
+    if not symbols and explicit_would_trade is not None and int(explicit_would_trade or 0) <= 0:
+        return []
+
     if not symbols:
         for row in list(summary.get("top_candidates") or []):
-            if isinstance(row, dict) and bool(row.get("selected")):
-                sym = str(row.get("symbol") or "").strip().upper()
+            if not isinstance(row, dict):
+                continue
+            cleaned = _p300_apply_executable_selection_contract(row)
+            if bool(cleaned.get("selected")) and bool((cleaned.get("executable_sizing_truth") or {}).get("executable")):
+                sym = str(cleaned.get("symbol") or "").strip().upper()
                 if sym:
                     symbols.append(sym)
-    if not symbols:
+
+    if not symbols and not explicit_selected_symbols_present:
         for row in reversed(list(lifecycle_items or [])):
             if not isinstance(row, dict):
                 continue
@@ -26212,6 +26233,7 @@ def _p298_selected_symbols_light(summary: dict | None = None, lifecycle_items: l
                 if sym:
                     symbols.append(sym)
                     break
+
     return _dedupe_keep_order(symbols)
 
 
@@ -26393,7 +26415,9 @@ def _p298_reconcile_light() -> dict:
 def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     lim = max(1, min(int(limit or 10), 25))
     latest_scan, summary = _p298_latest_scan_summary_light()
-    rows = list(summary.get("top_candidates") or summary.get("items") or [])[:lim]
+    rows = _p300_selection_contract_cleanup(
+        list(summary.get("top_candidates") or summary.get("items") or [])
+    )[:lim]
     selected_symbols = _p298_selected_symbols_light(summary, _p298_recent_lifecycle_items(limit=50))
     eligible_rows = [row for row in rows if isinstance(row, dict) and bool(row.get("eligible"))]
 
@@ -36217,7 +36241,9 @@ def diagnostics_no_trade_brief(
             "selected_total": int(scan_summary.get("selected_total") or 0),
             "selected_symbols": list(scan_summary.get("selected_symbols") or []),
             "eligible_count": int(scan_summary.get("eligible_total") or scan_summary.get("eligible_count") or 0),
-            "items": list(scan_summary.get("top_candidates") or [])[: max(1, min(int(limit or 25), 25))],
+            "items": _p300_selection_contract_cleanup(
+                list(scan_summary.get("top_candidates") or [])
+            )[: max(1, min(int(limit or 25), 25))],
             "blocked_by_post_change_drawdown": bool(scan_summary.get("blocked_by_post_change_drawdown")),
         },
         "live_positions": {
