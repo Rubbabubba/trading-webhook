@@ -1717,6 +1717,16 @@ SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE = getenv_any(
     default="defensive_near_miss_relaxation",
 ).strip().lower()
 
+# Patch 297 - selected candidate submission finalizer
+SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED = env_bool_any(
+    "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
+    default=True,
+)
+SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED = env_bool_any(
+    "SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED",
+    default=True,
+)
+
 # 5m resampling / strategy tuning
 RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
 
@@ -2087,7 +2097,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-296-ma-pilot-defensive-relaxation-promotion-broker-daily-goal-aware-entry-slot"
+PATCH_VERSION = "patch-297-selected-candidate-submission-finalizer-no-trade-side-effect-symbol-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -17647,6 +17657,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 override_symbol = str((override_candidates[0] or {}).get('symbol') or '').upper() or None
                 override_source = EARLY_ENTRY_OVERRIDE_SOURCE
     would_submit = []
+    selected_submission_payloads = []
     for c in selected:
         entry_type = str(c.get('entry_type') or 'standard').strip() or 'standard'
         source_name = 'worker_scan'
@@ -17698,12 +17709,45 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'swing_quarantine': quarantine_decision,
             'same_day_symbol_loss_cooldown': c.get('same_day_symbol_loss_cooldown'),
         }
+        selected_submission_payloads.append({
+            "symbol": c.get("symbol"),
+            "candidate": dict(c),
+            "meta": dict(meta),
+            "source_name": source_name,
+            "entry_type": entry_type,
+            "live_allowed": bool(live_allowed),
+        })
         if live_allowed:
             resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta, source=source_name)
-            would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), 'entry_type': entry_type, **resp})
+            submit_meta = _classify_scan_submit_response(resp)
+            would_submit.append({
+                'symbol': c['symbol'],
+                'signal': c.get('signal'),
+                'rank_score': c.get('rank_score'),
+                'entry_type': entry_type,
+                **resp,
+                "submit_state": submit_meta.get("state"),
+                "submit_reason": submit_meta.get("reason"),
+                "submit_attempted": bool(submit_meta.get("attempted")),
+            })
         else:
             resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', source_name, meta=meta)
-            would_submit.append({'symbol': c['symbol'], 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), 'entry_type': entry_type, **resp})
+            submit_meta = _classify_scan_submit_response(resp)
+            would_submit.append({
+                'symbol': c['symbol'],
+                'signal': c.get('signal'),
+                'rank_score': c.get('rank_score'),
+                'entry_type': entry_type,
+                **resp,
+                "submit_state": submit_meta.get("state"),
+                "submit_reason": submit_meta.get("reason"),
+                "submit_attempted": bool(submit_meta.get("attempted")),
+            })
+    selected_submission_finalizer = _p297_finalize_selected_submissions(
+        selected_submission_payloads,
+        would_submit,
+    )
+
     LAST_SWING_CANDIDATES.clear()
     LAST_SWING_CANDIDATES.extend(candidates[: max(1, min(len(candidates), SWING_MAX_CANDIDATES))])
     CANDIDATE_HISTORY.append({
@@ -17726,6 +17770,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'symbols': list(scan_symbols),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
+        'selected_submission_finalizer': dict(selected_submission_finalizer),
         'adaptive_capacity_candidates': [dict(c) for c in adaptive_capacity_candidates[:5]],
         'adaptive_capacity_selected': [c.get('symbol') for c in adaptive_capacity_selected],
         'shadow_candidates': [dict(c) for c in shadow_candidates[:SHADOW_REGIME_MAX_CANDIDATES]],
@@ -17756,6 +17801,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'mean_reversion_eligible_total': len(mean_reversion_approved),
         'selected_strategy': (selected[0].get('strategy') if selected else None),
         'selected_symbols': [c.get('symbol') for c in selected],
+        'selected_submission_finalizer': dict(selected_submission_finalizer),
+        'selected_submission_truth': _p297_selected_submission_truth([c.get('symbol') for c in selected]),
         'adaptive_capacity': {
             'enabled': bool(SWING_ADAPTIVE_CAPACITY_ENABLED),
             'candidate_count': len(adaptive_capacity_candidates),
@@ -18007,6 +18054,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         },
         'reconcile': reconcile_actions,
         'would_submit': would_submit,
+        'selected_submission_finalizer': selected_submission_finalizer,
+        'selected_submission_truth': _p297_selected_submission_truth([c.get('symbol') for c in selected]),
         'results': LAST_SWING_CANDIDATES[:SWING_MAX_CANDIDATES],
     }
 
@@ -25732,6 +25781,261 @@ def _classify_scan_submit_response(resp: dict | None) -> dict:
         return {"state": "not_submitted", "reason": reason or "ok_without_submit", "attempted": False, "order_id": ""}
     return {"state": "error", "reason": reason or "unknown", "attempted": False, "order_id": ""}
 
+def _p297_symbol_entry_side_effect(symbol: str) -> dict:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return {
+            "symbol": sym,
+            "side_effect_detected": False,
+            "reasons": ["missing_symbol"],
+        }
+
+    reasons = []
+    plan = dict((TRADE_PLAN or {}).get(sym) or {})
+    if bool(plan.get("active")):
+        reasons.append("active_plan")
+    if _plan_is_pending_entry(plan):
+        reasons.append("pending_entry_plan")
+
+    open_order = {}
+    try:
+        open_order = dict(find_open_order_for_symbol(sym) or {})
+    except Exception:
+        open_order = {}
+    if open_order:
+        reasons.append("open_order")
+
+    qty_signed = 0.0
+    pos_side = ""
+    try:
+        qty_signed, pos_side = get_position(sym)
+    except Exception:
+        qty_signed, pos_side = 0.0, ""
+    if float(qty_signed or 0.0) != 0.0:
+        reasons.append("broker_position")
+
+    return {
+        "symbol": sym,
+        "side_effect_detected": bool(reasons),
+        "reasons": _dedupe_candidate_reasons(reasons),
+        "active_plan": bool(plan.get("active")),
+        "pending_entry_plan": bool(_plan_is_pending_entry(plan)),
+        "open_order": bool(open_order),
+        "open_order_id": str(open_order.get("id") or open_order.get("order_id") or ""),
+        "broker_position_qty": float(qty_signed or 0.0),
+        "broker_position_side": pos_side,
+        "plan_status": plan.get("execution_state") or plan.get("lifecycle_state") or plan.get("status"),
+        "plan_source": plan.get("source"),
+        "plan_entry_type": plan.get("entry_type") or (plan.get("thesis") or {}).get("entry_type"),
+    }
+
+
+def _p297_selected_symbols_from_sections(sections: dict | None = None) -> list[str]:
+    sections = dict(sections or {})
+    candidates = dict(sections.get("candidates_full") or {})
+    selected = [
+        str(s or "").strip().upper()
+        for s in list(candidates.get("selected_symbols") or [])
+        if str(s or "").strip()
+    ]
+
+    if not selected:
+        for row in list(candidates.get("items") or []):
+            if not isinstance(row, dict):
+                continue
+            if bool(row.get("selected")):
+                sym = str(row.get("symbol") or "").strip().upper()
+                if sym:
+                    selected.append(sym)
+
+    if not selected:
+        lifecycle = dict(sections.get("execution_lifecycle") or {})
+        for row in reversed(list(lifecycle.get("items") or [])):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("stage") or "").strip().lower() == "candidate" and str(row.get("status") or "").strip().lower() == "selected":
+                sym = str(row.get("symbol") or "").strip().upper()
+                if sym:
+                    selected.append(sym)
+                    break
+
+    if not selected:
+        last_event = dict(LAST_PAPER_LIFECYCLE or {})
+        if str(last_event.get("stage") or "").strip().lower() == "candidate" and str(last_event.get("status") or "").strip().lower() == "selected":
+            sym = str(last_event.get("symbol") or "").strip().upper()
+            if sym:
+                selected.append(sym)
+
+    return _dedupe_keep_order(selected)
+
+
+def _p297_selected_submission_truth(selected_symbols: list[str] | None = None, sections: dict | None = None) -> dict:
+    symbols = _dedupe_keep_order([
+        str(s or "").strip().upper()
+        for s in list(selected_symbols or [])
+        if str(s or "").strip()
+    ])
+    if not symbols:
+        symbols = _p297_selected_symbols_from_sections(sections)
+
+    rows = [_p297_symbol_entry_side_effect(sym) for sym in symbols]
+    missing = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and not bool(row.get("side_effect_detected"))
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "selected_candidate_submission_truth",
+        "selected_symbols": symbols,
+        "selected_count": len(symbols),
+        "side_effect_symbols": [
+            row.get("symbol")
+            for row in rows
+            if bool(row.get("side_effect_detected"))
+        ],
+        "missing_side_effect_symbols": missing,
+        "selected_side_effect_detected": bool(symbols and not missing),
+        "selected_without_side_effect": bool(missing),
+        "rows": rows,
+        "recommended_action": (
+            "investigate_submit_path_for_selected_symbols"
+            if missing
+            else "selected_symbols_have_plan_order_or_position"
+            if symbols
+            else "no_selected_symbols_found"
+        ),
+    }
+
+
+def _p297_finalize_selected_submissions(selected_payloads: list | None, would_submit: list | None) -> dict:
+    payloads = [dict(p or {}) for p in list(selected_payloads or []) if isinstance(p, dict)]
+    rows = []
+    if not bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED):
+        return {
+            "enabled": False,
+            "rows": rows,
+            "finalized_symbols": [],
+            "missing_symbols": [],
+            "retried_symbols": [],
+            "reason": "selected_submission_finalizer_disabled",
+        }
+
+    would_rows = [dict(r or {}) for r in list(would_submit or []) if isinstance(r, dict)]
+    for payload in payloads:
+        candidate = dict(payload.get("candidate") or {})
+        sym = str(candidate.get("symbol") or payload.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+
+        existing_rows = [
+            r for r in would_rows
+            if str(r.get("symbol") or "").strip().upper() == sym
+        ]
+        latest_submit = existing_rows[-1] if existing_rows else {}
+        submit_state = str(latest_submit.get("submit_state") or "").strip().lower()
+        side_effect_before = _p297_symbol_entry_side_effect(sym)
+
+        row = {
+            "symbol": sym,
+            "selected": True,
+            "normal_submit_state": submit_state or None,
+            "normal_submit_reason": latest_submit.get("submit_reason") or latest_submit.get("reason"),
+            "side_effect_before": side_effect_before,
+            "retried": False,
+            "retry_response": None,
+            "side_effect_after": side_effect_before,
+            "finalized": bool(side_effect_before.get("side_effect_detected")),
+        }
+
+        retryable_state = submit_state in {"", "error", "not_submitted", "unknown", None}
+        if (
+            not row["finalized"]
+            and bool(SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED)
+            and bool(payload.get("live_allowed"))
+            and retryable_state
+        ):
+            retry_meta = dict(payload.get("meta") or {})
+            retry_meta["selected_submission_finalizer_retry"] = True
+            retry_meta["selected_submission_finalizer_patch"] = PATCH_VERSION
+            try:
+                resp = submit_scan_trade(
+                    sym,
+                    "buy",
+                    candidate.get("signal") or "daily_breakout",
+                    meta=retry_meta,
+                    source=str(payload.get("source_name") or "worker_scan"),
+                )
+            except Exception as exc:
+                resp = {
+                    "ok": False,
+                    "rejected": True,
+                    "reason": f"selected_submission_finalizer_exception:{exc}",
+                    "symbol": sym,
+                }
+
+            row["retried"] = True
+            row["retry_response"] = resp
+            submit_meta = _classify_scan_submit_response(resp)
+            retry_row = {
+                "symbol": sym,
+                "signal": candidate.get("signal"),
+                "rank_score": candidate.get("rank_score"),
+                "entry_type": payload.get("entry_type"),
+                "selected_submission_finalizer_retry": True,
+                **resp,
+                "submit_state": submit_meta.get("state"),
+                "submit_reason": submit_meta.get("reason"),
+                "submit_attempted": bool(submit_meta.get("attempted")),
+            }
+            would_submit.append(retry_row)
+            would_rows.append(retry_row)
+
+            try:
+                _record_paper_lifecycle(
+                    "entry",
+                    "finalizer_retry",
+                    symbol=sym,
+                    details={
+                        "submit_state": submit_meta.get("state"),
+                        "submit_reason": submit_meta.get("reason"),
+                        "order_id": submit_meta.get("order_id"),
+                        "entry_type": payload.get("entry_type"),
+                    },
+                )
+            except Exception:
+                pass
+
+            row["side_effect_after"] = _p297_symbol_entry_side_effect(sym)
+            row["finalized"] = bool(row["side_effect_after"].get("side_effect_detected"))
+
+        if not row["finalized"]:
+            try:
+                record_decision(
+                    "GUARDRAIL",
+                    "worker_scan",
+                    sym,
+                    side="buy",
+                    signal=str(candidate.get("signal") or "daily_breakout"),
+                    action="selected_without_submission_side_effect",
+                    reason=str(row.get("normal_submit_reason") or "selected_symbol_missing_plan_order_position"),
+                    meta=row,
+                )
+            except Exception:
+                pass
+
+        rows.append(row)
+
+    return {
+        "enabled": True,
+        "rows": rows,
+        "finalized_symbols": [r.get("symbol") for r in rows if bool(r.get("finalized"))],
+        "missing_symbols": [r.get("symbol") for r in rows if not bool(r.get("finalized"))],
+        "retried_symbols": [r.get("symbol") for r in rows if bool(r.get("retried"))],
+        "reason": "selected_submission_finalizer_checked",
+    }
 
 def _latest_scan_submit_decision(decisions: list[dict] | None) -> dict:
     for d in reversed(list(decisions or [])):
@@ -33784,6 +34088,7 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
     sections = dict(sections or {})
     scanner = dict(sections.get("scanner") or {})
     scanner_truth = _p268_active_scanner_error_truth(scanner)
+    selected_submission_truth = _p297_selected_submission_truth(sections=sections)
     candidates = dict(sections.get("candidates_full") or {})
     live = dict(sections.get("live_positions") or {})
     live_summary = dict(live.get("summary") or {})
@@ -33819,9 +34124,18 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
     root_cause = "unknown"
     recommended_action = "review_bundle_sections"
 
-    if scanner_truth.get("success_after_side_effect"):
-        root_cause = "scanner_timeout_after_confirmed_side_effect"
+    if selected_submission_truth.get("selected_without_side_effect"):
+        root_cause = "selected_candidate_without_submission_side_effect"
+        recommended_action = "review_selected_submission_truth_and_scanner_finalizer"
+    elif (
+        scanner_truth.get("success_after_side_effect")
+        and selected_submission_truth.get("selected_side_effect_detected")
+    ):
+        root_cause = "scanner_timeout_after_selected_side_effect_confirmed"
         recommended_action = "review_reconcile_then_tune_scanner_timeout_or_runtime"
+    elif scanner_truth.get("success_after_side_effect"):
+        root_cause = "scanner_timeout_after_unrelated_side_effect"
+        recommended_action = "ignore_unrelated_side_effect_for_selected_symbol_review_submission_path"
     elif scanner_truth.get("active_error"):
         root_cause = "scanner_error"
         recommended_action = "fix_active_scanner_error_before_strategy_tuning"
@@ -33870,6 +34184,7 @@ def _p268_no_trade_brief(sections: dict | None = None) -> dict:
         "daily_halt_active": daily_halt_active,
         "new_entries_blocked": new_entries_blocked,
         "scanner": scanner_truth,
+        "selected_submission_truth": selected_submission_truth,
         "candidates": {
             "eligible_count": eligible_count,
             "selected_total": selected_count,
@@ -34915,6 +35230,14 @@ def diagnostics_scenario_bundle(
     require_admin_if_configured(request)
     return _p268_operator_bundle(scope=scope, limit=limit, refresh_live=refresh_live)
 
+@app.get("/diagnostics/selected_submission_truth")
+def diagnostics_selected_submission_truth(request: Request):
+    require_admin_if_configured(request)
+    sections = {
+        "candidates_full": diagnostics_candidates_full(request, limit=25),
+        "execution_lifecycle": diagnostics_execution_lifecycle(request),
+    }
+    return _p297_selected_submission_truth(sections=sections)
 
 @app.get("/diagnostics/no_trade_brief")
 def diagnostics_no_trade_brief(
