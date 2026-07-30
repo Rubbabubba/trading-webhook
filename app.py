@@ -2205,7 +2205,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-309-hotfix-2-runtime-config-direct-market-hours-truth"
+PATCH_VERSION = "patch-309-hotfix-3-runtime-config-capacity-alias-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -38627,14 +38627,14 @@ def diagnostics_swing_runtime_config():
             "market_hours_required": bool(ONLY_MARKET_HOURS),
         },
         capacity={
-            "max_open_positions": int(SWING_MAX_OPEN_POSITIONS),
+            "max_open_positions": int(MAX_OPEN_POSITIONS),
             "sleeve_max_open_positions": int(SWING_SLEEVE_MAX_OPEN_POSITIONS),
             "max_new_entries_per_day": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
             "scanner_max_entries_per_scan": int(SCANNER_MAX_ENTRIES_PER_SCAN),
             "max_group_positions": int(SWING_MAX_GROUP_POSITIONS),
             "max_portfolio_exposure_pct": float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT),
             "max_symbol_exposure_pct": float(SWING_MAX_SYMBOL_EXPOSURE_PCT),
-            "risk_per_trade_dollars": float(SWING_RISK_PER_TRADE_DOLLARS),
+            "risk_per_trade_dollars": float(RISK_DOLLARS),
         },
         risk_controls={
             "daily_stop_dollars": float(DAILY_STOP_DOLLARS),
