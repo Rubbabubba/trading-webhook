@@ -2285,7 +2285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-319-swing-core-dead-path-removal-audit-trade-readiness-morning-brief"
+PATCH_VERSION = "patch-320-morning-brief-position-truth-fix-swing-dead-path-removal-phase-1"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11609,6 +11609,7 @@ def _p319_dead_path_removal_audit() -> dict:
         "swing_production_core_cleanup_enabled": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
         "removal_candidate_count": len(removal_candidates),
         "items": items,
+        "phase_1_status": _p320_swing_dead_path_phase1_status(),
         "recommended_sequence": [
             "keep_patch_318_light_watch_endpoint_as_primary_operator_view",
             "remove_or_disable_old_selected_intent_queue_path_after_one_more_clean_live_scan",
@@ -11617,6 +11618,72 @@ def _p319_dead_path_removal_audit() -> dict:
         ],
     }
 
+def _p320_active_position_truth_for_brief() -> dict:
+    plan_symbols = sorted({
+        str(sym or "").strip().upper()
+        for sym, plan in dict(globals().get("TRADE_PLAN") or {}).items()
+        if str(sym or "").strip() and isinstance(plan, dict) and bool(plan.get("active"))
+    })
+
+    broker_symbols = []
+    snapshot_symbols = []
+
+    try:
+        truth = dict(_position_truth_payload() or {})
+        broker_symbols = [
+            str(sym or "").strip().upper()
+            for sym in list(truth.get("broker_position_symbols") or truth.get("broker_symbols") or [])
+            if str(sym or "").strip()
+        ]
+    except Exception:
+        truth = {"ok": False, "reason": "position_truth_unavailable"}
+
+    try:
+        snap = _load_position_snapshot()
+        raw_positions = list((snap or {}).get("positions") or (snap or {}).get("broker_positions") or [])
+        for row in raw_positions:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or row.get("asset") or "").strip().upper()
+            qty = float(_safe_float(row.get("qty") or row.get("quantity") or row.get("position_qty")))
+            if sym and qty != 0.0:
+                snapshot_symbols.append(sym)
+    except Exception:
+        snap = {}
+
+    symbols = sorted(set(plan_symbols) | set(broker_symbols) | set(snapshot_symbols))
+
+    return {
+        "ok": True,
+        "active_position_count": len(symbols),
+        "symbols": symbols,
+        "plan_symbols": plan_symbols,
+        "broker_symbols": sorted(set(broker_symbols)),
+        "snapshot_symbols": sorted(set(snapshot_symbols)),
+        "source": "trade_plan_broker_truth_snapshot_union",
+        "position_truth": truth,
+    }
+
+
+def _p320_swing_dead_path_phase1_status() -> dict:
+    selected_intent_suppressed = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
+    finalizer_suppressed = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)
+    intraday_noise_suppressed = bool(_p317_intraday_separation_status().get("suppressed_for_swing_runtime"))
+
+    return {
+        "enabled": True,
+        "mode": "swing_dead_path_removal_phase_1",
+        "selected_entry_intent_queue_suppressed_from_swing_operator_paths": selected_intent_suppressed,
+        "selected_submission_finalizer_suppressed_from_swing_operator_paths": finalizer_suppressed,
+        "intraday_paper_hybrid_noise_suppressed_from_swing_operator_paths": intraday_noise_suppressed,
+        "endpoints_retained_for_historical_review": True,
+        "trade_submission_behavior_changed": False,
+        "next_safe_cleanup": [
+            "remove_selected_intent_queue_from_swing_default_diagnostics",
+            "remove_selected_submission_finalizer_from_swing_default_diagnostics",
+            "move_intraday_shadow_paper_metrics_to_intraday_only_bundle",
+        ],
+    }
 
 def _p319_trade_readiness_morning_brief(symbols: str | None = None, limit: int | None = None) -> dict:
     watch = _p316_swing_watchlist_trade_status(
@@ -11633,25 +11700,12 @@ def _p319_trade_readiness_morning_brief(symbols: str | None = None, limit: int |
 
     summary = dict((latest_scan.get("summary") if isinstance(latest_scan, dict) else {}) or {})
     scanner_runtime = dict(summary.get("scanner_runtime") or {})
-    position_truth = {}
-    try:
-        position_truth = dict(_position_truth_payload() or {})
-    except Exception:
-        position_truth = {"ok": False, "reason": "position_truth_unavailable"}
-
-    live_positions = []
-    try:
-        snap = _load_position_snapshot()
-        live_positions = list((snap or {}).get("positions") or [])
-    except Exception:
-        live_positions = []
+    active_truth = _p320_active_position_truth_for_brief()
+    position_truth = dict(active_truth.get("position_truth") or {})
 
     tradeable_count = int(watch.get("tradeable_count") or 0)
     watch_count = int(watch.get("watch_count") or 0)
-    active_position_count = len([
-        row for row in live_positions
-        if isinstance(row, dict) and float(_safe_float(row.get("qty") or row.get("quantity"))) != 0.0
-    ])
+    active_position_count = int(active_truth.get("active_position_count") or 0)
 
     open_slots = max(0, int(_effective_max_open_positions()) - active_position_count)
     scanner_ready = bool(
@@ -11697,6 +11751,8 @@ def _p319_trade_readiness_morning_brief(symbols: str | None = None, limit: int |
         },
         "capacity": {
             "active_position_count": active_position_count,
+            "active_symbols": list(active_truth.get("symbols") or []),
+            "position_count_source": active_truth.get("source"),
             "effective_max_open_positions": int(_effective_max_open_positions()),
             "open_slots": open_slots,
         },
@@ -11719,6 +11775,7 @@ def _p319_trade_readiness_morning_brief(symbols: str | None = None, limit: int |
         },
         "top_watch": list(watch.get("items") or [])[:max(1, min(int(limit or 6), 12))],
         "intraday_separation_status": intraday_sep,
+        "dead_path_phase_1": _p320_swing_dead_path_phase1_status(),
         "operator_action": (
             "monitor_watch_endpoint_and_wait_for_candidate_to_cross_gate"
             if tradeable_count <= 0
