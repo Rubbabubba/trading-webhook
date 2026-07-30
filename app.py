@@ -2285,7 +2285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-315-main-web-swing-runtime-slimmer-strong-rank-watchlist-scan-path"
+PATCH_VERSION = "patch-316-lightweight-swing-watchlist-trade-status"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11152,6 +11152,160 @@ def _p313_target_path_gate_calibration(rows: list[dict] | None = None, summary: 
         "recommended_action": recommended_action,
     }
 
+def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | None = None) -> dict:
+    active_scan = _p285_saved_truth_scan(limit=max(25, min(int(limit or 25), 100)))
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 25), 100)))
+
+    requested = [
+        str(s or "").strip().upper()
+        for s in str(symbols or "").replace(";", ",").split(",")
+        if str(s or "").strip()
+    ]
+
+    if not requested:
+        requested = []
+        for key in ("runtime_watch_symbols", "selected_symbols", "eligible_symbols"):
+            for sym in list(summary.get(key) or []):
+                sym_u = str(sym or "").strip().upper()
+                if sym_u and sym_u not in requested:
+                    requested.append(sym_u)
+
+        if not requested:
+            for row in rows:
+                sym_u = str(row.get("symbol") or "").strip().upper()
+                if sym_u and sym_u not in requested:
+                    requested.append(sym_u)
+                if len(requested) >= max(1, min(int(limit or 12), 25)):
+                    break
+
+    selected_symbols = {str(s or "").upper() for s in list(summary.get("selected_symbols") or [])}
+    active_symbols = set()
+    pending_symbols = set()
+
+    for plan in list(TRADE_PLANS or []):
+        if not isinstance(plan, dict):
+            continue
+        sym = str(plan.get("symbol") or "").strip().upper()
+        status = str(plan.get("status") or "").strip().lower()
+        if not sym:
+            continue
+        if status in {"filled", "open", "active"}:
+            active_symbols.add(sym)
+        if status in {"pending", "submitted", "accepted", "new"}:
+            pending_symbols.add(sym)
+
+    by_symbol: dict[str, list[dict]] = {}
+    for row in rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        by_symbol.setdefault(sym, []).append(dict(row or {}))
+
+    items = []
+    for sym in requested[:max(1, min(int(limit or 12), 25))]:
+        matches = by_symbol.get(sym, [])
+        matches.sort(key=_p283_candidate_sort_key, reverse=True)
+        row = dict(matches[0]) if matches else {}
+
+        target_path = dict(row.get("target_path_profit") or (_p283_target_path_profit_score(row) if row else {}))
+        gate = dict(row.get("target_profile_breakout_gate") or {})
+        executable = dict(row.get("executable_sizing_truth") or {})
+        reasons = [str(x) for x in list(row.get("rejection_reasons") or []) if str(x)]
+        blockers = [str(x) for x in list(target_path.get("gate_blockers") or gate.get("blockers") or []) if str(x)]
+
+        eligible = bool(row.get("eligible"))
+        selected = bool(row.get("selected")) or sym in selected_symbols
+        active_position = sym in active_symbols
+        pending_plan = sym in pending_symbols
+        executable_ok = bool(executable.get("executable")) if executable else None
+        target_score = round(float(_safe_float(target_path.get("score"))), 4) if target_path else None
+        rank_score = row.get("rank_score")
+
+        blocking_reasons = []
+        if active_position:
+            blocking_reasons.append("active_position")
+        if pending_plan:
+            blocking_reasons.append("pending_plan")
+        if not row:
+            blocking_reasons.append("not_in_latest_candidate_rows")
+        if reasons:
+            blocking_reasons.extend(reasons)
+        if blockers:
+            blocking_reasons.extend([f"gate:{b}" for b in blockers])
+        if executable_ok is False:
+            blocking_reasons.append(str(executable.get("sizing_block_reason") or "not_executable"))
+
+        if selected or eligible:
+            status = "tradeable"
+            recommendation = "inspect_submit_truth"
+        elif active_position or pending_plan:
+            status = "already_captured"
+            recommendation = "monitor_existing_position_or_pending_plan"
+        elif not row:
+            status = "not_scanned_or_not_candidate"
+            recommendation = "wait_for_next_scan_or_add_to_runtime_watchlist"
+        elif executable_ok is False:
+            status = "not_executable"
+            recommendation = "do_not_submit_until_sizing_or_buying_power_truth_clears"
+        elif "target_profile_breakout_gate" in reasons:
+            status = "watch_gate_near_miss"
+            recommendation = "recheck_only; do_not_force_trade"
+        elif reasons:
+            status = "rejected"
+            recommendation = "wait_for_signal_quality_to_improve"
+        else:
+            status = "watch"
+            recommendation = "monitor_next_scan"
+
+        items.append({
+            "symbol": sym,
+            "status": status,
+            "recommendation": recommendation,
+            "selected": selected,
+            "eligible": eligible,
+            "active_position": active_position,
+            "pending_plan": pending_plan,
+            "candidate_present": bool(row),
+            "strategy": row.get("strategy") or row.get("strategy_name") or row.get("signal"),
+            "entry_type": row.get("entry_type"),
+            "rank_score": rank_score,
+            "selection_quality_score": row.get("selection_quality_score"),
+            "target_path_score": target_score,
+            "target_path_passed": bool(target_path.get("passed")) if target_path else False,
+            "target_path_tier": target_path.get("tier") if target_path else None,
+            "gate_passed": bool(target_path.get("gate_passed")) if target_path else False,
+            "gate_blockers": blockers,
+            "rejection_reasons": reasons,
+            "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
+            "executable": executable_ok,
+            "sizing_block_reason": executable.get("sizing_block_reason") if executable else None,
+            "requested_qty": row.get("requested_qty") or executable.get("requested_qty"),
+            "risk_per_share_pct": row.get("risk_per_share_pct") or executable.get("risk_per_share_pct"),
+            "breakout_distance_pct": row.get("breakout_distance_pct"),
+            "close_to_high_pct": row.get("close_to_high_pct"),
+            "return_20d_pct": row.get("return_20d_pct"),
+        })
+
+    tradeable = [r for r in items if r.get("status") == "tradeable"]
+    watch = [r for r in items if str(r.get("status") or "").startswith("watch")]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_watchlist_trade_status",
+        "read_only": True,
+        "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
+        "scan_ts_utc": summary.get("scan_ts_utc") or summary.get("ts_utc"),
+        "runtime_slim_applied": bool(summary.get("runtime_slim_applied") or (summary.get("runtime_slim") or {}).get("applied")),
+        "runtime_symbols_used_count": summary.get("runtime_symbols_used_count") or summary.get("symbols_total"),
+        "selected_total": int(summary.get("selected_total") or 0),
+        "eligible_total": int(summary.get("eligible_total") or 0),
+        "watch_count": len(watch),
+        "tradeable_count": len(tradeable),
+        "symbols": requested[:max(1, min(int(limit or 12), 25))],
+        "items": items,
+    }
 
 def _p313_fast_no_trade_recheck_hint(summary: dict | None = None, rows: list | None = None) -> dict:
     summary = dict(summary or {})
@@ -26217,6 +26371,14 @@ def diagnostics_target_path_gate_calibration(request: Request, limit: int = 15):
     return JSONResponse(content=_p313_target_path_gate_calibration(
         rows,
         summary=summary,
+        limit=limit,
+    ))
+
+@app.get("/diagnostics/swing_watchlist_trade_status")
+def diagnostics_swing_watchlist_trade_status(request: Request, symbols: str = "", limit: int = 12):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p316_swing_watchlist_trade_status(
+        symbols=symbols,
         limit=limit,
     ))
 
