@@ -1069,7 +1069,23 @@ SWING_FAST_NO_TRADE_RECHECK_MAX_SYMBOLS = getenv_int_any(
     "SWING_FAST_NO_TRADE_RECHECK_MAX_SYMBOLS",
     default=5,
 )
-
+# Patch 314 - scanner slimming / stale intent cleanup / true tradeable semantics
+SWING_STALE_INTENT_RECONCILE_ENABLED = env_bool_any(
+    "SWING_STALE_INTENT_RECONCILE_ENABLED",
+    default=True,
+)
+SWING_STALE_INTENT_MAX_PENDING_AGE_SEC = getenv_int_any(
+    "SWING_STALE_INTENT_MAX_PENDING_AGE_SEC",
+    default=1800,
+)
+SWING_STALE_INTENT_KEEP_RECENT = getenv_int_any(
+    "SWING_STALE_INTENT_KEEP_RECENT",
+    default=25,
+)
+SWING_TRUE_TRADEABLE_REQUIRE_ELIGIBLE_OR_SELECTED = env_bool_any(
+    "SWING_TRUE_TRADEABLE_REQUIRE_ELIGIBLE_OR_SELECTED",
+    default=True,
+)
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -2235,7 +2251,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-313-target-path-gate-calibration-first-2k-replay-fast-no-trade-recheck"
+PATCH_VERSION = "patch-314-scanner-runtime-slimming-stale-intent-reconcile-true-tradeable-semantics"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -10994,25 +11010,42 @@ def _p313_target_path_gate_calibration(rows: list[dict] | None = None, summary: 
     strong_score = float(SWING_TARGET_PATH_STRONG_SCORE)
 
     calibrated_candidates = []
+    true_tradeable = []
+    target_path_interesting = []
+
     for row in candidate_rows[:max(1, min(int(limit or 15), 50))]:
         target_path = dict(row.get("target_path_profit") or _p283_target_path_profit_score(row))
         gate = dict(row.get("target_profile_breakout_gate") or {})
         score = float(_safe_float(target_path.get("score")))
-        calibrated_candidates.append({
+        reasons = [str(x) for x in list(row.get("rejection_reasons") or []) if str(x)]
+        blockers = [str(x) for x in list(target_path.get("gate_blockers") or gate.get("blockers") or []) if str(x)]
+        eligible = bool(row.get("eligible"))
+        selected = bool(row.get("selected"))
+        target_path_passed = bool(target_path.get("passed")) or score >= min_score
+
+        item = {
             "symbol": row.get("symbol"),
-            "eligible": bool(row.get("eligible")),
-            "selected": bool(row.get("selected")),
+            "eligible": eligible,
+            "selected": selected,
             "rank_score": row.get("rank_score"),
             "selection_quality_score": row.get("selection_quality_score"),
             "target_path_score": round(score, 4),
             "score_gap_to_configured_min": round(max(0.0, min_score - score), 4),
-            "target_path_passed": bool(target_path.get("passed")),
+            "target_path_passed": target_path_passed,
             "target_path_tier": target_path.get("tier"),
             "target_wins": int(target_path.get("target_wins") or 0),
             "gate_passed": bool(target_path.get("gate_passed")),
-            "gate_blockers": list(target_path.get("gate_blockers") or gate.get("blockers") or []),
-            "rejection_reasons": list(row.get("rejection_reasons") or []),
-        })
+            "gate_blockers": blockers,
+            "rejection_reasons": reasons,
+            "true_tradeable": bool(selected or eligible),
+            "semantics_note": "true_tradeable_requires_selected_or_eligible; target_path_passed_is_only_quality_interest",
+        }
+        calibrated_candidates.append(item)
+
+        if target_path_passed:
+            target_path_interesting.append(item)
+        if selected or eligible:
+            true_tradeable.append(item)
 
     best_score = max([float(r.get("target_path_score") or 0.0) for r in calibrated_candidates] or [0.0])
     best_rank = max([float(r.get("rank_score") or 0.0) for r in calibrated_candidates] or [0.0])
@@ -11032,12 +11065,15 @@ def _p313_target_path_gate_calibration(rows: list[dict] | None = None, summary: 
     if not calibration_ready:
         assessment = "insufficient_first_profit_window_for_calibration"
         recommended_action = "collect_more_attributed_history_before_changing_target_path_threshold"
+    elif true_tradeable:
+        assessment = "true_tradeable_candidates_present"
+        recommended_action = "inspect_submission_truth_for_selected_or_eligible_candidates"
+    elif target_path_interesting:
+        assessment = "target_path_interesting_but_not_tradeable"
+        recommended_action = "do_not_call_these_tradeable; inspect_actual_rejection_reasons"
     elif rank_strong_no_trade and best_score < min_score:
         assessment = "rank_strong_but_target_path_score_far_below_configured_min"
         recommended_action = "fast_recheck_rank_strong_candidates_without_forcing_trade"
-    elif best_score >= min_score:
-        assessment = "target_path_gate_has_tradeable_candidates"
-        recommended_action = "inspect_capacity_or_submission_truth"
     else:
         assessment = "no_trade_quality_gate_confirmed"
         recommended_action = "wait_for_better_target_path_setup"
@@ -11051,6 +11087,7 @@ def _p313_target_path_gate_calibration(rows: list[dict] | None = None, summary: 
         "configured": {
             "target_path_min_score": min_score,
             "target_path_strong_score": strong_score,
+            "true_tradeable_requires_eligible_or_selected": bool(SWING_TRUE_TRADEABLE_REQUIRE_ELIGIBLE_OR_SELECTED),
             "fast_no_trade_recheck_enabled": bool(SWING_FAST_NO_TRADE_RECHECK_ENABLED),
             "fast_no_trade_recheck_sec": int(SWING_FAST_NO_TRADE_RECHECK_SEC),
             "fast_no_trade_recheck_min_rank_score": float(SWING_FAST_NO_TRADE_RECHECK_MIN_RANK_SCORE),
@@ -11071,6 +11108,10 @@ def _p313_target_path_gate_calibration(rows: list[dict] | None = None, summary: 
             "best_target_path_score": round(best_score, 4),
             "best_rank_score": round(best_rank, 4),
             "rank_strong_no_trade_symbols": [r.get("symbol") for r in rank_strong_no_trade],
+            "target_path_interesting_count": len(target_path_interesting),
+            "target_path_interesting_symbols": [r.get("symbol") for r in target_path_interesting[:10]],
+            "true_tradeable_count": len(true_tradeable),
+            "true_tradeable_symbols": [r.get("symbol") for r in true_tradeable],
             "top_candidates": calibrated_candidates,
         },
         "assessment": assessment,
@@ -27423,10 +27464,107 @@ def _p299_intent_age_sec(intent: dict) -> float:
     except Exception:
         return 0.0
 
+def _p314_reconcile_stale_selected_entry_intents(apply: bool = True) -> dict:
+    rows = []
+    changed = False
+
+    if not bool(SWING_STALE_INTENT_RECONCILE_ENABLED):
+        return {
+            "enabled": False,
+            "applied": bool(apply),
+            "changed": False,
+            "rows": rows,
+            "reason": "stale_intent_reconcile_disabled",
+        }
+
+    now = datetime.now(timezone.utc)
+    max_age = max(60, int(SWING_STALE_INTENT_MAX_PENDING_AGE_SEC or 1800))
+
+    for intent in SELECTED_ENTRY_INTENT_QUEUE:
+        if not isinstance(intent, dict):
+            continue
+
+        status = str(intent.get("status") or "").strip().lower()
+        sym = str(intent.get("symbol") or "").strip().upper()
+        age_sec = _p299_intent_age_sec(intent)
+        side_effect = _p297_symbol_entry_side_effect(sym) if sym else {"side_effect_detected": False}
+
+        action = "keep"
+        reason = "active_or_recent"
+
+        if status == "pending" and bool(side_effect.get("side_effect_detected")):
+            action = "finalize_existing_side_effect"
+            reason = "broker_or_plan_side_effect_already_present"
+        elif status == "pending" and age_sec > float(max_age):
+            action = "expire_stale_pending"
+            reason = "pending_intent_too_old"
+        elif status == "blocked" and age_sec > float(max_age):
+            action = "archive_old_blocked"
+            reason = "old_blocked_intent"
+        elif status in {"submitted", "finalized"} and age_sec > float(max_age):
+            action = "archive_old_done"
+            reason = "old_completed_intent"
+
+        row = {
+            "intent_key": intent.get("intent_key"),
+            "symbol": sym,
+            "status_before": status,
+            "age_sec": round(age_sec, 2),
+            "side_effect_detected": bool(side_effect.get("side_effect_detected")),
+            "action": action,
+            "reason": reason,
+        }
+
+        if apply and action == "finalize_existing_side_effect":
+            intent["status"] = "finalized"
+            intent["updated_utc"] = now.isoformat()
+            intent["last_result"] = {"reason": reason, "side_effect": side_effect}
+            changed = True
+        elif apply and action.startswith("expire_"):
+            intent["status"] = "expired"
+            intent["updated_utc"] = now.isoformat()
+            intent["last_result"] = {"reason": reason, "age_sec": age_sec}
+            changed = True
+        elif apply and action.startswith("archive_"):
+            intent["archived"] = True
+            intent["updated_utc"] = now.isoformat()
+            intent["last_result"] = intent.get("last_result") or {"reason": reason, "age_sec": age_sec}
+            changed = True
+
+        rows.append(row)
+
+    if apply:
+        active_items = [
+            dict(x or {})
+            for x in SELECTED_ENTRY_INTENT_QUEUE
+            if isinstance(x, dict) and not bool(x.get("archived"))
+        ]
+        keep_recent = max(5, int(SWING_STALE_INTENT_KEEP_RECENT or 25))
+        archived_recent = [
+            dict(x or {})
+            for x in SELECTED_ENTRY_INTENT_QUEUE
+            if isinstance(x, dict) and bool(x.get("archived"))
+        ][-keep_recent:]
+        SELECTED_ENTRY_INTENT_QUEUE.clear()
+        SELECTED_ENTRY_INTENT_QUEUE.extend((active_items + archived_recent)[-100:])
+        if changed:
+            _p299_persist_selected_entry_intent_queue(reason="p314_stale_intent_reconcile")
+
+    return {
+        "enabled": True,
+        "applied": bool(apply),
+        "changed": bool(changed),
+        "max_pending_age_sec": max_age,
+        "queue_count": len(SELECTED_ENTRY_INTENT_QUEUE),
+        "rows": rows,
+    }
 
 def _p299_selected_entry_finalizer_status() -> dict:
     _p299_restore_selected_entry_intent_queue()
+    cleanup = _p314_reconcile_stale_selected_entry_intents(apply=True)
     pending = [dict(x or {}) for x in SELECTED_ENTRY_INTENT_QUEUE if str((x or {}).get("status") or "") == "pending"]
+    blocked = [dict(x or {}) for x in SELECTED_ENTRY_INTENT_QUEUE if str((x or {}).get("status") or "") == "blocked"]
+    expired = [dict(x or {}) for x in SELECTED_ENTRY_INTENT_QUEUE if str((x or {}).get("status") or "") == "expired"]
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -27437,6 +27575,9 @@ def _p299_selected_entry_finalizer_status() -> dict:
         "queue_count": len(SELECTED_ENTRY_INTENT_QUEUE),
         "pending_count": len(pending),
         "pending_symbols": [str(x.get("symbol") or "").strip().upper() for x in pending],
+        "blocked_count": len(blocked),
+        "expired_count": len(expired),
+        "stale_reconcile": cleanup,
         "items": list(SELECTED_ENTRY_INTENT_QUEUE or [])[-25:],
     }
 
@@ -37351,6 +37492,21 @@ def diagnostics_reconcile_light(request: Request):
 def diagnostics_selected_entry_intent_queue(request: Request):
     require_admin_if_configured(request)
     return _p299_selected_entry_finalizer_status()
+
+@app.get("/diagnostics/stale_selected_entry_intent_reconcile")
+def diagnostics_stale_selected_entry_intent_reconcile(
+    request: Request,
+    apply: bool = False,
+):
+    require_admin(request)
+    _p299_restore_selected_entry_intent_queue()
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "stale_selected_entry_intent_reconcile",
+        **_p314_reconcile_stale_selected_entry_intents(apply=bool(apply)),
+        "queue": _p299_selected_entry_finalizer_status(),
+    }
 
 @app.get("/diagnostics/executable_sizing_truth")
 def diagnostics_executable_sizing_truth(request: Request, limit: int = 25):

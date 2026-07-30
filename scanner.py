@@ -148,8 +148,13 @@ def main() -> None:
         v = os.getenv(envk)
         if v is not None and v != "":
             scan_payload[k] = v
+
+    # Patch 314: push runtime-slimming hints from the scanner worker without
+    # requiring more Render envs on the main webhook.
+    scan_payload.setdefault("max_symbols", os.getenv("SCAN_MAX_SYMBOLS", "25"))
+    scan_payload.setdefault("runtime_slim", os.getenv("SCAN_RUNTIME_SLIM", "true"))
     boot_id = str(uuid.uuid4())
-    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec}
+    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec, "runtime_slim": scan_payload.get("runtime_slim"), "max_symbols": scan_payload.get("max_symbols")}
     def heartbeat(event: str, status: str = "ok", details: dict | None = None) -> None:
         payload = {"worker_secret": worker_secret, "event": event, "status": status, "details": {**state, **(details or {})}}
         try:
