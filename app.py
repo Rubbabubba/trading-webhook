@@ -1040,6 +1040,36 @@ SWING_FIRST_2K_SIMILARITY_REVIVAL_REQUIRE_NO_TARGET_WINS = env_bool_any(
     "SWING_FIRST_2K_SIMILARITY_REVIVAL_REQUIRE_NO_TARGET_WINS",
     default=True,
 )
+# Patch 313 - Target-path calibration / fast no-trade recheck
+SWING_TARGET_PATH_CALIBRATION_RECENT_TRADES = getenv_int_any(
+    "SWING_TARGET_PATH_CALIBRATION_RECENT_TRADES",
+    default=60,
+)
+SWING_TARGET_PATH_CALIBRATION_MIN_FIRST_WINDOW_TRADES = getenv_int_any(
+    "SWING_TARGET_PATH_CALIBRATION_MIN_FIRST_WINDOW_TRADES",
+    default=10,
+)
+SWING_FAST_NO_TRADE_RECHECK_ENABLED = env_bool_any(
+    "SWING_FAST_NO_TRADE_RECHECK_ENABLED",
+    default=True,
+)
+SWING_FAST_NO_TRADE_RECHECK_SEC = getenv_int_any(
+    "SWING_FAST_NO_TRADE_RECHECK_SEC",
+    default=300,
+)
+SWING_FAST_NO_TRADE_RECHECK_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_FAST_NO_TRADE_RECHECK_MIN_RANK_SCORE",
+    default=103.0,
+)
+SWING_FAST_NO_TRADE_RECHECK_MIN_TARGET_SCORE = getenv_float_any(
+    "SWING_FAST_NO_TRADE_RECHECK_MIN_TARGET_SCORE",
+    default=30.0,
+)
+SWING_FAST_NO_TRADE_RECHECK_MAX_SYMBOLS = getenv_int_any(
+    "SWING_FAST_NO_TRADE_RECHECK_MAX_SYMBOLS",
+    default=5,
+)
+
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -2205,7 +2235,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-312-swing-submit-truth-unification-selected-gap-hard-alert"
+PATCH_VERSION = "patch-313-target-path-gate-calibration-first-2k-replay-fast-no-trade-recheck"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -10879,6 +10909,219 @@ def _p285_target_path_opportunity_expansion_lab(
         "top_opportunities": expansion_rows[:lim],
     }
 
+def _p313_percentile(values: list[float], pct: float) -> float | None:
+    clean = sorted(float(v) for v in list(values or []) if v is not None)
+    if not clean:
+        return None
+    if len(clean) == 1:
+        return round(clean[0], 4)
+    p = max(0.0, min(float(pct or 0.0), 1.0))
+    idx = p * (len(clean) - 1)
+    lo = int(idx)
+    hi = min(lo + 1, len(clean) - 1)
+    frac = idx - lo
+    return round(clean[lo] + (clean[hi] - clean[lo]) * frac, 4)
+
+
+def _p313_trade_profile_rows(rows: list[dict]) -> list[dict]:
+    out = []
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        rank_score = _p175_rank_score(row)
+        pnl = float(_p175_closed_trade_pnl(row) or 0.0)
+        out.append({
+            "symbol": _p280_symbol(row),
+            "strategy": _p280_strategy(row),
+            "entry_type": _p280_entry_type(row),
+            "exit_reason": _p281_exit_reason(row),
+            "gross_pnl": round(pnl, 4),
+            "pnl_r": _p175_closed_trade_r(row),
+            "rank_score": rank_score,
+            "holding_days": _p175_holding_days(row),
+            "regime": _p280_regime(row),
+            "target_exit": bool(_p281_is_target(row)),
+            "stall_family": bool(_p281_is_stall_family(row)),
+        })
+    return out
+
+
+def _p313_profile_summary(rows: list[dict]) -> dict:
+    profile_rows = _p313_trade_profile_rows(rows)
+    winners = [r for r in profile_rows if float(r.get("gross_pnl") or 0.0) > 0]
+    target_rows = [r for r in profile_rows if bool(r.get("target_exit"))]
+    ranks = [float(r.get("rank_score")) for r in profile_rows if r.get("rank_score") is not None]
+    winner_ranks = [float(r.get("rank_score")) for r in winners if r.get("rank_score") is not None]
+    target_ranks = [float(r.get("rank_score")) for r in target_rows if r.get("rank_score") is not None]
+
+    return {
+        "trade_count": len(profile_rows),
+        "summary": _p280_trade_summary(rows),
+        "winner_count": len(winners),
+        "target_exit_count": len(target_rows),
+        "target_exit_share": round(len(target_rows) / max(1, len(profile_rows)), 4),
+        "rank_score": {
+            "p25": _p313_percentile(ranks, 0.25),
+            "median": _p313_percentile(ranks, 0.50),
+            "p75": _p313_percentile(ranks, 0.75),
+        },
+        "winner_rank_score": {
+            "p25": _p313_percentile(winner_ranks, 0.25),
+            "median": _p313_percentile(winner_ranks, 0.50),
+            "p75": _p313_percentile(winner_ranks, 0.75),
+        },
+        "target_exit_rank_score": {
+            "p25": _p313_percentile(target_ranks, 0.25),
+            "median": _p313_percentile(target_ranks, 0.50),
+            "p75": _p313_percentile(target_ranks, 0.75),
+        },
+        "by_symbol": _p280_group_summary(rows, _p280_symbol, limit=12),
+        "by_entry_type": _p280_group_summary(rows, _p280_entry_type, limit=12),
+        "best_examples": _p281_trade_examples(rows, worst=False, limit=8),
+        "worst_examples": _p281_trade_examples(rows, worst=True, limit=8),
+    }
+
+
+def _p313_target_path_gate_calibration(rows: list[dict] | None = None, summary: dict | None = None, limit: int | None = None) -> dict:
+    closed_rows = _p281_attributed_closed_rows()
+    first = _p281_first_profit_window(closed_rows)
+    first_rows = list(first.get("rows") or [])
+    recent_rows = list(closed_rows)[-max(1, int(SWING_TARGET_PATH_CALIBRATION_RECENT_TRADES or 60)):]
+
+    candidate_rows = [dict(r) for r in list(rows or []) if isinstance(r, dict)]
+    candidate_rows.sort(key=_p283_candidate_sort_key, reverse=True)
+    min_score = float(SWING_TARGET_PATH_MIN_SCORE)
+    strong_score = float(SWING_TARGET_PATH_STRONG_SCORE)
+
+    calibrated_candidates = []
+    for row in candidate_rows[:max(1, min(int(limit or 15), 50))]:
+        target_path = dict(row.get("target_path_profit") or _p283_target_path_profit_score(row))
+        gate = dict(row.get("target_profile_breakout_gate") or {})
+        score = float(_safe_float(target_path.get("score")))
+        calibrated_candidates.append({
+            "symbol": row.get("symbol"),
+            "eligible": bool(row.get("eligible")),
+            "selected": bool(row.get("selected")),
+            "rank_score": row.get("rank_score"),
+            "selection_quality_score": row.get("selection_quality_score"),
+            "target_path_score": round(score, 4),
+            "score_gap_to_configured_min": round(max(0.0, min_score - score), 4),
+            "target_path_passed": bool(target_path.get("passed")),
+            "target_path_tier": target_path.get("tier"),
+            "target_wins": int(target_path.get("target_wins") or 0),
+            "gate_passed": bool(target_path.get("gate_passed")),
+            "gate_blockers": list(target_path.get("gate_blockers") or gate.get("blockers") or []),
+            "rejection_reasons": list(row.get("rejection_reasons") or []),
+        })
+
+    best_score = max([float(r.get("target_path_score") or 0.0) for r in calibrated_candidates] or [0.0])
+    best_rank = max([float(r.get("rank_score") or 0.0) for r in calibrated_candidates] or [0.0])
+    rank_strong_no_trade = [
+        r for r in calibrated_candidates
+        if float(r.get("rank_score") or 0.0) >= float(SWING_FAST_NO_TRADE_RECHECK_MIN_RANK_SCORE)
+        and float(r.get("target_path_score") or 0.0) >= float(SWING_FAST_NO_TRADE_RECHECK_MIN_TARGET_SCORE)
+        and not bool(r.get("selected"))
+    ]
+
+    first_profile = _p313_profile_summary(first_rows)
+    recent_profile = _p313_profile_summary(recent_rows)
+
+    first_trade_count = int(first_profile.get("trade_count") or 0)
+    calibration_ready = first_trade_count >= int(SWING_TARGET_PATH_CALIBRATION_MIN_FIRST_WINDOW_TRADES or 10)
+
+    if not calibration_ready:
+        assessment = "insufficient_first_profit_window_for_calibration"
+        recommended_action = "collect_more_attributed_history_before_changing_target_path_threshold"
+    elif rank_strong_no_trade and best_score < min_score:
+        assessment = "rank_strong_but_target_path_score_far_below_configured_min"
+        recommended_action = "fast_recheck_rank_strong_candidates_without_forcing_trade"
+    elif best_score >= min_score:
+        assessment = "target_path_gate_has_tradeable_candidates"
+        recommended_action = "inspect_capacity_or_submission_truth"
+    else:
+        assessment = "no_trade_quality_gate_confirmed"
+        recommended_action = "wait_for_better_target_path_setup"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "target_path_gate_calibration",
+        "read_only": True,
+        "truth_source": str((summary or {}).get("truth_source") or "active_scan_rows"),
+        "configured": {
+            "target_path_min_score": min_score,
+            "target_path_strong_score": strong_score,
+            "fast_no_trade_recheck_enabled": bool(SWING_FAST_NO_TRADE_RECHECK_ENABLED),
+            "fast_no_trade_recheck_sec": int(SWING_FAST_NO_TRADE_RECHECK_SEC),
+            "fast_no_trade_recheck_min_rank_score": float(SWING_FAST_NO_TRADE_RECHECK_MIN_RANK_SCORE),
+            "fast_no_trade_recheck_min_target_score": float(SWING_FAST_NO_TRADE_RECHECK_MIN_TARGET_SCORE),
+        },
+        "first_profit_window_profile": {
+            "target_reached": bool(first.get("target_reached")),
+            "target_dollars": first.get("target_dollars"),
+            "window_gross_pnl": first.get("window_gross_pnl"),
+            "profile": first_profile,
+        },
+        "recent_profile": recent_profile,
+        "current_scan": {
+            "selected_total": int((summary or {}).get("selected_total") or 0),
+            "selected_symbols": list((summary or {}).get("selected_symbols") or []),
+            "eligible_total": int((summary or {}).get("eligible_total") or 0),
+            "candidate_count": len(candidate_rows),
+            "best_target_path_score": round(best_score, 4),
+            "best_rank_score": round(best_rank, 4),
+            "rank_strong_no_trade_symbols": [r.get("symbol") for r in rank_strong_no_trade],
+            "top_candidates": calibrated_candidates,
+        },
+        "assessment": assessment,
+        "recommended_action": recommended_action,
+    }
+
+
+def _p313_fast_no_trade_recheck_hint(summary: dict | None = None, rows: list | None = None) -> dict:
+    summary = dict(summary or {})
+    if not bool(SWING_FAST_NO_TRADE_RECHECK_ENABLED):
+        return {"enabled": False, "apply": False, "reason": "fast_no_trade_recheck_disabled"}
+
+    selected_total = int(summary.get("selected_total") or 0)
+    eligible_total = int(summary.get("eligible_total") or 0)
+    if selected_total > 0 or eligible_total > 0:
+        return {"enabled": True, "apply": False, "reason": "scan_has_selected_or_eligible_candidates"}
+
+    if daily_halt_active() or realized_closed_trade_loss_halt_active():
+        return {"enabled": True, "apply": False, "reason": "loss_halt_active"}
+
+    candidate_rows = [dict(r) for r in list(rows or summary.get("top_candidates") or []) if isinstance(r, dict)]
+    watch = []
+    for row in candidate_rows:
+        target_path = dict(row.get("target_path_profit") or _p283_target_path_profit_score(row))
+        score = float(_safe_float(target_path.get("score")))
+        rank_score = float(_safe_float(row.get("rank_score")))
+        reasons = [str(x) for x in list(row.get("rejection_reasons") or []) if str(x)]
+        if (
+            rank_score >= float(SWING_FAST_NO_TRADE_RECHECK_MIN_RANK_SCORE)
+            and score >= float(SWING_FAST_NO_TRADE_RECHECK_MIN_TARGET_SCORE)
+            and "target_profile_breakout_gate" in reasons
+        ):
+            watch.append({
+                "symbol": row.get("symbol"),
+                "rank_score": round(rank_score, 4),
+                "target_path_score": round(score, 4),
+                "rejection_reasons": reasons,
+            })
+
+    watch = watch[:max(1, int(SWING_FAST_NO_TRADE_RECHECK_MAX_SYMBOLS or 5))]
+    apply = bool(watch and in_market_hours())
+
+    return {
+        "enabled": True,
+        "apply": apply,
+        "reason": "rank_strong_target_gate_watchlist" if apply else "no_rank_strong_target_gate_watchlist",
+        "sleep_sec": int(SWING_FAST_NO_TRADE_RECHECK_SEC),
+        "watch_symbols": [r.get("symbol") for r in watch],
+        "watch": watch,
+    }
+
 def _p283_latest_thrive_candidates(limit: int | None = None) -> dict:
     lim = max(1, min(int(limit or SWING_THRIVE_BRIEF_LIMIT or 10), 25))
     active_scan = _p285_saved_truth_scan(limit=max(25, lim))
@@ -18695,6 +18938,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         except Exception:
             pass
 
+    summary["target_path_gate_calibration"] = _p313_target_path_gate_calibration(
+        candidates,
+        summary=summary,
+        limit=SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT,
+    )
+    summary["fast_no_trade_recheck"] = _p313_fast_no_trade_recheck_hint(
+        summary=summary,
+        rows=candidates,
+    )
+
     summary['intraday_shadow'] = intraday_shadow
     try:
         _append_cohort_evidence_event(CANDIDATE_HISTORY[-1] if CANDIDATE_HISTORY else {})
@@ -25764,6 +26017,19 @@ def diagnostics_target_path_opportunity_expansion_lab(request: Request, limit: i
         ),
     }
     return JSONResponse(content=payload)
+
+@app.get("/diagnostics/target_path_gate_calibration")
+def diagnostics_target_path_gate_calibration(request: Request, limit: int = 15):
+    require_admin_if_configured(request)
+    active_scan = _p285_saved_truth_scan(limit=max(25, min(int(limit or 15), 100)))
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    summary["truth_source"] = str((active_scan or {}).get("_scan_source") or "unknown")
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 15), 100)))
+    return JSONResponse(content=_p313_target_path_gate_calibration(
+        rows,
+        summary=summary,
+        limit=limit,
+    ))
 
 @app.get("/diagnostics/mean_reversion_status")
 def diagnostics_mean_reversion_status(request: Request):

@@ -63,6 +63,31 @@ def getenv_float(name: str, default: float) -> float:
     except ValueError:
         return default
 
+def fast_no_trade_recheck_sleep_sec(body_text: str, default_sleep_sec: int) -> int | None:
+    if not getenv_bool("SCAN_FAST_NO_TRADE_RECHECK_ENABLED", True):
+        return None
+    try:
+        payload = json.loads(body_text or "{}")
+    except Exception:
+        payload = {}
+
+    summary = {}
+    if isinstance(payload.get("scanner"), dict):
+        summary = dict((payload.get("scanner") or {}).get("summary") or {})
+    if not summary and isinstance(payload.get("summary"), dict):
+        summary = dict(payload.get("summary") or {})
+
+    hint = dict(summary.get("fast_no_trade_recheck") or {})
+    if not bool(hint.get("apply")):
+        return None
+
+    try:
+        requested = int(hint.get("sleep_sec") or getenv_int("SCAN_FAST_NO_TRADE_RECHECK_SEC", 300))
+    except Exception:
+        requested = getenv_int("SCAN_FAST_NO_TRADE_RECHECK_SEC", 300)
+
+    floor_sec = max(30, getenv_int("SCAN_FAST_NO_TRADE_RECHECK_MIN_SEC", 120))
+    return max(floor_sec, min(int(default_sleep_sec), int(requested)))
 
 def market_open_catchup_sleep_sec(body_text: str, default_sleep_sec: int) -> int | None:
     if not getenv_bool("SCAN_MARKET_OPEN_CATCHUP_ENABLED", True):
@@ -164,13 +189,16 @@ def main() -> None:
                     status, body = post_json(url, payload, timeout=timeout)
                     body_prefix = body[:1000].replace("\n", " ")
                     catchup_sleep_sec = market_open_catchup_sleep_sec(body, interval)
+                    fast_recheck_sleep_sec = fast_no_trade_recheck_sleep_sec(body, interval)
+                    if fast_recheck_sleep_sec is not None:
+                        catchup_sleep_sec = fast_recheck_sleep_sec
                     state["success_total"] += 1
                     state["success_today"] += 1
                     state["consecutive_failures"] = 0
                     state["last_success_utc"] = ts_utc()
                     state["last_error"] = ""
                     log(f"scan_ok loop={loop_n} attempt={attempt}/{retries} reason={reason} status={status} body={body_prefix}")
-                    heartbeat("scan_dispatch_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id, "catchup_sleep_sec": catchup_sleep_sec})
+                    heartbeat("scan_dispatch_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id, "catchup_sleep_sec": catchup_sleep_sec, "fast_no_trade_recheck": fast_recheck_sleep_sec is not None})
                     if catchup_sleep_sec is not None:
                         state["market_open_catchup_sleep_sec"] = catchup_sleep_sec
                     break
