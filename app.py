@@ -2285,7 +2285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-316-hotfix-watchlist-plan-store-name-fix"
+PATCH_VERSION = "patch-317-watchlist-metadata-truth-intraday-separation-cleanup-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11282,6 +11282,16 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
             "gate_blockers": blockers,
             "rejection_reasons": reasons,
             "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
+            "what_needs_to_change": _p317_watchlist_needed_changes(
+                row,
+                target_path,
+                gate,
+                executable,
+                reasons,
+                blockers,
+                active_position=active_position,
+                pending_plan=pending_plan,
+            ),
             "executable": executable_ok,
             "sizing_block_reason": executable.get("sizing_block_reason") if executable else None,
             "requested_qty": row.get("requested_qty") or executable.get("requested_qty"),
@@ -11293,22 +11303,184 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
 
     tradeable = [r for r in items if r.get("status") == "tradeable"]
     watch = [r for r in items if str(r.get("status") or "").startswith("watch")]
+    metadata = _p317_scan_metadata_truth(active_scan=active_scan, summary=summary)
 
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "swing_watchlist_trade_status",
         "read_only": True,
-        "truth_source": str((active_scan or {}).get("_scan_source") or "unknown"),
-        "scan_ts_utc": summary.get("scan_ts_utc") or summary.get("ts_utc"),
-        "runtime_slim_applied": bool(summary.get("runtime_slim_applied") or (summary.get("runtime_slim") or {}).get("applied")),
-        "runtime_symbols_used_count": summary.get("runtime_symbols_used_count") or summary.get("symbols_total"),
+        "truth_source": metadata.get("truth_source"),
+        "scan_ts_utc": metadata.get("scan_ts_utc"),
+        "runtime_slim_applied": bool(metadata.get("runtime_slim_applied")),
+        "runtime_symbols_used_count": int(metadata.get("runtime_symbols_used_count") or 0),
+        "runtime_symbols_original_count": int(metadata.get("runtime_symbols_original_count") or 0),
+        "runtime_symbols_excluded_count": int(metadata.get("runtime_symbols_excluded_count") or 0),
+        "runtime_watch_symbols": list(metadata.get("runtime_watch_symbols") or []),
         "selected_total": int(summary.get("selected_total") or 0),
         "eligible_total": int(summary.get("eligible_total") or 0),
         "watch_count": len(watch),
         "tradeable_count": len(tradeable),
         "symbols": requested[:max(1, min(int(limit or 12), 25))],
         "items": items,
+    }
+
+def _p317_scan_metadata_truth(active_scan: dict | None = None, summary: dict | None = None) -> dict:
+    active_scan = dict(active_scan or {})
+    summary = dict(summary or {})
+
+    runtime_slim = summary.get("runtime_slim") if isinstance(summary.get("runtime_slim"), dict) else {}
+    if not runtime_slim and isinstance(active_scan.get("runtime_slim"), dict):
+        runtime_slim = dict(active_scan.get("runtime_slim") or {})
+
+    latest_hist = {}
+    try:
+        if CANDIDATE_HISTORY:
+            latest_hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
+    except Exception:
+        latest_hist = {}
+
+    hist_summary = dict(latest_hist.get("summary") or {}) if isinstance(latest_hist, dict) else {}
+    if not runtime_slim and isinstance(hist_summary.get("runtime_slim"), dict):
+        runtime_slim = dict(hist_summary.get("runtime_slim") or {})
+
+    scan_ts = (
+        summary.get("scan_ts_utc")
+        or summary.get("ts_utc")
+        or active_scan.get("scan_ts_utc")
+        or active_scan.get("ts_utc")
+        or latest_hist.get("scan_ts_utc")
+        or latest_hist.get("ts_utc")
+        or hist_summary.get("scan_ts_utc")
+        or hist_summary.get("ts_utc")
+    )
+
+    symbols_used = (
+        summary.get("runtime_symbols_used_count")
+        or active_scan.get("runtime_symbols_used_count")
+        or hist_summary.get("runtime_symbols_used_count")
+        or len(runtime_slim.get("symbols") or [])
+        or summary.get("symbols_total")
+        or active_scan.get("symbols_total")
+        or len(active_scan.get("symbols") or [])
+        or len(latest_hist.get("symbols") or [])
+    )
+
+    symbols_original = (
+        summary.get("runtime_symbols_original_count")
+        or active_scan.get("runtime_symbols_original_count")
+        or hist_summary.get("runtime_symbols_original_count")
+        or runtime_slim.get("original_count")
+        or symbols_used
+    )
+
+    return {
+        "scan_ts_utc": scan_ts,
+        "truth_source": str(active_scan.get("_scan_source") or summary.get("truth_source") or "unknown"),
+        "runtime_slim_applied": bool(
+            summary.get("runtime_slim_applied")
+            or active_scan.get("runtime_slim_applied")
+            or hist_summary.get("runtime_slim_applied")
+            or runtime_slim.get("applied")
+        ),
+        "runtime_symbols_used_count": int(symbols_used or 0),
+        "runtime_symbols_original_count": int(symbols_original or 0),
+        "runtime_symbols_excluded_count": int(
+            summary.get("runtime_symbols_excluded_count")
+            or active_scan.get("runtime_symbols_excluded_count")
+            or hist_summary.get("runtime_symbols_excluded_count")
+            or runtime_slim.get("excluded_count")
+            or max(0, int(symbols_original or 0) - int(symbols_used or 0))
+        ),
+        "runtime_watch_symbols": list(
+            summary.get("runtime_watch_symbols")
+            or active_scan.get("runtime_watch_symbols")
+            or hist_summary.get("runtime_watch_symbols")
+            or runtime_slim.get("watch_symbols")
+            or []
+        ),
+    }
+
+
+def _p317_watchlist_needed_changes(
+    row: dict | None,
+    target_path: dict | None,
+    gate: dict | None,
+    executable: dict | None,
+    reasons: list[str] | None,
+    blockers: list[str] | None,
+    *,
+    active_position: bool = False,
+    pending_plan: bool = False,
+) -> list[str]:
+    row = dict(row or {})
+    target_path = dict(target_path or {})
+    gate = dict(gate or {})
+    executable = dict(executable or {})
+    reasons = [str(x) for x in list(reasons or []) if str(x)]
+    blockers = [str(x) for x in list(blockers or []) if str(x)]
+
+    out = []
+    if active_position:
+        out.append("already_have_active_position_do_not_duplicate")
+    if pending_plan:
+        out.append("pending_entry_plan_exists_wait_for_reconcile")
+    if not row:
+        out.append("symbol_not_in_latest_candidate_rows_wait_for_next_scan_or_add_to_runtime_watchlist")
+        return out
+
+    if executable and executable.get("executable") is False:
+        out.append(f"sizing_must_clear:{executable.get('sizing_block_reason') or 'not_executable'}")
+
+    if "breakout_distance" in blockers or "target_profile_breakout_gate" in reasons:
+        breakout_distance = row.get("breakout_distance_pct")
+        if breakout_distance is not None:
+            out.append(f"price_must_move_closer_to_breakout_current_distance_pct:{breakout_distance}")
+        else:
+            out.append("price_must_move_closer_to_breakout")
+
+    if "risk_per_share" in blockers or "defensive_risk_per_share_too_wide" in reasons:
+        risk_pct = row.get("risk_per_share_pct") or executable.get("risk_per_share_pct")
+        if risk_pct is not None:
+            out.append(f"risk_band_must_contract_or_smaller_size_current_risk_pct:{risk_pct}")
+        else:
+            out.append("risk_band_must_contract_or_smaller_size")
+
+    if "close_to_high" in blockers or "close_not_near_high" in reasons:
+        out.append("close_must_reclaim_near_high_threshold")
+
+    if "stall_loss_entry_feedback" in reasons:
+        out.append("stall_loss_feedback_must_clear_or_symbol_should_remain_suppressed")
+
+    if "return_5d_not_pulled_back" in reasons:
+        out.append("mean_reversion_needs_actual_5d_pullback")
+
+    if "too_far_from_mean" in reasons:
+        out.append("mean_reversion_distance_from_mean_must_normalize")
+
+    if not out:
+        if bool(target_path.get("passed")):
+            out.append("quality_is_interesting_but_candidate_still_not_selected_check_selection_contract")
+        else:
+            out.append("wait_for_next_scan_quality_improvement")
+
+    return list(dict.fromkeys(out))
+
+
+def _p317_intraday_separation_status() -> dict:
+    swing_runtime = str(STRATEGY_MODE or "").strip().lower() == "swing"
+    intraday_live = bool(INTRADAY_LIVE_ENABLED and HYBRID_MODE == "live")
+    intraday_shadow_in_swing = bool(SWING_SCAN_RUN_INTRADAY_SHADOW)
+    suppressed = bool(swing_runtime and not intraday_live and not intraday_shadow_in_swing)
+
+    return {
+        "swing_runtime_active": swing_runtime,
+        "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
+        "concurrent_micro_live_enabled": bool(CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED),
+        "intraday_shadow_inside_swing_scan": intraday_shadow_in_swing,
+        "suppressed_for_swing_runtime": suppressed,
+        "status": "disabled_for_swing_runtime" if suppressed else "available",
+        "cleanup_note": "intraday diagnostics are retained for future split, but swing production should not run intraday shadow/live paths while suppressed",
     }
 
 def _p313_fast_no_trade_recheck_hint(summary: dict | None = None, rows: list | None = None) -> dict:
@@ -31771,10 +31943,20 @@ def diagnostics_intraday_shadow(request: Request):
     latest = _latest_scan_item()
     summary = _scan_summary_payload(latest)
     latest_shadow = summary.get("intraday_shadow") if isinstance(summary.get("intraday_shadow"), dict) else {}
+    separation_status = _p317_intraday_separation_status()
+    if bool(separation_status.get("suppressed_for_swing_runtime")):
+        latest_shadow = {
+            "enabled": False,
+            "configured": bool(INTRADAY_SHADOW_EVALUATION_ENABLE),
+            "status": "disabled_for_swing_runtime",
+            "reason": "swing_runtime_cleanup_active",
+        }
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "strategy_mode": STRATEGY_MODE,
+        "intraday_separation_status": separation_status,
         "entry_controls": {
             "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
             "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
