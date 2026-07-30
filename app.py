@@ -2205,7 +2205,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-309-hotfix-runtime-config-market-hours-compatibility"
+PATCH_VERSION = "patch-309-hotfix-2-runtime-config-direct-market-hours-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -38527,10 +38527,6 @@ def diagnostics_swing_core_status():
 
 @app.get("/diagnostics/swing_cleanup_status")
 def diagnostics_swing_cleanup_status():
-    market_hours_required = bool(
-        globals().get("SWING_ONLY_MARKET_HOURS", globals().get("ONLY_MARKET_HOURS", True))
-    )
-
     retired_paths = {
         "heavy_operator_bundle": {
             "disabled": not bool(HEAVY_DIAGNOSTICS_ENABLED),
@@ -38628,7 +38624,7 @@ def diagnostics_swing_runtime_config():
             "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
             "kill_switch": bool(KILL_SWITCH),
             "daily_halt_active": bool(daily_halt_active()),
-            "market_hours_required": bool(market_hours_required),
+            "market_hours_required": bool(ONLY_MARKET_HOURS),
         },
         capacity={
             "max_open_positions": int(SWING_MAX_OPEN_POSITIONS),
