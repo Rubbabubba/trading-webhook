@@ -2205,7 +2205,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-310-market-open-scanner-catch-up-stale-preopen-truth"
+PATCH_VERSION = "patch-311-selected-candidate-submit-bridge-light-submission-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -26720,6 +26720,11 @@ def _p298_selected_submission_truth_light() -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     lifecycle_items = _p298_recent_lifecycle_items(limit=100)
     selected_symbols = _p298_selected_symbols_light(summary, lifecycle_items)
+    submit_rows = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in list(summary.get("would_submit") or summary.get("selected_submission_rows") or [])
+        if str((row or {}).get("symbol") or "").strip()
+    }
 
     rows = []
     for sym in selected_symbols:
@@ -26731,10 +26736,26 @@ def _p298_selected_submission_truth_light() -> dict:
         ]
         submit_events = [
             row for row in lifecycle_matches
-            if str(row.get("stage") or "").lower() in {"entry", "submit", "order", "scanner"}
-            or "submit" in str(row.get("status") or "").lower()
+            if str(row.get("stage") or "").lower() in {"entry", "submit", "order"}
+            or "submitted" in str(row.get("status") or "").lower()
+            or "accepted" in str(row.get("status") or "").lower()
+            or "filled" in str(row.get("status") or "").lower()
             or "order" in str(row.get("status") or "").lower()
         ]
+        candidate_selected_only_events = [
+            row for row in lifecycle_matches
+            if str(row.get("stage") or "").lower() == "candidate"
+            and str(row.get("status") or "").lower() == "selected"
+        ]
+        submit_row = dict(submit_rows.get(sym) or {})
+        submit_state = str(submit_row.get("submit_state") or "").strip().lower()
+        actual_submit_side_effect = bool(
+            bool(plan.get("active"))
+            or _plan_is_pending_entry(plan)
+            or bool(submit_events)
+            or submit_state in {"submitted", "preview_only"}
+        )
+
         side_effect_reasons = []
         if bool(plan.get("active")):
             side_effect_reasons.append("active_plan")
@@ -26742,18 +26763,29 @@ def _p298_selected_submission_truth_light() -> dict:
             side_effect_reasons.append("pending_entry_plan")
         if submit_events:
             side_effect_reasons.append("lifecycle_submit_event")
+        if submit_state:
+            side_effect_reasons.append(f"scan_submit_state:{submit_state}")
 
         rows.append({
             "symbol": sym,
-            "side_effect_detected_light": bool(side_effect_reasons),
+            "side_effect_detected_light": bool(actual_submit_side_effect),
+            "actual_submit_side_effect": bool(actual_submit_side_effect),
+            "candidate_selected_only": bool(candidate_selected_only_events and not actual_submit_side_effect),
+            "submit_gap": bool(not actual_submit_side_effect),
             "reasons": _dedupe_candidate_reasons(side_effect_reasons),
             "active_plan": bool(plan.get("active")),
             "pending_entry_plan": bool(_plan_is_pending_entry(plan)),
             "plan_status": plan.get("execution_state") or plan.get("lifecycle_state") or plan.get("status"),
             "plan_source": plan.get("source"),
+            "submit_state": submit_state or None,
+            "submit_reason": submit_row.get("submit_reason"),
+            "submit_attempted": bool(submit_row.get("submit_attempted")),
+            "submit_order_id": submit_row.get("order_id") or submit_row.get("submit_order_id"),
             "recent_lifecycle_count": len(lifecycle_matches),
             "recent_submit_event_count": len(submit_events),
+            "candidate_selected_only_count": len(candidate_selected_only_events),
             "last_lifecycle_event": lifecycle_matches[-1] if lifecycle_matches else None,
+            "scan_submit_row": submit_row or None,
         })
 
     return swing_diag_selected_submission_truth_light_snapshot(
@@ -40244,8 +40276,80 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     candidate_slots=candidate_slots,
                     scan_reason=requested_reason or "scheduled",
                 )
-                would_submit.append({**payload, **resp, "submit_state": submit_meta.get("state"), "submit_reason": submit_meta.get("reason"), "submit_attempted": bool(submit_meta.get("attempted"))})
-            _stage_end("submit_loop")    
+                actual_side_effect = False
+                side_effect_reasons = []
+                try:
+                    plan_after_submit = dict((TRADE_PLAN or {}).get(str(sym or "").upper()) or {})
+                    if bool(plan_after_submit.get("active")):
+                        actual_side_effect = True
+                        side_effect_reasons.append("active_plan")
+                    if _plan_is_pending_entry(plan_after_submit):
+                        actual_side_effect = True
+                        side_effect_reasons.append("pending_entry_plan")
+                    if submit_meta.get("state") in {"submitted", "preview_only"}:
+                        actual_side_effect = True
+                        side_effect_reasons.append(f"submit_state:{submit_meta.get('state')}")
+                except Exception as side_effect_err:
+                    side_effect_reasons.append(f"side_effect_check_error:{side_effect_err}")
+
+                would_submit.append({
+                    **payload,
+                    **resp,
+                    "submit_state": submit_meta.get("state"),
+                    "submit_reason": submit_meta.get("reason"),
+                    "submit_attempted": bool(submit_meta.get("attempted")),
+                    "submit_order_id": submit_meta.get("order_id"),
+                    "actual_submit_side_effect": bool(actual_side_effect),
+                    "side_effect_reasons": _dedupe_candidate_reasons(side_effect_reasons),
+                    "submit_gap": not bool(actual_side_effect),
+                })
+            selected_symbols_for_summary = _dedupe_keep_order([
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in would_submit
+                if str((row or {}).get("symbol") or "").strip()
+            ])
+            actual_submit_symbols = _dedupe_keep_order([
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in would_submit
+                if bool((row or {}).get("actual_submit_side_effect"))
+            ])
+            submit_gap_symbols = [
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in would_submit
+                if str((row or {}).get("symbol") or "").strip()
+                and not bool((row or {}).get("actual_submit_side_effect"))
+            ]
+            scan_summary["selected_total"] = len(selected_symbols_for_summary)
+            scan_summary["selected_symbols"] = selected_symbols_for_summary
+            scan_summary["selected_submission_rows"] = list(would_submit)
+            scan_summary["actual_submit_side_effect_symbols"] = actual_submit_symbols
+            scan_summary["selected_submit_gap_symbols"] = submit_gap_symbols
+            scan_summary["selected_submit_gap_count"] = len(submit_gap_symbols)
+            if submit_gap_symbols:
+                scan_summary["selected_submit_gap_active"] = True
+                scan_summary["selected_submit_gap_reason"] = "selected_candidate_without_actual_submit_side_effect"
+                try:
+                    _record_scanner_telemetry(
+                        "scan_error",
+                        "selected_not_submitted",
+                        details={
+                            "selected_submit_gap_symbols": submit_gap_symbols,
+                            "selected_symbols": selected_symbols_for_summary,
+                            "scan_reason": requested_reason or "scheduled",
+                        },
+                    )
+                except Exception:
+                    pass
+            try:
+                if isinstance(LAST_SCAN.get("summary"), dict):
+                    LAST_SCAN["summary"].update(scan_summary)
+                else:
+                    LAST_SCAN["summary"] = dict(scan_summary)
+                LAST_SCAN["selected_symbols"] = selected_symbols_for_summary
+                LAST_SCAN["selected_submit_gap_symbols"] = submit_gap_symbols
+                LAST_SCAN["selected_submit_gap_count"] = len(submit_gap_symbols)
+            except Exception:
+                pass    
 
         # Store diagnostics for Postman/curl inspection.
         try:

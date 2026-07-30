@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-310-market-open-scanner-catch-up-stale-preopen-truth"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-311-selected-candidate-submit-bridge-light-submission-truth"
 
 
 def selected_submission_truth_light_snapshot(
@@ -22,7 +22,12 @@ def selected_submission_truth_light_snapshot(
     missing = [
         row.get("symbol")
         for row in rows
-        if row.get("symbol") and not row.get("side_effect_detected_light")
+        if row.get("symbol") and not row.get("actual_submit_side_effect", row.get("side_effect_detected_light"))
+    ]
+    candidate_selected_only = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and row.get("candidate_selected_only")
     ]
 
     return {
@@ -43,11 +48,14 @@ def selected_submission_truth_light_snapshot(
         ],
         "missing_side_effect_symbols": missing,
         "selected_without_side_effect": bool(missing),
+        "candidate_selected_only_symbols": candidate_selected_only,
+        "submit_gap_symbols": missing,
+        "submit_gap_count": len(missing),
         "rows": list(rows),
         "recommended_action": (
             "investigate_submit_path_for_selected_symbols"
             if missing
-            else "selected_symbols_have_runtime_plan_or_submit_event"
+            else "selected_symbols_have_actual_submit_side_effect"
             if selected_symbols
             else "no_selected_symbols_found"
         ),
