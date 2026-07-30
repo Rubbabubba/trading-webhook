@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-309-swing-runtime-config-module-split"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-310-market-open-scanner-catch-up-stale-preopen-truth"
 
 
 def selected_submission_truth_light_snapshot(
@@ -70,8 +70,11 @@ def scanner_light_snapshot(
         "dispatch_failure_recovered_by_closed_scan" in recovered_warning_codes
     )
 
+    post_open_scan_missing = bool(scan_summary.get("post_open_scan_missing") or latest_scan.get("post_open_scan_missing"))
+
     scanner_currently_ok = bool(
         not active_warning_codes
+        and not post_open_scan_missing
         and not bool(telemetry_summary.get("in_flight_run"))
         and str(telemetry.get("status") or telemetry.get("last_status") or "")
         .strip()
@@ -105,6 +108,7 @@ def scanner_light_snapshot(
             "manual_requests_are_historical": True,
             "worker_unknown_can_be_cleared_by_recent_heartbeat": True,
             "dispatch_failure_recovered_by_closed_scan": bool(dispatch_failure_recovered_by_closed_scan),
+            "post_open_scan_missing": bool(post_open_scan_missing),
         },
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),
@@ -117,6 +121,8 @@ def scanner_light_snapshot(
             "selected_total": int(scan_summary.get("selected_total") or 0),
             "selected_symbols": list(scan_summary.get("selected_symbols") or []),
             "eligible_total": int(scan_summary.get("eligible_total") or scan_summary.get("eligible_count") or 0),
+            "stale_preopen_scan": bool(scan_summary.get("stale_preopen_scan") or latest_scan.get("stale_preopen_scan")),
+            "post_open_scan_missing": bool(post_open_scan_missing),
         },
     }
 

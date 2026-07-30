@@ -2205,7 +2205,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-309-hotfix-4-safe-runtime-config-snapshot-endpoint"
+PATCH_VERSION = "patch-310-market-open-scanner-catch-up-stale-preopen-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -26626,14 +26626,36 @@ def _p297_selected_submission_truth(selected_symbols: list[str] | None = None, s
         ),
     }
 
+def _p310_scan_is_stale_preopen(latest_scan: dict | None = None) -> bool:
+    scan = dict(latest_scan or LAST_SCAN or {})
+    if not bool(in_market_hours()):
+        return False
+    if str(scan.get("reason") or "").strip() != "outside_market_hours":
+        return False
+    scan_dt = _safe_parse_iso_utc(scan.get("ts_utc")) if scan.get("ts_utc") else None
+    if scan_dt is None:
+        return False
+    scan_ny = scan_dt.astimezone(NY_TZ)
+    now_local = now_ny()
+    if scan_ny.date() != now_local.date():
+        return False
+    open_cutoff = now_local.replace(hour=9, minute=30, second=0, microsecond=0)
+    return scan_ny < open_cutoff <= now_local
+
+
 def _p298_latest_scan_summary_light() -> tuple[dict, dict]:
     latest_scan = dict(LAST_SCAN or {})
     summary = dict(latest_scan.get("summary") or {})
     if not summary and CANDIDATE_HISTORY:
         latest_candidate = dict((CANDIDATE_HISTORY or [])[-1] or {})
         summary = dict(latest_candidate.get("summary") or latest_candidate or {})
+    if _p310_scan_is_stale_preopen(latest_scan):
+        summary = dict(summary or {})
+        summary["post_open_scan_missing"] = True
+        summary["stale_preopen_scan"] = True
+        latest_scan["post_open_scan_missing"] = True
+        latest_scan["stale_preopen_scan"] = True
     return latest_scan, summary
-
 
 def _p298_recent_lifecycle_items(limit: int = 100) -> list[dict]:
     lim = max(1, min(int(limit or 100), 250))
@@ -26847,6 +26869,9 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     if selected_symbols:
         selection_status = "selected"
         recommended_action = "check_selected_submission_truth_light"
+    elif bool(summary.get("post_open_scan_missing")):
+        selection_status = "post_open_scan_missing"
+        recommended_action = "recover_scanner_dispatch_before_evaluating_candidates"
     elif int(summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0) <= 0:
         selection_status = "no_eligible_candidates"
         recommended_action = "review_top_rejection_reasons"
@@ -26868,6 +26893,8 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "would_trade": latest_scan.get("would_trade"),
             "blocked": latest_scan.get("blocked"),
             "duration_ms": latest_scan.get("duration_ms"),
+            "stale_preopen_scan": bool(summary.get("stale_preopen_scan")),
+            "post_open_scan_missing": bool(summary.get("post_open_scan_missing")),
         },
         "selection": {
             "status": selection_status,

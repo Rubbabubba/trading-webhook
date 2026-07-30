@@ -5,7 +5,7 @@ import urllib.request
 import urllib.error
 import random
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 def getenv_int(name: str, default: int) -> int:
     v = os.getenv(name)
@@ -53,6 +53,45 @@ def getenv_bool(name: str, default: bool) -> bool:
     if v is None or v == "":
         return default
     return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+def getenv_float(name: str, default: float) -> float:
+    v = os.getenv(name)
+    if v is None or v == "":
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
+
+
+def market_open_catchup_sleep_sec(body_text: str, default_sleep_sec: int) -> int | None:
+    if not getenv_bool("SCAN_MARKET_OPEN_CATCHUP_ENABLED", True):
+        return None
+    try:
+        payload = json.loads(body_text or "{}")
+    except Exception:
+        payload = {}
+    reason = str(payload.get("reason") or "").strip()
+    if reason != "outside_market_hours":
+        return None
+
+    now = datetime.now(timezone.utc)
+    open_hour = getenv_int("SCAN_MARKET_OPEN_UTC_HOUR", 13)
+    open_minute = getenv_int("SCAN_MARKET_OPEN_UTC_MINUTE", 30)
+    after_open_grace_sec = max(0, getenv_int("SCAN_MARKET_OPEN_CATCHUP_AFTER_OPEN_GRACE_SEC", 900))
+    before_open_window_sec = max(0, getenv_int("SCAN_MARKET_OPEN_CATCHUP_BEFORE_OPEN_WINDOW_SEC", 1800))
+    buffer_sec = max(1, getenv_int("SCAN_MARKET_OPEN_CATCHUP_BUFFER_SEC", 20))
+    fallback_sec = max(15, getenv_int("SCAN_MARKET_OPEN_CATCHUP_SEC", 60))
+
+    open_dt = now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+    if now > open_dt + timedelta(seconds=after_open_grace_sec):
+        return None
+    if now < open_dt - timedelta(seconds=before_open_window_sec):
+        return None
+
+    if now < open_dt:
+        return max(15, int((open_dt - now).total_seconds()) + buffer_sec)
+    return min(default_sleep_sec, fallback_sec)
 
 def ts_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -124,13 +163,16 @@ def main() -> None:
                     payload["fast_response"] = True
                     status, body = post_json(url, payload, timeout=timeout)
                     body_prefix = body[:1000].replace("\n", " ")
+                    catchup_sleep_sec = market_open_catchup_sleep_sec(body, interval)
                     state["success_total"] += 1
                     state["success_today"] += 1
                     state["consecutive_failures"] = 0
                     state["last_success_utc"] = ts_utc()
                     state["last_error"] = ""
                     log(f"scan_ok loop={loop_n} attempt={attempt}/{retries} reason={reason} status={status} body={body_prefix}")
-                    heartbeat("scan_dispatch_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id})
+                    heartbeat("scan_dispatch_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id, "catchup_sleep_sec": catchup_sleep_sec})
+                    if catchup_sleep_sec is not None:
+                        state["market_open_catchup_sleep_sec"] = catchup_sleep_sec
                     break
                 except urllib.error.HTTPError as e:
                     try:
@@ -159,10 +201,14 @@ def main() -> None:
                 if attempt < retries:
                     time.sleep(startup_retry_delay_sec)
         first = False
-        sleep_for = interval + (random.randint(0, jitter_sec) if jitter_sec > 0 else 0)
+        catchup_sleep_sec = state.pop("market_open_catchup_sleep_sec", None)
+        if catchup_sleep_sec is not None:
+            sleep_for = int(catchup_sleep_sec)
+        else:
+            sleep_for = interval + (random.randint(0, jitter_sec) if jitter_sec > 0 else 0)
         next_run_iso = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() + sleep_for, tz=timezone.utc).isoformat()
-        log(f"sleep sec={sleep_for}")
-        heartbeat("sleep", "ok", {"sleep_sec": sleep_for, "next_run_estimate_utc": next_run_iso})
+        log(f"sleep sec={sleep_for} market_open_catchup={catchup_sleep_sec is not None}")
+        heartbeat("sleep", "ok", {"sleep_sec": sleep_for, "next_run_estimate_utc": next_run_iso, "market_open_catchup": catchup_sleep_sec is not None})
         remaining_sleep = sleep_for
         while remaining_sleep > 0:
             chunk = min(remaining_sleep, sleep_heartbeat_sec)
