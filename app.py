@@ -2285,7 +2285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-316-lightweight-swing-watchlist-trade-status"
+PATCH_VERSION = "patch-316-hotfix-watchlist-plan-store-name-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11183,17 +11183,21 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
     active_symbols = set()
     pending_symbols = set()
 
-    for plan in list(TRADE_PLANS or []):
+    for sym_key, plan in dict(globals().get("TRADE_PLAN") or {}).items():
         if not isinstance(plan, dict):
             continue
-        sym = str(plan.get("symbol") or "").strip().upper()
-        status = str(plan.get("status") or "").strip().lower()
+        sym = str(plan.get("symbol") or sym_key or "").strip().upper()
         if not sym:
             continue
-        if status in {"filled", "open", "active"}:
+        if bool(plan.get("active")):
             active_symbols.add(sym)
-        if status in {"pending", "submitted", "accepted", "new"}:
-            pending_symbols.add(sym)
+        try:
+            if bool(_plan_is_pending_entry(plan)):
+                pending_symbols.add(sym)
+        except Exception:
+            status = str(plan.get("status") or plan.get("order_status") or "").strip().lower()
+            if status in {"pending", "submitted", "accepted", "new"}:
+                pending_symbols.add(sym)
 
     by_symbol: dict[str, list[dict]] = {}
     for row in rows:
