@@ -2205,7 +2205,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-309-hotfix-3-runtime-config-capacity-alias-fix"
+PATCH_VERSION = "patch-309-hotfix-4-safe-runtime-config-snapshot-endpoint"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -38573,145 +38573,172 @@ def diagnostics_swing_cleanup_status():
 
 @app.get("/diagnostics/swing_runtime_config")
 def diagnostics_swing_runtime_config():
+    def _cfg(names, default=None):
+        if isinstance(names, str):
+            names = [names]
+        for name in names:
+            if name in globals():
+                return globals().get(name)
+        return default
+
+    def _cfg_bool(names, default=False):
+        return bool(_cfg(names, default))
+
+    def _cfg_int(names, default=0):
+        try:
+            return int(_cfg(names, default) or 0)
+        except Exception:
+            return int(default or 0)
+
+    def _cfg_float(names, default=0.0):
+        try:
+            return float(_cfg(names, default) or 0.0)
+        except Exception:
+            return float(default or 0.0)
+
+    def _cfg_str(names, default=""):
+        return str(_cfg(names, default) or "")
+
+    strategy_mode = _cfg_str("STRATEGY_MODE")
     live_swing_runtime = bool(
-        str(STRATEGY_MODE or "").strip().lower() == "swing"
-        and LIVE_TRADING_ENABLED
-        and SCANNER_ALLOW_LIVE
-        and not DRY_RUN
-        and not SCANNER_DRY_RUN
+        strategy_mode.strip().lower() == "swing"
+        and _cfg_bool("LIVE_TRADING_ENABLED")
+        and _cfg_bool("SCANNER_ALLOW_LIVE")
+        and not _cfg_bool("DRY_RUN")
+        and not _cfg_bool("SCANNER_DRY_RUN")
     )
 
     retired_paths = {
         "heavy_operator_bundle": {
-            "disabled": not bool(HEAVY_DIAGNOSTICS_ENABLED),
+            "disabled": not _cfg_bool("HEAVY_DIAGNOSTICS_ENABLED"),
             "env": "HEAVY_DIAGNOSTICS_ENABLED",
         },
         "selected_entry_intent_queue": {
-            "disabled": not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED),
+            "disabled": not _cfg_bool("SELECTED_ENTRY_INTENT_QUEUE_ENABLED"),
             "env": "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
         },
         "selected_entry_finalizer": {
-            "disabled": not bool(SELECTED_ENTRY_FINALIZER_ENABLED),
+            "disabled": not _cfg_bool("SELECTED_ENTRY_FINALIZER_ENABLED"),
             "env": "SELECTED_ENTRY_FINALIZER_ENABLED",
         },
         "selected_submission_finalizer": {
-            "disabled": not bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED),
+            "disabled": not _cfg_bool("SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED"),
             "env": "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
         },
         "fast_swing_scan_trigger": {
-            "disabled": not bool(SWING_FAST_SCAN_TRIGGER_ENABLED),
+            "disabled": not _cfg_bool("SWING_FAST_SCAN_TRIGGER_ENABLED"),
             "env": "SWING_FAST_SCAN_TRIGGER_ENABLED",
         },
         "intraday_shadow_inside_swing_scan": {
-            "disabled": not bool(SWING_SCAN_RUN_INTRADAY_SHADOW),
+            "disabled": not _cfg_bool("SWING_SCAN_RUN_INTRADAY_SHADOW"),
             "env": "SWING_SCAN_RUN_INTRADAY_SHADOW",
         },
         "intraday_live": {
-            "disabled": not bool(INTRADAY_LIVE_ENABLED),
+            "disabled": not _cfg_bool("INTRADAY_LIVE_ENABLED"),
             "env": "INTRADAY_LIVE_ENABLED",
         },
     }
 
     return build_swing_runtime_config_snapshot(
         patch_version=PATCH_VERSION,
-        strategy_mode=STRATEGY_MODE,
+        strategy_mode=strategy_mode,
         live_swing_runtime=live_swing_runtime,
         live_flags={
-            "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
-            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
-            "dry_run": bool(DRY_RUN),
-            "scanner_dry_run": bool(SCANNER_DRY_RUN),
-            "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
-            "kill_switch": bool(KILL_SWITCH),
+            "live_trading_enabled": _cfg_bool("LIVE_TRADING_ENABLED"),
+            "scanner_allow_live": _cfg_bool("SCANNER_ALLOW_LIVE"),
+            "dry_run": _cfg_bool("DRY_RUN"),
+            "scanner_dry_run": _cfg_bool("SCANNER_DRY_RUN"),
+            "new_entries_enabled": _cfg_bool("NEW_ENTRIES_ENABLED"),
+            "kill_switch": _cfg_bool("KILL_SWITCH"),
             "daily_halt_active": bool(daily_halt_active()),
-            "market_hours_required": bool(ONLY_MARKET_HOURS),
+            "market_hours_required": _cfg_bool(["ONLY_MARKET_HOURS", "SWING_ONLY_MARKET_HOURS"], True),
         },
         capacity={
-            "max_open_positions": int(MAX_OPEN_POSITIONS),
-            "sleeve_max_open_positions": int(SWING_SLEEVE_MAX_OPEN_POSITIONS),
-            "max_new_entries_per_day": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
-            "scanner_max_entries_per_scan": int(SCANNER_MAX_ENTRIES_PER_SCAN),
-            "max_group_positions": int(SWING_MAX_GROUP_POSITIONS),
-            "max_portfolio_exposure_pct": float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT),
-            "max_symbol_exposure_pct": float(SWING_MAX_SYMBOL_EXPOSURE_PCT),
-            "risk_per_trade_dollars": float(RISK_DOLLARS),
+            "max_open_positions": _cfg_int(["MAX_OPEN_POSITIONS", "SWING_MAX_OPEN_POSITIONS"], 0),
+            "sleeve_max_open_positions": _cfg_int("SWING_SLEEVE_MAX_OPEN_POSITIONS", 0),
+            "max_new_entries_per_day": _cfg_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 0),
+            "scanner_max_entries_per_scan": _cfg_int("SCANNER_MAX_ENTRIES_PER_SCAN", 0),
+            "max_group_positions": _cfg_int("SWING_MAX_GROUP_POSITIONS", 0),
+            "max_portfolio_exposure_pct": _cfg_float("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", 0.0),
+            "max_symbol_exposure_pct": _cfg_float("SWING_MAX_SYMBOL_EXPOSURE_PCT", 0.0),
+            "risk_per_trade_dollars": _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0),
         },
         risk_controls={
-            "daily_stop_dollars": float(DAILY_STOP_DOLLARS),
-            "daily_loss_limit": float(DAILY_LOSS_LIMIT),
-            "daily_stop_action": DAILY_STOP_ACTION,
-            "allow_daily_stop_bulk_flatten": bool(ALLOW_DAILY_STOP_BULK_FLATTEN),
-            "auto_flatten_on_daily_stop": bool(AUTO_FLATTEN_ON_DAILY_STOP),
-            "same_day_symbol_loss_cooldown_enabled": bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED),
-            "loss_day_entry_throttle_enabled": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED),
+            "daily_stop_dollars": _cfg_float("DAILY_STOP_DOLLARS", 0.0),
+            "daily_loss_limit": _cfg_float("DAILY_LOSS_LIMIT", 0.0),
+            "daily_stop_action": _cfg_str("DAILY_STOP_ACTION"),
+            "allow_daily_stop_bulk_flatten": _cfg_bool("ALLOW_DAILY_STOP_BULK_FLATTEN"),
+            "auto_flatten_on_daily_stop": _cfg_bool("AUTO_FLATTEN_ON_DAILY_STOP"),
+            "same_day_symbol_loss_cooldown_enabled": _cfg_bool("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED"),
+            "loss_day_entry_throttle_enabled": _cfg_bool("SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED"),
         },
         entry_gates={
             "regime_filter": {
-                "enabled": bool(SWING_REGIME_FILTER_ENABLED),
-                "can_block_entries": bool(SWING_REQUIRE_INDEX_ALIGNMENT),
-                "allow_defensive_entries": bool(SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES),
-                "weak_tape_max_new_entries": int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES),
+                "enabled": _cfg_bool("SWING_REGIME_FILTER_ENABLED"),
+                "can_block_entries": _cfg_bool("SWING_REQUIRE_INDEX_ALIGNMENT"),
+                "allow_defensive_entries": _cfg_bool("SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES"),
+                "weak_tape_max_new_entries": _cfg_int("SWING_WEAK_TAPE_MAX_NEW_ENTRIES", 0),
             },
             "defensive_entry_tightening": {
-                "enabled": bool(SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED),
+                "enabled": _cfg_bool("SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED"),
                 "can_block_entries": True,
             },
             "target_profile_breakout_gate": {
-                "enabled": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+                "enabled": _cfg_bool("SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED"),
                 "can_block_entries": True,
-                "max_risk_per_share_pct": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT),
+                "max_risk_per_share_pct": _cfg_float("SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT", 0.0),
             },
             "target_path_profit_engine": {
-                "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+                "enabled": _cfg_bool("SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED"),
                 "can_block_entries": False,
-                "min_score": float(SWING_TARGET_PATH_MIN_SCORE),
-                "strong_score": float(SWING_TARGET_PATH_STRONG_SCORE),
+                "min_score": _cfg_float("SWING_TARGET_PATH_MIN_SCORE", 0.0),
+                "strong_score": _cfg_float("SWING_TARGET_PATH_STRONG_SCORE", 0.0),
             },
             "mean_reversion": {
-                "enabled": bool(SWING_MEAN_REVERSION_ENABLED),
+                "enabled": _cfg_bool("SWING_MEAN_REVERSION_ENABLED"),
                 "can_block_entries": False,
-                "only_when_regime_unfavorable": bool(SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE),
+                "only_when_regime_unfavorable": _cfg_bool("SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE"),
             },
             "same_day_symbol_loss_cooldown": {
-                "enabled": bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED),
-                "can_block_entries": not bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY),
+                "enabled": _cfg_bool("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED"),
+                "can_block_entries": not _cfg_bool("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY"),
             },
             "loss_day_entry_throttle": {
-                "enabled": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED),
-                "can_block_entries": not bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY),
-                "threshold_dollars": float(SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS),
+                "enabled": _cfg_bool("SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED"),
+                "can_block_entries": not _cfg_bool("SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY"),
+                "threshold_dollars": _cfg_float("SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS", 0.0),
             },
         },
         exit_guards={
             "opening_damage_guard": {
-                "enabled": bool(SWING_OPENING_DAMAGE_GUARD_ENABLED),
-                "max_loss_r": float(SWING_OPENING_DAMAGE_MAX_LOSS_R),
+                "enabled": _cfg_bool("SWING_OPENING_DAMAGE_GUARD_ENABLED"),
+                "max_loss_r": _cfg_float("SWING_OPENING_DAMAGE_MAX_LOSS_R", 0.0),
             },
             "stall_loss_guard": {
-                "enabled": bool(SWING_STALL_LOSS_GUARD_ENABLED),
-                "days": int(SWING_STALL_LOSS_GUARD_DAYS),
-                "max_loss_r": float(SWING_STALL_MAX_LOSS_R),
+                "enabled": _cfg_bool("SWING_STALL_LOSS_GUARD_ENABLED"),
+                "days": _cfg_int("SWING_STALL_LOSS_GUARD_DAYS", 0),
+                "max_loss_r": _cfg_float("SWING_STALL_MAX_LOSS_R", 0.0),
             },
             "stall_exit": {
-                "enabled": int(SWING_STALL_EXIT_DAYS) > 0,
-                "days": int(SWING_STALL_EXIT_DAYS),
-                "min_r": float(SWING_STALL_MIN_R),
+                "enabled": _cfg_int("SWING_STALL_EXIT_DAYS", 0) > 0,
+                "days": _cfg_int("SWING_STALL_EXIT_DAYS", 0),
+                "min_r": _cfg_float("SWING_STALL_MIN_R", 0.0),
             },
             "trailing_stop": {
-                "enabled": bool(SWING_ENABLE_TRAILING_STOP),
-                "trail_after_r": float(SWING_TRAIL_AFTER_R),
-                "lookback_days": int(SWING_TRAIL_LOOKBACK_DAYS),
+                "enabled": _cfg_bool("SWING_ENABLE_TRAILING_STOP"),
+                "trail_after_r": _cfg_float("SWING_TRAIL_AFTER_R", 0.0),
+                "lookback_days": _cfg_int("SWING_TRAIL_LOOKBACK_DAYS", 0),
             },
             "break_even_stop": {
-                "enabled": bool(SWING_ENABLE_BREAK_EVEN_STOP),
-                "break_even_r": float(SWING_BREAK_EVEN_R),
+                "enabled": _cfg_bool("SWING_ENABLE_BREAK_EVEN_STOP"),
+                "break_even_r": _cfg_float("SWING_BREAK_EVEN_R", 0.0),
             },
         },
         retired_paths=retired_paths,
         modules={
-            "swing_core": SWING_CORE_MODULE_VERSION,
-            "swing_light_diagnostics": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
-            "swing_runtime_config": SWING_RUNTIME_CONFIG_MODULE_VERSION,
+            "swing_core": _cfg_str("SWING_CORE_MODULE_VERSION", "missing"),
+            "swing_light_diagnostics": _cfg_str("SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION", "missing"),
+            "swing_runtime_config": _cfg_str("SWING_RUNTIME_CONFIG_MODULE_VERSION", "missing"),
         },
     )
 
