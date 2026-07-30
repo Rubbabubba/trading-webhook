@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-311-selected-candidate-submit-bridge-light-submission-truth"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-312-swing-submit-truth-unification-selected-gap-hard-alert"
 
 
 def selected_submission_truth_light_snapshot(
@@ -44,7 +44,7 @@ def selected_submission_truth_light_snapshot(
         "side_effect_symbols": [
             row.get("symbol")
             for row in rows
-            if row.get("side_effect_detected_light")
+            if row.get("actual_submit_side_effect")
         ],
         "missing_side_effect_symbols": missing,
         "selected_without_side_effect": bool(missing),
@@ -53,7 +53,7 @@ def selected_submission_truth_light_snapshot(
         "submit_gap_count": len(missing),
         "rows": list(rows),
         "recommended_action": (
-            "investigate_submit_path_for_selected_symbols"
+            "selected_candidate_submit_gap_detected"
             if missing
             else "selected_symbols_have_actual_submit_side_effect"
             if selected_symbols

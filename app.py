@@ -2205,7 +2205,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-311-selected-candidate-submit-bridge-light-submission-truth"
+PATCH_VERSION = "patch-312-swing-submit-truth-unification-selected-gap-hard-alert"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -18385,32 +18385,26 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             )
         if live_allowed:
             resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta, source=source_name)
-            submit_meta = _classify_scan_submit_response(resp)
-            would_submit.append({
-                'symbol': c['symbol'],
-                'signal': c.get('signal'),
-                'rank_score': c.get('rank_score'),
-                'entry_type': entry_type,
-                **resp,
-                "submit_state": submit_meta.get("state"),
-                "submit_reason": submit_meta.get("reason"),
-                "submit_attempted": bool(submit_meta.get("attempted")),
-                "selected_entry_intent": dict(selected_entry_intent),
-            })
         else:
             resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', source_name, meta=meta)
-            submit_meta = _classify_scan_submit_response(resp)
-            would_submit.append({
-                'symbol': c['symbol'],
-                'signal': c.get('signal'),
-                'rank_score': c.get('rank_score'),
-                'entry_type': entry_type,
-                **resp,
-                "submit_state": submit_meta.get("state"),
-                "submit_reason": submit_meta.get("reason"),
-                "submit_attempted": bool(submit_meta.get("attempted")),
-                "selected_entry_intent": dict(selected_entry_intent),
-            })
+
+        submit_meta = _classify_scan_submit_response(resp)
+        side_effect = _p312_scan_submit_side_effect(c.get("symbol"), submit_meta=submit_meta, resp=resp)
+        would_submit.append({
+            'symbol': c['symbol'],
+            'signal': c.get('signal'),
+            'rank_score': c.get('rank_score'),
+            'entry_type': entry_type,
+            **resp,
+            "submit_state": submit_meta.get("state"),
+            "submit_reason": submit_meta.get("reason"),
+            "submit_attempted": bool(submit_meta.get("attempted")),
+            "submit_order_id": submit_meta.get("order_id"),
+            "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
+            "side_effect_reasons": list(side_effect.get("side_effect_reasons") or []),
+            "submit_gap": bool(side_effect.get("submit_gap")),
+            "selected_entry_intent": dict(selected_entry_intent),
+        })
     selected_submission_finalizer = {
         "enabled": False,
         "reason": "swing_production_core_direct_submit",
@@ -18654,6 +18648,53 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         except Exception as exc:
             intraday_shadow = {"enabled": True, "status": "error", "error": str(exc), "symbols_requested": shadow_symbols}
             logger.exception("INTRADAY_SHADOW_SCAN_FAILED")
+    selected_symbols_for_summary = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    if not selected_symbols_for_summary:
+        selected_symbols_for_summary = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(selected or [])
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+
+    actual_submit_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if bool((row or {}).get("actual_submit_side_effect"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    submit_gap_symbols = [
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and not bool((row or {}).get("actual_submit_side_effect"))
+    ]
+
+    summary["selected_total"] = len(selected_symbols_for_summary)
+    summary["selected_symbols"] = selected_symbols_for_summary
+    summary["selected_submission_rows"] = list(would_submit or [])
+    summary["actual_submit_side_effect_symbols"] = actual_submit_symbols
+    summary["selected_submit_gap_symbols"] = submit_gap_symbols
+    summary["selected_submit_gap_count"] = len(submit_gap_symbols)
+    summary["selected_submit_gap_active"] = bool(submit_gap_symbols)
+    if submit_gap_symbols:
+        summary["selected_submit_gap_reason"] = "selected_candidate_without_actual_submit_side_effect"
+        try:
+            _record_scanner_telemetry(
+                "scan_error",
+                "selected_not_submitted",
+                details={
+                    "selected_submit_gap_symbols": submit_gap_symbols,
+                    "selected_symbols": selected_symbols_for_summary,
+                    "scan_reason": summary.get("scan_reason"),
+                },
+            )
+        except Exception:
+            pass
+
     summary['intraday_shadow'] = intraday_shadow
     try:
         _append_cohort_evidence_event(CANDIDATE_HISTORY[-1] if CANDIDATE_HISTORY else {})
@@ -26498,6 +26539,47 @@ def _classify_scan_submit_response(resp: dict | None) -> dict:
         return {"state": "not_submitted", "reason": reason or "ok_without_submit", "attempted": False, "order_id": ""}
     return {"state": "error", "reason": reason or "unknown", "attempted": False, "order_id": ""}
 
+
+def _p312_scan_submit_side_effect(symbol: str, submit_meta: dict | None = None, resp: dict | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    meta = dict(submit_meta or {})
+    resp = dict(resp or {})
+    submit_state = str(meta.get("state") or resp.get("submit_state") or "").strip().lower()
+    submit_order_id = str(meta.get("order_id") or resp.get("order_id") or resp.get("submit_order_id") or "").strip()
+
+    plan = dict((TRADE_PLAN or {}).get(sym) or {}) if sym else {}
+    active_plan = bool(plan.get("active"))
+    pending_entry_plan = bool(_plan_is_pending_entry(plan))
+
+    reasons = []
+    if active_plan:
+        reasons.append("active_plan")
+    if pending_entry_plan:
+        reasons.append("pending_entry_plan")
+    if submit_order_id:
+        reasons.append("submit_order_id")
+    if submit_state in {"submitted", "preview_only"}:
+        reasons.append(f"submit_state:{submit_state}")
+
+    actual_submit_side_effect = bool(
+        active_plan
+        or pending_entry_plan
+        or bool(submit_order_id)
+        or submit_state in {"submitted", "preview_only"}
+    )
+
+    return {
+        "actual_submit_side_effect": bool(actual_submit_side_effect),
+        "side_effect_reasons": _dedupe_candidate_reasons(reasons),
+        "submit_gap": not bool(actual_submit_side_effect),
+        "active_plan": active_plan,
+        "pending_entry_plan": pending_entry_plan,
+        "submit_state": submit_state or None,
+        "submit_order_id": submit_order_id or None,
+        "plan_status": plan.get("execution_state") or plan.get("lifecycle_state") or plan.get("status"),
+        "plan_source": plan.get("source"),
+    }
+
 def _p297_symbol_entry_side_effect(symbol: str) -> dict:
     sym = str(symbol or "").strip().upper()
     if not sym:
@@ -26722,19 +26804,18 @@ def _p298_selected_submission_truth_light() -> dict:
     selected_symbols = _p298_selected_symbols_light(summary, lifecycle_items)
     submit_rows = {
         str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
-        for row in list(summary.get("would_submit") or summary.get("selected_submission_rows") or [])
+        for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or [])
         if str((row or {}).get("symbol") or "").strip()
     }
 
     rows = []
     for sym in selected_symbols:
-        plan = dict((TRADE_PLAN or {}).get(sym) or {})
         lifecycle_matches = [
             dict(row or {})
             for row in lifecycle_items
             if str((row or {}).get("symbol") or "").strip().upper() == sym
         ]
-        submit_events = [
+        lifecycle_submit_evidence = [
             row for row in lifecycle_matches
             if str(row.get("stage") or "").lower() in {"entry", "submit", "order"}
             or "submitted" in str(row.get("status") or "").lower()
@@ -26748,41 +26829,32 @@ def _p298_selected_submission_truth_light() -> dict:
             and str(row.get("status") or "").lower() == "selected"
         ]
         submit_row = dict(submit_rows.get(sym) or {})
-        submit_state = str(submit_row.get("submit_state") or "").strip().lower()
-        actual_submit_side_effect = bool(
-            bool(plan.get("active"))
-            or _plan_is_pending_entry(plan)
-            or bool(submit_events)
-            or submit_state in {"submitted", "preview_only"}
-        )
-
-        side_effect_reasons = []
-        if bool(plan.get("active")):
-            side_effect_reasons.append("active_plan")
-        if _plan_is_pending_entry(plan):
-            side_effect_reasons.append("pending_entry_plan")
-        if submit_events:
-            side_effect_reasons.append("lifecycle_submit_event")
-        if submit_state:
-            side_effect_reasons.append(f"scan_submit_state:{submit_state}")
+        submit_meta = {
+            "state": submit_row.get("submit_state"),
+            "reason": submit_row.get("submit_reason"),
+            "attempted": bool(submit_row.get("submit_attempted")),
+            "order_id": submit_row.get("order_id") or submit_row.get("submit_order_id"),
+        }
+        side_effect = _p312_scan_submit_side_effect(sym, submit_meta=submit_meta, resp=submit_row)
 
         rows.append({
             "symbol": sym,
-            "side_effect_detected_light": bool(actual_submit_side_effect),
-            "actual_submit_side_effect": bool(actual_submit_side_effect),
-            "candidate_selected_only": bool(candidate_selected_only_events and not actual_submit_side_effect),
-            "submit_gap": bool(not actual_submit_side_effect),
-            "reasons": _dedupe_candidate_reasons(side_effect_reasons),
-            "active_plan": bool(plan.get("active")),
-            "pending_entry_plan": bool(_plan_is_pending_entry(plan)),
-            "plan_status": plan.get("execution_state") or plan.get("lifecycle_state") or plan.get("status"),
-            "plan_source": plan.get("source"),
-            "submit_state": submit_state or None,
+            "side_effect_detected_light": bool(side_effect.get("actual_submit_side_effect")),
+            "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
+            "candidate_selected_only": bool(candidate_selected_only_events and not side_effect.get("actual_submit_side_effect")),
+            "submit_gap": bool(not side_effect.get("actual_submit_side_effect")),
+            "reasons": list(side_effect.get("side_effect_reasons") or []),
+            "active_plan": bool(side_effect.get("active_plan")),
+            "pending_entry_plan": bool(side_effect.get("pending_entry_plan")),
+            "plan_status": side_effect.get("plan_status"),
+            "plan_source": side_effect.get("plan_source"),
+            "submit_state": side_effect.get("submit_state"),
             "submit_reason": submit_row.get("submit_reason"),
             "submit_attempted": bool(submit_row.get("submit_attempted")),
-            "submit_order_id": submit_row.get("order_id") or submit_row.get("submit_order_id"),
+            "submit_order_id": side_effect.get("submit_order_id"),
             "recent_lifecycle_count": len(lifecycle_matches),
-            "recent_submit_event_count": len(submit_events),
+            "recent_submit_event_count": len(lifecycle_submit_evidence),
+            "lifecycle_submit_evidence_only": bool(lifecycle_submit_evidence and not side_effect.get("actual_submit_side_effect")),
             "candidate_selected_only_count": len(candidate_selected_only_events),
             "last_lifecycle_event": lifecycle_matches[-1] if lifecycle_matches else None,
             "scan_submit_row": submit_row or None,
