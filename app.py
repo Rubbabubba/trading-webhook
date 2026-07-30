@@ -2285,7 +2285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-317-watchlist-metadata-truth-intraday-separation-cleanup-prep"
+PATCH_VERSION = "patch-318-watchlist-fresh-scan-preference-intraday-heavy-diagnostic-suppression"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11152,16 +11152,70 @@ def _p313_target_path_gate_calibration(rows: list[dict] | None = None, summary: 
         "recommended_action": recommended_action,
     }
 
-def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | None = None) -> dict:
-    active_scan = _p285_saved_truth_scan(limit=max(25, min(int(limit or 25), 100)))
-    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
-    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 25), 100)))
+def _p318_scan_candidate_symbols(scan: dict | None, limit: int = 100) -> set[str]:
+    rows = _p285_saved_candidate_rows(scan, limit=max(25, min(int(limit or 100), 200)))
+    out = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    }
 
+    summary = dict(((scan or {}).get("summary") if isinstance(scan, dict) else {}) or {})
+    for sym in list((scan or {}).get("symbols") or []) + list(summary.get("symbols") or []):
+        sym_u = str(sym or "").strip().upper()
+        if sym_u:
+            out.add(sym_u)
+
+    runtime_slim = summary.get("runtime_slim") if isinstance(summary.get("runtime_slim"), dict) else {}
+    for sym in list(runtime_slim.get("symbols") or []) + list(runtime_slim.get("watch_symbols") or []):
+        sym_u = str(sym or "").strip().upper()
+        if sym_u:
+            out.add(sym_u)
+
+    return out
+
+
+def _p318_watchlist_truth_scan(requested_symbols: list[str] | None = None, limit: int | None = None) -> dict:
+    requested = {
+        str(sym or "").strip().upper()
+        for sym in list(requested_symbols or [])
+        if str(sym or "").strip()
+    }
+    lim = max(25, min(int(limit or 25), 100))
+
+    try:
+        latest = _latest_completed_scan_record()
+        if isinstance(latest, dict) and latest:
+            latest_symbols = _p318_scan_candidate_symbols(latest, limit=lim)
+            if not requested or bool(requested & latest_symbols):
+                out = dict(latest)
+                out["_scan_source"] = "latest_completed_scan_watchlist_preferred"
+                out["_watchlist_requested_symbols"] = sorted(requested)
+                out["_watchlist_matched_symbols"] = sorted(requested & latest_symbols)
+                return out
+    except Exception:
+        logger.exception("P318_LATEST_COMPLETED_WATCHLIST_SCAN_FAILED")
+
+    fallback = _p285_saved_truth_scan(limit=lim)
+    if isinstance(fallback, dict):
+        fallback = dict(fallback)
+        fallback["_scan_source"] = str(fallback.get("_scan_source") or "saved_truth_scan_fallback")
+        fallback["_watchlist_requested_symbols"] = sorted(requested)
+    return fallback
+
+def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | None = None) -> dict:
     requested = [
         str(s or "").strip().upper()
         for s in str(symbols or "").replace(";", ",").split(",")
         if str(s or "").strip()
     ]
+
+    active_scan = _p318_watchlist_truth_scan(
+        requested_symbols=requested,
+        limit=max(25, min(int(limit or 25), 100)),
+    )
+    summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 25), 100)))
 
     if not requested:
         requested = []
@@ -31950,6 +32004,41 @@ def diagnostics_intraday_shadow(request: Request):
             "configured": bool(INTRADAY_SHADOW_EVALUATION_ENABLE),
             "status": "disabled_for_swing_runtime",
             "reason": "swing_runtime_cleanup_active",
+        }
+        return {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "strategy_mode": STRATEGY_MODE,
+            "mode": "intraday_shadow_suppressed_for_swing_runtime",
+            "intraday_separation_status": separation_status,
+            "entry_controls": {
+                "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
+                "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+                "scanner_dry_run": bool(SCANNER_DRY_RUN),
+                "swing_live_enabled": bool(SWING_LIVE_ENABLED),
+                "intraday_paper_enabled": bool(INTRADAY_PAPER_ENABLED),
+                "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED and HYBRID_MODE == "live"),
+                "hybrid_mode": HYBRID_MODE,
+                "effective_entry_dry_run": bool(effective_entry_dry_run("worker_scan")),
+                "exits_still_permitted": bool(is_live_exit_permitted("worker_exit")),
+            },
+            "config": {
+                "enabled": False,
+                "configured": bool(INTRADAY_SHADOW_EVALUATION_ENABLE),
+                "max_symbols": int(INTRADAY_SHADOW_MAX_SYMBOLS),
+                "suppressed_reason": "swing_runtime_cleanup_active",
+            },
+            "latest_shadow": latest_shadow,
+            "proof_metrics": {
+                "suppressed": True,
+                "reason": "intraday_heavy_diagnostics_disabled_for_swing_runtime",
+            },
+            "proof_ledger_recent": [],
+            "proof_plan": {
+                "live_intraday_submission": False,
+                "paper_intraday_submission": False,
+                "promote_when": ["separate_intraday_runtime_or_reenable_shadow_after_swing_cleanup"],
+            },
         }
 
     return {
