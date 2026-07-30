@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-308-swing-light-diagnostics-module-split"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-309-swing-runtime-config-module-split"
 
 
 def selected_submission_truth_light_snapshot(
@@ -145,5 +145,5 @@ def swing_cleanup_status_snapshot(
             "/diagnostics/reconcile_light",
             "/diagnostics/no_trade_brief?refresh_live=false&limit=10",
         ],
-        "next_cleanup_patch": "patch-309-swing-runtime-config-module-split",
+        "next_cleanup_patch": "patch-310-swing-strategy-selection-module-prep",
     }

@@ -77,6 +77,10 @@ from swing_light_diagnostics import (
     selected_submission_truth_light_snapshot as swing_diag_selected_submission_truth_light_snapshot,
     swing_cleanup_status_snapshot as swing_diag_cleanup_status_snapshot,
 )
+from swing_runtime_config import (
+    SWING_RUNTIME_CONFIG_MODULE_VERSION,
+    build_swing_runtime_config_snapshot,
+)
 
 @dataclass(frozen=True)
 class Bar:
@@ -2201,7 +2205,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-308-swing-light-diagnostics-module-split"
+PATCH_VERSION = "patch-309-swing-runtime-config-module-split"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2403,7 +2407,7 @@ def _intraday_launch_action_plan(
         "optional_scaling": _unique_nonempty_actions(optional_scaling_actions),
         "recommended_env": env,
     }
-EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "swing_core.py", "swing_light_diagnostics.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
+EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "swing_core.py", "swing_light_diagnostics.py", "swing_runtime_config.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
 BROKER_TRUTH_SYNC_LAST_TS = 0.0
 BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC = 60.0
 
@@ -38517,7 +38521,8 @@ def diagnostics_swing_core_status():
             "swing_cleanup_status",
         ],
         "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
-        "next_split_candidate": "swing_runtime_config",
+        "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
+        "next_split_candidate": "swing_strategy_selection",
     }
 
 @app.get("/diagnostics/swing_cleanup_status")
@@ -38564,6 +38569,150 @@ def diagnostics_swing_cleanup_status():
         strategy_mode=STRATEGY_MODE,
         live_swing_runtime=live_swing_runtime,
         retired_paths=retired_paths,
+    )
+
+@app.get("/diagnostics/swing_runtime_config")
+def diagnostics_swing_runtime_config():
+    live_swing_runtime = bool(
+        str(STRATEGY_MODE or "").strip().lower() == "swing"
+        and LIVE_TRADING_ENABLED
+        and SCANNER_ALLOW_LIVE
+        and not DRY_RUN
+        and not SCANNER_DRY_RUN
+    )
+
+    retired_paths = {
+        "heavy_operator_bundle": {
+            "disabled": not bool(HEAVY_DIAGNOSTICS_ENABLED),
+            "env": "HEAVY_DIAGNOSTICS_ENABLED",
+        },
+        "selected_entry_intent_queue": {
+            "disabled": not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED),
+            "env": "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
+        },
+        "selected_entry_finalizer": {
+            "disabled": not bool(SELECTED_ENTRY_FINALIZER_ENABLED),
+            "env": "SELECTED_ENTRY_FINALIZER_ENABLED",
+        },
+        "selected_submission_finalizer": {
+            "disabled": not bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED),
+            "env": "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
+        },
+        "fast_swing_scan_trigger": {
+            "disabled": not bool(SWING_FAST_SCAN_TRIGGER_ENABLED),
+            "env": "SWING_FAST_SCAN_TRIGGER_ENABLED",
+        },
+        "intraday_shadow_inside_swing_scan": {
+            "disabled": not bool(SWING_SCAN_RUN_INTRADAY_SHADOW),
+            "env": "SWING_SCAN_RUN_INTRADAY_SHADOW",
+        },
+        "intraday_live": {
+            "disabled": not bool(INTRADAY_LIVE_ENABLED),
+            "env": "INTRADAY_LIVE_ENABLED",
+        },
+    }
+
+    return build_swing_runtime_config_snapshot(
+        patch_version=PATCH_VERSION,
+        strategy_mode=STRATEGY_MODE,
+        live_swing_runtime=live_swing_runtime,
+        live_flags={
+            "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "dry_run": bool(DRY_RUN),
+            "scanner_dry_run": bool(SCANNER_DRY_RUN),
+            "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
+            "kill_switch": bool(KILL_SWITCH),
+            "daily_halt_active": bool(daily_halt_active()),
+            "market_hours_required": bool(SWING_ONLY_MARKET_HOURS),
+        },
+        capacity={
+            "max_open_positions": int(SWING_MAX_OPEN_POSITIONS),
+            "sleeve_max_open_positions": int(SWING_SLEEVE_MAX_OPEN_POSITIONS),
+            "max_new_entries_per_day": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+            "scanner_max_entries_per_scan": int(SCANNER_MAX_ENTRIES_PER_SCAN),
+            "max_group_positions": int(SWING_MAX_GROUP_POSITIONS),
+            "max_portfolio_exposure_pct": float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT),
+            "max_symbol_exposure_pct": float(SWING_MAX_SYMBOL_EXPOSURE_PCT),
+            "risk_per_trade_dollars": float(SWING_RISK_PER_TRADE_DOLLARS),
+        },
+        risk_controls={
+            "daily_stop_dollars": float(DAILY_STOP_DOLLARS),
+            "daily_loss_limit": float(DAILY_LOSS_LIMIT),
+            "daily_stop_action": DAILY_STOP_ACTION,
+            "allow_daily_stop_bulk_flatten": bool(ALLOW_DAILY_STOP_BULK_FLATTEN),
+            "auto_flatten_on_daily_stop": bool(AUTO_FLATTEN_ON_DAILY_STOP),
+            "same_day_symbol_loss_cooldown_enabled": bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED),
+            "loss_day_entry_throttle_enabled": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED),
+        },
+        entry_gates={
+            "regime_filter": {
+                "enabled": bool(SWING_REGIME_FILTER_ENABLED),
+                "can_block_entries": bool(SWING_REQUIRE_INDEX_ALIGNMENT),
+                "allow_defensive_entries": bool(SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES),
+                "weak_tape_max_new_entries": int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES),
+            },
+            "defensive_entry_tightening": {
+                "enabled": bool(SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED),
+                "can_block_entries": True,
+            },
+            "target_profile_breakout_gate": {
+                "enabled": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+                "can_block_entries": True,
+                "max_risk_per_share_pct": float(SWING_TARGET_PROFILE_BREAKOUT_GATE_MAX_RISK_PER_SHARE_PCT),
+            },
+            "target_path_profit_engine": {
+                "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+                "can_block_entries": False,
+                "min_score": float(SWING_TARGET_PATH_MIN_SCORE),
+                "strong_score": float(SWING_TARGET_PATH_STRONG_SCORE),
+            },
+            "mean_reversion": {
+                "enabled": bool(SWING_MEAN_REVERSION_ENABLED),
+                "can_block_entries": False,
+                "only_when_regime_unfavorable": bool(SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE),
+            },
+            "same_day_symbol_loss_cooldown": {
+                "enabled": bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED),
+                "can_block_entries": not bool(SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY),
+            },
+            "loss_day_entry_throttle": {
+                "enabled": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED),
+                "can_block_entries": not bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY),
+                "threshold_dollars": float(SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS),
+            },
+        },
+        exit_guards={
+            "opening_damage_guard": {
+                "enabled": bool(SWING_OPENING_DAMAGE_GUARD_ENABLED),
+                "max_loss_r": float(SWING_OPENING_DAMAGE_MAX_LOSS_R),
+            },
+            "stall_loss_guard": {
+                "enabled": bool(SWING_STALL_LOSS_GUARD_ENABLED),
+                "days": int(SWING_STALL_LOSS_GUARD_DAYS),
+                "max_loss_r": float(SWING_STALL_MAX_LOSS_R),
+            },
+            "stall_exit": {
+                "enabled": int(SWING_STALL_EXIT_DAYS) > 0,
+                "days": int(SWING_STALL_EXIT_DAYS),
+                "min_r": float(SWING_STALL_MIN_R),
+            },
+            "trailing_stop": {
+                "enabled": bool(SWING_ENABLE_TRAILING_STOP),
+                "trail_after_r": float(SWING_TRAIL_AFTER_R),
+                "lookback_days": int(SWING_TRAIL_LOOKBACK_DAYS),
+            },
+            "break_even_stop": {
+                "enabled": bool(SWING_ENABLE_BREAK_EVEN_STOP),
+                "break_even_r": float(SWING_BREAK_EVEN_R),
+            },
+        },
+        retired_paths=retired_paths,
+        modules={
+            "swing_core": SWING_CORE_MODULE_VERSION,
+            "swing_light_diagnostics": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
+            "swing_runtime_config": SWING_RUNTIME_CONFIG_MODULE_VERSION,
+        },
     )
 
 @app.get("/diagnostics/build")
