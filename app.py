@@ -2285,7 +2285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-318-watchlist-fresh-scan-preference-intraday-heavy-diagnostic-suppression"
+PATCH_VERSION = "patch-319-swing-core-dead-path-removal-audit-trade-readiness-morning-brief"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11535,6 +11535,195 @@ def _p317_intraday_separation_status() -> dict:
         "suppressed_for_swing_runtime": suppressed,
         "status": "disabled_for_swing_runtime" if suppressed else "available",
         "cleanup_note": "intraday diagnostics are retained for future split, but swing production should not run intraday shadow/live paths while suppressed",
+    }
+
+def _p319_bool_global(name: str, default: bool = False) -> bool:
+    try:
+        return bool(globals().get(name, default))
+    except Exception:
+        return bool(default)
+
+
+def _p319_dead_path_removal_audit() -> dict:
+    intraday_sep = _p317_intraday_separation_status()
+
+    items = [
+        {
+            "area": "intraday_shadow_inside_swing_scan",
+            "status": "removal_candidate" if intraday_sep.get("suppressed_for_swing_runtime") else "keep_active",
+            "runtime_enabled": bool(SWING_SCAN_RUN_INTRADAY_SHADOW),
+            "env": "SWING_SCAN_RUN_INTRADAY_SHADOW",
+            "safe_action": "keep_endpoint_but_remove_from_swing_scan_runtime" if intraday_sep.get("suppressed_for_swing_runtime") else "keep",
+            "reason": "swing runtime should not spend scan time on intraday shadow while intraday is separated",
+        },
+        {
+            "area": "selected_entry_intent_queue",
+            "status": "removal_candidate" if not bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE) else "keep_active",
+            "runtime_enabled": bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
+            "env": "SWING_LIVE_USE_SELECTED_INTENT_QUEUE",
+            "safe_action": "remove_from_swing_submit_path_after_one_more_clean_day" if not bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE) else "keep",
+            "reason": "swing production core uses direct submit path",
+        },
+        {
+            "area": "selected_submission_finalizer",
+            "status": "removal_candidate" if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) else "keep_active",
+            "runtime_enabled": not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
+            "env": "SWING_PRODUCTION_CORE_CLEANUP_ENABLED",
+            "safe_action": "keep_diagnostics_only_or_remove_old_retry_path" if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) else "keep",
+            "reason": "direct submit path should not depend on delayed finalizers",
+        },
+        {
+            "area": "heavy_candidate_diagnostics",
+            "status": "keep_but_admin_or_compact_only",
+            "runtime_enabled": bool(HEAVY_DIAGNOSTICS_ENABLED),
+            "env": "HEAVY_DIAGNOSTICS_ENABLED",
+            "safe_action": "prefer_light_endpoints_and_keep_full_endpoint_disabled_or_admin_only",
+            "reason": "large candidate payloads caused slow review loops and risk memory pressure",
+        },
+        {
+            "area": "intraday_live_runtime",
+            "status": "separation_candidate" if not bool(INTRADAY_LIVE_ENABLED) else "keep_active",
+            "runtime_enabled": bool(INTRADAY_LIVE_ENABLED),
+            "env": "INTRADAY_LIVE_ENABLED",
+            "safe_action": "prepare_separate_intraday_runtime_or_module" if not bool(INTRADAY_LIVE_ENABLED) else "keep",
+            "reason": "intraday live is paused and should not complicate swing production runtime",
+        },
+        {
+            "area": "intraday_paper_hybrid_capacity",
+            "status": "noise_candidate" if str(STRATEGY_MODE or "").strip().lower() == "swing" else "keep_active",
+            "runtime_enabled": bool(INTRADAY_PAPER_ENABLED),
+            "env": "INTRADAY_PAPER_ENABLED",
+            "safe_action": "suppress_from_swing_operator_briefs" if str(STRATEGY_MODE or "").strip().lower() == "swing" else "keep",
+            "reason": "paper metrics are useful later, but noisy while debugging swing execution",
+        },
+    ]
+
+    removal_candidates = [item for item in items if str(item.get("status")) in {"removal_candidate", "separation_candidate", "noise_candidate"}]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_core_dead_path_removal_audit",
+        "read_only": True,
+        "strategy_mode": STRATEGY_MODE,
+        "swing_production_core_cleanup_enabled": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
+        "removal_candidate_count": len(removal_candidates),
+        "items": items,
+        "recommended_sequence": [
+            "keep_patch_318_light_watch_endpoint_as_primary_operator_view",
+            "remove_or_disable_old_selected_intent_queue_path_after_one_more_clean_live_scan",
+            "move_intraday_shadow_live_paper_diagnostics_out_of_swing_operator_default_view",
+            "split_intraday_runtime_after_swing_direct_submit_path_is_stable",
+        ],
+    }
+
+
+def _p319_trade_readiness_morning_brief(symbols: str | None = None, limit: int | None = None) -> dict:
+    watch = _p316_swing_watchlist_trade_status(
+        symbols=symbols or "",
+        limit=max(5, min(int(limit or 12), 25)),
+    )
+    intraday_sep = _p317_intraday_separation_status()
+
+    latest_scan = {}
+    try:
+        latest_scan = dict(_latest_completed_scan_record() or {})
+    except Exception:
+        latest_scan = {}
+
+    summary = dict((latest_scan.get("summary") if isinstance(latest_scan, dict) else {}) or {})
+    scanner_runtime = dict(summary.get("scanner_runtime") or {})
+    position_truth = {}
+    try:
+        position_truth = dict(_position_truth_payload() or {})
+    except Exception:
+        position_truth = {"ok": False, "reason": "position_truth_unavailable"}
+
+    live_positions = []
+    try:
+        snap = _load_position_snapshot()
+        live_positions = list((snap or {}).get("positions") or [])
+    except Exception:
+        live_positions = []
+
+    tradeable_count = int(watch.get("tradeable_count") or 0)
+    watch_count = int(watch.get("watch_count") or 0)
+    active_position_count = len([
+        row for row in live_positions
+        if isinstance(row, dict) and float(_safe_float(row.get("qty") or row.get("quantity"))) != 0.0
+    ])
+
+    open_slots = max(0, int(_effective_max_open_positions()) - active_position_count)
+    scanner_ready = bool(
+        str((latest_scan.get("reason") or summary.get("reason") or "")).lower() in {"scan_completed", "none", ""}
+        and not bool(summary.get("daily_halt_active"))
+    )
+
+    blockers = []
+    if daily_halt_active() or realized_closed_trade_loss_halt_active():
+        blockers.append("daily_or_realized_loss_halt_active")
+    if not bool(NEW_ENTRIES_ENABLED):
+        blockers.append("new_entries_disabled")
+    if not bool(SCANNER_ALLOW_LIVE) or bool(SCANNER_DRY_RUN):
+        blockers.append("scanner_not_live")
+    if open_slots <= 0:
+        blockers.append("no_open_slots")
+    if not scanner_ready:
+        blockers.append("latest_scan_not_ready")
+    if tradeable_count <= 0:
+        blockers.append("no_tradeable_watch_candidates")
+
+    if blockers:
+        readiness = "watching_not_ready_to_submit"
+    else:
+        readiness = "ready_to_submit_when_selected_candidate_present"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_trade_readiness_morning_brief",
+        "read_only": True,
+        "readiness": readiness,
+        "blockers": blockers,
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+        "strategy_mode": STRATEGY_MODE,
+        "entry_controls": {
+            "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "scanner_dry_run": bool(SCANNER_DRY_RUN),
+            "swing_live_enabled": bool(SWING_LIVE_ENABLED),
+            "effective_entry_dry_run": bool(effective_entry_dry_run("worker_scan")),
+            "exits_still_permitted": bool(is_live_exit_permitted("worker_exit")),
+        },
+        "capacity": {
+            "active_position_count": active_position_count,
+            "effective_max_open_positions": int(_effective_max_open_positions()),
+            "open_slots": open_slots,
+        },
+        "latest_scan": {
+            "truth_source": watch.get("truth_source"),
+            "scan_ts_utc": watch.get("scan_ts_utc") or latest_scan.get("ts_utc"),
+            "runtime_slim_applied": bool(watch.get("runtime_slim_applied")),
+            "runtime_symbols_used_count": watch.get("runtime_symbols_used_count"),
+            "runtime_symbols_original_count": watch.get("runtime_symbols_original_count"),
+            "selected_total": int(watch.get("selected_total") or summary.get("selected_total") or 0),
+            "eligible_total": int(watch.get("eligible_total") or summary.get("eligible_total") or 0),
+            "tradeable_count": tradeable_count,
+            "watch_count": watch_count,
+        },
+        "position_truth": {
+            "ok": bool(position_truth.get("ok", True)),
+            "status": position_truth.get("status"),
+            "mismatch_count": position_truth.get("mismatch_count"),
+            "recommended_action": position_truth.get("recommended_action"),
+        },
+        "top_watch": list(watch.get("items") or [])[:max(1, min(int(limit or 6), 12))],
+        "intraday_separation_status": intraday_sep,
+        "operator_action": (
+            "monitor_watch_endpoint_and_wait_for_candidate_to_cross_gate"
+            if tradeable_count <= 0
+            else "inspect_submission_truth_for_tradeable_candidate"
+        ),
     }
 
 def _p313_fast_no_trade_recheck_hint(summary: dict | None = None, rows: list | None = None) -> dict:
@@ -26608,6 +26797,20 @@ def diagnostics_target_path_gate_calibration(request: Request, limit: int = 15):
 def diagnostics_swing_watchlist_trade_status(request: Request, symbols: str = "", limit: int = 12):
     require_admin_if_configured(request)
     return JSONResponse(content=_p316_swing_watchlist_trade_status(
+        symbols=symbols,
+        limit=limit,
+    ))
+
+@app.get("/diagnostics/swing_core_dead_path_removal_audit")
+def diagnostics_swing_core_dead_path_removal_audit(request: Request):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p319_dead_path_removal_audit())
+
+
+@app.get("/diagnostics/swing_trade_readiness_morning_brief")
+def diagnostics_swing_trade_readiness_morning_brief(request: Request, symbols: str = "", limit: int = 8):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p319_trade_readiness_morning_brief(
         symbols=symbols,
         limit=limit,
     ))
