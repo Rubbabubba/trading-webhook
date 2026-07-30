@@ -1086,6 +1086,40 @@ SWING_TRUE_TRADEABLE_REQUIRE_ELIGIBLE_OR_SELECTED = env_bool_any(
     "SWING_TRUE_TRADEABLE_REQUIRE_ELIGIBLE_OR_SELECTED",
     default=True,
 )
+# Patch 315 - Main-web swing runtime slimmer / strong-rank watchlist scan path
+SWING_RUNTIME_SLIM_ENABLED = env_bool_any(
+    "SWING_RUNTIME_SLIM_ENABLED",
+    default=True,
+)
+SWING_RUNTIME_SLIM_MAX_SYMBOLS = getenv_int_any(
+    "SWING_RUNTIME_SLIM_MAX_SYMBOLS",
+    default=25,
+)
+SWING_RUNTIME_SLIM_MIN_ORIGINAL_SYMBOLS = getenv_int_any(
+    "SWING_RUNTIME_SLIM_MIN_ORIGINAL_SYMBOLS",
+    default=26,
+)
+SWING_RUNTIME_SLIM_KEEP_PREVIOUS_TOP = getenv_int_any(
+    "SWING_RUNTIME_SLIM_KEEP_PREVIOUS_TOP",
+    default=12,
+)
+SWING_RUNTIME_SLIM_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_RUNTIME_SLIM_MIN_RANK_SCORE",
+    default=103.0,
+)
+SWING_RUNTIME_SLIM_MIN_TARGET_PATH_SCORE = getenv_float_any(
+    "SWING_RUNTIME_SLIM_MIN_TARGET_PATH_SCORE",
+    default=30.0,
+)
+SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS = [
+    s.strip().upper()
+    for s in getenv_any(
+        "SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS",
+        default="SPY,QQQ,AAPL,MSFT,NVDA,MA,CRM,NET,SNOW",
+    ).split(",")
+    if s.strip()
+]
+
 
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
@@ -2251,7 +2285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-314-scanner-runtime-slimming-stale-intent-reconcile-true-tradeable-semantics"
+PATCH_VERSION = "patch-315-main-web-swing-runtime-slimmer-strong-rank-watchlist-scan-path"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -15225,6 +15259,106 @@ def universe_symbols() -> list[str]:
 
     return _p295_apply_swing_pilot_symbols(sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
 
+def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict | None = None) -> dict:
+    scan_options = dict(scan_options or {})
+    original = _dedupe_keep_order([str(s or "").strip().upper() for s in list(all_symbols or []) if str(s or "").strip()])
+
+    payload_max = 0
+    try:
+        payload_max = int(scan_options.get("max_symbols") or 0)
+    except Exception:
+        payload_max = 0
+
+    configured_max = max(1, int(payload_max or SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
+    min_original = max(1, int(SWING_RUNTIME_SLIM_MIN_ORIGINAL_SYMBOLS or 26))
+
+    if (
+        not bool(SWING_RUNTIME_SLIM_ENABLED)
+        or len(original) < min_original
+        or configured_max >= len(original)
+    ):
+        return {
+            "enabled": bool(SWING_RUNTIME_SLIM_ENABLED),
+            "applied": False,
+            "reason": "runtime_slim_not_needed_or_disabled",
+            "configured_max_symbols": configured_max,
+            "original_count": len(original),
+            "symbols": original,
+            "excluded_symbols": [],
+            "watch_symbols": [],
+        }
+
+    active_symbols = []
+    try:
+        active_symbols = [
+            str(sym or "").strip().upper()
+            for sym, plan in (TRADE_PLAN or {}).items()
+            if str(sym or "").strip()
+            and isinstance(plan, dict)
+            and (
+                bool(plan.get("active"))
+                or _plan_is_pending_entry(plan)
+                or str(plan.get("status") or "").strip().lower() in {"pending_entry", "submitted", "filled"}
+            )
+        ]
+    except Exception:
+        active_symbols = []
+
+    previous_rows = [dict(r or {}) for r in list(LAST_SWING_CANDIDATES or []) if isinstance(r, dict)]
+    previous_rows.sort(
+        key=lambda r: (
+            float(_safe_float(r.get("rank_score"))),
+            float(_safe_float((r.get("target_path_profit") or {}).get("score") if isinstance(r.get("target_path_profit"), dict) else r.get("target_path_score"))),
+            float(_safe_float(r.get("selection_quality_score"))),
+        ),
+        reverse=True,
+    )
+
+    watch_symbols = []
+    for row in previous_rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        rank_score = float(_safe_float(row.get("rank_score")))
+        target_score = float(_safe_float((row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else row.get("target_path_score")))
+        if (
+            rank_score >= float(SWING_RUNTIME_SLIM_MIN_RANK_SCORE)
+            or target_score >= float(SWING_RUNTIME_SLIM_MIN_TARGET_PATH_SCORE)
+            or bool(row.get("defensive_near_miss_relaxation_entry"))
+            or bool(row.get("risk_adjusted_near_miss_entry"))
+            or bool(row.get("first_2k_similarity_revival_entry"))
+        ):
+            watch_symbols.append(sym)
+
+    watch_symbols = _dedupe_keep_order(watch_symbols[: max(1, int(SWING_RUNTIME_SLIM_KEEP_PREVIOUS_TOP or 12))])
+
+    priority = _dedupe_keep_order(
+        active_symbols
+        + list(SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS or [])
+        + watch_symbols
+        + original
+    )
+
+    slimmed = [s for s in priority if s in set(original)][:configured_max]
+    if not slimmed:
+        slimmed = original[:configured_max]
+
+    excluded = [s for s in original if s not in set(slimmed)]
+
+    return {
+        "enabled": True,
+        "applied": len(slimmed) < len(original),
+        "reason": "main_web_swing_runtime_slim_applied",
+        "configured_max_symbols": configured_max,
+        "original_count": len(original),
+        "symbols": slimmed,
+        "excluded_symbols": excluded,
+        "excluded_count": len(excluded),
+        "watch_symbols": watch_symbols,
+        "active_symbols": active_symbols,
+        "anchor_symbols": [s for s in list(SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS or []) if s in set(original)],
+    }
+
 def _bars_for_today_regular_session(bars: list[dict]) -> list[dict]:
     if not bars:
         return []
@@ -18185,9 +18319,12 @@ def _build_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAULT, br
     }
 
 
-def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None) -> dict:
+def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None, scan_options: dict | None = None) -> dict:
     reconcile_actions = reconcile_actions or []
-    syms = universe_symbols()
+    scan_options = dict(scan_options or {})
+    original_syms = universe_symbols()
+    runtime_slim = _p315_swing_runtime_scan_symbols(original_syms, scan_options=scan_options)
+    syms = list(runtime_slim.get("symbols") or original_syms)
     scan_symbols = list(syms)
     if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms:
         syms_for_fetch = syms + [SWING_INDEX_SYMBOL]
@@ -18732,6 +18869,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'allow_entries_when_regime_unfavorable': bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')),
         },
         'symbols': list(scan_symbols),
+        'runtime_slim': dict(runtime_slim),
+        'runtime_symbols_original_count': int(runtime_slim.get("original_count") or len(original_syms)),
+        'runtime_symbols_used_count': len(scan_symbols),
+        'runtime_symbols_excluded_count': int(runtime_slim.get("excluded_count") or 0),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
         'selected_submission_finalizer': dict(selected_submission_finalizer),
@@ -18759,6 +18900,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'regime': dict(regime),
         'symbols': list(scan_symbols),
         'symbols_total': len(scan_symbols),
+        'runtime_slim': dict(runtime_slim),
+        'runtime_slim_applied': bool(runtime_slim.get("applied")),
+        'runtime_symbols_original_count': int(runtime_slim.get("original_count") or len(original_syms)),
+        'runtime_symbols_used_count': len(scan_symbols),
+        'runtime_symbols_excluded_count': int(runtime_slim.get("excluded_count") or 0),
+        'runtime_watch_symbols': list(runtime_slim.get("watch_symbols") or []),
+        'runtime_excluded_symbols': list(runtime_slim.get("excluded_symbols") or [])[:25],
         'candidates_total': len(candidates),
         'eligible_total': len(approved),
         'selected_total': len(selected),
@@ -40131,7 +40279,13 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         _stage_end("reconcile")
 
         if STRATEGY_MODE == "swing":
-            swing_resp = run_swing_daily_scan(effective_dry_run, _set_last_scan, _elapsed_ms, reconcile_actions=reconcile_actions)
+            swing_resp = run_swing_daily_scan(
+                effective_dry_run,
+                _set_last_scan,
+                _elapsed_ms,
+                reconcile_actions=reconcile_actions,
+                scan_options=body,
+            )
             try:
                 scanner_payload = swing_resp.get("scanner") if isinstance(swing_resp, dict) else {}
                 _record_scanner_telemetry(
