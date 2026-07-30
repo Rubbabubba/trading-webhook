@@ -2285,7 +2285,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-320-morning-brief-position-truth-fix-swing-dead-path-removal-phase-1"
+PATCH_VERSION = "patch-321-swing-submit-path-trace-candidate-gate-crossing-alert"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11683,6 +11683,178 @@ def _p320_swing_dead_path_phase1_status() -> dict:
             "remove_selected_submission_finalizer_from_swing_default_diagnostics",
             "move_intraday_shadow_paper_metrics_to_intraday_only_bundle",
         ],
+    }
+
+def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None = None) -> dict:
+    watch = _p316_swing_watchlist_trade_status(
+        symbols=symbols or "",
+        limit=max(5, min(int(limit or 12), 25)),
+    )
+    active_truth = _p320_active_position_truth_for_brief()
+    selected_items = [
+        dict(row)
+        for row in list(watch.get("items") or [])
+        if isinstance(row, dict) and (bool(row.get("selected")) or bool(row.get("eligible")))
+    ]
+
+    direct_submit_enabled = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
+    old_intent_path_enabled = bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
+    finalizer_expected = not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)
+
+    blockers = []
+    if not bool(NEW_ENTRIES_ENABLED):
+        blockers.append("new_entries_disabled")
+    if not bool(SCANNER_ALLOW_LIVE) or bool(SCANNER_DRY_RUN):
+        blockers.append("scanner_not_live")
+    if bool(effective_entry_dry_run("worker_scan")):
+        blockers.append("effective_entry_dry_run")
+    if daily_halt_active() or realized_closed_trade_loss_halt_active():
+        blockers.append("loss_halt_active")
+    if int(active_truth.get("active_position_count") or 0) >= int(_effective_max_open_positions()):
+        blockers.append("max_open_positions_reached")
+    if not selected_items:
+        blockers.append("no_selected_or_eligible_candidates")
+
+    path_status = "ready_when_candidate_selected" if not blockers or blockers == ["no_selected_or_eligible_candidates"] else "blocked"
+    if selected_items and not blockers:
+        path_status = "ready_to_submit_selected_candidate"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_submit_path_trace",
+        "read_only": True,
+        "path_status": path_status,
+        "blockers": blockers,
+        "trade_submission_behavior_changed": False,
+        "direct_submit_enabled": direct_submit_enabled,
+        "old_selected_intent_queue_enabled": old_intent_path_enabled,
+        "selected_submission_finalizer_expected": finalizer_expected,
+        "selected_or_eligible_count": len(selected_items),
+        "selected_or_eligible_symbols": [row.get("symbol") for row in selected_items],
+        "entry_controls": {
+            "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "scanner_dry_run": bool(SCANNER_DRY_RUN),
+            "effective_entry_dry_run": bool(effective_entry_dry_run("worker_scan")),
+            "swing_live_enabled": bool(SWING_LIVE_ENABLED),
+        },
+        "capacity": {
+            "active_position_count": int(active_truth.get("active_position_count") or 0),
+            "active_symbols": list(active_truth.get("symbols") or []),
+            "effective_max_open_positions": int(_effective_max_open_positions()),
+            "open_slots": max(0, int(_effective_max_open_positions()) - int(active_truth.get("active_position_count") or 0)),
+        },
+        "watch_summary": {
+            "truth_source": watch.get("truth_source"),
+            "scan_ts_utc": watch.get("scan_ts_utc"),
+            "runtime_slim_applied": bool(watch.get("runtime_slim_applied")),
+            "selected_total": int(watch.get("selected_total") or 0),
+            "eligible_total": int(watch.get("eligible_total") or 0),
+            "tradeable_count": int(watch.get("tradeable_count") or 0),
+            "watch_count": int(watch.get("watch_count") or 0),
+        },
+        "selected_items": selected_items,
+    }
+
+
+def _p321_candidate_gate_crossing_alert(symbols: str | None = None, limit: int | None = None) -> dict:
+    watch = _p316_swing_watchlist_trade_status(
+        symbols=symbols or "",
+        limit=max(5, min(int(limit or 12), 25)),
+    )
+
+    rows = [dict(row) for row in list(watch.get("items") or []) if isinstance(row, dict)]
+    crossed = []
+    near = []
+    hard_blocked = []
+
+    for row in rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+
+        selected = bool(row.get("selected"))
+        eligible = bool(row.get("eligible"))
+        active_position = bool(row.get("active_position"))
+        pending_plan = bool(row.get("pending_plan"))
+        executable = row.get("executable")
+        reasons = [str(x) for x in list(row.get("rejection_reasons") or []) if str(x)]
+        blockers = [str(x) for x in list(row.get("gate_blockers") or []) if str(x)]
+
+        if selected or eligible:
+            crossed.append({
+                "symbol": sym,
+                "status": "crossed_trade_gate",
+                "selected": selected,
+                "eligible": eligible,
+                "executable": executable,
+                "recommendation": "inspect_submit_path_trace",
+            })
+            continue
+
+        if active_position or pending_plan:
+            hard_blocked.append({
+                "symbol": sym,
+                "status": "already_captured",
+                "reason": "active_position_or_pending_plan",
+            })
+            continue
+
+        if executable is False:
+            hard_blocked.append({
+                "symbol": sym,
+                "status": "not_executable",
+                "reason": row.get("sizing_block_reason") or "sizing_not_executable",
+            })
+            continue
+
+        nearish = (
+            row.get("status") == "watch_gate_near_miss"
+            or "target_profile_breakout_gate" in reasons
+            or bool(blockers)
+        )
+        if nearish:
+            near.append({
+                "symbol": sym,
+                "status": "near_miss",
+                "rank_score": row.get("rank_score"),
+                "target_path_score": row.get("target_path_score"),
+                "gate_blockers": blockers,
+                "what_needs_to_change": list(row.get("what_needs_to_change") or []),
+            })
+        else:
+            hard_blocked.append({
+                "symbol": sym,
+                "status": row.get("status") or "not_candidate",
+                "reason": ",".join(list(row.get("blocking_reasons") or [])) or "not_ready",
+            })
+
+    alert_active = bool(crossed)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "candidate_gate_crossing_alert",
+        "read_only": True,
+        "alert_active": alert_active,
+        "alert_level": "actionable" if alert_active else "watch",
+        "crossed_count": len(crossed),
+        "crossed_symbols": [row.get("symbol") for row in crossed],
+        "near_miss_count": len(near),
+        "near_miss_symbols": [row.get("symbol") for row in near],
+        "hard_blocked_count": len(hard_blocked),
+        "truth_source": watch.get("truth_source"),
+        "scan_ts_utc": watch.get("scan_ts_utc"),
+        "runtime_slim_applied": bool(watch.get("runtime_slim_applied")),
+        "crossed": crossed,
+        "near_miss": near,
+        "hard_blocked": hard_blocked,
+        "operator_action": (
+            "open_swing_submit_path_trace"
+            if alert_active
+            else "keep_monitoring_watchlist_trade_status"
+        ),
     }
 
 def _p319_trade_readiness_morning_brief(symbols: str | None = None, limit: int | None = None) -> dict:
@@ -26868,6 +27040,23 @@ def diagnostics_swing_core_dead_path_removal_audit(request: Request):
 def diagnostics_swing_trade_readiness_morning_brief(request: Request, symbols: str = "", limit: int = 8):
     require_admin_if_configured(request)
     return JSONResponse(content=_p319_trade_readiness_morning_brief(
+        symbols=symbols,
+        limit=limit,
+    ))
+
+@app.get("/diagnostics/swing_submit_path_trace")
+def diagnostics_swing_submit_path_trace(request: Request, symbols: str = "", limit: int = 12):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p321_swing_submit_path_trace(
+        symbols=symbols,
+        limit=limit,
+    ))
+
+
+@app.get("/diagnostics/candidate_gate_crossing_alert")
+def diagnostics_candidate_gate_crossing_alert(request: Request, symbols: str = "", limit: int = 12):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p321_candidate_gate_crossing_alert(
         symbols=symbols,
         limit=limit,
     ))
