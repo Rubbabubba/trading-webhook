@@ -2334,7 +2334,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-324-hotfix-legacy-summary-variable-defaults-production-scan-backfill"
+PATCH_VERSION = "patch-325-scanner-success-recovery-cleanup-production-contract-miss-reasons"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -28606,6 +28606,153 @@ def _p298_latest_scan_summary_light() -> tuple[dict, dict]:
 
     return latest_scan, summary
 
+def _p325_latest_scan_successfully_closed(latest_scan: dict | None, telemetry: dict | None, telemetry_summary: dict | None) -> bool:
+    scan = dict(latest_scan or {})
+    tel = dict(telemetry or {})
+    summary = dict(telemetry_summary or {})
+    scan_reason = str(scan.get("reason") or "").strip().lower()
+    last_status = str(tel.get("status") or tel.get("last_status") or "").strip().lower()
+    last_event = str(tel.get("event") or tel.get("last_event") or "").strip().lower()
+    return bool(
+        scan_reason == "scan_completed"
+        and not bool(summary.get("in_flight_run"))
+        and last_status in {"success", "ok", "skipped"}
+        and last_event in {"scan_ok", "scan_closed", "heartbeat", "scanner_heartbeat", "worker_heartbeat", ""}
+    )
+
+
+def _p325_recover_scanner_warning_summary(
+    telemetry_summary: dict | None,
+    latest_scan: dict | None,
+    telemetry: dict | None = None,
+) -> dict:
+    summary = dict(telemetry_summary or {})
+    active = [
+        str(code or "").strip()
+        for code in list(summary.get("active_warning_codes") or [])
+        if str(code or "").strip()
+    ]
+    recovered = [
+        str(code or "").strip()
+        for code in list(summary.get("recovered_warning_codes") or [])
+        if str(code or "").strip()
+    ]
+    historical = [
+        str(code or "").strip()
+        for code in list(summary.get("historical_warning_codes") or [])
+        if str(code or "").strip()
+    ]
+
+    recovered_by_success = _p325_latest_scan_successfully_closed(latest_scan, telemetry, summary)
+    if recovered_by_success and "dispatch_failure" in active:
+        active = [code for code in active if code != "dispatch_failure"]
+        if "dispatch_failure_recovered_by_scan_success" not in recovered:
+            recovered.append("dispatch_failure_recovered_by_scan_success")
+        if "dispatch_failure" not in historical:
+            historical.append("dispatch_failure")
+
+    summary["active_warning_codes"] = _dedupe_keep_order(active)
+    summary["recovered_warning_codes"] = _dedupe_keep_order(recovered)
+    summary["historical_warning_codes"] = _dedupe_keep_order(historical)
+    summary["warning_codes"] = list(summary["active_warning_codes"])
+    summary["has_warnings"] = bool(summary["active_warning_codes"])
+    summary["has_active_warnings"] = bool(summary["active_warning_codes"])
+    summary["has_recovered_warnings"] = bool(summary["recovered_warning_codes"])
+    summary["dispatch_failure_recovered_by_scan_success"] = bool(recovered_by_success and "dispatch_failure" in historical)
+    return summary
+
+
+def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    latest_scan, summary = _p298_latest_scan_summary_light()
+
+    rows = []
+    source = "last_swing_candidates"
+    if LAST_SWING_CANDIDATES:
+        rows = [dict(r or {}) for r in LAST_SWING_CANDIDATES if isinstance(r, dict)]
+    elif CANDIDATE_HISTORY:
+        hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
+        source = "candidate_history"
+        rows = [
+            dict(r or {})
+            for r in list(hist.get("candidates") or [])
+            if isinstance(r, dict)
+        ]
+
+    checked = []
+    for row in rows:
+        c = _p323_apply_swing_production_contract(row, global_block_reasons=[])
+        contract = dict(c.get("swing_production_contract") or {})
+        symbol = str(c.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        blockers = _dedupe_candidate_reasons(contract.get("blockers") or c.get("rejection_reasons") or [])
+        checked.append({
+            "symbol": symbol,
+            "strategy": c.get("strategy") or c.get("signal"),
+            "approved": bool(contract.get("approved")),
+            "selected": bool(c.get("selected")),
+            "rank_score": contract.get("rank_score"),
+            "risk_per_share_pct": contract.get("risk_per_share_pct"),
+            "breakout_distance_pct": contract.get("breakout_distance_pct"),
+            "close_to_high_pct": contract.get("close_to_high_pct"),
+            "return_20d_pct": contract.get("return_20d_pct"),
+            "blockers": blockers,
+            "advisory_legacy_reasons": list(contract.get("advisory_legacy_reasons") or []),
+            "checks": dict(contract.get("checks") or {}),
+            "executable": bool((contract.get("executable_sizing_truth") or {}).get("executable")),
+            "sizing_block_reason": (contract.get("executable_sizing_truth") or {}).get("sizing_block_reason"),
+        })
+
+    approved = [r for r in checked if bool(r.get("approved"))]
+    missed = [r for r in checked if not bool(r.get("approved"))]
+    reason_counts = Counter()
+    for row in missed:
+        blockers = list(row.get("blockers") or [])
+        if not blockers:
+            reason_counts["no_contract_blocker_reported"] += 1
+        for reason in blockers:
+            reason_counts[str(reason)] += 1
+
+    missed.sort(
+        key=lambda r: (
+            float(_safe_float(r.get("rank_score"))),
+            float(_safe_float(r.get("close_to_high_pct"))),
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "production_contract_miss_reasons",
+        "source": source,
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+            "would_trade": latest_scan.get("would_trade"),
+            "blocked": latest_scan.get("blocked"),
+            "duration_ms": latest_scan.get("duration_ms"),
+        },
+        "summary": {
+            "rows_checked": len(checked),
+            "approved_count": len(approved),
+            "missed_count": len(missed),
+            "top_reason_counts": dict(reason_counts.most_common(12)),
+            "selected_symbols": list(summary.get("selected_symbols") or []),
+            "last_successful_production_selected_symbols": list(summary.get("last_successful_production_selected_symbols") or []),
+        },
+        "approved": approved[:lim],
+        "missed": missed[:lim],
+        "recommended_action": (
+            "production_contract_has_approved_candidates"
+            if approved
+            else "review_top_miss_reasons_before_relaxing_contract"
+        ),
+    }
+
 def _p298_recent_lifecycle_items(limit: int = 100) -> list[dict]:
     lim = max(1, min(int(limit or 100), 250))
     rows = [dict(r or {}) for r in list(PAPER_LIFECYCLE_HISTORY or [])[-lim:] if isinstance(r, dict)]
@@ -28758,6 +28905,12 @@ def _p298_scanner_light() -> dict:
     latest_scan = dict(latest_scan or {})
     latest_scan["scanner_exception_truth"] = summary.get("scanner_exception_truth")
     latest_scan["using_last_successful_production_scan"] = bool(summary.get("using_last_successful_production_scan"))
+
+    telemetry_summary = _p325_recover_scanner_warning_summary(
+        telemetry_summary,
+        latest_scan,
+        telemetry=tel,
+    )
 
     return swing_diag_scanner_light_snapshot(
         patch_version=PATCH_VERSION,
@@ -39149,6 +39302,10 @@ def diagnostics_scanner_light(request: Request):
     require_admin_if_configured(request)
     return _p298_scanner_light()
 
+@app.get("/diagnostics/production_contract_miss_reasons")
+def diagnostics_production_contract_miss_reasons(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return _p325_production_contract_miss_reason_rows(limit=limit)
 
 @app.get("/diagnostics/market_open_selection_audit_light")
 def diagnostics_market_open_selection_audit_light(request: Request, limit: int = 10):
