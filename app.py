@@ -1566,6 +1566,13 @@ ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT = float(getenv_any("ENT
 SPREAD_BLOCKED_RETRY_ENABLED = env_bool_any("SPREAD_BLOCKED_RETRY_ENABLED", default=True)
 SPREAD_BLOCKED_RETRY_WINDOW_SEC = int(getenv_any("SPREAD_BLOCKED_RETRY_WINDOW_SEC", default="900"))
 SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS = int(getenv_any("SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS", default="6"))
+
+SWING_LIMIT_ENTRY_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_ENABLED", default=True)
+SWING_LIMIT_ENTRY_MAX_SPREAD_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MAX_SPREAD_PCT", default="0.06"))
+SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT", default="0.03"))
+SWING_LIMIT_ENTRY_SPREAD_FRACTION = float(getenv_any("SWING_LIMIT_ENTRY_SPREAD_FRACTION", default="0.50"))
+SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED", default=False)
+
 PLAN_STALE_SUBMITTED_SEC = int(getenv_any("PLAN_STALE_SUBMITTED_SEC", default="180"))
 PLAN_STALE_NO_POSITION_SEC = int(getenv_any("PLAN_STALE_NO_POSITION_SEC", default="90"))
 RECONCILE_ORDER_LOOKBACK_LIMIT = int(getenv_any("RECONCILE_ORDER_LOOKBACK_LIMIT", default="100"))
@@ -2338,7 +2345,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-327-hotfix-spread-retry-backfill-from-selected-submission-rows"
+PATCH_VERSION = "patch-328-limit-entry-support-for-selected-swing-candidates"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -6863,7 +6870,37 @@ def _alpaca_submit_order_rest(symbol: str, side: str, qty: float, client_order_i
     data.setdefault("client_order_id", client_order_id)
     return data
 
-
+def _alpaca_submit_limit_order_rest(symbol: str, side: str, qty: float, limit_price: float, client_order_id: str):
+    body = {
+        "symbol": str(symbol).upper(),
+        "side": str(side).lower(),
+        "type": "limit",
+        "time_in_force": "day",
+        "qty": _format_order_qty(qty),
+        "limit_price": f"{float(limit_price):.2f}",
+        "client_order_id": client_order_id,
+    }
+    req = UrlRequest(
+        _alpaca_trading_base_url().rstrip("/") + "/v2/orders",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "accept": "application/json",
+            "content-type": "application/json",
+            "APCA-API-KEY-ID": APCA_KEY,
+            "APCA-API-SECRET-KEY": APCA_SECRET,
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=20) as resp:
+        raw = resp.read().decode("utf-8") if resp else ""
+    data = json.loads(raw) if raw else {}
+    if not isinstance(data, dict):
+        raise RuntimeError("alpaca_rest_limit_submit_non_dict_response")
+    if not data.get("id"):
+        raise RuntimeError(f"alpaca_rest_limit_submit_missing_id:{data}")
+    data.setdefault("_submit_transport", "rest_limit")
+    data.setdefault("client_order_id", client_order_id)
+    return data
 
 def _order_id_from_submit_response(order) -> str:
     return str(_order_attr(order, "id", "") or _order_attr(order, "order_id", "") or "")
@@ -6923,6 +6960,9 @@ def submit_market_order(symbol: str, side: str, qty: float):
         except Exception as rest_e:
             raise RuntimeError(f"sdk:{sdk_error}; rest:{rest_e}")
 
+def submit_limit_order(symbol: str, side: str, qty: float, limit_price: float):
+    client_order_id = f"scanlim-{str(uuid.uuid4())[:8]}-{str(symbol).lower()}"
+    return _alpaca_submit_limit_order_rest(symbol, side, qty, limit_price, client_order_id)
 
 def get_order_status(order_id: str) -> dict:
     oid = str(order_id or "").strip()
@@ -28182,6 +28222,63 @@ def _pending_order_entry_freeze_snapshot() -> dict:
         "open_orders": orders,
     }
 
+def _p328_limit_entry_preview(symbol: str, side: str, snapshot: dict | None, meta: dict | None = None) -> dict:
+    snap = dict(snapshot or {})
+    if not SWING_LIMIT_ENTRY_ENABLED:
+        return {"allowed": False, "reason": "limit_entry_disabled"}
+
+    if str(side or "").lower() != "buy":
+        return {"allowed": False, "reason": "limit_entry_buy_only"}
+
+    try:
+        bid = float(snap.get("bid") or 0)
+        ask = float(snap.get("ask") or 0)
+        mid = float(snap.get("mid") or snap.get("price") or 0)
+    except Exception:
+        return {"allowed": False, "reason": "quote_parse_failed"}
+
+    if bid <= 0 or ask <= 0 or mid <= 0 or ask <= bid:
+        return {"allowed": False, "reason": "quote_not_limitable", "bid": bid, "ask": ask, "mid": mid}
+
+    spread_pct = float(snap.get("spread_pct") or ((ask - bid) / mid))
+    if spread_pct > float(SWING_LIMIT_ENTRY_MAX_SPREAD_PCT):
+        return {
+            "allowed": False,
+            "reason": "spread_above_limit_entry_max",
+            "spread_pct": spread_pct,
+            "max_spread_pct": float(SWING_LIMIT_ENTRY_MAX_SPREAD_PCT),
+        }
+
+    deviation = snap.get("trade_mid_deviation_pct")
+    if deviation is not None:
+        try:
+            if abs(float(deviation)) > float(SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT):
+                return {
+                    "allowed": False,
+                    "reason": "trade_mid_deviation_above_limit_entry_max",
+                    "trade_mid_deviation_pct": float(deviation),
+                    "max_trade_mid_deviation_pct": float(SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT),
+                }
+        except Exception:
+            pass
+
+    fraction = max(0.0, min(float(SWING_LIMIT_ENTRY_SPREAD_FRACTION), 1.0))
+    limit_price = round(bid + ((ask - bid) * fraction), 2)
+
+    return {
+        "allowed": True,
+        "reason": "limit_entry_allowed",
+        "symbol": str(symbol or "").upper(),
+        "side": "buy",
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+        "spread_pct": spread_pct,
+        "spread_fraction": fraction,
+        "limit_price": limit_price,
+        "fractional_enabled": bool(SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED),
+    }
+
 def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta: dict | None = None, auth_payload: dict | None = None) -> dict:
     """Shared entry execution path for scanner + webhook."""
     meta = meta or {}
@@ -28350,15 +28447,23 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                     record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="price_stale", meta={"snapshot": snapshot, "payload": payload, **(meta or {})})
                     soften_symbol_lock(symbol, 5)
                     return {"ok": False, "rejected": True, "reason": "price_stale", "symbol": symbol, "signal": signal, "snapshot": snapshot}
+        p328_limit_entry = None
         spread_pct = snapshot.get("spread_pct")
         if spread_pct is not None and float(spread_pct) > float(ENTRY_MAX_SPREAD_PCT):
             spread_override = _entry_spread_override_decision(snapshot, meta=meta)
             snapshot["spread_override"] = spread_override
             if not spread_override.get("allowed"):
-                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="spread_too_wide", meta={"snapshot": snapshot, "spread_override": spread_override, **(meta or {})})
-                soften_symbol_lock(symbol, 5)
-                return {"ok": False, "rejected": True, "reason": "spread_too_wide", "symbol": symbol, "signal": signal, "snapshot": snapshot, "spread_override": spread_override}
-            record_decision("ENTRY", source, symbol, side=side, signal=signal, action="allowed", reason="spread_override_allowed", meta={"snapshot": snapshot, "spread_override": spread_override, **(meta or {})})
+                limit_preview = _p328_limit_entry_preview(symbol, side, snapshot, meta=meta)
+                snapshot["limit_entry_preview"] = limit_preview
+                if limit_preview.get("allowed"):
+                    p328_limit_entry = limit_preview
+                    record_decision("ENTRY", source, symbol, side=side, signal=signal, action="allowed", reason="limit_entry_for_spread_block", meta={"snapshot": snapshot, "spread_override": spread_override, "limit_entry": limit_preview, **(meta or {})})
+                else:
+                    record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="spread_too_wide", meta={"snapshot": snapshot, "spread_override": spread_override, "limit_entry": limit_preview, **(meta or {})})
+                    soften_symbol_lock(symbol, 5)
+                    return {"ok": False, "rejected": True, "reason": "spread_too_wide", "symbol": symbol, "signal": signal, "snapshot": snapshot, "spread_override": spread_override, "limit_entry": limit_preview}
+            else:
+                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="allowed", reason="spread_override_allowed", meta={"snapshot": snapshot, "spread_override": spread_override, **(meta or {})})
 
         qty_signed_post_lock, pos_side_post_lock = get_position(symbol)
         if qty_signed_post_lock != 0:
@@ -28428,8 +28533,24 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 pass
             return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": plan}
 
-        order = submit_market_order(symbol, side, qty)
-        plan = build_trade_plan(symbol, side, qty, float(base_price), signal, meta=meta)
+        submit_order_type = "market"
+        submit_price = float(base_price)
+
+        if isinstance(p328_limit_entry, dict) and p328_limit_entry.get("allowed"):
+            submit_order_type = "limit"
+            submit_price = float(p328_limit_entry.get("limit_price") or base_price)
+            if not SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED:
+                qty = float(math.floor(float(qty)))
+                if qty <= 0:
+                    record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="limit_qty_zero_after_whole_share_rounding", qty=qty, meta={"snapshot": snapshot, "limit_entry": p328_limit_entry, **(meta or {})})
+                    soften_symbol_lock(symbol, 5)
+                    return {"ok": False, "rejected": True, "reason": "limit_qty_zero_after_whole_share_rounding", "symbol": symbol, "signal": signal, "snapshot": snapshot, "limit_entry": p328_limit_entry}
+
+            order = submit_limit_order(symbol, side, qty, submit_price)
+        else:
+            order = submit_market_order(symbol, side, qty)
+
+        plan = build_trade_plan(symbol, side, qty, submit_price, signal, meta=meta)
         plan["source"] = source
         plan["order_id"] = str(_order_attr(order, "id", ""))
         plan["submitted_at"] = now_ny().isoformat()
@@ -28438,6 +28559,9 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan["filled_qty"] = 0.0
         plan["avg_fill_price"] = float(base_price)
         plan["order_status"] = "submitted"
+        plan["order_type"] = submit_order_type
+        plan["limit_price"] = submit_price if submit_order_type == "limit" else None
+        plan["limit_entry"] = p328_limit_entry or {}
         plan["affordability"] = affordability or {}
         TRADE_PLAN[symbol] = plan
         _ensure_execution_lifecycle_plan(symbol, plan)
@@ -28449,7 +28573,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             _record_paper_lifecycle("entry", "submitted", symbol=symbol, details={"source": source, "signal": signal, "qty": qty, "order_id": str(_order_attr(order, "id", "")), "dry_run": False})
         except Exception:
             pass
-        return {"ok": True, "submitted": True, "order_id": str(_order_attr(order, "id", "")), "order": payload, "plan": plan}
+        return {"ok": True, "submitted": True, "order_id": str(_order_attr(order, "id", "")), "order_type": submit_order_type, "limit_price": submit_price if submit_order_type == "limit" else None, "order": payload, "plan": plan}
     except Exception as e:
         log("ORDER_REJECTED", symbol=symbol, side=side, err=str(e), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="alpaca_submit_failed", err=str(e), meta=meta)
