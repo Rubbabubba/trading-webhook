@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-329-limit-entry-evidence-cleanup-scanner-warning-recovery"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-330-filled-plan-execution-evidence-backfill-after-hours-light-truth-stability"
 
 
 def selected_submission_truth_light_snapshot(
@@ -33,6 +33,11 @@ def selected_submission_truth_light_snapshot(
         row.get("symbol")
         for row in rows
         if row.get("symbol") and str(row.get("plan_order_type") or "").lower() == "limit"
+    ]
+    filled_plan_backfill_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and bool(row.get("p330_filled_plan_backfill"))
     ]
 
     return {
@@ -58,6 +63,8 @@ def selected_submission_truth_light_snapshot(
         "submit_gap_count": len(missing),
         "limit_order_symbols": limit_order_symbols,
         "limit_order_count": len(limit_order_symbols),
+        "filled_plan_backfill_symbols": filled_plan_backfill_symbols,
+        "filled_plan_backfill_count": len(filled_plan_backfill_symbols),
         "rows": list(rows),
         "recommended_action": (
             "selected_candidate_submit_gap_detected"

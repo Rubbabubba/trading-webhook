@@ -2345,7 +2345,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-329-limit-entry-evidence-cleanup-scanner-warning-recovery"
+PATCH_VERSION = "patch-330-filled-plan-execution-evidence-backfill-after-hours-light-truth-stability"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -29470,11 +29470,106 @@ def _p298_selected_symbols_light(summary: dict | None = None, lifecycle_items: l
 
     return _dedupe_keep_order(symbols)
 
+def _p330_after_hours_empty_selection_scan(latest_scan: dict | None, summary: dict | None) -> bool:
+    scan = dict(latest_scan or {})
+    summ = dict(summary or {})
+    reason = str(scan.get("reason") or summ.get("reason") or "").strip().lower()
+    selected_total = int(summ.get("selected_total") or len(summ.get("selected_symbols") or []) or 0)
+    return bool(reason == "outside_market_hours" and selected_total <= 0)
+
+
+def _p330_preserved_selected_submission_summary(latest_scan: dict | None, summary: dict | None) -> tuple[dict, dict, dict]:
+    current_scan = dict(latest_scan or {})
+    current_summary = dict(summary or {})
+    if not _p330_after_hours_empty_selection_scan(current_scan, current_summary):
+        return current_scan, current_summary, {
+            "applied": False,
+            "reason": "latest_scan_has_current_selection_context",
+        }
+
+    preserved = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
+    preserved_summary = dict(preserved.get("summary") or {})
+    preserved_symbols = _p324_scan_selected_symbols(preserved)
+    if not preserved or not preserved_symbols:
+        return current_scan, current_summary, {
+            "applied": False,
+            "reason": "no_preserved_selected_production_scan_available",
+        }
+
+    preserved_scan = dict(preserved)
+    preserved_scan["p330_after_hours_truth_source"] = "last_successful_production_scan"
+    preserved_scan["p330_current_latest_scan"] = {
+        "ts_utc": current_scan.get("ts_utc"),
+        "reason": current_scan.get("reason"),
+        "selected_total": int(current_summary.get("selected_total") or 0),
+    }
+
+    preserved_summary["p330_after_hours_truth_source"] = "last_successful_production_scan"
+    preserved_summary["p330_after_hours_stability_applied"] = True
+    preserved_summary["p330_current_latest_scan_reason"] = current_scan.get("reason")
+    preserved_summary["p330_current_latest_scan_ts_utc"] = current_scan.get("ts_utc")
+
+    return preserved_scan, preserved_summary, {
+        "applied": True,
+        "reason": "after_hours_empty_scan_replaced_with_last_successful_production_scan",
+        "preserved_ts_utc": preserved.get("ts_utc"),
+        "preserved_selected_symbols": preserved_symbols,
+    }
+
+
+def _p330_plan_execution_dt_ny(plan: dict | None):
+    p = dict(plan or {})
+    for key in ("submitted_at", "opened_at", "execution_updated_ny", "execution_updated_utc"):
+        value = p.get(key)
+        if not value:
+            continue
+        dt = _coerce_dt_ny(value)
+        if dt:
+            return dt
+    return None
+
+
+def _p330_filled_plan_execution_backfill_symbols() -> list[str]:
+    symbols: list[str] = []
+    today = now_ny().date()
+    for sym, plan in dict(TRADE_PLAN or {}).items():
+        symbol = str(sym or "").strip().upper()
+        p = dict(plan or {})
+        if not symbol:
+            continue
+        if not bool(p.get("active")):
+            continue
+        if not str(p.get("order_id") or "").strip():
+            continue
+
+        status = str(
+            p.get("order_status")
+            or p.get("execution_state")
+            or p.get("lifecycle_state")
+            or p.get("status")
+            or ""
+        ).strip().lower()
+        if status not in {"filled", "submitted", "accepted", "partially_filled"}:
+            continue
+
+        dt_ny = _p330_plan_execution_dt_ny(p)
+        if not dt_ny or dt_ny.date() != today:
+            continue
+
+        symbols.append(symbol)
+
+    return _dedupe_keep_order(symbols)
 
 def _p298_selected_submission_truth_light() -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
+    latest_scan, summary, p330_after_hours_truth = _p330_preserved_selected_submission_summary(latest_scan, summary)
+
     lifecycle_items = _p298_recent_lifecycle_items(limit=100)
     selected_symbols = _p298_selected_symbols_light(summary, lifecycle_items)
+
+    p330_filled_plan_backfill_symbols = _p330_filled_plan_execution_backfill_symbols()
+    selected_symbols = _dedupe_keep_order(list(selected_symbols or []) + p330_filled_plan_backfill_symbols)
+
     submit_rows = {
         str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
         for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or [])
@@ -29513,6 +29608,15 @@ def _p298_selected_submission_truth_light() -> dict:
 
         rows.append({
             "symbol": sym,
+            "p330_evidence_source": (
+                "filled_active_plan_backfill"
+                if sym in p330_filled_plan_backfill_symbols and not submit_row
+                else "scan_selected_submission_row"
+                if submit_row
+                else "selected_symbol_side_effect_check"
+            ),
+            "p330_after_hours_truth_applied": bool(p330_after_hours_truth.get("applied")),
+            "p330_filled_plan_backfill": bool(sym in p330_filled_plan_backfill_symbols),
             "side_effect_detected_light": bool(side_effect.get("actual_submit_side_effect")),
             "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
             "candidate_selected_only": bool(candidate_selected_only_events and not side_effect.get("actual_submit_side_effect")),
@@ -29541,12 +29645,16 @@ def _p298_selected_submission_truth_light() -> dict:
             "scan_submit_row": submit_row or None,
         })
 
-    return swing_diag_selected_submission_truth_light_snapshot(
+    out = swing_diag_selected_submission_truth_light_snapshot(
         patch_version=PATCH_VERSION,
         latest_scan=latest_scan,
         selected_symbols=selected_symbols,
         rows=rows,
     )
+    out["p330_after_hours_truth"] = p330_after_hours_truth
+    out["p330_filled_plan_backfill_symbols"] = p330_filled_plan_backfill_symbols
+    out["p330_filled_plan_backfill_count"] = len(p330_filled_plan_backfill_symbols)
+    return out
 
 
 def _p298_scanner_light() -> dict:
