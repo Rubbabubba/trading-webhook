@@ -246,6 +246,7 @@ def swing_cleanup_status_snapshot(
             "/diagnostics/swing_core_status",
             "/diagnostics/swing_runtime_config",
             "/diagnostics/swing_selection_contract_module_status",
+            "/diagnostics/swing_execution_module_status",
         ],
         "removed_from_operator_default_flow": [
             "heavy_operator_bundle",
@@ -259,7 +260,7 @@ def swing_cleanup_status_snapshot(
         "next_cleanup_focus": [
             "verify_retired_queue_finalizer_paths_are_legacy_only",
             "delete_selected_entry_intent_queue_code_after_another_clean_live_session",
-            "split_swing_execution_submit_helpers_from_app_py_after_limit_order_path_is_proven",
+            "verify_swing_execution_helper_module_parity_before_submit_split",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
         "recommended_action": (

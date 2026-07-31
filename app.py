@@ -91,6 +91,14 @@ from swing_selection_contract import (
     approved_production_contract_rows as swing_contract_approved_rows,
     finalize_production_contract_selection as swing_contract_finalize,
 )
+from swing_execution import (
+    SWING_EXECUTION_MODULE_VERSION,
+    SwingLimitEntryConfig,
+    format_order_qty as swing_exec_format_order_qty,
+    build_market_order_payload as swing_exec_build_market_order_payload,
+    build_limit_order_payload as swing_exec_build_limit_order_payload,
+    limit_entry_preview as swing_exec_limit_entry_preview,
+)
 
 @dataclass(frozen=True)
 class Bar:
@@ -2356,7 +2364,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-334-retired-queue-finalizer-code-isolation-swing-default-flow-removal"
+PATCH_VERSION = "patch-335-swing-execution-submit-module-split-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -6842,23 +6850,20 @@ def _find_recent_entry_fill_for_symbol(symbol: str, side: str, before_iso: str |
 def _broker_truth_sync_strategy_performance(force: bool = False) -> dict:
     return {"ok": True, "skipped": True, "reason": "patch154_quarantined"}
 
+def _p335_swing_limit_entry_config() -> SwingLimitEntryConfig:
+    return SwingLimitEntryConfig(
+        enabled=bool(SWING_LIMIT_ENTRY_ENABLED),
+        max_spread_pct=float(SWING_LIMIT_ENTRY_MAX_SPREAD_PCT),
+        max_trade_mid_deviation_pct=float(SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT),
+        spread_fraction=float(SWING_LIMIT_ENTRY_SPREAD_FRACTION),
+        fractional_enabled=bool(SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED),
+    )
 
 def _format_order_qty(qty: float) -> str:
-    q = float(qty)
-    if q.is_integer():
-        return str(int(q))
-    return (f"{q:.6f}").rstrip("0").rstrip(".")
-
+    return swing_exec_format_order_qty(qty)
 
 def _alpaca_submit_order_rest(symbol: str, side: str, qty: float, client_order_id: str):
-    body = {
-        "symbol": str(symbol).upper(),
-        "side": str(side).lower(),
-        "type": "market",
-        "time_in_force": "day",
-        "qty": _format_order_qty(qty),
-        "client_order_id": client_order_id,
-    }
+    body = swing_exec_build_market_order_payload(symbol, side, qty, client_order_id)
     req = UrlRequest(
         _alpaca_trading_base_url().rstrip("/") + "/v2/orders",
         data=json.dumps(body).encode("utf-8"),
@@ -6882,15 +6887,7 @@ def _alpaca_submit_order_rest(symbol: str, side: str, qty: float, client_order_i
     return data
 
 def _alpaca_submit_limit_order_rest(symbol: str, side: str, qty: float, limit_price: float, client_order_id: str):
-    body = {
-        "symbol": str(symbol).upper(),
-        "side": str(side).lower(),
-        "type": "limit",
-        "time_in_force": "day",
-        "qty": _format_order_qty(qty),
-        "limit_price": f"{float(limit_price):.2f}",
-        "client_order_id": client_order_id,
-    }
+    body = swing_exec_build_limit_order_payload(symbol, side, qty, limit_price, client_order_id)
     req = UrlRequest(
         _alpaca_trading_base_url().rstrip("/") + "/v2/orders",
         data=json.dumps(body).encode("utf-8"),
@@ -28041,61 +28038,12 @@ def _pending_order_entry_freeze_snapshot() -> dict:
     }
 
 def _p328_limit_entry_preview(symbol: str, side: str, snapshot: dict | None, meta: dict | None = None) -> dict:
-    snap = dict(snapshot or {})
-    if not SWING_LIMIT_ENTRY_ENABLED:
-        return {"allowed": False, "reason": "limit_entry_disabled"}
-
-    if str(side or "").lower() != "buy":
-        return {"allowed": False, "reason": "limit_entry_buy_only"}
-
-    try:
-        bid = float(snap.get("bid") or 0)
-        ask = float(snap.get("ask") or 0)
-        mid = float(snap.get("mid") or snap.get("price") or 0)
-    except Exception:
-        return {"allowed": False, "reason": "quote_parse_failed"}
-
-    if bid <= 0 or ask <= 0 or mid <= 0 or ask <= bid:
-        return {"allowed": False, "reason": "quote_not_limitable", "bid": bid, "ask": ask, "mid": mid}
-
-    spread_pct = float(snap.get("spread_pct") or ((ask - bid) / mid))
-    if spread_pct > float(SWING_LIMIT_ENTRY_MAX_SPREAD_PCT):
-        return {
-            "allowed": False,
-            "reason": "spread_above_limit_entry_max",
-            "spread_pct": spread_pct,
-            "max_spread_pct": float(SWING_LIMIT_ENTRY_MAX_SPREAD_PCT),
-        }
-
-    deviation = snap.get("trade_mid_deviation_pct")
-    if deviation is not None:
-        try:
-            if abs(float(deviation)) > float(SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT):
-                return {
-                    "allowed": False,
-                    "reason": "trade_mid_deviation_above_limit_entry_max",
-                    "trade_mid_deviation_pct": float(deviation),
-                    "max_trade_mid_deviation_pct": float(SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT),
-                }
-        except Exception:
-            pass
-
-    fraction = max(0.0, min(float(SWING_LIMIT_ENTRY_SPREAD_FRACTION), 1.0))
-    limit_price = round(bid + ((ask - bid) * fraction), 2)
-
-    return {
-        "allowed": True,
-        "reason": "limit_entry_allowed",
-        "symbol": str(symbol or "").upper(),
-        "side": "buy",
-        "bid": bid,
-        "ask": ask,
-        "mid": mid,
-        "spread_pct": spread_pct,
-        "spread_fraction": fraction,
-        "limit_price": limit_price,
-        "fractional_enabled": bool(SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED),
-    }
+    return swing_exec_limit_entry_preview(
+        symbol,
+        side,
+        snapshot,
+        config=_p335_swing_limit_entry_config(),
+    )
 
 def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta: dict | None = None, auth_payload: dict | None = None) -> dict:
     """Shared entry execution path for scanner + webhook."""
@@ -41632,6 +41580,7 @@ def diagnostics_swing_core_status():
         "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
         "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
         "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
+        "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
         "cleanup_phase": "swing_production_core_cleanup",
         "next_split_candidate": "swing_execution_submit_helpers_after_limit_path_is_proven",
         "next_cleanup_focus": [
@@ -41703,6 +41652,79 @@ def diagnostics_swing_cleanup_status():
         live_swing_runtime=live_swing_runtime,
         retired_paths=retired_paths,
     )
+
+@app.get("/diagnostics/swing_execution_module_status")
+def diagnostics_swing_execution_module_status():
+    sample_snapshot = {
+        "symbol": "TEST",
+        "price": 100.0,
+        "bid": 99.5,
+        "ask": 100.5,
+        "mid": 100.0,
+        "spread_pct": 0.01,
+        "trade_mid_deviation_pct": 0.0,
+    }
+    config = _p335_swing_limit_entry_config()
+
+    app_qty = _format_order_qty(3.250000)
+    module_qty = swing_exec_format_order_qty(3.250000)
+
+    app_market = swing_exec_build_market_order_payload("TEST", "buy", 3.25, "sample-market")
+    module_market = swing_exec_build_market_order_payload("TEST", "buy", 3.25, "sample-market")
+
+    app_limit = swing_exec_build_limit_order_payload("TEST", "buy", 3.25, 100.12, "sample-limit")
+    module_limit = swing_exec_build_limit_order_payload("TEST", "buy", 3.25, 100.12, "sample-limit")
+
+    app_preview = _p328_limit_entry_preview("TEST", "buy", sample_snapshot)
+    module_preview = swing_exec_limit_entry_preview(
+        "TEST",
+        "buy",
+        sample_snapshot,
+        config=config,
+    )
+
+    checks = {
+        "format_order_qty_match": app_qty == module_qty,
+        "market_payload_match": app_market == module_market,
+        "limit_payload_match": app_limit == module_limit,
+        "limit_preview_match": app_preview == module_preview,
+    }
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_execution_module_status",
+        "module": "swing_execution",
+        "module_version": SWING_EXECUTION_MODULE_VERSION,
+        "broker_free": True,
+        "execution_submit_moved": False,
+        "pure_helpers_moved": [
+            "format_order_qty",
+            "build_market_order_payload",
+            "build_limit_order_payload",
+            "limit_entry_preview",
+        ],
+        "checks": checks,
+        "mismatch_count": len([k for k, v in checks.items() if not v]),
+        "sample": {
+            "format_order_qty": app_qty,
+            "market_payload": app_market,
+            "limit_payload": app_limit,
+            "limit_preview": app_preview,
+        },
+        "config": {
+            "limit_entry_enabled": bool(config.enabled),
+            "max_spread_pct": float(config.max_spread_pct),
+            "max_trade_mid_deviation_pct": float(config.max_trade_mid_deviation_pct),
+            "spread_fraction": float(config.spread_fraction),
+            "fractional_enabled": bool(config.fractional_enabled),
+        },
+        "recommended_action": (
+            "execution_helper_module_parity_ok"
+            if all(checks.values())
+            else "execution_helper_module_mismatch_investigate_before_submit_split"
+        ),
+    }
 
 @app.get("/diagnostics/swing_selection_contract_module_status")
 def diagnostics_swing_selection_contract_module_status(limit: int = 10):
