@@ -1563,6 +1563,9 @@ ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED = env_bool_any("ENTRY_IEX_LIQUIDITY_OVERRID
 ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME = float(getenv_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_MIN_AVG_DOLLAR_VOLUME", default="50000000"))
 ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT = float(getenv_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT", default="0.05"))
 ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT = float(getenv_any("ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT", default="0.005"))
+SPREAD_BLOCKED_RETRY_ENABLED = env_bool_any("SPREAD_BLOCKED_RETRY_ENABLED", default=True)
+SPREAD_BLOCKED_RETRY_WINDOW_SEC = int(getenv_any("SPREAD_BLOCKED_RETRY_WINDOW_SEC", default="900"))
+SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS = int(getenv_any("SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS", default="6"))
 PLAN_STALE_SUBMITTED_SEC = int(getenv_any("PLAN_STALE_SUBMITTED_SEC", default="180"))
 PLAN_STALE_NO_POSITION_SEC = int(getenv_any("PLAN_STALE_NO_POSITION_SEC", default="90"))
 RECONCILE_ORDER_LOOKBACK_LIMIT = int(getenv_any("RECONCILE_ORDER_LOOKBACK_LIMIT", default="100"))
@@ -1754,6 +1757,7 @@ TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_fo
 TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
 LAST_SCAN: dict = {}
 LAST_SUCCESSFUL_PRODUCTION_SCAN: dict = {}
+SPREAD_BLOCKED_SELECTED_RETRY_QUEUE: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
 STRATEGY_PERFORMANCE_STATE: dict = {"closed_trades": [], "by_strategy": {}, "kill_switch": {}}
 LAST_REGIME_SNAPSHOT: dict = {}
@@ -2334,7 +2338,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-326-approved-production-contract-selection-finalizer"
+PATCH_VERSION = "patch-327-spread-blocked-selected-candidate-retry-execution-quality-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2637,6 +2641,7 @@ def persist_scan_runtime_state(reason: str = ""):
         "reason": reason,
         "last_scan": dict(LAST_SCAN or {}),
         "last_successful_production_scan": dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {}),
+        "spread_blocked_selected_retry_queue": dict(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE or {}),
         "scan_history": list(SCAN_HISTORY or []),
         "candidate_history": list(CANDIDATE_HISTORY or []),
         "last_swing_candidates": list(LAST_SWING_CANDIDATES or []),
@@ -2646,12 +2651,13 @@ def persist_scan_runtime_state(reason: str = ""):
 
 def restore_scan_runtime_state() -> dict:
     payload = _safe_json_read(SCAN_STATE_PATH)
-    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
+    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "spread_blocked_retry_queue_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
     if not payload:
         return restored
     try:
         last_scan = payload.get("last_scan") or {}
         last_successful_production_scan = payload.get("last_successful_production_scan") or {}
+        spread_blocked_retry_queue = payload.get("spread_blocked_selected_retry_queue") or {}
         scan_history = payload.get("scan_history") or []
         candidate_history = payload.get("candidate_history") or []
         last_swing_candidates = payload.get("last_swing_candidates") or []
@@ -2663,6 +2669,10 @@ def restore_scan_runtime_state() -> dict:
             LAST_SUCCESSFUL_PRODUCTION_SCAN.clear()
             LAST_SUCCESSFUL_PRODUCTION_SCAN.update(last_successful_production_scan)
             restored["last_successful_production_scan_restored"] = True
+        if isinstance(spread_blocked_retry_queue, dict) and spread_blocked_retry_queue:
+            SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.clear()
+            SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.update(spread_blocked_retry_queue)
+            restored["spread_blocked_retry_queue_restored"] = True
         if isinstance(scan_history, list) and scan_history:
             SCAN_HISTORY.clear()
             SCAN_HISTORY.extend(scan_history[-SCAN_HISTORY_SIZE:])
@@ -20219,6 +20229,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', source_name, meta=meta)
 
         submit_meta = _classify_scan_submit_response(resp)
+        if (
+            str(submit_meta.get("state") or "").strip().lower() == "blocked"
+            and str(submit_meta.get("reason") or "").strip().lower() == "spread_too_wide"
+        ):
+            _p327_queue_spread_blocked_selected_candidate(c, meta=meta, resp=resp)
         side_effect = _p312_scan_submit_side_effect(c.get("symbol"), submit_meta=submit_meta, resp=resp)
         would_submit.append({
             'symbol': c['symbol'],
@@ -20359,6 +20374,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'min_target_path_score': float(SWING_EXECUTABLE_NEAR_MISS_MIN_TARGET_PATH_SCORE),
         },
         'selected_submission_truth': _p297_selected_submission_truth([c.get('symbol') for c in selected]),
+        'spread_blocked_retry_queue_count': len(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE),
+        'spread_blocked_retry_symbols': [
+            str((row or {}).get('symbol') or '').strip().upper()
+            for row in SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.values()
+            if str((row or {}).get('symbol') or '').strip()
+        ],
         'adaptive_capacity': {
             'enabled': bool(SWING_ADAPTIVE_CAPACITY_ENABLED),
             'candidate_count': len(adaptive_capacity_candidates),
@@ -28524,6 +28545,229 @@ def _p312_scan_submit_side_effect(symbol: str, submit_meta: dict | None = None, 
         "submit_order_id": submit_order_id or None,
         "plan_status": plan.get("execution_state") or plan.get("lifecycle_state") or plan.get("status"),
         "plan_source": plan.get("source"),
+    }
+
+def _p327_spread_retry_key(symbol: str, signal: str | None = None) -> str:
+    sym = str(symbol or "").strip().upper()
+    sig = str(signal or "daily_breakout").strip().lower() or "daily_breakout"
+    return f"{sym}|{sig}"
+
+
+def _p327_queue_spread_blocked_selected_candidate(candidate: dict | None, meta: dict | None, resp: dict | None) -> dict:
+    if not bool(SPREAD_BLOCKED_RETRY_ENABLED):
+        return {"queued": False, "reason": "spread_blocked_retry_disabled"}
+
+    c = dict(candidate or {})
+    m = dict(meta or {})
+    r = dict(resp or {})
+    symbol = str(c.get("symbol") or m.get("symbol") or r.get("symbol") or "").strip().upper()
+    signal = str(c.get("signal") or m.get("signal") or r.get("signal") or "daily_breakout").strip() or "daily_breakout"
+    if not symbol:
+        return {"queued": False, "reason": "missing_symbol"}
+
+    if str(r.get("reason") or "").strip().lower() != "spread_too_wide":
+        return {"queued": False, "reason": "not_spread_blocked"}
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    key = _p327_spread_retry_key(symbol, signal)
+    existing = dict(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.get(key) or {})
+    first_seen = existing.get("first_seen_utc") or now_iso
+    attempts = int(existing.get("attempts") or 0)
+
+    row = {
+        "key": key,
+        "symbol": symbol,
+        "signal": signal,
+        "first_seen_utc": first_seen,
+        "last_seen_utc": now_iso,
+        "expires_utc": (datetime.now(timezone.utc) + timedelta(seconds=max(60, int(SPREAD_BLOCKED_RETRY_WINDOW_SEC or 900)))).isoformat(),
+        "attempts": attempts,
+        "last_reason": "spread_too_wide",
+        "candidate": c,
+        "meta": m,
+        "last_response": r,
+        "last_snapshot": dict(r.get("snapshot") or {}),
+        "last_spread_override": dict(r.get("spread_override") or (r.get("snapshot") or {}).get("spread_override") or {}),
+        "source_name": str(m.get("selected_source") or m.get("source_name") or "swing_production_reset"),
+        "entry_type": str(m.get("entry_type") or c.get("entry_type") or "swing_production_contract"),
+    }
+    SPREAD_BLOCKED_SELECTED_RETRY_QUEUE[key] = row
+    persist_scan_runtime_state(reason="spread_blocked_selected_candidate_queued")
+    return {"queued": True, "key": key, "symbol": symbol, "expires_utc": row.get("expires_utc")}
+
+
+def _p327_retry_row_status(row: dict | None) -> dict:
+    r = dict(row or {})
+    symbol = str(r.get("symbol") or "").strip().upper()
+    signal = str(r.get("signal") or "daily_breakout").strip() or "daily_breakout"
+    now_dt = datetime.now(timezone.utc)
+    expires_dt = _safe_parse_iso_utc(r.get("expires_utc")) if r.get("expires_utc") else None
+    expired = bool(expires_dt and now_dt > expires_dt)
+    attempts = int(r.get("attempts") or 0)
+    max_attempts_hit = attempts >= int(SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS or 0)
+
+    candidate = dict(r.get("candidate") or {})
+    contract_row = _p323_apply_swing_production_contract(candidate, global_block_reasons=[])
+    contract = dict(contract_row.get("swing_production_contract") or {})
+    contract_approved = bool(contract.get("approved"))
+
+    snapshot = {}
+    spread_override = {}
+    quote_error = None
+    try:
+        snapshot = get_latest_quote_snapshot(symbol)
+        spread_override = _entry_spread_override_decision(snapshot, meta=dict(r.get("meta") or {}))
+        snapshot["spread_override"] = spread_override
+    except Exception as e:
+        quote_error = str(e)
+
+    spread_pct = snapshot.get("spread_pct") if isinstance(snapshot, dict) else None
+    quote_ok = bool(snapshot.get("quote_ok")) if isinstance(snapshot, dict) else False
+    fresh = bool(snapshot.get("fresh")) if isinstance(snapshot, dict) else False
+    spread_allowed = bool(spread_override.get("allowed"))
+
+    retry_eligible = bool(
+        SPREAD_BLOCKED_RETRY_ENABLED
+        and symbol
+        and not expired
+        and not max_attempts_hit
+        and contract_approved
+        and quote_error is None
+        and quote_ok
+        and ((not ENTRY_REQUIRE_FRESH_QUOTE) or fresh)
+        and (
+            spread_allowed
+            or (spread_pct is not None and float(spread_pct) <= float(ENTRY_MAX_SPREAD_PCT))
+        )
+    )
+
+    blockers = []
+    if not bool(SPREAD_BLOCKED_RETRY_ENABLED):
+        blockers.append("spread_blocked_retry_disabled")
+    if expired:
+        blockers.append("retry_window_expired")
+    if max_attempts_hit:
+        blockers.append("retry_max_attempts_hit")
+    if not contract_approved:
+        blockers.append("production_contract_not_approved_now")
+    if quote_error:
+        blockers.append("quote_error")
+    if not quote_ok:
+        blockers.append("quote_not_ok")
+    if ENTRY_REQUIRE_FRESH_QUOTE and not fresh:
+        blockers.append("quote_not_fresh")
+    if not retry_eligible and quote_error is None and quote_ok and (not ENTRY_REQUIRE_FRESH_QUOTE or fresh):
+        if not (spread_allowed or (spread_pct is not None and float(spread_pct) <= float(ENTRY_MAX_SPREAD_PCT))):
+            blockers.append("spread_still_too_wide")
+
+    return {
+        "key": r.get("key") or _p327_spread_retry_key(symbol, signal),
+        "symbol": symbol,
+        "signal": signal,
+        "retry_eligible": bool(retry_eligible),
+        "blockers": _dedupe_candidate_reasons(blockers),
+        "expired": bool(expired),
+        "attempts": attempts,
+        "max_attempts": int(SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS or 0),
+        "first_seen_utc": r.get("first_seen_utc"),
+        "last_seen_utc": r.get("last_seen_utc"),
+        "expires_utc": r.get("expires_utc"),
+        "contract_approved_now": bool(contract_approved),
+        "contract_blockers": list(contract.get("blockers") or []),
+        "quote_error": quote_error,
+        "execution_quality": {
+            "quote_ok": quote_ok,
+            "fresh": fresh,
+            "spread_pct": spread_pct,
+            "entry_max_spread_pct": float(ENTRY_MAX_SPREAD_PCT),
+            "spread_override_allowed": bool(spread_allowed),
+            "spread_override": spread_override,
+            "feed": ((snapshot.get("quote_debug") or {}).get("feed") if isinstance(snapshot, dict) else None),
+            "quote_ts_utc": snapshot.get("quote_ts_utc") if isinstance(snapshot, dict) else None,
+            "trade_ts_utc": snapshot.get("trade_ts_utc") if isinstance(snapshot, dict) else None,
+            "price_age_sec": snapshot.get("price_age_sec") if isinstance(snapshot, dict) else None,
+        },
+        "candidate": candidate,
+        "meta": dict(r.get("meta") or {}),
+    }
+
+
+def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: int = 10) -> dict:
+    lim = max(1, min(int(limit or 10), 25))
+    rows = []
+    submitted = []
+    removed = []
+
+    for key, row in list(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.items()):
+        status = _p327_retry_row_status(row)
+        rows.append(status)
+
+        if status.get("expired") or "retry_max_attempts_hit" in list(status.get("blockers") or []):
+            removed.append({"key": key, "symbol": status.get("symbol"), "reason": "expired_or_max_attempts"})
+            SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.pop(key, None)
+            continue
+
+        if apply and status.get("retry_eligible"):
+            queued = dict(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.get(key) or {})
+            queued["attempts"] = int(queued.get("attempts") or 0) + 1
+            queued["last_retry_utc"] = datetime.now(timezone.utc).isoformat()
+            SPREAD_BLOCKED_SELECTED_RETRY_QUEUE[key] = queued
+
+            resp = submit_scan_trade(
+                status.get("symbol"),
+                "buy",
+                status.get("signal") or "daily_breakout",
+                meta=dict(status.get("meta") or {}),
+                source=str((status.get("meta") or {}).get("selected_source") or "swing_production_reset"),
+            )
+            submit_meta = _classify_scan_submit_response(resp)
+            side_effect = _p312_scan_submit_side_effect(status.get("symbol"), submit_meta=submit_meta, resp=resp)
+            submitted_row = {
+                "key": key,
+                "symbol": status.get("symbol"),
+                "response": resp,
+                "submit_state": submit_meta.get("state"),
+                "submit_reason": submit_meta.get("reason"),
+                "submit_order_id": submit_meta.get("order_id"),
+                "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
+                "side_effect_reasons": list(side_effect.get("side_effect_reasons") or []),
+            }
+            submitted.append(submitted_row)
+            if bool(side_effect.get("actual_submit_side_effect")):
+                SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.pop(key, None)
+
+    rows.sort(key=lambda r: (1 if r.get("retry_eligible") else 0, str(r.get("first_seen_utc") or "")), reverse=True)
+    persist_scan_runtime_state(reason="spread_blocked_submission_retry_apply" if apply else "spread_blocked_submission_retry_snapshot")
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "spread_blocked_submission_retry",
+        "apply": bool(apply),
+        "enabled": bool(SPREAD_BLOCKED_RETRY_ENABLED),
+        "queue_count": len(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE),
+        "eligible_count": len([r for r in rows if r.get("retry_eligible")]),
+        "submitted_count": len(submitted),
+        "removed_count": len(removed),
+        "config": {
+            "window_sec": int(SPREAD_BLOCKED_RETRY_WINDOW_SEC or 0),
+            "max_attempts": int(SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS or 0),
+            "entry_max_spread_pct": float(ENTRY_MAX_SPREAD_PCT),
+            "iex_override_enabled": bool(ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED),
+            "iex_override_max_spread_pct": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT),
+        },
+        "rows": rows[:lim],
+        "submitted": submitted,
+        "removed": removed,
+        "recommended_action": (
+            "retry_submitted"
+            if submitted
+            else "run_apply_true_when_retry_eligible"
+            if any(r.get("retry_eligible") for r in rows)
+            else "wait_for_spread_to_normalize"
+            if rows
+            else "no_spread_blocked_candidates"
+        ),
     }
 
 def _p297_symbol_entry_side_effect(symbol: str) -> dict:
@@ -39395,6 +39639,11 @@ def diagnostics_last_successful_production_scan(request: Request):
 def diagnostics_selected_submission_truth_light(request: Request):
     require_admin_if_configured(request)
     return _p298_selected_submission_truth_light()
+
+@app.get("/diagnostics/spread_blocked_submission_retry")
+def diagnostics_spread_blocked_submission_retry(request: Request, apply: bool = False, limit: int = 10):
+    require_admin_if_configured(request)
+    return _p327_spread_blocked_submission_retry_snapshot(apply=apply, limit=limit)
 
 @app.get("/diagnostics/executable_near_miss_entry_sleeve")
 def diagnostics_executable_near_miss_entry_sleeve(request: Request, limit: int = 25):
