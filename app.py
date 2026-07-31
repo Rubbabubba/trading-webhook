@@ -1568,6 +1568,7 @@ SPREAD_BLOCKED_RETRY_WINDOW_SEC = int(getenv_any("SPREAD_BLOCKED_RETRY_WINDOW_SE
 SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS = int(getenv_any("SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS", default="6"))
 
 SWING_LIMIT_ENTRY_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_ENABLED", default=True)
+SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED", default=True)
 SWING_LIMIT_ENTRY_MAX_SPREAD_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MAX_SPREAD_PCT", default="0.06"))
 SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT", default="0.03"))
 SWING_LIMIT_ENTRY_SPREAD_FRACTION = float(getenv_any("SWING_LIMIT_ENTRY_SPREAD_FRACTION", default="0.50"))
@@ -2345,7 +2346,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-330-filled-plan-execution-evidence-backfill-after-hours-light-truth-stability"
+PATCH_VERSION = "patch-331-protective-limit-entry-for-wide-spread-override-trades"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -28451,19 +28452,78 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         spread_pct = snapshot.get("spread_pct")
         if spread_pct is not None and float(spread_pct) > float(ENTRY_MAX_SPREAD_PCT):
             spread_override = _entry_spread_override_decision(snapshot, meta=meta)
+            limit_preview = _p328_limit_entry_preview(symbol, side, snapshot, meta=meta)
             snapshot["spread_override"] = spread_override
-            if not spread_override.get("allowed"):
-                limit_preview = _p328_limit_entry_preview(symbol, side, snapshot, meta=meta)
-                snapshot["limit_entry_preview"] = limit_preview
-                if limit_preview.get("allowed"):
-                    p328_limit_entry = limit_preview
-                    record_decision("ENTRY", source, symbol, side=side, signal=signal, action="allowed", reason="limit_entry_for_spread_block", meta={"snapshot": snapshot, "spread_override": spread_override, "limit_entry": limit_preview, **(meta or {})})
-                else:
-                    record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="spread_too_wide", meta={"snapshot": snapshot, "spread_override": spread_override, "limit_entry": limit_preview, **(meta or {})})
-                    soften_symbol_lock(symbol, 5)
-                    return {"ok": False, "rejected": True, "reason": "spread_too_wide", "symbol": symbol, "signal": signal, "snapshot": snapshot, "spread_override": spread_override, "limit_entry": limit_preview}
+            snapshot["limit_entry_preview"] = limit_preview
+
+            if limit_preview.get("allowed") and (
+                not spread_override.get("allowed")
+                or bool(SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED)
+            ):
+                p328_limit_entry = limit_preview
+                limit_reason = (
+                    "protective_limit_entry_for_spread_override"
+                    if spread_override.get("allowed")
+                    else "limit_entry_for_spread_block"
+                )
+                record_decision(
+                    "ENTRY",
+                    source,
+                    symbol,
+                    side=side,
+                    signal=signal,
+                    action="allowed",
+                    reason=limit_reason,
+                    meta={
+                        "snapshot": snapshot,
+                        "spread_override": spread_override,
+                        "limit_entry": limit_preview,
+                        **(meta or {}),
+                    },
+                )
+            elif not spread_override.get("allowed"):
+                record_decision(
+                    "ENTRY",
+                    source,
+                    symbol,
+                    side=side,
+                    signal=signal,
+                    action="rejected",
+                    reason="spread_too_wide",
+                    meta={
+                        "snapshot": snapshot,
+                        "spread_override": spread_override,
+                        "limit_entry": limit_preview,
+                        **(meta or {}),
+                    },
+                )
+                soften_symbol_lock(symbol, 5)
+                return {
+                    "ok": False,
+                    "rejected": True,
+                    "reason": "spread_too_wide",
+                    "symbol": symbol,
+                    "signal": signal,
+                    "snapshot": snapshot,
+                    "spread_override": spread_override,
+                    "limit_entry": limit_preview,
+                }
             else:
-                record_decision("ENTRY", source, symbol, side=side, signal=signal, action="allowed", reason="spread_override_allowed", meta={"snapshot": snapshot, "spread_override": spread_override, **(meta or {})})
+                record_decision(
+                    "ENTRY",
+                    source,
+                    symbol,
+                    side=side,
+                    signal=signal,
+                    action="allowed",
+                    reason="spread_override_allowed_without_limit_entry",
+                    meta={
+                        "snapshot": snapshot,
+                        "spread_override": spread_override,
+                        "limit_entry": limit_preview,
+                        **(meta or {}),
+                    },
+                )
 
         qty_signed_post_lock, pos_side_post_lock = get_position(symbol)
         if qty_signed_post_lock != 0:
@@ -28503,6 +28563,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             "effective_submit_source": source,
             "selected_source": (meta or {}).get("selected_source") or source,
             "snapshot": snapshot,
+            "limit_entry_preview": p328_limit_entry or {},
         }
 
         if effective_dry_run:
@@ -28565,12 +28626,39 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan["affordability"] = affordability or {}
         TRADE_PLAN[symbol] = plan
         _ensure_execution_lifecycle_plan(symbol, plan)
-        _transition_execution_lifecycle(plan, symbol, "submitted", reason="entry_submitted", details={"source": source, "signal": signal, "qty": qty, "order_id": str(_order_attr(order, "id", ""))}, allow_illegal=True)
+        _transition_execution_lifecycle(
+            plan,
+            symbol,
+            "submitted",
+            reason="entry_submitted",
+            details={
+                "source": source,
+                "signal": signal,
+                "qty": qty,
+                "order_id": str(_order_attr(order, "id", "")),
+                "order_type": submit_order_type,
+                "limit_price": submit_price if submit_order_type == "limit" else None,
+            },
+            allow_illegal=True,
+        )
         persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(_order_attr(order, "id", "")), "source": source, "signal": signal})
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(_order_attr(order, "id", "")), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(_order_attr(order, "id", "")), qty=qty, meta={"snapshot": snapshot, **(meta or {})})
         try:
-            _record_paper_lifecycle("entry", "submitted", symbol=symbol, details={"source": source, "signal": signal, "qty": qty, "order_id": str(_order_attr(order, "id", "")), "dry_run": False})
+            _record_paper_lifecycle(
+                "entry",
+                "submitted",
+                symbol=symbol,
+                details={
+                    "source": source,
+                    "signal": signal,
+                    "qty": qty,
+                    "order_id": str(_order_attr(order, "id", "")),
+                    "order_type": submit_order_type,
+                    "limit_price": submit_price if submit_order_type == "limit" else None,
+                    "dry_run": False,
+                },
+            )
         except Exception:
             pass
         return {"ok": True, "submitted": True, "order_id": str(_order_attr(order, "id", "")), "order_type": submit_order_type, "limit_price": submit_price if submit_order_type == "limit" else None, "order": payload, "plan": plan}
