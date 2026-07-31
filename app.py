@@ -1633,6 +1633,46 @@ SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED = env_bool_any(
     "SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED",
     default=True,
 )
+SWING_PRODUCTION_RESET_ENABLED = env_bool_any(
+    "SWING_PRODUCTION_RESET_ENABLED",
+    default=True,
+)
+SWING_PRODUCTION_RESET_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_PRODUCTION_RESET_MIN_RANK_SCORE",
+    default=103.0,
+)
+SWING_PRODUCTION_RESET_MIN_AVG_DOLLAR_VOLUME = getenv_float_any(
+    "SWING_PRODUCTION_RESET_MIN_AVG_DOLLAR_VOLUME",
+    default=30000000.0,
+)
+SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT",
+    default=0.12,
+)
+SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
+    "SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT",
+    default=0.055,
+)
+SWING_PRODUCTION_RESET_MAX_ABOVE_BREAKOUT_PCT = getenv_float_any(
+    "SWING_PRODUCTION_RESET_MAX_ABOVE_BREAKOUT_PCT",
+    default=0.025,
+)
+SWING_PRODUCTION_RESET_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
+    "SWING_PRODUCTION_RESET_MIN_CLOSE_TO_HIGH_PCT",
+    default=0.985,
+)
+SWING_PRODUCTION_RESET_MIN_RETURN_20D_PCT = getenv_float_any(
+    "SWING_PRODUCTION_RESET_MIN_RETURN_20D_PCT",
+    default=0.0,
+)
+SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN",
+    default=2,
+)
+SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION = env_bool_any(
+    "SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION",
+    default=True,
+)
 SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
     "SWING_EXECUTABLE_SELECTION_MIN_QTY",
     default=1.0,
@@ -2293,7 +2333,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-322-swing-gate-crossing-persistence-near-miss-drift-tracker"
+PATCH_VERSION = "patch-323-swing-production-reset-single-entry-contract-legacy-gate-bypass"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -16883,6 +16923,180 @@ def _p300_selection_contract_cleanup(rows: list | None) -> list[dict]:
         cleaned.append(c)
     return cleaned
 
+def _p323_value(candidate: dict | None, *keys):
+    c = dict(candidate or {})
+    for key in keys:
+        val = c.get(key)
+        if val is not None and str(val).strip() != "":
+            return val
+    return None
+
+
+def _p323_pct_decimal(value):
+    if value is None or str(value).strip() == "":
+        return None
+    val = float(_safe_float(value))
+    if abs(val) > 1.0:
+        return val / 100.0
+    return val
+
+
+def _p323_swing_production_contract(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    symbol = str(c.get("symbol") or "").strip().upper()
+    strategy = str(c.get("strategy") or c.get("signal") or "").strip().lower()
+    original_eligible = bool(c.get("eligible"))
+    original_reasons = _dedupe_candidate_reasons(c.get("rejection_reasons") or [])
+    global_reasons = _dedupe_candidate_reasons(global_block_reasons or [])
+
+    hard_reasons = {
+        "insufficient_daily_bars",
+        "price_below_min",
+        "avg_dollar_volume_below_min",
+        "low_volume",
+        "internal_sizing_qty_zero",
+        "broker_insufficient_buying_power",
+        "insufficient_buying_power",
+        "daily_halt_active",
+        "daily_stop_hit",
+        "kill_switch_enabled",
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "pending_order_entry_freeze",
+        "same_day_symbol_loss_cooldown",
+        "strategy_kill_switch_active",
+        "correlation_group_limit",
+        "symbol_exposure_limit",
+        "portfolio_exposure_limit",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+        "swing_loss_day_entry_throttle",
+    }
+
+    legacy_advisory_reasons = {
+        "weak_tape",
+        "rank_score_below_min",
+        "close_not_near_high",
+        "too_far_below_breakout",
+        "target_profile_breakout_gate",
+        "defensive_daily_breakout_rollback",
+        "defensive_risk_per_share_too_wide",
+        "defensive_breakout_extension_too_high",
+        "defensive_20d_return_too_extended",
+        "stall_loss_entry_feedback",
+        "swing_post_change_drawdown_circuit",
+    }
+
+    blockers = []
+    advisory = []
+
+    for reason in original_reasons + global_reasons:
+        reason = str(reason or "").strip()
+        if not reason:
+            continue
+        if reason in hard_reasons:
+            blockers.append(reason)
+        elif reason in legacy_advisory_reasons:
+            advisory.append(reason)
+        else:
+            advisory.append(reason)
+
+    sizing_truth = dict(c.get("executable_sizing_truth") or _p300_executable_sizing_truth(c))
+    executable = bool(sizing_truth.get("executable"))
+
+    rank_score = float(_safe_float(c.get("rank_score")))
+    avg_dollar_volume = float(_safe_float(
+        _p323_value(c, "avg_dollar_volume", "avg_dollar_volume_20d")
+    ))
+    risk_pct = _p323_pct_decimal(c.get("risk_per_share_pct"))
+    breakout_distance_pct = _p323_pct_decimal(c.get("breakout_distance_pct"))
+    close_to_high_pct = _p323_pct_decimal(c.get("close_to_high_pct"))
+    return_20d_pct = _p323_pct_decimal(c.get("return_20d_pct"))
+
+    checks = {
+        "executable": executable,
+        "rank_score_ok": rank_score >= float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
+        "liquidity_ok": avg_dollar_volume >= float(SWING_PRODUCTION_RESET_MIN_AVG_DOLLAR_VOLUME),
+        "risk_ok": risk_pct is not None and risk_pct <= float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
+        "not_too_far_below_breakout": breakout_distance_pct is not None and breakout_distance_pct >= -abs(float(SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT)),
+        "not_too_extended_above_breakout": breakout_distance_pct is not None and breakout_distance_pct <= abs(float(SWING_PRODUCTION_RESET_MAX_ABOVE_BREAKOUT_PCT)),
+        "close_to_high_ok": close_to_high_pct is not None and close_to_high_pct >= float(SWING_PRODUCTION_RESET_MIN_CLOSE_TO_HIGH_PCT),
+        "return_20d_ok": return_20d_pct is None or return_20d_pct >= float(SWING_PRODUCTION_RESET_MIN_RETURN_20D_PCT),
+    }
+
+    if not executable:
+        blockers.append(str(sizing_truth.get("sizing_block_reason") or "internal_sizing_qty_zero"))
+    if not checks["rank_score_ok"]:
+        blockers.append("production_contract_rank_below_min")
+    if not checks["liquidity_ok"]:
+        blockers.append("production_contract_liquidity_below_min")
+
+    if strategy == MEAN_REVERSION_STRATEGY_NAME:
+        if not bool(SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION):
+            blockers.append("production_contract_mean_reversion_disabled")
+        if not original_eligible and not blockers:
+            blockers.append("production_contract_mean_reversion_original_rules_not_met")
+    else:
+        if not checks["risk_ok"]:
+            blockers.append("production_contract_risk_too_wide")
+        if not checks["not_too_far_below_breakout"]:
+            blockers.append("production_contract_too_far_below_breakout")
+        if not checks["not_too_extended_above_breakout"]:
+            blockers.append("production_contract_too_extended_above_breakout")
+        if not checks["close_to_high_ok"]:
+            blockers.append("production_contract_not_close_to_high")
+        if not checks["return_20d_ok"]:
+            blockers.append("production_contract_20d_return_below_floor")
+
+    blockers = _dedupe_candidate_reasons(blockers)
+    advisory = _dedupe_candidate_reasons(advisory)
+
+    return {
+        "enabled": bool(SWING_PRODUCTION_RESET_ENABLED),
+        "symbol": symbol,
+        "strategy": strategy,
+        "approved": bool(SWING_PRODUCTION_RESET_ENABLED) and not blockers,
+        "blockers": blockers,
+        "advisory_legacy_reasons": advisory,
+        "checks": checks,
+        "original_eligible": original_eligible,
+        "original_rejection_reasons": original_reasons,
+        "executable_sizing_truth": sizing_truth,
+        "rank_score": rank_score,
+        "avg_dollar_volume": avg_dollar_volume,
+        "risk_per_share_pct": risk_pct,
+        "breakout_distance_pct": breakout_distance_pct,
+        "close_to_high_pct": close_to_high_pct,
+        "return_20d_pct": return_20d_pct,
+    }
+
+
+def _p323_apply_swing_production_contract(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    c = dict(candidate or {})
+    contract = _p323_swing_production_contract(c, global_block_reasons=global_block_reasons)
+    c["swing_production_contract"] = contract
+    c["legacy_gate_mode"] = "diagnostic_only" if bool(SWING_PRODUCTION_RESET_ENABLED) else "legacy_live"
+    if bool(SWING_PRODUCTION_RESET_ENABLED):
+        c["pre_p323_eligible"] = bool(c.get("eligible"))
+        c["pre_p323_rejection_reasons"] = list(c.get("rejection_reasons") or [])
+        c["eligible"] = bool(contract.get("approved"))
+        c["rejection_reasons"] = list(contract.get("blockers") or [])
+        c["advisory_legacy_rejection_reasons"] = list(contract.get("advisory_legacy_reasons") or [])
+        if c["eligible"]:
+            c["entry_type"] = "swing_production_contract"
+            c["selected_source"] = "swing_production_reset"
+    return c
+
+
+def _p323_swing_production_sort_key(candidate: dict | None) -> tuple:
+    c = dict(candidate or {})
+    contract = dict(c.get("swing_production_contract") or {})
+    return (
+        1 if str(c.get("strategy") or "").strip().lower() == BREAKOUT_STRATEGY_NAME else 0,
+        float(_safe_float(contract.get("rank_score") or c.get("rank_score"))),
+        float(_safe_float((c.get("target_path_profit") or {}).get("score") or c.get("target_path_score"))),
+        float(_safe_float(c.get("selection_quality_score"))),
+    )
 
 def _p300_executable_sizing_audit(limit: int = 25) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
@@ -19419,6 +19633,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         effective_est_qty = float(cap_truth.get('effective_estimated_qty') or 0.0)
         c['estimated_qty'] = round(effective_est_qty, 2)
         c = _p300_apply_executable_selection_contract(c, cap_truth=cap_truth)
+        c = _p323_apply_swing_production_contract(c, global_block_reasons=global_block_reasons)
         projected_notional = float(cap_truth.get('effective_projected_notional') or 0.0)
         if c.get('eligible') and local_symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > local_symbol_cap:
             c['eligible'] = False
@@ -19453,117 +19668,30 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     mean_reversion_candidates = _p300_selection_contract_cleanup(mean_reversion_candidates)
     candidates = _p300_selection_contract_cleanup(candidates)
 
+    production_approved = [
+        c for c in candidates
+        if bool((c.get("swing_production_contract") or {}).get("approved"))
+        and bool((c.get("executable_sizing_truth") or _p300_executable_sizing_truth(c)).get("executable"))
+    ]
+    production_approved.sort(key=_p323_swing_production_sort_key, reverse=True)
+
     breakout_approved = [
-        c for c in breakout_candidates
-        if c.get('eligible') and bool((c.get("executable_sizing_truth") or {}).get("executable"))
+        c for c in production_approved
+        if str(c.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
     ]
     mean_reversion_approved = [
-        c for c in mean_reversion_candidates
-        if c.get('eligible') and bool((c.get("executable_sizing_truth") or {}).get("executable"))
+        c for c in production_approved
+        if str(c.get("strategy") or "").strip().lower() == MEAN_REVERSION_STRATEGY_NAME
     ]
-    if (
-        post_change_drawdown.get("block_new_entries")
-        and BREAKOUT_STRATEGY_NAME
-        in set(post_change_drawdown.get("guarded_strategies") or [])
-    ):
-        for candidate in breakout_approved:
-            candidate["eligible"] = False
-            candidate.setdefault("rejection_reasons", []).append(
-                "swing_post_change_drawdown_circuit"
-            )
-            candidate["post_change_drawdown_circuit"] = post_change_drawdown
-        breakout_approved = []
-    breakout_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-    mean_reversion_approved.sort(key=_p283_candidate_sort_key, reverse=True)
 
     target_path_approved = [
-        r for r in breakout_approved
-        if bool((r.get("target_path_profit") or {}).get("passed"))
-        and (
-            float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
-            or bool(r.get("risk_adjusted_near_miss_entry"))
-            or bool(r.get("first_2k_revival_entry"))
-            or bool(r.get("first_2k_similarity_revival_entry"))
-            or bool(r.get("defensive_near_miss_relaxation_entry"))
-        )
+        c for c in breakout_approved
+        if bool((c.get("target_path_profit") or {}).get("passed"))
     ]
-
-    risk_adjusted_near_miss_approved = [
-        r for r in target_path_approved
-        if bool(r.get("risk_adjusted_near_miss_entry"))
-    ]
-    first_2k_revival_approved = [
-        r for r in target_path_approved
-        if bool(r.get("first_2k_revival_entry"))
-    ]
-    first_2k_similarity_revival_approved = [
-        r for r in target_path_approved
-        if bool(r.get("first_2k_similarity_revival_entry"))
-    ]
-    defensive_near_miss_relaxation_approved = [
-        r for r in target_path_approved
-        if bool(r.get("defensive_near_miss_relaxation_entry"))
-    ]
-    if (
-        risk_adjusted_near_miss_approved
-        or first_2k_revival_approved
-        or first_2k_similarity_revival_approved
-        or defensive_near_miss_relaxation_approved
-    ):
-        regular_target_path_approved = [
-            r for r in target_path_approved
-            if not bool(r.get("risk_adjusted_near_miss_entry"))
-            and not bool(r.get("first_2k_revival_entry"))
-            and not bool(r.get("first_2k_similarity_revival_entry"))
-            and not bool(r.get("defensive_near_miss_relaxation_entry"))
-        ]
-        risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        first_2k_similarity_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        defensive_near_miss_relaxation_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        target_path_approved = (
-            regular_target_path_approved
-            + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
-            + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
-            + first_2k_similarity_revival_approved[:max(0, int(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
-            + defensive_near_miss_relaxation_approved[:max(0, int(SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY or 1))]
-        )
     target_path_strong = [
         c for c in target_path_approved
         if float(_safe_float((c.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
     ]
-
-    if bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED):
-        if target_path_approved:
-            approved = target_path_approved
-        elif bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED) and mean_reversion_approved:
-            approved = mean_reversion_approved
-        else:
-            approved = []
-    else:
-        approved = breakout_approved if breakout_approved else mean_reversion_approved
-
-    executable_near_miss_candidates = []
-    if bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED) and not approved:
-        for row in list(candidates or []):
-            candidate = _p301_apply_executable_near_miss_entry(
-                row,
-                daily_goal_progress=daily_goal_progress,
-            )
-            if bool((candidate.get("executable_near_miss_entry") or {}).get("applies")):
-                executable_near_miss_candidates.append(candidate)
-
-        executable_near_miss_candidates.sort(
-            key=lambda x: (
-                float(_safe_float((x.get("target_path_profit") or {}).get("score") or x.get("target_path_score") or 0.0)),
-                float(_safe_float(x.get("selection_quality_score") or 0.0)),
-                float(_safe_float(x.get("rank_score") or 0.0)),
-            ),
-            reverse=True,
-        )
-        approved = executable_near_miss_candidates[
-            : max(0, int(SWING_EXECUTABLE_NEAR_MISS_MAX_PER_SCAN or 1))
-        ]
 
     adaptive_capacity_candidates = []
     adaptive_capacity_selected = []
@@ -19572,21 +19700,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     base_daily_entry_cap = int(SWING_MAX_NEW_ENTRIES_PER_DAY)
     effective_daily_entry_cap = base_daily_entry_cap
     dynamic_entry_cap_applied = False
-    dynamic_entry_cap_reasons = []
-
-    if (
-        bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED)
-        and target_path_approved
-        and len(target_path_strong) >= max(1, int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES))
-        and not bool(loss_day_throttle.get("active"))
-        and not bool(post_change_drawdown.get("block_new_entries"))
-    ):
-        effective_daily_entry_cap = max(
-            effective_daily_entry_cap,
-            int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP or base_daily_entry_cap),
-        )
-        dynamic_entry_cap_applied = effective_daily_entry_cap > base_daily_entry_cap
-        dynamic_entry_cap_reasons.append("strong_target_path_candidates_available")
+    dynamic_entry_cap_reasons = ["legacy_dynamic_entry_cap_bypassed_by_p323"]
 
     remaining_today = max(0, effective_daily_entry_cap - int(same_day_stats.get('counted') or 0))
     max_new_entries = max(
@@ -19595,71 +19709,31 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             int(effective_daily_entry_cap),
             int(candidate_slots_available()),
             int(SCANNER_MAX_ENTRIES_PER_SCAN),
+            int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
         ),
     )
+
     if (
         loss_day_throttle.get("active")
         and not loss_day_throttle.get("advisory_only")
         and int(loss_day_throttle.get("max_new_entries_after_trigger") or 0) >= 0
     ):
         max_new_entries = min(max_new_entries, int(loss_day_throttle.get("max_new_entries_after_trigger") or 0))
+
+    max_new_entries = min(max_new_entries, remaining_today)
+
     weak_tape_capacity_override = {
-        "enabled": bool(SWING_STRONG_TARGET_PATH_WEAK_TAPE_OVERRIDE_ENABLED),
+        "enabled": False,
         "weak_tape": bool(regime_mode == "defensive" or regime.get("favorable") is False),
         "applies": False,
         "base_cap_before_override": int(max_new_entries),
         "effective_cap_after_override": int(max_new_entries),
-        "reason": "not_evaluated",
+        "reason": "legacy_weak_tape_capacity_override_bypassed_by_p323",
     }
 
-    if breakout_approved:
-        if regime_mode == 'defensive':
-            defensive_tier_cap = max(0, int(SWING_DEFENSIVE_BREAKOUT_TIER_MAX_NEW_ENTRIES_PER_SCAN or 1))
-            weak_tape_cap = max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1))
-            max_new_entries = min(max_new_entries, defensive_tier_cap, weak_tape_cap)
-        elif regime.get('favorable') is False:
-            max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
-
-        weak_tape_capacity_override = _p284_strong_target_path_weak_tape_capacity(
-            regime=regime,
-            regime_mode=regime_mode,
-            target_path_strong=target_path_strong,
-            current_cap=max_new_entries,
-        )
-        max_new_entries = int(weak_tape_capacity_override.get("effective_cap_after_override") or max_new_entries)
-
-    elif mean_reversion_approved:
-        max_new_entries = min(max_new_entries, max(0, int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
-    max_new_entries = min(max_new_entries, remaining_today)
-    if (
-        not approved
-        and max_new_entries > 0
-        and bool(SWING_ADAPTIVE_CAPACITY_ENABLED)
-        and not bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED)
-        and not post_change_drawdown.get("block_new_entries")
-    ):
-        for c in breakout_candidates:
-            qualifies, adapt_reasons = _candidate_qualifies_adaptive_capacity(c)
-            if not qualifies:
-                continue
-            row = dict(c)
-            row['adaptive_capacity_candidate'] = True
-            row['adaptive_capacity_reasons'] = list(adapt_reasons)
-            adaptive_capacity_candidates.append(row)
-        adaptive_capacity_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
-        adaptive_capacity_selected = adaptive_capacity_candidates[: max(0, min(int(SWING_ADAPTIVE_CAPACITY_MAX_ENTRIES_PER_SCAN), int(max_new_entries)))]
-        if adaptive_capacity_selected:
-            approved = adaptive_capacity_candidates
-    approved = [
-        c for c in list(approved or [])
-        if bool(c.get("eligible"))
-        and bool((c.get("executable_sizing_truth") or _p300_executable_sizing_truth(c)).get("executable"))
-    ]
-    selected = approved[:max_new_entries] if approved is not adaptive_capacity_candidates else [
-        c for c in adaptive_capacity_selected
-        if bool((c.get("executable_sizing_truth") or _p300_executable_sizing_truth(c)).get("executable"))
-    ]
-    if bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED) and selected:
+    approved = production_approved
+    selected = approved[:max_new_entries]
+    if (not bool(SWING_PRODUCTION_RESET_ENABLED)) and bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED) and selected:
         recovery_rows = [c for c in selected if bool(c.get("target_path_recovery_mode"))]
         if len(recovery_rows) > int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN or 0):
             allowed_recovery_symbols = {
@@ -19705,7 +19779,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if c.get('adaptive_capacity_candidate'):
             entry_type = 'adaptive_capacity'
             source_name = ADAPTIVE_CAPACITY_SOURCE
-        if bool(c.get("executable_near_miss_entry", {}).get("applies")):
+        if bool(SWING_PRODUCTION_RESET_ENABLED):
+            entry_type = str(c.get("entry_type") or "swing_production_contract")
+            source_name = "swing_production_reset"
+        elif bool(c.get("executable_near_miss_entry", {}).get("applies")):
             entry_type = "executable_near_miss"
             source_name = "executable_near_miss_sleeve"
         if override_live_permitted and override_symbol and str(c.get('symbol') or '').upper() == override_symbol:
@@ -19753,6 +19830,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'same_day_symbol_loss_cooldown': c.get('same_day_symbol_loss_cooldown'),
             'executable_near_miss_entry': c.get('executable_near_miss_entry'),
             'near_miss_original_rejection_reasons': list(c.get('near_miss_original_rejection_reasons') or []),
+            'swing_production_contract': c.get('swing_production_contract'),
+            'legacy_gate_mode': c.get('legacy_gate_mode'),
+            'advisory_legacy_rejection_reasons': list(c.get('advisory_legacy_rejection_reasons') or []),
         }
         selected_submission_payloads.append({
             "symbol": c.get("symbol"),
@@ -26303,125 +26383,61 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
             global_block_reasons,
             daily_goal_progress=daily_goal_progress,
         )
+        c = _p300_apply_executable_selection_contract(c, cap_truth=cap_truth)
+        c = _p323_apply_swing_production_contract(c, global_block_reasons=global_block_reasons)
         rows.append(c)
 
-    rows.sort(key=_p283_candidate_sort_key, reverse=True)
-    breakout_approved = [
+    rows.sort(key=_p323_swing_production_sort_key, reverse=True)
+
+    production_approved = [
         r for r in rows
-        if r.get('eligible')
-        and str(r.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
+        if bool((r.get("swing_production_contract") or {}).get("approved"))
+        and bool((r.get("executable_sizing_truth") or _p300_executable_sizing_truth(r)).get("executable"))
+    ]
+    production_approved.sort(key=_p323_swing_production_sort_key, reverse=True)
+
+    breakout_approved = [
+        r for r in production_approved
+        if str(r.get("strategy") or "").strip().lower() in {BREAKOUT_STRATEGY_NAME, "daily_breakout"}
     ]
     mean_reversion_approved = [
-        r for r in rows
-        if r.get('eligible')
-        and str(r.get("strategy") or "").strip().lower() == MEAN_REVERSION_STRATEGY_NAME
+        r for r in production_approved
+        if str(r.get("strategy") or "").strip().lower() == MEAN_REVERSION_STRATEGY_NAME
     ]
     target_path_approved = [
         r for r in breakout_approved
         if bool((r.get("target_path_profit") or {}).get("passed"))
-        and (
-            float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_MIN_SCORE)
-            or bool(r.get("risk_adjusted_near_miss_entry"))
-            or bool(r.get("first_2k_revival_entry"))
-            or bool(r.get("first_2k_similarity_revival_entry"))
-            or bool(r.get("defensive_near_miss_relaxation_entry"))
-        )
     ]
-
-    risk_adjusted_near_miss_approved = [
-        r for r in target_path_approved
-        if bool(r.get("risk_adjusted_near_miss_entry"))
-    ]
-    first_2k_revival_approved = [
-        r for r in target_path_approved
-        if bool(r.get("first_2k_revival_entry"))
-    ]
-    first_2k_similarity_revival_approved = [
-        r for r in target_path_approved
-        if bool(r.get("first_2k_similarity_revival_entry"))
-    ]
-    defensive_near_miss_relaxation_approved = [
-        r for r in target_path_approved
-        if bool(r.get("defensive_near_miss_relaxation_entry"))
-    ]
-    if (
-        risk_adjusted_near_miss_approved
-        or first_2k_revival_approved
-        or first_2k_similarity_revival_approved
-        or defensive_near_miss_relaxation_approved
-    ):
-        regular_target_path_approved = [
-            r for r in target_path_approved
-            if not bool(r.get("risk_adjusted_near_miss_entry"))
-            and not bool(r.get("first_2k_revival_entry"))
-            and not bool(r.get("first_2k_similarity_revival_entry"))
-            and not bool(r.get("defensive_near_miss_relaxation_entry"))
-        ]
-        risk_adjusted_near_miss_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        first_2k_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        first_2k_similarity_revival_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        defensive_near_miss_relaxation_approved.sort(key=_p283_candidate_sort_key, reverse=True)
-        target_path_approved = (
-            regular_target_path_approved
-            + risk_adjusted_near_miss_approved[:max(0, int(SWING_TARGET_PATH_RISK_ADJUSTED_NEAR_MISS_MAX_ENTRIES_PER_SCAN or 1))]
-            + first_2k_revival_approved[:max(0, int(SWING_FIRST_2K_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
-            + first_2k_similarity_revival_approved[:max(0, int(SWING_FIRST_2K_SIMILARITY_REVIVAL_MAX_ENTRIES_PER_SCAN or 1))]
-            + defensive_near_miss_relaxation_approved[:max(0, int(SWING_DEFENSIVE_RELAXATION_MAX_ENTRIES_PER_DAY or 1))]
-        )
     target_path_strong = [
         r for r in target_path_approved
         if float(_safe_float((r.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
     ]
 
-    if (
-        bool(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_ENABLED)
-        and target_path_approved
-        and len(target_path_strong) >= max(1, int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP_MIN_STRONG_CANDIDATES))
-        and not bool(post_change_drawdown.get("block_new_entries"))
-    ):
-        effective_daily_entry_cap = max(effective_daily_entry_cap, int(SWING_TARGET_PATH_DYNAMIC_ENTRY_CAP or base_daily_entry_cap))
-        dynamic_entry_cap_applied = effective_daily_entry_cap > base_daily_entry_cap
-        dynamic_entry_cap_reasons.append("strong_target_path_candidates_available")
-    weak_tape_capacity_override = {
-        "enabled": bool(SWING_STRONG_TARGET_PATH_WEAK_TAPE_OVERRIDE_ENABLED),
-        "weak_tape": bool(regime_mode == "defensive" or regime.get("favorable") is False),
-        "applies": False,
-        "base_cap_before_override": 0,
-        "effective_cap_after_override": 0,
-        "reason": "not_evaluated",
-    }
-    
+    dynamic_entry_cap_applied = False
+    dynamic_entry_cap_reasons = ["legacy_dynamic_entry_cap_bypassed_by_p323"]
+
     remaining_today = max(0, effective_daily_entry_cap - int(same_day_stats.get('counted') or 0))
-    max_new_entries = max(0, min(int(effective_daily_entry_cap), int(candidate_slots_available()), int(SCANNER_MAX_ENTRIES_PER_SCAN)))
-    if breakout_approved:
-        if regime_mode == 'defensive':
-            max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
-        elif regime.get('favorable') is False:
-            max_new_entries = min(max_new_entries, max(0, int(SWING_WEAK_TAPE_MAX_NEW_ENTRIES)))
-
-        weak_tape_capacity_override = _p284_strong_target_path_weak_tape_capacity(
-            regime=regime,
-            regime_mode=regime_mode,
-            target_path_strong=target_path_strong,
-            current_cap=max_new_entries,
-        )
-        max_new_entries = int(weak_tape_capacity_override.get("effective_cap_after_override") or max_new_entries)
-
-    elif mean_reversion_approved:
-        max_new_entries = min(max_new_entries, max(0, int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES or 1)))
-
+    max_new_entries = max(
+        0,
+        min(
+            int(effective_daily_entry_cap),
+            int(candidate_slots_available()),
+            int(SCANNER_MAX_ENTRIES_PER_SCAN),
+            int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
+        ),
+    )
     max_new_entries = min(max_new_entries, remaining_today)
 
-    if bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED):
-        if target_path_approved:
-            approved = target_path_approved
-        elif bool(SWING_TARGET_PATH_MEAN_REVERSION_FALLBACK_ENABLED) and mean_reversion_approved:
-            approved = mean_reversion_approved
-        else:
-            approved = []
-    else:
-        approved = breakout_approved if breakout_approved else mean_reversion_approved
+    weak_tape_capacity_override = {
+        "enabled": False,
+        "weak_tape": bool(regime_mode == "defensive" or regime.get("favorable") is False),
+        "applies": False,
+        "base_cap_before_override": int(max_new_entries),
+        "effective_cap_after_override": int(max_new_entries),
+        "reason": "legacy_weak_tape_capacity_override_bypassed_by_p323",
+    }
 
+    approved = production_approved
     selected = approved[:max_new_entries]
     selected_symbols = [str((r or {}).get('symbol') or '').upper() for r in selected if str((r or {}).get('symbol') or '').strip()]
     eligible_but_not_selected = []
@@ -26449,6 +26465,17 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
         "eligible_total": len(approved),
         "selected_total": len(selected_symbols),
         "selected_symbols": selected_symbols,
+        'swing_production_reset': {
+            'enabled': bool(SWING_PRODUCTION_RESET_ENABLED),
+            'contract': 'single_entry_contract',
+            'legacy_gate_mode': 'diagnostic_only' if bool(SWING_PRODUCTION_RESET_ENABLED) else 'legacy_live',
+            'approved_count': len(production_approved),
+            'approved_symbols': [c.get('symbol') for c in production_approved],
+            'selected_symbols': [c.get('symbol') for c in selected],
+            'max_entries_per_scan': int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
+            'min_rank_score': float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
+            'max_risk_per_share_pct': float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
+        },
         "remaining_new_entries_today": int(remaining_today),
         "max_new_entries_effective": int(max_new_entries),
         "target_path_recovery_mode": {
@@ -26851,6 +26878,56 @@ def diagnostics_swing_profit_regression_forensics(request: Request):
     require_admin_if_configured(request)
     return _p280_swing_profit_regression_forensics()
 
+@app.get("/diagnostics/swing_production_contract")
+def diagnostics_swing_production_contract(limit: int = 25):
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    rows = list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
+    out = []
+
+    for row in rows[: max(1, min(int(limit or 25), 50))]:
+        if not isinstance(row, dict):
+            continue
+        c = dict(row)
+        if "executable_sizing_truth" not in c:
+            c = _p300_apply_executable_selection_contract(c)
+        if "swing_production_contract" not in c:
+            c = _p323_apply_swing_production_contract(c, global_block_reasons=[])
+        contract = dict(c.get("swing_production_contract") or {})
+        out.append({
+            "symbol": c.get("symbol"),
+            "strategy": c.get("strategy") or c.get("signal"),
+            "approved": bool(contract.get("approved")),
+            "blockers": list(contract.get("blockers") or []),
+            "advisory_legacy_reasons": list(contract.get("advisory_legacy_reasons") or []),
+            "rank_score": contract.get("rank_score"),
+            "risk_per_share_pct": contract.get("risk_per_share_pct"),
+            "breakout_distance_pct": contract.get("breakout_distance_pct"),
+            "close_to_high_pct": contract.get("close_to_high_pct"),
+            "estimated_qty": c.get("estimated_qty"),
+            "executable": bool((contract.get("executable_sizing_truth") or {}).get("executable")),
+            "legacy_gate_mode": c.get("legacy_gate_mode"),
+        })
+
+    approved = [r for r in out if r.get("approved")]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_production_contract",
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+            "selected_symbols": summary.get("selected_symbols"),
+        },
+        "enabled": bool(SWING_PRODUCTION_RESET_ENABLED),
+        "legacy_gate_mode": "diagnostic_only" if bool(SWING_PRODUCTION_RESET_ENABLED) else "legacy_live",
+        "approved_count": len(approved),
+        "approved_symbols": [r.get("symbol") for r in approved],
+        "rows": out,
+        "recommended_action": "submit_path_ready_when_approved_symbols_exist" if approved else "review_contract_blockers",
+    }
 
 @app.get("/diagnostics/swing_pre_post_change_performance")
 def diagnostics_swing_pre_post_change_performance(request: Request):
