@@ -1,0 +1,375 @@
+"""Pure swing selection contract helpers.
+
+This module must stay broker-free and FastAPI-free. It shapes candidate rows
+using explicit config passed in by app.py.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, Any
+
+
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-333-swing-selection-contract-module-split-prep"
+
+
+@dataclass(frozen=True)
+class SwingProductionContractConfig:
+    production_reset_enabled: bool
+    min_rank_score: float
+    min_avg_dollar_volume: float
+    max_risk_per_share_pct: float
+    max_below_breakout_pct: float
+    max_above_breakout_pct: float
+    min_close_to_high_pct: float
+    min_return_20d_pct: float
+    allow_mean_reversion: bool
+    mean_reversion_strategy_name: str
+    breakout_strategy_name: str
+    max_entries_per_scan: int
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or str(value).strip() == "":
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _dedupe_reasons(values: list | tuple | None) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in list(values or []):
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _value(candidate: dict | None, *keys):
+    c = dict(candidate or {})
+    for key in keys:
+        val = c.get(key)
+        if val is not None and str(val).strip() != "":
+            return val
+    return None
+
+
+def _pct_decimal(value):
+    if value is None or str(value).strip() == "":
+        return None
+    val = float(_safe_float(value))
+    if abs(val) > 1.0:
+        return val / 100.0
+    return val
+
+
+def swing_production_contract(
+    candidate: dict | None,
+    *,
+    config: SwingProductionContractConfig,
+    global_block_reasons: list | None = None,
+    sizing_truth_fn: Callable[[dict], dict] | None = None,
+) -> dict:
+    c = dict(candidate or {})
+    symbol = str(c.get("symbol") or "").strip().upper()
+    strategy = str(c.get("strategy") or c.get("signal") or "").strip().lower()
+    original_eligible = bool(c.get("eligible"))
+    original_reasons = _dedupe_reasons(c.get("rejection_reasons") or [])
+    global_reasons = _dedupe_reasons(global_block_reasons or [])
+
+    hard_reasons = {
+        "insufficient_daily_bars",
+        "price_below_min",
+        "avg_dollar_volume_below_min",
+        "low_volume",
+        "internal_sizing_qty_zero",
+        "broker_insufficient_buying_power",
+        "insufficient_buying_power",
+        "daily_halt_active",
+        "daily_stop_hit",
+        "kill_switch_enabled",
+        "plan_or_pending_entry_exists",
+        "position_already_open",
+        "pending_order_entry_freeze",
+        "same_day_symbol_loss_cooldown",
+        "strategy_kill_switch_active",
+        "correlation_group_limit",
+        "symbol_exposure_limit",
+        "portfolio_exposure_limit",
+        "portfolio_already_over_cap_total",
+        "portfolio_already_over_cap_strategy",
+        "swing_loss_day_entry_throttle",
+    }
+
+    legacy_advisory_reasons = {
+        "weak_tape",
+        "rank_score_below_min",
+        "close_not_near_high",
+        "too_far_below_breakout",
+        "target_profile_breakout_gate",
+        "defensive_daily_breakout_rollback",
+        "defensive_risk_per_share_too_wide",
+        "defensive_breakout_extension_too_high",
+        "defensive_20d_return_too_extended",
+        "stall_loss_entry_feedback",
+        "swing_post_change_drawdown_circuit",
+    }
+
+    blockers: list[str] = []
+    advisory: list[str] = []
+
+    for reason in original_reasons + global_reasons:
+        reason = str(reason or "").strip()
+        if not reason:
+            continue
+        if reason in hard_reasons:
+            blockers.append(reason)
+        elif reason in legacy_advisory_reasons:
+            advisory.append(reason)
+        else:
+            advisory.append(reason)
+
+    if sizing_truth_fn is not None:
+        sizing_truth = dict(c.get("executable_sizing_truth") or sizing_truth_fn(c) or {})
+    else:
+        sizing_truth = dict(c.get("executable_sizing_truth") or {})
+    executable = bool(sizing_truth.get("executable"))
+
+    rank_score = float(_safe_float(c.get("rank_score")))
+    avg_dollar_volume = float(_safe_float(_value(c, "avg_dollar_volume", "avg_dollar_volume_20d")))
+    risk_pct = _pct_decimal(c.get("risk_per_share_pct"))
+    breakout_distance_pct = _pct_decimal(c.get("breakout_distance_pct"))
+    close_to_high_pct = _pct_decimal(c.get("close_to_high_pct"))
+    return_20d_pct = _pct_decimal(c.get("return_20d_pct"))
+
+    checks = {
+        "executable": executable,
+        "rank_score_ok": rank_score >= float(config.min_rank_score),
+        "liquidity_ok": avg_dollar_volume >= float(config.min_avg_dollar_volume),
+        "risk_ok": risk_pct is not None and risk_pct <= float(config.max_risk_per_share_pct),
+        "not_too_far_below_breakout": breakout_distance_pct is not None and breakout_distance_pct >= -abs(float(config.max_below_breakout_pct)),
+        "not_too_extended_above_breakout": breakout_distance_pct is not None and breakout_distance_pct <= abs(float(config.max_above_breakout_pct)),
+        "close_to_high_ok": close_to_high_pct is not None and close_to_high_pct >= float(config.min_close_to_high_pct),
+        "return_20d_ok": return_20d_pct is None or return_20d_pct >= float(config.min_return_20d_pct),
+    }
+
+    if not executable:
+        blockers.append(str(sizing_truth.get("sizing_block_reason") or "internal_sizing_qty_zero"))
+    if not checks["rank_score_ok"]:
+        blockers.append("production_contract_rank_below_min")
+    if not checks["liquidity_ok"]:
+        blockers.append("production_contract_liquidity_below_min")
+
+    if strategy == str(config.mean_reversion_strategy_name or "").strip().lower():
+        if not bool(config.allow_mean_reversion):
+            blockers.append("production_contract_mean_reversion_disabled")
+        if not original_eligible and not blockers:
+            blockers.append("production_contract_mean_reversion_original_rules_not_met")
+    else:
+        if not checks["risk_ok"]:
+            blockers.append("production_contract_risk_too_wide")
+        if not checks["not_too_far_below_breakout"]:
+            blockers.append("production_contract_too_far_below_breakout")
+        if not checks["not_too_extended_above_breakout"]:
+            blockers.append("production_contract_too_extended_above_breakout")
+        if not checks["close_to_high_ok"]:
+            blockers.append("production_contract_not_close_to_high")
+        if not checks["return_20d_ok"]:
+            blockers.append("production_contract_20d_return_below_floor")
+
+    blockers = _dedupe_reasons(blockers)
+    advisory = _dedupe_reasons(advisory)
+
+    return {
+        "enabled": bool(config.production_reset_enabled),
+        "symbol": symbol,
+        "strategy": strategy,
+        "approved": bool(config.production_reset_enabled) and not blockers,
+        "blockers": blockers,
+        "advisory_legacy_reasons": advisory,
+        "checks": checks,
+        "original_eligible": original_eligible,
+        "original_rejection_reasons": original_reasons,
+        "executable_sizing_truth": sizing_truth,
+        "rank_score": rank_score,
+        "avg_dollar_volume": avg_dollar_volume,
+        "risk_per_share_pct": risk_pct,
+        "breakout_distance_pct": breakout_distance_pct,
+        "close_to_high_pct": close_to_high_pct,
+        "return_20d_pct": return_20d_pct,
+    }
+
+
+def apply_swing_production_contract(
+    candidate: dict | None,
+    *,
+    config: SwingProductionContractConfig,
+    global_block_reasons: list | None = None,
+    sizing_truth_fn: Callable[[dict], dict] | None = None,
+) -> dict:
+    c = dict(candidate or {})
+    prior_contract = dict(c.get("swing_production_contract") or {})
+
+    if "pre_p323_eligible" not in c:
+        c["pre_p323_eligible"] = bool(c.get("eligible"))
+    if "pre_p323_rejection_reasons" not in c:
+        c["pre_p323_rejection_reasons"] = list(c.get("rejection_reasons") or [])
+
+    contract = swing_production_contract(
+        c,
+        config=config,
+        global_block_reasons=global_block_reasons,
+        sizing_truth_fn=sizing_truth_fn,
+    )
+    c["swing_production_contract"] = contract
+    c["legacy_gate_mode"] = "diagnostic_only" if bool(config.production_reset_enabled) else "legacy_live"
+
+    if bool(config.production_reset_enabled):
+        approved = bool(contract.get("approved"))
+        c["production_contract_approved"] = approved
+        c["eligible"] = approved
+        c["selected"] = False
+        c["rejection_reasons"] = list(contract.get("blockers") or [])
+        c["advisory_legacy_rejection_reasons"] = list(contract.get("advisory_legacy_reasons") or [])
+
+        if approved:
+            c["entry_type"] = "swing_production_contract"
+            c["selected_source"] = "swing_production_reset"
+        elif prior_contract:
+            c["selected_source"] = c.get("selected_source") or "swing_production_reset_blocked"
+
+    return c
+
+
+def swing_production_sort_key(candidate: dict | None, *, config: SwingProductionContractConfig) -> tuple:
+    c = dict(candidate or {})
+    contract = dict(c.get("swing_production_contract") or {})
+    return (
+        1 if str(c.get("strategy") or "").strip().lower() == str(config.breakout_strategy_name or "").strip().lower() else 0,
+        float(_safe_float(contract.get("rank_score") or c.get("rank_score"))),
+        float(_safe_float((c.get("target_path_profit") or {}).get("score") or c.get("target_path_score"))),
+        float(_safe_float(c.get("selection_quality_score"))),
+    )
+
+
+def enforce_production_contract_selection(
+    rows: list | None,
+    *,
+    config: SwingProductionContractConfig,
+    global_block_reasons: list | None = None,
+    sizing_truth_fn: Callable[[dict], dict] | None = None,
+) -> list[dict]:
+    enforced: list[dict] = []
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        c = apply_swing_production_contract(
+            row,
+            config=config,
+            global_block_reasons=global_block_reasons,
+            sizing_truth_fn=sizing_truth_fn,
+        )
+        if bool(config.production_reset_enabled):
+            c["eligible"] = bool((c.get("swing_production_contract") or {}).get("approved"))
+            c["rejection_reasons"] = list((c.get("swing_production_contract") or {}).get("blockers") or [])
+        enforced.append(c)
+    return enforced
+
+
+def approved_production_contract_rows(
+    rows: list | None,
+    *,
+    config: SwingProductionContractConfig,
+    sizing_truth_fn: Callable[[dict], dict] | None = None,
+) -> list[dict]:
+    approved = [
+        r for r in list(rows or [])
+        if isinstance(r, dict)
+        and bool((r.get("swing_production_contract") or {}).get("approved"))
+        and bool(
+            (
+                r.get("executable_sizing_truth")
+                or (sizing_truth_fn(r) if sizing_truth_fn is not None else {})
+            ).get("executable")
+        )
+    ]
+    approved.sort(key=lambda row: swing_production_sort_key(row, config=config), reverse=True)
+    return approved
+
+
+def finalize_production_contract_selection(
+    rows: list | None,
+    *,
+    config: SwingProductionContractConfig,
+    max_new_entries: int,
+    global_block_reasons: list | None = None,
+    sizing_truth_fn: Callable[[dict], dict] | None = None,
+) -> dict:
+    enforced = enforce_production_contract_selection(
+        list(rows or []),
+        config=config,
+        global_block_reasons=global_block_reasons,
+        sizing_truth_fn=sizing_truth_fn,
+    )
+    approved = approved_production_contract_rows(
+        enforced,
+        config=config,
+        sizing_truth_fn=sizing_truth_fn,
+    )
+    selected = [dict(r or {}) for r in approved[:max(0, int(max_new_entries or 0))]]
+
+    selected_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in selected
+        if str((row or {}).get("symbol") or "").strip()
+    }
+
+    finalized_rows: list[dict] = []
+    for row in enforced:
+        c = dict(row or {})
+        sym = str(c.get("symbol") or "").strip().upper()
+        is_selected = bool(sym and sym in selected_symbols)
+        c["selected"] = is_selected
+        if bool(config.production_reset_enabled):
+            c["eligible"] = bool((c.get("swing_production_contract") or {}).get("approved"))
+            c["production_contract_approved"] = bool((c.get("swing_production_contract") or {}).get("approved"))
+            c["rejection_reasons"] = list((c.get("swing_production_contract") or {}).get("blockers") or [])
+            c["legacy_gate_mode"] = "diagnostic_only"
+        if is_selected:
+            c["entry_type"] = "swing_production_contract"
+            c["selected_source"] = "swing_production_reset"
+            c["selection_finalizer"] = "p326_approved_production_contract_selection_finalizer"
+        finalized_rows.append(c)
+
+    selected_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in finalized_rows
+        if str((row or {}).get("symbol") or "").strip().upper() in selected_symbols
+    }
+    selected_final = [
+        selected_by_symbol.get(str((row or {}).get("symbol") or "").strip().upper(), dict(row or {}))
+        for row in selected
+        if str((row or {}).get("symbol") or "").strip().upper()
+    ]
+
+    return {
+        "rows": finalized_rows,
+        "approved": approved,
+        "selected": selected_final,
+        "selected_symbols": [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in selected_final
+            if str((row or {}).get("symbol") or "").strip()
+        ],
+        "approved_symbols": [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in approved
+            if str((row or {}).get("symbol") or "").strip()
+        ],
+        "max_new_entries": max(0, int(max_new_entries or 0)),
+    }

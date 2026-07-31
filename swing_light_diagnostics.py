@@ -245,6 +245,7 @@ def swing_cleanup_status_snapshot(
             "/diagnostics/swing_cleanup_status",
             "/diagnostics/swing_core_status",
             "/diagnostics/swing_runtime_config",
+            "/diagnostics/swing_selection_contract_module_status",
         ],
         "removed_from_operator_default_flow": [
             "heavy_operator_bundle",
