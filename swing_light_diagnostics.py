@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-330-filled-plan-execution-evidence-backfill-after-hours-light-truth-stability"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-332-swing-cleanup-status-current-truth-module-version-alignment"
 
 
 def selected_submission_truth_light_snapshot(
@@ -185,6 +185,14 @@ def swing_cleanup_status_snapshot(
     live_swing_runtime: bool,
     retired_paths: dict[str, dict[str, Any]],
 ) -> dict:
+    retired = dict(retired_paths or {})
+    active_retired_paths = [
+        name
+        for name, row in retired.items()
+        if isinstance(row, dict) and not bool(row.get("disabled"))
+    ]
+    fully_disabled = not bool(active_retired_paths)
+
     return {
         "ok": True,
         "patch_version": patch_version,
@@ -193,7 +201,38 @@ def swing_cleanup_status_snapshot(
         "module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
         "strategy_mode": strategy_mode,
         "live_swing_runtime": bool(live_swing_runtime),
-        "retired_paths": dict(retired_paths),
+        "cleanup_phase": "swing_production_core_cleanup",
+        "cleanup_principle": "protect_working_swing_lane_remove_or_disable_retired_side_paths",
+        "retired_paths": retired,
+        "active_retired_path_count": len(active_retired_paths),
+        "active_retired_paths": active_retired_paths,
+        "retired_paths_fully_disabled": fully_disabled,
+        "retained_runtime_paths": {
+            "swing_scanner": {
+                "status": "active",
+                "reason": "primary_candidate_source",
+            },
+            "swing_production_contract": {
+                "status": "active",
+                "reason": "single_entry_contract",
+            },
+            "direct_submit_path": {
+                "status": "active",
+                "reason": "selected_candidate_to_broker_order",
+            },
+            "broker_reconcile": {
+                "status": "active",
+                "reason": "position_truth_and_fill_recovery",
+            },
+            "worker_exit": {
+                "status": "active",
+                "reason": "normal_exit_management",
+            },
+            "light_diagnostics": {
+                "status": "active",
+                "reason": "operator_truth_without_heavy_bundles",
+            },
+        },
         "active_light_endpoints": [
             "/diagnostics/live_positions",
             "/diagnostics/reconcile",
@@ -203,6 +242,28 @@ def swing_cleanup_status_snapshot(
             "/diagnostics/live_positions_light",
             "/diagnostics/reconcile_light",
             "/diagnostics/no_trade_brief?refresh_live=false&limit=10",
+            "/diagnostics/swing_cleanup_status",
+            "/diagnostics/swing_core_status",
+            "/diagnostics/swing_runtime_config",
         ],
-        "next_cleanup_patch": "patch-310-swing-strategy-selection-module-prep",
+        "removed_from_operator_default_flow": [
+            "heavy_operator_bundle",
+            "selected_entry_intent_queue",
+            "selected_entry_finalizer",
+            "selected_submission_finalizer",
+            "fast_swing_scan_trigger",
+            "intraday_shadow_inside_swing_scan",
+            "intraday_live",
+        ],
+        "next_cleanup_focus": [
+            "remove_retired_queue_finalizer_sections_from_swing_default_diagnostics",
+            "split_swing_selection_contract_helpers_from_app_py",
+            "split_swing_execution_submit_helpers_from_app_py_after_limit_order_path_is_proven",
+            "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
+        ],
+        "recommended_action": (
+            "cleanup_state_ready_for_next_code_split"
+            if fully_disabled
+            else "disable_active_retired_paths_before_deeper_removal"
+        ),
     }

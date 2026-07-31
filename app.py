@@ -2346,7 +2346,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-331-protective-limit-entry-for-wide-spread-override-trades"
+PATCH_VERSION = "patch-332-swing-cleanup-status-current-truth-module-version-alignment"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -41765,40 +41765,63 @@ def diagnostics_swing_core_status():
         ],
         "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
         "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
-        "next_split_candidate": "swing_strategy_selection",
+        "cleanup_phase": "swing_production_core_cleanup",
+        "next_split_candidate": "swing_selection_contract_helpers",
+        "next_cleanup_focus": [
+            "selection_contract_module_split",
+            "execution_submit_module_split_after_limit_path_is_proven",
+            "retired_queue_finalizer_code_removal",
+        ],
     }
 
 @app.get("/diagnostics/swing_cleanup_status")
 def diagnostics_swing_cleanup_status():
+    def _retired_path_row(enabled: bool, env: str, reason: str) -> dict:
+        disabled = not bool(enabled)
+        return {
+            "disabled": disabled,
+            "enabled": bool(enabled),
+            "env": env,
+            "status": "retired_disabled" if disabled else "retired_but_still_enabled",
+            "reason": reason,
+        }
+
     retired_paths = {
-        "heavy_operator_bundle": {
-            "disabled": not bool(HEAVY_DIAGNOSTICS_ENABLED),
-            "env": "HEAVY_DIAGNOSTICS_ENABLED",
-        },
-        "selected_entry_intent_queue": {
-            "disabled": not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED),
-            "env": "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
-        },
-        "selected_entry_finalizer": {
-            "disabled": not bool(SELECTED_ENTRY_FINALIZER_ENABLED),
-            "env": "SELECTED_ENTRY_FINALIZER_ENABLED",
-        },
-        "selected_submission_finalizer": {
-            "disabled": not bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED),
-            "env": "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
-        },
-        "fast_swing_scan_trigger": {
-            "disabled": not bool(SWING_FAST_SCAN_TRIGGER_ENABLED),
-            "env": "SWING_FAST_SCAN_TRIGGER_ENABLED",
-        },
-        "intraday_shadow_inside_swing_scan": {
-            "disabled": not bool(SWING_SCAN_RUN_INTRADAY_SHADOW),
-            "env": "SWING_SCAN_RUN_INTRADAY_SHADOW",
-        },
-        "intraday_live": {
-            "disabled": not bool(INTRADAY_LIVE_ENABLED),
-            "env": "INTRADAY_LIVE_ENABLED",
-        },
+        "heavy_operator_bundle": _retired_path_row(
+            HEAVY_DIAGNOSTICS_ENABLED,
+            "HEAVY_DIAGNOSTICS_ENABLED",
+            "heavy bundles caused latency and memory pressure; light diagnostics replaced operator flow",
+        ),
+        "selected_entry_intent_queue": _retired_path_row(
+            SELECTED_ENTRY_INTENT_QUEUE_ENABLED,
+            "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
+            "swing production reset uses direct selected-candidate submit path",
+        ),
+        "selected_entry_finalizer": _retired_path_row(
+            SELECTED_ENTRY_FINALIZER_ENABLED,
+            "SELECTED_ENTRY_FINALIZER_ENABLED",
+            "finalizer queue was replaced by direct submit truth and reconcile",
+        ),
+        "selected_submission_finalizer": _retired_path_row(
+            SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED,
+            "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
+            "legacy selected-submission repair path is disabled for swing core cleanup",
+        ),
+        "fast_swing_scan_trigger": _retired_path_row(
+            SWING_FAST_SCAN_TRIGGER_ENABLED,
+            "SWING_FAST_SCAN_TRIGGER_ENABLED",
+            "main-web fast trigger is retired; scanner service owns scan cadence",
+        ),
+        "intraday_shadow_inside_swing_scan": _retired_path_row(
+            SWING_SCAN_RUN_INTRADAY_SHADOW,
+            "SWING_SCAN_RUN_INTRADAY_SHADOW",
+            "intraday is paused and should not run inside swing scanner runtime",
+        ),
+        "intraday_live": _retired_path_row(
+            INTRADAY_LIVE_ENABLED,
+            "INTRADAY_LIVE_ENABLED",
+            "intraday live trading remains paused until separated from swing runtime",
+        ),
     }
     live_swing_runtime = bool(
         str(STRATEGY_MODE or "").strip().lower() == "swing"
