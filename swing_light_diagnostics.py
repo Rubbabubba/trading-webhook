@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-325-scanner-success-recovery-cleanup-production-contract-miss-reasons"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-325-hotfix-warning-code-normalization-full-candidate-miss-coverage"
 
 
 def selected_submission_truth_light_snapshot(

@@ -2334,7 +2334,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-325-scanner-success-recovery-cleanup-production-contract-miss-reasons"
+PATCH_VERSION = "patch-325-hotfix-warning-code-normalization-full-candidate-miss-coverage"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -20259,6 +20259,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'max_risk_per_share_pct': float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
             'selection_source_enforced': True,
         },
+        'production_contract_miss_reasons': _p325_build_production_contract_miss_snapshot(
+            candidates,
+            selected=selected,
+            limit=50,
+        ),
         'breakout_candidates_total': len(breakout_candidates),
         'mean_reversion_candidates_total': len(mean_reversion_candidates),
         'breakout_eligible_total': len(breakout_approved),
@@ -28621,6 +28626,10 @@ def _p325_latest_scan_successfully_closed(latest_scan: dict | None, telemetry: d
     )
 
 
+def _p325_normalize_warning_code(code) -> str:
+    return str(code or "").strip().lower()
+
+
 def _p325_recover_scanner_warning_summary(
     telemetry_summary: dict | None,
     latest_scan: dict | None,
@@ -28628,19 +28637,19 @@ def _p325_recover_scanner_warning_summary(
 ) -> dict:
     summary = dict(telemetry_summary or {})
     active = [
-        str(code or "").strip()
+        _p325_normalize_warning_code(code)
         for code in list(summary.get("active_warning_codes") or [])
-        if str(code or "").strip()
+        if _p325_normalize_warning_code(code)
     ]
     recovered = [
-        str(code or "").strip()
+        _p325_normalize_warning_code(code)
         for code in list(summary.get("recovered_warning_codes") or [])
-        if str(code or "").strip()
+        if _p325_normalize_warning_code(code)
     ]
     historical = [
-        str(code or "").strip()
+        _p325_normalize_warning_code(code)
         for code in list(summary.get("historical_warning_codes") or [])
-        if str(code or "").strip()
+        if _p325_normalize_warning_code(code)
     ]
 
     recovered_by_success = _p325_latest_scan_successfully_closed(latest_scan, telemetry, summary)
@@ -28658,54 +28667,51 @@ def _p325_recover_scanner_warning_summary(
     summary["has_warnings"] = bool(summary["active_warning_codes"])
     summary["has_active_warnings"] = bool(summary["active_warning_codes"])
     summary["has_recovered_warnings"] = bool(summary["recovered_warning_codes"])
-    summary["dispatch_failure_recovered_by_scan_success"] = bool(recovered_by_success and "dispatch_failure" in historical)
+    summary["dispatch_failure_recovered_by_scan_success"] = bool(
+        recovered_by_success and "dispatch_failure" in historical
+    )
     return summary
 
+def _p325_contract_miss_row(candidate: dict | None) -> dict:
+    c = _p323_apply_swing_production_contract(dict(candidate or {}), global_block_reasons=[])
+    contract = dict(c.get("swing_production_contract") or {})
+    blockers = _dedupe_candidate_reasons(contract.get("blockers") or c.get("rejection_reasons") or [])
+    return {
+        "symbol": str(c.get("symbol") or "").strip().upper(),
+        "strategy": c.get("strategy") or c.get("signal"),
+        "approved": bool(contract.get("approved")),
+        "selected": bool(c.get("selected")),
+        "rank_score": contract.get("rank_score"),
+        "risk_per_share_pct": contract.get("risk_per_share_pct"),
+        "breakout_distance_pct": contract.get("breakout_distance_pct"),
+        "close_to_high_pct": contract.get("close_to_high_pct"),
+        "return_20d_pct": contract.get("return_20d_pct"),
+        "blockers": blockers,
+        "blocker_count": len(blockers),
+        "advisory_legacy_reasons": list(contract.get("advisory_legacy_reasons") or []),
+        "checks": dict(contract.get("checks") or {}),
+        "executable": bool((contract.get("executable_sizing_truth") or {}).get("executable")),
+        "sizing_block_reason": (contract.get("executable_sizing_truth") or {}).get("sizing_block_reason"),
+    }
 
-def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
-    lim = max(1, min(int(limit or 25), 100))
-    latest_scan, summary = _p298_latest_scan_summary_light()
 
-    rows = []
-    source = "last_swing_candidates"
-    if LAST_SWING_CANDIDATES:
-        rows = [dict(r or {}) for r in LAST_SWING_CANDIDATES if isinstance(r, dict)]
-    elif CANDIDATE_HISTORY:
-        hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
-        source = "candidate_history"
-        rows = [
-            dict(r or {})
-            for r in list(hist.get("candidates") or [])
-            if isinstance(r, dict)
-        ]
-
+def _p325_build_production_contract_miss_snapshot(
+    rows: list | None,
+    selected: list | None = None,
+    limit: int = 50,
+) -> dict:
+    lim = max(1, min(int(limit or 50), 200))
     checked = []
-    for row in rows:
-        c = _p323_apply_swing_production_contract(row, global_block_reasons=[])
-        contract = dict(c.get("swing_production_contract") or {})
-        symbol = str(c.get("symbol") or "").strip().upper()
-        if not symbol:
+    for row in list(rows or []):
+        if not isinstance(row, dict):
             continue
-        blockers = _dedupe_candidate_reasons(contract.get("blockers") or c.get("rejection_reasons") or [])
-        checked.append({
-            "symbol": symbol,
-            "strategy": c.get("strategy") or c.get("signal"),
-            "approved": bool(contract.get("approved")),
-            "selected": bool(c.get("selected")),
-            "rank_score": contract.get("rank_score"),
-            "risk_per_share_pct": contract.get("risk_per_share_pct"),
-            "breakout_distance_pct": contract.get("breakout_distance_pct"),
-            "close_to_high_pct": contract.get("close_to_high_pct"),
-            "return_20d_pct": contract.get("return_20d_pct"),
-            "blockers": blockers,
-            "advisory_legacy_reasons": list(contract.get("advisory_legacy_reasons") or []),
-            "checks": dict(contract.get("checks") or {}),
-            "executable": bool((contract.get("executable_sizing_truth") or {}).get("executable")),
-            "sizing_block_reason": (contract.get("executable_sizing_truth") or {}).get("sizing_block_reason"),
-        })
+        miss_row = _p325_contract_miss_row(row)
+        if miss_row.get("symbol"):
+            checked.append(miss_row)
 
     approved = [r for r in checked if bool(r.get("approved"))]
     missed = [r for r in checked if not bool(r.get("approved"))]
+
     reason_counts = Counter()
     for row in missed:
         blockers = list(row.get("blockers") or [])
@@ -28714,13 +28720,73 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
         for reason in blockers:
             reason_counts[str(reason)] += 1
 
-    missed.sort(
-        key=lambda r: (
-            float(_safe_float(r.get("rank_score"))),
-            float(_safe_float(r.get("close_to_high_pct"))),
-        ),
-        reverse=True,
+    near_approved = [
+        r for r in missed
+        if int(r.get("blocker_count") or 0) == 1
+        and "position_already_open" not in list(r.get("blockers") or [])
+        and "plan_or_pending_entry_exists" not in list(r.get("blockers") or [])
+    ]
+
+    sort_key = lambda r: (
+        float(_safe_float(r.get("rank_score"))),
+        float(_safe_float(r.get("close_to_high_pct"))),
+        0.0 - abs(float(_safe_float(r.get("breakout_distance_pct")))),
     )
+    approved.sort(key=sort_key, reverse=True)
+    near_approved.sort(key=sort_key, reverse=True)
+    missed.sort(key=sort_key, reverse=True)
+
+    return {
+        "rows_checked": len(checked),
+        "approved_count": len(approved),
+        "missed_count": len(missed),
+        "near_approved_count": len(near_approved),
+        "top_reason_counts": dict(reason_counts.most_common(12)),
+        "selected_symbols": [
+            str((r or {}).get("symbol") or "").strip().upper()
+            for r in list(selected or [])
+            if str((r or {}).get("symbol") or "").strip()
+        ],
+        "thresholds": {
+            "min_rank_score": float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
+            "min_avg_dollar_volume": float(SWING_PRODUCTION_RESET_MIN_AVG_DOLLAR_VOLUME),
+            "max_risk_per_share_pct": float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
+            "max_below_breakout_pct": float(SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT),
+            "max_above_breakout_pct": float(SWING_PRODUCTION_RESET_MAX_ABOVE_BREAKOUT_PCT),
+            "min_close_to_high_pct": float(SWING_PRODUCTION_RESET_MIN_CLOSE_TO_HIGH_PCT),
+            "min_return_20d_pct": float(SWING_PRODUCTION_RESET_MIN_RETURN_20D_PCT),
+            "allow_mean_reversion": bool(SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION),
+        },
+        "approved": approved[:lim],
+        "near_approved": near_approved[:lim],
+        "missed": missed[:lim],
+    }
+
+def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    latest_scan, summary = _p298_latest_scan_summary_light()
+
+    snapshot = dict(summary.get("production_contract_miss_reasons") or {})
+    source = "scan_summary_full_candidate_snapshot"
+
+    if not snapshot:
+        rows = []
+        source = "last_swing_candidates_fallback"
+        if LAST_SWING_CANDIDATES:
+            rows = [dict(r or {}) for r in LAST_SWING_CANDIDATES if isinstance(r, dict)]
+        elif CANDIDATE_HISTORY:
+            hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
+            source = "candidate_history_fallback"
+            rows = [
+                dict(r or {})
+                for r in list(hist.get("candidates") or [])
+                if isinstance(r, dict)
+            ]
+        snapshot = _p325_build_production_contract_miss_snapshot(rows, selected=[], limit=lim)
+
+    approved = list(snapshot.get("approved") or [])[:lim]
+    near_approved = list(snapshot.get("near_approved") or [])[:lim]
+    missed = list(snapshot.get("missed") or [])[:lim]
 
     return {
         "ok": True,
@@ -28737,18 +28803,23 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
             "duration_ms": latest_scan.get("duration_ms"),
         },
         "summary": {
-            "rows_checked": len(checked),
-            "approved_count": len(approved),
-            "missed_count": len(missed),
-            "top_reason_counts": dict(reason_counts.most_common(12)),
-            "selected_symbols": list(summary.get("selected_symbols") or []),
+            "rows_checked": int(snapshot.get("rows_checked") or 0),
+            "approved_count": int(snapshot.get("approved_count") or 0),
+            "near_approved_count": int(snapshot.get("near_approved_count") or 0),
+            "missed_count": int(snapshot.get("missed_count") or 0),
+            "top_reason_counts": dict(snapshot.get("top_reason_counts") or {}),
+            "thresholds": dict(snapshot.get("thresholds") or {}),
+            "selected_symbols": list(snapshot.get("selected_symbols") or summary.get("selected_symbols") or []),
             "last_successful_production_selected_symbols": list(summary.get("last_successful_production_selected_symbols") or []),
         },
-        "approved": approved[:lim],
-        "missed": missed[:lim],
+        "approved": approved,
+        "near_approved": near_approved,
+        "missed": missed,
         "recommended_action": (
             "production_contract_has_approved_candidates"
             if approved
+            else "review_near_approved_candidates"
+            if near_approved
             else "review_top_miss_reasons_before_relaxing_contract"
         ),
     }
