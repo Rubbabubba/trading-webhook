@@ -2356,7 +2356,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-333-swing-selection-contract-module-split-prep"
+PATCH_VERSION = "patch-334-retired-queue-finalizer-code-isolation-swing-default-flow-removal"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12015,11 +12015,13 @@ def _p320_swing_dead_path_phase1_status() -> dict:
         "selected_entry_intent_queue_suppressed_from_swing_operator_paths": selected_intent_suppressed,
         "selected_submission_finalizer_suppressed_from_swing_operator_paths": finalizer_suppressed,
         "intraday_paper_hybrid_noise_suppressed_from_swing_operator_paths": intraday_noise_suppressed,
+        "retired_queue_finalizer_removed_from_default_flow": True,
+        "legacy_endpoints_require_include_legacy": True,
         "endpoints_retained_for_historical_review": True,
         "trade_submission_behavior_changed": False,
         "next_safe_cleanup": [
-            "remove_selected_intent_queue_from_swing_default_diagnostics",
-            "remove_selected_submission_finalizer_from_swing_default_diagnostics",
+            "verify_scanner_summary_no_longer_loads_retired_queue_status",
+            "delete_selected_entry_intent_queue_code_after_another_clean_live_session",
             "move_intraday_shadow_paper_metrics_to_intraday_only_bundle",
         ],
     }
@@ -20161,9 +20163,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'runtime_symbols_excluded_count': int(runtime_slim.get("excluded_count") or 0),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
-        'selected_submission_finalizer': dict(selected_submission_finalizer),
-        'selected_entry_intent_finalizer': dict(selected_entry_intent_finalizer),
-        'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
+        'legacy_queue_finalizer_paths': _p334_retired_queue_finalizer_status(mode="candidate_history_legacy_queue_finalizer_paths"),
         'executable_near_miss_candidates': [dict(c) for c in executable_near_miss_candidates[:5]],
         'adaptive_capacity_candidates': [dict(c) for c in adaptive_capacity_candidates[:5]],
         'adaptive_capacity_selected': [c.get('symbol') for c in adaptive_capacity_selected],
@@ -20222,9 +20222,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'mean_reversion_eligible_total': len(mean_reversion_approved),
         'selected_strategy': (selected[0].get('strategy') if selected else None),
         'selected_symbols': [c.get('symbol') for c in selected],
-        'selected_submission_finalizer': dict(selected_submission_finalizer),
-        'selected_entry_intent_finalizer': dict(selected_entry_intent_finalizer),
-        'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
+        'legacy_queue_finalizer_paths': _p334_retired_queue_finalizer_status(mode="scanner_summary_legacy_queue_finalizer_paths"),
         'executable_near_miss_entry_sleeve': {
             'enabled': bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED),
             'candidate_count': len(executable_near_miss_candidates),
@@ -20563,9 +20561,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         },
         'reconcile': reconcile_actions,
         'would_submit': would_submit,
-        'selected_submission_finalizer': selected_submission_finalizer,
-        'selected_entry_intent_finalizer': selected_entry_intent_finalizer,
-        'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
+        'legacy_queue_finalizer_paths': _p334_retired_queue_finalizer_status(mode="scanner_return_legacy_queue_finalizer_paths"),
         'production_contract_selection_finalizer': {
             'selected_symbols': list(production_selection_finalizer.get('selected_symbols') or []),
             'approved_symbols': list(production_selection_finalizer.get('approved_symbols') or []),
@@ -29750,6 +29746,29 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
         "recommended_action": recommended_action,
     }
 
+def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_paths", apply: bool = False) -> dict:
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": mode,
+        "retired": True,
+        "enabled": False,
+        "applied": False,
+        "requested_apply": bool(apply),
+        "reason": "retired_for_swing_production_core_cleanup",
+        "direct_submit_path_active": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
+        "selected_entry_intent_queue_enabled": bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED),
+        "selected_entry_finalizer_enabled": bool(SELECTED_ENTRY_FINALIZER_ENABLED),
+        "selected_submission_finalizer_enabled": bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED),
+        "default_flow_removed": True,
+        "legacy_code_retained": True,
+        "legacy_access_note": "manual legacy inspection requires include_legacy=true on the legacy endpoint",
+        "processed": 0,
+        "finalized_symbols": [],
+        "rows": [],
+        "recommended_action": "use_direct_submit_truth_and_reconcile",
+    }
+
 def _p299_persist_selected_entry_intent_queue(reason: str = "") -> bool:
     payload = {
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -29980,7 +29999,10 @@ def _p314_reconcile_stale_selected_entry_intents(apply: bool = True) -> dict:
         "rows": rows,
     }
 
-def _p299_selected_entry_finalizer_status() -> dict:
+def _p299_selected_entry_finalizer_status(include_legacy: bool = False) -> dict:
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
+        return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
+
     _p299_restore_selected_entry_intent_queue()
     cleanup = _p314_reconcile_stale_selected_entry_intents(apply=True)
     pending = [dict(x or {}) for x in SELECTED_ENTRY_INTENT_QUEUE if str((x or {}).get("status") or "") == "pending"]
@@ -30111,9 +30133,15 @@ def _p299_backfill_latest_selected_entry_intents(apply: bool = False) -> dict:
         "rows": rows,
     }
 
-def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | None = None) -> dict:
+def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | None = None, include_legacy: bool = False) -> dict:
     rows = []
     finalized_symbols = []
+
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
+        return _p334_retired_queue_finalizer_status(
+            mode="selected_entry_finalizer",
+            apply=bool(apply),
+        )
 
     if not bool(SELECTED_ENTRY_FINALIZER_ENABLED):
         return {
@@ -40000,15 +40028,23 @@ def diagnostics_reconcile_light(request: Request):
     return _p298_reconcile_light()
 
 @app.get("/diagnostics/selected_entry_intent_queue")
-def diagnostics_selected_entry_intent_queue(request: Request):
+def diagnostics_selected_entry_intent_queue(request: Request, include_legacy: bool = False):
     require_admin_if_configured(request)
-    return _p299_selected_entry_finalizer_status()
+    return _p299_selected_entry_finalizer_status(include_legacy=bool(include_legacy))
 
 @app.get("/diagnostics/stale_selected_entry_intent_reconcile")
 def diagnostics_stale_selected_entry_intent_reconcile(
     request: Request,
     apply: bool = False,
+    include_legacy: bool = False,
 ):
+    require_admin_if_configured(request)
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
+        return _p334_retired_queue_finalizer_status(
+            mode="stale_selected_entry_intent_reconcile",
+            apply=bool(apply),
+        )
+
     require_admin(request)
     _p299_restore_selected_entry_intent_queue()
     return {
@@ -40016,7 +40052,7 @@ def diagnostics_stale_selected_entry_intent_reconcile(
         "patch_version": PATCH_VERSION,
         "mode": "stale_selected_entry_intent_reconcile",
         **_p314_reconcile_stale_selected_entry_intents(apply=bool(apply)),
-        "queue": _p299_selected_entry_finalizer_status(),
+        "queue": _p299_selected_entry_finalizer_status(include_legacy=True),
     }
 
 @app.get("/diagnostics/executable_sizing_truth")
@@ -40028,8 +40064,15 @@ def diagnostics_executable_sizing_truth(request: Request, limit: int = 25):
 def diagnostics_selected_entry_intent_backfill(
     request: Request,
     apply: bool = False,
+    include_legacy: bool = False,
 ):
     require_admin_if_configured(request)
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
+        return _p334_retired_queue_finalizer_status(
+            mode="selected_entry_intent_backfill",
+            apply=bool(apply),
+        )
+
     _p299_restore_selected_entry_intent_queue()
     return _p299_backfill_latest_selected_entry_intents(apply=bool(apply))
 
@@ -40038,13 +40081,14 @@ def diagnostics_selected_entry_finalizer(
     request: Request,
     apply: bool = False,
     max_items: int = 1,
+    include_legacy: bool = False,
 ):
     require_admin_if_configured(request)
     return _p299_finalize_selected_entry_intents(
         apply=bool(apply),
         max_items=max_items,
+        include_legacy=bool(include_legacy),
     )
-
 
 @app.post("/worker/selected_entry_finalizer")
 async def worker_selected_entry_finalizer(req: Request):
@@ -40063,6 +40107,7 @@ async def worker_selected_entry_finalizer(req: Request):
     return _p299_finalize_selected_entry_intents(
         apply=bool(apply),
         max_items=max_items,
+        include_legacy=False,
     )
 
 @app.get("/diagnostics/broker_daily_goal_truth")

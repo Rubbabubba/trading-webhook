@@ -257,8 +257,8 @@ def swing_cleanup_status_snapshot(
             "intraday_live",
         ],
         "next_cleanup_focus": [
-            "remove_retired_queue_finalizer_sections_from_swing_default_diagnostics",
-            "split_swing_selection_contract_helpers_from_app_py",
+            "verify_retired_queue_finalizer_paths_are_legacy_only",
+            "delete_selected_entry_intent_queue_code_after_another_clean_live_session",
             "split_swing_execution_submit_helpers_from_app_py_after_limit_order_path_is_proven",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
