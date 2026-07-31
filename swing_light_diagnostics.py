@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-325-hotfix-warning-code-normalization-full-candidate-miss-coverage"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-329-limit-entry-evidence-cleanup-scanner-warning-recovery"
 
 
 def selected_submission_truth_light_snapshot(
@@ -28,6 +28,11 @@ def selected_submission_truth_light_snapshot(
         row.get("symbol")
         for row in rows
         if row.get("symbol") and row.get("candidate_selected_only")
+    ]
+    limit_order_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and str(row.get("plan_order_type") or "").lower() == "limit"
     ]
 
     return {
@@ -51,6 +56,8 @@ def selected_submission_truth_light_snapshot(
         "candidate_selected_only_symbols": candidate_selected_only,
         "submit_gap_symbols": missing,
         "submit_gap_count": len(missing),
+        "limit_order_symbols": limit_order_symbols,
+        "limit_order_count": len(limit_order_symbols),
         "rows": list(rows),
         "recommended_action": (
             "selected_candidate_submit_gap_detected"
@@ -70,10 +77,39 @@ def scanner_light_snapshot(
     latest_scan: dict,
     scan_summary: dict,
 ) -> dict:
-    active_warning_codes = list(telemetry_summary.get("active_warning_codes") or [])
-    recovered_warning_codes = list(telemetry_summary.get("recovered_warning_codes") or [])
-    historical_warning_codes = list(telemetry_summary.get("historical_warning_codes") or [])
+    active_warning_codes = [
+        str(code or "").strip().lower()
+        for code in list(telemetry_summary.get("active_warning_codes") or [])
+        if str(code or "").strip()
+    ]
+    recovered_warning_codes = [
+        str(code or "").strip().lower()
+        for code in list(telemetry_summary.get("recovered_warning_codes") or [])
+        if str(code or "").strip()
+    ]
+    historical_warning_codes = [
+        str(code or "").strip().lower()
+        for code in list(telemetry_summary.get("historical_warning_codes") or [])
+        if str(code or "").strip()
+    ]
+
     current_error = telemetry.get("last_error") or telemetry.get("error")
+    latest_scan_completed = str(latest_scan.get("reason") or "").strip().lower() == "scan_completed"
+    latest_status_ok = str(telemetry.get("status") or telemetry.get("last_status") or "").strip().lower() in {
+        "ok",
+        "success",
+        "skipped",
+        "sleep",
+    }
+    in_flight = bool(telemetry_summary.get("in_flight_run"))
+
+    if latest_scan_completed and latest_status_ok and not in_flight and "dispatch_failure" in active_warning_codes:
+        active_warning_codes = [code for code in active_warning_codes if code != "dispatch_failure"]
+        if "dispatch_failure_recovered_by_scan_success" not in recovered_warning_codes:
+            recovered_warning_codes.append("dispatch_failure_recovered_by_scan_success")
+        if "dispatch_failure" not in historical_warning_codes:
+            historical_warning_codes.append("dispatch_failure")
+
     dispatch_failure_recovered_by_closed_scan = (
         "dispatch_failure_recovered_by_closed_scan" in recovered_warning_codes
     )
@@ -83,7 +119,7 @@ def scanner_light_snapshot(
     scanner_currently_ok = bool(
         not active_warning_codes
         and not post_open_scan_missing
-        and not bool(telemetry_summary.get("in_flight_run"))
+        and not in_flight
         and str(telemetry.get("status") or telemetry.get("last_status") or "")
         .strip()
         .lower()
@@ -103,7 +139,7 @@ def scanner_light_snapshot(
         "last_closed_utc": telemetry_summary.get("last_closed_utc") or telemetry.get("last_closed_utc"),
         "last_error": None if scanner_currently_ok else current_error,
         "last_error_historical": current_error if scanner_currently_ok else None,
-        "in_flight_run": bool(telemetry_summary.get("in_flight_run")),
+        "in_flight_run": bool(in_flight),
         "attempts_today": telemetry_summary.get("attempts_today"),
         "success_today": telemetry_summary.get("success_today"),
         "failure_today": telemetry_summary.get("failure_today"),
@@ -152,9 +188,11 @@ def swing_cleanup_status_snapshot(
         "live_swing_runtime": bool(live_swing_runtime),
         "retired_paths": dict(retired_paths),
         "active_light_endpoints": [
+            "/diagnostics/live_positions",
+            "/diagnostics/reconcile",
             "/diagnostics/scanner_light",
-            "/diagnostics/market_open_selection_audit_light",
             "/diagnostics/selected_submission_truth_light",
+            "/diagnostics/market_open_selection_audit_light",
             "/diagnostics/live_positions_light",
             "/diagnostics/reconcile_light",
             "/diagnostics/no_trade_brief?refresh_live=false&limit=10",

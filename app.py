@@ -2345,7 +2345,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-328-limit-entry-support-for-selected-swing-candidates"
+PATCH_VERSION = "patch-329-limit-entry-evidence-cleanup-scanner-warning-recovery"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -29186,8 +29186,17 @@ def _p325_latest_scan_successfully_closed(latest_scan: dict | None, telemetry: d
     return bool(
         scan_reason == "scan_completed"
         and not bool(summary.get("in_flight_run"))
-        and last_status in {"success", "ok", "skipped"}
-        and last_event in {"scan_ok", "scan_closed", "heartbeat", "scanner_heartbeat", "worker_heartbeat", ""}
+        and last_status in {"success", "ok", "skipped", "sleep"}
+        and last_event in {
+            "scan_ok",
+            "scan_closed",
+            "scan_completed",
+            "heartbeat",
+            "scanner_heartbeat",
+            "worker_heartbeat",
+            "sleep",
+            "",
+        }
     )
 
 
@@ -29493,6 +29502,7 @@ def _p298_selected_submission_truth_light() -> dict:
             and str(row.get("status") or "").lower() == "selected"
         ]
         submit_row = dict(submit_rows.get(sym) or {})
+        plan_snapshot = dict((TRADE_PLAN or {}).get(sym) or {})
         submit_meta = {
             "state": submit_row.get("submit_state"),
             "reason": submit_row.get("submit_reason"),
@@ -29516,6 +29526,13 @@ def _p298_selected_submission_truth_light() -> dict:
             "submit_reason": submit_row.get("submit_reason"),
             "submit_attempted": bool(submit_row.get("submit_attempted")),
             "submit_order_id": side_effect.get("submit_order_id"),
+            "plan_order_id": plan_snapshot.get("order_id"),
+            "plan_order_type": plan_snapshot.get("order_type"),
+            "plan_limit_price": plan_snapshot.get("limit_price"),
+            "plan_order_status": plan_snapshot.get("order_status"),
+            "plan_filled_qty": plan_snapshot.get("filled_qty"),
+            "plan_avg_fill_price": plan_snapshot.get("avg_fill_price") or plan_snapshot.get("filled_avg_price"),
+            "plan_limit_entry": dict(plan_snapshot.get("limit_entry") or {}),
             "recent_lifecycle_count": len(lifecycle_matches),
             "recent_submit_event_count": len(lifecycle_submit_evidence),
             "lifecycle_submit_evidence_only": bool(lifecycle_submit_evidence and not side_effect.get("actual_submit_side_effect")),
