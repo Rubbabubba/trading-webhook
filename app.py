@@ -2338,7 +2338,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-327-spread-blocked-selected-candidate-retry-execution-quality-truth"
+PATCH_VERSION = "patch-327-hotfix-spread-retry-backfill-from-selected-submission-rows"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -28595,6 +28595,115 @@ def _p327_queue_spread_blocked_selected_candidate(candidate: dict | None, meta: 
     persist_scan_runtime_state(reason="spread_blocked_selected_candidate_queued")
     return {"queued": True, "key": key, "symbol": symbol, "expires_utc": row.get("expires_utc")}
 
+def _p327_find_candidate_for_spread_retry_backfill(symbol: str, summary: dict | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    summary = dict(summary or {})
+    if not sym:
+        return {}
+
+    search_sets = [
+        list(LAST_SWING_CANDIDATES or []),
+        list(summary.get("top_candidates") or []),
+        list(summary.get("top_breakout_candidates") or []),
+        list(summary.get("top_mean_reversion_candidates") or []),
+        list((summary.get("production_contract_miss_reasons") or {}).get("approved") or []),
+        list((summary.get("production_contract_miss_reasons") or {}).get("missed") or []),
+        list((summary.get("production_contract_miss_reasons") or {}).get("near_approved") or []),
+    ]
+
+    for rows in search_sets:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("symbol") or "").strip().upper() == sym:
+                return dict(row)
+
+    return {}
+
+
+def _p327_backfill_spread_retry_queue_from_selected_submission_rows(summary: dict | None = None) -> dict:
+    summary = dict(summary or {})
+    rows = list(summary.get("selected_submission_rows") or summary.get("would_submit") or [])
+    backfilled = []
+    skipped = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        signal = str(row.get("signal") or "daily_breakout").strip() or "daily_breakout"
+        submit_state = str(row.get("submit_state") or "").strip().lower()
+        submit_reason = str(row.get("submit_reason") or row.get("reason") or "").strip().lower()
+
+        if not symbol:
+            skipped.append({"symbol": symbol, "reason": "missing_symbol"})
+            continue
+        if submit_state != "blocked" or submit_reason != "spread_too_wide":
+            skipped.append({"symbol": symbol, "reason": "not_spread_blocked"})
+            continue
+
+        key = _p327_spread_retry_key(symbol, signal)
+        if key in SPREAD_BLOCKED_SELECTED_RETRY_QUEUE:
+            skipped.append({"symbol": symbol, "reason": "already_queued"})
+            continue
+
+        candidate = _p327_find_candidate_for_spread_retry_backfill(symbol, summary=summary)
+        candidate.update({
+            "symbol": symbol,
+            "signal": signal,
+            "selected": True,
+            "selected_source": "swing_production_reset",
+            "entry_type": str(row.get("entry_type") or candidate.get("entry_type") or "swing_production_contract"),
+        })
+
+        meta = {
+            "symbol": symbol,
+            "signal": signal,
+            "selected_source": "swing_production_reset",
+            "entry_type": str(row.get("entry_type") or candidate.get("entry_type") or "swing_production_contract"),
+            "rank_score": row.get("rank_score") or candidate.get("rank_score"),
+            "avg_dollar_volume_20d": candidate.get("avg_dollar_volume_20d") or candidate.get("avg_dollar_volume"),
+            "strategy": candidate.get("strategy") or row.get("strategy") or row.get("signal"),
+            "strategy_name": candidate.get("strategy") or row.get("strategy") or row.get("signal"),
+            "breakout_level": candidate.get("breakout_level"),
+            "stop_price": candidate.get("stop_price"),
+            "target_price": candidate.get("target_price"),
+            "risk_per_share": candidate.get("risk_per_share"),
+            "max_hold_days": candidate.get("max_hold_days"),
+            "regime_mode": candidate.get("regime_mode"),
+            "scan_ts_utc": candidate.get("scan_ts_utc"),
+            "close": candidate.get("close") or row.get("price") or row.get("trade_price"),
+            "price": candidate.get("close") or row.get("price") or row.get("trade_price"),
+            "trade_price": candidate.get("close") or row.get("price") or row.get("trade_price"),
+            "swing_production_contract": candidate.get("swing_production_contract"),
+            "legacy_gate_mode": candidate.get("legacy_gate_mode"),
+            "spread_retry_backfilled": True,
+        }
+
+        resp = {
+            "ok": False,
+            "rejected": True,
+            "reason": "spread_too_wide",
+            "symbol": symbol,
+            "signal": signal,
+            "snapshot": dict(row.get("snapshot") or {}),
+            "spread_override": dict(row.get("spread_override") or (row.get("snapshot") or {}).get("spread_override") or {}),
+        }
+
+        queued = _p327_queue_spread_blocked_selected_candidate(candidate, meta=meta, resp=resp)
+        backfilled.append({
+            "symbol": symbol,
+            "key": key,
+            "queued": bool(queued.get("queued")),
+            "reason": queued.get("reason"),
+        })
+
+    return {
+        "attempted": len(rows),
+        "backfilled": backfilled,
+        "skipped": skipped[:25],
+        "backfilled_count": len([r for r in backfilled if r.get("queued")]),
+    }
 
 def _p327_retry_row_status(row: dict | None) -> dict:
     r = dict(row or {})
@@ -28694,6 +28803,8 @@ def _p327_retry_row_status(row: dict | None) -> dict:
 
 def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: int = 10) -> dict:
     lim = max(1, min(int(limit or 10), 25))
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    backfill = _p327_backfill_spread_retry_queue_from_selected_submission_rows(summary)
     rows = []
     submitted = []
     removed = []
@@ -28749,6 +28860,12 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
         "eligible_count": len([r for r in rows if r.get("retry_eligible")]),
         "submitted_count": len(submitted),
         "removed_count": len(removed),
+        "backfill": backfill,
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "selected_symbols": list(summary.get("selected_symbols") or []),
+        },
         "config": {
             "window_sec": int(SPREAD_BLOCKED_RETRY_WINDOW_SEC or 0),
             "max_attempts": int(SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS or 0),
@@ -28766,7 +28883,7 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
             if any(r.get("retry_eligible") for r in rows)
             else "wait_for_spread_to_normalize"
             if rows
-            else "no_spread_blocked_candidates"
+            else "no_spread_blocked_candidates_or_selected_rows"
         ),
     }
 
