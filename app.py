@@ -1677,6 +1677,14 @@ SWING_FAST_SCAN_TRIGGER_MAX_FINALIZE = getenv_int_any(
     "SWING_FAST_SCAN_TRIGGER_MAX_FINALIZE",
     default=1,
 )
+SWING_GATE_CROSSING_STATE_PATH = getenv_any(
+    "SWING_GATE_CROSSING_STATE_PATH",
+    default="/var/data/swing_gate_crossing_state.json",
+)
+SWING_GATE_CROSSING_HISTORY_SIZE = getenv_int_any(
+    "SWING_GATE_CROSSING_HISTORY_SIZE",
+    default=50,
+)
 
 # Patch 303 - keep swing live execution direct while intraday is paused.
 SWING_PRODUCTION_CORE_CLEANUP_ENABLED = env_bool_any(
@@ -2285,7 +2293,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-321-swing-submit-path-trace-candidate-gate-crossing-alert"
+PATCH_VERSION = "patch-322-swing-gate-crossing-persistence-near-miss-drift-tracker"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11854,6 +11862,166 @@ def _p321_candidate_gate_crossing_alert(symbols: str | None = None, limit: int |
             "open_swing_submit_path_trace"
             if alert_active
             else "keep_monitoring_watchlist_trade_status"
+        ),
+    }
+
+def _p322_load_gate_crossing_state() -> dict:
+    path = str(SWING_GATE_CROSSING_STATE_PATH or "").strip()
+    if not path:
+        return {"ok": False, "loaded": False, "reason": "state_path_not_configured", "history": []}
+    try:
+        if not os.path.exists(path):
+            return {"ok": True, "loaded": False, "reason": "state_file_missing", "history": []}
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        history = list((payload or {}).get("history") or [])
+        return {
+            "ok": True,
+            "loaded": True,
+            "path": path,
+            "history": [dict(row) for row in history if isinstance(row, dict)],
+        }
+    except Exception as exc:
+        return {"ok": False, "loaded": False, "path": path, "reason": str(exc), "history": []}
+
+
+def _p322_save_gate_crossing_state(history: list[dict]) -> dict:
+    path = str(SWING_GATE_CROSSING_STATE_PATH or "").strip()
+    if not path:
+        return {"ok": False, "saved": False, "reason": "state_path_not_configured"}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lim = max(1, min(int(SWING_GATE_CROSSING_HISTORY_SIZE or 50), 500))
+        payload = {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "updated_utc": datetime.now(timezone.utc).isoformat(),
+            "history": list(history or [])[-lim:],
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+        return {"ok": True, "saved": True, "path": path, "count": len(payload["history"])}
+    except Exception as exc:
+        return {"ok": False, "saved": False, "path": path, "reason": str(exc)}
+
+
+def _p322_numeric_delta(current, previous) -> float | None:
+    if current is None or previous is None:
+        return None
+    try:
+        return round(float(current) - float(previous), 4)
+    except Exception:
+        return None
+
+
+def _p322_symbol_snapshot_from_alert(alert: dict) -> dict:
+    rows = []
+    for bucket in ("crossed", "near_miss", "hard_blocked"):
+        for row in list((alert or {}).get(bucket) or []):
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item["bucket"] = bucket
+            item["symbol"] = str(item.get("symbol") or "").strip().upper()
+            if item.get("symbol"):
+                rows.append(item)
+    return {
+        str(row.get("symbol")): row
+        for row in rows
+        if str(row.get("symbol") or "").strip()
+    }
+
+
+def _p322_near_miss_drift_tracker(symbols: str | None = None, limit: int | None = None, persist: bool = True) -> dict:
+    alert = _p321_candidate_gate_crossing_alert(
+        symbols=symbols or "",
+        limit=max(5, min(int(limit or 12), 25)),
+    )
+    state = _p322_load_gate_crossing_state()
+    history = [dict(row) for row in list(state.get("history") or []) if isinstance(row, dict)]
+
+    current_symbols = _p322_symbol_snapshot_from_alert(alert)
+    previous_snapshot = {}
+    if history:
+        previous_snapshot = dict((history[-1] or {}).get("symbols") or {})
+
+    drift_rows = []
+    for sym, current in sorted(current_symbols.items()):
+        prev = dict(previous_snapshot.get(sym) or {})
+        rank_delta = _p322_numeric_delta(current.get("rank_score"), prev.get("rank_score"))
+        target_delta = _p322_numeric_delta(current.get("target_path_score"), prev.get("target_path_score"))
+
+        current_changes = list(current.get("what_needs_to_change") or [])
+        prev_changes = list(prev.get("what_needs_to_change") or [])
+        blockers_cleared = sorted(set(prev_changes) - set(current_changes))
+        blockers_added = sorted(set(current_changes) - set(prev_changes))
+
+        if current.get("bucket") == "crossed":
+            drift = "crossed_trade_gate"
+        elif target_delta is not None and target_delta > 0:
+            drift = "improving"
+        elif target_delta is not None and target_delta < 0:
+            drift = "deteriorating"
+        elif blockers_cleared:
+            drift = "improving"
+        elif blockers_added:
+            drift = "deteriorating"
+        else:
+            drift = "flat_or_unknown"
+
+        drift_rows.append({
+            "symbol": sym,
+            "bucket": current.get("bucket"),
+            "status": current.get("status"),
+            "drift": drift,
+            "rank_score": current.get("rank_score"),
+            "rank_delta": rank_delta,
+            "target_path_score": current.get("target_path_score"),
+            "target_path_delta": target_delta,
+            "blockers_cleared": blockers_cleared,
+            "blockers_added": blockers_added,
+            "what_needs_to_change": current_changes,
+        })
+
+    snapshot = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "scan_ts_utc": alert.get("scan_ts_utc"),
+        "truth_source": alert.get("truth_source"),
+        "runtime_slim_applied": bool(alert.get("runtime_slim_applied")),
+        "alert_active": bool(alert.get("alert_active")),
+        "crossed_symbols": list(alert.get("crossed_symbols") or []),
+        "near_miss_symbols": list(alert.get("near_miss_symbols") or []),
+        "symbols": current_symbols,
+    }
+
+    save_result = {"saved": False, "reason": "persist_false"}
+    if persist:
+        history.append(snapshot)
+        save_result = _p322_save_gate_crossing_state(history)
+
+    improving = [row for row in drift_rows if row.get("drift") in {"improving", "crossed_trade_gate"}]
+    deteriorating = [row for row in drift_rows if row.get("drift") == "deteriorating"]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "near_miss_drift_tracker",
+        "read_only": not bool(persist),
+        "persisted": bool(save_result.get("saved")),
+        "save_result": save_result,
+        "history_loaded": bool(state.get("loaded")),
+        "history_count_before": len(history) - (1 if persist else 0),
+        "scan_ts_utc": alert.get("scan_ts_utc"),
+        "truth_source": alert.get("truth_source"),
+        "alert_active": bool(alert.get("alert_active")),
+        "crossed_symbols": list(alert.get("crossed_symbols") or []),
+        "improving_symbols": [row.get("symbol") for row in improving],
+        "deteriorating_symbols": [row.get("symbol") for row in deteriorating],
+        "drift": drift_rows,
+        "operator_action": (
+            "inspect_submit_path_trace"
+            if bool(alert.get("alert_active"))
+            else "keep_monitoring_drift_until_symbol_crosses_gate"
         ),
     }
 
@@ -27059,6 +27227,20 @@ def diagnostics_candidate_gate_crossing_alert(request: Request, symbols: str = "
     return JSONResponse(content=_p321_candidate_gate_crossing_alert(
         symbols=symbols,
         limit=limit,
+    ))
+
+@app.get("/diagnostics/near_miss_drift_tracker")
+def diagnostics_near_miss_drift_tracker(
+    request: Request,
+    symbols: str = "",
+    limit: int = 12,
+    persist: bool = True,
+):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p322_near_miss_drift_tracker(
+        symbols=symbols,
+        limit=limit,
+        persist=bool(persist),
     ))
 
 @app.get("/diagnostics/mean_reversion_status")
