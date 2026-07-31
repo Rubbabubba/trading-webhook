@@ -2333,7 +2333,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-323-swing-production-reset-single-entry-contract-legacy-gate-bypass"
+PATCH_VERSION = "patch-323-hotfix-production-contract-selection-source-enforcement"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -17073,18 +17073,31 @@ def _p323_swing_production_contract(candidate: dict | None, global_block_reasons
 
 def _p323_apply_swing_production_contract(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
     c = dict(candidate or {})
+    prior_contract = dict(c.get("swing_production_contract") or {})
+
+    if "pre_p323_eligible" not in c:
+        c["pre_p323_eligible"] = bool(c.get("eligible"))
+    if "pre_p323_rejection_reasons" not in c:
+        c["pre_p323_rejection_reasons"] = list(c.get("rejection_reasons") or [])
+
     contract = _p323_swing_production_contract(c, global_block_reasons=global_block_reasons)
     c["swing_production_contract"] = contract
     c["legacy_gate_mode"] = "diagnostic_only" if bool(SWING_PRODUCTION_RESET_ENABLED) else "legacy_live"
+
     if bool(SWING_PRODUCTION_RESET_ENABLED):
-        c["pre_p323_eligible"] = bool(c.get("eligible"))
-        c["pre_p323_rejection_reasons"] = list(c.get("rejection_reasons") or [])
-        c["eligible"] = bool(contract.get("approved"))
+        approved = bool(contract.get("approved"))
+        c["production_contract_approved"] = approved
+        c["eligible"] = approved
+        c["selected"] = False
         c["rejection_reasons"] = list(contract.get("blockers") or [])
         c["advisory_legacy_rejection_reasons"] = list(contract.get("advisory_legacy_reasons") or [])
-        if c["eligible"]:
+
+        if approved:
             c["entry_type"] = "swing_production_contract"
             c["selected_source"] = "swing_production_reset"
+        elif prior_contract:
+            c["selected_source"] = c.get("selected_source") or "swing_production_reset_blocked"
+
     return c
 
 
@@ -17097,6 +17110,32 @@ def _p323_swing_production_sort_key(candidate: dict | None) -> tuple:
         float(_safe_float((c.get("target_path_profit") or {}).get("score") or c.get("target_path_score"))),
         float(_safe_float(c.get("selection_quality_score"))),
     )
+
+def _p323_enforce_production_contract_selection(
+    rows: list | None,
+    global_block_reasons: list | None = None,
+) -> list[dict]:
+    enforced = []
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        c = _p323_apply_swing_production_contract(row, global_block_reasons=global_block_reasons)
+        if bool(SWING_PRODUCTION_RESET_ENABLED):
+            c["eligible"] = bool((c.get("swing_production_contract") or {}).get("approved"))
+            c["rejection_reasons"] = list((c.get("swing_production_contract") or {}).get("blockers") or [])
+        enforced.append(c)
+    return enforced
+
+
+def _p323_contract_approved_rows(rows: list | None) -> list[dict]:
+    approved = [
+        r for r in list(rows or [])
+        if isinstance(r, dict)
+        and bool((r.get("swing_production_contract") or {}).get("approved"))
+        and bool((r.get("executable_sizing_truth") or _p300_executable_sizing_truth(r)).get("executable"))
+    ]
+    approved.sort(key=_p323_swing_production_sort_key, reverse=True)
+    return approved
 
 def _p300_executable_sizing_audit(limit: int = 25) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
@@ -19633,12 +19672,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         effective_est_qty = float(cap_truth.get('effective_estimated_qty') or 0.0)
         c['estimated_qty'] = round(effective_est_qty, 2)
         c = _p300_apply_executable_selection_contract(c, cap_truth=cap_truth)
-        c = _p323_apply_swing_production_contract(c, global_block_reasons=global_block_reasons)
         projected_notional = float(cap_truth.get('effective_projected_notional') or 0.0)
+
         if c.get('eligible') and local_symbol_cap > 0 and projected_notional + open_by_symbol.get(sym, 0.0) > local_symbol_cap:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('symbol_exposure_limit')
+
         _canonical_portfolio_cap_gate(c, projected_notional, exposure, portfolio_cap, restore_eligibility=True)
+
+        c = _p323_apply_swing_production_contract(c, global_block_reasons=global_block_reasons)
         c.update(_classify_shadow_candidate(c))
         if c.get('shadow_regime_candidate'):
             shadow_candidates.append(c)
@@ -19664,16 +19706,20 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     candidates.sort(key=lambda x: (1 if str(x.get('strategy') or '').strip().lower() == BREAKOUT_STRATEGY_NAME else 0, float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     shadow_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     shadow_alignment_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
-    breakout_candidates = _p300_selection_contract_cleanup(breakout_candidates)
-    mean_reversion_candidates = _p300_selection_contract_cleanup(mean_reversion_candidates)
-    candidates = _p300_selection_contract_cleanup(candidates)
+    breakout_candidates = _p323_enforce_production_contract_selection(
+        _p300_selection_contract_cleanup(breakout_candidates),
+        global_block_reasons=global_block_reasons,
+    )
+    mean_reversion_candidates = _p323_enforce_production_contract_selection(
+        _p300_selection_contract_cleanup(mean_reversion_candidates),
+        global_block_reasons=global_block_reasons,
+    )
+    candidates = _p323_enforce_production_contract_selection(
+        _p300_selection_contract_cleanup(candidates),
+        global_block_reasons=global_block_reasons,
+    )
 
-    production_approved = [
-        c for c in candidates
-        if bool((c.get("swing_production_contract") or {}).get("approved"))
-        and bool((c.get("executable_sizing_truth") or _p300_executable_sizing_truth(c)).get("executable"))
-    ]
-    production_approved.sort(key=_p323_swing_production_sort_key, reverse=True)
+    production_approved = _p323_contract_approved_rows(candidates)
 
     breakout_approved = [
         c for c in production_approved
@@ -19733,6 +19779,14 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
 
     approved = production_approved
     selected = approved[:max_new_entries]
+
+    selected_symbol_set = {
+        str(c.get("symbol") or "").strip().upper()
+        for c in selected
+        if str(c.get("symbol") or "").strip()
+    }
+    for c in candidates:
+        c["selected"] = str(c.get("symbol") or "").strip().upper() in selected_symbol_set
     if (not bool(SWING_PRODUCTION_RESET_ENABLED)) and bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED) and selected:
         recovery_rows = [c for c in selected if bool(c.get("target_path_recovery_mode"))]
         if len(recovery_rows) > int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN or 0):
@@ -19960,6 +20014,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'candidates_total': len(candidates),
         'eligible_total': len(approved),
         'selected_total': len(selected),
+        'swing_production_reset': {
+            'enabled': bool(SWING_PRODUCTION_RESET_ENABLED),
+            'contract': 'single_entry_contract',
+            'legacy_gate_mode': 'diagnostic_only' if bool(SWING_PRODUCTION_RESET_ENABLED) else 'legacy_live',
+            'approved_count': len(production_approved),
+            'approved_symbols': [c.get('symbol') for c in production_approved],
+            'selected_symbols': [c.get('symbol') for c in selected],
+            'max_entries_per_scan': int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
+            'min_rank_score': float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
+            'max_risk_per_share_pct': float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
+            'selection_source_enforced': True,
+        },
         'breakout_candidates_total': len(breakout_candidates),
         'mean_reversion_candidates_total': len(mean_reversion_candidates),
         'breakout_eligible_total': len(breakout_approved),
@@ -20023,6 +20089,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'reason': k, 'count': int(v)
         } for k, v in rejection_counts.most_common(10)],
         'target_profile_breakout_gate_enabled': bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+        'target_profile_breakout_gate_live_mode': 'diagnostic_only' if bool(SWING_PRODUCTION_RESET_ENABLED) else 'legacy_live',
         'stall_loss_entry_feedback_enabled': bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED),
         'target_path_recovery_mode': {
             'enabled': bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED),
@@ -20078,9 +20145,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'target_path_strong_count': len(target_path_strong),
             'mean_reversion_eligible_total': len(mean_reversion_approved),
         },
-        'target_profile_breakout_gate_blocked': sum(
+        'target_profile_breakout_gate_blocked': 0 if bool(SWING_PRODUCTION_RESET_ENABLED) else sum(
             1 for c in candidates
             if 'target_profile_breakout_gate' in list(c.get('rejection_reasons') or [])
+        ),
+        'target_profile_breakout_gate_advisory': sum(
+            1 for c in candidates
+            if 'target_profile_breakout_gate' in list(c.get('advisory_legacy_rejection_reasons') or [])
         ),
         'stall_loss_entry_feedback_blocked': sum(
             1 for c in candidates
@@ -26389,12 +26460,11 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
 
     rows.sort(key=_p323_swing_production_sort_key, reverse=True)
 
-    production_approved = [
-        r for r in rows
-        if bool((r.get("swing_production_contract") or {}).get("approved"))
-        and bool((r.get("executable_sizing_truth") or _p300_executable_sizing_truth(r)).get("executable"))
-    ]
-    production_approved.sort(key=_p323_swing_production_sort_key, reverse=True)
+    rows = _p323_enforce_production_contract_selection(
+        rows,
+        global_block_reasons=global_block_reasons,
+    )
+    production_approved = _p323_contract_approved_rows(rows)
 
     breakout_approved = [
         r for r in production_approved
@@ -26440,6 +26510,9 @@ def _current_runtime_preview_snapshot(limit: int = 25) -> dict:
     approved = production_approved
     selected = approved[:max_new_entries]
     selected_symbols = [str((r or {}).get('symbol') or '').upper() for r in selected if str((r or {}).get('symbol') or '').strip()]
+    selected_symbol_set = set(selected_symbols)
+    for row in rows:
+        row["selected"] = str(row.get("symbol") or "").strip().upper() in selected_symbol_set
     eligible_but_not_selected = []
     if max_new_entries < len(approved):
         for row in approved[max_new_entries:]:
@@ -28519,11 +28592,26 @@ def _p298_reconcile_light() -> dict:
 def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     lim = max(1, min(int(limit or 10), 25))
     latest_scan, summary = _p298_latest_scan_summary_light()
-    rows = _p300_selection_contract_cleanup(
-        list(summary.get("top_candidates") or summary.get("items") or [])
+
+    rows = _p323_enforce_production_contract_selection(
+        _p300_selection_contract_cleanup(
+            list(summary.get("top_candidates") or summary.get("items") or [])
+        ),
+        global_block_reasons=[],
     )[:lim]
-    selected_symbols = _p298_selected_symbols_light(summary, _p298_recent_lifecycle_items(limit=50))
-    eligible_rows = [row for row in rows if isinstance(row, dict) and bool(row.get("eligible"))]
+
+    production_summary = dict(summary.get("swing_production_reset") or {})
+    selected_symbols = [
+        str(s or "").strip().upper()
+        for s in list(production_summary.get("selected_symbols") or [])
+        if str(s or "").strip()
+    ]
+
+    if not selected_symbols:
+        selected_symbols = _p298_selected_symbols_light(summary, _p298_recent_lifecycle_items(limit=50))
+
+    approved_rows = [row for row in rows if isinstance(row, dict) and bool((row.get("swing_production_contract") or {}).get("approved"))]
+    eligible_rows = approved_rows
 
     if selected_symbols:
         selection_status = "selected"
@@ -28531,7 +28619,7 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     elif bool(summary.get("post_open_scan_missing")):
         selection_status = "post_open_scan_missing"
         recommended_action = "recover_scanner_dispatch_before_evaluating_candidates"
-    elif int(summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0) <= 0:
+    elif int(production_summary.get("approved_count") or summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0) <= 0:
         selection_status = "no_eligible_candidates"
         recommended_action = "review_top_rejection_reasons"
     else:
@@ -28559,17 +28647,20 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "status": selection_status,
             "selected_total": int(summary.get("selected_total") or len(selected_symbols) or 0),
             "selected_symbols": selected_symbols,
-            "eligible_count": int(summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0),
+            "eligible_count": int(production_summary.get("approved_count") or summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0),
+            "production_approved_symbols": list(production_summary.get("approved_symbols") or [r.get("symbol") for r in approved_rows]),
         },
         "top": [
             {
                 "symbol": row.get("symbol"),
-                "eligible": bool(row.get("eligible")),
-                "selected": bool(row.get("selected")),
+                "eligible": bool((row.get("swing_production_contract") or {}).get("approved")),
+                "selected": str(row.get("symbol") or "").strip().upper() in set(selected_symbols),
                 "rank_score": row.get("rank_score"),
                 "target_path_score": (row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else row.get("target_path_score"),
                 "rejection_reasons": list(row.get("rejection_reasons") or []),
                 "selection_blockers": list(row.get("selection_blockers") or []),
+                "swing_production_contract": row.get("swing_production_contract"),
+                "legacy_gate_mode": row.get("legacy_gate_mode"),
             }
             for row in rows
             if isinstance(row, dict)
