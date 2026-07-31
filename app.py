@@ -2334,7 +2334,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-325-hotfix-warning-code-normalization-full-candidate-miss-coverage"
+PATCH_VERSION = "patch-326-approved-production-contract-selection-finalizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -17367,6 +17367,69 @@ def _p323_contract_approved_rows(rows: list | None) -> list[dict]:
     approved.sort(key=_p323_swing_production_sort_key, reverse=True)
     return approved
 
+def _p326_finalize_production_contract_selection(
+    rows: list | None,
+    max_new_entries: int,
+    global_block_reasons: list | None = None,
+) -> dict:
+    enforced = _p323_enforce_production_contract_selection(
+        list(rows or []),
+        global_block_reasons=global_block_reasons,
+    )
+    approved = _p323_contract_approved_rows(enforced)
+    selected = [dict(r or {}) for r in approved[:max(0, int(max_new_entries or 0))]]
+
+    selected_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in selected
+        if str((row or {}).get("symbol") or "").strip()
+    }
+
+    finalized_rows = []
+    for row in enforced:
+        c = dict(row or {})
+        sym = str(c.get("symbol") or "").strip().upper()
+        is_selected = bool(sym and sym in selected_symbols)
+        c["selected"] = is_selected
+        if bool(SWING_PRODUCTION_RESET_ENABLED):
+            c["eligible"] = bool((c.get("swing_production_contract") or {}).get("approved"))
+            c["production_contract_approved"] = bool((c.get("swing_production_contract") or {}).get("approved"))
+            c["rejection_reasons"] = list((c.get("swing_production_contract") or {}).get("blockers") or [])
+            c["legacy_gate_mode"] = "diagnostic_only"
+        if is_selected:
+            c["entry_type"] = "swing_production_contract"
+            c["selected_source"] = "swing_production_reset"
+            c["selection_finalizer"] = "p326_approved_production_contract_selection_finalizer"
+        finalized_rows.append(c)
+
+    selected_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in finalized_rows
+        if str((row or {}).get("symbol") or "").strip().upper() in selected_symbols
+    }
+    selected_final = [
+        selected_by_symbol.get(str((row or {}).get("symbol") or "").strip().upper(), dict(row or {}))
+        for row in selected
+        if str((row or {}).get("symbol") or "").strip().upper()
+    ]
+
+    return {
+        "rows": finalized_rows,
+        "approved": approved,
+        "selected": selected_final,
+        "selected_symbols": [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in selected_final
+            if str((row or {}).get("symbol") or "").strip()
+        ],
+        "approved_symbols": [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in approved
+            if str((row or {}).get("symbol") or "").strip()
+        ],
+        "max_new_entries": max(0, int(max_new_entries or 0)),
+    }
+
 def _p300_executable_sizing_audit(limit: int = 25) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     rows = list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
@@ -17421,6 +17484,8 @@ def _p300_executable_sizing_audit(limit: int = 25) -> dict:
             else "selection_contract_clean"
         ),
     }
+
+
 
 def _p301_executable_near_miss_decision(candidate: dict | None, daily_goal_progress: dict | None = None) -> dict:
     c = dict(candidate or {})
@@ -20012,8 +20077,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "reason": "legacy_weak_tape_capacity_override_bypassed_by_p323",
     }
 
+    production_selection_finalizer = _p326_finalize_production_contract_selection(
+        candidates,
+        max_new_entries=max_new_entries,
+        global_block_reasons=global_block_reasons,
+    )
+    candidates = list(production_selection_finalizer.get("rows") or [])
+    production_approved = list(production_selection_finalizer.get("approved") or [])
     approved = production_approved
-    selected = approved[:max_new_entries]
+    selected = list(production_selection_finalizer.get("selected") or [])
 
     selected_symbol_set = {
         str(c.get("symbol") or "").strip().upper()
@@ -20258,6 +20330,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'min_rank_score': float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
             'max_risk_per_share_pct': float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
             'selection_source_enforced': True,
+            'selection_finalizer': 'p326_approved_production_contract_selection_finalizer',
+            'selection_finalizer_selected_symbols': list(production_selection_finalizer.get('selected_symbols') or []),
+            'selection_finalizer_approved_symbols': list(production_selection_finalizer.get('approved_symbols') or []),
         },
         'production_contract_miss_reasons': _p325_build_production_contract_miss_snapshot(
             candidates,
@@ -20608,6 +20683,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'selected_submission_finalizer': selected_submission_finalizer,
         'selected_entry_intent_finalizer': selected_entry_intent_finalizer,
         'selected_entry_intent_queue': _p299_selected_entry_finalizer_status(),
+        'production_contract_selection_finalizer': {
+            'selected_symbols': list(production_selection_finalizer.get('selected_symbols') or []),
+            'approved_symbols': list(production_selection_finalizer.get('approved_symbols') or []),
+            'max_new_entries': int(production_selection_finalizer.get('max_new_entries') or 0),
+        },
         'executable_near_miss_entry_sleeve': {
             'enabled': bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED),
             'candidate_count': len(executable_near_miss_candidates),
