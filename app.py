@@ -1753,6 +1753,7 @@ TRADES_TODAY_TARGET_TRADES = int(getenv_any("TRADES_TODAY_TARGET_TRADES", defaul
 TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_force")
 TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
 LAST_SCAN: dict = {}
+LAST_SUCCESSFUL_PRODUCTION_SCAN: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
 STRATEGY_PERFORMANCE_STATE: dict = {"closed_trades": [], "by_strategy": {}, "kill_switch": {}}
 LAST_REGIME_SNAPSHOT: dict = {}
@@ -2333,7 +2334,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-323-hotfix-production-contract-selection-source-enforcement"
+PATCH_VERSION = "patch-324-last-successful-production-scan-preservation-scanner-exception-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2635,6 +2636,7 @@ def persist_scan_runtime_state(reason: str = ""):
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
         "reason": reason,
         "last_scan": dict(LAST_SCAN or {}),
+        "last_successful_production_scan": dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {}),
         "scan_history": list(SCAN_HISTORY or []),
         "candidate_history": list(CANDIDATE_HISTORY or []),
         "last_swing_candidates": list(LAST_SWING_CANDIDATES or []),
@@ -2644,11 +2646,12 @@ def persist_scan_runtime_state(reason: str = ""):
 
 def restore_scan_runtime_state() -> dict:
     payload = _safe_json_read(SCAN_STATE_PATH)
-    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
+    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
     if not payload:
         return restored
     try:
         last_scan = payload.get("last_scan") or {}
+        last_successful_production_scan = payload.get("last_successful_production_scan") or {}
         scan_history = payload.get("scan_history") or []
         candidate_history = payload.get("candidate_history") or []
         last_swing_candidates = payload.get("last_swing_candidates") or []
@@ -2656,6 +2659,10 @@ def restore_scan_runtime_state() -> dict:
             LAST_SCAN.clear()
             LAST_SCAN.update(last_scan)
             restored["last_scan_restored"] = True
+        if isinstance(last_successful_production_scan, dict) and last_successful_production_scan:
+            LAST_SUCCESSFUL_PRODUCTION_SCAN.clear()
+            LAST_SUCCESSFUL_PRODUCTION_SCAN.update(last_successful_production_scan)
+            restored["last_successful_production_scan_restored"] = True
         if isinstance(scan_history, list) and scan_history:
             SCAN_HISTORY.clear()
             SCAN_HISTORY.extend(scan_history[-SCAN_HISTORY_SIZE:])
@@ -2668,12 +2675,119 @@ def restore_scan_runtime_state() -> dict:
             LAST_SWING_CANDIDATES.clear()
             LAST_SWING_CANDIDATES.extend(last_swing_candidates[: max(1, SWING_MAX_CANDIDATES)])
             restored["last_swing_candidates_restored"] = len(LAST_SWING_CANDIDATES)
-        restored["loaded"] = restored["last_scan_restored"] or bool(restored["scan_history_restored"]) or bool(restored["candidate_history_restored"])
+        restored["loaded"] = restored["last_scan_restored"] or restored["last_successful_production_scan_restored"] or bool(restored["scan_history_restored"]) or bool(restored["candidate_history_restored"])
     except Exception as e:
         restored["error"] = str(e)
     globals()["SCAN_STATE_RESTORE"] = restored
     return restored
 
+def _p324_scan_selected_symbols(scan: dict | None) -> list[str]:
+    scan = dict(scan or {})
+    summary = dict(scan.get("summary") or {})
+    symbols = []
+
+    for source in (
+        summary.get("selected_symbols"),
+        scan.get("selected_symbols"),
+        summary.get("actual_submit_side_effect_symbols"),
+        summary.get("swing_production_reset", {}).get("selected_symbols") if isinstance(summary.get("swing_production_reset"), dict) else [],
+    ):
+        for sym in list(source or []):
+            sym = str(sym or "").strip().upper()
+            if sym:
+                symbols.append(sym)
+
+    return _dedupe_keep_order(symbols)
+
+
+def _p324_is_successful_production_scan(scan: dict | None) -> bool:
+    scan = dict(scan or {})
+    summary = dict(scan.get("summary") or {})
+    reason = str(scan.get("reason") or summary.get("scan_reason") or "").strip()
+
+    if reason != "scan_completed":
+        return False
+
+    if bool(scan.get("skipped")):
+        return False
+
+    selected_symbols = _p324_scan_selected_symbols(scan)
+    production = dict(summary.get("swing_production_reset") or {})
+
+    return bool(
+        selected_symbols
+        or int(summary.get("selected_total") or 0) > 0
+        or int(production.get("approved_count") or 0) > 0
+    )
+
+
+def _p324_preserve_successful_production_scan(scan: dict | None, reason: str = "") -> bool:
+    scan = dict(scan or {})
+    if not _p324_is_successful_production_scan(scan):
+        return False
+
+    preserved = dict(scan)
+    preserved["preserved_at_utc"] = datetime.now(timezone.utc).isoformat()
+    preserved["preserved_reason"] = reason or "successful_production_scan"
+    preserved["preserved_selected_symbols"] = _p324_scan_selected_symbols(scan)
+    preserved["source"] = "last_successful_production_scan"
+
+    LAST_SUCCESSFUL_PRODUCTION_SCAN.clear()
+    LAST_SUCCESSFUL_PRODUCTION_SCAN.update(preserved)
+    return True
+
+
+def _p324_latest_scan_exception_truth() -> dict:
+    latest = dict(LAST_SCAN or {})
+    reason = str(latest.get("reason") or "").strip()
+    if reason != "scan_exception":
+        return {
+            "active": False,
+            "reason": reason or None,
+        }
+
+    return {
+        "active": True,
+        "reason": "scan_exception",
+        "ts_utc": latest.get("ts_utc"),
+        "duration_ms": latest.get("duration_ms"),
+        "error": latest.get("error"),
+        "scanned": latest.get("scanned"),
+        "signals": latest.get("signals"),
+        "would_trade": latest.get("would_trade"),
+        "blocked": latest.get("blocked"),
+        "preserved_scan_available": bool(LAST_SUCCESSFUL_PRODUCTION_SCAN),
+        "preserved_selected_symbols": _p324_scan_selected_symbols(LAST_SUCCESSFUL_PRODUCTION_SCAN),
+    }
+
+
+def _p324_effective_latest_scan_for_light() -> tuple[dict, dict]:
+    latest_scan = dict(LAST_SCAN or {})
+    latest_summary = dict(latest_scan.get("summary") or {})
+    exception_truth = _p324_latest_scan_exception_truth()
+
+    if exception_truth.get("active") and LAST_SUCCESSFUL_PRODUCTION_SCAN:
+        preserved = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
+        preserved_summary = dict(preserved.get("summary") or {})
+
+        preserved["latest_scan_exception"] = exception_truth
+        preserved["using_last_successful_production_scan"] = True
+        preserved["latest_exception_ts_utc"] = exception_truth.get("ts_utc")
+        preserved["latest_exception_duration_ms"] = exception_truth.get("duration_ms")
+        preserved["latest_exception_error"] = exception_truth.get("error")
+
+        preserved_summary["latest_scan_exception"] = exception_truth
+        preserved_summary["using_last_successful_production_scan"] = True
+        preserved_summary["last_successful_selected_symbols"] = _p324_scan_selected_symbols(preserved)
+        preserved_summary["selected_symbols"] = preserved_summary.get("selected_symbols") or _p324_scan_selected_symbols(preserved)
+        preserved_summary["selected_total"] = int(preserved_summary.get("selected_total") or len(preserved_summary.get("selected_symbols") or []))
+
+        return preserved, preserved_summary
+
+    if latest_summary:
+        latest_summary["latest_scan_exception"] = exception_truth
+
+    return latest_scan, latest_summary
 
 def _symbol_rows(rows: list[dict] | None) -> list[str]:
     out = []
@@ -28354,17 +28468,23 @@ def _p310_scan_is_stale_preopen(latest_scan: dict | None = None) -> bool:
 
 
 def _p298_latest_scan_summary_light() -> tuple[dict, dict]:
-    latest_scan = dict(LAST_SCAN or {})
-    summary = dict(latest_scan.get("summary") or {})
+    latest_scan, summary = _p324_effective_latest_scan_for_light()
+
     if not summary and CANDIDATE_HISTORY:
         latest_candidate = dict((CANDIDATE_HISTORY or [])[-1] or {})
         summary = dict(latest_candidate.get("summary") or latest_candidate or {})
+
     if _p310_scan_is_stale_preopen(latest_scan):
         summary = dict(summary or {})
         summary["post_open_scan_missing"] = True
         summary["stale_preopen_scan"] = True
         latest_scan["post_open_scan_missing"] = True
         latest_scan["stale_preopen_scan"] = True
+
+    summary["scanner_exception_truth"] = _p324_latest_scan_exception_truth()
+    summary["last_successful_production_scan_available"] = bool(LAST_SUCCESSFUL_PRODUCTION_SCAN)
+    summary["last_successful_production_selected_symbols"] = _p324_scan_selected_symbols(LAST_SUCCESSFUL_PRODUCTION_SCAN)
+
     return latest_scan, summary
 
 def _p298_recent_lifecycle_items(limit: int = 100) -> list[dict]:
@@ -28388,15 +28508,29 @@ def _p298_selected_symbols_light(summary: dict | None = None, lifecycle_items: l
         if str(s or "").strip()
     ]
 
-    # If the latest scan explicitly says nothing was selected, do not resurrect stale lifecycle selections.
+    scanner_exception_truth = dict(summary.get("scanner_exception_truth") or summary.get("latest_scan_exception") or {})
+    if bool(scanner_exception_truth.get("active")) and not symbols:
+        symbols = [
+            str(s or "").strip().upper()
+            for s in list(summary.get("last_successful_production_selected_symbols") or scanner_exception_truth.get("preserved_selected_symbols") or [])
+            if str(s or "").strip()
+        ]
+
+    # If the latest successful scan explicitly says nothing was selected, do not resurrect stale lifecycle selections.
     if (
-        explicit_selected_symbols_present
+        not bool(scanner_exception_truth.get("active"))
+        and explicit_selected_symbols_present
         and not symbols
         and int(explicit_selected_total or 0) <= 0
     ):
         return []
 
-    if not symbols and explicit_would_trade is not None and int(explicit_would_trade or 0) <= 0:
+    if (
+        not bool(scanner_exception_truth.get("active"))
+        and not symbols
+        and explicit_would_trade is not None
+        and int(explicit_would_trade or 0) <= 0
+    ):
         return []
 
     if not symbols:
@@ -28501,6 +28635,10 @@ def _p298_scanner_light() -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     today_prefix = str(now_ny().date())
     telemetry_summary = _scanner_telemetry_summary(today_prefix=today_prefix)
+
+    latest_scan = dict(latest_scan or {})
+    latest_scan["scanner_exception_truth"] = summary.get("scanner_exception_truth")
+    latest_scan["using_last_successful_production_scan"] = bool(summary.get("using_last_successful_production_scan"))
 
     return swing_diag_scanner_light_snapshot(
         patch_version=PATCH_VERSION,
@@ -28642,6 +28780,8 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "duration_ms": latest_scan.get("duration_ms"),
             "stale_preopen_scan": bool(summary.get("stale_preopen_scan")),
             "post_open_scan_missing": bool(summary.get("post_open_scan_missing")),
+            "using_last_successful_production_scan": bool(summary.get("using_last_successful_production_scan")),
+            "scanner_exception_truth": summary.get("scanner_exception_truth"),
         },
         "selection": {
             "status": selection_status,
@@ -38792,6 +38932,38 @@ def diagnostics_no_trade_brief_full(
         "mode": "full_bundle_no_trade_brief",
     }
 
+@app.get("/diagnostics/last_successful_production_scan")
+def diagnostics_last_successful_production_scan(request: Request):
+    require_admin_if_configured(request)
+    latest_exception = _p324_latest_scan_exception_truth()
+    preserved = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
+    summary = dict(preserved.get("summary") or {})
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "last_successful_production_scan",
+        "latest_scan_reason": (LAST_SCAN or {}).get("reason"),
+        "latest_scan_ts_utc": (LAST_SCAN or {}).get("ts_utc"),
+        "scanner_exception_truth": latest_exception,
+        "preserved_available": bool(preserved),
+        "preserved_ts_utc": preserved.get("ts_utc"),
+        "preserved_reason": preserved.get("reason"),
+        "preserved_at_utc": preserved.get("preserved_at_utc"),
+        "selected_symbols": _p324_scan_selected_symbols(preserved),
+        "selected_total": int(summary.get("selected_total") or len(_p324_scan_selected_symbols(preserved)) or 0),
+        "actual_submit_side_effect_symbols": list(summary.get("actual_submit_side_effect_symbols") or []),
+        "selected_submit_gap_symbols": list(summary.get("selected_submit_gap_symbols") or []),
+        "swing_production_reset": dict(summary.get("swing_production_reset") or {}),
+        "recommended_action": (
+            "latest_scan_failed_but_successful_production_scan_preserved"
+            if latest_exception.get("active") and preserved
+            else "production_scan_truth_current"
+            if preserved
+            else "no_successful_production_scan_preserved_yet"
+        ),
+    }
+
 @app.get("/diagnostics/selected_submission_truth_light")
 def diagnostics_selected_submission_truth_light(request: Request):
     require_admin_if_configured(request)
@@ -41387,8 +41559,10 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         if requested_reason and not LAST_SCAN.get('reason'):
             LAST_SCAN['reason'] = requested_reason
         try:
-            if isinstance(LAST_SCAN.get('summary'), dict) and requested_reason and not LAST_SCAN['summary'].get('scan_reason'):
-                LAST_SCAN['summary']['scan_reason'] = requested_reason
+            _p324_preserve_successful_production_scan(
+                LAST_SCAN,
+                reason=str(LAST_SCAN.get("reason") or kwargs.get("reason") or "set_last_scan"),
+            )
         except Exception:
             pass
         try:
@@ -42324,7 +42498,22 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
     except Exception as e:
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
         try:
-            _set_last_scan(skipped=False, reason='scan_exception', error=str(e), scanned=0, signals=0, would_trade=0, blocked=0, duration_ms=duration_ms)
+            _set_last_scan(
+                skipped=False,
+                reason='scan_exception',
+                error=str(e),
+                scanned=0,
+                signals=0,
+                would_trade=0,
+                blocked=0,
+                duration_ms=duration_ms,
+                last_successful_production_scan={
+                    "ts_utc": LAST_SUCCESSFUL_PRODUCTION_SCAN.get("ts_utc"),
+                    "reason": LAST_SUCCESSFUL_PRODUCTION_SCAN.get("reason"),
+                    "selected_symbols": _p324_scan_selected_symbols(LAST_SUCCESSFUL_PRODUCTION_SCAN),
+                    "preserved_at_utc": LAST_SUCCESSFUL_PRODUCTION_SCAN.get("preserved_at_utc"),
+                },
+            )
             try:
                 _record_scanner_telemetry("scan_error", "exception", details={"error": str(e), "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled", **source_meta})
             except Exception:
