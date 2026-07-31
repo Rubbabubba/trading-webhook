@@ -2334,7 +2334,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-324-last-successful-production-scan-preservation-scanner-exception-truth"
+PATCH_VERSION = "patch-324-hotfix-legacy-summary-variable-defaults-production-scan-backfill"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2736,9 +2736,125 @@ def _p324_preserve_successful_production_scan(scan: dict | None, reason: str = "
     LAST_SUCCESSFUL_PRODUCTION_SCAN.update(preserved)
     return True
 
+def _p324_backfill_successful_production_scan_from_active_plans(reason: str = "") -> dict:
+    rows = []
+    selected_symbols = []
+
+    for sym, plan in sorted(dict(TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict):
+            continue
+
+        symbol = str(plan.get("symbol") or sym or "").strip().upper()
+        if not symbol:
+            continue
+
+        if not bool(plan.get("active")):
+            continue
+
+        source = str(plan.get("source") or (plan.get("thesis") or {}).get("selected_source") or "").strip()
+        entry_type = str(plan.get("entry_type") or (plan.get("thesis") or {}).get("entry_type") or "").strip()
+
+        if source != "swing_production_reset" and entry_type != "swing_production_contract":
+            continue
+
+        selected_symbols.append(symbol)
+        rows.append({
+            "symbol": symbol,
+            "strategy": plan.get("strategy_name") or plan.get("signal") or "daily_breakout",
+            "signal": plan.get("signal") or "daily_breakout",
+            "selected": True,
+            "eligible": True,
+            "entry_type": entry_type or "swing_production_contract",
+            "selected_source": source or "swing_production_reset",
+            "rank_score": plan.get("rank_score") or (plan.get("thesis") or {}).get("candidate_rank_score"),
+            "selection_quality_score": plan.get("selection_quality_score") or (plan.get("thesis") or {}).get("selection_quality_score"),
+            "estimated_qty": plan.get("qty") or plan.get("requested_qty"),
+            "entry_price": plan.get("entry_price"),
+            "stop_price": plan.get("stop_price"),
+            "target_price": plan.get("take_price") or plan.get("target_price"),
+            "opened_at": plan.get("opened_at"),
+            "source": source or "swing_production_reset",
+        })
+
+    selected_symbols = _dedupe_keep_order(selected_symbols)
+
+    if not selected_symbols:
+        return {
+            "backfilled": False,
+            "reason": "no_active_swing_production_reset_plans",
+            "selected_symbols": [],
+        }
+
+    now_utc = datetime.now(timezone.utc).isoformat()
+    preserved = {
+        "ts_utc": now_utc,
+        "ts_ny": now_ny().isoformat(),
+        "reason": "scan_completed",
+        "preserved_at_utc": now_utc,
+        "preserved_reason": reason or "active_plan_backfill",
+        "source": "active_plan_backfill",
+        "selected_symbols": selected_symbols,
+        "scanned": 0,
+        "signals": len(selected_symbols),
+        "would_trade": len(selected_symbols),
+        "blocked": 0,
+        "summary": {
+            "scan_reason": "active_plan_backfill",
+            "selected_total": len(selected_symbols),
+            "selected_symbols": selected_symbols,
+            "eligible_total": len(selected_symbols),
+            "top_candidates": rows,
+            "selected_submission_rows": [
+                {
+                    "symbol": row.get("symbol"),
+                    "actual_submit_side_effect": True,
+                    "submit_state": "filled",
+                    "submit_reason": "active_plan_backfill",
+                    "entry_type": row.get("entry_type"),
+                    "source": row.get("source"),
+                }
+                for row in rows
+            ],
+            "actual_submit_side_effect_symbols": selected_symbols,
+            "selected_submit_gap_symbols": [],
+            "selected_submit_gap_count": 0,
+            "selected_submit_gap_active": False,
+            "swing_production_reset": {
+                "enabled": bool(SWING_PRODUCTION_RESET_ENABLED),
+                "contract": "single_entry_contract",
+                "legacy_gate_mode": "diagnostic_only" if bool(SWING_PRODUCTION_RESET_ENABLED) else "legacy_live",
+                "approved_count": len(selected_symbols),
+                "approved_symbols": selected_symbols,
+                "selected_symbols": selected_symbols,
+                "backfilled_from_active_plans": True,
+            },
+        },
+    }
+
+    LAST_SUCCESSFUL_PRODUCTION_SCAN.clear()
+    LAST_SUCCESSFUL_PRODUCTION_SCAN.update(preserved)
+
+    try:
+        persist_scan_runtime_state(reason="p324_active_plan_backfill")
+    except Exception:
+        pass
+
+    return {
+        "backfilled": True,
+        "reason": reason or "active_plan_backfill",
+        "selected_symbols": selected_symbols,
+        "row_count": len(rows),
+    }
 
 def _p324_latest_scan_exception_truth() -> dict:
     latest = dict(LAST_SCAN or {})
+    if not LAST_SUCCESSFUL_PRODUCTION_SCAN:
+        try:
+            _p324_backfill_successful_production_scan_from_active_plans(
+                reason="exception_truth_backfill"
+            )
+        except Exception:
+            pass
     reason = str(latest.get("reason") or "").strip()
     if reason != "scan_exception":
         return {
@@ -19729,6 +19845,14 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     breakout_candidates = []
     mean_reversion_candidates = []
 
+    # Patch 324 hotfix: these legacy paths are bypassed by the swing production reset,
+    # but older summary/reporting blocks still reference the variables.
+    executable_near_miss_candidates = []
+    adaptive_capacity_candidates = []
+    adaptive_capacity_selected = []
+    override_candidates = []
+    override_selected = []
+
     def _finalize_candidate(candidate: dict, sym: str):
         c = dict(candidate or {})
         strategy_name = str(c.get('strategy') or '').strip().lower()
@@ -19853,9 +19977,6 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if float(_safe_float((c.get("target_path_profit") or {}).get("score"))) >= float(SWING_TARGET_PATH_STRONG_SCORE)
     ]
 
-    adaptive_capacity_candidates = []
-    adaptive_capacity_selected = []
-
     same_day_stats = _same_day_entry_stats()
     base_daily_entry_cap = int(SWING_MAX_NEW_ENTRIES_PER_DAY)
     effective_daily_entry_cap = base_daily_entry_cap
@@ -19915,8 +20036,6 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             ]
     shadow_selected = shadow_candidates[:max_new_entries]
     shadow_alignment_selected = shadow_alignment_candidates[:max_new_entries]
-    override_candidates = []
-    override_selected = []
     override_live_permitted = False
     override_live_reasons = []
     override_symbol = None
@@ -38935,6 +39054,10 @@ def diagnostics_no_trade_brief_full(
 @app.get("/diagnostics/last_successful_production_scan")
 def diagnostics_last_successful_production_scan(request: Request):
     require_admin_if_configured(request)
+    if not LAST_SUCCESSFUL_PRODUCTION_SCAN:
+        _p324_backfill_successful_production_scan_from_active_plans(
+            reason="diagnostic_endpoint_backfill"
+        )
     latest_exception = _p324_latest_scan_exception_truth()
     preserved = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
     summary = dict(preserved.get("summary") or {})
@@ -42538,5 +42661,16 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             pass
         return JSONResponse(
             status_code=500,
-            content={'ok': False, 'error': 'scan_exception', 'detail': str(e), **LAST_SCAN},
+            content={
+                'ok': False,
+                'error': 'scan_exception',
+                'detail': str(e),
+                'last_successful_production_scan': {
+                    'available': bool(LAST_SUCCESSFUL_PRODUCTION_SCAN),
+                    'selected_symbols': _p324_scan_selected_symbols(LAST_SUCCESSFUL_PRODUCTION_SCAN),
+                    'ts_utc': LAST_SUCCESSFUL_PRODUCTION_SCAN.get('ts_utc'),
+                    'source': LAST_SUCCESSFUL_PRODUCTION_SCAN.get('source'),
+                },
+                **LAST_SCAN,
+            },
 )
