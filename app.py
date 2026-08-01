@@ -2271,6 +2271,7 @@ data_client = StockHistoricalDataClient(APCA_KEY, APCA_SECRET)
 # In-memory state
 # =============================
 TRADE_PLAN: dict[str, dict] = {}          # symbol -> plan dict
+P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE: list[dict] = []
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
@@ -2364,7 +2365,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-336-swing-core-status-cleanup-submit-split-readiness-truth"
+PATCH_VERSION = "patch-337-protective-limit-submit-evidence-capture-submit-split-greenlight"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -28372,6 +28373,18 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                     soften_symbol_lock(symbol, 5)
                     return {"ok": False, "rejected": True, "reason": "limit_qty_zero_after_whole_share_rounding", "symbol": symbol, "signal": signal, "snapshot": snapshot, "limit_entry": p328_limit_entry}
 
+            _p337_record_limit_submit_evidence(
+                symbol=symbol,
+                side=side,
+                signal=signal,
+                source=source,
+                stage="attempted",
+                order_type="limit",
+                qty=qty,
+                limit_price=submit_price,
+                limit_entry=p328_limit_entry,
+                snapshot=snapshot,
+            )
             order = submit_limit_order(symbol, side, qty, submit_price)
         else:
             order = submit_market_order(symbol, side, qty)
@@ -28389,6 +28402,23 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan["limit_price"] = submit_price if submit_order_type == "limit" else None
         plan["limit_entry"] = p328_limit_entry or {}
         plan["affordability"] = affordability or {}
+        p337_limit_submit_evidence = {}
+        if submit_order_type == "limit":
+            p337_limit_submit_evidence = _p337_record_limit_submit_evidence(
+                symbol=symbol,
+                side=side,
+                signal=signal,
+                source=source,
+                stage="submitted",
+                order_type=submit_order_type,
+                qty=qty,
+                limit_price=submit_price,
+                order_id=str(_order_attr(order, "id", "")),
+                client_order_id=str(_order_attr(order, "client_order_id", "")),
+                limit_entry=p328_limit_entry,
+                snapshot=snapshot,
+                plan=plan,
+            )
         TRADE_PLAN[symbol] = plan
         _ensure_execution_lifecycle_plan(symbol, plan)
         _transition_execution_lifecycle(
@@ -28403,6 +28433,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 "order_id": str(_order_attr(order, "id", "")),
                 "order_type": submit_order_type,
                 "limit_price": submit_price if submit_order_type == "limit" else None,
+                "protective_limit_submit_evidence": p337_limit_submit_evidence,
             },
             allow_illegal=True,
         )
@@ -28426,8 +28457,26 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             )
         except Exception:
             pass
-        return {"ok": True, "submitted": True, "order_id": str(_order_attr(order, "id", "")), "order_type": submit_order_type, "limit_price": submit_price if submit_order_type == "limit" else None, "order": payload, "plan": plan}
+        return {"ok": True, "submitted": True, "order_id": str(_order_attr(order, "id", "")), "order_type": submit_order_type, "limit_price": submit_price if submit_order_type == "limit" else None, "protective_limit_submit_evidence": p337_limit_submit_evidence, "order": payload, "plan": plan}
     except Exception as e:
+        if str(locals().get("submit_order_type") or "").lower() == "limit" or isinstance(locals().get("p328_limit_entry"), dict):
+            try:
+                _p337_record_limit_submit_evidence(
+                    symbol=symbol,
+                    side=side,
+                    signal=signal,
+                    source=source,
+                    stage="rejected",
+                    order_type=str(locals().get("submit_order_type") or "limit"),
+                    qty=locals().get("qty"),
+                    limit_price=locals().get("submit_price"),
+                    limit_entry=locals().get("p328_limit_entry") if isinstance(locals().get("p328_limit_entry"), dict) else {},
+                    snapshot=locals().get("snapshot") if isinstance(locals().get("snapshot"), dict) else {},
+                    plan=TRADE_PLAN.get(symbol) if isinstance(TRADE_PLAN.get(symbol), dict) else None,
+                    error=str(e),
+                )
+            except Exception:
+                pass
         log("ORDER_REJECTED", symbol=symbol, side=side, err=str(e), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="alpaca_submit_failed", err=str(e), meta=meta)
         try:
@@ -41562,9 +41611,85 @@ def diagnostics_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAUL
     _refresh_regime_snapshot_if_needed()
     return _build_actionable_watchlist(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct, limit=limit)
 
+def _p337_record_limit_submit_evidence(
+    *,
+    symbol: str,
+    side: str,
+    signal: str,
+    source: str,
+    stage: str,
+    order_type: str,
+    qty: float | None = None,
+    limit_price: float | None = None,
+    order_id: str = "",
+    client_order_id: str = "",
+    limit_entry: dict | None = None,
+    snapshot: dict | None = None,
+    plan: dict | None = None,
+    error: str = "",
+) -> dict:
+    evidence = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "ts_ny": now_ny().isoformat(),
+        "patch_version": PATCH_VERSION,
+        "symbol": str(symbol or "").upper(),
+        "side": str(side or "").lower(),
+        "signal": str(signal or ""),
+        "source": str(source or ""),
+        "stage": str(stage or ""),
+        "order_type": str(order_type or "").lower(),
+        "qty": _safe_float(qty, 0.0),
+        "limit_price": _safe_float(limit_price, 0.0) if limit_price is not None else None,
+        "order_id": str(order_id or ""),
+        "client_order_id": str(client_order_id or ""),
+        "limit_entry": dict(limit_entry or {}),
+        "snapshot": {
+            "price": (snapshot or {}).get("price"),
+            "bid": (snapshot or {}).get("bid"),
+            "ask": (snapshot or {}).get("ask"),
+            "mid": (snapshot or {}).get("mid"),
+            "spread_pct": (snapshot or {}).get("spread_pct"),
+            "fresh": (snapshot or {}).get("fresh"),
+            "quote_ok": (snapshot or {}).get("quote_ok"),
+        },
+        "error": str(error or ""),
+    }
+
+    try:
+        P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE.append(evidence)
+        del P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE[:-50]
+    except Exception:
+        pass
+
+    if isinstance(plan, dict):
+        history = list(plan.get("protective_limit_submit_evidence_history") or [])
+        history.append(evidence)
+        plan["protective_limit_submit_evidence_history"] = history[-10:]
+        plan["protective_limit_submit_evidence"] = evidence
+        plan["protective_limit_submit_evidence_patch"] = PATCH_VERSION
+        if evidence.get("stage") == "submitted":
+            plan["protective_limit_submit_live_proven"] = True
+
+    return evidence
+
 def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     rows = []
+
+    for evidence in list(P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE or []):
+        if not isinstance(evidence, dict):
+            continue
+        rows.append({
+            "source": "p337_runtime_evidence",
+            "symbol": str(evidence.get("symbol") or "").upper(),
+            "order_type": str(evidence.get("order_type") or "").lower(),
+            "limit_price": evidence.get("limit_price"),
+            "stage": evidence.get("stage"),
+            "order_id": evidence.get("order_id"),
+            "client_order_id": evidence.get("client_order_id"),
+            "ts_utc": evidence.get("ts_utc"),
+            "live_proven": str(evidence.get("stage") or "").lower() == "submitted",
+        })
 
     for sym, plan in sorted(dict(TRADE_PLAN or {}).items()):
         p = dict(plan or {})
@@ -41592,6 +41717,8 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
                 "submitted": bool(p.get("submitted") or p.get("entry_submitted")),
                 "filled": bool(p.get("filled") or p.get("entry_filled")),
                 "client_order_id": p.get("client_order_id") or p.get("entry_client_order_id"),
+                "protective_limit_submit_live_proven": bool(p.get("protective_limit_submit_live_proven")),
+                "protective_limit_submit_evidence": dict(p.get("protective_limit_submit_evidence") or {}),
             })
 
     for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or []):
@@ -41753,13 +41880,57 @@ def diagnostics_swing_cleanup_status():
         retired_paths=retired_paths,
     )
 
+@app.get("/diagnostics/protective_limit_submit_evidence")
+def diagnostics_protective_limit_submit_evidence(limit: int = 20):
+    evidence = _p336_recent_limit_entry_evidence(limit=max(1, min(int(limit or 20), 50)))
+    submitted_rows = [
+        row for row in list(evidence.get("rows") or [])
+        if str(row.get("stage") or "").lower() == "submitted"
+        or bool(row.get("protective_limit_submit_live_proven"))
+        or bool(row.get("live_proven"))
+    ]
+    attempted_rows = [
+        row for row in list(evidence.get("rows") or [])
+        if str(row.get("stage") or "").lower() == "attempted"
+    ]
+    rejected_rows = [
+        row for row in list(evidence.get("rows") or [])
+        if str(row.get("stage") or "").lower() == "rejected"
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "protective_limit_submit_evidence",
+        "broker_free": True,
+        "evidence_count": int(evidence.get("evidence_count") or 0),
+        "submitted_count": len(submitted_rows),
+        "attempted_count": len(attempted_rows),
+        "rejected_count": len(rejected_rows),
+        "limit_path_live_proven": bool(submitted_rows),
+        "symbols": list(evidence.get("symbols") or []),
+        "rows": list(evidence.get("rows") or []),
+        "latest_scan": dict(evidence.get("latest_scan") or {}),
+        "recommended_action": (
+            "submit_split_greenlight_available"
+            if submitted_rows
+            else "wait_for_next_protective_limit_submit"
+        ),
+    }
+
 @app.get("/diagnostics/swing_submit_split_readiness")
 def diagnostics_swing_submit_split_readiness():
     execution_status = diagnostics_swing_execution_module_status()
     limit_evidence = _p336_recent_limit_entry_evidence(limit=10)
 
     helper_mismatch_count = int(execution_status.get("mismatch_count") or 0)
-    limit_path_proven = int(limit_evidence.get("evidence_count") or 0) > 0
+    limit_path_proven = any(
+        str(row.get("stage") or "").lower() == "submitted"
+        or bool(row.get("protective_limit_submit_live_proven"))
+        or bool(row.get("live_proven"))
+        for row in list(limit_evidence.get("rows") or [])
+        if isinstance(row, dict)
+    )
 
     blockers = []
     if helper_mismatch_count:

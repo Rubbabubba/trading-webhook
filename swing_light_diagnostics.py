@@ -248,6 +248,7 @@ def swing_cleanup_status_snapshot(
             "/diagnostics/swing_selection_contract_module_status",
             "/diagnostics/swing_execution_module_status",
             "/diagnostics/swing_submit_split_readiness",
+            "/diagnostics/protective_limit_submit_evidence",
         ],
         "removed_from_operator_default_flow": [
             "heavy_operator_bundle",
