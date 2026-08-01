@@ -2364,7 +2364,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-335-swing-execution-submit-module-split-prep"
+PATCH_VERSION = "patch-336-swing-core-status-cleanup-submit-split-readiness-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -41562,6 +41562,83 @@ def diagnostics_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAUL
     _refresh_regime_snapshot_if_needed()
     return _build_actionable_watchlist(history_limit=history_limit, breakout_max_distance_pct=breakout_max_distance_pct, limit=limit)
 
+def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    rows = []
+
+    for sym, plan in sorted(dict(TRADE_PLAN or {}).items()):
+        p = dict(plan or {})
+        limit_entry = p.get("limit_entry") if isinstance(p.get("limit_entry"), dict) else {}
+        order_type = str(
+            p.get("order_type")
+            or p.get("entry_order_type")
+            or p.get("plan_order_type")
+            or ""
+        ).strip().lower()
+        limit_price = _safe_float(
+            p.get("limit_price")
+            or p.get("entry_limit_price")
+            or limit_entry.get("limit_price"),
+            0.0,
+        )
+        if order_type == "limit" or limit_price > 0 or bool(limit_entry):
+            rows.append({
+                "source": "trade_plan",
+                "symbol": str(sym or "").upper(),
+                "order_type": order_type or "unknown",
+                "limit_price": limit_price if limit_price > 0 else None,
+                "active": bool(p.get("active")),
+                "pending_entry": bool(_plan_is_pending_entry(p)),
+                "submitted": bool(p.get("submitted") or p.get("entry_submitted")),
+                "filled": bool(p.get("filled") or p.get("entry_filled")),
+                "client_order_id": p.get("client_order_id") or p.get("entry_client_order_id"),
+            })
+
+    for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or []):
+        if not isinstance(row, dict):
+            continue
+        plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
+        order_type = str(
+            row.get("order_type")
+            or row.get("plan_order_type")
+            or plan.get("order_type")
+            or ""
+        ).strip().lower()
+        limit_price = _safe_float(
+            row.get("limit_price")
+            or row.get("entry_limit_price")
+            or plan.get("limit_price"),
+            0.0,
+        )
+        if order_type == "limit" or limit_price > 0:
+            rows.append({
+                "source": "selected_submission_rows",
+                "symbol": str(row.get("symbol") or plan.get("symbol") or "").upper(),
+                "order_type": order_type or "unknown",
+                "limit_price": limit_price if limit_price > 0 else None,
+                "actual_submit_side_effect": bool(row.get("actual_submit_side_effect")),
+                "side_effect_detected_light": bool(row.get("side_effect_detected_light")),
+                "block_reason": row.get("block_reason") or row.get("reason"),
+            })
+
+    symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").upper()
+        for row in rows
+        if str(row.get("symbol") or "").strip()
+    ])
+
+    return {
+        "evidence_count": len(rows),
+        "symbols": symbols,
+        "rows": rows[: max(1, int(limit or 10))],
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "selected_total": int(summary.get("selected_total") or 0),
+            "selected_symbols": list(summary.get("selected_symbols") or []),
+        },
+    }
+
 @app.get("/diagnostics/swing_core_status")
 def diagnostics_swing_core_status():
     return {
@@ -41582,11 +41659,34 @@ def diagnostics_swing_core_status():
         "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
         "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
         "cleanup_phase": "swing_production_core_cleanup",
-        "next_split_candidate": "swing_execution_submit_helpers_after_limit_path_is_proven",
-        "next_cleanup_focus": [
+        "completed_cleanup": [
             "selection_contract_module_split",
-            "execution_submit_module_split_after_limit_path_is_proven",
-            "retired_queue_finalizer_code_removal",
+            "execution_pure_helper_module_split",
+            "retired_queue_finalizer_default_flow_removal",
+        ],
+        "module_split_status": {
+            "selection_contract": {
+                "module": "swing_selection_contract",
+                "status": "split_parity_proven",
+                "active_in_default_flow": True,
+            },
+            "execution_helpers": {
+                "module": "swing_execution",
+                "status": "pure_helpers_split_parity_proven",
+                "active_in_default_flow": True,
+            },
+            "execution_submit": {
+                "module": "app.py",
+                "status": "not_moved",
+                "reason": "awaiting_protective_limit_live_path_proof",
+            },
+        },
+        "next_split_candidate": "swing_execution_submit_helpers_after_limit_path_is_live_proven",
+        "next_cleanup_focus": [
+            "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
+            "prepare_submit_function_split_after_limit_path_is_live_proven",
+            "delete_selected_entry_intent_queue_code_after_another_clean_live_session",
+            "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
     }
 
@@ -41652,6 +41752,42 @@ def diagnostics_swing_cleanup_status():
         live_swing_runtime=live_swing_runtime,
         retired_paths=retired_paths,
     )
+
+@app.get("/diagnostics/swing_submit_split_readiness")
+def diagnostics_swing_submit_split_readiness():
+    execution_status = diagnostics_swing_execution_module_status()
+    limit_evidence = _p336_recent_limit_entry_evidence(limit=10)
+
+    helper_mismatch_count = int(execution_status.get("mismatch_count") or 0)
+    limit_path_proven = int(limit_evidence.get("evidence_count") or 0) > 0
+
+    blockers = []
+    if helper_mismatch_count:
+        blockers.append("execution_helper_module_parity_not_clean")
+    if not limit_path_proven:
+        blockers.append("protective_limit_live_path_not_proven")
+
+    submit_split_ready = not blockers
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_submit_split_readiness",
+        "broker_free": True,
+        "submit_split_ready": submit_split_ready,
+        "execution_submit_moved": False,
+        "broker_submit_still_in_app_py": True,
+        "pure_helpers_moved": True,
+        "helper_mismatch_count": helper_mismatch_count,
+        "limit_path_proven": limit_path_proven,
+        "limit_entry_evidence": limit_evidence,
+        "blockers": blockers,
+        "recommended_action": (
+            "ready_to_split_submit_functions_next"
+            if submit_split_ready
+            else "wait_for_limit_path_live_proof_before_submit_split"
+        ),
+    }
 
 @app.get("/diagnostics/swing_execution_module_status")
 def diagnostics_swing_execution_module_status():

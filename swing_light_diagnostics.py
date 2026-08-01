@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-332-swing-cleanup-status-current-truth-module-version-alignment"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-336-swing-core-status-cleanup-submit-split-readiness-truth"
 
 
 def selected_submission_truth_light_snapshot(
@@ -247,6 +247,7 @@ def swing_cleanup_status_snapshot(
             "/diagnostics/swing_runtime_config",
             "/diagnostics/swing_selection_contract_module_status",
             "/diagnostics/swing_execution_module_status",
+            "/diagnostics/swing_submit_split_readiness",
         ],
         "removed_from_operator_default_flow": [
             "heavy_operator_bundle",
@@ -258,9 +259,9 @@ def swing_cleanup_status_snapshot(
             "intraday_live",
         ],
         "next_cleanup_focus": [
-            "verify_retired_queue_finalizer_paths_are_legacy_only",
+            "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
+            "prepare_submit_function_split_after_limit_path_is_live_proven",
             "delete_selected_entry_intent_queue_code_after_another_clean_live_session",
-            "verify_swing_execution_helper_module_parity_before_submit_split",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
         "recommended_action": (
