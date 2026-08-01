@@ -2365,7 +2365,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-337-protective-limit-submit-evidence-capture-submit-split-greenlight"
+PATCH_VERSION = "patch-338-retired-selected-queue-finalizer-deletion-phase-1-module-version-tidy"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -4836,7 +4836,11 @@ def _ensure_runtime_state_loaded():
     except Exception:
         pass
     try:
-        if bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED) and not SELECTED_ENTRY_INTENT_QUEUE:
+        if (
+            bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED)
+            and not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)
+            and not SELECTED_ENTRY_INTENT_QUEUE
+        ):
             SELECTED_ENTRY_INTENT_QUEUE_RESTORE.update(_p299_restore_selected_entry_intent_queue())
     except Exception:
         pass
@@ -12017,9 +12021,15 @@ def _p320_swing_dead_path_phase1_status() -> dict:
         "legacy_endpoints_require_include_legacy": True,
         "endpoints_retained_for_historical_review": True,
         "trade_submission_behavior_changed": False,
+        "phase_1_deletion_actions": [
+            "runtime_restore_no_longer_loads_selected_entry_intent_queue_when_cleanup_enabled",
+            "selected_entry_intent_queue_endpoint_returns_retired_status_by_default",
+            "selected_entry_finalizer_endpoint_returns_retired_status_by_default",
+            "selected_entry_finalizer_worker_returns_retired_status_when_cleanup_enabled",
+        ],
         "next_safe_cleanup": [
-            "verify_scanner_summary_no_longer_loads_retired_queue_status",
-            "delete_selected_entry_intent_queue_code_after_another_clean_live_session",
+            "remove_selected_entry_intent_queue_persistence_helpers_after_one_clean_deploy",
+            "remove_selected_entry_finalizer_submit_loop_after_one_clean_deploy",
             "move_intraday_shadow_paper_metrics_to_intraday_only_bundle",
         ],
     }
@@ -40027,6 +40037,8 @@ def diagnostics_reconcile_light(request: Request):
 @app.get("/diagnostics/selected_entry_intent_queue")
 def diagnostics_selected_entry_intent_queue(request: Request, include_legacy: bool = False):
     require_admin_if_configured(request)
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
+        return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
     return _p299_selected_entry_finalizer_status(include_legacy=bool(include_legacy))
 
 @app.get("/diagnostics/stale_selected_entry_intent_reconcile")
@@ -40081,6 +40093,11 @@ def diagnostics_selected_entry_finalizer(
     include_legacy: bool = False,
 ):
     require_admin_if_configured(request)
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
+        return _p334_retired_queue_finalizer_status(
+            mode="selected_entry_finalizer",
+            apply=bool(apply),
+        )
     return _p299_finalize_selected_entry_intents(
         apply=bool(apply),
         max_items=max_items,
@@ -40099,12 +40116,18 @@ async def worker_selected_entry_finalizer(req: Request):
         if str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
+        return _p334_retired_queue_finalizer_status(
+            mode="selected_entry_finalizer_worker",
+            apply=False,
+        )
+
     apply = str(body.get("apply") or "true").strip().lower() not in {"0", "false", "no", "off"}
     max_items = int(body.get("max_items") or SELECTED_ENTRY_FINALIZER_MAX_PER_RUN or 1)
     return _p299_finalize_selected_entry_intents(
         apply=bool(apply),
         max_items=max_items,
-        include_legacy=False,
+        include_legacy=True,
     )
 
 @app.get("/diagnostics/broker_daily_goal_truth")
@@ -41790,6 +41813,8 @@ def diagnostics_swing_core_status():
             "selection_contract_module_split",
             "execution_pure_helper_module_split",
             "retired_queue_finalizer_default_flow_removal",
+            "retired_queue_finalizer_runtime_restore_removed",
+            "retired_queue_finalizer_worker_default_disabled",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -41812,7 +41837,8 @@ def diagnostics_swing_core_status():
         "next_cleanup_focus": [
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "delete_selected_entry_intent_queue_code_after_another_clean_live_session",
+            "remove_selected_entry_intent_queue_persistence_helpers_after_one_clean_deploy",
+            "remove_selected_entry_finalizer_submit_loop_after_one_clean_deploy",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
     }

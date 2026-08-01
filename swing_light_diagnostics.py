@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-336-swing-core-status-cleanup-submit-split-readiness-truth"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-338-retired-selected-queue-finalizer-deletion-phase-1-module-version-tidy"
 
 
 def selected_submission_truth_light_snapshot(
@@ -262,7 +262,8 @@ def swing_cleanup_status_snapshot(
         "next_cleanup_focus": [
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "delete_selected_entry_intent_queue_code_after_another_clean_live_session",
+            "remove_selected_entry_intent_queue_persistence_helpers_after_one_clean_deploy",
+            "remove_selected_entry_finalizer_submit_loop_after_one_clean_deploy",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
         "recommended_action": (
