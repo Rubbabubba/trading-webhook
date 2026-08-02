@@ -1638,26 +1638,13 @@ SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must 
 NEW_ENTRIES_ENABLED = env_bool_any("NEW_ENTRIES_ENABLED", "ENTRIES_ENABLED", default="true")
 PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
 
-SELECTED_ENTRY_INTENT_QUEUE_ENABLED = env_bool_any(
-    "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
-    default=False,
-)
-SELECTED_ENTRY_FINALIZER_ENABLED = env_bool_any(
-    "SELECTED_ENTRY_FINALIZER_ENABLED",
-    default=False,
-)
-SELECTED_ENTRY_FINALIZER_MAX_PER_RUN = getenv_int_any(
-    "SELECTED_ENTRY_FINALIZER_MAX_PER_RUN",
-    default=1,
-)
-SELECTED_ENTRY_FINALIZER_MAX_INTENT_AGE_SEC = getenv_int_any(
-    "SELECTED_ENTRY_FINALIZER_MAX_INTENT_AGE_SEC",
-    default=900,
-)
-SELECTED_ENTRY_INTENT_QUEUE_PATH = getenv_any(
-    "SELECTED_ENTRY_INTENT_QUEUE_PATH",
-    default="/var/data/selected_entry_intent_queue.json",
-)
+# Retired in Patch 341. Kept as fixed constants only so old status stubs stay import-safe.
+SELECTED_ENTRY_INTENT_QUEUE_ENABLED = False
+SELECTED_ENTRY_FINALIZER_ENABLED = False
+SELECTED_ENTRY_FINALIZER_MAX_PER_RUN = 0
+SELECTED_ENTRY_FINALIZER_MAX_INTENT_AGE_SEC = 0
+SELECTED_ENTRY_INTENT_QUEUE_PATH = ""
+
 SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED = env_bool_any(
     "SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED",
     default=True,
@@ -1793,8 +1780,7 @@ REGIME_HISTORY: list[dict] = []
 PAPER_LIFECYCLE_STATE_RESTORE: dict = {}
 LAST_PAPER_LIFECYCLE: dict = {}
 PAPER_LIFECYCLE_HISTORY: list[dict] = []
-SELECTED_ENTRY_INTENT_QUEUE: list[dict] = []
-SELECTED_ENTRY_INTENT_QUEUE_RESTORE: dict = {}
+# Selected intent queue storage was physically retired in Patch 341.
 CANDIDATE_HISTORY_SIZE = int(os.getenv("CANDIDATE_HISTORY_SIZE", "100"))
 CANDIDATE_HISTORY: list[dict] = []
 COHORT_EVIDENCE_HISTORY: list[dict] = []
@@ -1984,15 +1970,9 @@ SWING_DEFENSIVE_RELAXATION_ENTRY_TYPE = getenv_any(
     default="defensive_near_miss_relaxation",
 ).strip().lower()
 
-# Retired by Patch 307 hotfix. Direct swing scanner submit is the production path.
-SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED = env_bool_any(
-    "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
-    default=False,
-)
-SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED = env_bool_any(
-    "SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED",
-    default=False,
-)
+# Retired in Patch 341. Direct selected-candidate submit is the production path.
+SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED = False
+SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED = False
 
 # 5m resampling / strategy tuning
 RESAMPLE_5M_MIN_BARS = int(os.getenv("RESAMPLE_5M_MIN_BARS", "40"))  # ~ last ~3h20m on 5m
@@ -2365,7 +2345,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-340-physical-selected-intent-helper-removal-retired-endpoint-stub-cleanup"
+PATCH_VERSION = "patch-341-dead-selected-intent-env-global-cleanup-retired-endpoint-status-consolidation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -4835,15 +4815,7 @@ def _ensure_runtime_state_loaded():
             restore_paper_lifecycle_state()
     except Exception:
         pass
-    try:
-        if (
-            bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED)
-            and not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)
-            and not SELECTED_ENTRY_INTENT_QUEUE
-        ):
-            SELECTED_ENTRY_INTENT_QUEUE_RESTORE.update(_p299_restore_selected_entry_intent_queue())
-    except Exception:
-        pass
+    # Selected intent queue restore retired; direct submit/reconcile is authoritative.
     try:
         if (not LAST_SCANNER_TELEMETRY) and (not SCANNER_TELEMETRY_HISTORY):
             restore_scanner_telemetry_state()
@@ -12043,9 +12015,14 @@ def _p320_swing_dead_path_phase1_status() -> dict:
             "selected_entry_finalizer_submit_loop_body_removed",
             "selected_submission_finalizer_retry_loop_body_removed",
         ],
+        "phase_4_deletion_actions": [
+            "dead_selected_intent_env_reads_removed",
+            "dead_selected_submission_finalizer_env_reads_removed",
+            "dead_selected_intent_global_queue_removed",
+            "retired_selected_intent_endpoints_consolidated",
+        ],
         "next_safe_cleanup": [
-            "remove_dead_selected_intent_env_reads_after_clean_deploy",
-            "remove_dead_selected_intent_global_queue_after_clean_deploy",
+            "remove_retired_selected_intent_endpoint_routes_after_clean_deploy",
             "move_intraday_shadow_paper_metrics_to_intraday_only_bundle",
         ],
     }
@@ -12802,11 +12779,11 @@ def startup_restore_state() -> dict:
     regime_restore = restore_regime_runtime_state()
     paper_restore = restore_paper_lifecycle_state()
     selected_entry_intent_restore = {
-        "path": SELECTED_ENTRY_INTENT_QUEUE_PATH,
         "loaded": False,
         "count": 0,
-        "deferred": True,
-        "reason": "p299_helper_defined_after_startup_restore_state",
+        "retired": True,
+        "config_removed": True,
+        "reason": "selected_entry_intent_queue_retired_direct_submit_is_authoritative",
     }
     cohort_restore = restore_cohort_evidence_state()
     strategy_perf_restore = restore_strategy_performance_state()
@@ -29789,8 +29766,10 @@ def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_pa
         "finalizer_loop_isolated": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
         "legacy_code_retained": False,
         "physical_helper_bodies_removed": True,
+        "dead_env_reads_removed": True,
+        "dead_global_queue_removed": True,
         "endpoint_stubs_retained": True,
-        "legacy_access_note": "selected intent persistence/backfill/finalizer helper bodies were physically removed; only retired endpoint stubs remain",
+        "legacy_access_note": "selected intent env reads, queue storage, persistence, backfill, and finalizer bodies were removed; only retired endpoint stubs remain",
         "processed": 0,
         "finalized_symbols": [],
         "rows": [],
@@ -29802,10 +29781,10 @@ def _p299_persist_selected_entry_intent_queue(reason: str = "") -> bool:
 
 def _p299_restore_selected_entry_intent_queue() -> dict:
     return {
-        "path": SELECTED_ENTRY_INTENT_QUEUE_PATH,
         "loaded": False,
         "count": 0,
         "retired": True,
+        "config_removed": True,
         "reason": "selected_entry_intent_restore_physically_removed",
     }
 
@@ -39419,9 +39398,7 @@ def diagnostics_reconcile_light(request: Request):
 @app.get("/diagnostics/selected_entry_intent_queue")
 def diagnostics_selected_entry_intent_queue(request: Request, include_legacy: bool = False):
     require_admin_if_configured(request)
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
-        return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
-    return _p299_selected_entry_finalizer_status(include_legacy=bool(include_legacy))
+    return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
 
 @app.get("/diagnostics/stale_selected_entry_intent_reconcile")
 def diagnostics_stale_selected_entry_intent_reconcile(
@@ -39430,21 +39407,10 @@ def diagnostics_stale_selected_entry_intent_reconcile(
     include_legacy: bool = False,
 ):
     require_admin_if_configured(request)
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
-        return _p334_retired_queue_finalizer_status(
-            mode="stale_selected_entry_intent_reconcile",
-            apply=bool(apply),
-        )
-
-    require_admin(request)
-    _p299_restore_selected_entry_intent_queue()
-    return {
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "stale_selected_entry_intent_reconcile",
-        **_p314_reconcile_stale_selected_entry_intents(apply=bool(apply)),
-        "queue": _p299_selected_entry_finalizer_status(include_legacy=True),
-    }
+    return _p334_retired_queue_finalizer_status(
+        mode="stale_selected_entry_intent_reconcile",
+        apply=bool(apply),
+    )
 
 @app.get("/diagnostics/executable_sizing_truth")
 def diagnostics_executable_sizing_truth(request: Request, limit: int = 25):
@@ -39458,14 +39424,10 @@ def diagnostics_selected_entry_intent_backfill(
     include_legacy: bool = False,
 ):
     require_admin_if_configured(request)
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
-        return _p334_retired_queue_finalizer_status(
-            mode="selected_entry_intent_backfill",
-            apply=bool(apply),
-        )
-
-    _p299_restore_selected_entry_intent_queue()
-    return _p299_backfill_latest_selected_entry_intents(apply=bool(apply))
+    return _p334_retired_queue_finalizer_status(
+        mode="selected_entry_intent_backfill",
+        apply=bool(apply),
+    )
 
 @app.get("/diagnostics/selected_entry_finalizer")
 def diagnostics_selected_entry_finalizer(
@@ -39475,15 +39437,9 @@ def diagnostics_selected_entry_finalizer(
     include_legacy: bool = False,
 ):
     require_admin_if_configured(request)
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
-        return _p334_retired_queue_finalizer_status(
-            mode="selected_entry_finalizer",
-            apply=bool(apply),
-        )
-    return _p299_finalize_selected_entry_intents(
+    return _p334_retired_queue_finalizer_status(
+        mode="selected_entry_finalizer",
         apply=bool(apply),
-        max_items=max_items,
-        include_legacy=bool(include_legacy),
     )
 
 @app.post("/worker/selected_entry_finalizer")
@@ -39498,18 +39454,9 @@ async def worker_selected_entry_finalizer(req: Request):
         if str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="Invalid worker secret")
 
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return _p334_retired_queue_finalizer_status(
-            mode="selected_entry_finalizer_worker",
-            apply=False,
-        )
-
-    apply = str(body.get("apply") or "true").strip().lower() not in {"0", "false", "no", "off"}
-    max_items = int(body.get("max_items") or SELECTED_ENTRY_FINALIZER_MAX_PER_RUN or 1)
-    return _p299_finalize_selected_entry_intents(
-        apply=bool(apply),
-        max_items=max_items,
-        include_legacy=True,
+    return _p334_retired_queue_finalizer_status(
+        mode="selected_entry_finalizer_worker",
+        apply=False,
     )
 
 @app.get("/diagnostics/broker_daily_goal_truth")
@@ -41203,6 +41150,10 @@ def diagnostics_swing_core_status():
             "selected_entry_intent_helper_bodies_physically_removed",
             "selected_entry_finalizer_loop_body_physically_removed",
             "selected_submission_finalizer_loop_body_physically_removed",
+            "dead_selected_intent_env_reads_removed",
+            "dead_selected_submission_finalizer_env_reads_removed",
+            "dead_selected_intent_global_queue_removed",
+            "retired_selected_intent_endpoints_consolidated",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -41225,8 +41176,7 @@ def diagnostics_swing_core_status():
         "next_cleanup_focus": [
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "remove_dead_selected_intent_env_reads_after_clean_deploy",
-            "remove_dead_selected_intent_global_queue_after_clean_deploy",
+            "remove_retired_selected_intent_endpoint_routes_after_clean_deploy",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
     }
@@ -41249,21 +41199,30 @@ def diagnostics_swing_cleanup_status():
             "HEAVY_DIAGNOSTICS_ENABLED",
             "heavy bundles caused latency and memory pressure; light diagnostics replaced operator flow",
         ),
-        "selected_entry_intent_queue": _retired_path_row(
-            SELECTED_ENTRY_INTENT_QUEUE_ENABLED,
-            "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
-            "swing production reset uses direct selected-candidate submit path",
-        ),
-        "selected_entry_finalizer": _retired_path_row(
-            SELECTED_ENTRY_FINALIZER_ENABLED,
-            "SELECTED_ENTRY_FINALIZER_ENABLED",
-            "finalizer queue was replaced by direct submit truth and reconcile",
-        ),
-        "selected_submission_finalizer": _retired_path_row(
-            SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED,
-            "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
-            "legacy selected-submission repair path is disabled for swing core cleanup",
-        ),
+        "selected_entry_intent_queue": {
+            "disabled": True,
+            "enabled": False,
+            "env": "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
+            "env_removed": True,
+            "status": "retired_removed",
+            "reason": "selected intent queue config and storage removed; direct submit path is authoritative",
+        },
+        "selected_entry_finalizer": {
+            "disabled": True,
+            "enabled": False,
+            "env": "SELECTED_ENTRY_FINALIZER_ENABLED",
+            "env_removed": True,
+            "status": "retired_removed",
+            "reason": "selected entry finalizer config and loop removed; direct submit path is authoritative",
+        },
+        "selected_submission_finalizer": {
+            "disabled": True,
+            "enabled": False,
+            "env": "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
+            "env_removed": True,
+            "status": "retired_removed",
+            "reason": "selected submission finalizer config and retry loop removed; direct submit path is authoritative",
+        },
         "fast_swing_scan_trigger": _retired_path_row(
             SWING_FAST_SCAN_TRIGGER_ENABLED,
             "SWING_FAST_SCAN_TRIGGER_ENABLED",
@@ -41572,16 +41531,22 @@ def diagnostics_swing_runtime_config():
             "env": "HEAVY_DIAGNOSTICS_ENABLED",
         },
         "selected_entry_intent_queue": {
-            "disabled": not _cfg_bool("SELECTED_ENTRY_INTENT_QUEUE_ENABLED"),
+            "disabled": True,
             "env": "SELECTED_ENTRY_INTENT_QUEUE_ENABLED",
+            "env_removed": True,
+            "status": "retired_removed",
         },
         "selected_entry_finalizer": {
-            "disabled": not _cfg_bool("SELECTED_ENTRY_FINALIZER_ENABLED"),
+            "disabled": True,
             "env": "SELECTED_ENTRY_FINALIZER_ENABLED",
+            "env_removed": True,
+            "status": "retired_removed",
         },
         "selected_submission_finalizer": {
-            "disabled": not _cfg_bool("SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED"),
+            "disabled": True,
             "env": "SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED",
+            "env_removed": True,
+            "status": "retired_removed",
         },
         "fast_swing_scan_trigger": {
             "disabled": not _cfg_bool("SWING_FAST_SCAN_TRIGGER_ENABLED"),
