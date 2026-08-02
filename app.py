@@ -2365,7 +2365,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-338-retired-selected-queue-finalizer-deletion-phase-1-module-version-tidy"
+PATCH_VERSION = "patch-339-retired-selected-intent-persistence-removal-finalizer-loop-isolation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12027,9 +12027,17 @@ def _p320_swing_dead_path_phase1_status() -> dict:
             "selected_entry_finalizer_endpoint_returns_retired_status_by_default",
             "selected_entry_finalizer_worker_returns_retired_status_when_cleanup_enabled",
         ],
+        "phase_2_deletion_actions": [
+            "selected_entry_intent_persistence_noops_when_cleanup_enabled",
+            "selected_entry_intent_restore_noops_when_cleanup_enabled",
+            "selected_entry_intent_queue_creation_noops_when_cleanup_enabled",
+            "stale_selected_entry_intent_reconcile_noops_when_cleanup_enabled",
+            "selected_entry_finalizer_submit_loop_isolated_when_cleanup_enabled",
+            "selected_submission_finalizer_retry_loop_isolated_when_cleanup_enabled",
+        ],
         "next_safe_cleanup": [
-            "remove_selected_entry_intent_queue_persistence_helpers_after_one_clean_deploy",
-            "remove_selected_entry_finalizer_submit_loop_after_one_clean_deploy",
+            "physically_remove_selected_entry_intent_persistence_helpers_after_clean_deploy",
+            "physically_remove_selected_entry_finalizer_submit_loop_after_clean_deploy",
             "move_intraday_shadow_paper_metrics_to_intraday_only_bundle",
         ],
     }
@@ -29768,8 +29776,11 @@ def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_pa
         "selected_entry_finalizer_enabled": bool(SELECTED_ENTRY_FINALIZER_ENABLED),
         "selected_submission_finalizer_enabled": bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED),
         "default_flow_removed": True,
+        "persistence_removed_from_runtime": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
+        "restore_removed_from_runtime": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
+        "finalizer_loop_isolated": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
         "legacy_code_retained": True,
-        "legacy_access_note": "manual legacy inspection requires include_legacy=true on the legacy endpoint",
+        "legacy_access_note": "legacy queue/finalizer code is retained only as inert rollback scaffolding during deletion phase",
         "processed": 0,
         "finalized_symbols": [],
         "rows": [],
@@ -29777,6 +29788,9 @@ def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_pa
     }
 
 def _p299_persist_selected_entry_intent_queue(reason: str = "") -> bool:
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
+        return False
+
     payload = {
         "saved_at_utc": datetime.now(timezone.utc).isoformat(),
         "reason": reason,
@@ -29787,12 +29801,17 @@ def _p299_persist_selected_entry_intent_queue(reason: str = "") -> bool:
 
 
 def _p299_restore_selected_entry_intent_queue() -> dict:
-    payload = _safe_json_read(SELECTED_ENTRY_INTENT_QUEUE_PATH)
     restored = {
         "path": SELECTED_ENTRY_INTENT_QUEUE_PATH,
         "loaded": False,
         "count": 0,
+        "retired": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
+        "reason": "selected_entry_intent_restore_removed_from_runtime" if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) else None,
     }
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
+        return restored
+
+    payload = _safe_json_read(SELECTED_ENTRY_INTENT_QUEUE_PATH)
     if not payload:
         return restored
     try:
@@ -29815,6 +29834,14 @@ def _p299_intent_key(symbol: str, signal: str, selected_ts_utc: str = "") -> str
 
 
 def _p299_queue_selected_entry_intent(candidate: dict, meta: dict | None = None, source_name: str = "worker_scan", live_allowed: bool = False) -> dict:
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
+        return {
+            "queued": False,
+            "retired": True,
+            "reason": "selected_entry_intent_queue_removed_from_swing_runtime",
+            "direct_submit_path_active": bool(not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
+        }
+
     if not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED):
         return {"queued": False, "reason": "selected_entry_intent_queue_disabled"}
 
@@ -29915,6 +29942,17 @@ def _p314_reconcile_stale_selected_entry_intents(apply: bool = True) -> dict:
     rows = []
     changed = False
 
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
+        return {
+            "enabled": False,
+            "retired": True,
+            "applied": False,
+            "requested_apply": bool(apply),
+            "changed": False,
+            "rows": rows,
+            "reason": "stale_selected_entry_intent_reconcile_removed_from_runtime",
+        }
+
     if not bool(SWING_STALE_INTENT_RECONCILE_ENABLED):
         return {
             "enabled": False,
@@ -30007,7 +30045,7 @@ def _p314_reconcile_stale_selected_entry_intents(apply: bool = True) -> dict:
     }
 
 def _p299_selected_entry_finalizer_status(include_legacy: bool = False) -> dict:
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
         return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
 
     _p299_restore_selected_entry_intent_queue()
@@ -30032,6 +30070,12 @@ def _p299_selected_entry_finalizer_status(include_legacy: bool = False) -> dict:
     }
 
 def _p299_backfill_latest_selected_entry_intents(apply: bool = False) -> dict:
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
+        return _p334_retired_queue_finalizer_status(
+            mode="selected_entry_intent_backfill",
+            apply=bool(apply),
+        )
+
     if not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED):
         return {
             "ok": True,
@@ -30144,7 +30188,7 @@ def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | 
     rows = []
     finalized_symbols = []
 
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) and not bool(include_legacy):
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
         return _p334_retired_queue_finalizer_status(
             mode="selected_entry_finalizer",
             apply=bool(apply),
@@ -30356,6 +30400,17 @@ def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | 
 def _p297_finalize_selected_submissions(selected_payloads: list | None, would_submit: list | None) -> dict:
     payloads = [dict(p or {}) for p in list(selected_payloads or []) if isinstance(p, dict)]
     rows = []
+    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
+        return {
+            "enabled": False,
+            "retired": True,
+            "rows": rows,
+            "finalized_symbols": [],
+            "missing_symbols": [],
+            "retried_symbols": [],
+            "reason": "selected_submission_finalizer_removed_from_swing_runtime",
+        }
+
     if not bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED):
         return {
             "enabled": False,
@@ -41815,6 +41870,9 @@ def diagnostics_swing_core_status():
             "retired_queue_finalizer_default_flow_removal",
             "retired_queue_finalizer_runtime_restore_removed",
             "retired_queue_finalizer_worker_default_disabled",
+            "selected_entry_intent_persistence_removed_from_runtime",
+            "selected_entry_finalizer_submit_loop_isolated",
+            "selected_submission_finalizer_retry_loop_isolated",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -41837,8 +41895,8 @@ def diagnostics_swing_core_status():
         "next_cleanup_focus": [
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "remove_selected_entry_intent_queue_persistence_helpers_after_one_clean_deploy",
-            "remove_selected_entry_finalizer_submit_loop_after_one_clean_deploy",
+            "physically_remove_selected_entry_intent_persistence_helpers_after_clean_deploy",
+            "physically_remove_selected_entry_finalizer_submit_loop_after_clean_deploy",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
     }
