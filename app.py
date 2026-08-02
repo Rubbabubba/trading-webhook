@@ -2365,7 +2365,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-339-retired-selected-intent-persistence-removal-finalizer-loop-isolation"
+PATCH_VERSION = "patch-340-physical-selected-intent-helper-removal-retired-endpoint-stub-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12035,9 +12035,17 @@ def _p320_swing_dead_path_phase1_status() -> dict:
             "selected_entry_finalizer_submit_loop_isolated_when_cleanup_enabled",
             "selected_submission_finalizer_retry_loop_isolated_when_cleanup_enabled",
         ],
+        "phase_3_deletion_actions": [
+            "selected_entry_intent_persistence_helper_body_removed",
+            "selected_entry_intent_restore_helper_body_removed",
+            "selected_entry_intent_queue_helper_body_removed",
+            "stale_selected_entry_intent_reconcile_helper_body_removed",
+            "selected_entry_finalizer_submit_loop_body_removed",
+            "selected_submission_finalizer_retry_loop_body_removed",
+        ],
         "next_safe_cleanup": [
-            "physically_remove_selected_entry_intent_persistence_helpers_after_clean_deploy",
-            "physically_remove_selected_entry_finalizer_submit_loop_after_clean_deploy",
+            "remove_dead_selected_intent_env_reads_after_clean_deploy",
+            "remove_dead_selected_intent_global_queue_after_clean_deploy",
             "move_intraday_shadow_paper_metrics_to_intraday_only_bundle",
         ],
     }
@@ -29779,8 +29787,10 @@ def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_pa
         "persistence_removed_from_runtime": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
         "restore_removed_from_runtime": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
         "finalizer_loop_isolated": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
-        "legacy_code_retained": True,
-        "legacy_access_note": "legacy queue/finalizer code is retained only as inert rollback scaffolding during deletion phase",
+        "legacy_code_retained": False,
+        "physical_helper_bodies_removed": True,
+        "endpoint_stubs_retained": True,
+        "legacy_access_note": "selected intent persistence/backfill/finalizer helper bodies were physically removed; only retired endpoint stubs remain",
         "processed": 0,
         "finalized_symbols": [],
         "rows": [],
@@ -29788,751 +29798,68 @@ def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_pa
     }
 
 def _p299_persist_selected_entry_intent_queue(reason: str = "") -> bool:
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return False
-
-    payload = {
-        "saved_at_utc": datetime.now(timezone.utc).isoformat(),
-        "reason": reason,
-        "patch_version": PATCH_VERSION,
-        "items": list(SELECTED_ENTRY_INTENT_QUEUE or []),
-    }
-    return _safe_json_write(SELECTED_ENTRY_INTENT_QUEUE_PATH, payload)
-
+    return False
 
 def _p299_restore_selected_entry_intent_queue() -> dict:
-    restored = {
+    return {
         "path": SELECTED_ENTRY_INTENT_QUEUE_PATH,
         "loaded": False,
         "count": 0,
-        "retired": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
-        "reason": "selected_entry_intent_restore_removed_from_runtime" if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED) else None,
+        "retired": True,
+        "reason": "selected_entry_intent_restore_physically_removed",
     }
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return restored
-
-    payload = _safe_json_read(SELECTED_ENTRY_INTENT_QUEUE_PATH)
-    if not payload:
-        return restored
-    try:
-        items = payload.get("items") or []
-        if isinstance(items, list):
-            SELECTED_ENTRY_INTENT_QUEUE.clear()
-            SELECTED_ENTRY_INTENT_QUEUE.extend([dict(x or {}) for x in items if isinstance(x, dict)][-100:])
-            restored["loaded"] = True
-            restored["count"] = len(SELECTED_ENTRY_INTENT_QUEUE)
-    except Exception as exc:
-        restored["error"] = str(exc)
-    return restored
-
 
 def _p299_intent_key(symbol: str, signal: str, selected_ts_utc: str = "") -> str:
-    sym = str(symbol or "").strip().upper()
-    sig = str(signal or "").strip().lower()
-    day = str((selected_ts_utc or datetime.now(timezone.utc).isoformat())[:10])
-    return f"{day}:{sym}:{sig}"
-
+    return ""
 
 def _p299_queue_selected_entry_intent(candidate: dict, meta: dict | None = None, source_name: str = "worker_scan", live_allowed: bool = False) -> dict:
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return {
-            "queued": False,
-            "retired": True,
-            "reason": "selected_entry_intent_queue_removed_from_swing_runtime",
-            "direct_submit_path_active": bool(not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
-        }
-
-    if not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED):
-        return {"queued": False, "reason": "selected_entry_intent_queue_disabled"}
-
-    candidate = dict(candidate or {})
-    meta = dict(meta or {})
-    sym = str(candidate.get("symbol") or "").strip().upper()
-    if not sym:
-        return {"queued": False, "reason": "missing_symbol"}
-    sizing_truth = _p300_executable_sizing_truth(candidate)
-    if bool(SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED) and not bool(sizing_truth.get("executable")):
-        return {
-            "queued": False,
-            "reason": "non_executable_sizing",
-            "symbol": sym,
-            "executable_sizing_truth": sizing_truth,
-        }
-
-    signal = str(candidate.get("signal") or "daily_breakout").strip() or "daily_breakout"
-    selected_ts = datetime.now(timezone.utc).isoformat()
-    key = _p299_intent_key(sym, signal, selected_ts)
-
-    for row in SELECTED_ENTRY_INTENT_QUEUE:
-        if str(row.get("intent_key") or "") == key and str(row.get("status") or "") in {"pending", "submitted", "finalized"}:
-            return {
-                "queued": False,
-                "reason": "intent_already_exists",
-                "intent_key": key,
-                "status": row.get("status"),
-            }
-
-    intent = {
-        "intent_key": key,
-        "status": "pending",
+    sym = str((candidate or {}).get("symbol") or "").strip().upper() if isinstance(candidate, dict) else ""
+    return {
+        "queued": False,
+        "retired": True,
         "symbol": sym,
-        "side": "buy",
-        "signal": signal,
-        "source": str(source_name or "worker_scan"),
-        "selected_ts_utc": selected_ts,
-        "created_utc": selected_ts,
-        "updated_utc": selected_ts,
-        "attempt_count": 0,
-        "last_attempt_utc": None,
-        "last_result": None,
-        "live_allowed_at_selection": bool(live_allowed),
-        "candidate": {
-            "symbol": sym,
-            "signal": signal,
-            "rank_score": candidate.get("rank_score"),
-            "selection_quality_score": candidate.get("selection_quality_score"),
-            "entry_type": candidate.get("entry_type"),
-            "strategy": candidate.get("strategy"),
-            "close": candidate.get("close"),
-            "avg_dollar_volume_20d": candidate.get("avg_dollar_volume_20d"),
-            "close_to_high_pct": candidate.get("close_to_high_pct"),
-            "breakout_distance_pct": candidate.get("breakout_distance_pct"),
-            "return_20d_pct": candidate.get("return_20d_pct"),
-            "price": candidate.get("price") or candidate.get("close"),
-            "target_path_profit": candidate.get("target_path_profit"),
-            "target_path_recovery": candidate.get("target_path_recovery"),
-            "defensive_near_miss_relaxation_entry": bool(candidate.get("defensive_near_miss_relaxation_entry")),
-        },
-        "meta": meta,
+        "reason": "selected_entry_intent_queue_physically_removed",
+        "direct_submit_path_active": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
     }
 
-    SELECTED_ENTRY_INTENT_QUEUE.append(intent)
-    if len(SELECTED_ENTRY_INTENT_QUEUE) > 100:
-        del SELECTED_ENTRY_INTENT_QUEUE[: len(SELECTED_ENTRY_INTENT_QUEUE) - 100]
-    _p299_persist_selected_entry_intent_queue(reason="queue_selected_entry_intent")
-    try:
-        record_decision(
-            "SCAN",
-            "selected_entry_intent_queue",
-            symbol=sym,
-            side="buy",
-            signal=signal,
-            action="selected_entry_intent_queued",
-            reason="selected_candidate_queued_for_lightweight_finalizer",
-            meta={"intent_key": key, "source": source_name},
-        )
-    except Exception:
-        pass
-    return {"queued": True, "intent_key": key, "symbol": sym, "status": "pending"}
-
-
 def _p299_intent_age_sec(intent: dict) -> float:
-    try:
-        ts = str(intent.get("selected_ts_utc") or intent.get("created_utc") or "")
-        if not ts:
-            return 0.0
-        dt = datetime.fromisoformat(ts)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
-    except Exception:
-        return 0.0
+    return 0.0
 
 def _p314_reconcile_stale_selected_entry_intents(apply: bool = True) -> dict:
-    rows = []
-    changed = False
-
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return {
-            "enabled": False,
-            "retired": True,
-            "applied": False,
-            "requested_apply": bool(apply),
-            "changed": False,
-            "rows": rows,
-            "reason": "stale_selected_entry_intent_reconcile_removed_from_runtime",
-        }
-
-    if not bool(SWING_STALE_INTENT_RECONCILE_ENABLED):
-        return {
-            "enabled": False,
-            "applied": bool(apply),
-            "changed": False,
-            "rows": rows,
-            "reason": "stale_intent_reconcile_disabled",
-        }
-
-    now = datetime.now(timezone.utc)
-    max_age = max(60, int(SWING_STALE_INTENT_MAX_PENDING_AGE_SEC or 1800))
-
-    for intent in SELECTED_ENTRY_INTENT_QUEUE:
-        if not isinstance(intent, dict):
-            continue
-
-        status = str(intent.get("status") or "").strip().lower()
-        sym = str(intent.get("symbol") or "").strip().upper()
-        age_sec = _p299_intent_age_sec(intent)
-        side_effect = _p297_symbol_entry_side_effect(sym) if sym else {"side_effect_detected": False}
-
-        action = "keep"
-        reason = "active_or_recent"
-
-        if status == "pending" and bool(side_effect.get("side_effect_detected")):
-            action = "finalize_existing_side_effect"
-            reason = "broker_or_plan_side_effect_already_present"
-        elif status == "pending" and age_sec > float(max_age):
-            action = "expire_stale_pending"
-            reason = "pending_intent_too_old"
-        elif status == "blocked" and age_sec > float(max_age):
-            action = "archive_old_blocked"
-            reason = "old_blocked_intent"
-        elif status in {"submitted", "finalized"} and age_sec > float(max_age):
-            action = "archive_old_done"
-            reason = "old_completed_intent"
-
-        row = {
-            "intent_key": intent.get("intent_key"),
-            "symbol": sym,
-            "status_before": status,
-            "age_sec": round(age_sec, 2),
-            "side_effect_detected": bool(side_effect.get("side_effect_detected")),
-            "action": action,
-            "reason": reason,
-        }
-
-        if apply and action == "finalize_existing_side_effect":
-            intent["status"] = "finalized"
-            intent["updated_utc"] = now.isoformat()
-            intent["last_result"] = {"reason": reason, "side_effect": side_effect}
-            changed = True
-        elif apply and action.startswith("expire_"):
-            intent["status"] = "expired"
-            intent["updated_utc"] = now.isoformat()
-            intent["last_result"] = {"reason": reason, "age_sec": age_sec}
-            changed = True
-        elif apply and action.startswith("archive_"):
-            intent["archived"] = True
-            intent["updated_utc"] = now.isoformat()
-            intent["last_result"] = intent.get("last_result") or {"reason": reason, "age_sec": age_sec}
-            changed = True
-
-        rows.append(row)
-
-    if apply:
-        active_items = [
-            dict(x or {})
-            for x in SELECTED_ENTRY_INTENT_QUEUE
-            if isinstance(x, dict) and not bool(x.get("archived"))
-        ]
-        keep_recent = max(5, int(SWING_STALE_INTENT_KEEP_RECENT or 25))
-        archived_recent = [
-            dict(x or {})
-            for x in SELECTED_ENTRY_INTENT_QUEUE
-            if isinstance(x, dict) and bool(x.get("archived"))
-        ][-keep_recent:]
-        SELECTED_ENTRY_INTENT_QUEUE.clear()
-        SELECTED_ENTRY_INTENT_QUEUE.extend((active_items + archived_recent)[-100:])
-        if changed:
-            _p299_persist_selected_entry_intent_queue(reason="p314_stale_intent_reconcile")
-
     return {
-        "enabled": True,
-        "applied": bool(apply),
-        "changed": bool(changed),
-        "max_pending_age_sec": max_age,
-        "queue_count": len(SELECTED_ENTRY_INTENT_QUEUE),
-        "rows": rows,
+        "enabled": False,
+        "retired": True,
+        "applied": False,
+        "requested_apply": bool(apply),
+        "changed": False,
+        "rows": [],
+        "reason": "stale_selected_entry_intent_reconcile_physically_removed",
     }
 
 def _p299_selected_entry_finalizer_status(include_legacy: bool = False) -> dict:
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
-
-    _p299_restore_selected_entry_intent_queue()
-    cleanup = _p314_reconcile_stale_selected_entry_intents(apply=True)
-    pending = [dict(x or {}) for x in SELECTED_ENTRY_INTENT_QUEUE if str((x or {}).get("status") or "") == "pending"]
-    blocked = [dict(x or {}) for x in SELECTED_ENTRY_INTENT_QUEUE if str((x or {}).get("status") or "") == "blocked"]
-    expired = [dict(x or {}) for x in SELECTED_ENTRY_INTENT_QUEUE if str((x or {}).get("status") or "") == "expired"]
-    return {
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "selected_entry_intent_queue",
-        "enabled": bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED),
-        "finalizer_enabled": bool(SELECTED_ENTRY_FINALIZER_ENABLED),
-        "path": SELECTED_ENTRY_INTENT_QUEUE_PATH,
-        "queue_count": len(SELECTED_ENTRY_INTENT_QUEUE),
-        "pending_count": len(pending),
-        "pending_symbols": [str(x.get("symbol") or "").strip().upper() for x in pending],
-        "blocked_count": len(blocked),
-        "expired_count": len(expired),
-        "stale_reconcile": cleanup,
-        "items": list(SELECTED_ENTRY_INTENT_QUEUE or [])[-25:],
-    }
+    return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
 
 def _p299_backfill_latest_selected_entry_intents(apply: bool = False) -> dict:
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return _p334_retired_queue_finalizer_status(
-            mode="selected_entry_intent_backfill",
-            apply=bool(apply),
-        )
-
-    if not bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED):
-        return {
-            "ok": True,
-            "patch_version": PATCH_VERSION,
-            "mode": "selected_entry_intent_backfill",
-            "enabled": False,
-            "applied": bool(apply),
-            "reason": "selected_entry_intent_queue_disabled_for_swing_core_cleanup",
-            "selected_symbols": [],
-            "queued": [],
-            "rows": [],
-        }
-
-    latest_scan, summary = _p298_latest_scan_summary_light()
-    lifecycle_items = _p298_recent_lifecycle_items(limit=100)
-    selected_symbols = _p298_selected_symbols_light(summary, lifecycle_items)
-
-    candidate_rows = [
-        dict(r or {})
-        for r in list(summary.get("top_candidates") or [])
-        if isinstance(r, dict)
-    ]
-
-    rows = []
-    queued = []
-
-    for sym in selected_symbols:
-        side_effect = _p297_symbol_entry_side_effect(sym)
-        if bool(side_effect.get("side_effect_detected")):
-            rows.append({
-                "symbol": sym,
-                "action": "skip_side_effect_exists",
-                "side_effect": side_effect,
-            })
-            continue
-
-        existing_pending = [
-            row for row in SELECTED_ENTRY_INTENT_QUEUE
-            if str(row.get("symbol") or "").strip().upper() == sym
-            and str(row.get("status") or "") == "pending"
-        ]
-        if existing_pending:
-            rows.append({
-                "symbol": sym,
-                "action": "skip_pending_intent_exists",
-                "intent_key": existing_pending[-1].get("intent_key"),
-            })
-            continue
-
-        candidate = next(
-            (
-                dict(r)
-                for r in candidate_rows
-                if str(r.get("symbol") or "").strip().upper() == sym
-            ),
-            {"symbol": sym, "signal": "daily_breakout"},
-        )
-
-        sizing_truth = _p300_executable_sizing_truth(candidate)
-        if bool(SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED) and not bool(sizing_truth.get("executable")):
-            rows.append({
-                "symbol": sym,
-                "action": "skip_non_executable_sizing",
-                "executable_sizing_truth": sizing_truth,
-                "candidate": candidate,
-            })
-            continue
-        meta = {
-            "selected_entry_intent_backfill": True,
-            "backfilled_from_latest_selected": True,
-            "latest_scan_ts_utc": latest_scan.get("ts_utc"),
-            "latest_scan_reason": latest_scan.get("reason"),
-            "patch_version": PATCH_VERSION,
-        }
-
-        if not apply:
-            rows.append({
-                "symbol": sym,
-                "action": "would_queue_missing_side_effect_intent",
-                "candidate": candidate,
-            })
-            continue
-
-        queued_result = _p299_queue_selected_entry_intent(
-            candidate,
-            meta=meta,
-            source_name="selected_entry_intent_backfill",
-            live_allowed=bool(SCANNER_ALLOW_LIVE and not SCANNER_DRY_RUN and not DRY_RUN),
-        )
-        queued.append(queued_result)
-        rows.append({
-            "symbol": sym,
-            "action": "queued_missing_side_effect_intent",
-            "queue_result": queued_result,
-        })
-
-    return {
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "selected_entry_intent_backfill",
-        "applied": bool(apply),
-        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
-        "latest_scan_reason": latest_scan.get("reason"),
-        "selected_symbols": selected_symbols,
-        "queued": queued,
-        "rows": rows,
-    }
-
-def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | None = None, include_legacy: bool = False) -> dict:
-    rows = []
-    finalized_symbols = []
-
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return _p334_retired_queue_finalizer_status(
-            mode="selected_entry_finalizer",
-            apply=bool(apply),
-        )
-
-    if not bool(SELECTED_ENTRY_FINALIZER_ENABLED):
-        return {
-            "ok": True,
-            "patch_version": PATCH_VERSION,
-            "mode": "selected_entry_finalizer",
-            "enabled": False,
-            "applied": bool(apply),
-            "reason": "selected_entry_finalizer_disabled_for_swing_core_cleanup",
-            "processed": 0,
-            "finalized_symbols": finalized_symbols,
-            "rows": rows,
-        }
-
-    if bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED):
-        _p299_restore_selected_entry_intent_queue()
-        backfill = _p299_backfill_latest_selected_entry_intents(apply=bool(apply))
-    else:
-        backfill = {
-            "enabled": False,
-            "reason": "selected_entry_intent_queue_disabled_for_swing_core_cleanup",
-        }
-
-    max_run = max(1, min(int(max_items or SELECTED_ENTRY_FINALIZER_MAX_PER_RUN or 1), 5))
-
-    live_allowed_now = bool(
-        LIVE_TRADING_ENABLED
-        and SCANNER_ALLOW_LIVE
-        and not DRY_RUN
-        and not SCANNER_DRY_RUN
-        and not KILL_SWITCH
-        and not daily_halt_active()
-        and not daily_stop_hit()
-        and in_market_hours()
+    return _p334_retired_queue_finalizer_status(
+        mode="selected_entry_intent_backfill",
+        apply=bool(apply),
     )
 
-    processed = 0
-    for intent in SELECTED_ENTRY_INTENT_QUEUE:
-        if processed >= max_run:
-            break
-        if str(intent.get("status") or "") != "pending":
-            continue
-
-        sym = str(intent.get("symbol") or "").strip().upper()
-        signal = str(intent.get("signal") or "daily_breakout").strip() or "daily_breakout"
-        age_sec = _p299_intent_age_sec(intent)
-        side_effect = _p297_symbol_entry_side_effect(sym)
-
-        row = {
-            "intent_key": intent.get("intent_key"),
-            "symbol": sym,
-            "status_before": intent.get("status"),
-            "age_sec": round(age_sec, 2),
-            "side_effect_before": side_effect,
-            "apply": bool(apply),
-            "live_allowed_now": bool(live_allowed_now),
-            "action": "inspect",
-            "result": None,
-        }
-
-        if not sym:
-            intent["status"] = "expired"
-            intent["updated_utc"] = datetime.now(timezone.utc).isoformat()
-            intent["last_result"] = {"reason": "missing_symbol"}
-            row["action"] = "expired_missing_symbol"
-            rows.append(row)
-            processed += 1
-            continue
-
-        if age_sec > float(SELECTED_ENTRY_FINALIZER_MAX_INTENT_AGE_SEC):
-            intent["status"] = "expired"
-            intent["updated_utc"] = datetime.now(timezone.utc).isoformat()
-            intent["last_result"] = {"reason": "intent_too_old", "age_sec": age_sec}
-            row["action"] = "expired_intent_too_old"
-            rows.append(row)
-            processed += 1
-            continue
-
-        if bool(side_effect.get("side_effect_detected")):
-            intent["status"] = "finalized"
-            intent["updated_utc"] = datetime.now(timezone.utc).isoformat()
-            intent["last_result"] = {"reason": "side_effect_already_present", "side_effect": side_effect}
-            row["action"] = "finalized_existing_side_effect"
-            row["result"] = intent["last_result"]
-            finalized_symbols.append(sym)
-            rows.append(row)
-            processed += 1
-            continue
-
-        if not live_allowed_now:
-            row["action"] = "blocked_live_not_allowed"
-            row["result"] = {
-                "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
-                "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
-                "dry_run": bool(DRY_RUN),
-                "scanner_dry_run": bool(SCANNER_DRY_RUN),
-                "kill_switch": bool(KILL_SWITCH),
-                "daily_halt_active": bool(daily_halt_active()),
-                "market_open": bool(in_market_hours()),
-            }
-            rows.append(row)
-            processed += 1
-            continue
-
-        if not apply:
-            row["action"] = "would_submit"
-            rows.append(row)
-            processed += 1
-            continue
-
-        meta = dict(intent.get("meta") or {})
-        candidate_meta = dict(intent.get("candidate") or {})
-        for key in (
-            "avg_dollar_volume_20d",
-            "rank_score",
-            "selection_quality_score",
-            "entry_type",
-            "strategy",
-            "close",
-            "price",
-            "target_path_profit",
-            "target_path_recovery",
-            "close_to_high_pct",
-            "breakout_distance_pct",
-            "return_20d_pct",
-        ):
-            if meta.get(key) in (None, "", 0, 0.0) and candidate_meta.get(key) not in (None, ""):
-                meta[key] = candidate_meta.get(key)
-        meta["selected_entry_intent_finalizer"] = True
-        meta["selected_entry_intent_key"] = intent.get("intent_key")
-        meta["selected_entry_intent_patch"] = PATCH_VERSION
-
-        intent["attempt_count"] = int(intent.get("attempt_count") or 0) + 1
-        intent["last_attempt_utc"] = datetime.now(timezone.utc).isoformat()
-        intent["updated_utc"] = intent["last_attempt_utc"]
-
-        try:
-            resp = submit_scan_trade(
-                sym,
-                "buy",
-                signal,
-                meta=meta,
-                source=str(intent.get("source") or "worker_scan"),
-            )
-        except Exception as exc:
-            resp = {
-                "ok": False,
-                "rejected": True,
-                "reason": f"selected_entry_finalizer_exception:{exc}",
-                "symbol": sym,
-            }
-
-        submit_meta = _classify_scan_submit_response(resp)
-        intent["last_result"] = {
-            "response": resp,
-            "submit_state": submit_meta.get("state"),
-            "submit_reason": submit_meta.get("reason"),
-            "submit_attempted": bool(submit_meta.get("attempted")),
-        }
-
-        after = _p297_symbol_entry_side_effect(sym)
-        row["action"] = "submitted" if submit_meta.get("state") == "submitted" else "submit_attempted"
-        row["result"] = intent["last_result"]
-        row["side_effect_after"] = after
-
-        if submit_meta.get("state") == "submitted" or bool(after.get("side_effect_detected")):
-            intent["status"] = "submitted"
-            finalized_symbols.append(sym)
-        elif submit_meta.get("state") in {"blocked", "ignored", "preview_only"}:
-            intent["status"] = "blocked"
-        else:
-            intent["status"] = "pending"
-
-        try:
-            record_decision(
-                "ENTRY",
-                "selected_entry_finalizer",
-                symbol=sym,
-                side="buy",
-                signal=signal,
-                action=row["action"],
-                reason=str(submit_meta.get("reason") or resp.get("reason") or ""),
-                meta={"intent_key": intent.get("intent_key"), "submit_meta": submit_meta},
-            )
-        except Exception:
-            pass
-
-        rows.append(row)
-        processed += 1
-
-    _p299_persist_selected_entry_intent_queue(reason="finalize_selected_entry_intents")
-    return {
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "selected_entry_finalizer",
-        "applied": bool(apply),
-        "live_allowed_now": bool(live_allowed_now),
-        "processed": processed,
-        "finalized_symbols": finalized_symbols,
-        "backfill": backfill,
-        "rows": rows,
-        "queue": _p299_selected_entry_finalizer_status(),
-    }
+def _p299_finalize_selected_entry_intents(apply: bool = False, max_items: int | None = None, include_legacy: bool = False) -> dict:
+    return _p334_retired_queue_finalizer_status(
+        mode="selected_entry_finalizer",
+        apply=bool(apply),
+    )
 
 def _p297_finalize_selected_submissions(selected_payloads: list | None, would_submit: list | None) -> dict:
-    payloads = [dict(p or {}) for p in list(selected_payloads or []) if isinstance(p, dict)]
-    rows = []
-    if bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED):
-        return {
-            "enabled": False,
-            "retired": True,
-            "rows": rows,
-            "finalized_symbols": [],
-            "missing_symbols": [],
-            "retried_symbols": [],
-            "reason": "selected_submission_finalizer_removed_from_swing_runtime",
-        }
-
-    if not bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED):
-        return {
-            "enabled": False,
-            "rows": rows,
-            "finalized_symbols": [],
-            "missing_symbols": [],
-            "retried_symbols": [],
-            "reason": "selected_submission_finalizer_disabled",
-        }
-
-    would_rows = [dict(r or {}) for r in list(would_submit or []) if isinstance(r, dict)]
-    for payload in payloads:
-        candidate = dict(payload.get("candidate") or {})
-        sym = str(candidate.get("symbol") or payload.get("symbol") or "").strip().upper()
-        if not sym:
-            continue
-
-        existing_rows = [
-            r for r in would_rows
-            if str(r.get("symbol") or "").strip().upper() == sym
-        ]
-        latest_submit = existing_rows[-1] if existing_rows else {}
-        submit_state = str(latest_submit.get("submit_state") or "").strip().lower()
-        side_effect_before = _p297_symbol_entry_side_effect(sym)
-
-        row = {
-            "symbol": sym,
-            "selected": True,
-            "normal_submit_state": submit_state or None,
-            "normal_submit_reason": latest_submit.get("submit_reason") or latest_submit.get("reason"),
-            "side_effect_before": side_effect_before,
-            "retried": False,
-            "retry_response": None,
-            "side_effect_after": side_effect_before,
-            "finalized": bool(side_effect_before.get("side_effect_detected")),
-        }
-
-        retryable_state = submit_state in {"", "error", "not_submitted", "unknown", None}
-        if (
-            not row["finalized"]
-            and bool(SWING_SELECTED_SUBMISSION_FINALIZER_RETRY_ENABLED)
-            and bool(payload.get("live_allowed"))
-            and retryable_state
-        ):
-            retry_meta = dict(payload.get("meta") or {})
-            retry_meta["selected_submission_finalizer_retry"] = True
-            retry_meta["selected_submission_finalizer_patch"] = PATCH_VERSION
-            try:
-                resp = submit_scan_trade(
-                    sym,
-                    "buy",
-                    candidate.get("signal") or "daily_breakout",
-                    meta=retry_meta,
-                    source=str(payload.get("source_name") or "worker_scan"),
-                )
-            except Exception as exc:
-                resp = {
-                    "ok": False,
-                    "rejected": True,
-                    "reason": f"selected_submission_finalizer_exception:{exc}",
-                    "symbol": sym,
-                }
-
-            row["retried"] = True
-            row["retry_response"] = resp
-            submit_meta = _classify_scan_submit_response(resp)
-            retry_row = {
-                "symbol": sym,
-                "signal": candidate.get("signal"),
-                "rank_score": candidate.get("rank_score"),
-                "entry_type": payload.get("entry_type"),
-                "selected_submission_finalizer_retry": True,
-                **resp,
-                "submit_state": submit_meta.get("state"),
-                "submit_reason": submit_meta.get("reason"),
-                "submit_attempted": bool(submit_meta.get("attempted")),
-            }
-            would_submit.append(retry_row)
-            would_rows.append(retry_row)
-
-            try:
-                _record_paper_lifecycle(
-                    "entry",
-                    "finalizer_retry",
-                    symbol=sym,
-                    details={
-                        "submit_state": submit_meta.get("state"),
-                        "submit_reason": submit_meta.get("reason"),
-                        "order_id": submit_meta.get("order_id"),
-                        "entry_type": payload.get("entry_type"),
-                    },
-                )
-            except Exception:
-                pass
-
-            row["side_effect_after"] = _p297_symbol_entry_side_effect(sym)
-            row["finalized"] = bool(row["side_effect_after"].get("side_effect_detected"))
-
-        if not row["finalized"]:
-            try:
-                record_decision(
-                    "GUARDRAIL",
-                    "worker_scan",
-                    sym,
-                    side="buy",
-                    signal=str(candidate.get("signal") or "daily_breakout"),
-                    action="selected_without_submission_side_effect",
-                    reason=str(row.get("normal_submit_reason") or "selected_symbol_missing_plan_order_position"),
-                    meta=row,
-                )
-            except Exception:
-                pass
-
-        rows.append(row)
-
     return {
-        "enabled": True,
-        "rows": rows,
-        "finalized_symbols": [r.get("symbol") for r in rows if bool(r.get("finalized"))],
-        "missing_symbols": [r.get("symbol") for r in rows if not bool(r.get("finalized"))],
-        "retried_symbols": [r.get("symbol") for r in rows if bool(r.get("retried"))],
-        "reason": "selected_submission_finalizer_checked",
+        "enabled": False,
+        "retired": True,
+        "rows": [],
+        "finalized_symbols": [],
+        "missing_symbols": [],
+        "retried_symbols": [],
+        "reason": "selected_submission_finalizer_physically_removed",
     }
 
 def _latest_scan_submit_decision(decisions: list[dict] | None) -> dict:
@@ -41873,6 +41200,9 @@ def diagnostics_swing_core_status():
             "selected_entry_intent_persistence_removed_from_runtime",
             "selected_entry_finalizer_submit_loop_isolated",
             "selected_submission_finalizer_retry_loop_isolated",
+            "selected_entry_intent_helper_bodies_physically_removed",
+            "selected_entry_finalizer_loop_body_physically_removed",
+            "selected_submission_finalizer_loop_body_physically_removed",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -41895,8 +41225,8 @@ def diagnostics_swing_core_status():
         "next_cleanup_focus": [
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "physically_remove_selected_entry_intent_persistence_helpers_after_clean_deploy",
-            "physically_remove_selected_entry_finalizer_submit_loop_after_clean_deploy",
+            "remove_dead_selected_intent_env_reads_after_clean_deploy",
+            "remove_dead_selected_intent_global_queue_after_clean_deploy",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
     }
