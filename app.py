@@ -2433,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-348-runtime-slim-universe-coverage-rejected-candidate-actionability-cleanup"
+PATCH_VERSION = "patch-349-current-state-rejection-reason-scrub-near-miss-production-decision-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11764,6 +11764,14 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         target_score = round(float(_safe_float(target_path.get("score"))), 4) if target_path else None
         rank_score = row.get("rank_score")
 
+        scrubbed_reasons = _p349_scrub_current_state_rejection_reasons(
+            reasons,
+            active_position=active_position,
+            pending_plan=pending_plan,
+        )
+        reasons = list(scrubbed_reasons.get("reasons") or [])
+        stale_rejection_reasons_removed = list(scrubbed_reasons.get("removed") or [])
+
         blocking_reasons = []
         if active_position:
             blocking_reasons.append("active_position")
@@ -11825,6 +11833,7 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
             "gate_passed": bool(target_path.get("gate_passed")) if target_path else False,
             "gate_blockers": blockers,
             "rejection_reasons": reasons,
+            "stale_rejection_reasons_removed": stale_rejection_reasons_removed,
             "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
             "what_needs_to_change": _p317_watchlist_needed_changes(
                 row,
@@ -11854,6 +11863,12 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
 
     for row in items:
         row["actionability_bucket"] = _p348_rejected_candidate_actionability(row)
+        row["production_decision"] = _p349_production_decision_truth(row)
+        row["near_miss_minimum_changes"] = (
+            _p349_near_miss_minimum_changes(row)
+            if row.get("actionability_bucket") == "near_miss_actionable"
+            else []
+        )
 
     actionability_rows = {
         "actionable_tradeable": [r for r in items if r.get("actionability_bucket") == "actionable_tradeable"],
@@ -11862,6 +11877,16 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         "too_dangerous": [r for r in items if r.get("actionability_bucket") == "too_dangerous"],
         "correctly_rejected": [r for r in items if r.get("actionability_bucket") == "correctly_rejected"],
         "not_candidate": [r for r in items if r.get("actionability_bucket") == "not_candidate"],
+    }
+    production_decision_rows = {
+        "selected": [r for r in items if r.get("production_decision") == "selected"],
+        "near_miss": [r for r in items if r.get("production_decision") == "near_miss"],
+        "too_dangerous": [r for r in items if r.get("production_decision") == "too_dangerous"],
+        "already_active": [r for r in items if r.get("production_decision") == "already_active"],
+        "pending_plan": [r for r in items if r.get("production_decision") == "pending_plan"],
+        "correctly_rejected": [r for r in items if r.get("production_decision") == "correctly_rejected"],
+        "not_candidate": [r for r in items if r.get("production_decision") == "not_candidate"],
+        "watch": [r for r in items if r.get("production_decision") == "watch"],
     }
 
     effective_max_positions = int(_effective_max_open_positions())
@@ -11923,6 +11948,24 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
             "correctly_rejected_symbols": [r.get("symbol") for r in actionability_rows["correctly_rejected"]],
             "not_candidate_count": len(actionability_rows["not_candidate"]),
             "not_candidate_symbols": [r.get("symbol") for r in actionability_rows["not_candidate"]],
+        },
+        "production_decision_truth": {
+            "selected_count": len(production_decision_rows["selected"]),
+            "selected_symbols": [r.get("symbol") for r in production_decision_rows["selected"]],
+            "near_miss_count": len(production_decision_rows["near_miss"]),
+            "near_miss_symbols": [r.get("symbol") for r in production_decision_rows["near_miss"]],
+            "too_dangerous_count": len(production_decision_rows["too_dangerous"]),
+            "too_dangerous_symbols": [r.get("symbol") for r in production_decision_rows["too_dangerous"]],
+            "already_active_count": len(production_decision_rows["already_active"]),
+            "already_active_symbols": [r.get("symbol") for r in production_decision_rows["already_active"]],
+            "pending_plan_count": len(production_decision_rows["pending_plan"]),
+            "pending_plan_symbols": [r.get("symbol") for r in production_decision_rows["pending_plan"]],
+            "correctly_rejected_count": len(production_decision_rows["correctly_rejected"]),
+            "correctly_rejected_symbols": [r.get("symbol") for r in production_decision_rows["correctly_rejected"]],
+            "not_candidate_count": len(production_decision_rows["not_candidate"]),
+            "not_candidate_symbols": [r.get("symbol") for r in production_decision_rows["not_candidate"]],
+            "watch_count": len(production_decision_rows["watch"]),
+            "watch_symbols": [r.get("symbol") for r in production_decision_rows["watch"]],
         },
         "selected_total": max(
             int(summary.get("selected_total") or 0),
@@ -12071,6 +12114,108 @@ def _p317_scan_metadata_truth(active_scan: dict | None = None, summary: dict | N
             or "unknown"
         ),
     }
+
+def _p349_scrub_current_state_rejection_reasons(
+    reasons: list[str] | None,
+    *,
+    active_position: bool = False,
+    pending_plan: bool = False,
+) -> dict:
+    stale_position_reasons = {
+        "position_already_open",
+        "plan_or_pending_entry_exists",
+        "active_position",
+        "pending_plan",
+    }
+
+    cleaned = []
+    removed = []
+
+    for reason in list(reasons or []):
+        reason_s = str(reason or "").strip()
+        reason_l = reason_s.lower()
+        if not reason_s:
+            continue
+        if reason_l in stale_position_reasons and not bool(active_position or pending_plan):
+            removed.append(reason_s)
+            continue
+        cleaned.append(reason_s)
+
+    return {
+        "reasons": list(dict.fromkeys(cleaned)),
+        "removed": list(dict.fromkeys(removed)),
+    }
+
+
+def _p349_near_miss_minimum_changes(row: dict | None) -> list[str]:
+    row = dict(row or {})
+    if not row:
+        return ["candidate_must_appear_in_current_scan"]
+
+    if bool(row.get("active_position")):
+        return ["already_active_no_new_entry_needed"]
+    if bool(row.get("pending_plan")):
+        return ["pending_plan_must_fill_or_cancel_before_new_entry"]
+
+    out = []
+    reasons = [
+        str(x or "").strip().lower()
+        for x in list(row.get("rejection_reasons") or [])
+        if str(x or "").strip()
+    ]
+    blockers = [
+        str(x or "").strip().lower()
+        for x in list(row.get("gate_blockers") or [])
+        if str(x or "").strip()
+    ]
+
+    rank_score = float(_safe_float(row.get("rank_score")))
+    target_score = float(_safe_float(row.get("target_path_score")))
+    risk_pct = float(_safe_float(row.get("risk_per_share_pct")))
+    breakout_distance = float(_safe_float(row.get("breakout_distance_pct")))
+    close_to_high = float(_safe_float(row.get("close_to_high_pct")))
+
+    if "production_contract_rank_below_min" in reasons or "rank_score" in blockers:
+        out.append(f"rank_score_must_improve_current:{round(rank_score, 4)}")
+    if "production_contract_not_close_to_high" in reasons or "close_to_high" in blockers:
+        out.append(f"close_to_high_must_improve_current:{round(close_to_high, 4)}")
+    if "breakout_distance" in blockers or "production_contract_too_extended_above_breakout" in reasons:
+        out.append(f"breakout_distance_must_normalize_current:{round(breakout_distance, 4)}")
+    if "risk_per_share" in blockers or "production_contract_risk_too_wide" in reasons:
+        out.append(f"risk_per_share_must_contract_current:{round(risk_pct, 4)}")
+    if target_score and target_score < float(SWING_TARGET_PATH_MIN_SCORE):
+        out.append(f"target_path_score_below_min_current:{round(target_score, 4)}")
+
+    if not out:
+        out.append("near_miss_has_no_single_numeric_blocker_recheck_next_scan")
+
+    return list(dict.fromkeys(out))
+
+
+def _p349_production_decision_truth(row: dict | None) -> str:
+    row = dict(row or {})
+    if not row:
+        return "not_candidate"
+
+    if bool(row.get("active_position")):
+        return "already_active"
+    if bool(row.get("pending_plan")):
+        return "pending_plan"
+    if bool(row.get("selected")) or bool(row.get("eligible")) or str(row.get("status") or "") == "tradeable":
+        return "selected"
+
+    bucket = str(row.get("actionability_bucket") or "").strip()
+    if bucket == "near_miss_actionable":
+        return "near_miss"
+    if bucket == "too_dangerous":
+        return "too_dangerous"
+    if bucket == "correctly_rejected":
+        return "correctly_rejected"
+
+    if str(row.get("status") or "") == "rejected":
+        return "correctly_rejected"
+
+    return "watch"
 
 def _p348_rejected_candidate_actionability(row: dict | None) -> str:
     row = dict(row or {})
@@ -12473,6 +12618,10 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "near_miss_actionable_count": int((watch.get("rejected_candidate_actionability") or {}).get("near_miss_actionable_count") or 0),
             "too_dangerous_count": int((watch.get("rejected_candidate_actionability") or {}).get("too_dangerous_count") or 0),
             "correctly_rejected_count": int((watch.get("rejected_candidate_actionability") or {}).get("correctly_rejected_count") or 0),
+            "production_near_miss_count": int((watch.get("production_decision_truth") or {}).get("near_miss_count") or 0),
+            "production_near_miss_symbols": list((watch.get("production_decision_truth") or {}).get("near_miss_symbols") or []),
+            "production_too_dangerous_count": int((watch.get("production_decision_truth") or {}).get("too_dangerous_count") or 0),
+            "production_already_active_count": int((watch.get("production_decision_truth") or {}).get("already_active_count") or 0),
         },
         "profit_path_status": {
             "daily_goal_low": float(globals().get("BROKER_DAILY_GOAL_LOW_DOLLARS", 100) or 100),
