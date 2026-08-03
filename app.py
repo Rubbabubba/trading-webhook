@@ -2433,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-350-broker-qty-exit-clamp-same-day-preservation-exit-truth-after-hours-selected-suppression"
+PATCH_VERSION = "patch-350-hotfix-submit-trace-after-hours-missing-opportunity-suppression"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12644,6 +12644,14 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         )
     ]
 
+    market_open_now = bool(watch.get("market_open"))
+    after_hours_suppression = dict(watch.get("after_hours_selected_candidate_suppression") or {})
+    after_hours_suppressed = bool(after_hours_suppression.get("active"))
+    effective_missing_count = int(watch.get("missing_trade_opportunity_count") or 0)
+    effective_missing_symbols = list(watch.get("missing_trade_opportunity_symbols") or [])
+    raw_selected_count = len(selected_items)
+    raw_selected_symbols = [row.get("symbol") for row in selected_items]
+
     direct_submit_enabled = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
     direct_submit_status = {
         "active": direct_submit_enabled,
@@ -12664,12 +12672,16 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         blockers.append("loss_halt_active")
     if int(active_truth.get("active_position_count") or 0) >= int(_effective_max_open_positions()):
         blockers.append("max_open_positions_reached")
-    if not selected_items and captured_items:
+    if after_hours_suppressed:
+        blockers.append("market_closed_selected_candidates_suppressed")
+    elif not selected_items and captured_items:
         blockers.append("latest_candidate_already_captured")
     elif not selected_items:
         blockers.append("no_selected_or_eligible_candidates")
 
     path_status = "ready_when_candidate_selected" if not blockers or blockers == ["no_selected_or_eligible_candidates"] else "blocked"
+    if blockers == ["market_closed_selected_candidates_suppressed"]:
+        path_status = "market_closed_selected_candidates_suppressed"
     if blockers == ["latest_candidate_already_captured"]:
         path_status = "captured_candidate_monitor_existing_position"
     if selected_items and not blockers:
@@ -12684,12 +12696,21 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         "blockers": blockers,
         "trade_submission_behavior_changed": False,
         "direct_submit": direct_submit_status,
-        "selected_or_eligible_count": len(selected_items),
-        "selected_or_eligible_symbols": [row.get("symbol") for row in selected_items],
+        "selected_or_eligible_count": raw_selected_count,
+        "selected_or_eligible_symbols": raw_selected_symbols,
         "captured_candidate_count": len(captured_items),
         "captured_candidate_symbols": [row.get("symbol") for row in captured_items],
-        "missing_trade_opportunity_count": len(selected_items),
-        "missing_trade_opportunity_symbols": [row.get("symbol") for row in selected_items],
+        "missing_trade_opportunity_count": effective_missing_count,
+        "missing_trade_opportunity_symbols": effective_missing_symbols,
+        "after_hours_selected_candidate_suppression": {
+            "active": after_hours_suppressed,
+            "market_open": market_open_now,
+            "raw_selected_count": raw_selected_count,
+            "raw_selected_symbols": raw_selected_symbols,
+            "suppressed_count": int(after_hours_suppression.get("suppressed_count") or 0),
+            "suppressed_symbols": list(after_hours_suppression.get("suppressed_symbols") or []),
+            "reason": after_hours_suppression.get("reason"),
+        },
         "entry_controls": {
             "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
             "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
