@@ -2433,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-347-watchlist-universe-truth-consolidation-active-position-coverage-fix"
+PATCH_VERSION = "patch-348-runtime-slim-universe-coverage-rejected-candidate-actionability-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11852,7 +11852,35 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
     watch = [r for r in items if str(r.get("status") or "").startswith("watch")]
     metadata = _p317_scan_metadata_truth(active_scan=active_scan, summary=summary)
 
+    for row in items:
+        row["actionability_bucket"] = _p348_rejected_candidate_actionability(row)
+
+    actionability_rows = {
+        "actionable_tradeable": [r for r in items if r.get("actionability_bucket") == "actionable_tradeable"],
+        "near_miss_actionable": [r for r in items if r.get("actionability_bucket") == "near_miss_actionable"],
+        "blocked_by_current_position": [r for r in items if r.get("actionability_bucket") == "blocked_by_current_position"],
+        "too_dangerous": [r for r in items if r.get("actionability_bucket") == "too_dangerous"],
+        "correctly_rejected": [r for r in items if r.get("actionability_bucket") == "correctly_rejected"],
+        "not_candidate": [r for r in items if r.get("actionability_bucket") == "not_candidate"],
+    }
+
+    effective_max_positions = int(_effective_max_open_positions())
+    active_position_count = len(active_symbols)
+    open_slots = max(0, effective_max_positions - active_position_count)
     coverage_missing_active_symbols = sorted(active_symbols - set(requested_limited))
+
+    if actionable_tradeable:
+        open_slot_read = "open_slots_available_with_actionable_candidate"
+    elif open_slots <= 0:
+        open_slot_read = "capacity_full"
+    elif actionability_rows["near_miss_actionable"]:
+        open_slot_read = "open_slots_unused_near_miss_candidates_exist"
+    elif actionability_rows["too_dangerous"]:
+        open_slot_read = "open_slots_unused_candidates_too_dangerous"
+    elif items:
+        open_slot_read = "open_slots_unused_no_candidate_met_contract"
+    else:
+        open_slot_read = "open_slots_unused_no_current_candidates"
 
     return {
         "ok": True,
@@ -11866,6 +11894,36 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         "runtime_symbols_original_count": int(metadata.get("runtime_symbols_original_count") or 0),
         "runtime_symbols_excluded_count": int(metadata.get("runtime_symbols_excluded_count") or 0),
         "runtime_watch_symbols": list(metadata.get("runtime_watch_symbols") or []),
+        "runtime_slim_coverage": {
+            "applied": bool(metadata.get("runtime_slim_applied")),
+            "reason": metadata.get("runtime_slim_reason"),
+            "used_count": int(metadata.get("runtime_symbols_used_count") or 0),
+            "original_count": int(metadata.get("runtime_symbols_original_count") or 0),
+            "excluded_count": int(metadata.get("runtime_symbols_excluded_count") or 0),
+            "used_symbols": list(metadata.get("runtime_symbols") or []),
+            "excluded_symbols": list(metadata.get("runtime_excluded_symbols") or []),
+            "watch_symbols": list(metadata.get("runtime_watch_symbols") or []),
+        },
+        "open_slot_truth": {
+            "effective_max_open_positions": effective_max_positions,
+            "active_position_count": active_position_count,
+            "open_slots": open_slots,
+            "read": open_slot_read,
+        },
+        "rejected_candidate_actionability": {
+            "actionable_tradeable_count": len(actionability_rows["actionable_tradeable"]),
+            "actionable_tradeable_symbols": [r.get("symbol") for r in actionability_rows["actionable_tradeable"]],
+            "near_miss_actionable_count": len(actionability_rows["near_miss_actionable"]),
+            "near_miss_actionable_symbols": [r.get("symbol") for r in actionability_rows["near_miss_actionable"]],
+            "blocked_by_current_position_count": len(actionability_rows["blocked_by_current_position"]),
+            "blocked_by_current_position_symbols": [r.get("symbol") for r in actionability_rows["blocked_by_current_position"]],
+            "too_dangerous_count": len(actionability_rows["too_dangerous"]),
+            "too_dangerous_symbols": [r.get("symbol") for r in actionability_rows["too_dangerous"]],
+            "correctly_rejected_count": len(actionability_rows["correctly_rejected"]),
+            "correctly_rejected_symbols": [r.get("symbol") for r in actionability_rows["correctly_rejected"]],
+            "not_candidate_count": len(actionability_rows["not_candidate"]),
+            "not_candidate_symbols": [r.get("symbol") for r in actionability_rows["not_candidate"]],
+        },
         "selected_total": max(
             int(summary.get("selected_total") or 0),
             len([r for r in items if bool(r.get("selected"))]),
@@ -11950,6 +12008,29 @@ def _p317_scan_metadata_truth(active_scan: dict | None = None, summary: dict | N
         or symbols_used
     )
 
+        runtime_symbols = list(
+        summary.get("runtime_symbols")
+        or active_scan.get("runtime_symbols")
+        or hist_summary.get("runtime_symbols")
+        or runtime_slim.get("symbols")
+        or active_scan.get("symbols")
+        or []
+    )
+    runtime_excluded_symbols = list(
+        summary.get("runtime_excluded_symbols")
+        or active_scan.get("runtime_excluded_symbols")
+        or hist_summary.get("runtime_excluded_symbols")
+        or runtime_slim.get("excluded_symbols")
+        or []
+    )
+    runtime_watch_symbols = list(
+        summary.get("runtime_watch_symbols")
+        or active_scan.get("runtime_watch_symbols")
+        or hist_summary.get("runtime_watch_symbols")
+        or runtime_slim.get("watch_symbols")
+        or []
+    )
+
     return {
         "scan_ts_utc": scan_ts,
         "truth_source": str(active_scan.get("_scan_source") or summary.get("truth_source") or "unknown"),
@@ -11968,15 +12049,81 @@ def _p317_scan_metadata_truth(active_scan: dict | None = None, summary: dict | N
             or runtime_slim.get("excluded_count")
             or max(0, int(symbols_original or 0) - int(symbols_used or 0))
         ),
-        "runtime_watch_symbols": list(
-            summary.get("runtime_watch_symbols")
-            or active_scan.get("runtime_watch_symbols")
-            or hist_summary.get("runtime_watch_symbols")
-            or runtime_slim.get("watch_symbols")
-            or []
+        "runtime_symbols": [
+            str(sym or "").strip().upper()
+            for sym in runtime_symbols
+            if str(sym or "").strip()
+        ][:100],
+        "runtime_excluded_symbols": [
+            str(sym or "").strip().upper()
+            for sym in runtime_excluded_symbols
+            if str(sym or "").strip()
+        ][:100],
+        "runtime_watch_symbols": [
+            str(sym or "").strip().upper()
+            for sym in runtime_watch_symbols
+            if str(sym or "").strip()
+        ],
+        "runtime_slim_reason": str(
+            runtime_slim.get("reason")
+            or summary.get("runtime_slim_reason")
+            or active_scan.get("runtime_slim_reason")
+            or "unknown"
         ),
     }
 
+def _p348_rejected_candidate_actionability(row: dict | None) -> str:
+    row = dict(row or {})
+    if not row:
+        return "not_candidate"
+
+    if bool(row.get("active_position")) or bool(row.get("pending_plan")) or bool(row.get("captured")):
+        return "blocked_by_current_position"
+
+    if bool(row.get("selected")) or bool(row.get("eligible")) or str(row.get("status") or "") == "tradeable":
+        return "actionable_tradeable"
+
+    reasons = [
+        str(x or "").strip().lower()
+        for x in list(row.get("rejection_reasons") or [])
+        if str(x or "").strip()
+    ]
+    blockers = [
+        str(x or "").strip().lower()
+        for x in list(row.get("gate_blockers") or [])
+        if str(x or "").strip()
+    ]
+    blocking_reasons = [
+        str(x or "").strip().lower()
+        for x in list(row.get("blocking_reasons") or [])
+        if str(x or "").strip()
+    ]
+
+    risk_pct = float(_safe_float(row.get("risk_per_share_pct")))
+    breakout_distance = float(_safe_float(row.get("breakout_distance_pct")))
+    close_to_high = float(_safe_float(row.get("close_to_high_pct")))
+    rank_score = float(_safe_float(row.get("rank_score")))
+    target_path_score = float(_safe_float(row.get("target_path_score")))
+
+    reason_blob = "|".join(reasons + blockers + blocking_reasons)
+
+    if (
+        risk_pct >= 8.0
+        or "too_extended" in reason_blob
+        or "risk_too_wide" in reason_blob
+        or ("risk_per_share" in reason_blob and risk_pct >= 6.0)
+    ):
+        return "too_dangerous"
+
+    near_rank = rank_score >= 100.0
+    near_target_path = target_path_score >= 20.0
+    near_breakout = abs(breakout_distance) <= 3.0
+    near_high = close_to_high >= 97.0
+
+    if near_rank and (near_target_path or near_breakout or near_high):
+        return "near_miss_actionable"
+
+    return "correctly_rejected"
 
 def _p317_watchlist_needed_changes(
     row: dict | None,
@@ -12322,6 +12469,10 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "universe_coverage_ok": bool((watch.get("universe_truth") or {}).get("coverage_ok", True)),
             "active_symbols": list((watch.get("universe_truth") or {}).get("active_symbols") or []),
             "coverage_missing_active_symbols": list((watch.get("universe_truth") or {}).get("coverage_missing_active_symbols") or []),
+            "open_slot_read": (watch.get("open_slot_truth") or {}).get("read"),
+            "near_miss_actionable_count": int((watch.get("rejected_candidate_actionability") or {}).get("near_miss_actionable_count") or 0),
+            "too_dangerous_count": int((watch.get("rejected_candidate_actionability") or {}).get("too_dangerous_count") or 0),
+            "correctly_rejected_count": int((watch.get("rejected_candidate_actionability") or {}).get("correctly_rejected_count") or 0),
         },
         "profit_path_status": {
             "daily_goal_low": float(globals().get("BROKER_DAILY_GOAL_LOW_DOLLARS", 100) or 100),
