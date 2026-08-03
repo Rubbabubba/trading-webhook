@@ -1638,6 +1638,27 @@ SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must 
 NEW_ENTRIES_ENABLED = env_bool_any("NEW_ENTRIES_ENABLED", "ENTRIES_ENABLED", default="true")
 PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
 
+SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED = env_bool_any(
+    "SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED",
+    default=True,
+)
+SWING_DAILY_GOAL_PRESERVATION_NEAR_TARGET_PCT = getenv_float_any(
+    "SWING_DAILY_GOAL_PRESERVATION_NEAR_TARGET_PCT",
+    default=0.90,
+)
+SWING_DAILY_GOAL_PRESERVATION_CLOSE_ALL_AT_LOW_TARGET = env_bool_any(
+    "SWING_DAILY_GOAL_PRESERVATION_CLOSE_ALL_AT_LOW_TARGET",
+    default=True,
+)
+SWING_DAILY_GOAL_PRESERVATION_CLOSE_PROFITABLE_NEAR_TARGET = env_bool_any(
+    "SWING_DAILY_GOAL_PRESERVATION_CLOSE_PROFITABLE_NEAR_TARGET",
+    default=True,
+)
+SWING_DAILY_GOAL_PRESERVATION_MAX_OPEN_LOSS_DOLLARS = getenv_float_any(
+    "SWING_DAILY_GOAL_PRESERVATION_MAX_OPEN_LOSS_DOLLARS",
+    default=10.0,
+)
+
 # Retired in Patch 341. Kept as fixed constants only so old status stubs stay import-safe.
 SELECTED_ENTRY_INTENT_QUEUE_ENABLED = False
 SELECTED_ENTRY_FINALIZER_ENABLED = False
@@ -2345,7 +2366,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-341-dead-selected-intent-env-global-cleanup-retired-endpoint-status-consolidation"
+PATCH_VERSION = "patch-342-recovered-position-stale-deactivation-guard-daily-goal-preservation-exit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7591,6 +7612,22 @@ def list_open_positions_details_allowed() -> list[dict]:
             continue
     return out
 
+def _p342_broker_backed_filled_or_recovered_plan(plan: dict | None, qty_signed: float | None = None) -> bool:
+    p = dict(plan or {})
+    execution_state = str(p.get("execution_state") or p.get("lifecycle_state") or "").strip().lower()
+    order_status = str(p.get("order_status") or "").strip().lower()
+    filled_qty = _safe_float(p.get("filled_qty") or p.get("qty") or 0.0, 0.0)
+    broker_position_present = abs(_safe_float(qty_signed, 0.0)) > 0
+
+    return bool(
+        broker_position_present
+        and (
+            bool(p.get("recovered"))
+            or execution_state in {"filled", "open", "partial", "partially_filled"}
+            or order_status in {"filled", "partially_filled"}
+            or filled_qty > 0
+        )
+    )
 
 def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
     """Best-effort sync between internal plan, broker order state, and live position."""
@@ -7731,14 +7768,31 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                 _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
                 return out
     elif age_sec is not None and age_sec >= PLAN_STALE_SUBMITTED_SEC and str(order_status.get("status") or "").lower() not in {"filled", "partially_filled"}:
+        if _p342_broker_backed_filled_or_recovered_plan(plan, qty_signed=qty_signed):
+            plan["active"] = True
+            plan["execution_state"] = "filled"
+            plan["lifecycle_state"] = "filled"
+            plan["execution_state_reason"] = "broker_backed_recovered_plan_stale_deactivation_guard"
+            plan["order_status"] = "filled"
+            plan["p342_stale_deactivation_guard"] = True
+            plan["p342_stale_deactivation_guard_at"] = now_ny().isoformat()
+            out["changes"].append("blocked_stale_submitted_deactivation_for_broker_backed_filled_plan")
+            _apply_execution_lifecycle_reconcile(symbol, plan, broker_order={"status": "filled"}, broker_position_qty=qty_signed)
+            record_decision(
+                "RECONCILE",
+                "worker_exit",
+                symbol,
+                action="stale_deactivation_blocked",
+                reason="broker_backed_recovered_filled_plan",
+                meta={"age_sec": age_sec, "order_status": order_status, "recovered": bool(plan.get("recovered"))},
+            )
+            return out
+
         plan["active"] = False
         out["changes"].append("deactivated_stale_submitted_plan")
         _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
         record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="stale_submitted_plan", meta={"age_sec": age_sec, "order_status": order_status})
         return out
-
-    _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
-    return out
 
 
 
@@ -30043,7 +30097,107 @@ def _run_eod_flatten_cycle(reconcile_actions: list[dict] | None = None, reason: 
     except Exception:
         pass
     return status
-    
+
+def _p342_position_unrealized_for_symbol(symbol: str, broker_positions: list[dict] | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    for row in list(broker_positions or list_open_positions_details_allowed() or []):
+        if str((row or {}).get("symbol") or "").strip().upper() != sym:
+            continue
+        return {
+            "symbol": sym,
+            "qty": _safe_float((row or {}).get("qty") or 0.0, 0.0),
+            "avg_entry_price": _safe_float((row or {}).get("avg_entry_price") or 0.0, 0.0),
+            "current_price": _safe_float((row or {}).get("current_price") or (row or {}).get("last_price") or 0.0, 0.0),
+            "unrealized_pl": _safe_float((row or {}).get("unrealized_pl") or 0.0, 0.0),
+            "unrealized_plpc": _safe_float((row or {}).get("unrealized_plpc") or 0.0, 0.0),
+        }
+    return {"symbol": sym, "qty": 0.0, "unrealized_pl": 0.0}
+
+
+def _p342_daily_goal_preservation_exit_plan() -> dict:
+    pnl_truth = today_pnl_truth_snapshot()
+    goal = dict(pnl_truth.get("daily_goal_progress") or _p295_broker_daily_goal_progress(pnl_truth) or {})
+    primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
+    target_low = max(0.01, _safe_float(goal.get("target_low"), float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW or 100.0)))
+    progress = primary / target_low if target_low > 0 else 0.0
+    low_hit = bool(goal.get("low_target_hit") or primary >= target_low)
+    near_hit = bool(progress >= max(0.0, float(SWING_DAILY_GOAL_PRESERVATION_NEAR_TARGET_PCT or 0.90)))
+
+    broker_positions = list_open_positions_details_allowed()
+    rows = []
+    close_symbols = []
+    protect_symbols = []
+
+    for sym, plan in sorted(dict(TRADE_PLAN or {}).items()):
+        sym = str(sym or "").strip().upper()
+        if not sym or not isinstance(plan, dict) or not bool(plan.get("active")):
+            continue
+
+        pos = _p342_position_unrealized_for_symbol(sym, broker_positions=broker_positions)
+        qty = _safe_float(pos.get("qty"), 0.0)
+        if qty == 0:
+            continue
+
+        unreal = _safe_float(pos.get("unrealized_pl"), 0.0)
+        recovered = bool(plan.get("recovered"))
+        reason = "none"
+        action = "hold"
+
+        if low_hit and bool(SWING_DAILY_GOAL_PRESERVATION_CLOSE_ALL_AT_LOW_TARGET):
+            action = "close"
+            reason = "daily_goal_low_hit_close_all"
+        elif near_hit and unreal > 0 and bool(SWING_DAILY_GOAL_PRESERVATION_CLOSE_PROFITABLE_NEAR_TARGET):
+            action = "close"
+            reason = "daily_goal_near_hit_close_profitable"
+        elif near_hit and unreal <= -abs(float(SWING_DAILY_GOAL_PRESERVATION_MAX_OPEN_LOSS_DOLLARS or 10.0)):
+            action = "close"
+            reason = "daily_goal_near_hit_max_open_loss"
+        elif near_hit or low_hit:
+            action = "protect"
+            reason = "daily_goal_preservation_monitor"
+
+        row = {
+            "symbol": sym,
+            "action": action,
+            "reason": reason,
+            "qty": qty,
+            "unrealized_pl": round(unreal, 4),
+            "recovered": recovered,
+            "entry_price": plan.get("entry_price"),
+            "stop_price": plan.get("stop_price"),
+            "take_price": plan.get("take_price"),
+        }
+        rows.append(row)
+
+        if action == "close":
+            close_symbols.append(sym)
+        elif action == "protect":
+            protect_symbols.append(sym)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "daily_goal_preservation_exit",
+        "enabled": bool(SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED),
+        "market_open": bool(in_market_hours()),
+        "daily_goal_progress": goal,
+        "primary_daily_pnl": round(primary, 4),
+        "target_low": round(target_low, 4),
+        "progress_to_low_fraction": round(progress, 4),
+        "near_target_hit": near_hit,
+        "low_target_hit": low_hit,
+        "should_act": bool(SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED and (near_hit or low_hit) and close_symbols),
+        "close_symbols": close_symbols,
+        "protect_symbols": protect_symbols,
+        "rows": rows,
+        "recommended_action": (
+            "close_daily_goal_preservation_symbols"
+            if close_symbols
+            else "protective_monitor_daily_goal_near_hit"
+            if near_hit or low_hit
+            else "none"
+        ),
+    }    
     
 @app.post("/worker/exit")
 def worker_exit(body: dict = Body(default_factory=dict)):
@@ -30175,6 +30329,46 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             "snapshot_ts_utc": snapshot.get("ts_utc"),
             "reconcile": reconcile_actions,
         }
+
+    daily_goal_preservation = _p342_daily_goal_preservation_exit_plan()
+    if bool(daily_goal_preservation.get("enabled")) and bool(daily_goal_preservation.get("should_act")):
+        for row in list(daily_goal_preservation.get("rows") or []):
+            if str(row.get("action") or "") != "close":
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            plan = TRADE_PLAN.get(symbol)
+            if not isinstance(plan, dict) or not bool(plan.get("active")):
+                continue
+            plan["last_exit_attempt_ts"] = utc_ts()
+            reason = str(row.get("reason") or "daily_goal_preservation_exit")
+            out = close_position(symbol, reason=reason, source="worker_exit")
+            if out.get("closed"):
+                plan["active"] = False
+                try:
+                    px = _safe_float(row.get("current_price") or get_latest_price(symbol), 0.0)
+                except Exception:
+                    px = 0.0
+                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+            result = {
+                "symbol": symbol,
+                "action": "daily_goal_preservation_exit" if out.get("closed") else "daily_goal_preservation_exit_failed",
+                "reason": reason,
+                "daily_goal_preservation": row,
+                **dict(out or {}),
+            }
+            results.append(result)
+            record_decision(
+                "EXIT",
+                "worker_exit",
+                symbol,
+                side=str((plan or {}).get("side") or "buy"),
+                signal=str((plan or {}).get("signal") or ""),
+                action=result["action"],
+                reason=reason,
+                meta={"daily_goal_preservation": daily_goal_preservation, "result": out},
+            )
 
     # Manage active plans with stop/take
     for symbol, plan in list(TRADE_PLAN.items()):
@@ -30378,9 +30572,28 @@ def worker_exit(body: dict = Body(default_factory=dict)):
     except Exception as e:
         logger.exception("TRADES_TODAY_ERROR err=%s", e)
     if results or reconcile_actions:
-        persist_positions_snapshot(reason="worker_exit_cycle", extra={"results_count": len(results), "reconcile_count": len(reconcile_actions)})
-    update_exit_heartbeat(status="ok", results=len(results), reconcile=len(reconcile_actions))
-    return {"ok": True, "ts_ny": now.isoformat(), "reconcile": reconcile_actions, "results": results}
+        persist_positions_snapshot(
+            reason="worker_exit_cycle",
+            extra={
+                "results_count": len(results),
+                "reconcile_count": len(reconcile_actions),
+                "daily_goal_preservation": daily_goal_preservation if "daily_goal_preservation" in locals() else {},
+            },
+        )
+    update_exit_heartbeat(
+        status="ok",
+        results=len(results),
+        reconcile=len(reconcile_actions),
+        daily_goal_preservation_action=(daily_goal_preservation or {}).get("recommended_action") if "daily_goal_preservation" in locals() else None,
+        daily_goal_preservation_close_symbols=(daily_goal_preservation or {}).get("close_symbols") if "daily_goal_preservation" in locals() else [],
+    )
+    return {
+        "ok": True,
+        "ts_ny": now.isoformat(),
+        "reconcile": reconcile_actions,
+        "daily_goal_preservation": daily_goal_preservation if "daily_goal_preservation" in locals() else {},
+        "results": results,
+    }
 
 
 
@@ -39459,6 +39672,11 @@ async def worker_selected_entry_finalizer(req: Request):
         apply=False,
     )
 
+@app.get("/diagnostics/daily_goal_preservation_exit")
+def diagnostics_daily_goal_preservation_exit(request: Request):
+    require_admin_if_configured(request)
+    return _p342_daily_goal_preservation_exit_plan()
+
 @app.get("/diagnostics/broker_daily_goal_truth")
 def diagnostics_broker_daily_goal_truth(request: Request):
     require_admin_if_configured(request)
@@ -39479,6 +39697,7 @@ def diagnostics_broker_daily_goal_truth(request: Request):
             "pilot_only": bool(SWING_DEFENSIVE_RELAXATION_PILOT_ONLY),
             "pilot_symbols": _p295_defensive_relaxation_pilot_symbols(),
         },
+        "daily_goal_preservation_exit": _p342_daily_goal_preservation_exit_plan(),
         "recommended_action": "use_broker_daily_goal_truth_for_daily_target_tracking",
     }
 
