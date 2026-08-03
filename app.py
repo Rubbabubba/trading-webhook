@@ -1853,6 +1853,7 @@ HEAVY_DIAGNOSTICS_ENABLED = env_bool_any(
 )
 # --- Trades-Today forcing (emergency mode) ---
 TRADES_TODAY_ENABLE = env_bool("TRADES_TODAY_ENABLE", False)
+TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED = env_bool_any("TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED", default=False)
 TRADES_TODAY_TARGET_TRADES = int(getenv_any("TRADES_TODAY_TARGET_TRADES", default="1"))
 TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_force")
 TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
@@ -2433,7 +2434,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-350-hotfix-submit-trace-after-hours-missing-opportunity-suppression"
+PATCH_VERSION = "patch-351-worker-exit-trades-today-forcing-isolation-exit-guard-evidence-light"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7191,6 +7192,68 @@ def _p350_record_exit_qty_guard(symbol: str, source: str, reason: str, close_sid
         "reason": guard.get("reason") or action,
         "exit_reason": reason or "exit",
         "broker_qty_exit_clamp": guard,
+    }
+
+def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
+    limit = max(1, min(int(limit or 20), 50))
+    rows = []
+
+    try:
+        for row in reversed(list(DECISIONS or [])[-500:]):
+            if len(rows) >= limit:
+                break
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("category") or "").upper() != "EXIT":
+                continue
+
+            meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+            guard = meta.get("broker_qty_exit_clamp") if isinstance(meta.get("broker_qty_exit_clamp"), dict) else {}
+            action = str(row.get("action") or "")
+            if not guard and action not in {"exit_blocked_broker_qty_zero", "exit_qty_clamped_to_broker_qty"}:
+                continue
+
+            rows.append({
+                "ts": row.get("ts") or row.get("ts_utc") or row.get("time"),
+                "symbol": str(row.get("symbol") or "").upper(),
+                "source": row.get("source"),
+                "action": action,
+                "reason": row.get("reason"),
+                "side": row.get("side"),
+                "qty": row.get("qty"),
+                "guard_reason": guard.get("reason"),
+                "requested_qty": guard.get("requested_qty"),
+                "broker_available_qty": guard.get("broker_available_qty"),
+                "clamped_qty": guard.get("clamped_qty"),
+                "blocked": bool(guard.get("blocked")),
+            })
+    except Exception as exc:
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "exit_guard_evidence_light",
+            "error": str(exc),
+            "items": rows,
+        }
+
+    blocked = [r for r in rows if bool(r.get("blocked"))]
+    clamped = [
+        r for r in rows
+        if str(r.get("guard_reason") or "") == "exit_qty_clamped_to_broker_qty"
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "exit_guard_evidence_light",
+        "read_only": True,
+        "limit": limit,
+        "evidence_count": len(rows),
+        "blocked_count": len(blocked),
+        "blocked_symbols": sorted({str(r.get("symbol") or "") for r in blocked if str(r.get("symbol") or "")}),
+        "clamped_count": len(clamped),
+        "clamped_symbols": sorted({str(r.get("symbol") or "") for r in clamped if str(r.get("symbol") or "")}),
+        "items": rows,
     }
 
 def _record_exit_submit_failure(symbol: str, source: str, reason: str, close_side: str, qty: float, err) -> dict:
@@ -31394,11 +31457,40 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r")})
 
 
-    # --- Trades-Today forcing (optional, emergency) ---
-    # Keep this path conservative and self-contained so it cannot crash the exit worker.
+    # --- Retired Trades-Today forcing isolation ---
+    # Worker exit should manage exits/reconcile only. Forced entries from this path are isolated by default.
     try:
         effective_dry_run = effective_entry_dry_run("worker_scan")
-        if TRADES_TODAY_ENABLE and SCANNER_ALLOW_LIVE and (not effective_dry_run) and in_market_hours():
+        trades_today_forcing_requested = bool(TRADES_TODAY_ENABLE)
+        trades_today_forcing_allowed = bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED)
+        if trades_today_forcing_requested and not trades_today_forcing_allowed:
+            results.append({
+                "symbol": "",
+                "action": "trades_today_worker_exit_forcing_isolated",
+                "reason": "worker_exit_entry_forcing_retired_from_swing_runtime",
+                "trade_submission_behavior_changed": True,
+                "trades_today_enable": bool(TRADES_TODAY_ENABLE),
+                "trades_today_worker_exit_forcing_enabled": bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+            })
+            record_decision(
+                "SCAN",
+                "worker_exit",
+                symbol="",
+                action="trades_today_forcing_isolated",
+                reason="worker_exit_entry_forcing_retired_from_swing_runtime",
+                meta={
+                    "trades_today_enable": bool(TRADES_TODAY_ENABLE),
+                    "trades_today_worker_exit_forcing_enabled": bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+                    "effective_dry_run": bool(effective_dry_run),
+                },
+            )
+        elif (
+            trades_today_forcing_requested
+            and trades_today_forcing_allowed
+            and SCANNER_ALLOW_LIVE
+            and (not effective_dry_run)
+            and in_market_hours()
+        ):
             forced_today = _count_forced_trades_today_ny()
             already_actionable = any(str(r.get("action", "")).startswith("exit_") for r in results)
             allowed_pool = [s for s in TRADES_TODAY_PREFERRED_SYMBOLS if (not ALLOWED_SYMBOLS or s in ALLOWED_SYMBOLS)]
@@ -31415,12 +31507,12 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                     "stop": submit.get("stop"),
                     "take": submit.get("take"),
                     "order_id": submit.get("order_id"),
-                    "diagnostics": {"forced": True},
+                    "diagnostics": {"forced": True, "worker_exit_forcing_enabled": True},
                 })
                 record_decision("SCAN", "worker_exit", symbol=pick, side=side, signal=signal,
                                 action=submit.get("action", "submit"), reason="forced_trade",
                                 price=submit.get("price"), stop=submit.get("stop"), take=submit.get("take"),
-                                meta={"forced": True})
+                                meta={"forced": True, "worker_exit_forcing_enabled": True})
     except Exception as e:
         logger.exception("TRADES_TODAY_ERROR err=%s", e)
     if results or reconcile_actions:
@@ -31438,6 +31530,8 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         reconcile=len(reconcile_actions),
         daily_goal_preservation_action=(daily_goal_preservation or {}).get("recommended_action") if "daily_goal_preservation" in locals() else None,
         daily_goal_preservation_close_symbols=(daily_goal_preservation or {}).get("close_symbols") if "daily_goal_preservation" in locals() else [],
+        trades_today_worker_exit_forcing_enabled=bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+        trades_today_worker_exit_forcing_isolated=bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
     )
     return {
         "ok": True,
@@ -43138,7 +43232,19 @@ def diagnostics_universe_shadow(limit: int = 10):
 
 @app.get("/diagnostics/worker_exit_status")
 def diagnostics_worker_exit_status(limit: int = 20):
-    return _worker_exit_status_snapshot(limit=limit)
+    payload = _worker_exit_status_snapshot(limit=limit)
+    if isinstance(payload, dict):
+        payload["trades_today_forcing_isolation"] = {
+            "trades_today_enable": bool(TRADES_TODAY_ENABLE),
+            "worker_exit_forcing_enabled": bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+            "isolated": bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+            "status": "isolated_from_worker_exit" if bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED) else "inactive_or_explicitly_enabled",
+        }
+    return JSONResponse(content=payload)
+
+@app.get("/diagnostics/exit_guard_evidence_light")
+def diagnostics_exit_guard_evidence_light(limit: int = 20):
+    return JSONResponse(content=_p351_exit_guard_evidence_light(limit=limit))
 
 @app.get("/diagnostics/position_truth")
 def diagnostics_position_truth(request: Request):

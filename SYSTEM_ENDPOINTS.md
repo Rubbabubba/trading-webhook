@@ -56,6 +56,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/execution_proof
 https://trading-webhook-q4d5.onrender.com/diagnostics/execution_spread_policy
 https://trading-webhook-q4d5.onrender.com/diagnostics/execution_visibility
 https://trading-webhook-q4d5.onrender.com/diagnostics/exits
+https://trading-webhook-q4d5.onrender.com/diagnostics/exit_guard_evidence_light
 https://trading-webhook-q4d5.onrender.com/diagnostics/expanded_swing_universe_discovery
 https://trading-webhook-q4d5.onrender.com/diagnostics/failure_decomp
 https://trading-webhook-q4d5.onrender.com/diagnostics/filter_pressure
