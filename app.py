@@ -2366,7 +2366,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-342-recovered-position-stale-deactivation-guard-daily-goal-preservation-exit"
+PATCH_VERSION = "patch-342-hotfix-sync-return-safety-worker-exit-null-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7793,6 +7793,9 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
         _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
         record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="stale_submitted_plan", meta={"age_sec": age_sec, "order_status": order_status})
         return out
+
+    _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
+    return out
 
 
 
@@ -30375,8 +30378,23 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         if not plan.get("active") and not _plan_is_pending_entry(plan):
             continue
 
-        if PLAN_SYNC_ON_WORKER_EXIT:
+                if PLAN_SYNC_ON_WORKER_EXIT:
             sync_info = sync_trade_plan_with_broker(symbol, plan)
+            if not isinstance(sync_info, dict):
+                sync_info = {
+                    "symbol": symbol,
+                    "active": bool(plan.get("active")),
+                    "changes": ["sync_returned_non_dict_guarded"],
+                    "order_status": plan.get("order_status"),
+                }
+                record_decision(
+                    "RECONCILE",
+                    "worker_exit",
+                    symbol,
+                    action="sync_return_guarded",
+                    reason="sync_trade_plan_with_broker_returned_non_dict",
+                    meta={"plan_active": bool(plan.get("active")), "order_status": plan.get("order_status")},
+                )
             if sync_info.get("changes"):
                 results.append({"symbol": symbol, "action": "plan_sync", "changes": sync_info.get("changes"), "order_status": sync_info.get("order_status")})
             if not plan.get("active") and not _plan_is_pending_entry(plan):
