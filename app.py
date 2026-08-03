@@ -12008,7 +12008,7 @@ def _p317_scan_metadata_truth(active_scan: dict | None = None, summary: dict | N
         or symbols_used
     )
 
-        runtime_symbols = list(
+    runtime_symbols = list(
         summary.get("runtime_symbols")
         or active_scan.get("runtime_symbols")
         or hist_summary.get("runtime_symbols")
