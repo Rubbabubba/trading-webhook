@@ -159,7 +159,7 @@ def swing_production_contract(
     close_to_high_pct = _pct_decimal(c.get("close_to_high_pct"))
     return_20d_pct = _pct_decimal(c.get("return_20d_pct"))
 
-        rank_score_ok = rank_score >= float(config.min_rank_score)
+    rank_score_ok = rank_score >= float(config.min_rank_score)
     liquidity_ok = avg_dollar_volume >= float(config.min_avg_dollar_volume)
     base_risk_ok = risk_pct is not None and risk_pct <= float(config.max_risk_per_share_pct)
     not_too_far_below_breakout = breakout_distance_pct is not None and breakout_distance_pct >= -abs(float(config.max_below_breakout_pct))
