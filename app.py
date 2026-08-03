@@ -2433,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-344-hotfix-approved-candidate-final-selection-sync-light-truth-rebuild"
+PATCH_VERSION = "patch-345-captured-candidate-truth-normalization-post-submit-diagnostic-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11652,15 +11652,36 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         limit=max(25, min(int(limit or 25), 100)),
     )
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
-    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 25), 100)))
+        rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 25), 100)))
     rows = _p323_enforce_production_contract_selection(
         _p300_selection_contract_cleanup(rows),
         global_block_reasons=[],
     )
 
+    production_summary = dict(summary.get("swing_production_reset") or {})
+    selected_symbols = {
+        str(s or "").strip().upper()
+        for s in list(summary.get("selected_symbols") or production_summary.get("selected_symbols") or [])
+        if str(s or "").strip()
+    }
+    approved_symbols = {
+        str(s or "").strip().upper()
+        for s in list(production_summary.get("approved_symbols") or [])
+        if str(s or "").strip()
+    }
+
+    row_approved_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict)
+        and bool((row.get("swing_production_contract") or {}).get("approved"))
+        and str((row or {}).get("symbol") or "").strip()
+    }
+    approved_symbols.update(row_approved_symbols)
+
     if not requested:
         requested = []
-        for sym in list(selected_symbols) + list(approved_symbols):
+        for sym in list(selected_symbols) + sorted(approved_symbols):
             sym_u = str(sym or "").strip().upper()
             if sym_u and sym_u not in requested:
                 requested.append(sym_u)
@@ -11679,17 +11700,6 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
                 if len(requested) >= max(1, min(int(limit or 12), 25)):
                     break
 
-    production_summary = dict(summary.get("swing_production_reset") or {})
-    selected_symbols = {
-        str(s or "").strip().upper()
-        for s in list(summary.get("selected_symbols") or production_summary.get("selected_symbols") or [])
-        if str(s or "").strip()
-    }
-    approved_symbols = {
-        str(s or "").strip().upper()
-        for s in list(production_summary.get("approved_symbols") or [])
-        if str(s or "").strip()
-    }
     active_symbols = set()
     pending_symbols = set()
 
@@ -11750,10 +11760,15 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         if executable_ok is False:
             blocking_reasons.append(str(executable.get("sizing_block_reason") or "not_executable"))
 
-        if selected or eligible:
+        captured = bool(active_position or pending_plan)
+
+        if captured and (selected or eligible):
+            status = "captured_tradeable_candidate"
+            recommendation = "monitor_existing_position_or_pending_plan"
+        elif selected or eligible:
             status = "tradeable"
             recommendation = "inspect_submit_truth"
-        elif active_position or pending_plan:
+        elif captured:
             status = "already_captured"
             recommendation = "monitor_existing_position_or_pending_plan"
         elif not row:
@@ -11778,6 +11793,7 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
             "recommendation": recommendation,
             "selected": selected,
             "eligible": eligible,
+            "captured": bool(active_position or pending_plan),
             "active_position": active_position,
             "pending_plan": pending_plan,
             "candidate_present": bool(row),
@@ -11812,6 +11828,9 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         })
 
     tradeable = [r for r in items if r.get("status") == "tradeable"]
+    captured = [r for r in items if bool(r.get("captured")) or str(r.get("status") or "") in {"already_captured", "captured_tradeable_candidate"}]
+    captured_tradeable = [r for r in items if str(r.get("status") or "") == "captured_tradeable_candidate"]
+    actionable_tradeable = [r for r in tradeable if not bool(r.get("captured"))]
     watch = [r for r in items if str(r.get("status") or "").startswith("watch")]
     metadata = _p317_scan_metadata_truth(active_scan=active_scan, summary=summary)
 
@@ -11838,6 +11857,14 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         "approved_symbols": sorted(approved_symbols),
         "watch_count": len(watch),
         "tradeable_count": len(tradeable),
+        "actionable_tradeable_count": len(actionable_tradeable),
+        "actionable_tradeable_symbols": [row.get("symbol") for row in actionable_tradeable],
+        "captured_count": len(captured),
+        "captured_symbols": [row.get("symbol") for row in captured],
+        "captured_tradeable_count": len(captured_tradeable),
+        "captured_tradeable_symbols": [row.get("symbol") for row in captured_tradeable],
+        "missing_trade_opportunity_count": len(actionable_tradeable),
+        "missing_trade_opportunity_symbols": [row.get("symbol") for row in actionable_tradeable],
         "symbols": requested[:max(1, min(int(limit or 12), 25))],
         "items": items,
     }
@@ -12186,7 +12213,18 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
     selected_items = [
         dict(row)
         for row in list(watch.get("items") or [])
-        if isinstance(row, dict) and (bool(row.get("selected")) or bool(row.get("eligible")))
+        if isinstance(row, dict)
+        and (bool(row.get("selected")) or bool(row.get("eligible")))
+        and not bool(row.get("captured"))
+    ]
+    captured_items = [
+        dict(row)
+        for row in list(watch.get("items") or [])
+        if isinstance(row, dict)
+        and (
+            bool(row.get("captured"))
+            or str(row.get("status") or "") in {"already_captured", "captured_tradeable_candidate"}
+        )
     ]
 
     direct_submit_enabled = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
@@ -12204,10 +12242,14 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         blockers.append("loss_halt_active")
     if int(active_truth.get("active_position_count") or 0) >= int(_effective_max_open_positions()):
         blockers.append("max_open_positions_reached")
-    if not selected_items:
+    if not selected_items and captured_items:
+        blockers.append("latest_candidate_already_captured")
+    elif not selected_items:
         blockers.append("no_selected_or_eligible_candidates")
 
     path_status = "ready_when_candidate_selected" if not blockers or blockers == ["no_selected_or_eligible_candidates"] else "blocked"
+    if blockers == ["latest_candidate_already_captured"]:
+        path_status = "captured_candidate_monitor_existing_position"
     if selected_items and not blockers:
         path_status = "ready_to_submit_selected_candidate"
 
@@ -12224,6 +12266,10 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         "selected_submission_finalizer_expected": finalizer_expected,
         "selected_or_eligible_count": len(selected_items),
         "selected_or_eligible_symbols": [row.get("symbol") for row in selected_items],
+        "captured_candidate_count": len(captured_items),
+        "captured_candidate_symbols": [row.get("symbol") for row in captured_items],
+        "missing_trade_opportunity_count": len(selected_items),
+        "missing_trade_opportunity_symbols": [row.get("symbol") for row in selected_items],
         "entry_controls": {
             "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
             "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
@@ -12244,6 +12290,10 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "selected_total": int(watch.get("selected_total") or 0),
             "eligible_total": int(watch.get("eligible_total") or 0),
             "tradeable_count": int(watch.get("tradeable_count") or 0),
+            "actionable_tradeable_count": int(watch.get("actionable_tradeable_count") or 0),
+            "captured_count": int(watch.get("captured_count") or 0),
+            "captured_tradeable_count": int(watch.get("captured_tradeable_count") or 0),
+            "missing_trade_opportunity_count": int(watch.get("missing_trade_opportunity_count") or 0),
             "watch_count": int(watch.get("watch_count") or 0),
         },
         "selected_items": selected_items,
@@ -29955,16 +30005,40 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     if not selected_symbols:
         selected_symbols = _p298_selected_symbols_light(summary, _p298_recent_lifecycle_items(limit=50))
 
+    active_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in dict(globals().get("TRADE_PLAN") or {}).items()
+        if str(sym or "").strip()
+        and isinstance(plan, dict)
+        and bool(plan.get("active"))
+    }
+
     approved_rows = [row for row in rows if isinstance(row, dict) and bool((row.get("swing_production_contract") or {}).get("approved"))]
     eligible_rows = approved_rows
+    captured_rows = [
+        row for row in rows
+        if isinstance(row, dict)
+        and (
+            str(row.get("symbol") or "").strip().upper() in active_symbols
+            or "position_already_open" in list(row.get("rejection_reasons") or [])
+            or "plan_or_pending_entry_exists" in list(row.get("rejection_reasons") or [])
+        )
+    ]
+    actionable_eligible_rows = [
+        row for row in eligible_rows
+        if str(row.get("symbol") or "").strip().upper() not in active_symbols
+    ]
 
     if selected_symbols:
         selection_status = "selected"
         recommended_action = "check_selected_submission_truth_light"
+    elif captured_rows and not actionable_eligible_rows:
+        selection_status = "latest_candidates_already_captured"
+        recommended_action = "monitor_existing_positions_or_wait_for_new_candidate"
     elif bool(summary.get("post_open_scan_missing")):
         selection_status = "post_open_scan_missing"
         recommended_action = "recover_scanner_dispatch_before_evaluating_candidates"
-    elif int(production_summary.get("approved_count") or summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0) <= 0:
+    elif int(production_summary.get("approved_count") or summary.get("eligible_total") or summary.get("eligible_count") or len(actionable_eligible_rows) or 0) <= 0:
         selection_status = "no_eligible_candidates"
         recommended_action = "review_top_rejection_reasons"
     else:
@@ -29995,6 +30069,12 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "selected_total": int(summary.get("selected_total") or len(selected_symbols) or 0),
             "selected_symbols": selected_symbols,
             "eligible_count": int(production_summary.get("approved_count") or summary.get("eligible_total") or summary.get("eligible_count") or len(eligible_rows) or 0),
+            "actionable_eligible_count": len(actionable_eligible_rows),
+            "actionable_eligible_symbols": [r.get("symbol") for r in actionable_eligible_rows],
+            "captured_count": len(captured_rows),
+            "captured_symbols": [r.get("symbol") for r in captured_rows],
+            "missing_trade_opportunity_count": len(actionable_eligible_rows),
+            "missing_trade_opportunity_symbols": [r.get("symbol") for r in actionable_eligible_rows],
             "production_approved_symbols": list(production_summary.get("approved_symbols") or [r.get("symbol") for r in approved_rows]),
         },
         "top": [
