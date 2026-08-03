@@ -11652,7 +11652,7 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         limit=max(25, min(int(limit or 25), 100)),
     )
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
-        rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 25), 100)))
+    rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 25), 100)))
     rows = _p323_enforce_production_contract_selection(
         _p300_selection_contract_cleanup(rows),
         global_block_reasons=[],
