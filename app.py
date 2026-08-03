@@ -2433,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-346-direct-submit-runtime-cleanup-profit-opportunity-status"
+PATCH_VERSION = "patch-347-watchlist-universe-truth-consolidation-active-position-coverage-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11677,29 +11677,18 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         and str((row or {}).get("symbol") or "").strip()
     })
 
-    if not requested:
-        requested = []
-        for sym in list(selected_symbols) + sorted(approved_symbols):
-            sym_u = str(sym or "").strip().upper()
-            if sym_u and sym_u not in requested:
-                requested.append(sym_u)
-
-        for key in ("runtime_watch_symbols", "selected_symbols", "eligible_symbols"):
-            for sym in list(summary.get(key) or []):
-                sym_u = str(sym or "").strip().upper()
-                if sym_u and sym_u not in requested:
-                    requested.append(sym_u)
-
-        if not requested:
-            for row in rows:
-                sym_u = str(row.get("symbol") or "").strip().upper()
-                if sym_u and sym_u not in requested:
-                    requested.append(sym_u)
-                if len(requested) >= max(1, min(int(limit or 12), 25)):
-                    break
-
     active_symbols = set()
     pending_symbols = set()
+
+    try:
+        active_truth = _p320_active_position_truth_for_brief()
+        active_symbols.update({
+            str(sym or "").strip().upper()
+            for sym in list(active_truth.get("symbols") or [])
+            if str(sym or "").strip()
+        })
+    except Exception:
+        active_truth = {"ok": False, "reason": "active_position_truth_unavailable"}
 
     for sym_key, plan in dict(globals().get("TRADE_PLAN") or {}).items():
         if not isinstance(plan, dict):
@@ -11718,14 +11707,45 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
                 pending_symbols.add(sym)
 
     by_symbol: dict[str, list[dict]] = {}
+    candidate_symbols = set()
     for row in rows:
         sym = str(row.get("symbol") or "").strip().upper()
         if not sym:
             continue
+        candidate_symbols.add(sym)
         by_symbol.setdefault(sym, []).append(dict(row or {}))
 
+    if not requested:
+        requested = []
+
+        for bucket in (
+            sorted(active_symbols),
+            sorted(pending_symbols),
+            list(selected_symbols),
+            sorted(approved_symbols),
+        ):
+            for sym in bucket:
+                sym_u = str(sym or "").strip().upper()
+                if sym_u and sym_u not in requested:
+                    requested.append(sym_u)
+
+        for key in ("runtime_watch_symbols", "selected_symbols", "eligible_symbols"):
+            for sym in list(summary.get(key) or []):
+                sym_u = str(sym or "").strip().upper()
+                if sym_u and sym_u not in requested:
+                    requested.append(sym_u)
+
+        for sym in sorted(candidate_symbols):
+            sym_u = str(sym or "").strip().upper()
+            if sym_u and sym_u not in requested:
+                requested.append(sym_u)
+            if len(requested) >= max(1, min(int(limit or 12), 25)):
+                break
+
+    requested_limited = requested[:max(1, min(int(limit or 12), 25))]
+
     items = []
-    for sym in requested[:max(1, min(int(limit or 12), 25))]:
+    for sym in requested_limited:
         matches = by_symbol.get(sym, [])
         matches.sort(key=_p283_candidate_sort_key, reverse=True)
         row = dict(matches[0]) if matches else {}
@@ -11791,7 +11811,7 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
             "recommendation": recommendation,
             "selected": selected,
             "eligible": eligible,
-            "captured": bool(active_position or pending_plan),
+            "captured": captured,
             "active_position": active_position,
             "pending_plan": pending_plan,
             "candidate_present": bool(row),
@@ -11832,6 +11852,8 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
     watch = [r for r in items if str(r.get("status") or "").startswith("watch")]
     metadata = _p317_scan_metadata_truth(active_scan=active_scan, summary=summary)
 
+    coverage_missing_active_symbols = sorted(active_symbols - set(requested_limited))
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -11863,7 +11885,19 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         "captured_tradeable_symbols": [row.get("symbol") for row in captured_tradeable],
         "missing_trade_opportunity_count": len(actionable_tradeable),
         "missing_trade_opportunity_symbols": [row.get("symbol") for row in actionable_tradeable],
-        "symbols": requested[:max(1, min(int(limit or 12), 25))],
+        "symbols": requested_limited,
+        "universe_truth": {
+            "coverage_ok": not coverage_missing_active_symbols,
+            "coverage_missing_active_symbols": coverage_missing_active_symbols,
+            "active_symbols": sorted(active_symbols),
+            "pending_symbols": sorted(pending_symbols),
+            "selected_symbols": sorted(selected_symbols),
+            "approved_symbols": sorted(approved_symbols),
+            "candidate_symbols": sorted(candidate_symbols),
+            "requested_symbols": requested_limited,
+            "source": "active_position_truth_plus_trade_plan_plus_latest_candidate_rows",
+            "active_truth_source": active_truth.get("source") if isinstance(active_truth, dict) else None,
+        },
         "items": items,
     }
 
@@ -12285,6 +12319,9 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "captured_tradeable_count": int(watch.get("captured_tradeable_count") or 0),
             "missing_trade_opportunity_count": int(watch.get("missing_trade_opportunity_count") or 0),
             "watch_count": int(watch.get("watch_count") or 0),
+            "universe_coverage_ok": bool((watch.get("universe_truth") or {}).get("coverage_ok", True)),
+            "active_symbols": list((watch.get("universe_truth") or {}).get("active_symbols") or []),
+            "coverage_missing_active_symbols": list((watch.get("universe_truth") or {}).get("coverage_missing_active_symbols") or []),
         },
         "profit_path_status": {
             "daily_goal_low": float(globals().get("BROKER_DAILY_GOAL_LOW_DOLLARS", 100) or 100),
