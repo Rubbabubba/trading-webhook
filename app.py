@@ -2433,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-344-production-contract-starter-sleeve-near-rank-revival-scanner-speed-guard"
+PATCH_VERSION = "patch-344-hotfix-approved-candidate-final-selection-sync-light-truth-rebuild"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11653,9 +11653,18 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
     )
     summary = dict((active_scan.get("summary") if isinstance(active_scan, dict) else {}) or {})
     rows = _p285_saved_candidate_rows(active_scan, limit=max(25, min(int(limit or 25), 100)))
+    rows = _p323_enforce_production_contract_selection(
+        _p300_selection_contract_cleanup(rows),
+        global_block_reasons=[],
+    )
 
     if not requested:
         requested = []
+        for sym in list(selected_symbols) + list(approved_symbols):
+            sym_u = str(sym or "").strip().upper()
+            if sym_u and sym_u not in requested:
+                requested.append(sym_u)
+
         for key in ("runtime_watch_symbols", "selected_symbols", "eligible_symbols"):
             for sym in list(summary.get(key) or []):
                 sym_u = str(sym or "").strip().upper()
@@ -11670,7 +11679,17 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
                 if len(requested) >= max(1, min(int(limit or 12), 25)):
                     break
 
-    selected_symbols = {str(s or "").upper() for s in list(summary.get("selected_symbols") or [])}
+    production_summary = dict(summary.get("swing_production_reset") or {})
+    selected_symbols = {
+        str(s or "").strip().upper()
+        for s in list(summary.get("selected_symbols") or production_summary.get("selected_symbols") or [])
+        if str(s or "").strip()
+    }
+    approved_symbols = {
+        str(s or "").strip().upper()
+        for s in list(production_summary.get("approved_symbols") or [])
+        if str(s or "").strip()
+    }
     active_symbols = set()
     pending_symbols = set()
 
@@ -11808,8 +11827,15 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         "runtime_symbols_original_count": int(metadata.get("runtime_symbols_original_count") or 0),
         "runtime_symbols_excluded_count": int(metadata.get("runtime_symbols_excluded_count") or 0),
         "runtime_watch_symbols": list(metadata.get("runtime_watch_symbols") or []),
-        "selected_total": int(summary.get("selected_total") or 0),
-        "eligible_total": int(summary.get("eligible_total") or 0),
+        "selected_total": max(
+            int(summary.get("selected_total") or 0),
+            len([r for r in items if bool(r.get("selected"))]),
+        ),
+        "eligible_total": max(
+            int(summary.get("eligible_total") or 0),
+            len([r for r in items if bool(r.get("eligible"))]),
+        ),
+        "approved_symbols": sorted(approved_symbols),
         "watch_count": len(watch),
         "tradeable_count": len(tradeable),
         "symbols": requested[:max(1, min(int(limit or 12), 25))],
@@ -17441,6 +17467,75 @@ def _p326_finalize_production_contract_selection(
         sizing_truth_fn=_p300_executable_sizing_truth,
     )
 
+def _p344_sync_selected_from_approved_finalizer(
+    finalizer: dict | None,
+    *,
+    max_new_entries: int,
+) -> dict:
+    out = dict(finalizer or {})
+    rows = [dict(r or {}) for r in list(out.get("rows") or []) if isinstance(r, dict)]
+    approved = [dict(r or {}) for r in list(out.get("approved") or []) if isinstance(r, dict)]
+    selected = [dict(r or {}) for r in list(out.get("selected") or []) if isinstance(r, dict)]
+
+    max_total = max(0, int(max_new_entries or 0))
+    if not selected and approved and max_total > 0:
+        selected = approved[:max_total]
+        out["p344_selected_sync_applied"] = True
+        out["p344_selected_sync_reason"] = "approved_rows_present_but_finalizer_selected_empty"
+    else:
+        out["p344_selected_sync_applied"] = False
+        out["p344_selected_sync_reason"] = "finalizer_selection_already_consistent"
+
+    selected_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in selected
+        if str((row or {}).get("symbol") or "").strip()
+    }
+
+    rebuilt_rows = []
+    for row in rows:
+        c = dict(row or {})
+        sym = str(c.get("symbol") or "").strip().upper()
+        is_selected = bool(sym and sym in selected_symbols)
+        c["selected"] = is_selected
+        if is_selected:
+            contract = dict(c.get("swing_production_contract") or {})
+            checks = dict(contract.get("checks") or {})
+            if bool(checks.get("near_rank_revival_ok")):
+                c["entry_type"] = "swing_production_near_rank_revival"
+                c["selected_source"] = "swing_production_near_rank_revival"
+                c["near_rank_revival_applied"] = True
+            elif bool(checks.get("risk_calibrated_starter_ok")):
+                c["entry_type"] = "swing_production_risk_calibrated_starter"
+                c["selected_source"] = "swing_production_risk_calibration"
+                c["risk_calibration_applied"] = True
+            else:
+                c["entry_type"] = "swing_production_contract"
+                c["selected_source"] = "swing_production_reset"
+            c["selection_finalizer"] = "p344_approved_candidate_final_selection_sync"
+        rebuilt_rows.append(c)
+
+    selected_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in rebuilt_rows
+        if str((row or {}).get("symbol") or "").strip().upper() in selected_symbols
+    }
+    selected_final = [
+        selected_by_symbol.get(str((row or {}).get("symbol") or "").strip().upper(), dict(row or {}))
+        for row in selected
+        if str((row or {}).get("symbol") or "").strip()
+    ]
+
+    out["rows"] = rebuilt_rows
+    out["selected"] = selected_final
+    out["selected_symbols"] = [
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in selected_final
+        if str((row or {}).get("symbol") or "").strip()
+    ]
+    out["selected_count"] = len(selected_final)
+    return out
+
 def _p300_executable_sizing_audit(limit: int = 25) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     rows = list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
@@ -20093,6 +20188,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         max_new_entries=max_new_entries,
         global_block_reasons=global_block_reasons,
     )
+    production_selection_finalizer = _p344_sync_selected_from_approved_finalizer(
+        production_selection_finalizer,
+        max_new_entries=max_new_entries,
+    )
     candidates = list(production_selection_finalizer.get("rows") or [])
     production_approved = list(production_selection_finalizer.get("approved") or [])
     approved = production_approved
@@ -20344,9 +20443,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'min_rank_score': float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
             'max_risk_per_share_pct': float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
             'selection_source_enforced': True,
-            'selection_finalizer': 'p326_approved_production_contract_selection_finalizer',
+            'selection_finalizer': 'p344_approved_candidate_final_selection_sync',
             'selection_finalizer_selected_symbols': list(production_selection_finalizer.get('selected_symbols') or []),
             'selection_finalizer_approved_symbols': list(production_selection_finalizer.get('approved_symbols') or []),
+            'selected_sync_applied': bool(production_selection_finalizer.get('p344_selected_sync_applied')),
+            'selected_sync_reason': production_selection_finalizer.get('p344_selected_sync_reason'),
             'risk_calibrated_starter_count': len([
                 c for c in production_approved
                 if bool(((c.get("swing_production_contract") or {}).get("checks") or {}).get("risk_calibrated_starter_ok"))
