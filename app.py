@@ -2433,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-345-captured-candidate-truth-normalization-post-submit-diagnostic-cleanup"
+PATCH_VERSION = "patch-346-direct-submit-runtime-cleanup-profit-opportunity-status"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -11669,15 +11669,13 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         for s in list(production_summary.get("approved_symbols") or [])
         if str(s or "").strip()
     }
-
-    row_approved_symbols = {
+    approved_symbols.update({
         str((row or {}).get("symbol") or "").strip().upper()
         for row in rows
         if isinstance(row, dict)
         and bool((row.get("swing_production_contract") or {}).get("approved"))
         and str((row or {}).get("symbol") or "").strip()
-    }
-    approved_symbols.update(row_approved_symbols)
+    })
 
     if not requested:
         requested = []
@@ -12156,51 +12154,40 @@ def _p320_active_position_truth_for_brief() -> dict:
 
 
 def _p320_swing_dead_path_phase1_status() -> dict:
-    selected_intent_suppressed = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
-    finalizer_suppressed = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)
     intraday_noise_suppressed = bool(_p317_intraday_separation_status().get("suppressed_for_swing_runtime"))
+    direct_submit_active = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
 
     return {
         "enabled": True,
-        "mode": "swing_dead_path_removal_phase_1",
-        "selected_entry_intent_queue_suppressed_from_swing_operator_paths": selected_intent_suppressed,
-        "selected_submission_finalizer_suppressed_from_swing_operator_paths": finalizer_suppressed,
+        "mode": "swing_direct_submit_cleanup_status",
+        "direct_submit_path_active": direct_submit_active,
         "intraday_paper_hybrid_noise_suppressed_from_swing_operator_paths": intraday_noise_suppressed,
-        "retired_queue_finalizer_removed_from_default_flow": True,
-        "legacy_endpoints_require_include_legacy": True,
-        "endpoints_retained_for_historical_review": True,
         "trade_submission_behavior_changed": False,
-        "phase_1_deletion_actions": [
-            "runtime_restore_no_longer_loads_selected_entry_intent_queue_when_cleanup_enabled",
-            "selected_entry_intent_queue_endpoint_returns_retired_status_by_default",
-            "selected_entry_finalizer_endpoint_returns_retired_status_by_default",
-            "selected_entry_finalizer_worker_returns_retired_status_when_cleanup_enabled",
-        ],
-        "phase_2_deletion_actions": [
-            "selected_entry_intent_persistence_noops_when_cleanup_enabled",
-            "selected_entry_intent_restore_noops_when_cleanup_enabled",
-            "selected_entry_intent_queue_creation_noops_when_cleanup_enabled",
-            "stale_selected_entry_intent_reconcile_noops_when_cleanup_enabled",
-            "selected_entry_finalizer_submit_loop_isolated_when_cleanup_enabled",
-            "selected_submission_finalizer_retry_loop_isolated_when_cleanup_enabled",
-        ],
-        "phase_3_deletion_actions": [
-            "selected_entry_intent_persistence_helper_body_removed",
-            "selected_entry_intent_restore_helper_body_removed",
-            "selected_entry_intent_queue_helper_body_removed",
-            "stale_selected_entry_intent_reconcile_helper_body_removed",
-            "selected_entry_finalizer_submit_loop_body_removed",
-            "selected_submission_finalizer_retry_loop_body_removed",
-        ],
-        "phase_4_deletion_actions": [
+        "retired_paths": {
+            "selected_entry_intent_queue": "retired_from_swing_runtime",
+            "selected_entry_finalizer": "retired_from_swing_runtime",
+            "selected_submission_finalizer": "retired_from_swing_runtime",
+            "stale_selected_entry_intent_reconcile": "retired_from_swing_runtime",
+        },
+        "completed_cleanup": [
+            "runtime_restore_skips_selected_entry_intent_queue",
+            "selected_entry_intent_helper_bodies_removed",
+            "selected_submission_finalizer_loop_body_removed",
             "dead_selected_intent_env_reads_removed",
             "dead_selected_submission_finalizer_env_reads_removed",
             "dead_selected_intent_global_queue_removed",
-            "retired_selected_intent_endpoints_consolidated",
+            "captured_candidate_truth_normalized",
         ],
+        "current_live_contract": {
+            "selection": "swing_production_contract",
+            "submission": "direct_submit",
+            "capture_truth": "broker_position_or_active_plan",
+            "missed_trade_truth": "missing_trade_opportunity_count",
+        },
         "next_safe_cleanup": [
-            "remove_retired_selected_intent_endpoint_routes_after_clean_deploy",
+            "remove_retired_endpoint_recommendations_from_operator_bundles",
             "move_intraday_shadow_paper_metrics_to_intraday_only_bundle",
+            "split_direct_submit_status_into_swing_execution_module",
         ],
     }
 
@@ -12228,8 +12215,13 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
     ]
 
     direct_submit_enabled = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
-    old_intent_path_enabled = bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
-    finalizer_expected = not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)
+    direct_submit_status = {
+        "active": direct_submit_enabled,
+        "selection_source": "swing_production_contract",
+        "submission_source": "direct_submit",
+        "retired_queue_path_active": False,
+        "retired_finalizer_path_active": False,
+    }
 
     blockers = []
     if not bool(NEW_ENTRIES_ENABLED):
@@ -12261,9 +12253,7 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         "path_status": path_status,
         "blockers": blockers,
         "trade_submission_behavior_changed": False,
-        "direct_submit_enabled": direct_submit_enabled,
-        "old_selected_intent_queue_enabled": old_intent_path_enabled,
-        "selected_submission_finalizer_expected": finalizer_expected,
+        "direct_submit": direct_submit_status,
         "selected_or_eligible_count": len(selected_items),
         "selected_or_eligible_symbols": [row.get("symbol") for row in selected_items],
         "captured_candidate_count": len(captured_items),
@@ -12295,6 +12285,18 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "captured_tradeable_count": int(watch.get("captured_tradeable_count") or 0),
             "missing_trade_opportunity_count": int(watch.get("missing_trade_opportunity_count") or 0),
             "watch_count": int(watch.get("watch_count") or 0),
+        },
+        "profit_path_status": {
+            "daily_goal_low": float(globals().get("BROKER_DAILY_GOAL_LOW_DOLLARS", 100) or 100),
+            "daily_goal_high": float(globals().get("BROKER_DAILY_GOAL_HIGH_DOLLARS", 200) or 200),
+            "missing_trade_opportunity_count": int(watch.get("missing_trade_opportunity_count") or 0),
+            "captured_candidate_count": len(captured_items),
+            "open_slots": max(0, int(_effective_max_open_positions()) - int(active_truth.get("active_position_count") or 0)),
+            "operator_read": (
+                "not_missing_current_trade; monitor_existing_positions_and_next_scan"
+                if int(watch.get("missing_trade_opportunity_count") or 0) <= 0
+                else "actionable_trade_available; inspect_selected_items_now"
+            ),
         },
         "selected_items": selected_items,
     }
@@ -20398,7 +20400,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
             "side_effect_reasons": list(side_effect.get("side_effect_reasons") or []),
             "submit_gap": bool(side_effect.get("submit_gap")),
-            "selected_entry_intent": dict(selected_entry_intent),
+            "direct_submit_lineage": {
+                "active": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
+                "selection_source": c.get("selected_source") or "swing_production_contract",
+                "entry_type": entry_type,
+                "source": source_name,
+            },
         })
     selected_submission_finalizer = {
         "enabled": False,
@@ -20449,7 +20456,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'runtime_symbols_excluded_count': int(runtime_slim.get("excluded_count") or 0),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
-        'legacy_queue_finalizer_paths': _p334_retired_queue_finalizer_status(mode="candidate_history_legacy_queue_finalizer_paths"),
+        'direct_submit_cleanup_status': _p320_swing_dead_path_phase1_status(),
         'executable_near_miss_candidates': [dict(c) for c in executable_near_miss_candidates[:5]],
         'adaptive_capacity_candidates': [dict(c) for c in adaptive_capacity_candidates[:5]],
         'adaptive_capacity_selected': [c.get('symbol') for c in adaptive_capacity_selected],
@@ -20526,7 +20533,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'mean_reversion_eligible_total': len(mean_reversion_approved),
         'selected_strategy': (selected[0].get('strategy') if selected else None),
         'selected_symbols': [c.get('symbol') for c in selected],
-        'legacy_queue_finalizer_paths': _p334_retired_queue_finalizer_status(mode="scanner_summary_legacy_queue_finalizer_paths"),
+        'direct_submit_cleanup_status': _p320_swing_dead_path_phase1_status(),
         'executable_near_miss_entry_sleeve': {
             'enabled': bool(SWING_EXECUTABLE_NEAR_MISS_ENTRY_ENABLED),
             'candidate_count': len(executable_near_miss_candidates),
@@ -20865,7 +20872,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         },
         'reconcile': reconcile_actions,
         'would_submit': would_submit,
-        'legacy_queue_finalizer_paths': _p334_retired_queue_finalizer_status(mode="scanner_return_legacy_queue_finalizer_paths"),
+        'direct_submit_cleanup_status': _p320_swing_dead_path_phase1_status(),
         'production_contract_selection_finalizer': {
             'selected_symbols': list(production_selection_finalizer.get('selected_symbols') or []),
             'approved_symbols': list(production_selection_finalizer.get('approved_symbols') or []),
@@ -39656,7 +39663,8 @@ def diagnostics_operator_bundle(
             "use_light_endpoints": [
                 "/diagnostics/scanner_light",
                 "/diagnostics/market_open_selection_audit_light",
-                "/diagnostics/selected_submission_truth_light",
+                "/diagnostics/swing_watchlist_trade_status",
+                "/diagnostics/swing_submit_path_trace",
                 "/diagnostics/live_positions_light",
                 "/diagnostics/reconcile_light",
                 "/diagnostics/no_trade_brief?refresh_live=false&limit=10",
@@ -39680,7 +39688,8 @@ def diagnostics_operator_bundle_intraday_light(request: Request):
             "use_light_endpoints": [
                 "/diagnostics/scanner_light",
                 "/diagnostics/market_open_selection_audit_light",
-                "/diagnostics/selected_submission_truth_light",
+                "/diagnostics/swing_watchlist_trade_status",
+                "/diagnostics/swing_submit_path_trace",
                 "/diagnostics/live_positions_light",
                 "/diagnostics/reconcile_light",
             ],
