@@ -30378,7 +30378,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         if not plan.get("active") and not _plan_is_pending_entry(plan):
             continue
 
-                if PLAN_SYNC_ON_WORKER_EXIT:
+        if PLAN_SYNC_ON_WORKER_EXIT:
             sync_info = sync_trade_plan_with_broker(symbol, plan)
             if not isinstance(sync_info, dict):
                 sync_info = {
