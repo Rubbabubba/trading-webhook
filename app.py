@@ -2433,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-349-current-state-rejection-reason-scrub-near-miss-production-decision-truth"
+PATCH_VERSION = "patch-350-broker-qty-exit-clamp-same-day-preservation-exit-truth-after-hours-selected-suppression"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7116,6 +7116,82 @@ def _normalize_close_qty(qty: float) -> float:
         return 0.0
     return float(_format_order_qty(q))
 
+def _p350_broker_qty_exit_clamp(symbol: str, requested_qty: float, close_side: str, reason: str = "", source: str = "") -> dict:
+    sym = str(symbol or "").strip().upper()
+    close_side = str(close_side or "").strip().lower()
+    requested = _normalize_close_qty(requested_qty)
+
+    try:
+        broker_qty_signed, _broker_side = get_position(sym)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "broker_qty_lookup_failed",
+            "symbol": sym,
+            "requested_qty": requested,
+            "broker_qty_signed": None,
+            "broker_available_qty": 0.0,
+            "clamped_qty": 0.0,
+            "close_side": close_side,
+            "error": str(exc),
+        }
+
+    broker_qty_signed = float(_safe_float(broker_qty_signed, 0.0))
+    if close_side == "sell":
+        broker_available = max(0.0, broker_qty_signed)
+    elif close_side == "buy":
+        broker_available = max(0.0, abs(min(0.0, broker_qty_signed)))
+    else:
+        broker_available = 0.0
+
+    clamped = _normalize_close_qty(min(requested, broker_available))
+    blocked = clamped <= 0.0
+
+    return {
+        "ok": True,
+        "blocked": blocked,
+        "reason": "exit_blocked_broker_qty_zero" if blocked else ("exit_qty_clamped_to_broker_qty" if clamped < requested else "exit_qty_ok"),
+        "symbol": sym,
+        "requested_qty": requested,
+        "broker_qty_signed": round(broker_qty_signed, 8),
+        "broker_available_qty": round(broker_available, 8),
+        "clamped_qty": clamped,
+        "close_side": close_side,
+        "exit_reason": reason or "exit",
+        "source": source or "system",
+    }
+
+
+def _p350_record_exit_qty_guard(symbol: str, source: str, reason: str, close_side: str, guard: dict) -> dict:
+    sym = str(symbol or "").strip().upper()
+    action = "exit_blocked_broker_qty_zero" if guard.get("blocked") else "exit_qty_clamped_to_broker_qty"
+    record_decision(
+        "EXIT",
+        source or "system",
+        sym,
+        side=close_side,
+        action=action,
+        reason=reason or guard.get("reason") or "exit_qty_guard",
+        qty=guard.get("clamped_qty") or 0.0,
+        meta={"broker_qty_exit_clamp": guard},
+    )
+    try:
+        if isinstance(TRADE_PLAN.get(sym), dict):
+            plan_ref = TRADE_PLAN[sym]
+            plan_ref["last_exit_qty_guard"] = dict(guard)
+            plan_ref["last_exit_qty_guard_at"] = datetime.now(timezone.utc).isoformat()
+    except Exception:
+        pass
+    return {
+        "closed": False,
+        "symbol": sym,
+        "qty": guard.get("clamped_qty") or 0.0,
+        "close_side": close_side,
+        "reason": guard.get("reason") or action,
+        "exit_reason": reason or "exit",
+        "broker_qty_exit_clamp": guard,
+    }
 
 def _record_exit_submit_failure(symbol: str, source: str, reason: str, close_side: str, qty: float, err) -> dict:
     err_text = _alpaca_order_error_text(err)
@@ -7486,6 +7562,13 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
         record_decision("EXIT", source, symbol, side=close_side, action="ignored", reason="invalid_close_quantity", exit_reason=reason)
         return {"closed": False, "reason": "Invalid close quantity", "symbol": symbol, "qty": qty, "close_side": close_side}
 
+    qty_guard = _p350_broker_qty_exit_clamp(symbol, qty, close_side, reason=reason, source=source)
+    if qty_guard.get("blocked"):
+        return _p350_record_exit_qty_guard(symbol, source, reason, close_side, qty_guard)
+    if float(_safe_float(qty_guard.get("clamped_qty"), qty)) < qty:
+        qty = _normalize_close_qty(qty_guard.get("clamped_qty"))
+        _p350_record_exit_qty_guard(symbol, source, reason, close_side, qty_guard)
+
     pending_close = _pending_close_order_for_symbol(symbol, close_side)
     if pending_close:
         order_id = str(pending_close.get("id") or "")
@@ -7521,7 +7604,7 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
     except Exception as e:
         return _record_exit_submit_failure(symbol, source, reason, close_side, qty, e)
     order_id = _order_id_from_submit_response(order)
-    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id}
+    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id, "broker_qty_exit_clamp": qty_guard}
     record_decision("EXIT", source, symbol, side=close_side, action="order_submitted", reason=reason or "exit", qty=qty, order_id=order_id)
     persist_positions_snapshot(reason="close_position_submitted", extra={"symbol": symbol, "order_id": order_id, "exit_reason": reason, "source": source})
     try:
@@ -7556,6 +7639,15 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
     if qty <= 0:
         return {"closed": False, "reason": "Invalid partial quantity"}
 
+    qty_guard = _p350_broker_qty_exit_clamp(symbol, qty, close_side, reason=reason or "partial_exit", source=source)
+    if qty_guard.get("blocked"):
+        payload = _p350_record_exit_qty_guard(symbol, source, reason or "partial_exit", close_side, qty_guard)
+        payload["partial"] = True
+        return payload
+    if float(_safe_float(qty_guard.get("clamped_qty"), qty)) < qty:
+        qty = _normalize_close_qty(qty_guard.get("clamped_qty"))
+        _p350_record_exit_qty_guard(symbol, source, reason or "partial_exit", close_side, qty_guard)
+
     pending_close = _pending_close_order_for_symbol(symbol, close_side)
     if pending_close:
         order_id = str(pending_close.get("id") or "")
@@ -7587,7 +7679,7 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
         payload["partial"] = True
         return payload
     order_id = _order_id_from_submit_response(order)
-    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id, "partial": True}
+    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id, "partial": True, "broker_qty_exit_clamp": qty_guard}
     record_decision("EXIT", source, symbol, side=close_side, action="partial_order_submitted", reason=reason or "partial_exit", qty=qty, order_id=order_id)
     persist_positions_snapshot(reason="partial_close_submitted", extra={"symbol": symbol, "order_id": order_id, "exit_reason": reason, "source": source, "qty": qty})
     try:
@@ -11854,10 +11946,13 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
             "return_20d_pct": row.get("return_20d_pct"),
         })
 
+    market_open_now = bool(in_market_hours())
     tradeable = [r for r in items if r.get("status") == "tradeable"]
     captured = [r for r in items if bool(r.get("captured")) or str(r.get("status") or "") in {"already_captured", "captured_tradeable_candidate"}]
     captured_tradeable = [r for r in items if str(r.get("status") or "") == "captured_tradeable_candidate"]
-    actionable_tradeable = [r for r in tradeable if not bool(r.get("captured"))]
+    actionable_tradeable_raw = [r for r in tradeable if not bool(r.get("captured"))]
+    actionable_tradeable = actionable_tradeable_raw if market_open_now else []
+    after_hours_suppressed_tradeable = actionable_tradeable_raw if not market_open_now else []
     watch = [r for r in items if str(r.get("status") or "").startswith("watch")]
     metadata = _p317_scan_metadata_truth(active_scan=active_scan, summary=summary)
 
@@ -11894,7 +11989,9 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
     open_slots = max(0, effective_max_positions - active_position_count)
     coverage_missing_active_symbols = sorted(active_symbols - set(requested_limited))
 
-    if actionable_tradeable:
+    if after_hours_suppressed_tradeable:
+        open_slot_read = "market_closed_selected_candidates_suppressed"
+    elif actionable_tradeable:
         open_slot_read = "open_slots_available_with_actionable_candidate"
     elif open_slots <= 0:
         open_slot_read = "capacity_full"
@@ -11912,6 +12009,13 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         "patch_version": PATCH_VERSION,
         "mode": "swing_watchlist_trade_status",
         "read_only": True,
+        "market_open": market_open_now,
+        "after_hours_selected_candidate_suppression": {
+            "active": not market_open_now,
+            "suppressed_count": len(after_hours_suppressed_tradeable),
+            "suppressed_symbols": [row.get("symbol") for row in after_hours_suppressed_tradeable],
+            "reason": "market_closed_selected_candidates_are_not_counted_as_missing_trade_opportunities" if not market_open_now else "market_open",
+        },
         "truth_source": metadata.get("truth_source"),
         "scan_ts_utc": metadata.get("scan_ts_utc"),
         "runtime_slim_applied": bool(metadata.get("runtime_slim_applied")),
@@ -12615,6 +12719,9 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "active_symbols": list((watch.get("universe_truth") or {}).get("active_symbols") or []),
             "coverage_missing_active_symbols": list((watch.get("universe_truth") or {}).get("coverage_missing_active_symbols") or []),
             "open_slot_read": (watch.get("open_slot_truth") or {}).get("read"),
+            "market_open": bool(watch.get("market_open")),
+            "after_hours_suppressed_count": int((watch.get("after_hours_selected_candidate_suppression") or {}).get("suppressed_count") or 0),
+            "after_hours_suppressed_symbols": list((watch.get("after_hours_selected_candidate_suppression") or {}).get("suppressed_symbols") or []),
             "near_miss_actionable_count": int((watch.get("rejected_candidate_actionability") or {}).get("near_miss_actionable_count") or 0),
             "too_dangerous_count": int((watch.get("rejected_candidate_actionability") or {}).get("too_dangerous_count") or 0),
             "correctly_rejected_count": int((watch.get("rejected_candidate_actionability") or {}).get("correctly_rejected_count") or 0),
@@ -31044,11 +31151,27 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 except Exception:
                     px = 0.0
                 _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+
+            qty_guard = dict((out or {}).get("broker_qty_exit_clamp") or {})
             result = {
                 "symbol": symbol,
                 "action": "daily_goal_preservation_exit" if out.get("closed") else "daily_goal_preservation_exit_failed",
                 "reason": reason,
                 "daily_goal_preservation": row,
+                "same_day_preservation_exit_truth": {
+                    "triggered": True,
+                    "closed": bool(out.get("closed")),
+                    "blocked_by_broker_qty_guard": bool(qty_guard.get("blocked")),
+                    "broker_qty_guard_reason": qty_guard.get("reason"),
+                    "requested_qty": qty_guard.get("requested_qty"),
+                    "broker_available_qty": qty_guard.get("broker_available_qty"),
+                    "clamped_qty": qty_guard.get("clamped_qty"),
+                    "primary_daily_pnl": daily_goal_preservation.get("primary_daily_pnl"),
+                    "target_low": daily_goal_preservation.get("target_low"),
+                    "near_target_hit": daily_goal_preservation.get("near_target_hit"),
+                    "low_target_hit": daily_goal_preservation.get("low_target_hit"),
+                    "high_water_preserve": daily_goal_preservation.get("high_water_preserve"),
+                },
                 **dict(out or {}),
             }
             results.append(result)
