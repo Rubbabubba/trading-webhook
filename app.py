@@ -1719,7 +1719,7 @@ SWING_PRODUCTION_RISK_CALIBRATION_MIN_RANK_SCORE = getenv_float_any(
 )
 SWING_PRODUCTION_RISK_CALIBRATION_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
     "SWING_PRODUCTION_RISK_CALIBRATION_MIN_CLOSE_TO_HIGH_PCT",
-    default=0.985,
+    default=0.982,
 )
 SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT = getenv_float_any(
     "SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT",
@@ -1727,6 +1727,30 @@ SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT = getenv_float_any(
 )
 SWING_PRODUCTION_RISK_CALIBRATION_MAX_ENTRIES_PER_SCAN = getenv_int_any(
     "SWING_PRODUCTION_RISK_CALIBRATION_MAX_ENTRIES_PER_SCAN",
+    default=1,
+)
+SWING_PRODUCTION_NEAR_RANK_REVIVAL_ENABLED = env_bool_any(
+    "SWING_PRODUCTION_NEAR_RANK_REVIVAL_ENABLED",
+    default=True,
+)
+SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_RANK_SCORE",
+    default=99.0,
+)
+SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
+    "SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_CLOSE_TO_HIGH_PCT",
+    default=0.995,
+)
+SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_RISK_PCT = getenv_float_any(
+    "SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_RISK_PCT",
+    default=0.08,
+)
+SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_TARGET_PATH_SCORE = getenv_float_any(
+    "SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_TARGET_PATH_SCORE",
+    default=10.0,
+)
+SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN",
     default=1,
 )
 SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
@@ -1851,9 +1875,9 @@ COHORT_EVIDENCE_HISTORY: list[dict] = []
 COHORT_EVIDENCE_STATE_RESTORE: dict = {}
 
 SCANNER_UNIVERSE_PROVIDER = getenv_any("SCANNER_UNIVERSE_PROVIDER", default="static").lower()
-SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="200"))
+SCANNER_MAX_SYMBOLS_PER_CYCLE = int(getenv_any("SCANNER_MAX_SYMBOLS_PER_CYCLE", default="50"))
 SCANNER_FETCH_CHUNK_SIZE = max(1, int(getenv_any("SCANNER_FETCH_CHUNK_SIZE", default="5") or 5))
-SCANNER_MAX_1M_BARS_PER_SYMBOL = max(0, int(getenv_any("SCANNER_MAX_1M_BARS_PER_SYMBOL", default="1500") or 0))
+SCANNER_MAX_1M_BARS_PER_SYMBOL = max(0, int(getenv_any("SCANNER_MAX_1M_BARS_PER_SYMBOL", default="500") or 0))
 # Volatility ranking (Option A)
 SCANNER_VOL_RANK_ENABLE = env_bool("SCANNER_VOL_RANK_ENABLE", False)
 # Canonical name: SCANNER_VOL_RANK_TOP_N
@@ -2409,7 +2433,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-343-production-contract-risk-calibration-daily-goal-high-water-preservation"
+PATCH_VERSION = "patch-344-production-contract-starter-sleeve-near-rank-revival-scanner-speed-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -17337,6 +17361,12 @@ def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
         risk_calibration_min_close_to_high_pct=float(SWING_PRODUCTION_RISK_CALIBRATION_MIN_CLOSE_TO_HIGH_PCT),
         risk_calibration_max_above_breakout_pct=float(SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT),
         risk_calibration_max_entries_per_scan=int(SWING_PRODUCTION_RISK_CALIBRATION_MAX_ENTRIES_PER_SCAN),
+        near_rank_revival_enabled=bool(SWING_PRODUCTION_NEAR_RANK_REVIVAL_ENABLED),
+        near_rank_revival_min_rank_score=float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_RANK_SCORE),
+        near_rank_revival_min_close_to_high_pct=float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_CLOSE_TO_HIGH_PCT),
+        near_rank_revival_max_risk_pct=float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_RISK_PCT),
+        near_rank_revival_min_target_path_score=float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_TARGET_PATH_SCORE),
+        near_rank_revival_max_entries_per_scan=int(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN),
     )
 
 def _p323_value(candidate: dict | None, *keys):
@@ -20317,6 +20347,22 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'selection_finalizer': 'p326_approved_production_contract_selection_finalizer',
             'selection_finalizer_selected_symbols': list(production_selection_finalizer.get('selected_symbols') or []),
             'selection_finalizer_approved_symbols': list(production_selection_finalizer.get('approved_symbols') or []),
+            'risk_calibrated_starter_count': len([
+                c for c in production_approved
+                if bool(((c.get("swing_production_contract") or {}).get("checks") or {}).get("risk_calibrated_starter_ok"))
+            ]),
+            'risk_calibrated_starter_symbols': [
+                c.get('symbol') for c in production_approved
+                if bool(((c.get("swing_production_contract") or {}).get("checks") or {}).get("risk_calibrated_starter_ok"))
+            ],
+            'near_rank_revival_count': len([
+                c for c in production_approved
+                if bool(((c.get("swing_production_contract") or {}).get("checks") or {}).get("near_rank_revival_ok"))
+            ]),
+            'near_rank_revival_symbols': [
+                c.get('symbol') for c in production_approved
+                if bool(((c.get("swing_production_contract") or {}).get("checks") or {}).get("near_rank_revival_ok"))
+            ],
         },
         'production_contract_miss_reasons': _p325_build_production_contract_miss_snapshot(
             candidates,
@@ -29348,6 +29394,14 @@ def _p325_build_production_contract_miss_snapshot(
                 "min_close_to_high_pct": float(SWING_PRODUCTION_RISK_CALIBRATION_MIN_CLOSE_TO_HIGH_PCT),
                 "max_above_breakout_pct": float(SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT),
                 "max_entries_per_scan": int(SWING_PRODUCTION_RISK_CALIBRATION_MAX_ENTRIES_PER_SCAN),
+            },
+            "near_rank_revival": {
+                "enabled": bool(SWING_PRODUCTION_NEAR_RANK_REVIVAL_ENABLED),
+                "min_rank_score": float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_RANK_SCORE),
+                "min_close_to_high_pct": float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_CLOSE_TO_HIGH_PCT),
+                "max_risk_pct": float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_RISK_PCT),
+                "min_target_path_score": float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_TARGET_PATH_SCORE),
+                "max_entries_per_scan": int(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN),
             },
         },
         "approved": approved[:lim],

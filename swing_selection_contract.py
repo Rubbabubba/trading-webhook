@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-343-production-contract-risk-calibration"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-344-production-contract-starter-sleeve-near-rank-revival"
 
 
 @dataclass(frozen=True)
@@ -30,9 +30,15 @@ class SwingProductionContractConfig:
     risk_calibration_enabled: bool = False
     risk_calibration_max_risk_pct: float = 0.20
     risk_calibration_min_rank_score: float = 105.0
-    risk_calibration_min_close_to_high_pct: float = 0.985
+    risk_calibration_min_close_to_high_pct: float = 0.982
     risk_calibration_max_above_breakout_pct: float = 0.025
     risk_calibration_max_entries_per_scan: int = 1
+    near_rank_revival_enabled: bool = False
+    near_rank_revival_min_rank_score: float = 99.0
+    near_rank_revival_min_close_to_high_pct: float = 0.995
+    near_rank_revival_max_risk_pct: float = 0.08
+    near_rank_revival_min_target_path_score: float = 10.0
+    near_rank_revival_max_entries_per_scan: int = 1
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -153,55 +159,102 @@ def swing_production_contract(
     close_to_high_pct = _pct_decimal(c.get("close_to_high_pct"))
     return_20d_pct = _pct_decimal(c.get("return_20d_pct"))
 
+        rank_score_ok = rank_score >= float(config.min_rank_score)
+    liquidity_ok = avg_dollar_volume >= float(config.min_avg_dollar_volume)
     base_risk_ok = risk_pct is not None and risk_pct <= float(config.max_risk_per_share_pct)
+    not_too_far_below_breakout = breakout_distance_pct is not None and breakout_distance_pct >= -abs(float(config.max_below_breakout_pct))
+    not_too_extended_above_breakout = breakout_distance_pct is not None and breakout_distance_pct <= abs(float(config.max_above_breakout_pct))
+    close_to_high_ok = close_to_high_pct is not None and close_to_high_pct >= float(config.min_close_to_high_pct)
+    return_20d_ok = return_20d_pct is None or return_20d_pct >= float(config.min_return_20d_pct)
+
+    target_path_score = float(_safe_float(
+        (c.get("target_path_profit") or {}).get("score")
+        if isinstance(c.get("target_path_profit"), dict)
+        else c.get("target_path_score")
+    ))
+
+    base_contract_ok = bool(
+        executable
+        and rank_score_ok
+        and liquidity_ok
+        and base_risk_ok
+        and not_too_far_below_breakout
+        and not_too_extended_above_breakout
+        and close_to_high_ok
+        and return_20d_ok
+    )
+
     risk_calibrated_starter_ok = bool(
         config.risk_calibration_enabled
+        and executable
         and risk_pct is not None
         and risk_pct <= float(config.risk_calibration_max_risk_pct)
         and rank_score >= float(config.risk_calibration_min_rank_score)
-        and avg_dollar_volume >= float(config.min_avg_dollar_volume)
+        and liquidity_ok
         and close_to_high_pct is not None
         and close_to_high_pct >= float(config.risk_calibration_min_close_to_high_pct)
+        and not_too_far_below_breakout
         and breakout_distance_pct is not None
         and breakout_distance_pct <= abs(float(config.risk_calibration_max_above_breakout_pct))
-        and executable
+        and return_20d_ok
     )
+
+    near_rank_revival_ok = bool(
+        config.near_rank_revival_enabled
+        and executable
+        and rank_score >= float(config.near_rank_revival_min_rank_score)
+        and liquidity_ok
+        and risk_pct is not None
+        and risk_pct <= float(config.near_rank_revival_max_risk_pct)
+        and close_to_high_pct is not None
+        and close_to_high_pct >= float(config.near_rank_revival_min_close_to_high_pct)
+        and not_too_far_below_breakout
+        and not_too_extended_above_breakout
+        and return_20d_ok
+        and target_path_score >= float(config.near_rank_revival_min_target_path_score)
+    )
+
+    contract_path_ok = bool(base_contract_ok or risk_calibrated_starter_ok or near_rank_revival_ok)
 
     checks = {
         "executable": executable,
-        "rank_score_ok": rank_score >= float(config.min_rank_score),
-        "liquidity_ok": avg_dollar_volume >= float(config.min_avg_dollar_volume),
-        "risk_ok": bool(base_risk_ok or risk_calibrated_starter_ok),
+        "rank_score_ok": rank_score_ok,
+        "liquidity_ok": liquidity_ok,
+        "risk_ok": bool(base_risk_ok or risk_calibrated_starter_ok or near_rank_revival_ok),
         "base_risk_ok": bool(base_risk_ok),
+        "base_contract_ok": bool(base_contract_ok),
         "risk_calibrated_starter_ok": bool(risk_calibrated_starter_ok),
-        "not_too_far_below_breakout": breakout_distance_pct is not None and breakout_distance_pct >= -abs(float(config.max_below_breakout_pct)),
-        "not_too_extended_above_breakout": breakout_distance_pct is not None and breakout_distance_pct <= abs(float(config.max_above_breakout_pct)),
-        "close_to_high_ok": close_to_high_pct is not None and close_to_high_pct >= float(config.min_close_to_high_pct),
-        "return_20d_ok": return_20d_pct is None or return_20d_pct >= float(config.min_return_20d_pct),
+        "near_rank_revival_ok": bool(near_rank_revival_ok),
+        "not_too_far_below_breakout": not_too_far_below_breakout,
+        "not_too_extended_above_breakout": not_too_extended_above_breakout,
+        "close_to_high_ok": close_to_high_ok,
+        "return_20d_ok": return_20d_ok,
+        "target_path_score": target_path_score,
+        "contract_path_ok": contract_path_ok,
     }
 
     if not executable:
         blockers.append(str(sizing_truth.get("sizing_block_reason") or "internal_sizing_qty_zero"))
-    if not checks["rank_score_ok"]:
-        blockers.append("production_contract_rank_below_min")
-    if not checks["liquidity_ok"]:
-        blockers.append("production_contract_liquidity_below_min")
 
     if strategy == str(config.mean_reversion_strategy_name or "").strip().lower():
         if not bool(config.allow_mean_reversion):
             blockers.append("production_contract_mean_reversion_disabled")
         if not original_eligible and not blockers:
             blockers.append("production_contract_mean_reversion_original_rules_not_met")
-    else:
+    elif not contract_path_ok:
+        if not rank_score_ok:
+            blockers.append("production_contract_rank_below_min")
+        if not liquidity_ok:
+            blockers.append("production_contract_liquidity_below_min")
         if not checks["risk_ok"]:
             blockers.append("production_contract_risk_too_wide")
-        if not checks["not_too_far_below_breakout"]:
+        if not not_too_far_below_breakout:
             blockers.append("production_contract_too_far_below_breakout")
-        if not checks["not_too_extended_above_breakout"]:
+        if not not_too_extended_above_breakout:
             blockers.append("production_contract_too_extended_above_breakout")
-        if not checks["close_to_high_ok"]:
+        if not close_to_high_ok:
             blockers.append("production_contract_not_close_to_high")
-        if not checks["return_20d_ok"]:
+        if not return_20d_ok:
             blockers.append("production_contract_20d_return_below_floor")
 
     blockers = _dedupe_reasons(blockers)
@@ -260,7 +313,12 @@ def apply_swing_production_contract(
         c["advisory_legacy_rejection_reasons"] = list(contract.get("advisory_legacy_reasons") or [])
 
         if approved:
-            if bool((contract.get("checks") or {}).get("risk_calibrated_starter_ok")):
+            checks = dict(contract.get("checks") or {})
+            if bool(checks.get("near_rank_revival_ok")):
+                c["entry_type"] = "swing_production_near_rank_revival"
+                c["selected_source"] = "swing_production_near_rank_revival"
+                c["near_rank_revival_applied"] = True
+            elif bool(checks.get("risk_calibrated_starter_ok")):
                 c["entry_type"] = "swing_production_risk_calibrated_starter"
                 c["selected_source"] = "swing_production_risk_calibration"
                 c["risk_calibration_applied"] = True
@@ -351,19 +409,26 @@ def finalize_production_contract_selection(
 
     max_total = max(0, int(max_new_entries or 0))
     max_calibrated = max(0, int(config.risk_calibration_max_entries_per_scan or 0))
+    max_near_rank = max(0, int(config.near_rank_revival_max_entries_per_scan or 0))
     selected = []
     calibrated_count = 0
+    near_rank_count = 0
 
     for row in approved:
         if len(selected) >= max_total:
             break
         contract = dict((row or {}).get("swing_production_contract") or {})
         checks = dict(contract.get("checks") or {})
-        is_calibrated = bool(checks.get("risk_calibrated_starter_ok"))
+        is_near_rank = bool(checks.get("near_rank_revival_ok"))
+        is_calibrated = bool(checks.get("risk_calibrated_starter_ok")) and not is_near_rank
+        if is_near_rank and near_rank_count >= max_near_rank:
+            continue
         if is_calibrated and calibrated_count >= max_calibrated:
             continue
         selected.append(dict(row or {}))
-        if is_calibrated:
+        if is_near_rank:
+            near_rank_count += 1
+        elif is_calibrated:
             calibrated_count += 1
 
     selected_symbols = {
@@ -386,7 +451,11 @@ def finalize_production_contract_selection(
         if is_selected:
             contract = dict(c.get("swing_production_contract") or {})
             checks = dict(contract.get("checks") or {})
-            if bool(checks.get("risk_calibrated_starter_ok")):
+            if bool(checks.get("near_rank_revival_ok")):
+                c["entry_type"] = "swing_production_near_rank_revival"
+                c["selected_source"] = "swing_production_near_rank_revival"
+                c["near_rank_revival_applied"] = True
+            elif bool(checks.get("risk_calibrated_starter_ok")):
                 c["entry_type"] = "swing_production_risk_calibrated_starter"
                 c["selected_source"] = "swing_production_risk_calibration"
                 c["risk_calibration_applied"] = True
