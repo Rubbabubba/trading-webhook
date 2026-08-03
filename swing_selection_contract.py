@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-333-swing-selection-contract-module-split-prep"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-343-production-contract-risk-calibration"
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,12 @@ class SwingProductionContractConfig:
     mean_reversion_strategy_name: str
     breakout_strategy_name: str
     max_entries_per_scan: int
+    risk_calibration_enabled: bool = False
+    risk_calibration_max_risk_pct: float = 0.20
+    risk_calibration_min_rank_score: float = 105.0
+    risk_calibration_min_close_to_high_pct: float = 0.985
+    risk_calibration_max_above_breakout_pct: float = 0.025
+    risk_calibration_max_entries_per_scan: int = 1
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -147,11 +153,27 @@ def swing_production_contract(
     close_to_high_pct = _pct_decimal(c.get("close_to_high_pct"))
     return_20d_pct = _pct_decimal(c.get("return_20d_pct"))
 
+    base_risk_ok = risk_pct is not None and risk_pct <= float(config.max_risk_per_share_pct)
+    risk_calibrated_starter_ok = bool(
+        config.risk_calibration_enabled
+        and risk_pct is not None
+        and risk_pct <= float(config.risk_calibration_max_risk_pct)
+        and rank_score >= float(config.risk_calibration_min_rank_score)
+        and avg_dollar_volume >= float(config.min_avg_dollar_volume)
+        and close_to_high_pct is not None
+        and close_to_high_pct >= float(config.risk_calibration_min_close_to_high_pct)
+        and breakout_distance_pct is not None
+        and breakout_distance_pct <= abs(float(config.risk_calibration_max_above_breakout_pct))
+        and executable
+    )
+
     checks = {
         "executable": executable,
         "rank_score_ok": rank_score >= float(config.min_rank_score),
         "liquidity_ok": avg_dollar_volume >= float(config.min_avg_dollar_volume),
-        "risk_ok": risk_pct is not None and risk_pct <= float(config.max_risk_per_share_pct),
+        "risk_ok": bool(base_risk_ok or risk_calibrated_starter_ok),
+        "base_risk_ok": bool(base_risk_ok),
+        "risk_calibrated_starter_ok": bool(risk_calibrated_starter_ok),
         "not_too_far_below_breakout": breakout_distance_pct is not None and breakout_distance_pct >= -abs(float(config.max_below_breakout_pct)),
         "not_too_extended_above_breakout": breakout_distance_pct is not None and breakout_distance_pct <= abs(float(config.max_above_breakout_pct)),
         "close_to_high_ok": close_to_high_pct is not None and close_to_high_pct >= float(config.min_close_to_high_pct),
@@ -238,8 +260,13 @@ def apply_swing_production_contract(
         c["advisory_legacy_rejection_reasons"] = list(contract.get("advisory_legacy_reasons") or [])
 
         if approved:
-            c["entry_type"] = "swing_production_contract"
-            c["selected_source"] = "swing_production_reset"
+            if bool((contract.get("checks") or {}).get("risk_calibrated_starter_ok")):
+                c["entry_type"] = "swing_production_risk_calibrated_starter"
+                c["selected_source"] = "swing_production_risk_calibration"
+                c["risk_calibration_applied"] = True
+            else:
+                c["entry_type"] = "swing_production_contract"
+                c["selected_source"] = "swing_production_reset"
         elif prior_contract:
             c["selected_source"] = c.get("selected_source") or "swing_production_reset_blocked"
 
@@ -321,7 +348,23 @@ def finalize_production_contract_selection(
         config=config,
         sizing_truth_fn=sizing_truth_fn,
     )
-    selected = [dict(r or {}) for r in approved[:max(0, int(max_new_entries or 0))]]
+
+    max_total = max(0, int(max_new_entries or 0))
+    max_calibrated = max(0, int(config.risk_calibration_max_entries_per_scan or 0))
+    selected = []
+    calibrated_count = 0
+
+    for row in approved:
+        if len(selected) >= max_total:
+            break
+        contract = dict((row or {}).get("swing_production_contract") or {})
+        checks = dict(contract.get("checks") or {})
+        is_calibrated = bool(checks.get("risk_calibrated_starter_ok"))
+        if is_calibrated and calibrated_count >= max_calibrated:
+            continue
+        selected.append(dict(row or {}))
+        if is_calibrated:
+            calibrated_count += 1
 
     selected_symbols = {
         str((row or {}).get("symbol") or "").strip().upper()
@@ -341,8 +384,15 @@ def finalize_production_contract_selection(
             c["rejection_reasons"] = list((c.get("swing_production_contract") or {}).get("blockers") or [])
             c["legacy_gate_mode"] = "diagnostic_only"
         if is_selected:
-            c["entry_type"] = "swing_production_contract"
-            c["selected_source"] = "swing_production_reset"
+            contract = dict(c.get("swing_production_contract") or {})
+            checks = dict(contract.get("checks") or {})
+            if bool(checks.get("risk_calibrated_starter_ok")):
+                c["entry_type"] = "swing_production_risk_calibrated_starter"
+                c["selected_source"] = "swing_production_risk_calibration"
+                c["risk_calibration_applied"] = True
+            else:
+                c["entry_type"] = "swing_production_contract"
+                c["selected_source"] = "swing_production_reset"
             c["selection_finalizer"] = "p326_approved_production_contract_selection_finalizer"
         finalized_rows.append(c)
 

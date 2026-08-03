@@ -1658,6 +1658,25 @@ SWING_DAILY_GOAL_PRESERVATION_MAX_OPEN_LOSS_DOLLARS = getenv_float_any(
     "SWING_DAILY_GOAL_PRESERVATION_MAX_OPEN_LOSS_DOLLARS",
     default=10.0,
 )
+SWING_DAILY_GOAL_HIGH_WATER_PRESERVATION_ENABLED = env_bool_any(
+    "SWING_DAILY_GOAL_HIGH_WATER_PRESERVATION_ENABLED",
+    default=True,
+)
+SWING_DAILY_GOAL_HIGH_WATER_RETRACE_DOLLARS = getenv_float_any(
+    "SWING_DAILY_GOAL_HIGH_WATER_RETRACE_DOLLARS",
+    default=10.0,
+)
+SWING_DAILY_GOAL_HIGH_WATER_CLOSE_ALL_ON_RETRACE = env_bool_any(
+    "SWING_DAILY_GOAL_HIGH_WATER_CLOSE_ALL_ON_RETRACE",
+    default=True,
+)
+P343_DAILY_GOAL_HIGH_WATER = {
+    "primary_daily_pnl": None,
+    "ts_utc": None,
+    "ts_ny": None,
+    "source": "runtime_memory",
+}
+
 
 # Retired in Patch 341. Kept as fixed constants only so old status stubs stay import-safe.
 SELECTED_ENTRY_INTENT_QUEUE_ENABLED = False
@@ -1685,6 +1704,30 @@ SWING_PRODUCTION_RESET_MIN_AVG_DOLLAR_VOLUME = getenv_float_any(
 SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
     "SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT",
     default=0.12,
+)
+SWING_PRODUCTION_RISK_CALIBRATION_ENABLED = env_bool_any(
+    "SWING_PRODUCTION_RISK_CALIBRATION_ENABLED",
+    default=True,
+)
+SWING_PRODUCTION_RISK_CALIBRATION_MAX_RISK_PCT = getenv_float_any(
+    "SWING_PRODUCTION_RISK_CALIBRATION_MAX_RISK_PCT",
+    default=0.20,
+)
+SWING_PRODUCTION_RISK_CALIBRATION_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_PRODUCTION_RISK_CALIBRATION_MIN_RANK_SCORE",
+    default=105.0,
+)
+SWING_PRODUCTION_RISK_CALIBRATION_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
+    "SWING_PRODUCTION_RISK_CALIBRATION_MIN_CLOSE_TO_HIGH_PCT",
+    default=0.985,
+)
+SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT = getenv_float_any(
+    "SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT",
+    default=0.025,
+)
+SWING_PRODUCTION_RISK_CALIBRATION_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_PRODUCTION_RISK_CALIBRATION_MAX_ENTRIES_PER_SCAN",
+    default=1,
 )
 SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
     "SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT",
@@ -2366,7 +2409,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-342-hotfix-sync-return-safety-worker-exit-null-guard"
+PATCH_VERSION = "patch-343-production-contract-risk-calibration-daily-goal-high-water-preservation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -17288,6 +17331,12 @@ def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
         mean_reversion_strategy_name=str(MEAN_REVERSION_STRATEGY_NAME),
         breakout_strategy_name=str(BREAKOUT_STRATEGY_NAME),
         max_entries_per_scan=int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
+        risk_calibration_enabled=bool(SWING_PRODUCTION_RISK_CALIBRATION_ENABLED),
+        risk_calibration_max_risk_pct=float(SWING_PRODUCTION_RISK_CALIBRATION_MAX_RISK_PCT),
+        risk_calibration_min_rank_score=float(SWING_PRODUCTION_RISK_CALIBRATION_MIN_RANK_SCORE),
+        risk_calibration_min_close_to_high_pct=float(SWING_PRODUCTION_RISK_CALIBRATION_MIN_CLOSE_TO_HIGH_PCT),
+        risk_calibration_max_above_breakout_pct=float(SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT),
+        risk_calibration_max_entries_per_scan=int(SWING_PRODUCTION_RISK_CALIBRATION_MAX_ENTRIES_PER_SCAN),
     )
 
 def _p323_value(candidate: dict | None, *keys):
@@ -29292,6 +29341,14 @@ def _p325_build_production_contract_miss_snapshot(
             "min_close_to_high_pct": float(SWING_PRODUCTION_RESET_MIN_CLOSE_TO_HIGH_PCT),
             "min_return_20d_pct": float(SWING_PRODUCTION_RESET_MIN_RETURN_20D_PCT),
             "allow_mean_reversion": bool(SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION),
+            "risk_calibration": {
+                "enabled": bool(SWING_PRODUCTION_RISK_CALIBRATION_ENABLED),
+                "max_risk_pct": float(SWING_PRODUCTION_RISK_CALIBRATION_MAX_RISK_PCT),
+                "min_rank_score": float(SWING_PRODUCTION_RISK_CALIBRATION_MIN_RANK_SCORE),
+                "min_close_to_high_pct": float(SWING_PRODUCTION_RISK_CALIBRATION_MIN_CLOSE_TO_HIGH_PCT),
+                "max_above_breakout_pct": float(SWING_PRODUCTION_RISK_CALIBRATION_MAX_ABOVE_BREAKOUT_PCT),
+                "max_entries_per_scan": int(SWING_PRODUCTION_RISK_CALIBRATION_MAX_ENTRIES_PER_SCAN),
+            },
         },
         "approved": approved[:lim],
         "near_approved": near_approved[:lim],
@@ -30116,6 +30173,51 @@ def _p342_position_unrealized_for_symbol(symbol: str, broker_positions: list[dic
         }
     return {"symbol": sym, "qty": 0.0, "unrealized_pl": 0.0}
 
+def _p343_update_daily_goal_high_water(primary_daily_pnl: float, goal: dict | None = None) -> dict:
+    current = _safe_float(primary_daily_pnl, 0.0)
+    prior = P343_DAILY_GOAL_HIGH_WATER.get("primary_daily_pnl")
+    prior_val = None if prior is None else _safe_float(prior, 0.0)
+
+    if prior_val is None or current > prior_val:
+        P343_DAILY_GOAL_HIGH_WATER.update({
+            "primary_daily_pnl": round(current, 4),
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "ts_ny": now_ny().isoformat(),
+            "source": str((goal or {}).get("primary_source") or "broker_account_daily_change"),
+        })
+
+    return dict(P343_DAILY_GOAL_HIGH_WATER)
+
+
+def _p343_daily_goal_high_water_state(primary_daily_pnl: float, target_low: float, goal: dict | None = None) -> dict:
+    high = _p343_update_daily_goal_high_water(primary_daily_pnl, goal=goal)
+    high_value = _safe_float(high.get("primary_daily_pnl"), _safe_float(primary_daily_pnl, 0.0))
+    current = _safe_float(primary_daily_pnl, 0.0)
+    target = max(0.01, _safe_float(target_low, 100.0))
+    retrace = max(0.0, _safe_float(SWING_DAILY_GOAL_HIGH_WATER_RETRACE_DOLLARS, 10.0))
+    giveback = max(0.0, high_value - current)
+
+    return {
+        "enabled": bool(SWING_DAILY_GOAL_HIGH_WATER_PRESERVATION_ENABLED),
+        "source": high.get("source"),
+        "high_water_pnl": round(high_value, 4),
+        "high_water_ts_utc": high.get("ts_utc"),
+        "high_water_ts_ny": high.get("ts_ny"),
+        "current_primary_daily_pnl": round(current, 4),
+        "target_low": round(target, 4),
+        "high_water_progress_to_low_pct": round((high_value / target) * 100.0, 2),
+        "current_progress_to_low_pct": round((current / target) * 100.0, 2),
+        "giveback_from_high_water": round(giveback, 4),
+        "retrace_dollars": round(retrace, 4),
+        "high_water_low_target_hit": bool(high_value >= target),
+        "high_water_near_target_hit": bool((high_value / target) >= max(0.0, float(SWING_DAILY_GOAL_PRESERVATION_NEAR_TARGET_PCT or 0.90))),
+        "retraced_from_high_water": bool(giveback >= retrace and high_value > current),
+        "should_preserve": bool(
+            SWING_DAILY_GOAL_HIGH_WATER_PRESERVATION_ENABLED
+            and high_value >= target
+            and giveback >= retrace
+        ),
+    }
 
 def _p342_daily_goal_preservation_exit_plan() -> dict:
     pnl_truth = today_pnl_truth_snapshot()
@@ -30125,6 +30227,8 @@ def _p342_daily_goal_preservation_exit_plan() -> dict:
     progress = primary / target_low if target_low > 0 else 0.0
     low_hit = bool(goal.get("low_target_hit") or primary >= target_low)
     near_hit = bool(progress >= max(0.0, float(SWING_DAILY_GOAL_PRESERVATION_NEAR_TARGET_PCT or 0.90)))
+    high_water = _p343_daily_goal_high_water_state(primary, target_low, goal=goal)
+    high_water_preserve = bool(high_water.get("should_preserve"))
 
     broker_positions = list_open_positions_details_allowed()
     rows = []
@@ -30146,7 +30250,10 @@ def _p342_daily_goal_preservation_exit_plan() -> dict:
         reason = "none"
         action = "hold"
 
-        if low_hit and bool(SWING_DAILY_GOAL_PRESERVATION_CLOSE_ALL_AT_LOW_TARGET):
+        if high_water_preserve and bool(SWING_DAILY_GOAL_HIGH_WATER_CLOSE_ALL_ON_RETRACE):
+            action = "close"
+            reason = "daily_goal_high_water_retrace_close_all"
+        elif low_hit and bool(SWING_DAILY_GOAL_PRESERVATION_CLOSE_ALL_AT_LOW_TARGET):
             action = "close"
             reason = "daily_goal_low_hit_close_all"
         elif near_hit and unreal > 0 and bool(SWING_DAILY_GOAL_PRESERVATION_CLOSE_PROFITABLE_NEAR_TARGET):
@@ -30155,7 +30262,7 @@ def _p342_daily_goal_preservation_exit_plan() -> dict:
         elif near_hit and unreal <= -abs(float(SWING_DAILY_GOAL_PRESERVATION_MAX_OPEN_LOSS_DOLLARS or 10.0)):
             action = "close"
             reason = "daily_goal_near_hit_max_open_loss"
-        elif near_hit or low_hit:
+        elif high_water_preserve or near_hit or low_hit:
             action = "protect"
             reason = "daily_goal_preservation_monitor"
 
@@ -30184,20 +30291,24 @@ def _p342_daily_goal_preservation_exit_plan() -> dict:
         "enabled": bool(SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED),
         "market_open": bool(in_market_hours()),
         "daily_goal_progress": goal,
+        "daily_goal_high_water": high_water,
         "primary_daily_pnl": round(primary, 4),
         "target_low": round(target_low, 4),
         "progress_to_low_fraction": round(progress, 4),
         "near_target_hit": near_hit,
         "low_target_hit": low_hit,
-        "should_act": bool(SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED and (near_hit or low_hit) and close_symbols),
+        "high_water_preserve": high_water_preserve,
+        "should_act": bool(SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED and (near_hit or low_hit or high_water_preserve) and close_symbols),
         "close_symbols": close_symbols,
         "protect_symbols": protect_symbols,
         "rows": rows,
         "recommended_action": (
-            "close_daily_goal_preservation_symbols"
+            "close_daily_goal_high_water_preservation_symbols"
+            if high_water_preserve and close_symbols
+            else "close_daily_goal_preservation_symbols"
             if close_symbols
             else "protective_monitor_daily_goal_near_hit"
-            if near_hit or low_hit
+            if high_water_preserve or near_hit or low_hit
             else "none"
         ),
     }    
