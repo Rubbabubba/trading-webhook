@@ -1,4 +1,4 @@
-> Patch 352 note: swing submit diagnostics now classify Alpaca 429 submit failures as retryable rate-limit events. Prefer `/diagnostics/protective_limit_submit_evidence` plus `/diagnostics/swing_submit_path_trace` to distinguish selected-not-attempted from attempted-but-rate-limited.
+> Patch 353 note: swing production scanner entries require protective limit-entry formation by default. `/diagnostics/swing_submit_path_trace` now treats only the current scan selected symbols as selected submit opportunities; eligible-but-not-selected names are reported separately.
 
 https://trading-webhook-q4d5.onrender.com/
 https://trading-webhook-q4d5.onrender.com/admin/release/promote/{target_stage}

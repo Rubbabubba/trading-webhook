@@ -1587,6 +1587,7 @@ SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS = int(getenv_any("SPREAD_BLOCKED_RETRY_MAX_ATT
 
 SWING_LIMIT_ENTRY_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_ENABLED", default=True)
 SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED", default=True)
+SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY = env_bool_any("SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY", default=True)
 SWING_LIMIT_ENTRY_MAX_SPREAD_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MAX_SPREAD_PCT", default="0.06"))
 SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT", default="0.03"))
 SWING_LIMIT_ENTRY_SPREAD_FRACTION = float(getenv_any("SWING_LIMIT_ENTRY_SPREAD_FRACTION", default="0.50"))
@@ -2438,7 +2439,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-352-alpaca-rate-limit-submit-recovery-selected-opportunity-truth-correction"
+PATCH_VERSION = "patch-353-protective-limit-entry-enforcement-current-scan-submit-truth-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12019,7 +12020,12 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
     captured_tradeable = [r for r in items if str(r.get("status") or "") == "captured_tradeable_candidate"]
     actionable_tradeable_raw = [r for r in tradeable if not bool(r.get("captured"))]
     actionable_tradeable = actionable_tradeable_raw if market_open_now else []
-    after_hours_suppressed_tradeable = actionable_tradeable_raw if not market_open_now else []
+    actionable_selected_tradeable_raw = [
+        r for r in actionable_tradeable_raw
+        if str(r.get("symbol") or "").strip().upper() in selected_symbols
+    ]
+    actionable_selected_tradeable = actionable_selected_tradeable_raw if market_open_now else []
+    after_hours_suppressed_tradeable = actionable_selected_tradeable_raw if not market_open_now else []
     watch = [r for r in items if str(r.get("status") or "").startswith("watch")]
     metadata = _p317_scan_metadata_truth(active_scan=active_scan, summary=summary)
 
@@ -12155,8 +12161,20 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
         "captured_symbols": [row.get("symbol") for row in captured],
         "captured_tradeable_count": len(captured_tradeable),
         "captured_tradeable_symbols": [row.get("symbol") for row in captured_tradeable],
-        "missing_trade_opportunity_count": len(actionable_tradeable),
-        "missing_trade_opportunity_symbols": [row.get("symbol") for row in actionable_tradeable],
+        "missing_trade_opportunity_count": len(actionable_selected_tradeable),
+        "missing_trade_opportunity_symbols": [row.get("symbol") for row in actionable_selected_tradeable],
+        "eligible_not_selected_truth": {
+            "count": len([
+                row for row in actionable_tradeable
+                if str(row.get("symbol") or "").strip().upper() not in selected_symbols
+            ]),
+            "symbols": [
+                row.get("symbol")
+                for row in actionable_tradeable
+                if str(row.get("symbol") or "").strip().upper() not in selected_symbols
+            ],
+            "read": "eligible_but_not_current_scan_selected_not_counted_as_missing_trade",
+        },
         "symbols": requested_limited,
         "universe_truth": {
             "coverage_ok": not coverage_missing_active_symbols,
@@ -12694,12 +12712,27 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         limit=max(5, min(int(limit or 12), 25)),
     )
     active_truth = _p320_active_position_truth_for_brief()
-    selected_items = [
+    selected_or_eligible_items = [
         dict(row)
         for row in list(watch.get("items") or [])
         if isinstance(row, dict)
         and (bool(row.get("selected")) or bool(row.get("eligible")))
         and not bool(row.get("captured"))
+    ]
+    current_scan_selected_symbols = {
+        str(sym or "").strip().upper()
+        for sym in list((watch.get("universe_truth") or {}).get("selected_symbols") or [])
+        if str(sym or "").strip()
+    }
+    selected_items = [
+        dict(row)
+        for row in selected_or_eligible_items
+        if str(row.get("symbol") or "").strip().upper() in current_scan_selected_symbols
+    ]
+    eligible_not_selected_items = [
+        dict(row)
+        for row in selected_or_eligible_items
+        if str(row.get("symbol") or "").strip().upper() not in current_scan_selected_symbols
     ]
     captured_items = [
         dict(row)
@@ -12718,6 +12751,7 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
     effective_missing_symbols = list(watch.get("missing_trade_opportunity_symbols") or [])
     raw_selected_count = len(selected_items)
     raw_selected_symbols = [row.get("symbol") for row in selected_items]
+    eligible_not_selected_symbols = [row.get("symbol") for row in eligible_not_selected_items]
 
     recent_limit_evidence = _p336_recent_limit_entry_evidence(limit=20)
     rate_limited_symbols = _dedupe_keep_order([
@@ -12763,10 +12797,12 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         blockers.append("market_closed_selected_candidates_suppressed")
     elif not selected_items and captured_items:
         blockers.append("latest_candidate_already_captured")
+    elif not selected_items and eligible_not_selected_items:
+        blockers.append("no_current_scan_selected_candidates")
     elif not selected_items:
         blockers.append("no_selected_or_eligible_candidates")
 
-    path_status = "ready_when_candidate_selected" if not blockers or blockers == ["no_selected_or_eligible_candidates"] else "blocked"
+    path_status = "ready_when_candidate_selected" if not blockers or blockers in (["no_selected_or_eligible_candidates"], ["no_current_scan_selected_candidates"]) else "blocked"
     if blockers == ["market_closed_selected_candidates_suppressed"]:
         path_status = "market_closed_selected_candidates_suppressed"
     if blockers == ["latest_candidate_already_captured"]:
@@ -12783,8 +12819,10 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         "blockers": blockers,
         "trade_submission_behavior_changed": False,
         "direct_submit": direct_submit_status,
-        "selected_or_eligible_count": raw_selected_count,
-        "selected_or_eligible_symbols": raw_selected_symbols,
+        "selected_or_eligible_count": len(selected_or_eligible_items),
+        "selected_or_eligible_symbols": _dedupe_keep_order(raw_selected_symbols + eligible_not_selected_symbols),
+        "current_scan_selected_count": raw_selected_count,
+        "current_scan_selected_symbols": raw_selected_symbols,
         "captured_candidate_count": len(captured_items),
         "captured_candidate_symbols": [row.get("symbol") for row in captured_items],
         "missing_trade_opportunity_count": effective_missing_count,
@@ -12796,7 +12834,9 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "selected_not_attempted_symbols": selected_not_attempted_symbols,
             "rate_limited_submit_count": len(rate_limited_selected_symbols),
             "rate_limited_submit_symbols": rate_limited_selected_symbols,
-            "eligible_not_selected_count": max(0, effective_missing_count - raw_selected_count),
+            "eligible_not_selected_count": len(eligible_not_selected_items),
+            "eligible_not_selected_symbols": eligible_not_selected_symbols,
+            "current_scan_selected_source": "latest_scan_summary_selected_symbols",
             "read": (
                 "selected_submit_rate_limited_retryable"
                 if rate_limited_selected_symbols
@@ -12869,6 +12909,7 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             ),
         },
         "selected_items": selected_items,
+        "eligible_not_selected_items": eligible_not_selected_items,
     }
 
 
@@ -20967,7 +21008,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "submit_reason": submit_meta.get("reason"),
             "submit_attempted": bool(submit_meta.get("attempted")),
             "submit_order_id": submit_meta.get("order_id"),
-            "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
+                    "order_type": resp.get("order_type"),
+                    "limit_price": resp.get("limit_price"),
+                    "production_limit_required": bool(SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY and str(STRATEGY_MODE or "").strip().lower() == "swing"),
+                    "limit_entry_unavailable": str(resp.get("reason") or "").startswith("limit_entry_unavailable"),
+                    "actual_submit_side_effect": bool(actual_side_effect),
             "side_effect_reasons": list(side_effect.get("side_effect_reasons") or []),
             "submit_gap": bool(side_effect.get("submit_gap")),
             "direct_submit_lineage": {
@@ -28929,6 +28974,31 @@ def _p328_limit_entry_preview(symbol: str, side: str, snapshot: dict | None, met
         config=_p335_swing_limit_entry_config(),
     )
 
+
+def _p353_requires_protective_limit_entry(source: str, signal: str, meta: dict | None = None) -> bool:
+    if not bool(SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY):
+        return False
+    if str(STRATEGY_MODE or "").strip().lower() != "swing":
+        return False
+
+    m = dict(meta or {})
+    src = str(source or "").strip().lower()
+    selected_source = str(m.get("selected_source") or "").strip().lower()
+    sig = str(signal or "").strip().lower()
+
+    production_sources = {
+        "worker_scan",
+        "swing_production_reset",
+        "swing_fast_scan",
+        "scan",
+    }
+    return bool(
+        src in production_sources
+        or selected_source in production_sources
+        or bool(m.get("selected_by_scanner"))
+        or sig.startswith("daily_")
+    )
+
 def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta: dict | None = None, auth_payload: dict | None = None) -> dict:
     """Shared entry execution path for scanner + webhook."""
     meta = meta or {}
@@ -29173,6 +29243,55 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                         **(meta or {}),
                     },
                 )
+
+        if p328_limit_entry is None and _p353_requires_protective_limit_entry(source, signal, meta=meta):
+            forced_limit_preview = _p328_limit_entry_preview(symbol, side, snapshot, meta=meta)
+            snapshot["production_limit_entry_required"] = True
+            snapshot["production_limit_entry_preview"] = forced_limit_preview
+
+            if forced_limit_preview.get("allowed"):
+                p328_limit_entry = forced_limit_preview
+                record_decision(
+                    "ENTRY",
+                    source,
+                    symbol,
+                    side=side,
+                    signal=signal,
+                    action="allowed",
+                    reason="production_protective_limit_entry_required",
+                    meta={
+                        "snapshot": snapshot,
+                        "limit_entry": forced_limit_preview,
+                        **(meta or {}),
+                    },
+                )
+            else:
+                record_decision(
+                    "ENTRY",
+                    source,
+                    symbol,
+                    side=side,
+                    signal=signal,
+                    action="rejected",
+                    reason="limit_entry_unavailable",
+                    meta={
+                        "snapshot": snapshot,
+                        "limit_entry": forced_limit_preview,
+                        "production_limit_required": True,
+                        **(meta or {}),
+                    },
+                )
+                soften_symbol_lock(symbol, 5)
+                return {
+                    "ok": False,
+                    "rejected": True,
+                    "reason": "limit_entry_unavailable",
+                    "symbol": symbol,
+                    "signal": signal,
+                    "snapshot": snapshot,
+                    "limit_entry": forced_limit_preview,
+                    "production_limit_required": True,
+                }
 
         qty_signed_post_lock, pos_side_post_lock = get_position(symbol)
         if qty_signed_post_lock != 0:
