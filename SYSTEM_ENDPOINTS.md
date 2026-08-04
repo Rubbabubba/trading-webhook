@@ -1,4 +1,4 @@
-> Patch 346 note: selected-entry-intent and selected-submission-finalizer endpoints are retained only as retired compatibility stubs. Swing production uses direct submit. Operator workflows should prefer `/diagnostics/swing_watchlist_trade_status` and `/diagnostics/swing_submit_path_trace`.
+> Patch 352 note: swing submit diagnostics now classify Alpaca 429 submit failures as retryable rate-limit events. Prefer `/diagnostics/protective_limit_submit_evidence` plus `/diagnostics/swing_submit_path_trace` to distinguish selected-not-attempted from attempted-but-rate-limited.
 
 https://trading-webhook-q4d5.onrender.com/
 https://trading-webhook-q4d5.onrender.com/admin/release/promote/{target_stage}

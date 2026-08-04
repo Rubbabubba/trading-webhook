@@ -2341,6 +2341,7 @@ data_client = StockHistoricalDataClient(APCA_KEY, APCA_SECRET)
 # =============================
 TRADE_PLAN: dict[str, dict] = {}          # symbol -> plan dict
 P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE: list[dict] = []
+P352_RATE_LIMIT_SUBMIT_RECOVERY: list[dict] = []
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
@@ -2401,6 +2402,9 @@ SCAN_FAST_RESPONSE_ENABLED = env_bool_any("SCAN_FAST_RESPONSE_ENABLED", default=
 SCAN_FAST_RESPONSE_FOR_WORKER_ONLY = env_bool_any("SCAN_FAST_RESPONSE_FOR_WORKER_ONLY", default="true")
 SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", default=str(int(os.getenv("SCAN_TIMEOUT_SEC", "240") or 240) - 30)) or 210))
 SCAN_RUNTIME_WARN_RATIO = max(0.10, float(getenv_any("SCAN_RUNTIME_WARN_RATIO", default="0.85") or 0.85))
+ALPACA_SUBMIT_RATE_LIMIT_RETRY_ENABLED = env_bool_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_ENABLED", default="true")
+ALPACA_SUBMIT_RATE_LIMIT_RETRY_DELAY_SEC = max(0.0, float(getenv_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_DELAY_SEC", default="3") or 3))
+ALPACA_SUBMIT_RATE_LIMIT_RETRY_MAX_ATTEMPTS = max(1, int(getenv_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_MAX_ATTEMPTS", default="2") or 2))
 DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT = env_bool_any("DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT", default="true")
 DIAGNOSTIC_BUNDLE_MAX_ROWS = max(1, int(getenv_any("DIAGNOSTIC_BUNDLE_MAX_ROWS", default="10") or 10))
 DIAGNOSTIC_SCANNER_HISTORY_LIMIT = max(0, int(getenv_any("DIAGNOSTIC_SCANNER_HISTORY_LIMIT", default="10") or 10))
@@ -2434,7 +2438,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-351-worker-exit-trades-today-forcing-isolation-exit-guard-evidence-light"
+PATCH_VERSION = "patch-352-alpaca-rate-limit-submit-recovery-selected-opportunity-truth-correction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12715,6 +12719,26 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
     raw_selected_count = len(selected_items)
     raw_selected_symbols = [row.get("symbol") for row in selected_items]
 
+    recent_limit_evidence = _p336_recent_limit_entry_evidence(limit=20)
+    rate_limited_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").upper()
+        for row in list(recent_limit_evidence.get("rows") or [])
+        if (
+            str(row.get("stage") or "").lower() == "rate_limited"
+            or bool(row.get("rate_limited"))
+            or _p352_is_alpaca_rate_limit_error(row.get("error"))
+            or _p352_is_alpaca_rate_limit_error(row.get("block_reason"))
+        )
+        and str(row.get("symbol") or "").strip()
+    ])
+    rate_limited_selected_symbols = [
+        sym for sym in raw_selected_symbols
+        if str(sym or "").upper() in set(rate_limited_symbols)
+    ]
+    selected_not_attempted_symbols = [
+        sym for sym in raw_selected_symbols
+        if str(sym or "").upper() not in set(rate_limited_symbols)
+    ]
     direct_submit_enabled = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
     direct_submit_status = {
         "active": direct_submit_enabled,
@@ -12765,6 +12789,22 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         "captured_candidate_symbols": [row.get("symbol") for row in captured_items],
         "missing_trade_opportunity_count": effective_missing_count,
         "missing_trade_opportunity_symbols": effective_missing_symbols,
+        "selected_opportunity_truth": {
+            "raw_selected_count": raw_selected_count,
+            "raw_selected_symbols": raw_selected_symbols,
+            "selected_not_attempted_count": len(selected_not_attempted_symbols),
+            "selected_not_attempted_symbols": selected_not_attempted_symbols,
+            "rate_limited_submit_count": len(rate_limited_selected_symbols),
+            "rate_limited_submit_symbols": rate_limited_selected_symbols,
+            "eligible_not_selected_count": max(0, effective_missing_count - raw_selected_count),
+            "read": (
+                "selected_submit_rate_limited_retryable"
+                if rate_limited_selected_symbols
+                else "selected_candidates_waiting_for_submit"
+                if selected_not_attempted_symbols
+                else "no_selected_submit_gap"
+            ),
+        },
         "after_hours_selected_candidate_suppression": {
             "active": after_hours_suppressed,
             "market_open": market_open_now,
@@ -12821,7 +12861,9 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "captured_candidate_count": len(captured_items),
             "open_slots": max(0, int(_effective_max_open_positions()) - int(active_truth.get("active_position_count") or 0)),
             "operator_read": (
-                "not_missing_current_trade; monitor_existing_positions_and_next_scan"
+                "selected_submit_rate_limited_retryable; inspect_protective_limit_submit_evidence"
+                if rate_limited_selected_symbols
+                else "not_missing_current_trade; monitor_existing_positions_and_next_scan"
                 if int(watch.get("missing_trade_opportunity_count") or 0) <= 0
                 else "actionable_trade_available; inspect_selected_items_now"
             ),
@@ -29300,6 +29342,10 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             pass
         return {"ok": True, "submitted": True, "order_id": str(_order_attr(order, "id", "")), "order_type": submit_order_type, "limit_price": submit_price if submit_order_type == "limit" else None, "protective_limit_submit_evidence": p337_limit_submit_evidence, "order": payload, "plan": plan}
     except Exception as e:
+        submit_error = str(e)
+        rate_limited = _p352_is_alpaca_rate_limit_error(submit_error)
+        evidence_stage = "rate_limited" if rate_limited else "rejected"
+
         if str(locals().get("submit_order_type") or "").lower() == "limit" or isinstance(locals().get("p328_limit_entry"), dict):
             try:
                 _p337_record_limit_submit_evidence(
@@ -29307,39 +29353,55 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                     side=side,
                     signal=signal,
                     source=source,
-                    stage="rejected",
+                    stage=evidence_stage,
                     order_type=str(locals().get("submit_order_type") or "limit"),
                     qty=locals().get("qty"),
                     limit_price=locals().get("submit_price"),
                     limit_entry=locals().get("p328_limit_entry") if isinstance(locals().get("p328_limit_entry"), dict) else {},
                     snapshot=locals().get("snapshot") if isinstance(locals().get("snapshot"), dict) else {},
                     plan=TRADE_PLAN.get(symbol) if isinstance(TRADE_PLAN.get(symbol), dict) else None,
-                    error=str(e),
+                    error=submit_error,
                 )
             except Exception:
                 pass
-        log("ORDER_REJECTED", symbol=symbol, side=side, err=str(e), signal=signal, source=source)
-        record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason="alpaca_submit_failed", err=str(e), meta=meta)
+        log("ORDER_REJECTED", symbol=symbol, side=side, err=submit_error, signal=signal, source=source)
+        decision_reason = "alpaca_submit_rate_limited" if rate_limited else "alpaca_submit_failed"
+        record_decision(
+            "ENTRY",
+            source,
+            symbol,
+            side=side,
+            signal=signal,
+            action="rejected",
+            reason=decision_reason,
+            err=submit_error,
+            meta={**dict(meta or {}), "rate_limited": rate_limited, "retryable": rate_limited},
+        )
         try:
-            _record_paper_lifecycle("entry", "rejected", symbol=symbol, details={"source": source, "signal": signal, "reason": "alpaca_submit_failed", "error": str(e)})
+            _record_paper_lifecycle("entry", "rejected", symbol=symbol, details={"source": source, "signal": signal, "reason": decision_reason, "error": submit_error, "rate_limited": rate_limited, "retryable": rate_limited})
         except Exception:
             pass
         try:
             stale_plan = TRADE_PLAN.get(symbol)
             if isinstance(stale_plan, dict):
                 _ensure_execution_lifecycle_plan(symbol, stale_plan)
-                _transition_execution_lifecycle(stale_plan, symbol, "rejected", reason="alpaca_submit_failed", details={"source": source, "signal": signal, "error": str(e)}, allow_illegal=True)
+                _transition_execution_lifecycle(stale_plan, symbol, "rejected", reason=decision_reason, details={"source": source, "signal": signal, "error": submit_error, "rate_limited": rate_limited, "retryable": rate_limited}, allow_illegal=True)
         except Exception:
             pass
         soften_symbol_lock(symbol, 5)
         return {
             "ok": False,
             "rejected": True,
-            "reason": f"alpaca_submit_failed:{e}",
+            "retryable": bool(rate_limited),
+            "rate_limited": bool(rate_limited),
+            "reason": f"{decision_reason}:{submit_error}",
             "symbol": symbol,
             "signal": signal,
             "affordability": affordability if "affordability" in locals() else None,
             "submit_diagnostics": {
+                "error": submit_error,
+                "rate_limited": bool(rate_limited),
+                "retryable": bool(rate_limited),
                 "snapshot_present": isinstance(locals().get("snapshot"), dict),
                 "payload_present": isinstance(locals().get("payload"), dict),
                 "base_price": (locals().get("payload") or {}).get("base_price") if isinstance(locals().get("payload"), dict) else None,
@@ -29352,10 +29414,114 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         }
 
 
+def _p352_is_alpaca_rate_limit_error(err: object) -> bool:
+    text = str(err or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "429" in text
+        or "too many requests" in text
+        or "rate limit" in text
+        or "rate_limit" in text
+    )
+
+
+def _p352_record_rate_limit_submit_recovery(symbol: str, side: str, signal: str, source: str, stage: str, **details) -> dict:
+    row = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "ts_ny": now_ny().isoformat(),
+        "patch_version": PATCH_VERSION,
+        "symbol": str(symbol or "").strip().upper(),
+        "side": str(side or "").strip().lower(),
+        "signal": str(signal or ""),
+        "source": str(source or ""),
+        "stage": str(stage or ""),
+        **dict(details or {}),
+    }
+    try:
+        P352_RATE_LIMIT_SUBMIT_RECOVERY.append(row)
+        del P352_RATE_LIMIT_SUBMIT_RECOVERY[:-50]
+    except Exception:
+        pass
+    return row
+
+
+def _p352_response_rate_limited(resp: dict | None) -> bool:
+    r = dict(resp or {})
+    return bool(
+        r.get("rate_limited")
+        or r.get("retryable")
+        or _p352_is_alpaca_rate_limit_error(r.get("reason"))
+        or _p352_is_alpaca_rate_limit_error((r.get("submit_diagnostics") or {}).get("error"))
+    )
+
+
 def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None, source: str = "worker_scan") -> dict:
-    """Submit a market order originating from the scanner (shared execution path)."""
+    """Submit an order originating from the scanner through the shared execution path."""
     source_name = str(source or "worker_scan").strip() or "worker_scan"
-    return execute_entry_signal(symbol=symbol, side=side, signal=signal, source=source_name, meta=meta)
+    first = execute_entry_signal(symbol=symbol, side=side, signal=signal, source=source_name, meta=meta)
+
+    if not bool(ALPACA_SUBMIT_RATE_LIMIT_RETRY_ENABLED):
+        return first
+    if not _p352_response_rate_limited(first):
+        return first
+
+    max_attempts = max(1, int(ALPACA_SUBMIT_RATE_LIMIT_RETRY_MAX_ATTEMPTS or 1))
+    if max_attempts <= 1:
+        return first
+
+    delay_sec = max(0.0, float(ALPACA_SUBMIT_RATE_LIMIT_RETRY_DELAY_SEC or 0.0))
+    _p352_record_rate_limit_submit_recovery(
+        symbol,
+        side,
+        signal,
+        source_name,
+        "retry_scheduled",
+        delay_sec=delay_sec,
+        first_reason=first.get("reason"),
+    )
+    record_decision(
+        "ENTRY",
+        source_name,
+        symbol,
+        side=side,
+        signal=signal,
+        action="submit_retry_scheduled",
+        reason="alpaca_rate_limit",
+        meta={"delay_sec": delay_sec, "first_response": first},
+    )
+
+    if delay_sec > 0:
+        _time.sleep(delay_sec)
+
+    try:
+        release_symbol_lock(str(symbol or "").strip().upper())
+    except Exception:
+        pass
+
+    retry_meta = dict(meta or {})
+    retry_meta["rate_limit_retry"] = True
+    retry_meta["rate_limit_retry_attempt"] = 2
+    retry = execute_entry_signal(symbol=symbol, side=side, signal=signal, source=source_name, meta=retry_meta)
+    retry["rate_limit_retry"] = {
+        "attempted": True,
+        "first_reason": first.get("reason"),
+        "retry_reason": retry.get("reason"),
+        "retry_submitted": bool(retry.get("submitted")),
+    }
+
+    _p352_record_rate_limit_submit_recovery(
+        symbol,
+        side,
+        signal,
+        source_name,
+        "retry_completed",
+        submitted=bool(retry.get("submitted")),
+        first_reason=first.get("reason"),
+        retry_reason=retry.get("reason"),
+        order_id=str(retry.get("order_id") or ""),
+    )
+    return retry
 
 
 def _classify_scan_submit_response(resp: dict | None) -> dict:
@@ -29368,7 +29534,15 @@ def _classify_scan_submit_response(resp: dict | None) -> dict:
     if bool(resp.get("ignored")):
         return {"state": "ignored", "reason": reason or "ignored", "attempted": False, "order_id": ""}
     if bool(resp.get("rejected")):
-        return {"state": "blocked", "reason": reason or "rejected", "attempted": False, "order_id": ""}
+        retryable = bool(resp.get("retryable") or resp.get("rate_limited") or _p352_is_alpaca_rate_limit_error(reason))
+        return {
+            "state": "retryable_rate_limit" if retryable else "blocked",
+            "reason": reason or ("alpaca_submit_rate_limited" if retryable else "rejected"),
+            "attempted": True,
+            "retryable": retryable,
+            "rate_limited": retryable,
+            "order_id": "",
+        }
     if bool(resp.get("ok")):
         return {"state": "not_submitted", "reason": reason or "ok_without_submit", "attempted": False, "order_id": ""}
     return {"state": "error", "reason": reason or "unknown", "attempted": False, "order_id": ""}
@@ -42198,6 +42372,8 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
     for evidence in list(P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE or []):
         if not isinstance(evidence, dict):
             continue
+        stage = str(evidence.get("stage") or "").lower()
+        err = str(evidence.get("error") or "")
         rows.append({
             "source": "p337_runtime_evidence",
             "symbol": str(evidence.get("symbol") or "").upper(),
@@ -42207,7 +42383,10 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
             "order_id": evidence.get("order_id"),
             "client_order_id": evidence.get("client_order_id"),
             "ts_utc": evidence.get("ts_utc"),
-            "live_proven": str(evidence.get("stage") or "").lower() == "submitted",
+            "error": err,
+            "rate_limited": bool(stage == "rate_limited" or _p352_is_alpaca_rate_limit_error(err)),
+            "retryable": bool(stage == "rate_limited" or _p352_is_alpaca_rate_limit_error(err)),
+            "live_proven": stage == "submitted",
         })
 
     for sym, plan in sorted(dict(TRADE_PLAN or {}).items()):
@@ -42437,6 +42616,18 @@ def diagnostics_protective_limit_submit_evidence(limit: int = 20):
         row for row in list(evidence.get("rows") or [])
         if str(row.get("stage") or "").lower() == "rejected"
     ]
+    rate_limited_rows = [
+        row for row in list(evidence.get("rows") or [])
+        if str(row.get("stage") or "").lower() == "rate_limited"
+        or bool(row.get("rate_limited"))
+        or _p352_is_alpaca_rate_limit_error(row.get("error"))
+        or _p352_is_alpaca_rate_limit_error(row.get("block_reason"))
+    ]
+    retryable_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").upper()
+        for row in rate_limited_rows
+        if str(row.get("symbol") or "").strip()
+    ])
 
     return {
         "ok": True,
@@ -42447,12 +42638,16 @@ def diagnostics_protective_limit_submit_evidence(limit: int = 20):
         "submitted_count": len(submitted_rows),
         "attempted_count": len(attempted_rows),
         "rejected_count": len(rejected_rows),
+        "rate_limited_count": len(rate_limited_rows),
+        "retryable_symbols": retryable_symbols,
         "limit_path_live_proven": bool(submitted_rows),
         "symbols": list(evidence.get("symbols") or []),
         "rows": list(evidence.get("rows") or []),
         "latest_scan": dict(evidence.get("latest_scan") or {}),
         "recommended_action": (
-            "submit_split_greenlight_available"
+            "rate_limited_submit_retry_needed"
+            if rate_limited_rows and not submitted_rows
+            else "submit_split_greenlight_available"
             if submitted_rows
             else "wait_for_next_protective_limit_submit"
         ),
