@@ -2443,7 +2443,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-354-selected-candidate-submit-completion-marketable-protective-limit-pricing"
+PATCH_VERSION = "patch-355-swing-execution-policy-truth-protective-limit-evidence-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -42867,11 +42867,12 @@ def diagnostics_swing_execution_module_status():
     sample_snapshot = {
         "symbol": "TEST",
         "price": 100.0,
-        "bid": 99.5,
-        "ask": 100.5,
+        "bid": 99.95,
+        "ask": 100.05,
         "mid": 100.0,
-        "spread_pct": 0.01,
+        "spread_pct": 0.001,
         "trade_mid_deviation_pct": 0.0,
+        "avg_dollar_volume_20d": 100000000.0,
     }
     config = _p335_swing_limit_entry_config()
 
@@ -42927,6 +42928,9 @@ def diagnostics_swing_execution_module_status():
             "max_trade_mid_deviation_pct": float(config.max_trade_mid_deviation_pct),
             "spread_fraction": float(config.spread_fraction),
             "fractional_enabled": bool(config.fractional_enabled),
+            "marketable_enabled": bool(config.marketable_enabled),
+            "marketable_max_slippage_pct": float(config.marketable_max_slippage_pct),
+            "marketable_min_adv": float(config.marketable_min_adv),
         },
         "recommended_action": (
             "execution_helper_module_parity_ok"
@@ -43184,6 +43188,32 @@ def diagnostics_swing_runtime_config():
             "break_even_stop": {
                 "enabled": _cfg_bool("SWING_ENABLE_BREAK_EVEN_STOP"),
                 "break_even_r": _cfg_float("SWING_BREAK_EVEN_R", 0.0),
+            },
+        },
+        execution_policy={
+            "protective_limit_entry": {
+                "enabled": _cfg_bool("SWING_LIMIT_ENTRY_ENABLED"),
+                "required_for_production": _cfg_bool("SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY"),
+                "spread_override_enabled": _cfg_bool("SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED"),
+                "max_spread_pct": _cfg_float("SWING_LIMIT_ENTRY_MAX_SPREAD_PCT", 0.0),
+                "max_trade_mid_deviation_pct": _cfg_float("SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT", 0.0),
+                "spread_fraction": _cfg_float("SWING_LIMIT_ENTRY_SPREAD_FRACTION", 0.0),
+                "fractional_enabled": _cfg_bool("SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED"),
+                "marketable_enabled": _cfg_bool("SWING_LIMIT_ENTRY_MARKETABLE_ENABLED"),
+                "marketable_max_slippage_pct": _cfg_float("SWING_LIMIT_ENTRY_MARKETABLE_MAX_SLIPPAGE_PCT", 0.0),
+                "marketable_min_adv": _cfg_float("SWING_LIMIT_ENTRY_MARKETABLE_MIN_ADV", 0.0),
+            },
+            "pending_order_entry_freeze": {
+                "enabled": _cfg_bool("PENDING_ORDER_ENTRY_FREEZE_ENABLE"),
+                "scope": _cfg_str("PENDING_ORDER_ENTRY_FREEZE_SCOPE", "symbol"),
+                "expected_scope": "symbol",
+                "global_freeze_disabled": _cfg_str("PENDING_ORDER_ENTRY_FREEZE_SCOPE", "symbol").strip().lower() != "global",
+            },
+            "direct_submit": {
+                "selection_source": "swing_production_contract",
+                "submission_source": "direct_submit",
+                "retired_queue_path_active": False,
+                "retired_finalizer_path_active": False,
             },
         },
         retired_paths=retired_paths,

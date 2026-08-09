@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_RUNTIME_CONFIG_MODULE_VERSION = "patch-309-swing-runtime-config-module-split"
+SWING_RUNTIME_CONFIG_MODULE_VERSION = "patch-355-swing-execution-policy-truth-protective-limit-evidence-cleanup"
 
 
 def build_swing_runtime_config_snapshot(
@@ -22,6 +22,7 @@ def build_swing_runtime_config_snapshot(
     risk_controls: dict[str, Any],
     entry_gates: dict[str, Any],
     exit_guards: dict[str, Any],
+    execution_policy: dict[str, Any] | None = None,
     retired_paths: dict[str, Any],
     modules: dict[str, Any],
 ) -> dict:
@@ -58,6 +59,7 @@ def build_swing_runtime_config_snapshot(
         "risk_controls": dict(risk_controls),
         "entry_gates": dict(entry_gates),
         "exit_guards": dict(exit_guards),
+        "execution_policy": dict(execution_policy or {}),
         "retired_paths": dict(retired_paths),
         "modules": dict(modules),
         "summary": {
