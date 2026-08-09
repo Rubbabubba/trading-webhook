@@ -97,6 +97,7 @@ from swing_execution import (
     format_order_qty as swing_exec_format_order_qty,
     build_market_order_payload as swing_exec_build_market_order_payload,
     build_limit_order_payload as swing_exec_build_limit_order_payload,
+    build_submit_decision as swing_exec_build_submit_decision,
     limit_entry_preview as swing_exec_limit_entry_preview,
 )
 
@@ -2443,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-355-swing-execution-policy-truth-protective-limit-evidence-cleanup"
+PATCH_VERSION = "patch-356-direct-submit-function-split-prep-protective-limit-live-proof-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -42826,6 +42827,12 @@ def diagnostics_swing_submit_split_readiness():
     limit_evidence = _p336_recent_limit_entry_evidence(limit=10)
 
     helper_mismatch_count = int(execution_status.get("mismatch_count") or 0)
+    execution_checks = dict(execution_status.get("checks") or {})
+    submit_decision_helper_ready = bool(
+        execution_checks.get("submit_decision_broker_free")
+        and execution_checks.get("submit_decision_limit")
+        and execution_checks.get("submit_decision_marketable")
+    )
     limit_path_proven = any(
         str(row.get("stage") or "").lower() == "submitted"
         or bool(row.get("protective_limit_submit_live_proven"))
@@ -42837,6 +42844,8 @@ def diagnostics_swing_submit_split_readiness():
     blockers = []
     if helper_mismatch_count:
         blockers.append("execution_helper_module_parity_not_clean")
+    if not submit_decision_helper_ready:
+        blockers.append("submit_decision_helper_not_ready")
     if not limit_path_proven:
         blockers.append("protective_limit_live_path_not_proven")
 
@@ -42852,6 +42861,7 @@ def diagnostics_swing_submit_split_readiness():
         "broker_submit_still_in_app_py": True,
         "pure_helpers_moved": True,
         "helper_mismatch_count": helper_mismatch_count,
+        "submit_decision_helper_ready": submit_decision_helper_ready,
         "limit_path_proven": limit_path_proven,
         "limit_entry_evidence": limit_evidence,
         "blockers": blockers,
@@ -42892,12 +42902,24 @@ def diagnostics_swing_execution_module_status():
         sample_snapshot,
         config=config,
     )
+    module_submit_decision = swing_exec_build_submit_decision(
+        "TEST",
+        "buy",
+        3.25,
+        100.0,
+        "sample-submit",
+        limit_entry=module_preview,
+        fractional_limit_enabled=bool(config.fractional_enabled),
+    )
 
     checks = {
         "format_order_qty_match": app_qty == module_qty,
         "market_payload_match": app_market == module_market,
         "limit_payload_match": app_limit == module_limit,
         "limit_preview_match": app_preview == module_preview,
+        "submit_decision_broker_free": bool(module_submit_decision.get("broker_free")),
+        "submit_decision_limit": str(module_submit_decision.get("order_type") or "").lower() == "limit",
+        "submit_decision_marketable": bool(module_submit_decision.get("marketable")),
     }
 
     return {
@@ -42912,6 +42934,7 @@ def diagnostics_swing_execution_module_status():
             "format_order_qty",
             "build_market_order_payload",
             "build_limit_order_payload",
+            "build_submit_decision",
             "limit_entry_preview",
         ],
         "checks": checks,
@@ -42921,6 +42944,7 @@ def diagnostics_swing_execution_module_status():
             "market_payload": app_market,
             "limit_payload": app_limit,
             "limit_preview": app_preview,
+            "submit_decision": module_submit_decision,
         },
         "config": {
             "limit_entry_enabled": bool(config.enabled),

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SWING_EXECUTION_MODULE_VERSION = "patch-354-selected-candidate-submit-completion-marketable-protective-limit-pricing"
+SWING_EXECUTION_MODULE_VERSION = "patch-356-direct-submit-function-split-prep-protective-limit-live-proof-guard"
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,85 @@ def build_limit_order_payload(symbol: str, side: str, qty: float, limit_price: f
         "client_order_id": str(client_order_id),
     }
 
+def build_submit_decision(
+    symbol: str,
+    side: str,
+    qty: float,
+    base_price: float,
+    client_order_id: str,
+    *,
+    limit_entry: dict | None = None,
+    fractional_limit_enabled: bool = False,
+) -> dict:
+    submit_qty = safe_float(qty)
+    submit_price = safe_float(base_price)
+    entry = dict(limit_entry or {})
+
+    if submit_qty <= 0:
+        return {
+            "ok": False,
+            "broker_free": True,
+            "rejected": True,
+            "reason": "submit_qty_not_positive",
+            "symbol": str(symbol or "").upper(),
+            "side": str(side or "").lower(),
+            "order_type": "none",
+            "qty": submit_qty,
+            "limit_price": None,
+            "payload": {},
+            "limit_entry": entry,
+        }
+
+    if bool(entry.get("allowed")):
+        submit_price = safe_float(entry.get("limit_price"), submit_price)
+        if not bool(fractional_limit_enabled):
+            submit_qty = float(int(submit_qty))
+            if submit_qty <= 0:
+                return {
+                    "ok": False,
+                    "broker_free": True,
+                    "rejected": True,
+                    "reason": "limit_qty_zero_after_whole_share_rounding",
+                    "symbol": str(symbol or "").upper(),
+                    "side": str(side or "").lower(),
+                    "order_type": "limit",
+                    "qty": submit_qty,
+                    "limit_price": submit_price,
+                    "payload": {},
+                    "limit_entry": entry,
+                }
+
+        payload = build_limit_order_payload(symbol, side, submit_qty, submit_price, client_order_id)
+        return {
+            "ok": True,
+            "broker_free": True,
+            "rejected": False,
+            "reason": "limit_submit_decision",
+            "symbol": str(symbol or "").upper(),
+            "side": str(side or "").lower(),
+            "order_type": "limit",
+            "qty": submit_qty,
+            "limit_price": submit_price,
+            "payload": payload,
+            "limit_entry": entry,
+            "marketable": bool(entry.get("marketable")),
+        }
+
+    payload = build_market_order_payload(symbol, side, submit_qty, client_order_id)
+    return {
+        "ok": True,
+        "broker_free": True,
+        "rejected": False,
+        "reason": "market_submit_decision",
+        "symbol": str(symbol or "").upper(),
+        "side": str(side or "").lower(),
+        "order_type": "market",
+        "qty": submit_qty,
+        "limit_price": None,
+        "payload": payload,
+        "limit_entry": entry,
+        "marketable": False,
+    }
 
 def limit_entry_preview(
     symbol: str,
