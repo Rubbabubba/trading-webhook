@@ -2444,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-357-retired-endpoint-route-tombstone-cleanup-cleanup-status-version-sync"
+PATCH_VERSION = "patch-358-intraday-runtime-isolation-status-swing-only-operator-surface-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12536,17 +12536,43 @@ def _p317_intraday_separation_status() -> dict:
     swing_runtime = str(STRATEGY_MODE or "").strip().lower() == "swing"
     intraday_live = bool(INTRADAY_LIVE_ENABLED and HYBRID_MODE == "live")
     intraday_shadow_in_swing = bool(SWING_SCAN_RUN_INTRADAY_SHADOW)
-    suppressed = bool(swing_runtime and not intraday_live and not intraday_shadow_in_swing)
+    concurrent_micro_live = bool(CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED)
+    intraday_paper = bool(INTRADAY_PAPER_ENABLED)
+    suppressed = bool(
+        swing_runtime
+        and not intraday_live
+        and not concurrent_micro_live
+        and not intraday_shadow_in_swing
+    )
 
     return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "intraday_runtime_isolation_status",
+        "strategy_mode": STRATEGY_MODE,
+        "hybrid_mode": HYBRID_MODE,
         "swing_runtime_active": swing_runtime,
         "intraday_live_enabled": bool(INTRADAY_LIVE_ENABLED),
-        "concurrent_micro_live_enabled": bool(CONCURRENT_INTRADAY_MICRO_LIVE_ENABLED),
+        "concurrent_micro_live_enabled": concurrent_micro_live,
+        "intraday_paper_enabled": intraday_paper,
         "intraday_shadow_inside_swing_scan": intraday_shadow_in_swing,
         "suppressed_for_swing_runtime": suppressed,
-        "status": "disabled_for_swing_runtime" if suppressed else "available",
-        "cleanup_note": "intraday diagnostics are retained for future split, but swing production should not run intraday shadow/live paths while suppressed",
+        "broker_order_path_active": bool(intraday_live or concurrent_micro_live),
+        "scanner_shadow_path_active_in_swing": intraday_shadow_in_swing,
+        "operator_surface": "swing_only" if suppressed else "mixed_or_intraday_available",
+        "status": "retained_dormant_for_swing_runtime" if suppressed else "available_or_mixed",
+        "cleanup_note": "Intraday code is retained for future separation, but swing production should not run intraday shadow/live paths while suppressed.",
+        "recommended_action": (
+            "use_swing_light_endpoints_only"
+            if suppressed
+            else "review_intraday_flags_before_swing_cleanup_continues"
+        ),
     }
+
+@app.get("/diagnostics/intraday_runtime_isolation_status")
+def diagnostics_intraday_runtime_isolation_status(request: Request):
+    require_admin_if_configured(request)
+    return _p317_intraday_separation_status()
 
 def _p319_bool_global(name: str, default: bool = False) -> bool:
     try:
@@ -42687,6 +42713,8 @@ def diagnostics_swing_core_status():
             "retired_selected_intent_endpoints_consolidated",
             "retired_selected_intent_route_tombstones_cleaned",
             "swing_light_diagnostics_version_synced",
+            "intraday_runtime_isolation_status_added",
+            "swing_operator_surface_marked_swing_only",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -42710,7 +42738,7 @@ def diagnostics_swing_core_status():
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
             "keep_retired_selected_intent_compatibility_routes_out_of_operator_flow",
-            "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
+            "keep_intraday_runtime_retained_dormant_until_separate_service",
         ],
     }
 
@@ -43131,10 +43159,12 @@ def diagnostics_swing_runtime_config():
         "intraday_shadow_inside_swing_scan": {
             "disabled": not _cfg_bool("SWING_SCAN_RUN_INTRADAY_SHADOW"),
             "env": "SWING_SCAN_RUN_INTRADAY_SHADOW",
+            "status": "retained_dormant" if not _cfg_bool("SWING_SCAN_RUN_INTRADAY_SHADOW") else "active_in_swing_scan",
         },
         "intraday_live": {
             "disabled": not _cfg_bool("INTRADAY_LIVE_ENABLED"),
             "env": "INTRADAY_LIVE_ENABLED",
+            "status": "retained_dormant" if not _cfg_bool("INTRADAY_LIVE_ENABLED") else "live_enabled",
         },
     }
 

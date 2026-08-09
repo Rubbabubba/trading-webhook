@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-357-retired-endpoint-route-tombstone-cleanup-cleanup-status-version-sync"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-358-intraday-runtime-isolation-status-swing-only-operator-surface-cleanup"
 
 
 def selected_submission_truth_light_snapshot(
@@ -232,6 +232,10 @@ def swing_cleanup_status_snapshot(
                 "status": "active",
                 "reason": "operator_truth_without_heavy_bundles",
             },
+            "intraday_runtime": {
+                "status": "retained_dormant",
+                "reason": "intraday_code_retained_for_future_separation_but_not_part_of_swing_operator_flow",
+            },
         },
         "active_light_endpoints": [
             "/diagnostics/live_positions",
@@ -249,6 +253,7 @@ def swing_cleanup_status_snapshot(
             "/diagnostics/swing_execution_module_status",
             "/diagnostics/swing_submit_split_readiness",
             "/diagnostics/protective_limit_submit_evidence",
+            "/diagnostics/intraday_runtime_isolation_status",
         ],
         "removed_from_operator_default_flow": [
             "heavy_operator_bundle",
@@ -263,7 +268,7 @@ def swing_cleanup_status_snapshot(
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
             "keep_retired_selected_intent_compatibility_routes_out_of_operator_flow",
-            "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
+            "keep_intraday_runtime_retained_dormant_until_separate_service",
         ],
         "recommended_action": (
             "cleanup_state_ready_for_next_code_split"
