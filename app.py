@@ -2444,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-356-direct-submit-function-split-prep-protective-limit-live-proof-guard"
+PATCH_VERSION = "patch-357-retired-endpoint-route-tombstone-cleanup-cleanup-status-version-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -30956,6 +30956,13 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     }
 
 def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_paths", apply: bool = False) -> dict:
+    compatibility_routes = [
+        "/diagnostics/selected_entry_intent_queue",
+        "/diagnostics/stale_selected_entry_intent_reconcile",
+        "/diagnostics/selected_entry_intent_backfill",
+        "/diagnostics/selected_entry_finalizer",
+        "/worker/selected_entry_finalizer",
+    ]
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -30966,23 +30973,28 @@ def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_pa
         "requested_apply": bool(apply),
         "reason": "retired_for_swing_production_core_cleanup",
         "direct_submit_path_active": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
-        "selected_entry_intent_queue_enabled": bool(SELECTED_ENTRY_INTENT_QUEUE_ENABLED),
-        "selected_entry_finalizer_enabled": bool(SELECTED_ENTRY_FINALIZER_ENABLED),
-        "selected_submission_finalizer_enabled": bool(SWING_SELECTED_SUBMISSION_FINALIZER_ENABLED),
+        "selected_entry_intent_queue_enabled": False,
+        "selected_entry_finalizer_enabled": False,
+        "selected_submission_finalizer_enabled": False,
         "default_flow_removed": True,
-        "persistence_removed_from_runtime": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
-        "restore_removed_from_runtime": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
-        "finalizer_loop_isolated": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
+        "operator_flow_removed": True,
+        "persistence_removed_from_runtime": True,
+        "restore_removed_from_runtime": True,
+        "finalizer_loop_isolated": True,
         "legacy_code_retained": False,
         "physical_helper_bodies_removed": True,
         "dead_env_reads_removed": True,
         "dead_global_queue_removed": True,
-        "endpoint_stubs_retained": True,
-        "legacy_access_note": "selected intent env reads, queue storage, persistence, backfill, and finalizer bodies were removed; only retired endpoint stubs remain",
+        "route_tombstones_consolidated": True,
+        "compatibility_routes_retained": True,
+        "compatibility_routes": compatibility_routes,
+        "canonical_operator_endpoint": "/diagnostics/swing_cleanup_status",
+        "operator_endpoint": "/diagnostics/swing_cleanup_status",
+        "legacy_access_note": "Selected intent queue/finalizer runtime is removed. These routes are compatibility tombstones only and are not part of the swing operator flow.",
         "processed": 0,
         "finalized_symbols": [],
         "rows": [],
-        "recommended_action": "use_direct_submit_truth_and_reconcile",
+        "recommended_action": "use_swing_cleanup_status_and_direct_submit_truth",
     }
 
 def _p299_persist_selected_entry_intent_queue(reason: str = "") -> bool:
@@ -40881,11 +40893,13 @@ def diagnostics_reconcile_light(request: Request):
     require_admin_if_configured(request)
     return _p298_reconcile_light()
 
+# Compatibility tombstone only. Selected intent queue runtime is retired; direct submit is authoritative.
 @app.get("/diagnostics/selected_entry_intent_queue")
 def diagnostics_selected_entry_intent_queue(request: Request, include_legacy: bool = False):
     require_admin_if_configured(request)
     return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
 
+# Compatibility tombstone only. Stale selected intent reconcile is retired.
 @app.get("/diagnostics/stale_selected_entry_intent_reconcile")
 def diagnostics_stale_selected_entry_intent_reconcile(
     request: Request,
@@ -40903,6 +40917,7 @@ def diagnostics_executable_sizing_truth(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return _p300_executable_sizing_audit(limit=limit)
 
+# Compatibility tombstone only. Selected intent backfill is retired.
 @app.get("/diagnostics/selected_entry_intent_backfill")
 def diagnostics_selected_entry_intent_backfill(
     request: Request,
@@ -40915,6 +40930,7 @@ def diagnostics_selected_entry_intent_backfill(
         apply=bool(apply),
     )
 
+# Compatibility tombstone only. Selected entry finalizer is retired.
 @app.get("/diagnostics/selected_entry_finalizer")
 def diagnostics_selected_entry_finalizer(
     request: Request,
@@ -40928,6 +40944,7 @@ def diagnostics_selected_entry_finalizer(
         apply=bool(apply),
     )
 
+# Compatibility tombstone only. Worker selected entry finalizer is retired.
 @app.post("/worker/selected_entry_finalizer")
 async def worker_selected_entry_finalizer(req: Request):
     body = {}
@@ -42668,6 +42685,8 @@ def diagnostics_swing_core_status():
             "dead_selected_submission_finalizer_env_reads_removed",
             "dead_selected_intent_global_queue_removed",
             "retired_selected_intent_endpoints_consolidated",
+            "retired_selected_intent_route_tombstones_cleaned",
+            "swing_light_diagnostics_version_synced",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -42690,7 +42709,7 @@ def diagnostics_swing_core_status():
         "next_cleanup_focus": [
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "remove_retired_selected_intent_endpoint_routes_after_clean_deploy",
+            "keep_retired_selected_intent_compatibility_routes_out_of_operator_flow",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
     }

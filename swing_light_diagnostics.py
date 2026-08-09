@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-341-dead-selected-intent-env-global-cleanup-retired-endpoint-status-consolidation"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-357-retired-endpoint-route-tombstone-cleanup-cleanup-status-version-sync"
 
 
 def selected_submission_truth_light_snapshot(
@@ -262,7 +262,7 @@ def swing_cleanup_status_snapshot(
         "next_cleanup_focus": [
             "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "remove_retired_selected_intent_endpoint_routes_after_clean_deploy",
+            "keep_retired_selected_intent_compatibility_routes_out_of_operator_flow",
             "keep_intraday_code_retained_but_out_of_swing_runtime_until_separate_service",
         ],
         "recommended_action": (
