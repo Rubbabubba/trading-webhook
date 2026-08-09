@@ -2444,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-359-swing-submit-split-readiness-promotion-live-proof-evidence-backfill"
+PATCH_VERSION = "patch-360-swing-core-status-version-sync-submit-proof-required-operator-brief"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -42739,8 +42739,48 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
         },
     }
 
+def _p360_submit_proof_operator_brief() -> dict:
+    readiness = diagnostics_swing_submit_split_readiness()
+    blockers = list(readiness.get("blockers") or [])
+    helper_ready = bool(readiness.get("submit_decision_helper_ready"))
+    limit_proven = bool(readiness.get("limit_path_proven"))
+    submit_ready = bool(readiness.get("submit_split_ready"))
+
+    if submit_ready:
+        status = "submit_split_ready"
+        action = "ready_to_split_submit_functions_next"
+    elif helper_ready and not limit_proven:
+        status = "waiting_for_live_protective_limit_proof"
+        action = "wait_for_next_live_selected_candidate_before_moving_broker_submit"
+    elif not helper_ready:
+        status = "submit_helper_not_ready"
+        action = "fix_submit_decision_helper_before_any_broker_submit_split"
+    else:
+        status = "blocked"
+        action = "review_submit_split_blockers"
+
+    return {
+        "status": status,
+        "submit_split_ready": submit_ready,
+        "submit_decision_helper_ready": helper_ready,
+        "protective_limit_live_path_proven": limit_proven,
+        "broker_submit_still_in_app_py": bool(readiness.get("broker_submit_still_in_app_py")),
+        "execution_submit_moved": bool(readiness.get("execution_submit_moved")),
+        "blockers": blockers,
+        "limit_path_proof_symbols": list(readiness.get("limit_path_proof_symbols") or []),
+        "operator_read": (
+            "Submit helper is ready; broker submit stays in app.py until a real protective-limit live submit is proven."
+            if helper_ready and not limit_proven
+            else "Submit split is ready."
+            if submit_ready
+            else "Submit split is not ready; review blockers."
+        ),
+        "recommended_action": action,
+    }
+
 @app.get("/diagnostics/swing_core_status")
 def diagnostics_swing_core_status():
+    submit_proof_brief = _p360_submit_proof_operator_brief()
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -42780,6 +42820,8 @@ def diagnostics_swing_core_status():
             "intraday_runtime_isolation_status_added",
             "swing_operator_surface_marked_swing_only",
             "protective_limit_live_proof_backfill_from_limit_plans",
+            "swing_core_status_version_synced",
+            "submit_proof_required_operator_brief_added",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -42798,9 +42840,10 @@ def diagnostics_swing_core_status():
                 "reason": "awaiting_protective_limit_live_path_proof",
             },
         },
+        "submit_proof_operator_brief": submit_proof_brief,
         "next_split_candidate": "swing_execution_submit_helpers_after_limit_path_is_live_proven",
         "next_cleanup_focus": [
-            "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
+            "verify_protective_limit_submit_path_on_next_live_selected_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
             "keep_retired_selected_intent_compatibility_routes_out_of_operator_flow",
             "keep_intraday_runtime_retained_dormant_until_separate_service",

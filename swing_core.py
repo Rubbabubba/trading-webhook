@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CORE_MODULE_VERSION = "patch-306-swing-core-file-split-prep"
+SWING_CORE_MODULE_VERSION = "patch-360-swing-core-status-version-sync-submit-proof-required-operator-brief"
 
 
 def control_row(
