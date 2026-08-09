@@ -1592,6 +1592,10 @@ SWING_LIMIT_ENTRY_MAX_SPREAD_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MAX_SPREA
 SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT", default="0.03"))
 SWING_LIMIT_ENTRY_SPREAD_FRACTION = float(getenv_any("SWING_LIMIT_ENTRY_SPREAD_FRACTION", default="0.50"))
 SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED", default=False)
+SWING_LIMIT_ENTRY_MARKETABLE_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_MARKETABLE_ENABLED", default=True)
+SWING_LIMIT_ENTRY_MARKETABLE_MAX_SLIPPAGE_PCT = float(getenv_any("SWING_LIMIT_ENTRY_MARKETABLE_MAX_SLIPPAGE_PCT", default="0.0035"))
+SWING_LIMIT_ENTRY_MARKETABLE_MIN_ADV = float(getenv_any("SWING_LIMIT_ENTRY_MARKETABLE_MIN_ADV", default="50000000"))
+PENDING_ORDER_ENTRY_FREEZE_SCOPE = str(getenv_any("PENDING_ORDER_ENTRY_FREEZE_SCOPE", default="symbol")).strip().lower()
 
 PLAN_STALE_SUBMITTED_SEC = int(getenv_any("PLAN_STALE_SUBMITTED_SEC", default="180"))
 PLAN_STALE_NO_POSITION_SEC = int(getenv_any("PLAN_STALE_NO_POSITION_SEC", default="90"))
@@ -2439,7 +2443,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-353-protective-limit-entry-enforcement-current-scan-submit-truth-sync"
+PATCH_VERSION = "patch-354-selected-candidate-submit-completion-marketable-protective-limit-pricing"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -6928,6 +6932,9 @@ def _p335_swing_limit_entry_config() -> SwingLimitEntryConfig:
         max_trade_mid_deviation_pct=float(SWING_LIMIT_ENTRY_MAX_TRADE_MID_DEVIATION_PCT),
         spread_fraction=float(SWING_LIMIT_ENTRY_SPREAD_FRACTION),
         fractional_enabled=bool(SWING_LIMIT_ENTRY_FRACTIONAL_ENABLED),
+        marketable_enabled=bool(SWING_LIMIT_ENTRY_MARKETABLE_ENABLED),
+        marketable_max_slippage_pct=float(SWING_LIMIT_ENTRY_MARKETABLE_MAX_SLIPPAGE_PCT),
+        marketable_min_adv=float(SWING_LIMIT_ENTRY_MARKETABLE_MIN_ADV),
     )
 
 def _format_order_qty(qty: float) -> str:
@@ -28953,24 +28960,48 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         out["flags"].append("stall_exit_ready")
     return out
 
-def _pending_order_entry_freeze_snapshot() -> dict:
+def _pending_order_entry_freeze_snapshot(symbol: str | None = None) -> dict:
+    scope = str(PENDING_ORDER_ENTRY_FREEZE_SCOPE or "symbol").strip().lower()
+    if scope not in {"symbol", "global"}:
+        scope = "symbol"
     if not PENDING_ORDER_ENTRY_FREEZE_ENABLE:
-        return {"active": False, "enabled": False, "open_order_count": 0, "open_order_symbols": [], "open_orders": []}
+        return {"active": False, "enabled": False, "scope": scope, "open_order_count": 0, "open_order_symbols": [], "open_orders": []}
     orders = list_open_orders_safe()
+    requested_symbol = str(symbol or "").upper().strip()
     symbols = sorted({str(o.get("symbol") or "").upper() for o in orders if str(o.get("symbol") or "").strip()})
+    relevant_orders = list(orders)
+    if scope == "symbol" and requested_symbol:
+        relevant_orders = [o for o in orders if str(o.get("symbol") or "").upper().strip() == requested_symbol]
+    relevant_symbols = sorted({str(o.get("symbol") or "").upper() for o in relevant_orders if str(o.get("symbol") or "").strip()})
     return {
-        "active": bool(orders),
+        "active": bool(relevant_orders),
         "enabled": True,
+        "scope": scope,
+        "requested_symbol": requested_symbol,
         "open_order_count": len(orders),
         "open_order_symbols": symbols,
+        "relevant_open_order_count": len(relevant_orders),
+        "relevant_open_order_symbols": relevant_symbols,
         "open_orders": orders,
+        "relevant_open_orders": relevant_orders,
     }
 
 def _p328_limit_entry_preview(symbol: str, side: str, snapshot: dict | None, meta: dict | None = None) -> dict:
+    snap = dict(snapshot or {})
+    m = dict(meta or {})
+    avg_dollar_volume = (
+        snap.get("avg_dollar_volume_20d")
+        or snap.get("avg_dollar_volume")
+        or m.get("avg_dollar_volume_20d")
+        or m.get("avg_dollar_volume")
+        or m.get("dollar_volume")
+    )
+    if avg_dollar_volume is not None:
+        snap["avg_dollar_volume_20d"] = avg_dollar_volume
     return swing_exec_limit_entry_preview(
         symbol,
         side,
-        snapshot,
+        snap,
         config=_p335_swing_limit_entry_config(),
     )
 
@@ -29071,7 +29102,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="outside_market_hours", meta={"market_clock": market_clock, **(meta or {})})
         return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal, "market_clock": market_clock}
 
-    pending_freeze = _pending_order_entry_freeze_snapshot()
+    pending_freeze = _pending_order_entry_freeze_snapshot(symbol)
     if bool(pending_freeze.get("active")):
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="pending_order_entry_freeze", meta={"pending_order_entry_freeze": pending_freeze, **(meta or {})})
         return {"ok": True, "ignored": True, "reason": "pending_order_entry_freeze", "symbol": symbol, "signal": signal, "pending_order_entry_freeze": pending_freeze}
@@ -42455,6 +42486,13 @@ def _p337_record_limit_submit_evidence(
         "order_id": str(order_id or ""),
         "client_order_id": str(client_order_id or ""),
         "limit_entry": dict(limit_entry or {}),
+        "limit_entry_reason": str((limit_entry or {}).get("reason") or ""),
+        "marketable": bool((limit_entry or {}).get("marketable")),
+        "limit_distance_to_ask_pct": (
+            round(((_safe_float(limit_price, 0.0) - _safe_float((snapshot or {}).get("ask"), 0.0)) / _safe_float((snapshot or {}).get("ask"), 1.0)), 6)
+            if limit_price is not None and _safe_float((snapshot or {}).get("ask"), 0.0) > 0
+            else None
+        ),
         "snapshot": {
             "price": (snapshot or {}).get("price"),
             "bid": (snapshot or {}).get("bid"),
@@ -42506,6 +42544,9 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
             "rate_limited": bool(stage == "rate_limited" or _p352_is_alpaca_rate_limit_error(err)),
             "retryable": bool(stage == "rate_limited" or _p352_is_alpaca_rate_limit_error(err)),
             "live_proven": stage == "submitted",
+            "limit_entry_reason": evidence.get("limit_entry_reason") or dict(evidence.get("limit_entry") or {}).get("reason"),
+            "marketable": bool(evidence.get("marketable") or dict(evidence.get("limit_entry") or {}).get("marketable")),
+            "limit_distance_to_ask_pct": evidence.get("limit_distance_to_ask_pct"),
         })
 
     for sym, plan in sorted(dict(TRADE_PLAN or {}).items()):
@@ -42533,7 +42574,12 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
                 "pending_entry": bool(_plan_is_pending_entry(p)),
                 "submitted": bool(p.get("submitted") or p.get("entry_submitted")),
                 "filled": bool(p.get("filled") or p.get("entry_filled")),
+                "order_id": p.get("order_id"),
+                "order_status": p.get("order_status"),
+                "submitted_at": p.get("submitted_at"),
                 "client_order_id": p.get("client_order_id") or p.get("entry_client_order_id"),
+                "limit_entry_reason": limit_entry.get("reason"),
+                "marketable": bool(limit_entry.get("marketable")),
                 "protective_limit_submit_live_proven": bool(p.get("protective_limit_submit_live_proven")),
                 "protective_limit_submit_evidence": dict(p.get("protective_limit_submit_evidence") or {}),
             })
@@ -42563,6 +42609,8 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
                 "actual_submit_side_effect": bool(row.get("actual_submit_side_effect")),
                 "side_effect_detected_light": bool(row.get("side_effect_detected_light")),
                 "block_reason": row.get("block_reason") or row.get("reason"),
+                "limit_entry_reason": row.get("limit_entry_reason") or plan.get("limit_entry_reason"),
+                "marketable": bool(row.get("marketable") or plan.get("marketable")),
             })
 
     symbols = _dedupe_keep_order([

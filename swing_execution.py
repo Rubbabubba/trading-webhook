@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SWING_EXECUTION_MODULE_VERSION = "patch-335-swing-execution-submit-module-split-prep"
+SWING_EXECUTION_MODULE_VERSION = "patch-354-selected-candidate-submit-completion-marketable-protective-limit-pricing"
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,9 @@ class SwingLimitEntryConfig:
     max_trade_mid_deviation_pct: float
     spread_fraction: float
     fractional_enabled: bool
-
+    marketable_enabled: bool = True
+    marketable_max_slippage_pct: float = 0.0035
+    marketable_min_adv: float = 50000000.0
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -111,6 +113,42 @@ def limit_entry_preview(
         except Exception:
             pass
 
+    avg_dollar_volume = safe_float(
+        snap.get("avg_dollar_volume_20d")
+        or snap.get("avg_dollar_volume")
+        or (snap.get("quote_debug") or {}).get("avg_dollar_volume_20d")
+    )
+    price = safe_float(snap.get("price") or mid)
+    marketable_allowed = (
+        bool(getattr(config, "marketable_enabled", False))
+        and avg_dollar_volume >= float(getattr(config, "marketable_min_adv", 0.0))
+        and price > 0
+        and ask > 0
+    )
+    if marketable_allowed:
+        max_slippage_pct = max(0.0, float(getattr(config, "marketable_max_slippage_pct", 0.0)))
+        max_price = round(price * (1.0 + max_slippage_pct), 2)
+        marketable_limit = round(min(ask, max_price), 2)
+        if marketable_limit >= ask or ask <= max_price:
+            return {
+                "allowed": True,
+                "reason": "marketable_protective_limit_entry_allowed",
+                "symbol": str(symbol or "").upper(),
+                "side": "buy",
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+                "price": price,
+                "spread_pct": spread_pct,
+                "spread_fraction": 1.0,
+                "limit_price": marketable_limit,
+                "marketable": True,
+                "marketable_max_price": max_price,
+                "marketable_max_slippage_pct": max_slippage_pct,
+                "avg_dollar_volume": avg_dollar_volume,
+                "fractional_enabled": bool(config.fractional_enabled),
+            }
+
     fraction = max(0.0, min(float(config.spread_fraction), 1.0))
     limit_price = round(bid + ((ask - bid) * fraction), 2)
 
@@ -122,8 +160,11 @@ def limit_entry_preview(
         "bid": bid,
         "ask": ask,
         "mid": mid,
+        "price": price,
         "spread_pct": spread_pct,
         "spread_fraction": fraction,
         "limit_price": limit_price,
+        "marketable": False,
+        "avg_dollar_volume": avg_dollar_volume,
         "fractional_enabled": bool(config.fractional_enabled),
     }
