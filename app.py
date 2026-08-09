@@ -2444,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-358-intraday-runtime-isolation-status-swing-only-operator-surface-cleanup"
+PATCH_VERSION = "patch-359-swing-submit-split-readiness-promotion-live-proof-evidence-backfill"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -42566,6 +42566,59 @@ def _p337_record_limit_submit_evidence(
 
     return evidence
 
+def _p359_limit_plan_live_proof(plan: dict | None) -> dict:
+    p = dict(plan or {})
+    limit_entry = p.get("limit_entry") if isinstance(p.get("limit_entry"), dict) else {}
+    order_type = str(
+        p.get("order_type")
+        or p.get("entry_order_type")
+        or p.get("plan_order_type")
+        or ""
+    ).strip().lower()
+    limit_price = _safe_float(
+        p.get("limit_price")
+        or p.get("entry_limit_price")
+        or limit_entry.get("limit_price"),
+        0.0,
+    )
+    order_id = str(p.get("order_id") or p.get("entry_order_id") or "").strip()
+    client_order_id = str(p.get("client_order_id") or p.get("entry_client_order_id") or "").strip()
+    order_status = str(p.get("order_status") or p.get("execution_state") or p.get("lifecycle_state") or "").strip().lower()
+    filled_qty = _safe_float(p.get("filled_qty") or p.get("entry_filled_qty") or 0.0, 0.0)
+    submitted_qty = _safe_float(p.get("submitted_qty") or p.get("qty") or p.get("requested_qty") or 0.0, 0.0)
+
+    limit_like = bool(order_type == "limit" or limit_price > 0 or limit_entry)
+    broker_identified = bool(order_id or client_order_id)
+    status_proven = order_status in {
+        "submitted",
+        "accepted",
+        "new",
+        "partially_filled",
+        "filled",
+        "open",
+        "acknowledged",
+    }
+    fill_proven = bool(filled_qty > 0)
+
+    live_proven = bool(limit_like and broker_identified and (status_proven or fill_proven))
+
+    return {
+        "live_proven": live_proven,
+        "limit_like": limit_like,
+        "broker_identified": broker_identified,
+        "status_proven": status_proven,
+        "fill_proven": fill_proven,
+        "order_type": order_type,
+        "limit_price": limit_price if limit_price > 0 else None,
+        "order_id": order_id,
+        "client_order_id": client_order_id,
+        "order_status": order_status,
+        "filled_qty": filled_qty,
+        "submitted_qty": submitted_qty,
+        "limit_entry_reason": limit_entry.get("reason"),
+        "marketable": bool(limit_entry.get("marketable")),
+    }
+
 def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     rows = []
@@ -42609,23 +42662,34 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
             0.0,
         )
         if order_type == "limit" or limit_price > 0 or bool(limit_entry):
+            live_proof = _p359_limit_plan_live_proof(p)
+            if live_proof.get("live_proven") and isinstance(TRADE_PLAN.get(sym), dict):
+                TRADE_PLAN[sym]["protective_limit_submit_live_proven"] = True
+                TRADE_PLAN[sym]["protective_limit_submit_live_proven_source"] = "p359_filled_or_submitted_limit_plan_backfill"
             rows.append({
                 "source": "trade_plan",
                 "symbol": str(sym or "").upper(),
-                "order_type": order_type or "unknown",
-                "limit_price": limit_price if limit_price > 0 else None,
+                "order_type": order_type or live_proof.get("order_type") or "unknown",
+                "limit_price": limit_price if limit_price > 0 else live_proof.get("limit_price"),
                 "active": bool(p.get("active")),
                 "pending_entry": bool(_plan_is_pending_entry(p)),
-                "submitted": bool(p.get("submitted") or p.get("entry_submitted")),
-                "filled": bool(p.get("filled") or p.get("entry_filled")),
-                "order_id": p.get("order_id"),
-                "order_status": p.get("order_status"),
+                "submitted": bool(p.get("submitted") or p.get("entry_submitted") or live_proof.get("status_proven")),
+                "filled": bool(p.get("filled") or p.get("entry_filled") or live_proof.get("fill_proven")),
+                "order_id": p.get("order_id") or live_proof.get("order_id"),
+                "order_status": p.get("order_status") or live_proof.get("order_status"),
                 "submitted_at": p.get("submitted_at"),
-                "client_order_id": p.get("client_order_id") or p.get("entry_client_order_id"),
-                "limit_entry_reason": limit_entry.get("reason"),
-                "marketable": bool(limit_entry.get("marketable")),
-                "protective_limit_submit_live_proven": bool(p.get("protective_limit_submit_live_proven")),
+                "client_order_id": p.get("client_order_id") or p.get("entry_client_order_id") or live_proof.get("client_order_id"),
+                "filled_qty": live_proof.get("filled_qty"),
+                "submitted_qty": live_proof.get("submitted_qty"),
+                "limit_entry_reason": limit_entry.get("reason") or live_proof.get("limit_entry_reason"),
+                "marketable": bool(limit_entry.get("marketable") or live_proof.get("marketable")),
+                "protective_limit_submit_live_proven": bool(p.get("protective_limit_submit_live_proven") or live_proof.get("live_proven")),
+                "protective_limit_submit_live_proven_source": (
+                    p.get("protective_limit_submit_live_proven_source")
+                    or ("p359_filled_or_submitted_limit_plan_backfill" if live_proof.get("live_proven") else "")
+                ),
                 "protective_limit_submit_evidence": dict(p.get("protective_limit_submit_evidence") or {}),
+                "live_proof": live_proof,
             })
 
     for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or []):
@@ -42715,6 +42779,7 @@ def diagnostics_swing_core_status():
             "swing_light_diagnostics_version_synced",
             "intraday_runtime_isolation_status_added",
             "swing_operator_surface_marked_swing_only",
+            "protective_limit_live_proof_backfill_from_limit_plans",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -42822,6 +42887,7 @@ def diagnostics_protective_limit_submit_evidence(limit: int = 20):
         if str(row.get("stage") or "").lower() == "submitted"
         or bool(row.get("protective_limit_submit_live_proven"))
         or bool(row.get("live_proven"))
+        or bool((row.get("live_proof") or {}).get("live_proven"))
     ]
     attempted_rows = [
         row for row in list(evidence.get("rows") or [])
@@ -42884,6 +42950,7 @@ def diagnostics_swing_submit_split_readiness():
         str(row.get("stage") or "").lower() == "submitted"
         or bool(row.get("protective_limit_submit_live_proven"))
         or bool(row.get("live_proven"))
+        or bool((row.get("live_proof") or {}).get("live_proven"))
         for row in list(limit_evidence.get("rows") or [])
         if isinstance(row, dict)
     )
@@ -42897,6 +42964,18 @@ def diagnostics_swing_submit_split_readiness():
         blockers.append("protective_limit_live_path_not_proven")
 
     submit_split_ready = not blockers
+    limit_path_proof_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").upper()
+        for row in list(limit_evidence.get("rows") or [])
+        if isinstance(row, dict)
+        and (
+            str(row.get("stage") or "").lower() == "submitted"
+            or bool(row.get("protective_limit_submit_live_proven"))
+            or bool(row.get("live_proven"))
+            or bool((row.get("live_proof") or {}).get("live_proven"))
+        )
+        and str(row.get("symbol") or "").strip()
+    ])
 
     return {
         "ok": True,
@@ -42910,6 +42989,7 @@ def diagnostics_swing_submit_split_readiness():
         "helper_mismatch_count": helper_mismatch_count,
         "submit_decision_helper_ready": submit_decision_helper_ready,
         "limit_path_proven": limit_path_proven,
+        "limit_path_proof_symbols": limit_path_proof_symbols,
         "limit_entry_evidence": limit_evidence,
         "blockers": blockers,
         "recommended_action": (
