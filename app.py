@@ -2444,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-360-swing-core-status-version-sync-submit-proof-required-operator-brief"
+PATCH_VERSION = "patch-361-swing-light-endpoint-manifest-operator-pull-list-consolidation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -42739,6 +42739,90 @@ def _p336_recent_limit_entry_evidence(limit: int = 10) -> dict:
         },
     }
 
+def _p361_swing_light_endpoint_manifest() -> dict:
+    base = "/diagnostics"
+    pull_sets = {
+        "market_open_trade_check": [
+            f"{base}/scanner_light",
+            f"{base}/swing_submit_path_trace",
+            f"{base}/market_open_selection_audit_light",
+            f"{base}/protective_limit_submit_evidence",
+            f"{base}/live_positions_light",
+            f"{base}/reconcile_light",
+            f"{base}/orders",
+        ],
+        "no_trade_check": [
+            f"{base}/scanner_light",
+            f"{base}/no_trade_brief?refresh_live=false&limit=10",
+            f"{base}/swing_submit_path_trace",
+            f"{base}/market_open_selection_audit_light",
+            f"{base}/protective_limit_submit_evidence",
+        ],
+        "submit_fill_proof_check": [
+            f"{base}/protective_limit_submit_evidence",
+            f"{base}/swing_submit_split_readiness",
+            f"{base}/swing_execution_module_status",
+            f"{base}/selected_submission_truth_light",
+            f"{base}/orders",
+        ],
+        "position_exit_check": [
+            f"{base}/live_positions_light",
+            f"{base}/reconcile_light",
+            f"{base}/worker_exit_status",
+            f"{base}/daily_goal_preservation_exit",
+            f"{base}/broker_daily_goal_truth",
+        ],
+        "after_hours_cleanup_check": [
+            f"{base}/swing_cleanup_status",
+            f"{base}/swing_core_status",
+            f"{base}/swing_runtime_config",
+            f"{base}/intraday_runtime_isolation_status",
+            f"{base}/swing_submit_split_readiness",
+        ],
+        "performance_review": [
+            f"{base}/broker_preferred_performance",
+            f"{base}/broker_preferred_daily_pnl_dedup",
+            f"{base}/swing_performance_attribution",
+            f"{base}/swing_pre_post_change_performance",
+            f"{base}/target_path_opportunity_expansion_lab",
+            f"{base}/missed_opportunity_replay_lab",
+        ],
+    }
+    default_pull_order = [
+        "market_open_trade_check",
+        "submit_fill_proof_check",
+        "position_exit_check",
+        "after_hours_cleanup_check",
+    ]
+    heavy_or_avoid_by_default = [
+        f"{base}/operator_bundle",
+        f"{base}/bundle/swing",
+        f"{base}/candidates",
+        f"{base}/candidates_full",
+        f"{base}/no_trade_brief_full",
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_light_endpoint_manifest",
+        "broker_free": True,
+        "operator_surface": "swing_only",
+        "base_url_hint": "https://trading-webhook-q4d5.onrender.com",
+        "default_pull_order": default_pull_order,
+        "pull_sets": pull_sets,
+        "heavy_or_avoid_by_default": heavy_or_avoid_by_default,
+        "notes": {
+            "market_open_trade_check": "Use when market is open and you want to know whether selected candidates are submitting/filling.",
+            "no_trade_check": "Use when the system is live but no trades are appearing.",
+            "submit_fill_proof_check": "Use to prove protective-limit submit/fill behavior before moving broker submit out of app.py.",
+            "position_exit_check": "Use when positions are open and you want to verify exits, P&L, and broker alignment.",
+            "after_hours_cleanup_check": "Use after deploys or outside market hours to verify cleanup status without live broker-heavy reads.",
+            "performance_review": "Use for deeper review. These can be heavier than the light operational endpoints.",
+        },
+        "recommended_action": "use_pull_sets_instead_of_heavy_operator_bundles",
+    }
+
 def _p360_submit_proof_operator_brief() -> dict:
     readiness = diagnostics_swing_submit_split_readiness()
     blockers = list(readiness.get("blockers") or [])
@@ -42777,6 +42861,11 @@ def _p360_submit_proof_operator_brief() -> dict:
         ),
         "recommended_action": action,
     }
+
+@app.get("/diagnostics/swing_light_endpoint_manifest")
+def diagnostics_swing_light_endpoint_manifest(request: Request):
+    require_admin_if_configured(request)
+    return _p361_swing_light_endpoint_manifest()
 
 @app.get("/diagnostics/swing_core_status")
 def diagnostics_swing_core_status():
@@ -42822,6 +42911,8 @@ def diagnostics_swing_core_status():
             "protective_limit_live_proof_backfill_from_limit_plans",
             "swing_core_status_version_synced",
             "submit_proof_required_operator_brief_added",
+            "swing_light_endpoint_manifest_added",
+            "operator_pull_lists_consolidated",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -42841,11 +42932,20 @@ def diagnostics_swing_core_status():
             },
         },
         "submit_proof_operator_brief": submit_proof_brief,
+        "operator_pull_manifest": {
+            "endpoint": "/diagnostics/swing_light_endpoint_manifest",
+            "recommended_default_sets": [
+                "market_open_trade_check",
+                "submit_fill_proof_check",
+                "position_exit_check",
+                "after_hours_cleanup_check",
+            ],
+        },
         "next_split_candidate": "swing_execution_submit_helpers_after_limit_path_is_live_proven",
         "next_cleanup_focus": [
+            "use_swing_light_endpoint_manifest_for_operator_pulls",
             "verify_protective_limit_submit_path_on_next_live_selected_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "keep_retired_selected_intent_compatibility_routes_out_of_operator_flow",
             "keep_intraday_runtime_retained_dormant_until_separate_service",
         ],
     }

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-358-intraday-runtime-isolation-status-swing-only-operator-surface-cleanup"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-361-swing-light-endpoint-manifest-operator-pull-list-consolidation"
 
 
 def selected_submission_truth_light_snapshot(
@@ -248,6 +248,7 @@ def swing_cleanup_status_snapshot(
             "/diagnostics/no_trade_brief?refresh_live=false&limit=10",
             "/diagnostics/swing_cleanup_status",
             "/diagnostics/swing_core_status",
+            "/diagnostics/swing_light_endpoint_manifest",
             "/diagnostics/swing_runtime_config",
             "/diagnostics/swing_selection_contract_module_status",
             "/diagnostics/swing_execution_module_status",
@@ -265,9 +266,9 @@ def swing_cleanup_status_snapshot(
             "intraday_live",
         ],
         "next_cleanup_focus": [
-            "verify_protective_limit_submit_path_on_next_wide_spread_live_candidate",
+            "use_swing_light_endpoint_manifest_for_operator_pulls",
+            "verify_protective_limit_submit_path_on_next_live_selected_candidate",
             "prepare_submit_function_split_after_limit_path_is_live_proven",
-            "keep_retired_selected_intent_compatibility_routes_out_of_operator_flow",
             "keep_intraday_runtime_retained_dormant_until_separate_service",
         ],
         "recommended_action": (
