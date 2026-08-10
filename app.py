@@ -2444,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-361-swing-light-endpoint-manifest-operator-pull-list-consolidation"
+PATCH_VERSION = "patch-362-scanner-submit-side-effect-variable-fix-current-scan-truth-recovery"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2998,23 +2998,40 @@ def _p324_effective_latest_scan_for_light() -> tuple[dict, dict]:
     latest_summary = dict(latest_scan.get("summary") or {})
     exception_truth = _p324_latest_scan_exception_truth()
 
-    if exception_truth.get("active") and LAST_SUCCESSFUL_PRODUCTION_SCAN:
+    if exception_truth.get("active"):
         preserved = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
         preserved_summary = dict(preserved.get("summary") or {})
+        preserved_symbols = _p324_scan_selected_symbols(preserved)
 
-        preserved["latest_scan_exception"] = exception_truth
-        preserved["using_last_successful_production_scan"] = True
-        preserved["latest_exception_ts_utc"] = exception_truth.get("ts_utc")
-        preserved["latest_exception_duration_ms"] = exception_truth.get("duration_ms")
-        preserved["latest_exception_error"] = exception_truth.get("error")
+        latest_scan["current_scan_failed"] = True
+        latest_scan["using_last_successful_production_scan"] = False
+        latest_scan["scanner_exception_truth"] = exception_truth
+        latest_scan["preserved_scan_available"] = bool(preserved)
+        latest_scan["preserved_selected_symbols"] = preserved_symbols
 
-        preserved_summary["latest_scan_exception"] = exception_truth
-        preserved_summary["using_last_successful_production_scan"] = True
-        preserved_summary["last_successful_selected_symbols"] = _p324_scan_selected_symbols(preserved)
-        preserved_summary["selected_symbols"] = preserved_summary.get("selected_symbols") or _p324_scan_selected_symbols(preserved)
-        preserved_summary["selected_total"] = int(preserved_summary.get("selected_total") or len(preserved_summary.get("selected_symbols") or []))
-
-        return preserved, preserved_summary
+        current_summary = dict(latest_summary or {})
+        current_summary.update({
+            "scanner_exception_truth": exception_truth,
+            "current_scan_failed": True,
+            "current_scan_truth": "failed_current_scan",
+            "using_last_successful_production_scan": False,
+            "last_successful_production_scan_available": bool(preserved),
+            "last_successful_production_selected_symbols": preserved_symbols,
+            "preserved_scan_reference": {
+                "available": bool(preserved),
+                "ts_utc": preserved.get("ts_utc"),
+                "reason": preserved.get("reason"),
+                "selected_symbols": preserved_symbols,
+                "selected_total": int(preserved_summary.get("selected_total") or len(preserved_symbols) or 0),
+            },
+            "selected_symbols": [],
+            "selected_total": 0,
+            "eligible_total": 0,
+            "would_trade": 0,
+            "actual_submit_side_effect_symbols": [],
+            "selected_submit_gap_symbols": [],
+        })
+        return latest_scan, current_summary
 
     if latest_summary:
         latest_summary["latest_scan_exception"] = exception_truth
@@ -21042,11 +21059,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "submit_reason": submit_meta.get("reason"),
             "submit_attempted": bool(submit_meta.get("attempted")),
             "submit_order_id": submit_meta.get("order_id"),
-                    "order_type": resp.get("order_type"),
-                    "limit_price": resp.get("limit_price"),
-                    "production_limit_required": bool(SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY and str(STRATEGY_MODE or "").strip().lower() == "swing"),
-                    "limit_entry_unavailable": str(resp.get("reason") or "").startswith("limit_entry_unavailable"),
-                    "actual_submit_side_effect": bool(actual_side_effect),
+            "order_type": resp.get("order_type"),
+            "limit_price": resp.get("limit_price"),
+            "production_limit_required": bool(SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY and str(STRATEGY_MODE or "").strip().lower() == "swing"),
+            "limit_entry_unavailable": str(resp.get("reason") or "").startswith("limit_entry_unavailable"),
+            "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
             "side_effect_reasons": list(side_effect.get("side_effect_reasons") or []),
             "submit_gap": bool(side_effect.get("submit_gap")),
             "direct_submit_lineage": {
