@@ -2445,7 +2445,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-365-same-day-target-exit-allowance-stall-churn-reentry-cooldown"
+PATCH_VERSION = "patch-366-spread-blocked-submit-truth-cleanup-protective-retry-classification"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -21588,17 +21588,43 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if bool((row or {}).get("actual_submit_side_effect"))
         and str((row or {}).get("symbol") or "").strip()
     ])
+    execution_quality_block_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and _p366_submit_execution_quality_blocked(
+            (row or {}).get("submit_state"),
+            (row or {}).get("submit_reason"),
+        )
+    ])
+    retryable_spread_block_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and bool(_p366_retryable_spread_block(
+            str((row or {}).get("symbol") or "").strip().upper(),
+            (row or {}).get("signal") or (row or {}).get("strategy") or "daily_breakout",
+            (row or {}).get("submit_state"),
+            (row or {}).get("submit_reason"),
+        ).get("retryable"))
+    ])
     submit_gap_symbols = [
         str((row or {}).get("symbol") or "").strip().upper()
         for row in list(would_submit or [])
         if str((row or {}).get("symbol") or "").strip()
         and not bool((row or {}).get("actual_submit_side_effect"))
+        and str((row or {}).get("symbol") or "").strip().upper() not in set(execution_quality_block_symbols)
+        and str((row or {}).get("symbol") or "").strip().upper() not in set(retryable_spread_block_symbols)
     ]
 
     summary["selected_total"] = len(selected_symbols_for_summary)
     summary["selected_symbols"] = selected_symbols_for_summary
     summary["selected_submission_rows"] = list(would_submit or [])
     summary["actual_submit_side_effect_symbols"] = actual_submit_symbols
+    summary["execution_quality_block_symbols"] = execution_quality_block_symbols
+    summary["execution_quality_block_count"] = len(execution_quality_block_symbols)
+    summary["retryable_spread_block_symbols"] = retryable_spread_block_symbols
+    summary["retryable_spread_block_count"] = len(retryable_spread_block_symbols)
     summary["selected_submit_gap_symbols"] = submit_gap_symbols
     summary["selected_submit_gap_count"] = len(submit_gap_symbols)
     summary["selected_submit_gap_active"] = bool(submit_gap_symbols)
@@ -29939,6 +29965,42 @@ def _classify_scan_submit_response(resp: dict | None) -> dict:
         return {"state": "not_submitted", "reason": reason or "ok_without_submit", "attempted": False, "order_id": ""}
     return {"state": "error", "reason": reason or "unknown", "attempted": False, "order_id": ""}
 
+def _p366_submit_execution_quality_blocked(submit_state: str | None, submit_reason: str | None) -> bool:
+    state = str(submit_state or "").strip().lower()
+    reason = str(submit_reason or "").strip().lower()
+    return bool(
+        state == "blocked"
+        and reason in {
+            "spread_too_wide",
+            "quote_missing",
+            "quote_stale",
+            "fresh_quote_required",
+        }
+    )
+
+
+def _p366_retryable_spread_block(symbol: str, signal: str | None, submit_state: str | None, submit_reason: str | None) -> dict:
+    state = str(submit_state or "").strip().lower()
+    reason = str(submit_reason or "").strip().lower()
+    sym = str(symbol or "").strip().upper()
+    sig = str(signal or "daily_breakout").strip() or "daily_breakout"
+    key = _p327_spread_retry_key(sym, sig) if sym else ""
+
+    retryable = bool(
+        SPREAD_BLOCKED_RETRY_ENABLED
+        and sym
+        and state == "blocked"
+        and reason == "spread_too_wide"
+    )
+
+    queued = bool(key and key in SPREAD_BLOCKED_SELECTED_RETRY_QUEUE)
+
+    return {
+        "retryable": retryable,
+        "queued": queued,
+        "key": key or None,
+        "reason": "spread_blocked_retry_available" if retryable else "not_retryable_spread_block",
+    }
 
 def _p312_scan_submit_side_effect(symbol: str, submit_meta: dict | None = None, resp: dict | None = None) -> dict:
     sym = str(symbol or "").strip().upper()
@@ -30930,6 +30992,21 @@ def _p298_selected_submission_truth_light() -> dict:
             "order_id": submit_row.get("order_id") or submit_row.get("submit_order_id"),
         }
         side_effect = _p312_scan_submit_side_effect(sym, submit_meta=submit_meta, resp=submit_row)
+        execution_quality_blocked = _p366_submit_execution_quality_blocked(
+            submit_meta.get("state"),
+            submit_meta.get("reason"),
+        )
+        retryable_spread_block = _p366_retryable_spread_block(
+            sym,
+            submit_row.get("signal") or submit_row.get("strategy") or "daily_breakout",
+            submit_meta.get("state"),
+            submit_meta.get("reason"),
+        )
+        submit_gap = bool(
+            not side_effect.get("actual_submit_side_effect")
+            and not execution_quality_blocked
+            and not bool(retryable_spread_block.get("retryable"))
+        )
 
         rows.append({
             "symbol": sym,
@@ -30945,7 +31022,9 @@ def _p298_selected_submission_truth_light() -> dict:
             "side_effect_detected_light": bool(side_effect.get("actual_submit_side_effect")),
             "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
             "candidate_selected_only": bool(candidate_selected_only_events and not side_effect.get("actual_submit_side_effect")),
-            "submit_gap": bool(not side_effect.get("actual_submit_side_effect")),
+            "submit_gap": bool(submit_gap),
+            "execution_quality_blocked": bool(execution_quality_blocked),
+            "retryable_spread_block": retryable_spread_block,
             "reasons": list(side_effect.get("side_effect_reasons") or []),
             "active_plan": bool(side_effect.get("active_plan")),
             "pending_entry_plan": bool(side_effect.get("pending_entry_plan")),
@@ -45543,16 +45622,42 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 for row in would_submit
                 if bool((row or {}).get("actual_submit_side_effect"))
             ])
+            execution_quality_block_symbols = _dedupe_keep_order([
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in would_submit
+                if str((row or {}).get("symbol") or "").strip()
+                and _p366_submit_execution_quality_blocked(
+                    (row or {}).get("submit_state"),
+                    (row or {}).get("submit_reason"),
+                )
+            ])
+            retryable_spread_block_symbols = _dedupe_keep_order([
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in would_submit
+                if str((row or {}).get("symbol") or "").strip()
+                and bool(_p366_retryable_spread_block(
+                    str((row or {}).get("symbol") or "").strip().upper(),
+                    (row or {}).get("signal") or (row or {}).get("strategy") or "daily_breakout",
+                    (row or {}).get("submit_state"),
+                    (row or {}).get("submit_reason"),
+                ).get("retryable"))
+            ])
             submit_gap_symbols = [
                 str((row or {}).get("symbol") or "").strip().upper()
                 for row in would_submit
                 if str((row or {}).get("symbol") or "").strip()
                 and not bool((row or {}).get("actual_submit_side_effect"))
+                and str((row or {}).get("symbol") or "").strip().upper() not in set(execution_quality_block_symbols)
+                and str((row or {}).get("symbol") or "").strip().upper() not in set(retryable_spread_block_symbols)
             ]
             scan_summary["selected_total"] = len(selected_symbols_for_summary)
             scan_summary["selected_symbols"] = selected_symbols_for_summary
             scan_summary["selected_submission_rows"] = list(would_submit)
             scan_summary["actual_submit_side_effect_symbols"] = actual_submit_symbols
+            scan_summary["execution_quality_block_symbols"] = execution_quality_block_symbols
+            scan_summary["execution_quality_block_count"] = len(execution_quality_block_symbols)
+            scan_summary["retryable_spread_block_symbols"] = retryable_spread_block_symbols
+            scan_summary["retryable_spread_block_count"] = len(retryable_spread_block_symbols)
             scan_summary["selected_submit_gap_symbols"] = submit_gap_symbols
             scan_summary["selected_submit_gap_count"] = len(submit_gap_symbols)
             if submit_gap_symbols:
@@ -45576,6 +45681,10 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 else:
                     LAST_SCAN["summary"] = dict(scan_summary)
                 LAST_SCAN["selected_symbols"] = selected_symbols_for_summary
+                LAST_SCAN["execution_quality_block_symbols"] = execution_quality_block_symbols
+                LAST_SCAN["execution_quality_block_count"] = len(execution_quality_block_symbols)
+                LAST_SCAN["retryable_spread_block_symbols"] = retryable_spread_block_symbols
+                LAST_SCAN["retryable_spread_block_count"] = len(retryable_spread_block_symbols)
                 LAST_SCAN["selected_submit_gap_symbols"] = submit_gap_symbols
                 LAST_SCAN["selected_submit_gap_count"] = len(submit_gap_symbols)
             except Exception:

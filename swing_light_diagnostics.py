@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-361-swing-light-endpoint-manifest-operator-pull-list-consolidation"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-366-spread-blocked-submit-truth-cleanup-protective-retry-classification"
 
 
 def selected_submission_truth_light_snapshot(
@@ -19,10 +19,28 @@ def selected_submission_truth_light_snapshot(
     selected_symbols: list[str],
     rows: list[dict],
 ) -> dict:
-    missing = [
+    submit_gap_symbols = [
         row.get("symbol")
         for row in rows
-        if row.get("symbol") and not row.get("actual_submit_side_effect", row.get("side_effect_detected_light"))
+        if row.get("symbol") and bool(row.get("submit_gap"))
+    ]
+    execution_quality_block_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and bool(row.get("execution_quality_blocked"))
+    ]
+    retryable_spread_block_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and bool((row.get("retryable_spread_block") or {}).get("retryable"))
+    ]
+    missing_side_effect_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol")
+        and not row.get("actual_submit_side_effect", row.get("side_effect_detected_light"))
+        and row.get("symbol") not in set(execution_quality_block_symbols)
+        and row.get("symbol") not in set(retryable_spread_block_symbols)
     ]
     candidate_selected_only = [
         row.get("symbol")
@@ -56,11 +74,15 @@ def selected_submission_truth_light_snapshot(
             for row in rows
             if row.get("actual_submit_side_effect")
         ],
-        "missing_side_effect_symbols": missing,
-        "selected_without_side_effect": bool(missing),
+        "missing_side_effect_symbols": missing_side_effect_symbols,
+        "selected_without_side_effect": bool(missing_side_effect_symbols),
         "candidate_selected_only_symbols": candidate_selected_only,
-        "submit_gap_symbols": missing,
-        "submit_gap_count": len(missing),
+        "execution_quality_block_symbols": execution_quality_block_symbols,
+        "execution_quality_block_count": len(execution_quality_block_symbols),
+        "retryable_spread_block_symbols": retryable_spread_block_symbols,
+        "retryable_spread_block_count": len(retryable_spread_block_symbols),
+        "submit_gap_symbols": submit_gap_symbols,
+        "submit_gap_count": len(submit_gap_symbols),
         "limit_order_symbols": limit_order_symbols,
         "limit_order_count": len(limit_order_symbols),
         "filled_plan_backfill_symbols": filled_plan_backfill_symbols,
@@ -68,7 +90,11 @@ def selected_submission_truth_light_snapshot(
         "rows": list(rows),
         "recommended_action": (
             "selected_candidate_submit_gap_detected"
-            if missing
+            if submit_gap_symbols
+            else "selected_candidate_blocked_by_execution_quality"
+            if execution_quality_block_symbols
+            else "retryable_spread_block_waiting_for_quote_improvement"
+            if retryable_spread_block_symbols
             else "selected_symbols_have_actual_submit_side_effect"
             if selected_symbols
             else "no_selected_symbols_found"
