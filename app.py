@@ -2444,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-363-weak-tape-second-slot-truth-eligible-not-selected-decision-cleanup"
+PATCH_VERSION = "patch-364-active-exit-protection-truth-same-day-stall-exit-churn-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -31020,6 +31020,247 @@ def _p298_reconcile_light() -> dict:
         "startup_state": STARTUP_STATE,
     }
 
+def _p364_plan_opened_today(plan: dict | None) -> bool:
+    opened = _parse_plan_opened_dt(plan or {})
+    return bool(opened and opened.date() == now_ny().date())
+
+
+def _p364_snapshot_position_by_symbol() -> dict[str, dict]:
+    latest_snapshot = {}
+    try:
+        latest_snapshot = read_positions_snapshot()
+    except Exception:
+        latest_snapshot = {}
+
+    rows = []
+    if isinstance(latest_snapshot, dict):
+        rows = list(latest_snapshot.get("positions") or latest_snapshot.get("items") or [])
+
+    out = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").strip().upper()
+        if sym:
+            out[sym] = row
+    return out
+
+
+def _p364_active_exit_protection_truth() -> dict:
+    positions_by_symbol = _p364_snapshot_position_by_symbol()
+    rows = []
+    missing_protection = []
+    actionable_exit_watch = []
+
+    for symbol in sorted(set(positions_by_symbol) | {
+        str(sym or "").strip().upper()
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if isinstance(plan, dict) and bool(plan.get("active"))
+    }):
+        if not symbol:
+            continue
+
+        pos = dict(positions_by_symbol.get(symbol) or {})
+        plan = dict((TRADE_PLAN or {}).get(symbol) or {})
+        has_plan = bool(plan and plan.get("active"))
+
+        qty = _safe_float(pos.get("qty") or plan.get("filled_qty") or plan.get("submitted_qty") or 0.0)
+        current_price = _safe_float(pos.get("current_price") or pos.get("last_price") or 0.0)
+        entry_price = _safe_float(
+            pos.get("avg_entry_price")
+            or plan.get("avg_fill_price")
+            or plan.get("entry_price")
+            or 0.0
+        )
+        stop_price = _safe_float(plan.get("stop_price") or 0.0)
+        take_price = _safe_float(plan.get("take_price") or plan.get("target_price") or 0.0)
+        profit_lock_price = _safe_float(plan.get("profit_lock_price") or 0.0)
+        unrealized_pl = _safe_float(pos.get("unrealized_pl") or 0.0)
+
+        opened_today = _p364_plan_opened_today(plan)
+        hold_days = plan_days_held(plan) if has_plan else None
+        max_hold_days = int(plan.get("max_hold_days") or SWING_MAX_HOLD_DAYS or 0) if has_plan else 0
+
+        hit_stop = bool(stop_price > 0 and current_price > 0 and current_price <= stop_price)
+        hit_profit_lock = bool(profit_lock_price > 0 and current_price > 0 and current_price <= profit_lock_price)
+        hit_target = bool(take_price > 0 and current_price > 0 and current_price >= take_price)
+        time_exit_due = bool(has_plan and max_hold_days > 0 and hold_days is not None and hold_days >= max_hold_days)
+
+        closest_exit_reason = "none"
+        if hit_stop:
+            closest_exit_reason = "stop"
+        elif hit_profit_lock:
+            closest_exit_reason = "profit_lock_stop"
+        elif hit_target:
+            closest_exit_reason = "target"
+        elif time_exit_due:
+            closest_exit_reason = "time_exit"
+
+        has_hard_exit_level = bool(stop_price > 0 or profit_lock_price > 0 or take_price > 0)
+        exit_worker_has_enough_data = bool(has_plan and qty > 0 and current_price > 0 and entry_price > 0)
+        protection_status = (
+            "protected"
+            if exit_worker_has_enough_data and has_hard_exit_level
+            else "plan_missing"
+            if not has_plan
+            else "price_or_qty_missing"
+            if not exit_worker_has_enough_data
+            else "missing_exit_levels"
+        )
+
+        same_day_block = same_day_exit_blocked(plan, reason=closest_exit_reason) if has_plan else False
+
+        row = {
+            "symbol": symbol,
+            "has_broker_position_snapshot": symbol in positions_by_symbol,
+            "has_active_plan": has_plan,
+            "qty": qty,
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "unrealized_pl": unrealized_pl,
+            "stop_price": stop_price or None,
+            "target_price": take_price or None,
+            "profit_lock_price": profit_lock_price or None,
+            "opened_at": plan.get("opened_at"),
+            "opened_today": opened_today,
+            "hold_days": hold_days,
+            "max_hold_days": max_hold_days,
+            "closest_exit_reason": closest_exit_reason,
+            "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target or time_exit_due),
+            "same_day_exit_blocked_for_closest_reason": bool(same_day_block),
+            "exit_worker_has_enough_data": exit_worker_has_enough_data,
+            "protection_status": protection_status,
+            "last_exit_attempt_ts": plan.get("last_exit_attempt_ts"),
+            "order_status": plan.get("order_status"),
+            "source": plan.get("source"),
+        }
+        rows.append(row)
+
+        if protection_status != "protected":
+            missing_protection.append(symbol)
+        if row["exit_trigger_now"] or protection_status != "protected":
+            actionable_exit_watch.append(row)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "active_exit_protection_truth",
+        "source": "positions_snapshot_and_memory_no_broker_refresh",
+        "summary": {
+            "position_count": len(positions_by_symbol),
+            "active_plan_count": len([
+                1 for plan in (TRADE_PLAN or {}).values()
+                if isinstance(plan, dict) and bool(plan.get("active"))
+            ]),
+            "row_count": len(rows),
+            "missing_protection_count": len(missing_protection),
+            "exit_watch_count": len(actionable_exit_watch),
+            "all_active_positions_protected": len(missing_protection) == 0,
+        },
+        "missing_protection_symbols": missing_protection,
+        "actionable_exit_watch": actionable_exit_watch,
+        "rows": rows,
+        "recommended_action": (
+            "inspect_missing_exit_protection_symbols"
+            if missing_protection
+            else "monitor_exit_worker"
+            if actionable_exit_watch
+            else "none"
+        ),
+    }
+
+
+def _p364_same_day_stall_exit_churn_audit(limit: int = 25) -> dict:
+    today = now_ny().date()
+    rows = []
+
+    for row in list(DECISIONS or [])[-1000:]:
+        if not isinstance(row, dict):
+            continue
+        ts = _ts_parse_or_none(row.get("ts_utc") or row.get("timestamp") or row.get("time"))
+        if not ts or ts.astimezone(NY_TZ).date() != today:
+            continue
+        if str(row.get("source") or "") != "worker_exit":
+            continue
+
+        action = str(row.get("action") or "").strip()
+        reason = str(row.get("reason") or "").strip()
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        if not (
+            "exit" in action.lower()
+            or reason in {"stall_exit", "stall_loss_guard", "target", "stop", "profit_lock_stop", "time_exit", "daily_goal_preservation_exit"}
+        ):
+            continue
+
+        plan = dict((TRADE_PLAN or {}).get(symbol) or {})
+        rows.append({
+            "ts_utc": row.get("ts_utc"),
+            "symbol": symbol,
+            "action": action,
+            "reason": reason,
+            "opened_today_current_plan": _p364_plan_opened_today(plan),
+            "current_plan_active": bool(plan.get("active")),
+            "current_plan_source": plan.get("source"),
+            "same_day_exit_blocked_now_for_reason": same_day_exit_blocked(plan, reason=reason) if plan else None,
+        })
+
+    by_symbol = {}
+    for row in rows:
+        sym = row["symbol"]
+        bucket = by_symbol.setdefault(sym, {
+            "symbol": sym,
+            "exit_decision_count": 0,
+            "stall_family_count": 0,
+            "target_or_profit_count": 0,
+            "actions": [],
+            "reentered_or_still_active": False,
+        })
+        bucket["exit_decision_count"] += 1
+        if row.get("reason") in {"stall_exit", "stall_loss_guard"} or row.get("action") in {"stall_exit", "stall_loss_guard"}:
+            bucket["stall_family_count"] += 1
+        if row.get("reason") in {"target", "profit_lock_stop"} or row.get("action") in {"exit_target", "exit_profit_lock_stop"}:
+            bucket["target_or_profit_count"] += 1
+        bucket["actions"].append({
+            "ts_utc": row.get("ts_utc"),
+            "action": row.get("action"),
+            "reason": row.get("reason"),
+        })
+        if bool(row.get("current_plan_active")):
+            bucket["reentered_or_still_active"] = True
+
+    churn_symbols = sorted([
+        sym for sym, bucket in by_symbol.items()
+        if int(bucket.get("exit_decision_count") or 0) > 0 and bool(bucket.get("reentered_or_still_active"))
+    ])
+
+    limited_rows = rows[-max(1, min(int(limit or 25), 100)):]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "same_day_stall_exit_churn_audit",
+        "source": "worker_exit_decisions_memory",
+        "today_ny": str(today),
+        "summary": {
+            "worker_exit_decisions_today": len(rows),
+            "symbols_with_exit_decisions_today": len(by_symbol),
+            "stall_family_exit_decisions_today": sum(int(b.get("stall_family_count") or 0) for b in by_symbol.values()),
+            "target_or_profit_exit_decisions_today": sum(int(b.get("target_or_profit_count") or 0) for b in by_symbol.values()),
+            "same_day_churn_symbol_count": len(churn_symbols),
+        },
+        "same_day_churn_symbols": churn_symbols,
+        "by_symbol": sorted(by_symbol.values(), key=lambda b: (-int(b.get("exit_decision_count") or 0), str(b.get("symbol") or ""))),
+        "rows": limited_rows,
+        "recommended_action": (
+            "review_same_day_reentry_or_still_active_symbols"
+            if churn_symbols
+            else "review_stall_family_exits_today"
+            if any(int(b.get("stall_family_count") or 0) for b in by_symbol.values())
+            else "none"
+        ),
+    }
 
 def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     lim = max(1, min(int(limit or 10), 25))
@@ -42931,6 +43172,8 @@ def _p361_swing_light_endpoint_manifest() -> dict:
         "position_exit_check": [
             f"{base}/live_positions_light",
             f"{base}/reconcile_light",
+            f"{base}/active_exit_protection_truth",
+            f"{base}/same_day_stall_exit_churn_audit",
             f"{base}/worker_exit_status",
             f"{base}/daily_goal_preservation_exit",
             f"{base}/broker_daily_goal_truth",
@@ -44100,6 +44343,15 @@ def diagnostics_worker_exit_status(limit: int = 20):
 @app.get("/diagnostics/exit_guard_evidence_light")
 def diagnostics_exit_guard_evidence_light(limit: int = 20):
     return JSONResponse(content=_p351_exit_guard_evidence_light(limit=limit))
+
+@app.get("/diagnostics/active_exit_protection_truth")
+def diagnostics_active_exit_protection_truth():
+    return JSONResponse(content=_p364_active_exit_protection_truth())
+
+
+@app.get("/diagnostics/same_day_stall_exit_churn_audit")
+def diagnostics_same_day_stall_exit_churn_audit(limit: int = 25):
+    return JSONResponse(content=_p364_same_day_stall_exit_churn_audit(limit=limit))
 
 @app.get("/diagnostics/position_truth")
 def diagnostics_position_truth(request: Request):
