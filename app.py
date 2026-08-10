@@ -2444,7 +2444,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-362-scanner-submit-side-effect-variable-fix-current-scan-truth-recovery"
+PATCH_VERSION = "patch-363-weak-tape-second-slot-truth-eligible-not-selected-decision-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12757,6 +12757,128 @@ def _p320_swing_dead_path_phase1_status() -> dict:
         ],
     }
 
+def _p363_second_slot_truth(
+    watch: dict | None = None,
+    selected_items: list[dict] | None = None,
+    eligible_not_selected_items: list[dict] | None = None,
+    captured_items: list[dict] | None = None,
+    active_truth: dict | None = None,
+) -> dict:
+    watch = dict(watch or {})
+    selected_items = [dict(row or {}) for row in (selected_items or []) if isinstance(row, dict)]
+    eligible_not_selected_items = [dict(row or {}) for row in (eligible_not_selected_items or []) if isinstance(row, dict)]
+    captured_items = [dict(row or {}) for row in (captured_items or []) if isinstance(row, dict)]
+    active_truth = dict(active_truth or {})
+
+    latest_scan = _latest_completed_scan_record() or dict(LAST_SCAN or {})
+    latest_summary = dict((latest_scan or {}).get("summary") or {})
+    regime_mode = str(
+        latest_summary.get("regime_mode")
+        or watch.get("regime_mode")
+        or ""
+    ).strip().lower()
+    regime = dict(latest_summary.get("regime") or {})
+    weak_tape_active = bool(
+        regime_mode == "defensive"
+        or regime.get("favorable") is False
+        or "weak_tape" in set(str(r or "").strip() for r in list(latest_summary.get("global_block_reasons") or []))
+    )
+
+    weak_tape_cap = int(globals().get("SWING_WEAK_TAPE_MAX_NEW_ENTRIES", 0) or 0)
+    selected_count = int(watch.get("selected_total") or len(selected_items) or 0)
+    captured_tradeable_count = int(watch.get("captured_tradeable_count") or len(captured_items) or 0)
+    consumed_slot_count = max(selected_count, captured_tradeable_count)
+    open_slots = max(0, int(_effective_max_open_positions()) - int(active_truth.get("active_position_count") or 0))
+
+    rows = []
+    bug_symbols = []
+    weak_cap_symbols = []
+    risk_symbols = []
+
+    for row in eligible_not_selected_items:
+        sym = str(row.get("symbol") or "").strip().upper()
+        blocking = [
+            str(r or "").strip()
+            for r in list(row.get("blocking_reasons") or row.get("selection_blockers") or [])
+            if str(r or "").strip()
+        ]
+        gate_blockers = [
+            str(r or "").strip()
+            for r in list(row.get("gate_blockers") or [])
+            if str(r or "").strip()
+        ]
+        risk_blocked = bool(
+            "gate:risk_per_share" in blocking
+            or "risk_per_share" in gate_blockers
+            or "production_contract_risk_too_wide" in list(row.get("rejection_reasons") or [])
+        )
+        weak_cap_blocked = bool(
+            weak_tape_active
+            and weak_tape_cap > 0
+            and consumed_slot_count >= weak_tape_cap
+        )
+
+        if weak_cap_blocked:
+            decision = "blocked_by_weak_tape_slot_cap"
+            weak_cap_symbols.append(sym)
+        elif risk_blocked:
+            decision = "blocked_by_risk_per_share"
+            risk_symbols.append(sym)
+        else:
+            decision = "eligible_second_slot_not_selected_bug"
+            bug_symbols.append(sym)
+
+        rows.append({
+            "symbol": sym,
+            "decision": decision,
+            "selected": bool(row.get("selected")),
+            "eligible": bool(row.get("eligible")),
+            "captured": bool(row.get("captured")),
+            "rank_score": row.get("rank_score"),
+            "target_path_score": row.get("target_path_score"),
+            "risk_per_share_pct": row.get("risk_per_share_pct"),
+            "blocking_reasons": blocking,
+            "gate_blockers": gate_blockers,
+            "what_needs_to_change": list(row.get("what_needs_to_change") or []),
+        })
+
+    if bug_symbols:
+        read = "eligible_second_slot_not_selected_bug"
+        recommended_action = "inspect_selection_slot_builder_before_relaxing_thresholds"
+    elif weak_cap_symbols:
+        read = "weak_tape_second_slot_cap_active"
+        recommended_action = "keep_cap_or_deliberately_raise_weak_tape_max_new_entries"
+    elif risk_symbols:
+        read = "eligible_second_slot_blocked_by_risk"
+        recommended_action = "do_not_force_entry_unless_risk_adjusted_sizing_path_is_explicit"
+    elif not eligible_not_selected_items:
+        read = "no_second_slot_candidate"
+        recommended_action = "monitor_next_scan"
+    else:
+        read = "second_slot_truth_unclear"
+        recommended_action = "inspect_swing_submit_path_trace_rows"
+
+    return {
+        "enabled": True,
+        "trade_submission_behavior_changed": False,
+        "weak_tape_active": weak_tape_active,
+        "regime_mode": regime_mode or "unknown",
+        "weak_tape_max_new_entries": weak_tape_cap,
+        "selected_count": selected_count,
+        "captured_tradeable_count": captured_tradeable_count,
+        "consumed_slot_count": consumed_slot_count,
+        "eligible_not_selected_count": len(eligible_not_selected_items),
+        "open_slots": open_slots,
+        "weak_tape_slot_cap_applies": bool(weak_tape_active and weak_tape_cap > 0),
+        "weak_tape_slot_cap_reached": bool(weak_tape_active and weak_tape_cap > 0 and consumed_slot_count >= weak_tape_cap),
+        "weak_cap_symbols": _dedupe_keep_order(weak_cap_symbols),
+        "risk_blocked_symbols": _dedupe_keep_order(risk_symbols),
+        "bug_symbols": _dedupe_keep_order(bug_symbols),
+        "rows": rows,
+        "read": read,
+        "recommended_action": recommended_action,
+    }
+
 def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None = None) -> dict:
     watch = _p316_swing_watchlist_trade_status(
         symbols=symbols or "",
@@ -12832,6 +12954,13 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         "retired_queue_path_active": False,
         "retired_finalizer_path_active": False,
     }
+    second_slot_truth = _p363_second_slot_truth(
+        watch=watch,
+        selected_items=selected_items,
+        eligible_not_selected_items=eligible_not_selected_items,
+        captured_items=captured_items,
+        active_truth=active_truth,
+    )
 
     blockers = []
     if not bool(NEW_ENTRIES_ENABLED):
@@ -12888,14 +13017,19 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "eligible_not_selected_count": len(eligible_not_selected_items),
             "eligible_not_selected_symbols": eligible_not_selected_symbols,
             "current_scan_selected_source": "latest_scan_summary_selected_symbols",
+            "second_slot_read": second_slot_truth.get("read"),
+            "second_slot_recommended_action": second_slot_truth.get("recommended_action"),
             "read": (
                 "selected_submit_rate_limited_retryable"
                 if rate_limited_selected_symbols
                 else "selected_candidates_waiting_for_submit"
                 if selected_not_attempted_symbols
+                else second_slot_truth.get("read")
+                if eligible_not_selected_items
                 else "no_selected_submit_gap"
             ),
         },
+        "second_slot_truth": second_slot_truth,
         "after_hours_selected_candidate_suppression": {
             "active": after_hours_suppressed,
             "market_open": market_open_now,
@@ -30931,6 +31065,17 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
         row for row in eligible_rows
         if str(row.get("symbol") or "").strip().upper() not in active_symbols
     ]
+    audit_second_slot_truth = _p363_second_slot_truth(
+        watch={
+            "selected_total": len(selected_symbols),
+            "captured_tradeable_count": len(captured_rows),
+            "regime_mode": summary.get("regime_mode"),
+        },
+        selected_items=[row for row in actionable_eligible_rows if str(row.get("symbol") or "").strip().upper() in set(selected_symbols)],
+        eligible_not_selected_items=[row for row in actionable_eligible_rows if str(row.get("symbol") or "").strip().upper() not in set(selected_symbols)],
+        captured_items=captured_rows,
+        active_truth={"active_position_count": len(active_symbols)},
+    )
 
     if selected_symbols:
         selection_status = "selected"
@@ -30979,6 +31124,7 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "missing_trade_opportunity_count": len(actionable_eligible_rows),
             "missing_trade_opportunity_symbols": [r.get("symbol") for r in actionable_eligible_rows],
             "production_approved_symbols": list(production_summary.get("approved_symbols") or [r.get("symbol") for r in approved_rows]),
+            "second_slot_truth": audit_second_slot_truth,
         },
         "top": [
             {
@@ -42818,6 +42964,9 @@ def _p361_swing_light_endpoint_manifest() -> dict:
         f"{base}/candidates_full",
         f"{base}/no_trade_brief_full",
     ]
+    retired_or_replaced = {
+        f"{base}/near_miss_production_decision_truth": f"{base}/swing_submit_path_trace",
+    }
 
     return {
         "ok": True,
@@ -42829,6 +42978,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
         "default_pull_order": default_pull_order,
         "pull_sets": pull_sets,
         "heavy_or_avoid_by_default": heavy_or_avoid_by_default,
+        "retired_or_replaced": retired_or_replaced,
         "notes": {
             "market_open_trade_check": "Use when market is open and you want to know whether selected candidates are submitting/filling.",
             "no_trade_check": "Use when the system is live but no trades are appearing.",
