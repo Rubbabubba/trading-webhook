@@ -2453,7 +2453,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-370-production-contract-open-position-suppression-cleanup-retry-evidence-status-tidy"
+PATCH_VERSION = "patch-371-actionable-candidate-reason-compression-profit-opportunity-watch-tier"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -12414,6 +12414,119 @@ def _p349_near_miss_minimum_changes(row: dict | None) -> list[str]:
 
     return list(dict.fromkeys(out))
 
+def _p371_compact_candidate_reasons(row: dict | None) -> dict:
+    row = dict(row or {})
+    symbol = str(row.get("symbol") or "").strip().upper()
+    reasons = [
+        str(r or "").strip()
+        for r in list(row.get("rejection_reasons") or [])
+        if str(r or "").strip()
+    ]
+    contract = dict(row.get("swing_production_contract") or {})
+    blockers = [
+        str(r or "").strip()
+        for r in list(contract.get("blockers") or [])
+        if str(r or "").strip()
+    ]
+    checks = dict(contract.get("checks") or {})
+    combined = list(dict.fromkeys(reasons + blockers))
+
+    primary = "none"
+    if "position_already_open" in combined or "plan_or_pending_entry_exists" in combined:
+        primary = "already_captured"
+    elif "production_contract_risk_too_wide" in combined:
+        primary = "risk_too_wide"
+    elif "production_contract_too_far_below_breakout" in combined:
+        primary = "below_breakout"
+    elif "production_contract_too_extended_above_breakout" in combined:
+        primary = "too_extended"
+    elif "production_contract_rank_below_min" in combined:
+        primary = "rank_below_min"
+    elif "production_contract_not_close_to_high" in combined:
+        primary = "not_close_to_high"
+    elif combined:
+        primary = combined[0]
+
+    return {
+        "symbol": symbol,
+        "primary_reason": primary,
+        "reason_count": len(combined),
+        "reasons": combined[:4],
+        "checks": {
+            "rank_score_ok": bool(checks.get("rank_score_ok")),
+            "risk_ok": bool(checks.get("risk_ok")),
+            "not_too_far_below_breakout": bool(checks.get("not_too_far_below_breakout")),
+            "not_too_extended_above_breakout": bool(checks.get("not_too_extended_above_breakout")),
+            "close_to_high_ok": bool(checks.get("close_to_high_ok")),
+            "return_20d_ok": bool(checks.get("return_20d_ok")),
+            "contract_path_ok": bool(checks.get("contract_path_ok")),
+        },
+    }
+
+
+def _p371_profit_opportunity_watch_tier(row: dict | None) -> dict:
+    row = dict(row or {})
+    compact = _p371_compact_candidate_reasons(row)
+    primary = str(compact.get("primary_reason") or "none")
+    minimum_changes = _p349_near_miss_minimum_changes(row)
+
+    rank_score = float(_safe_float(row.get("rank_score")))
+    target_path_score = float(_safe_float(
+        (row.get("target_path_profit") or {}).get("score")
+        if isinstance(row.get("target_path_profit"), dict)
+        else row.get("target_path_score")
+    ))
+    risk_pct = float(_safe_float(row.get("risk_per_share_pct")))
+    breakout_distance = float(_safe_float(row.get("breakout_distance_pct")))
+    close_to_high = float(_safe_float(row.get("close_to_high_pct")))
+
+    if primary == "already_captured":
+        tier = "captured"
+        action = "monitor_existing_position"
+        priority = 0
+    elif primary == "risk_too_wide" and "production_contract_too_far_below_breakout" in compact.get("reasons", []):
+        tier = "risk_too_wide_do_not_chase"
+        action = "wait_for_risk_to_contract_and_breakout_reclaim"
+        priority = 2
+    elif primary == "risk_too_wide":
+        tier = "risk_too_wide_do_not_chase"
+        action = "wait_for_risk_to_contract"
+        priority = 2
+    elif primary == "below_breakout":
+        tier = "wait_for_breakout_reclaim"
+        action = "watch_for_breakout_reclaim"
+        priority = 3
+    elif primary == "too_extended":
+        tier = "wait_for_pullback"
+        action = "wait_for_pullback_or_next_base"
+        priority = 3
+    elif primary in {"rank_below_min", "not_close_to_high"}:
+        tier = "near_miss_watch"
+        action = "watch_next_scan_for_improvement"
+        priority = 2
+    elif not compact.get("reasons"):
+        tier = "tradeable_or_unblocked"
+        action = "verify_selection_and_submit_truth"
+        priority = 4
+    else:
+        tier = "blocked_other"
+        action = "review_compact_reasons"
+        priority = 1
+
+    return {
+        "tier": tier,
+        "action": action,
+        "priority": priority,
+        "primary_reason": primary,
+        "minimum_changes": minimum_changes[:3],
+        "metrics": {
+            "rank_score": round(rank_score, 4),
+            "target_path_score": round(target_path_score, 4),
+            "risk_per_share_pct": round(risk_pct, 5),
+            "breakout_distance_pct": round(breakout_distance, 5),
+            "close_to_high_pct": round(close_to_high, 5),
+        },
+    }
 
 def _p349_production_decision_truth(row: dict | None) -> str:
     row = dict(row or {})
@@ -31700,6 +31813,22 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
         and str(row.get("symbol") or "").strip().upper() not in retryable_spread_block_symbols
     ]
 
+    watch_tier_rows = [
+        {
+            "symbol": row.get("symbol"),
+            "rank_score": row.get("rank_score"),
+            "target_path_score": (row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else row.get("target_path_score"),
+            "reason_compression": _p371_compact_candidate_reasons(row),
+            "watch_tier": _p371_profit_opportunity_watch_tier(row),
+        }
+        for row in candidate_miss_rows
+        if isinstance(row, dict)
+    ]
+    watch_tier_counts = dict(Counter(
+        str((row.get("watch_tier") or {}).get("tier") or "unknown")
+        for row in watch_tier_rows
+    ))
+
     audit_second_slot_truth = _p363_second_slot_truth(
         watch={
             "selected_total": len(selected_symbols),
@@ -31772,6 +31901,15 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "missing_trade_opportunity_count": len(true_missing_opportunity_rows),
             "missing_trade_opportunity_symbols": [r.get("symbol") for r in true_missing_opportunity_rows],
             "production_approved_symbols": list(production_summary.get("approved_symbols") or [r.get("symbol") for r in approved_rows]),
+            "watch_tier_counts": watch_tier_counts,
+            "watch_tier_symbols": {
+                tier: [
+                    row.get("symbol")
+                    for row in watch_tier_rows
+                    if str((row.get("watch_tier") or {}).get("tier") or "unknown") == tier
+                ]
+                for tier in sorted(watch_tier_counts.keys())
+            },
             "second_slot_truth": audit_second_slot_truth,
         },
         "top_actionable": [
@@ -31787,14 +31925,14 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
                 },
                 "rank_score": row.get("rank_score"),
                 "target_path_score": (row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else row.get("target_path_score"),
-                "rejection_reasons": list(row.get("rejection_reasons") or []),
-                "selection_blockers": list(row.get("selection_blockers") or []),
-                "swing_production_contract": row.get("swing_production_contract"),
+                "reason_compression": _p371_compact_candidate_reasons(row),
+                "watch_tier": _p371_profit_opportunity_watch_tier(row),
                 "legacy_gate_mode": row.get("legacy_gate_mode"),
             }
             for row in candidate_miss_rows
             if isinstance(row, dict)
         ],
+        "profit_opportunity_watch": watch_tier_rows,
         "top_captured": [
             {
                 "symbol": row.get("symbol"),

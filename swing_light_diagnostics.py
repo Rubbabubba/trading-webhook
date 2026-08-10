@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-370-production-contract-open-position-suppression-cleanup-retry-evidence-status-tidy"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-371-actionable-candidate-reason-compression-profit-opportunity-watch-tier"
 
 
 def selected_submission_truth_light_snapshot(
