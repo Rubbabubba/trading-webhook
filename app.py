@@ -2445,7 +2445,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-367-market-open-opportunity-truth-execution-block-sync"
+PATCH_VERSION = "patch-368-scanner-light-inflight-warning-reconciliation-retryable-spread-queue-freshness"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -30207,6 +30207,11 @@ def _p327_retry_row_status(row: dict | None) -> dict:
     now_dt = datetime.now(timezone.utc)
     expires_dt = _safe_parse_iso_utc(r.get("expires_utc")) if r.get("expires_utc") else None
     expired = bool(expires_dt and now_dt > expires_dt)
+    first_seen_dt = _safe_parse_iso_utc(r.get("first_seen_utc")) if r.get("first_seen_utc") else None
+    last_seen_dt = _safe_parse_iso_utc(r.get("last_seen_utc")) if r.get("last_seen_utc") else None
+    queue_age_sec = round(max(0.0, (now_dt - first_seen_dt).total_seconds()), 2) if first_seen_dt else None
+    last_seen_age_sec = round(max(0.0, (now_dt - last_seen_dt).total_seconds()), 2) if last_seen_dt else None
+    ttl_remaining_sec = round((expires_dt - now_dt).total_seconds(), 2) if expires_dt else None
     attempts = int(r.get("attempts") or 0)
     max_attempts_hit = attempts >= int(SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS or 0)
 
@@ -30271,6 +30276,25 @@ def _p327_retry_row_status(row: dict | None) -> dict:
         "retry_eligible": bool(retry_eligible),
         "blockers": _dedupe_candidate_reasons(blockers),
         "expired": bool(expired),
+        "freshness_status": (
+            "retry_eligible_now"
+            if retry_eligible
+            else "expired"
+            if expired
+            else "max_attempts_hit"
+            if max_attempts_hit
+            else "waiting_for_spread_to_normalize"
+            if "spread_still_too_wide" in blockers
+            else "waiting_for_quote_freshness"
+            if "quote_not_fresh" in blockers
+            else "blocked"
+            if blockers
+            else "waiting"
+        ),
+        "waiting_intentional": bool((not retry_eligible) and (not expired) and (not max_attempts_hit) and bool(blockers)),
+        "queue_age_sec": queue_age_sec,
+        "last_seen_age_sec": last_seen_age_sec,
+        "ttl_remaining_sec": ttl_remaining_sec,
         "attempts": attempts,
         "max_attempts": int(SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS or 0),
         "first_seen_utc": r.get("first_seen_utc"),
@@ -30343,6 +30367,12 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
                 SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.pop(key, None)
 
     rows.sort(key=lambda r: (1 if r.get("retry_eligible") else 0, str(r.get("first_seen_utc") or "")), reverse=True)
+    freshness_counts = Counter(str(r.get("freshness_status") or "unknown") for r in rows)
+    intentional_wait_symbols = [
+        str(r.get("symbol") or "").strip().upper()
+        for r in rows
+        if bool(r.get("waiting_intentional"))
+    ]
     persist_scan_runtime_state(reason="spread_blocked_submission_retry_apply" if apply else "spread_blocked_submission_retry_snapshot")
 
     return {
@@ -30355,6 +30385,13 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
         "eligible_count": len([r for r in rows if r.get("retry_eligible")]),
         "submitted_count": len(submitted),
         "removed_count": len(removed),
+        "freshness_counts": dict(freshness_counts),
+        "intentional_wait_symbols": intentional_wait_symbols,
+        "stale_queue_symbols": [
+            str(r.get("symbol") or "").strip().upper()
+            for r in rows
+            if str(r.get("freshness_status") or "") in {"expired", "max_attempts_hit"}
+        ],
         "backfill": backfill,
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-366-spread-blocked-submit-truth-cleanup-protective-retry-classification"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-368-scanner-light-inflight-warning-reconciliation-retryable-spread-queue-freshness"
 
 
 def selected_submission_truth_light_snapshot(
@@ -135,13 +135,22 @@ def scanner_light_snapshot(
         "sleep",
     }
     in_flight = bool(telemetry_summary.get("in_flight_run"))
+    in_flight_reconciled_by_completed_scan = bool(latest_scan_completed and latest_status_ok and in_flight)
+    effective_in_flight = bool(in_flight and not in_flight_reconciled_by_completed_scan)
 
-    if latest_scan_completed and latest_status_ok and not in_flight and "dispatch_failure" in active_warning_codes:
+    if latest_scan_completed and latest_status_ok and "dispatch_failure" in active_warning_codes:
         active_warning_codes = [code for code in active_warning_codes if code != "dispatch_failure"]
         if "dispatch_failure_recovered_by_scan_success" not in recovered_warning_codes:
             recovered_warning_codes.append("dispatch_failure_recovered_by_scan_success")
         if "dispatch_failure" not in historical_warning_codes:
             historical_warning_codes.append("dispatch_failure")
+
+    if in_flight_reconciled_by_completed_scan and "partial_run_open" in active_warning_codes:
+        active_warning_codes = [code for code in active_warning_codes if code != "partial_run_open"]
+        if "partial_run_open_reconciled_by_completed_scan" not in recovered_warning_codes:
+            recovered_warning_codes.append("partial_run_open_reconciled_by_completed_scan")
+        if "partial_run_open" not in historical_warning_codes:
+            historical_warning_codes.append("partial_run_open")
 
     dispatch_failure_recovered_by_closed_scan = (
         "dispatch_failure_recovered_by_closed_scan" in recovered_warning_codes
@@ -152,7 +161,7 @@ def scanner_light_snapshot(
     scanner_currently_ok = bool(
         not active_warning_codes
         and not post_open_scan_missing
-        and not in_flight
+        and not effective_in_flight
         and str(telemetry.get("status") or telemetry.get("last_status") or "")
         .strip()
         .lower()
@@ -172,7 +181,9 @@ def scanner_light_snapshot(
         "last_closed_utc": telemetry_summary.get("last_closed_utc") or telemetry.get("last_closed_utc"),
         "last_error": None if scanner_currently_ok else current_error,
         "last_error_historical": current_error if scanner_currently_ok else None,
-        "in_flight_run": bool(in_flight),
+        "in_flight_run": bool(effective_in_flight),
+        "raw_in_flight_run": bool(in_flight),
+        "in_flight_reconciled_by_completed_scan": bool(in_flight_reconciled_by_completed_scan),
         "attempts_today": telemetry_summary.get("attempts_today"),
         "success_today": telemetry_summary.get("success_today"),
         "failure_today": telemetry_summary.get("failure_today"),
@@ -185,6 +196,8 @@ def scanner_light_snapshot(
             "manual_requests_are_historical": True,
             "worker_unknown_can_be_cleared_by_recent_heartbeat": True,
             "dispatch_failure_recovered_by_closed_scan": bool(dispatch_failure_recovered_by_closed_scan),
+            "dispatch_failure_recovered_by_scan_success": "dispatch_failure_recovered_by_scan_success" in recovered_warning_codes,
+            "partial_run_open_reconciled_by_completed_scan": bool(in_flight_reconciled_by_completed_scan),
             "post_open_scan_missing": bool(post_open_scan_missing),
         },
         "latest_scan": {
