@@ -2453,7 +2453,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-369-spread-retry-ttl-refresh-auto-retry-submit-worker-truth"
+PATCH_VERSION = "patch-370-production-contract-open-position-suppression-cleanup-retry-evidence-status-tidy"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -30515,6 +30515,18 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
         for r in rows
         if bool(r.get("waiting_intentional"))
     ]
+    no_longer_spread_blocked_symbols = _dedupe_keep_order([
+        str((r or {}).get("symbol") or "").strip().upper()
+        for r in list((backfill or {}).get("skipped") or [])
+        if str((r or {}).get("reason") or "") == "not_spread_blocked"
+        and str((r or {}).get("symbol") or "").strip()
+    ])
+    resolved_retry_symbols = _dedupe_keep_order([
+        str((r or {}).get("symbol") or "").strip().upper()
+        for r in submitted
+        if bool((r or {}).get("actual_submit_side_effect"))
+        and str((r or {}).get("symbol") or "").strip()
+    ] + no_longer_spread_blocked_symbols)
     persist_scan_runtime_state(reason="spread_blocked_submission_retry_apply" if apply else "spread_blocked_submission_retry_snapshot")
 
     return {
@@ -30534,6 +30546,8 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
             for r in rows
             if str(r.get("freshness_status") or "") in {"expired", "max_attempts_hit"}
         ],
+        "resolved_retry_symbols": resolved_retry_symbols,
+        "no_longer_spread_blocked_symbols": no_longer_spread_blocked_symbols,
         "backfill": backfill,
         "ttl_refresh": ttl_refresh,
         "latest_scan": {
@@ -30556,6 +30570,8 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
         "recommended_action": (
             "retry_submitted"
             if submitted
+            else "spread_retry_resolved_or_no_longer_blocked"
+            if resolved_retry_symbols
             else "run_apply_true_when_retry_eligible"
             if any(r.get("retry_eligible") for r in rows)
             else "wait_for_spread_to_normalize"
@@ -31189,6 +31205,17 @@ def _p298_selected_submission_truth_light() -> dict:
             and not execution_quality_blocked
             and not bool(retryable_spread_block.get("retryable"))
         )
+        retry_evidence_status = (
+            "resolved_by_active_plan_or_submit_side_effect"
+            if bool(side_effect.get("actual_submit_side_effect"))
+            else "waiting_for_spread_retry"
+            if bool(retryable_spread_block.get("retryable"))
+            else "blocked_by_execution_quality"
+            if execution_quality_blocked
+            else "submit_gap"
+            if submit_gap
+            else "no_retry_evidence_needed"
+        )
 
         rows.append({
             "symbol": sym,
@@ -31207,6 +31234,7 @@ def _p298_selected_submission_truth_light() -> dict:
             "submit_gap": bool(submit_gap),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": retryable_spread_block,
+            "retry_evidence_status": retry_evidence_status,
             "reasons": list(side_effect.get("side_effect_reasons") or []),
             "active_plan": bool(side_effect.get("active_plan")),
             "pending_entry_plan": bool(side_effect.get("pending_entry_plan")),
@@ -31631,9 +31659,20 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             or "plan_or_pending_entry_exists" in list(row.get("rejection_reasons") or [])
         )
     ]
+    captured_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in captured_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    candidate_miss_rows = [
+        row for row in rows
+        if isinstance(row, dict)
+        and str(row.get("symbol") or "").strip().upper() not in captured_symbols
+    ]
     actionable_eligible_rows = [
         row for row in eligible_rows
         if str(row.get("symbol") or "").strip().upper() not in active_symbols
+        and str(row.get("symbol") or "").strip().upper() not in captured_symbols
     ]
 
     execution_quality_block_symbols = {
@@ -31684,7 +31723,7 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
         recommended_action = "check_selected_submission_truth_light"
     elif captured_rows and not actionable_eligible_rows:
         selection_status = "latest_candidates_already_captured"
-        recommended_action = "monitor_existing_positions_or_wait_for_new_candidate"
+        recommended_action = "monitor_existing_positions_or_wait_for_new_actionable_candidate"
     elif bool(summary.get("post_open_scan_missing")):
         selection_status = "post_open_scan_missing"
         recommended_action = "recover_scanner_dispatch_before_evaluating_candidates"
@@ -31723,6 +31762,9 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "actionable_eligible_symbols": [r.get("symbol") for r in actionable_eligible_rows],
             "captured_count": len(captured_rows),
             "captured_symbols": [r.get("symbol") for r in captured_rows],
+            "candidate_miss_count": len(candidate_miss_rows),
+            "candidate_miss_symbols": [r.get("symbol") for r in candidate_miss_rows],
+            "captured_suppressed_from_actionable_top": True,
             "execution_quality_block_count": len(execution_quality_block_rows),
             "execution_quality_block_symbols": [r.get("symbol") for r in execution_quality_block_rows],
             "retryable_spread_block_count": len(retryable_spread_block_rows),
@@ -31732,7 +31774,7 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "production_approved_symbols": list(production_summary.get("approved_symbols") or [r.get("symbol") for r in approved_rows]),
             "second_slot_truth": audit_second_slot_truth,
         },
-        "top": [
+        "top_actionable": [
             {
                 "symbol": row.get("symbol"),
                 "eligible": bool((row.get("swing_production_contract") or {}).get("approved")),
@@ -31749,6 +31791,34 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
                 "selection_blockers": list(row.get("selection_blockers") or []),
                 "swing_production_contract": row.get("swing_production_contract"),
                 "legacy_gate_mode": row.get("legacy_gate_mode"),
+            }
+            for row in candidate_miss_rows
+            if isinstance(row, dict)
+        ],
+        "top_captured": [
+            {
+                "symbol": row.get("symbol"),
+                "rank_score": row.get("rank_score"),
+                "target_path_score": (row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else row.get("target_path_score"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+                "capture_reasons": [
+                    reason for reason in ["position_already_open", "plan_or_pending_entry_exists"]
+                    if reason in list(row.get("rejection_reasons") or [])
+                ],
+                "active_position": str(row.get("symbol") or "").strip().upper() in active_symbols,
+            }
+            for row in captured_rows
+            if isinstance(row, dict)
+        ],
+        "top": [
+            {
+                "symbol": row.get("symbol"),
+                "eligible": bool((row.get("swing_production_contract") or {}).get("approved")),
+                "selected": str(row.get("symbol") or "").strip().upper() in set(selected_symbols),
+                "captured": str(row.get("symbol") or "").strip().upper() in captured_symbols,
+                "rank_score": row.get("rank_score"),
+                "target_path_score": (row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else row.get("target_path_score"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
             }
             for row in rows
             if isinstance(row, dict)

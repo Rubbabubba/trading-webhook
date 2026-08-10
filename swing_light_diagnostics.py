@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-369-spread-retry-ttl-refresh-auto-retry-submit-worker-truth"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-370-production-contract-open-position-suppression-cleanup-retry-evidence-status-tidy"
 
 
 def selected_submission_truth_light_snapshot(
@@ -57,6 +57,18 @@ def selected_submission_truth_light_snapshot(
         for row in rows
         if row.get("symbol") and bool(row.get("p330_filled_plan_backfill"))
     ]
+    retry_resolved_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol")
+        and str(row.get("retry_evidence_status") or "") == "resolved_by_active_plan_or_submit_side_effect"
+    ]
+    retry_waiting_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol")
+        and str(row.get("retry_evidence_status") or "") == "waiting_for_spread_retry"
+    ]
 
     return {
         "ok": True,
@@ -87,6 +99,10 @@ def selected_submission_truth_light_snapshot(
         "limit_order_count": len(limit_order_symbols),
         "filled_plan_backfill_symbols": filled_plan_backfill_symbols,
         "filled_plan_backfill_count": len(filled_plan_backfill_symbols),
+        "retry_resolved_symbols": retry_resolved_symbols,
+        "retry_resolved_count": len(retry_resolved_symbols),
+        "retry_waiting_symbols": retry_waiting_symbols,
+        "retry_waiting_count": len(retry_waiting_symbols),
         "rows": list(rows),
         "recommended_action": (
             "selected_candidate_submit_gap_detected"
@@ -94,7 +110,7 @@ def selected_submission_truth_light_snapshot(
             else "selected_candidate_blocked_by_execution_quality"
             if execution_quality_block_symbols
             else "retryable_spread_block_waiting_for_quote_improvement"
-            if retryable_spread_block_symbols
+            if retryable_spread_block_symbols or retry_waiting_symbols
             else "selected_symbols_have_actual_submit_side_effect"
             if selected_symbols
             else "no_selected_symbols_found"
