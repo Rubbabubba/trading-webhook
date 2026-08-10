@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-368-scanner-light-inflight-warning-reconciliation-retryable-spread-queue-freshness"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-369-spread-retry-ttl-refresh-auto-retry-submit-worker-truth"
 
 
 def selected_submission_truth_light_snapshot(

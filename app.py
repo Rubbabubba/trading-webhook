@@ -1586,6 +1586,14 @@ ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_TRADE_MID_DEVIATION_PCT = float(getenv_any("ENT
 SPREAD_BLOCKED_RETRY_ENABLED = env_bool_any("SPREAD_BLOCKED_RETRY_ENABLED", default=True)
 SPREAD_BLOCKED_RETRY_WINDOW_SEC = int(getenv_any("SPREAD_BLOCKED_RETRY_WINDOW_SEC", default="900"))
 SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS = int(getenv_any("SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS", default="6"))
+SPREAD_BLOCKED_RETRY_REFRESH_ON_SELECTED_SCAN_ENABLED = env_bool_any(
+    "SPREAD_BLOCKED_RETRY_REFRESH_ON_SELECTED_SCAN_ENABLED",
+    default=True,
+)
+SPREAD_BLOCKED_RETRY_AUTO_APPLY_ON_SCAN_ENABLED = env_bool_any(
+    "SPREAD_BLOCKED_RETRY_AUTO_APPLY_ON_SCAN_ENABLED",
+    default=True,
+)
 
 SWING_LIMIT_ENTRY_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_ENABLED", default=True)
 SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED = env_bool_any("SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED", default=True)
@@ -2445,7 +2453,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-368-scanner-light-inflight-warning-reconciliation-retryable-spread-queue-freshness"
+PATCH_VERSION = "patch-369-spread-retry-ttl-refresh-auto-retry-submit-worker-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -21662,6 +21670,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     duration_ms = elapsed_ms_fn()
     set_last_scan_fn(skipped=False, reason='scan_completed', scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
     try:
+        summary["spread_retry_auto_apply"] = _p369_auto_retry_after_scan_summary(summary)
+    except Exception as exc:
+        summary["spread_retry_auto_apply"] = {"enabled": bool(SPREAD_BLOCKED_RETRY_AUTO_APPLY_ON_SCAN_ENABLED), "applied": False, "reason": "auto_apply_error", "error": str(exc)}
+    try:
         _record_paper_lifecycle(
             stage='scan',
             status='completed',
@@ -30200,6 +30212,132 @@ def _p327_backfill_spread_retry_queue_from_selected_submission_rows(summary: dic
         "backfilled_count": len([r for r in backfilled if r.get("queued")]),
     }
 
+
+def _p369_spread_retry_rows_from_summary(summary: dict | None = None) -> list[dict]:
+    summary = dict(summary or {})
+    rows = list(summary.get("selected_submission_rows") or summary.get("would_submit") or [])
+    return [dict(r) for r in rows if isinstance(r, dict)]
+
+
+def _p369_refresh_spread_retry_queue_from_latest_selection(summary: dict | None = None) -> dict:
+    if not bool(SPREAD_BLOCKED_RETRY_REFRESH_ON_SELECTED_SCAN_ENABLED):
+        return {"enabled": False, "refreshed_count": 0, "reason": "refresh_disabled"}
+
+    summary = dict(summary or {})
+    rows = _p369_spread_retry_rows_from_summary(summary)
+    selected_symbols = {
+        str(s or "").strip().upper()
+        for s in list(summary.get("selected_symbols") or [])
+        if str(s or "").strip()
+    }
+    selected_symbols.update({
+        str((r or {}).get("symbol") or "").strip().upper()
+        for r in rows
+        if str((r or {}).get("symbol") or "").strip()
+    })
+
+    row_by_key = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        signal = str(row.get("signal") or row.get("strategy") or "daily_breakout").strip() or "daily_breakout"
+        if symbol:
+            row_by_key[_p327_spread_retry_key(symbol, signal)] = dict(row)
+
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    ttl_sec = max(60, int(SPREAD_BLOCKED_RETRY_WINDOW_SEC or 900))
+    refreshed = []
+    skipped = []
+
+    for key, queued_row in list(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.items()):
+        row = dict(queued_row or {})
+        symbol = str(row.get("symbol") or "").strip().upper()
+        signal = str(row.get("signal") or "daily_breakout").strip() or "daily_breakout"
+        current_key = _p327_spread_retry_key(symbol, signal)
+        submit_row = dict(row_by_key.get(current_key) or {})
+
+        if not symbol:
+            skipped.append({"key": key, "reason": "missing_symbol"})
+            continue
+        if symbol not in selected_symbols:
+            skipped.append({"key": key, "symbol": symbol, "reason": "not_selected_in_latest_scan"})
+            continue
+
+        submit_state = str(submit_row.get("submit_state") or "").strip().lower()
+        submit_reason = str(submit_row.get("submit_reason") or submit_row.get("reason") or "").strip().lower()
+        still_spread_blocked = bool(submit_state == "blocked" and submit_reason == "spread_too_wide")
+        listed_retryable = symbol in {
+            str(s or "").strip().upper()
+            for s in list(summary.get("retryable_spread_block_symbols") or [])
+            if str(s or "").strip()
+        }
+
+        if submit_row and not (still_spread_blocked or listed_retryable):
+            skipped.append({"key": key, "symbol": symbol, "reason": "latest_selection_not_spread_blocked"})
+            continue
+
+        row["last_seen_utc"] = now_iso
+        row["expires_utc"] = (now_dt + timedelta(seconds=ttl_sec)).isoformat()
+        row["last_refresh_utc"] = now_iso
+        row["refresh_count"] = int(row.get("refresh_count") or 0) + 1
+        row["last_refresh_reason"] = "latest_scan_still_selected"
+
+        if submit_row:
+            row["latest_submit_row"] = submit_row
+            row["last_snapshot"] = dict(submit_row.get("snapshot") or row.get("last_snapshot") or {})
+            row["last_spread_override"] = dict(
+                submit_row.get("spread_override")
+                or (submit_row.get("snapshot") or {}).get("spread_override")
+                or row.get("last_spread_override")
+                or {}
+            )
+
+        SPREAD_BLOCKED_SELECTED_RETRY_QUEUE[key] = row
+        refreshed.append({
+            "key": key,
+            "symbol": symbol,
+            "expires_utc": row.get("expires_utc"),
+            "refresh_count": int(row.get("refresh_count") or 0),
+        })
+
+    if refreshed:
+        persist_scan_runtime_state(reason="p369_spread_retry_ttl_refresh")
+
+    return {
+        "enabled": True,
+        "refreshed_count": len(refreshed),
+        "refreshed": refreshed[:25],
+        "skipped": skipped[:25],
+    }
+
+
+def _p369_auto_retry_after_scan_summary(summary: dict | None = None) -> dict:
+    if not bool(SPREAD_BLOCKED_RETRY_AUTO_APPLY_ON_SCAN_ENABLED):
+        return {"enabled": False, "applied": False, "reason": "auto_apply_disabled"}
+    if not bool(SPREAD_BLOCKED_RETRY_ENABLED):
+        return {"enabled": False, "applied": False, "reason": "spread_retry_disabled"}
+
+    summary = dict(summary or {})
+    has_retryable_selection = bool(summary.get("retryable_spread_block_symbols"))
+    if not SPREAD_BLOCKED_SELECTED_RETRY_QUEUE and not has_retryable_selection:
+        return {"enabled": True, "applied": False, "reason": "no_retry_queue_or_retryable_selection"}
+
+    try:
+        result = _p327_spread_blocked_submission_retry_snapshot(apply=True, limit=5)
+        return {
+            "enabled": True,
+            "applied": True,
+            "ok": bool(result.get("ok")),
+            "eligible_count": int(result.get("eligible_count") or 0),
+            "submitted_count": int(result.get("submitted_count") or 0),
+            "removed_count": int(result.get("removed_count") or 0),
+            "recommended_action": result.get("recommended_action"),
+        }
+    except Exception as exc:
+        logger.exception("P369_SPREAD_RETRY_AUTO_APPLY_FAILED")
+        return {"enabled": True, "applied": False, "reason": "auto_apply_error", "error": str(exc)}
+
+
 def _p327_retry_row_status(row: dict | None) -> dict:
     r = dict(row or {})
     symbol = str(r.get("symbol") or "").strip().upper()
@@ -30300,6 +30438,9 @@ def _p327_retry_row_status(row: dict | None) -> dict:
         "first_seen_utc": r.get("first_seen_utc"),
         "last_seen_utc": r.get("last_seen_utc"),
         "expires_utc": r.get("expires_utc"),
+        "last_refresh_utc": r.get("last_refresh_utc"),
+        "refresh_count": int(r.get("refresh_count") or 0),
+        "last_refresh_reason": r.get("last_refresh_reason"),
         "contract_approved_now": bool(contract_approved),
         "contract_blockers": list(contract.get("blockers") or []),
         "quote_error": quote_error,
@@ -30324,6 +30465,7 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
     lim = max(1, min(int(limit or 10), 25))
     latest_scan, summary = _p298_latest_scan_summary_light()
     backfill = _p327_backfill_spread_retry_queue_from_selected_submission_rows(summary)
+    ttl_refresh = _p369_refresh_spread_retry_queue_from_latest_selection(summary)
     rows = []
     submitted = []
     removed = []
@@ -30393,6 +30535,7 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
             if str(r.get("freshness_status") or "") in {"expired", "max_attempts_hit"}
         ],
         "backfill": backfill,
+        "ttl_refresh": ttl_refresh,
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),
             "reason": latest_scan.get("reason"),
@@ -30401,6 +30544,8 @@ def _p327_spread_blocked_submission_retry_snapshot(apply: bool = False, limit: i
         "config": {
             "window_sec": int(SPREAD_BLOCKED_RETRY_WINDOW_SEC or 0),
             "max_attempts": int(SPREAD_BLOCKED_RETRY_MAX_ATTEMPTS or 0),
+            "refresh_on_selected_scan_enabled": bool(SPREAD_BLOCKED_RETRY_REFRESH_ON_SELECTED_SCAN_ENABLED),
+            "auto_apply_on_scan_enabled": bool(SPREAD_BLOCKED_RETRY_AUTO_APPLY_ON_SCAN_ENABLED),
             "entry_max_spread_pct": float(ENTRY_MAX_SPREAD_PCT),
             "iex_override_enabled": bool(ENTRY_IEX_LIQUIDITY_OVERRIDE_ENABLED),
             "iex_override_max_spread_pct": float(ENTRY_IEX_LIQUIDITY_OVERRIDE_MAX_SPREAD_PCT),
@@ -45767,7 +45912,14 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 LAST_SCAN["selected_submit_gap_symbols"] = submit_gap_symbols
                 LAST_SCAN["selected_submit_gap_count"] = len(submit_gap_symbols)
             except Exception:
-                pass    
+                pass
+
+            try:
+                scan_summary["spread_retry_auto_apply"] = _p369_auto_retry_after_scan_summary(scan_summary)
+                if isinstance(LAST_SCAN.get("summary"), dict):
+                    LAST_SCAN["summary"]["spread_retry_auto_apply"] = dict(scan_summary.get("spread_retry_auto_apply") or {})
+            except Exception as exc:
+                scan_summary["spread_retry_auto_apply"] = {"enabled": bool(SPREAD_BLOCKED_RETRY_AUTO_APPLY_ON_SCAN_ENABLED), "applied": False, "reason": "auto_apply_error", "error": str(exc)}
 
         # Store diagnostics for Postman/curl inspection.
         try:
