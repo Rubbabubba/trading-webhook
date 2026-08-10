@@ -2416,6 +2416,10 @@ SCAN_HISTORY_RESULT_LIMIT = max(0, int(getenv_any("SCAN_HISTORY_RESULT_LIMIT", d
 SCAN_FAST_RESPONSE_ENABLED = env_bool_any("SCAN_FAST_RESPONSE_ENABLED", default="true")
 SCAN_FAST_RESPONSE_FOR_WORKER_ONLY = env_bool_any("SCAN_FAST_RESPONSE_FOR_WORKER_ONLY", default="true")
 SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", default=str(int(os.getenv("SCAN_TIMEOUT_SEC", "240") or 240) - 30)) or 210))
+SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC = max(
+    60,
+    int(getenv_any("SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC", default="900") or 900),
+)
 SCAN_RUNTIME_WARN_RATIO = max(0.10, float(getenv_any("SCAN_RUNTIME_WARN_RATIO", default="0.85") or 0.85))
 ALPACA_SUBMIT_RATE_LIMIT_RETRY_ENABLED = env_bool_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_ENABLED", default="true")
 ALPACA_SUBMIT_RATE_LIMIT_RETRY_DELAY_SEC = max(0.0, float(getenv_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_DELAY_SEC", default="3") or 3))
@@ -2453,7 +2457,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-371-actionable-candidate-reason-compression-profit-opportunity-watch-tier"
+PATCH_VERSION = "patch-372-scanner-inflight-grace-window-dispatch-failure-aging-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -31406,6 +31410,8 @@ def _p298_scanner_light() -> dict:
         telemetry_summary=telemetry_summary,
         latest_scan=latest_scan,
         scan_summary=summary,
+        in_flight_grace_sec=int(SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC),
+        scan_runtime_budget_sec=int(SCAN_RUNTIME_BUDGET_SEC),
     )
 
 

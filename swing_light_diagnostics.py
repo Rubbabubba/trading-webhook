@@ -6,10 +6,11 @@ FastAPI, Alpaca clients, app globals, or broker submission logic.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-371-actionable-candidate-reason-compression-profit-opportunity-watch-tier"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-372-scanner-inflight-grace-window-dispatch-failure-aging-truth"
 
 
 def selected_submission_truth_light_snapshot(
@@ -117,6 +118,17 @@ def selected_submission_truth_light_snapshot(
         ),
     }
 
+def _scanner_light_iso_age_sec(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        return None
 
 def scanner_light_snapshot(
     *,
@@ -125,6 +137,8 @@ def scanner_light_snapshot(
     telemetry_summary: dict,
     latest_scan: dict,
     scan_summary: dict,
+    in_flight_grace_sec: int = 900,
+    scan_runtime_budget_sec: int = 240,
 ) -> dict:
     active_warning_codes = [
         str(code or "").strip().lower()
@@ -151,8 +165,17 @@ def scanner_light_snapshot(
         "sleep",
     }
     in_flight = bool(telemetry_summary.get("in_flight_run"))
-    in_flight_reconciled_by_completed_scan = bool(latest_scan_completed and latest_status_ok and in_flight)
-    effective_in_flight = bool(in_flight and not in_flight_reconciled_by_completed_scan)
+    last_event_age_sec = _scanner_light_iso_age_sec(telemetry.get("last_event_utc"))
+    last_closed_age_sec = _scanner_light_iso_age_sec(telemetry_summary.get("last_closed_utc") or telemetry.get("last_closed_utc"))
+    grace_sec = max(60, int(in_flight_grace_sec or 900))
+    budget_sec = max(60, int(scan_runtime_budget_sec or 240))
+    running_age_sec = last_event_age_sec if in_flight else None
+
+    in_flight_grace_active = bool(in_flight and running_age_sec is not None and running_age_sec <= grace_sec)
+    in_flight_over_grace = bool(in_flight and running_age_sec is not None and running_age_sec > grace_sec)
+    in_flight_over_budget = bool(in_flight and running_age_sec is not None and running_age_sec > budget_sec)
+    in_flight_reconciled_by_completed_scan = bool(latest_scan_completed and latest_status_ok and in_flight and not in_flight_grace_active)
+    effective_in_flight = bool(in_flight and not in_flight_reconciled_by_completed_scan and not in_flight_grace_active)
 
     if latest_scan_completed and latest_status_ok and "dispatch_failure" in active_warning_codes:
         active_warning_codes = [code for code in active_warning_codes if code != "dispatch_failure"]
@@ -168,20 +191,40 @@ def scanner_light_snapshot(
         if "partial_run_open" not in historical_warning_codes:
             historical_warning_codes.append("partial_run_open")
 
+    if in_flight_grace_active:
+        if "partial_run_open" in active_warning_codes:
+            active_warning_codes = [code for code in active_warning_codes if code != "partial_run_open"]
+            if "partial_run_open_within_grace_window" not in recovered_warning_codes:
+                recovered_warning_codes.append("partial_run_open_within_grace_window")
+            if "partial_run_open" not in historical_warning_codes:
+                historical_warning_codes.append("partial_run_open")
+        if "dispatch_failure" in active_warning_codes and not in_flight_over_budget:
+            active_warning_codes = [code for code in active_warning_codes if code != "dispatch_failure"]
+            if "dispatch_failure_pending_scan_close_within_grace_window" not in recovered_warning_codes:
+                recovered_warning_codes.append("dispatch_failure_pending_scan_close_within_grace_window")
+            if "dispatch_failure" not in historical_warning_codes:
+                historical_warning_codes.append("dispatch_failure")
+
     dispatch_failure_recovered_by_closed_scan = (
         "dispatch_failure_recovered_by_closed_scan" in recovered_warning_codes
     )
 
     post_open_scan_missing = bool(scan_summary.get("post_open_scan_missing") or latest_scan.get("post_open_scan_missing"))
 
+    scanner_status = (
+        "scan_running_within_grace"
+        if in_flight_grace_active and not in_flight_over_budget
+        else "scan_running_over_budget"
+        if in_flight_over_budget
+        else "scan_stale_failed"
+        if effective_in_flight or active_warning_codes
+        else "healthy"
+    )
+
     scanner_currently_ok = bool(
-        not active_warning_codes
+        scanner_status in {"healthy", "scan_running_within_grace"}
         and not post_open_scan_missing
-        and not effective_in_flight
-        and str(telemetry.get("status") or telemetry.get("last_status") or "")
-        .strip()
-        .lower()
-        in {"ok", "success", "skipped", ""}
+        and not active_warning_codes
     )
 
     return {
@@ -197,9 +240,17 @@ def scanner_light_snapshot(
         "last_closed_utc": telemetry_summary.get("last_closed_utc") or telemetry.get("last_closed_utc"),
         "last_error": None if scanner_currently_ok else current_error,
         "last_error_historical": current_error if scanner_currently_ok else None,
+        "scanner_status": scanner_status,
         "in_flight_run": bool(effective_in_flight),
         "raw_in_flight_run": bool(in_flight),
+        "in_flight_grace_active": bool(in_flight_grace_active),
+        "in_flight_over_grace": bool(in_flight_over_grace),
+        "in_flight_over_budget": bool(in_flight_over_budget),
         "in_flight_reconciled_by_completed_scan": bool(in_flight_reconciled_by_completed_scan),
+        "last_event_age_sec": round(last_event_age_sec, 2) if last_event_age_sec is not None else None,
+        "last_closed_age_sec": round(last_closed_age_sec, 2) if last_closed_age_sec is not None else None,
+        "in_flight_grace_sec": int(grace_sec),
+        "scan_runtime_budget_sec": int(budget_sec),
         "attempts_today": telemetry_summary.get("attempts_today"),
         "success_today": telemetry_summary.get("success_today"),
         "failure_today": telemetry_summary.get("failure_today"),
@@ -208,6 +259,10 @@ def scanner_light_snapshot(
         "historical_warning_codes": historical_warning_codes,
         "cleanup_status": {
             "scanner_currently_ok": scanner_currently_ok,
+            "scanner_status": scanner_status,
+            "in_flight_grace_active": bool(in_flight_grace_active),
+            "dispatch_failure_aged_as_pending_scan": bool("dispatch_failure_pending_scan_close_within_grace_window" in recovered_warning_codes),
+            "partial_run_aged_as_pending_scan": bool("partial_run_open_within_grace_window" in recovered_warning_codes),
             "stale_errors_suppressed": bool(scanner_currently_ok and current_error),
             "manual_requests_are_historical": True,
             "worker_unknown_can_be_cleared_by_recent_heartbeat": True,
