@@ -2445,7 +2445,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-366-spread-blocked-submit-truth-cleanup-protective-retry-classification"
+PATCH_VERSION = "patch-367-market-open-opportunity-truth-execution-block-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -31453,19 +31453,51 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
         row for row in eligible_rows
         if str(row.get("symbol") or "").strip().upper() not in active_symbols
     ]
+
+    execution_quality_block_symbols = {
+        str(s or "").strip().upper()
+        for s in list(summary.get("execution_quality_block_symbols") or [])
+        if str(s or "").strip()
+    }
+    retryable_spread_block_symbols = {
+        str(s or "").strip().upper()
+        for s in list(summary.get("retryable_spread_block_symbols") or [])
+        if str(s or "").strip()
+    }
+
+    execution_quality_block_rows = [
+        row for row in actionable_eligible_rows
+        if str(row.get("symbol") or "").strip().upper() in execution_quality_block_symbols
+    ]
+    retryable_spread_block_rows = [
+        row for row in actionable_eligible_rows
+        if str(row.get("symbol") or "").strip().upper() in retryable_spread_block_symbols
+    ]
+    true_missing_opportunity_rows = [
+        row for row in actionable_eligible_rows
+        if str(row.get("symbol") or "").strip().upper() not in execution_quality_block_symbols
+        and str(row.get("symbol") or "").strip().upper() not in retryable_spread_block_symbols
+    ]
+
     audit_second_slot_truth = _p363_second_slot_truth(
         watch={
             "selected_total": len(selected_symbols),
             "captured_tradeable_count": len(captured_rows),
             "regime_mode": summary.get("regime_mode"),
         },
-        selected_items=[row for row in actionable_eligible_rows if str(row.get("symbol") or "").strip().upper() in set(selected_symbols)],
-        eligible_not_selected_items=[row for row in actionable_eligible_rows if str(row.get("symbol") or "").strip().upper() not in set(selected_symbols)],
+        selected_items=[row for row in true_missing_opportunity_rows if str(row.get("symbol") or "").strip().upper() in set(selected_symbols)],
+        eligible_not_selected_items=[row for row in true_missing_opportunity_rows if str(row.get("symbol") or "").strip().upper() not in set(selected_symbols)],
         captured_items=captured_rows,
         active_truth={"active_position_count": len(active_symbols)},
     )
 
-    if selected_symbols:
+    if selected_symbols and true_missing_opportunity_rows:
+        selection_status = "selected_missing_submit_truth"
+        recommended_action = "check_selected_submission_truth_light"
+    elif selected_symbols and execution_quality_block_rows:
+        selection_status = "selected_execution_quality_blocked"
+        recommended_action = "wait_for_spread_retry_or_next_scan"
+    elif selected_symbols:
         selection_status = "selected"
         recommended_action = "check_selected_submission_truth_light"
     elif captured_rows and not actionable_eligible_rows:
@@ -31509,8 +31541,12 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "actionable_eligible_symbols": [r.get("symbol") for r in actionable_eligible_rows],
             "captured_count": len(captured_rows),
             "captured_symbols": [r.get("symbol") for r in captured_rows],
-            "missing_trade_opportunity_count": len(actionable_eligible_rows),
-            "missing_trade_opportunity_symbols": [r.get("symbol") for r in actionable_eligible_rows],
+            "execution_quality_block_count": len(execution_quality_block_rows),
+            "execution_quality_block_symbols": [r.get("symbol") for r in execution_quality_block_rows],
+            "retryable_spread_block_count": len(retryable_spread_block_rows),
+            "retryable_spread_block_symbols": [r.get("symbol") for r in retryable_spread_block_rows],
+            "missing_trade_opportunity_count": len(true_missing_opportunity_rows),
+            "missing_trade_opportunity_symbols": [r.get("symbol") for r in true_missing_opportunity_rows],
             "production_approved_symbols": list(production_summary.get("approved_symbols") or [r.get("symbol") for r in approved_rows]),
             "second_slot_truth": audit_second_slot_truth,
         },
@@ -31519,6 +31555,12 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
                 "symbol": row.get("symbol"),
                 "eligible": bool((row.get("swing_production_contract") or {}).get("approved")),
                 "selected": str(row.get("symbol") or "").strip().upper() in set(selected_symbols),
+                "execution_quality_blocked": str(row.get("symbol") or "").strip().upper() in execution_quality_block_symbols,
+                "retryable_spread_block": str(row.get("symbol") or "").strip().upper() in retryable_spread_block_symbols,
+                "missing_trade_opportunity": str(row.get("symbol") or "").strip().upper() in {
+                    str(r.get("symbol") or "").strip().upper()
+                    for r in true_missing_opportunity_rows
+                },
                 "rank_score": row.get("rank_score"),
                 "target_path_score": (row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else row.get("target_path_score"),
                 "rejection_reasons": list(row.get("rejection_reasons") or []),
