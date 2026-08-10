@@ -1477,6 +1477,7 @@ SWING_DEFENSIVE_REQUIRE_BREAKOUT_NOT_EXTENDED = env_bool_any("SWING_DEFENSIVE_RE
 SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED", default=True)
 SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_OPENING_DAMAGE = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_OPENING_DAMAGE", default=True)
 SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_STALL_LOSS = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_INCLUDE_STALL_LOSS", default=True)
+SWING_STALL_CHURN_REENTRY_COOLDOWN_ENABLED = env_bool_any("SWING_STALL_CHURN_REENTRY_COOLDOWN_ENABLED", default=True)
 SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_MIN_LOSS_DOLLARS = getenv_float_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_MIN_LOSS_DOLLARS", default=0.01)
 SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY = env_bool_any("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY", default=False)
 SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED = env_bool_any("SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED", default=True)
@@ -2444,7 +2445,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-364-active-exit-protection-truth-same-day-stall-exit-churn-audit"
+PATCH_VERSION = "patch-365-same-day-target-exit-allowance-stall-churn-reentry-cooldown"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -16027,6 +16028,7 @@ def same_day_exit_blocked(plan: dict, reason: str = "") -> bool:
         "catastrophic_invalid",
         "stop",
         "profit_lock_stop",
+        "target",
         "opening_damage_exit",
         "stall_loss_guard",
     }
@@ -18260,8 +18262,66 @@ def _p323_pct_decimal(value):
         return val / 100.0
     return val
 
+def _p365_same_day_stall_churn_reentry_cooldown(symbol: str) -> dict:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return {"active": False, "reason": "missing_symbol"}
+
+    if not bool(SWING_STALL_CHURN_REENTRY_COOLDOWN_ENABLED):
+        return {"active": False, "reason": "disabled"}
+
+    today = now_ny().date()
+    stall_rows = []
+    for row in list(DECISIONS or [])[-1000:]:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("source") or "") != "worker_exit":
+            continue
+        if str(row.get("symbol") or "").strip().upper() != sym:
+            continue
+
+        ts = _ts_parse_or_none(row.get("ts_utc") or row.get("timestamp") or row.get("time"))
+        if not ts or ts.astimezone(NY_TZ).date() != today:
+            continue
+
+        action = str(row.get("action") or "").strip().lower()
+        reason = str(row.get("reason") or "").strip().lower()
+        if reason in {"stall_exit", "stall_loss_guard"} or action in {"stall_exit", "stall_loss_guard"}:
+            stall_rows.append({
+                "ts_utc": row.get("ts_utc"),
+                "action": row.get("action"),
+                "reason": row.get("reason"),
+            })
+
+    if not stall_rows:
+        return {"active": False, "reason": "no_same_day_stall_family_exit"}
+
+    return {
+        "active": True,
+        "reason": "same_day_stall_churn_reentry_cooldown",
+        "symbol": sym,
+        "stall_exit_count_today": len(stall_rows),
+        "latest_stall_exit": stall_rows[-1],
+    }
+
+
+def _p365_apply_stall_churn_reentry_cooldown(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    sym = str(c.get("symbol") or "").strip().upper()
+    cooldown = _p365_same_day_stall_churn_reentry_cooldown(sym)
+    c["same_day_stall_churn_reentry_cooldown"] = cooldown
+
+    if bool(cooldown.get("active")):
+        reasons = list(c.get("rejection_reasons") or [])
+        if "same_day_stall_churn_reentry_cooldown" not in reasons:
+            reasons.append("same_day_stall_churn_reentry_cooldown")
+        c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+        c["eligible"] = False
+
+    return c
 
 def _p323_swing_production_contract(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    candidate = _p365_apply_stall_churn_reentry_cooldown(candidate)
     return swing_contract_production_contract(
         candidate,
         config=_p333_swing_selection_contract_config(),
@@ -18271,6 +18331,7 @@ def _p323_swing_production_contract(candidate: dict | None, global_block_reasons
 
 
 def _p323_apply_swing_production_contract(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
+    candidate = _p365_apply_stall_churn_reentry_cooldown(candidate)
     return swing_contract_apply(
         candidate,
         config=_p333_swing_selection_contract_config(),
@@ -18288,6 +18349,7 @@ def _p323_enforce_production_contract_selection(
     rows: list | None,
     global_block_reasons: list | None = None,
 ) -> list[dict]:
+    rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     return swing_contract_enforce(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -18296,6 +18358,7 @@ def _p323_enforce_production_contract_selection(
     )
 
 def _p323_contract_approved_rows(rows: list | None) -> list[dict]:
+    rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     return swing_contract_approved_rows(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -18307,6 +18370,7 @@ def _p326_finalize_production_contract_selection(
     max_new_entries: int,
     global_block_reasons: list | None = None,
 ) -> dict:
+    rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     return swing_contract_finalize(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -31108,7 +31172,11 @@ def _p364_active_exit_protection_truth() -> dict:
             else "missing_exit_levels"
         )
 
-        same_day_block = same_day_exit_blocked(plan, reason=closest_exit_reason) if has_plan else False
+        same_day_block = (
+            same_day_exit_blocked(plan, reason=closest_exit_reason)
+            if has_plan and closest_exit_reason != "none"
+            else False
+        )
 
         row = {
             "symbol": symbol,
@@ -43864,6 +43932,10 @@ def diagnostics_swing_runtime_config():
             "same_day_symbol_loss_cooldown": {
                 "enabled": _cfg_bool("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED"),
                 "can_block_entries": not _cfg_bool("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY"),
+            },
+            "same_day_stall_churn_reentry_cooldown": {
+                "enabled": _cfg_bool("SWING_STALL_CHURN_REENTRY_COOLDOWN_ENABLED"),
+                "hard_blocks_reentry_after_same_day_stall_family_exit": True,
             },
             "loss_day_entry_throttle": {
                 "enabled": _cfg_bool("SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED"),

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-344-production-contract-starter-sleeve-near-rank-revival"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-365-same-day-target-exit-allowance-stall-churn-reentry-cooldown"
 
 
 @dataclass(frozen=True)
@@ -109,6 +109,7 @@ def swing_production_contract(
         "position_already_open",
         "pending_order_entry_freeze",
         "same_day_symbol_loss_cooldown",
+        "same_day_stall_churn_reentry_cooldown",
         "strategy_kill_switch_active",
         "correlation_group_limit",
         "symbol_exposure_limit",
