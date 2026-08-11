@@ -1826,6 +1826,26 @@ BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MAX_GIVEBACK_PCT = getenv_float_any(
     "BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MAX_GIVEBACK_PCT",
     default=0.50,
 )
+DAILY_BREAKOUT_PROFIT_GIVEBACK_EXIT_ENABLED = env_bool_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_EXIT_ENABLED",
+    default=True,
+)
+DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_FAVORABLE_PCT = getenv_float_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_FAVORABLE_PCT",
+    default=1.00,
+)
+DAILY_BREAKOUT_PROFIT_GIVEBACK_MAX_GIVEBACK_PCT = getenv_float_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_MAX_GIVEBACK_PCT",
+    default=0.50,
+)
+DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_HOLD_MIN = getenv_int_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_HOLD_MIN",
+    default=15,
+)
+DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_LOCK_PROFIT_PCT = getenv_float_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_LOCK_PROFIT_PCT",
+    default=0.25,
+)
 SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
     "SWING_EXECUTABLE_SELECTION_MIN_QTY",
     default=1.0,
@@ -2516,7 +2536,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-377-hotfix-2-safe-candidate-float-default"
+PATCH_VERSION = "patch-378-daily-breakout-profit-giveback-preservation-exit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8102,6 +8122,51 @@ def _p377_breakout_early_follow_through_gate_snapshot(limit: int = 20) -> dict:
             }
             for r in checked[:max(1, min(int(limit or 20), 50))]
         ],
+    }
+
+def _p378_daily_breakout_profit_giveback_preservation_truth() -> dict:
+    rows = []
+    for symbol, plan in sorted(dict(TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not bool(plan.get("active")):
+            continue
+        sym = str(symbol or plan.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        try:
+            px = get_latest_price(sym)
+        except Exception:
+            px = 0.0
+        state = _p378_daily_breakout_profit_giveback_state(sym, plan, float(px or 0.0))
+        rows.append({
+            "symbol": sym,
+            "active": bool(plan.get("active")),
+            "strategy_name": plan.get("strategy_name") or plan.get("signal"),
+            "entry_price": plan.get("entry_price"),
+            "current_price": round(float(px), 4) if px else None,
+            "profit_lock_price": plan.get("profit_lock_price"),
+            "take_price": plan.get("take_price"),
+            "state": state,
+        })
+
+    triggered = [
+        r for r in rows
+        if bool((r.get("state") or {}).get("triggered"))
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "daily_breakout_profit_giveback_preservation_truth",
+        "read_only": True,
+        "enabled": bool(DAILY_BREAKOUT_PROFIT_GIVEBACK_EXIT_ENABLED),
+        "triggered_count": len(triggered),
+        "triggered_symbols": [r.get("symbol") for r in triggered],
+        "rows": rows,
+        "recommended_action": (
+            "worker_exit_should_close_triggered_breakout_giveback_symbols"
+            if triggered
+            else "monitor_active_breakout_winners"
+        ),
     }
 
 def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
@@ -17140,6 +17205,7 @@ def same_day_exit_blocked(plan: dict, reason: str = "") -> bool:
         "target",
         "opening_damage_exit",
         "stall_loss_guard",
+        "daily_breakout_profit_giveback_preservation_exit",
     }
     if (reason or "").strip().lower() in protective_reasons:
         return False
@@ -30262,6 +30328,111 @@ def _normalize_long_exit_plan(plan: dict, px: float) -> dict:
 
     return out
 
+def _p378_is_daily_breakout_plan(plan: dict | None) -> bool:
+    plan = dict(plan or {})
+    thesis = dict(plan.get("thesis") or {})
+    strategy = str(
+        plan.get("strategy_name")
+        or plan.get("strategy")
+        or plan.get("signal")
+        or thesis.get("strategy_name")
+        or thesis.get("signal")
+        or ""
+    ).strip().lower()
+    return strategy in {"daily_breakout", str(BREAKOUT_STRATEGY_NAME or "").strip().lower()}
+
+
+def _p378_plan_opened_minutes_ago(plan: dict | None) -> float | None:
+    opened = _parse_plan_opened_dt(dict(plan or {}))
+    if opened is None:
+        return None
+    return max(0.0, (now_ny() - opened).total_seconds() / 60.0)
+
+
+def _p378_daily_breakout_profit_giveback_state(symbol: str, plan: dict | None, px: float) -> dict:
+    plan = plan if isinstance(plan, dict) else {}
+    sym = str(symbol or plan.get("symbol") or "").strip().upper()
+    entry = _safe_float(plan.get("entry_price") or plan.get("avg_fill_price") or 0.0, 0.0)
+    side = str(plan.get("side") or "buy").strip().lower()
+    prior = dict(plan.get("daily_breakout_profit_giveback") or {})
+
+    out = {
+        "enabled": bool(DAILY_BREAKOUT_PROFIT_GIVEBACK_EXIT_ENABLED),
+        "symbol": sym,
+        "is_daily_breakout": _p378_is_daily_breakout_plan(plan),
+        "triggered": False,
+        "reason": "not_applicable",
+        "updates": {},
+    }
+
+    if not DAILY_BREAKOUT_PROFIT_GIVEBACK_EXIT_ENABLED:
+        out["reason"] = "disabled"
+        return out
+    if STRATEGY_MODE != "swing":
+        out["reason"] = "strategy_mode_not_swing"
+        return out
+    if not out["is_daily_breakout"]:
+        out["reason"] = "not_daily_breakout"
+        return out
+    if side != "buy":
+        out["reason"] = "not_long"
+        return out
+    if entry <= 0 or px <= 0:
+        out["reason"] = "missing_entry_or_price"
+        return out
+
+    hold_min = _p378_plan_opened_minutes_ago(plan)
+    min_hold = max(0, int(DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_HOLD_MIN or 0))
+    current_return_pct = ((float(px) - entry) / entry) * 100.0
+
+    prior_high_pct = _safe_float(prior.get("high_return_pct"), 0.0)
+    high_return_pct = max(prior_high_pct, current_return_pct)
+    high_price = _safe_float(prior.get("high_price"), 0.0)
+    if current_return_pct >= prior_high_pct or high_price <= 0:
+        high_price = float(px)
+
+    giveback_pct = high_return_pct - current_return_pct
+    min_favorable = float(DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_FAVORABLE_PCT or 0.0)
+    max_giveback = float(DAILY_BREAKOUT_PROFIT_GIVEBACK_MAX_GIVEBACK_PCT or 0.0)
+    min_lock_profit = float(DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_LOCK_PROFIT_PCT or 0.0)
+
+    lock_return_pct = max(min_lock_profit, high_return_pct - max_giveback)
+    lock_price = entry * (1.0 + (lock_return_pct / 100.0)) if high_return_pct >= min_favorable else 0.0
+
+    state = {
+        "high_return_pct": round(high_return_pct, 4),
+        "high_price": round(high_price, 4),
+        "current_return_pct": round(current_return_pct, 4),
+        "giveback_pct": round(giveback_pct, 4),
+        "lock_return_pct": round(lock_return_pct, 4) if lock_price > 0 else None,
+        "lock_price": round(lock_price, 4) if lock_price > 0 else None,
+        "min_favorable_pct": round(min_favorable, 4),
+        "max_giveback_pct": round(max_giveback, 4),
+        "min_hold_min": int(min_hold),
+        "hold_min": round(float(hold_min), 2) if hold_min is not None else None,
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+    out["state"] = state
+    out["updates"]["daily_breakout_profit_giveback"] = state
+
+    if high_return_pct >= min_favorable and lock_price > 0:
+        current_profit_lock = _safe_float(plan.get("profit_lock_price") or 0.0, 0.0)
+        if lock_price > current_profit_lock:
+            out["updates"]["profit_lock_price"] = round(lock_price, 4)
+            out["profit_lock_armed"] = True
+
+    if hold_min is not None and hold_min < min_hold:
+        out["reason"] = "minimum_hold_window_active"
+        return out
+
+    if high_return_pct >= min_favorable and giveback_pct >= max_giveback:
+        out["triggered"] = True
+        out["reason"] = "daily_breakout_profit_giveback_preservation_exit"
+        return out
+
+    out["reason"] = "monitoring_profit_giveback"
+    return out
 
 def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     out = {
@@ -30289,8 +30460,20 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     unrealized_r = _swing_unrealized_r(plan or {}, float(px))
     out["stall_r"] = round(unrealized_r, 4)
 
+    breakout_giveback = _p378_daily_breakout_profit_giveback_state(symbol, plan, float(px))
+    out["daily_breakout_profit_giveback"] = breakout_giveback
+    if breakout_giveback.get("updates"):
+        out["updates"].update(dict(breakout_giveback.get("updates") or {}))
+    if breakout_giveback.get("profit_lock_armed"):
+        out["flags"].append("daily_breakout_profit_lock_armed")
+    if breakout_giveback.get("triggered"):
+        out["daily_breakout_profit_giveback_exit"] = True
+        out["flags"].append("daily_breakout_profit_giveback_preservation_exit")
+
     proposed_stop = current_stop
     proposed_profit_lock = current_profit_lock
+    if _safe_float(out.get("updates", {}).get("profit_lock_price") or 0.0, 0.0) > proposed_profit_lock:
+        proposed_profit_lock = _safe_float(out.get("updates", {}).get("profit_lock_price"), proposed_profit_lock)
     partial_taken = bool((plan or {}).get("partial_profit_taken"))
 
     if SWING_PARTIAL_PROFIT_ENABLED and (not partial_taken) and unrealized_r >= float(SWING_PARTIAL_PROFIT_R):
@@ -33766,6 +33949,47 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 })
             continue
         
+        if dynamic_exit.get("daily_breakout_profit_giveback_exit"):
+            plan["last_exit_attempt_ts"] = now_ts
+            reason = "daily_breakout_profit_giveback_preservation_exit"
+            if same_day_exit_blocked(plan, reason=reason):
+                results.append({
+                    "symbol": symbol,
+                    "action": "blocked_same_day_exit",
+                    "reason": reason,
+                    "days_held": hold_days,
+                    "daily_breakout_profit_giveback": dynamic_exit.get("daily_breakout_profit_giveback"),
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                })
+                continue
+
+            out = close_position(symbol, reason=reason, source="worker_exit")
+            if out.get("closed"):
+                plan["active"] = False
+                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+                results.append({
+                    "symbol": symbol,
+                    "action": reason,
+                    "price": px,
+                    "stop": stop_price,
+                    "profit_lock": profit_lock_price,
+                    "take": take_price,
+                    "days_held": hold_days,
+                    "daily_breakout_profit_giveback": dynamic_exit.get("daily_breakout_profit_giveback"),
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                    **out,
+                })
+            else:
+                results.append({
+                    "symbol": symbol,
+                    "action": f"{reason}_failed",
+                    "price": px,
+                    "days_held": hold_days,
+                    "daily_breakout_profit_giveback": dynamic_exit.get("daily_breakout_profit_giveback"),
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                    **out,
+                })
+            continue
         if dynamic_exit.get("partial_profit_ready") and not bool(plan.get("partial_profit_taken")):
             qty_to_close = float(dynamic_exit.get("partial_profit_qty") or 0.0)
             if qty_to_close > 0:
@@ -41133,6 +41357,10 @@ def diagnostics_daily_breakout_circuit_release_criteria():
     _recompute_strategy_performance_state()
     return _p264_daily_breakout_circuit_release_criteria()
 
+@app.get("/diagnostics/daily_breakout_profit_giveback_preservation_truth")
+def diagnostics_daily_breakout_profit_giveback_preservation_truth():
+    return JSONResponse(content=_p378_daily_breakout_profit_giveback_preservation_truth())
+
 @app.get("/diagnostics/current_open_stall_risk_preview")
 def diagnostics_current_open_stall_risk_preview(request: Request):
     require_admin_if_configured(request)
@@ -44781,6 +45009,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/exit_guard_evidence_light",
             f"{base}/worker_exit_status",
             f"{base}/daily_goal_preservation_exit",
+            f"{base}/daily_breakout_profit_giveback_preservation_truth",
             f"{base}/broker_daily_goal_truth",
             f"{base}/broker_only_daily_loss_truth",
             f"{base}/same_day_breakout_loss_forensics?limit=10",
