@@ -2449,6 +2449,14 @@ SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS = {
     ).split(",")
     if str(x or "").strip()
 }
+BROKER_ONLY_DAILY_LOSS_TRUTH_ENABLED = env_bool_any(
+    "BROKER_ONLY_DAILY_LOSS_TRUTH_ENABLED",
+    default=True,
+)
+WORKER_EXIT_SHADOW_QUARANTINE_ENABLED = env_bool_any(
+    "WORKER_EXIT_SHADOW_QUARANTINE_ENABLED",
+    default=True,
+)
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 
 # Guards in-memory shared state when scan evaluation runs concurrently
@@ -2474,7 +2482,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-373-same-day-exit-submission-idempotency-broker-preferred-loss-attribution-truth"
+PATCH_VERSION = "patch-374-broker-only-daily-loss-truth-worker-exit-shadow-quarantine"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7513,12 +7521,47 @@ def _p373_broker_preferred_loss_attribution_truth() -> dict:
             "broker_reconciled_rows_today": len(broker_rows),
             "worker_exit_rows_today": len(worker_rows),
             "duplicate_worker_rows_removed": daily.get("duplicate_worker_rows_removed"),
+            "worker_exit_shadow_quarantined_rows_today": daily.get("worker_exit_shadow_quarantined_rows_today"),
+            "shadow_worker_exit_estimate_pnl": daily.get("shadow_worker_exit_estimate_pnl"),
+            "worker_exit_shadow_quarantine_enabled": daily.get("worker_exit_shadow_quarantine_enabled"),
             "wins_today": daily.get("wins_today"),
             "losses_today": daily.get("losses_today"),
             "rows": daily_rows[-20:],
+            "shadow_worker_exit_rows": list(daily.get("shadow_worker_exit_rows") or [])[-20:],
         },
         "rollup": perf.get("broker_preferred") if isinstance(perf, dict) else {},
         "recommended_action": "use_broker_preferred_loss_attribution_for_daily_loss_forensics",
+    }
+
+def _p374_broker_only_daily_loss_truth() -> dict:
+    pnl = today_pnl_truth_snapshot()
+    deduped = dict(pnl.get("deduped_strategy_state_today") or {})
+    broker_orders = dict(pnl.get("broker_orders_today") or {})
+    shadow_rows = list(deduped.get("shadow_worker_exit_rows") or [])
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_only_daily_loss_truth",
+        "read_only": True,
+        "accounting_source": pnl.get("accounting_source"),
+        "broker_only_daily_loss_truth_enabled": bool(BROKER_ONLY_DAILY_LOSS_TRUTH_ENABLED),
+        "worker_exit_shadow_quarantine_enabled": bool(WORKER_EXIT_SHADOW_QUARANTINE_ENABLED),
+        "today_realized_pnl": pnl.get("today_realized_pnl"),
+        "today_unrealized_pnl": pnl.get("today_unrealized_pnl"),
+        "today_net_pnl": pnl.get("today_net_pnl"),
+        "account_daily_pnl": pnl.get("account_daily_pnl"),
+        "broker_exit_fills_today": pnl.get("broker_exit_fills_today"),
+        "broker_orders_today_realized_pnl": broker_orders.get("today_realized_pnl"),
+        "broker_orders_closed_trades_today": broker_orders.get("closed_trades_today"),
+        "raw_strategy_state_realized_pnl": deduped.get("raw_strategy_state_realized_pnl"),
+        "broker_preferred_realized_pnl": deduped.get("today_realized_pnl"),
+        "duplicate_adjustment": deduped.get("duplicate_adjustment"),
+        "worker_exit_rows_today": deduped.get("worker_exit_rows_today"),
+        "worker_exit_shadow_quarantined_rows_today": deduped.get("worker_exit_shadow_quarantined_rows_today"),
+        "shadow_worker_exit_estimate_pnl": deduped.get("shadow_worker_exit_estimate_pnl"),
+        "shadow_worker_exit_rows": shadow_rows[-20:],
+        "recommended_action": "use_account_or_broker_orders_for_daily_loss_halt; keep_worker_exit_rows_for_forensics_only",
     }
 
 def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
@@ -16988,6 +17031,7 @@ def _p254_broker_preferred_today_strategy_realized_pnl(perf_state: dict | None =
         ]
 
         economic_rows = []
+        shadow_worker_rows = []
         used_worker: set[int] = set()
 
         for broker in sorted(broker_rows, key=lambda r: str(r.get("ts_utc") or "")):
@@ -16997,45 +17041,65 @@ def _p254_broker_preferred_today_strategy_realized_pnl(perf_state: dict | None =
             row = dict(broker)
             row["preferred_basis"] = "broker_reconciled_strategy_row"
             row["paired_worker_exit"] = bool(worker)
+            row["daily_loss_truth_included"] = True
             economic_rows.append(row)
 
         for i, worker in enumerate(worker_rows):
             if i in used_worker:
                 continue
             row = dict(worker)
-            row["preferred_basis"] = "unmatched_worker_exit"
+            row["preferred_basis"] = "unmatched_worker_exit_shadow_quarantined"
             row["paired_worker_exit"] = False
-            economic_rows.append(row)
+            row["daily_loss_truth_included"] = False
+            row["shadow_quarantine_reason"] = "worker_exit_estimate_without_broker_reconciled_exit"
+            shadow_worker_rows.append(row)
+
+            if not bool(WORKER_EXIT_SHADOW_QUARANTINE_ENABLED):
+                copy = dict(row)
+                copy["preferred_basis"] = "unmatched_worker_exit_legacy_included"
+                copy["daily_loss_truth_included"] = True
+                economic_rows.append(copy)
 
         for row in other_rows:
             copy = dict(row)
             copy["preferred_basis"] = copy.get("preferred_basis") or "non_worker_non_broker_strategy_row"
+            copy["daily_loss_truth_included"] = True
             economic_rows.append(copy)
 
         gross = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in economic_rows), 4)
         raw_gross = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in strategy_rows), 4)
+        shadow_gross = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in shadow_worker_rows), 4)
+
         wins = sum(1 for r in economic_rows if _safe_float(r.get("gross_pnl"), 0.0) > 0)
         losses = sum(1 for r in economic_rows if _safe_float(r.get("gross_pnl"), 0.0) < 0)
         flat = sum(1 for r in economic_rows if _safe_float(r.get("gross_pnl"), 0.0) == 0)
+
         duplicate_worker_rows_removed = max(0, len(strategy_rows) - len(economic_rows))
+        shadow_quarantined_count = len(shadow_worker_rows) if bool(WORKER_EXIT_SHADOW_QUARANTINE_ENABLED) else 0
 
         return {
             "ok": True,
             "source": "strategy_performance_state_broker_preferred_deduped",
+            "accounting_policy": "broker_rows_preferred_worker_exit_estimates_shadow_quarantined",
+            "broker_only_daily_loss_truth_enabled": bool(BROKER_ONLY_DAILY_LOSS_TRUTH_ENABLED),
+            "worker_exit_shadow_quarantine_enabled": bool(WORKER_EXIT_SHADOW_QUARANTINE_ENABLED),
             "today_realized_pnl": gross,
             "raw_strategy_state_realized_pnl": raw_gross,
             "duplicate_adjustment": round(gross - raw_gross, 4),
+            "shadow_worker_exit_estimate_pnl": shadow_gross,
             "closed_trades_today": len(economic_rows),
             "raw_closed_rows_today": len(strategy_rows),
             "broker_reconciled_rows_today": len(broker_rows),
             "worker_exit_rows_today": len(worker_rows),
+            "worker_exit_shadow_quarantined_rows_today": shadow_quarantined_count,
             "duplicate_worker_rows_removed": duplicate_worker_rows_removed,
             "wins_today": wins,
             "losses_today": losses,
             "flat_today": flat,
             "rows": economic_rows[-20:],
             "raw_rows": strategy_rows[-20:],
-            "recommended_action": "use_broker_preferred_deduped_daily_pnl",
+            "shadow_worker_exit_rows": shadow_worker_rows[-20:],
+            "recommended_action": "use_broker_preferred_deduped_daily_pnl_with_worker_exit_shadow_quarantined",
         }
     except Exception as exc:
         return {
@@ -17045,6 +17109,7 @@ def _p254_broker_preferred_today_strategy_realized_pnl(perf_state: dict | None =
             "today_realized_pnl": 0.0,
             "closed_trades_today": 0,
             "rows": [],
+            "shadow_worker_exit_rows": [],
         }
 
 def _ny_date_from_iso(ts: str) -> str:
@@ -17160,18 +17225,21 @@ def today_pnl_truth_snapshot() -> dict:
     deduped_count = int(deduped_strategy_realized.get("closed_trades_today") or 0)
     strategy_count = int(strategy_realized.get("closed_trades_today") or 0)
 
-    if broker_realized.get("ok") and broker_calc_count > 0:
+    if bool(BROKER_ONLY_DAILY_LOSS_TRUTH_ENABLED) and broker_realized.get("ok") and broker_calc_count > 0:
+        realized = broker_realized
+        accounting_source = "alpaca_orders_broker_only_daily_loss_truth"
+    elif broker_realized.get("ok") and broker_calc_count > 0:
         realized = broker_realized
         accounting_source = "alpaca_orders"
     elif deduped_strategy_realized.get("ok") and deduped_count > 0:
         realized = deduped_strategy_realized
         accounting_source = "strategy_performance_state_broker_preferred_deduped"
-    elif strategy_realized.get("ok") and strategy_count > 0:
+    elif strategy_realized.get("ok") and strategy_count > 0 and not bool(WORKER_EXIT_SHADOW_QUARANTINE_ENABLED):
         realized = strategy_realized
-        accounting_source = "strategy_performance_state"
+        accounting_source = "strategy_performance_state_legacy_worker_exit_included"
     else:
-        realized = broker_realized if broker_realized.get("ok") else strategy_realized
-        accounting_source = realized.get("source") or "strategy_performance_state"
+        realized = broker_realized if broker_realized.get("ok") else deduped_strategy_realized
+        accounting_source = realized.get("source") or "broker_or_broker_preferred_no_worker_shadow"
 
     unrealized_truth = _p246_live_unrealized_pnl_truth()
     unrealized = _safe_float(unrealized_truth.get("today_unrealized_pnl"), 0.0)
@@ -17202,6 +17270,10 @@ def today_pnl_truth_snapshot() -> dict:
         "raw_strategy_closed_rows_today": int(deduped_strategy_realized.get("raw_closed_rows_today") or strategy_count),
         "duplicate_worker_rows_removed": int(deduped_strategy_realized.get("duplicate_worker_rows_removed") or 0),
         "duplicate_adjustment": deduped_strategy_realized.get("duplicate_adjustment"),
+        "broker_only_daily_loss_truth_enabled": bool(BROKER_ONLY_DAILY_LOSS_TRUTH_ENABLED),
+        "worker_exit_shadow_quarantine_enabled": bool(WORKER_EXIT_SHADOW_QUARANTINE_ENABLED),
+        "worker_exit_shadow_quarantined_rows_today": int(deduped_strategy_realized.get("worker_exit_shadow_quarantined_rows_today") or 0),
+        "shadow_worker_exit_estimate_pnl": deduped_strategy_realized.get("shadow_worker_exit_estimate_pnl"),
         "broker_exit_fills_today": int(broker_realized.get("broker_exit_fills_today") or deduped_strategy_realized.get("broker_reconciled_rows_today") or 0),
         "wins_today": int(realized.get("wins_today") or 0),
         "losses_today": int(realized.get("losses_today") or 0),
@@ -44079,6 +44151,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/worker_exit_status",
             f"{base}/daily_goal_preservation_exit",
             f"{base}/broker_daily_goal_truth",
+            f"{base}/broker_only_daily_loss_truth",
         ],
         "after_hours_cleanup_check": [
             f"{base}/swing_cleanup_status",
@@ -44091,6 +44164,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/broker_preferred_performance",
             f"{base}/broker_preferred_daily_pnl_dedup",
             f"{base}/broker_preferred_loss_attribution_truth",
+            f"{base}/broker_only_daily_loss_truth",
             f"{base}/swing_performance_attribution",
             f"{base}/swing_pre_post_change_performance",
             f"{base}/target_path_opportunity_expansion_lab",
@@ -45312,6 +45386,9 @@ def diagnostics_broker_preferred_daily_pnl_dedup():
         "deduped_strategy_state_today": _p254_broker_preferred_today_strategy_realized_pnl(),
     }
 
+@app.get("/diagnostics/broker_only_daily_loss_truth")
+def diagnostics_broker_only_daily_loss_truth():
+    return JSONResponse(content=_p374_broker_only_daily_loss_truth())
 
 @app.get("/diagnostics/corrected_swing_capacity_truth")
 def diagnostics_corrected_swing_capacity_truth():
