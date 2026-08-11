@@ -1875,6 +1875,7 @@ TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_
 LAST_SCAN: dict = {}
 LAST_SUCCESSFUL_PRODUCTION_SCAN: dict = {}
 SPREAD_BLOCKED_SELECTED_RETRY_QUEUE: dict = {}
+SAME_DAY_EXIT_SUBMIT_LOCKS: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
 STRATEGY_PERFORMANCE_STATE: dict = {"closed_trades": [], "by_strategy": {}, "kill_switch": {}}
 LAST_REGIME_SNAPSHOT: dict = {}
@@ -2432,6 +2433,22 @@ SCANNER_DISPATCH_FAILURE_BLOCK_SEC = getenv_int_any(
     "SCANNER_DISPATCH_FAILURE_BLOCK_SEC",
     default=300,
 )
+SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_ENABLED = env_bool_any(
+    "SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_ENABLED",
+    default=True,
+)
+SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_WINDOW_SEC = getenv_int_any(
+    "SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_WINDOW_SEC",
+    default=900,
+)
+SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS = {
+    str(x or "").strip().lower()
+    for x in getenv_any(
+        "SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS",
+        default="stall_loss_guard,stop,opening_damage_exit,daily_goal_preservation",
+    ).split(",")
+    if str(x or "").strip()
+}
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 
 # Guards in-memory shared state when scan evaluation runs concurrently
@@ -2457,7 +2474,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-372-scanner-inflight-grace-window-dispatch-failure-aging-truth"
+PATCH_VERSION = "patch-373-same-day-exit-submission-idempotency-broker-preferred-loss-attribution-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2761,6 +2778,7 @@ def persist_scan_runtime_state(reason: str = ""):
         "last_scan": dict(LAST_SCAN or {}),
         "last_successful_production_scan": dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {}),
         "spread_blocked_selected_retry_queue": dict(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE or {}),
+        "same_day_exit_submit_locks": dict(SAME_DAY_EXIT_SUBMIT_LOCKS or {}),
         "scan_history": list(SCAN_HISTORY or []),
         "candidate_history": list(CANDIDATE_HISTORY or []),
         "last_swing_candidates": list(LAST_SWING_CANDIDATES or []),
@@ -2770,13 +2788,14 @@ def persist_scan_runtime_state(reason: str = ""):
 
 def restore_scan_runtime_state() -> dict:
     payload = _safe_json_read(SCAN_STATE_PATH)
-    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "spread_blocked_retry_queue_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
+    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "spread_blocked_retry_queue_restored": False, "same_day_exit_submit_locks_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
     if not payload:
         return restored
     try:
         last_scan = payload.get("last_scan") or {}
         last_successful_production_scan = payload.get("last_successful_production_scan") or {}
         spread_blocked_retry_queue = payload.get("spread_blocked_selected_retry_queue") or {}
+        same_day_exit_submit_locks = payload.get("same_day_exit_submit_locks") or {}
         scan_history = payload.get("scan_history") or []
         candidate_history = payload.get("candidate_history") or []
         last_swing_candidates = payload.get("last_swing_candidates") or []
@@ -2792,6 +2811,10 @@ def restore_scan_runtime_state() -> dict:
             SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.clear()
             SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.update(spread_blocked_retry_queue)
             restored["spread_blocked_retry_queue_restored"] = True
+        if isinstance(same_day_exit_submit_locks, dict) and same_day_exit_submit_locks:
+            SAME_DAY_EXIT_SUBMIT_LOCKS.clear()
+            SAME_DAY_EXIT_SUBMIT_LOCKS.update(same_day_exit_submit_locks)
+            restored["same_day_exit_submit_locks_restored"] = True
         if isinstance(scan_history, list) and scan_history:
             SCAN_HISTORY.clear()
             SCAN_HISTORY.extend(scan_history[-SCAN_HISTORY_SIZE:])
@@ -2804,7 +2827,7 @@ def restore_scan_runtime_state() -> dict:
             LAST_SWING_CANDIDATES.clear()
             LAST_SWING_CANDIDATES.extend(last_swing_candidates[: max(1, SWING_MAX_CANDIDATES)])
             restored["last_swing_candidates_restored"] = len(LAST_SWING_CANDIDATES)
-        restored["loaded"] = restored["last_scan_restored"] or restored["last_successful_production_scan_restored"] or bool(restored["scan_history_restored"]) or bool(restored["candidate_history_restored"])
+        restored["loaded"] = restored["last_scan_restored"] or restored["last_successful_production_scan_restored"] or bool(restored["spread_blocked_retry_queue_restored"]) or bool(restored["same_day_exit_submit_locks_restored"]) or bool(restored["scan_history_restored"]) or bool(restored["candidate_history_restored"])
     except Exception as e:
         restored["error"] = str(e)
     globals()["SCAN_STATE_RESTORE"] = restored
@@ -7237,6 +7260,267 @@ def _p350_record_exit_qty_guard(symbol: str, source: str, reason: str, close_sid
         "broker_qty_exit_clamp": guard,
     }
 
+def _p373_exit_reason_lockable(reason: str) -> bool:
+    reason_l = str(reason or "exit").strip().lower()
+    if not reason_l:
+        reason_l = "exit"
+    return reason_l in SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS
+
+
+def _p373_same_day_exit_lock_key(symbol: str) -> str:
+    return f"{str(symbol or '').strip().upper()}|{now_ny().date().isoformat()}"
+
+
+def _p373_same_day_exit_submit_guard(
+    symbol: str,
+    reason: str = "",
+    source: str = "system",
+    qty: float | None = None,
+    plan_ref: dict | None = None,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    reason_l = str(reason or "exit").strip().lower()
+    source_l = str(source or "system").strip().lower()
+    window_sec = max(1, int(SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_WINDOW_SEC or 900))
+
+    out = {
+        "ok": True,
+        "enabled": bool(SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_ENABLED),
+        "blocked": False,
+        "symbol": sym,
+        "reason": reason_l,
+        "source": source_l,
+        "qty": qty,
+        "window_sec": window_sec,
+    }
+
+    if not SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_ENABLED:
+        out["status"] = "disabled"
+        return out
+    if source_l != "worker_exit":
+        out["status"] = "source_not_worker_exit"
+        return out
+    if not _p373_exit_reason_lockable(reason_l):
+        out["status"] = "reason_not_lockable"
+        return out
+    if not sym:
+        out["status"] = "missing_symbol"
+        return out
+
+    key = _p373_same_day_exit_lock_key(sym)
+    now_utc = datetime.now(timezone.utc)
+    existing = dict(SAME_DAY_EXIT_SUBMIT_LOCKS.get(key) or {})
+    out["lock_key"] = key
+    out["existing_lock"] = existing or None
+
+    ts_raw = existing.get("submitted_utc") or existing.get("ts_utc")
+    age_sec = None
+    try:
+        if ts_raw:
+            dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_sec = max(0.0, (now_utc - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        age_sec = None
+
+    if existing and (age_sec is None or age_sec <= window_sec):
+        out.update({
+            "blocked": True,
+            "status": "same_day_exit_submit_recently_submitted",
+            "age_sec": age_sec,
+            "prior_order_id": existing.get("order_id"),
+            "prior_reason": existing.get("reason"),
+        })
+        return out
+
+    if isinstance(plan_ref, dict):
+        plan_order_id = str(plan_ref.get("last_exit_order_id") or "").strip()
+        plan_reason = str(plan_ref.get("last_exit_submit_reason") or "").strip().lower()
+        plan_ts = str(plan_ref.get("last_exit_submit_ts_utc") or "").strip()
+        plan_age_sec = None
+        try:
+            if plan_ts:
+                dt = datetime.fromisoformat(plan_ts.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                plan_age_sec = max(0.0, (now_utc - dt.astimezone(timezone.utc)).total_seconds())
+        except Exception:
+            plan_age_sec = None
+
+        if plan_order_id and _p373_exit_reason_lockable(plan_reason or reason_l) and (plan_age_sec is None or plan_age_sec <= window_sec):
+            out.update({
+                "blocked": True,
+                "status": "plan_exit_submit_recently_submitted",
+                "age_sec": plan_age_sec,
+                "prior_order_id": plan_order_id,
+                "prior_reason": plan_reason or reason_l,
+            })
+            return out
+
+    out["status"] = "allowed"
+    return out
+
+
+def _p373_mark_same_day_exit_submit_lock(
+    symbol: str,
+    reason: str = "",
+    source: str = "system",
+    qty: float | None = None,
+    order_id: str = "",
+    plan_ref: dict | None = None,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    reason_l = str(reason or "exit").strip().lower()
+    key = _p373_same_day_exit_lock_key(sym)
+    row = {
+        "symbol": sym,
+        "reason": reason_l,
+        "source": str(source or "system"),
+        "qty": qty,
+        "order_id": str(order_id or ""),
+        "submitted_utc": datetime.now(timezone.utc).isoformat(),
+        "submitted_ny": now_ny().isoformat(),
+        "patch_version": PATCH_VERSION,
+    }
+    SAME_DAY_EXIT_SUBMIT_LOCKS[key] = row
+
+    try:
+        if isinstance(plan_ref, dict):
+            plan_ref["last_exit_submit_reason"] = reason_l
+            plan_ref["last_exit_submit_ts_utc"] = row["submitted_utc"]
+            plan_ref["last_exit_submit_idempotency_key"] = key
+    except Exception:
+        pass
+
+    try:
+        persist_scan_runtime_state(reason="same_day_exit_submit_lock")
+    except Exception:
+        pass
+
+    return row
+
+
+def _p373_record_exit_submit_idempotency_block(
+    symbol: str,
+    source: str,
+    reason: str,
+    close_side: str,
+    qty: float,
+    guard: dict,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    record_decision(
+        "EXIT",
+        source or "system",
+        sym,
+        side=close_side,
+        action="exit_submit_blocked_same_day_idempotency",
+        reason=reason or "same_day_exit_submit_idempotency",
+        qty=qty,
+        order_id=str(guard.get("prior_order_id") or ""),
+        meta={"same_day_exit_submit_idempotency": guard},
+    )
+    try:
+        if isinstance(TRADE_PLAN.get(sym), dict):
+            TRADE_PLAN[sym]["last_exit_submit_idempotency_block"] = dict(guard)
+            TRADE_PLAN[sym]["last_exit_submit_idempotency_block_at"] = datetime.now(timezone.utc).isoformat()
+    except Exception:
+        pass
+
+    return {
+        "closed": False,
+        "blocked": True,
+        "symbol": sym,
+        "qty": qty,
+        "close_side": close_side,
+        "reason": "same_day_exit_submit_idempotency",
+        "exit_reason": reason or "exit",
+        "same_day_exit_submit_idempotency": guard,
+    }
+
+
+def _p373_same_day_exit_submit_lock_truth(limit: int = 20) -> dict:
+    limit = max(1, min(int(limit or 20), 50))
+    today = now_ny().date().isoformat()
+    rows = []
+    for key, row in list(SAME_DAY_EXIT_SUBMIT_LOCKS.items()):
+        if not isinstance(row, dict):
+            continue
+        if not str(key or "").endswith(f"|{today}"):
+            continue
+        rows.append(dict(row, lock_key=key))
+
+    active_plan_rows = []
+    for sym, plan in list(TRADE_PLAN.items()):
+        if not isinstance(plan, dict):
+            continue
+        if not str(plan.get("last_exit_submit_idempotency_key") or plan.get("last_exit_order_id") or "").strip():
+            continue
+        active_plan_rows.append({
+            "symbol": str(sym or "").upper(),
+            "active": bool(plan.get("active")),
+            "last_exit_order_id": plan.get("last_exit_order_id"),
+            "last_exit_submit_reason": plan.get("last_exit_submit_reason"),
+            "last_exit_submit_ts_utc": plan.get("last_exit_submit_ts_utc"),
+            "last_exit_submit_idempotency_key": plan.get("last_exit_submit_idempotency_key"),
+            "last_exit_submit_idempotency_block": plan.get("last_exit_submit_idempotency_block"),
+        })
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "same_day_exit_submit_lock_truth",
+        "read_only": True,
+        "enabled": bool(SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_ENABLED),
+        "window_sec": int(SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_WINDOW_SEC or 900),
+        "lockable_reasons": sorted(SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS),
+        "today_ny": today,
+        "lock_count": len(rows),
+        "locks": rows[-limit:],
+        "active_plan_exit_submit_markers": active_plan_rows[-limit:],
+        "recommended_action": "ok" if rows else "watch_next_worker_exit_cycle_for_lock_evidence",
+    }
+
+
+def _p373_broker_preferred_loss_attribution_truth() -> dict:
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    daily = _p254_broker_preferred_today_strategy_realized_pnl()
+    perf = _p245_broker_preferred_performance_snapshot()
+
+    daily_rows = list(daily.get("rows") or [])
+    raw_rows = list(daily.get("raw_rows") or [])
+    worker_rows = [r for r in raw_rows if str(r.get("source") or "") == "worker_exit"]
+    broker_rows = [
+        r for r in raw_rows
+        if str(r.get("source") or "") == "alpaca_orders_reconciled"
+        or str(r.get("reason") or "") == "broker_exit_fill"
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_preferred_loss_attribution_truth",
+        "read_only": True,
+        "accounting_rule": "broker_reconciled_exit_rows_preferred_over_worker_exit_estimates",
+        "today": {
+            "broker_preferred_realized_pnl": daily.get("today_realized_pnl"),
+            "raw_strategy_state_realized_pnl": daily.get("raw_strategy_state_realized_pnl"),
+            "duplicate_adjustment": daily.get("duplicate_adjustment"),
+            "closed_trades_today": daily.get("closed_trades_today"),
+            "raw_closed_rows_today": daily.get("raw_closed_rows_today"),
+            "broker_reconciled_rows_today": len(broker_rows),
+            "worker_exit_rows_today": len(worker_rows),
+            "duplicate_worker_rows_removed": daily.get("duplicate_worker_rows_removed"),
+            "wins_today": daily.get("wins_today"),
+            "losses_today": daily.get("losses_today"),
+            "rows": daily_rows[-20:],
+        },
+        "rollup": perf.get("broker_preferred") if isinstance(perf, dict) else {},
+        "recommended_action": "use_broker_preferred_loss_attribution_for_daily_loss_forensics",
+    }
+
 def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
     limit = max(1, min(int(limit or 20), 50))
     rows = []
@@ -7252,8 +7536,9 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
 
             meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
             guard = meta.get("broker_qty_exit_clamp") if isinstance(meta.get("broker_qty_exit_clamp"), dict) else {}
+            idem_guard = meta.get("same_day_exit_submit_idempotency") if isinstance(meta.get("same_day_exit_submit_idempotency"), dict) else {}
             action = str(row.get("action") or "")
-            if not guard and action not in {"exit_blocked_broker_qty_zero", "exit_qty_clamped_to_broker_qty"}:
+            if not guard and not idem_guard and action not in {"exit_blocked_broker_qty_zero", "exit_qty_clamped_to_broker_qty", "exit_submit_blocked_same_day_idempotency"}:
                 continue
 
             rows.append({
@@ -7269,6 +7554,9 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
                 "broker_available_qty": guard.get("broker_available_qty"),
                 "clamped_qty": guard.get("clamped_qty"),
                 "blocked": bool(guard.get("blocked")),
+                "same_day_exit_idempotency_status": idem_guard.get("status"),
+                "same_day_exit_idempotency_blocked": bool(idem_guard.get("blocked")),
+                "same_day_exit_prior_order_id": idem_guard.get("prior_order_id"),
             })
     except Exception as exc:
         return {
@@ -7705,6 +7993,24 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
             pass
         return payload
 
+    plan_ref = TRADE_PLAN.get(symbol) if isinstance(TRADE_PLAN.get(symbol), dict) else None
+    same_day_exit_guard = _p373_same_day_exit_submit_guard(
+        symbol,
+        reason=reason,
+        source=source,
+        qty=qty,
+        plan_ref=plan_ref,
+    )
+    if same_day_exit_guard.get("blocked"):
+        return _p373_record_exit_submit_idempotency_block(
+            symbol,
+            source,
+            reason,
+            close_side,
+            qty,
+            same_day_exit_guard,
+        )
+
     try:
         order = submit_market_order(symbol, close_side, qty)
     except Exception as e:
@@ -7712,6 +8018,15 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
     order_id = _order_id_from_submit_response(order)
     out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id, "broker_qty_exit_clamp": qty_guard}
     record_decision("EXIT", source, symbol, side=close_side, action="order_submitted", reason=reason or "exit", qty=qty, order_id=order_id)
+    same_day_exit_lock = _p373_mark_same_day_exit_submit_lock(
+        symbol,
+        reason=reason,
+        source=source,
+        qty=qty,
+        order_id=order_id,
+        plan_ref=plan_ref,
+    )
+    out["same_day_exit_submit_idempotency"] = same_day_exit_lock
     persist_positions_snapshot(reason="close_position_submitted", extra={"symbol": symbol, "order_id": order_id, "exit_reason": reason, "source": source})
     try:
         _record_paper_lifecycle("exit", "submitted", symbol=symbol, details={"reason": reason or "exit", "qty": qty, "source": source, "order_id": order_id})
@@ -43759,6 +44074,8 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/reconcile_light",
             f"{base}/active_exit_protection_truth",
             f"{base}/same_day_stall_exit_churn_audit",
+            f"{base}/same_day_exit_submit_lock_truth",
+            f"{base}/exit_guard_evidence_light",
             f"{base}/worker_exit_status",
             f"{base}/daily_goal_preservation_exit",
             f"{base}/broker_daily_goal_truth",
@@ -43773,6 +44090,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
         "performance_review": [
             f"{base}/broker_preferred_performance",
             f"{base}/broker_preferred_daily_pnl_dedup",
+            f"{base}/broker_preferred_loss_attribution_truth",
             f"{base}/swing_performance_attribution",
             f"{base}/swing_pre_post_change_performance",
             f"{base}/target_path_opportunity_expansion_lab",
@@ -44941,6 +45259,15 @@ def diagnostics_active_exit_protection_truth():
 @app.get("/diagnostics/same_day_stall_exit_churn_audit")
 def diagnostics_same_day_stall_exit_churn_audit(limit: int = 25):
     return JSONResponse(content=_p364_same_day_stall_exit_churn_audit(limit=limit))
+
+@app.get("/diagnostics/same_day_exit_submit_lock_truth")
+def diagnostics_same_day_exit_submit_lock_truth(limit: int = 20):
+    return JSONResponse(content=_p373_same_day_exit_submit_lock_truth(limit=limit))
+
+
+@app.get("/diagnostics/broker_preferred_loss_attribution_truth")
+def diagnostics_broker_preferred_loss_attribution_truth():
+    return JSONResponse(content=_p373_broker_preferred_loss_attribution_truth())
 
 @app.get("/diagnostics/position_truth")
 def diagnostics_position_truth(request: Request):
