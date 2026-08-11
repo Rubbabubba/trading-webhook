@@ -2482,7 +2482,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-375-broker-fill-economic-dedup-legacy-broker-preferred-naming-cleanup"
+PATCH_VERSION = "patch-375-hotfix-today-only-strategy-broker-delta-broker-truth-label-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7534,7 +7534,8 @@ def _p373_broker_preferred_loss_attribution_truth() -> dict:
         },
         "rollup": perf.get("strategy_state_broker_reconciled_estimate") if isinstance(perf, dict) else {},
         "broker_only_daily_loss_truth": perf.get("broker_only_daily_loss_truth") if isinstance(perf, dict) else {},
-        "strategy_state_vs_broker_only_delta": perf.get("strategy_state_vs_broker_only_delta") if isinstance(perf, dict) else None,
+        "strategy_state_vs_broker_only_today_delta": perf.get("strategy_state_vs_broker_only_today_delta") if isinstance(perf, dict) else None,
+        "all_time_strategy_state_vs_today_broker_delta_unusable": perf.get("all_time_strategy_state_vs_today_broker_delta_unusable") if isinstance(perf, dict) else None,lse None,
         "recommended_action": "use_broker_only_daily_loss_truth_for_daily_loss; use_this_endpoint_for_strategy_state_drift_forensics",
     }
 
@@ -7560,8 +7561,14 @@ def _p374_broker_only_daily_loss_truth() -> dict:
         "broker_orders_today_realized_pnl": broker_orders.get("today_realized_pnl"),
         "broker_orders_closed_trades_today": broker_orders.get("closed_trades_today"),
         "raw_strategy_state_realized_pnl": deduped.get("raw_strategy_state_realized_pnl"),
+        "today_strategy_state_broker_reconciled_estimate_pnl": deduped.get("today_realized_pnl"),
         "strategy_state_broker_reconciled_estimate_pnl": deduped.get("today_realized_pnl"),
         "broker_preferred_realized_pnl_legacy_name": deduped.get("today_realized_pnl"),
+        "strategy_state_vs_broker_only_today_delta": round(
+            _safe_float(deduped.get("today_realized_pnl"), 0.0)
+            - _safe_float(broker_orders.get("today_realized_pnl"), 0.0),
+            4,
+        ),
         "duplicate_adjustment": deduped.get("duplicate_adjustment"),
         "worker_exit_rows_today": deduped.get("worker_exit_rows_today"),
         "worker_exit_shadow_quarantined_rows_today": deduped.get("worker_exit_shadow_quarantined_rows_today"),
@@ -14943,9 +14950,13 @@ def _p245_broker_preferred_performance_snapshot() -> dict:
     raw_rollup = _p245_performance_rollup(list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []))
     broker_only = _p374_broker_only_daily_loss_truth() if "_p374_broker_only_daily_loss_truth" in globals() else {}
 
+    today_strategy_estimate = _p254_broker_preferred_today_strategy_realized_pnl()
     broker_only_realized = _safe_float(broker_only.get("today_realized_pnl"), 0.0)
-    strategy_state_estimate = _safe_float(rollup.get("gross_pnl"), 0.0)
-    delta = round(strategy_state_estimate - broker_only_realized, 4)
+    today_strategy_realized = _safe_float(today_strategy_estimate.get("today_realized_pnl"), 0.0)
+    today_delta = round(today_strategy_realized - broker_only_realized, 4)
+
+    all_time_strategy_state_estimate = _safe_float(rollup.get("gross_pnl"), 0.0)
+    all_time_minus_today_broker_delta = round(all_time_strategy_state_estimate - broker_only_realized, 4)
 
     return {
         "ok": True,
@@ -14963,7 +14974,17 @@ def _p245_broker_preferred_performance_snapshot() -> dict:
             "account_daily_pnl": broker_only.get("account_daily_pnl"),
             "accounting_source": broker_only.get("accounting_source"),
         },
-        "strategy_state_vs_broker_only_delta": delta,
+        "strategy_state_vs_broker_only_today_delta": today_delta,
+        "today_strategy_state_broker_reconciled_estimate": {
+            "today_realized_pnl": today_strategy_estimate.get("today_realized_pnl"),
+            "closed_trades_today": today_strategy_estimate.get("closed_trades_today"),
+            "broker_reconciled_rows_today": today_strategy_estimate.get("broker_reconciled_rows_today"),
+            "worker_exit_shadow_quarantined_rows_today": today_strategy_estimate.get("worker_exit_shadow_quarantined_rows_today"),
+            "shadow_worker_exit_estimate_pnl": today_strategy_estimate.get("shadow_worker_exit_estimate_pnl"),
+            "source": today_strategy_estimate.get("source"),
+        },
+        "all_time_strategy_state_rollup_gross_pnl": rollup.get("gross_pnl"),
+        "all_time_strategy_state_vs_today_broker_delta_unusable": all_time_minus_today_broker_delta,
         "broker_fill_deduped_count": preferred.get("broker_fill_deduped_count"),
         "broker_fill_duplicate_count": preferred.get("broker_fill_duplicate_count"),
         "broker_fill_duplicate_gross_pnl": preferred.get("broker_fill_duplicate_gross_pnl"),
@@ -34049,7 +34070,7 @@ def _live_operator_performance_summary() -> dict:
     out["broker_only_today_realized_pnl"] = broker_only.get("today_realized_pnl")
     out["broker_only_today_net_pnl"] = broker_only.get("today_net_pnl")
     out["account_daily_pnl"] = broker_only.get("account_daily_pnl")
-    out["strategy_state_vs_broker_only_delta"] = snap.get("strategy_state_vs_broker_only_delta")
+    out["strategy_state_vs_broker_only_today_delta"] = snap.get("strategy_state_vs_broker_only_today_delta")
     return out
 
 def _live_loss_halt_checklist(halt_truth: dict | None, today_pnl: dict | None, flatten_decision: dict | None, open_orders: list | None = None) -> dict:
@@ -45448,6 +45469,7 @@ def diagnostics_broker_preferred_performance():
     payload = _p245_broker_preferred_performance_snapshot()
     payload["endpoint_legacy_name"] = "/diagnostics/broker_preferred_performance"
     payload["preferred_endpoint_for_daily_loss"] = "/diagnostics/broker_only_daily_loss_truth"
+    payload["delta_note"] = "strategy_state_vs_broker_only_today_delta compares today-to-today only; all-time rollup is historical performance, not daily loss truth."
     return payload
 
 @app.get("/diagnostics/strategy_state_broker_reconciled_estimate")
