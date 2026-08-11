@@ -7535,7 +7535,7 @@ def _p373_broker_preferred_loss_attribution_truth() -> dict:
         "rollup": perf.get("strategy_state_broker_reconciled_estimate") if isinstance(perf, dict) else {},
         "broker_only_daily_loss_truth": perf.get("broker_only_daily_loss_truth") if isinstance(perf, dict) else {},
         "strategy_state_vs_broker_only_today_delta": perf.get("strategy_state_vs_broker_only_today_delta") if isinstance(perf, dict) else None,
-        "all_time_strategy_state_vs_today_broker_delta_unusable": perf.get("all_time_strategy_state_vs_today_broker_delta_unusable") if isinstance(perf, dict) else None,lse None,
+        "all_time_strategy_state_vs_today_broker_delta_unusable": perf.get("all_time_strategy_state_vs_today_broker_delta_unusable") if isinstance(perf, dict) else None,
         "recommended_action": "use_broker_only_daily_loss_truth_for_daily_loss; use_this_endpoint_for_strategy_state_drift_forensics",
     }
 
