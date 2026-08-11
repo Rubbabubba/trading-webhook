@@ -1846,6 +1846,22 @@ DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_LOCK_PROFIT_PCT = getenv_float_any(
     "DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_LOCK_PROFIT_PCT",
     default=0.25,
 )
+DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_ENABLED = env_bool_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_ENABLED",
+    default=True,
+)
+DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_LOOKBACK_DAYS = getenv_int_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_LOOKBACK_DAYS",
+    default=3,
+)
+DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_LIMIT = getenv_int_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_LIMIT",
+    default=3000,
+)
+DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_MIN_REFRESH_SEC = getenv_int_any(
+    "DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_MIN_REFRESH_SEC",
+    default=900,
+)
 SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
     "SWING_EXECUTABLE_SELECTION_MIN_QTY",
     default=1.0,
@@ -2536,7 +2552,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-378-daily-breakout-profit-giveback-preservation-exit"
+PATCH_VERSION = "patch-378-hotfix-active-breakout-high-water-backfill-giveback-preservation-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8146,6 +8162,9 @@ def _p378_daily_breakout_profit_giveback_preservation_truth() -> dict:
             "profit_lock_price": plan.get("profit_lock_price"),
             "take_price": plan.get("take_price"),
             "state": state,
+            "would_update_plan": dict(state.get("updates") or {}),
+            "profit_lock_would_arm": bool(state.get("profit_lock_armed")),
+            "exit_would_trigger": bool(state.get("triggered")),
         })
 
     triggered = [
@@ -30348,6 +30367,114 @@ def _p378_plan_opened_minutes_ago(plan: dict | None) -> float | None:
         return None
     return max(0.0, (now_ny() - opened).total_seconds() / 60.0)
 
+def _p378_plan_entry_ts_utc(plan: dict | None) -> datetime | None:
+    plan = dict(plan or {})
+    for key in ("opened_at", "entry_ts_utc", "filled_at", "submitted_at"):
+        dt = _p376_parse_utc_dt(plan.get(key))
+        if dt:
+            return dt
+    thesis = dict(plan.get("thesis") or {})
+    for key in ("opened_at", "entry_ts_utc", "scan_ts", "submitted_at"):
+        dt = _p376_parse_utc_dt(thesis.get(key))
+        if dt:
+            return dt
+    return None
+
+
+def _p378_recent_backfill_fresh(prior: dict | None) -> bool:
+    prior = dict(prior or {})
+    refresh_sec = max(0, int(DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_MIN_REFRESH_SEC or 0))
+    if refresh_sec <= 0:
+        return False
+    ts = _p376_parse_utc_dt(prior.get("high_water_backfill_ts_utc"))
+    if not ts:
+        return False
+    age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+    return bool(age_sec < refresh_sec)
+
+
+def _p378_active_breakout_high_water_backfill(symbol: str, plan: dict | None, entry_price: float) -> dict:
+    sym = str(symbol or "").strip().upper()
+    plan = dict(plan or {})
+    prior = dict(plan.get("daily_breakout_profit_giveback") or {})
+
+    out = {
+        "ok": False,
+        "enabled": bool(DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_ENABLED),
+        "symbol": sym,
+        "reason": "disabled",
+    }
+
+    if not DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_ENABLED:
+        return out
+    if _p378_recent_backfill_fresh(prior):
+        out.update({
+            "ok": True,
+            "reason": "recent_backfill_fresh",
+            "max_favorable_return_pct": _safe_float(prior.get("high_return_pct"), 0.0),
+            "high_price": _safe_float(prior.get("high_price"), 0.0),
+            "source": "cached_plan_state",
+        })
+        return out
+
+    entry = _safe_float(entry_price, 0.0)
+    if not sym or entry <= 0:
+        out["reason"] = "missing_symbol_or_entry"
+        return out
+
+    entry_dt = _p378_plan_entry_ts_utc(plan)
+    if not entry_dt:
+        out["reason"] = "missing_entry_ts"
+        return out
+
+    try:
+        bars = fetch_1m_bars(
+            sym,
+            lookback_days=max(1, int(DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_LOOKBACK_DAYS or 3)),
+            limit=max(100, int(DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_LIMIT or 3000)),
+            feed_override=_DATA_FEED_RAW or "iex",
+        )
+    except Exception as exc:
+        out["reason"] = "bar_fetch_error"
+        out["error"] = str(exc)
+        return out
+
+    max_high = 0.0
+    max_high_ts = None
+    bars_after_entry = 0
+
+    for raw in list(bars or []):
+        bar = dict(raw or {})
+        ts = _p376_bar_ts_utc(bar)
+        if not ts or ts < entry_dt:
+            continue
+        high = _safe_float(bar.get("high") or bar.get("close") or 0.0, 0.0)
+        if high <= 0:
+            continue
+        bars_after_entry += 1
+        if high > max_high:
+            max_high = high
+            max_high_ts = ts.isoformat()
+
+    if max_high <= 0 or bars_after_entry <= 0:
+        out["reason"] = "no_bars_after_entry"
+        out["entry_ts_utc"] = entry_dt.isoformat()
+        return out
+
+    max_return_pct = ((max_high - entry) / entry) * 100.0
+
+    out.update({
+        "ok": True,
+        "reason": "backfilled_from_1m_bars",
+        "source": "recent_1m_bars",
+        "entry_ts_utc": entry_dt.isoformat(),
+        "bars_after_entry": int(bars_after_entry),
+        "max_high_ts_utc": max_high_ts,
+        "high_price": round(max_high, 4),
+        "max_favorable_return_pct": round(max_return_pct, 4),
+        "lookback_days": int(DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_LOOKBACK_DAYS or 3),
+    })
+    return out
 
 def _p378_daily_breakout_profit_giveback_state(symbol: str, plan: dict | None, px: float) -> dict:
     plan = plan if isinstance(plan, dict) else {}
@@ -30385,10 +30512,16 @@ def _p378_daily_breakout_profit_giveback_state(symbol: str, plan: dict | None, p
     min_hold = max(0, int(DAILY_BREAKOUT_PROFIT_GIVEBACK_MIN_HOLD_MIN or 0))
     current_return_pct = ((float(px) - entry) / entry) * 100.0
 
+    backfill = _p378_active_breakout_high_water_backfill(sym, plan, entry)
     prior_high_pct = _safe_float(prior.get("high_return_pct"), 0.0)
-    high_return_pct = max(prior_high_pct, current_return_pct)
+    backfill_high_pct = _safe_float(backfill.get("max_favorable_return_pct"), 0.0) if bool(backfill.get("ok")) else 0.0
+
+    high_return_pct = max(prior_high_pct, backfill_high_pct, current_return_pct)
     high_price = _safe_float(prior.get("high_price"), 0.0)
-    if current_return_pct >= prior_high_pct or high_price <= 0:
+
+    if backfill_high_pct >= prior_high_pct and _safe_float(backfill.get("high_price"), 0.0) > 0:
+        high_price = _safe_float(backfill.get("high_price"), 0.0)
+    if current_return_pct >= high_return_pct or high_price <= 0:
         high_price = float(px)
 
     giveback_pct = high_return_pct - current_return_pct
@@ -30410,6 +30543,8 @@ def _p378_daily_breakout_profit_giveback_state(symbol: str, plan: dict | None, p
         "max_giveback_pct": round(max_giveback, 4),
         "min_hold_min": int(min_hold),
         "hold_min": round(float(hold_min), 2) if hold_min is not None else None,
+        "high_water_backfill": backfill,
+        "high_water_backfill_ts_utc": datetime.now(timezone.utc).isoformat() if bool(backfill.get("ok")) else prior.get("high_water_backfill_ts_utc"),
         "updated_at_utc": datetime.now(timezone.utc).isoformat(),
     }
 
