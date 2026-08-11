@@ -2482,7 +2482,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-375-hotfix-today-only-strategy-broker-delta-broker-truth-label-cleanup"
+PATCH_VERSION = "patch-376-same-day-breakout-loss-forensics-entry-quality-kill-zone-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7575,6 +7575,252 @@ def _p374_broker_only_daily_loss_truth() -> dict:
         "shadow_worker_exit_estimate_pnl": deduped.get("shadow_worker_exit_estimate_pnl"),
         "shadow_worker_exit_rows": shadow_rows[-20:],
         "recommended_action": "use_account_or_broker_orders_for_daily_loss_halt; keep_worker_exit_rows_for_forensics_only",
+    }
+
+def _p376_parse_utc_dt(value) -> datetime | None:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return None
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _p376_bar_ts_utc(bar: dict | None) -> datetime | None:
+    bar = dict(bar or {})
+    for key in ("ts_utc", "timestamp", "t", "time", "start"):
+        dt = _p376_parse_utc_dt(bar.get(key))
+        if dt:
+            return dt
+    return None
+
+
+def _p376_entry_window_metrics(symbol: str, entry_ts_utc: str, entry_price: float, side: str = "buy") -> dict:
+    sym = str(symbol or "").strip().upper()
+    entry_dt = _p376_parse_utc_dt(entry_ts_utc)
+    entry_px = _safe_float(entry_price, 0.0)
+    side_l = str(side or "buy").strip().lower()
+
+    out = {
+        "ok": False,
+        "symbol": sym,
+        "entry_ts_utc": entry_ts_utc,
+        "entry_price": round(entry_px, 4) if entry_px > 0 else None,
+        "side": side_l,
+        "windows": {},
+        "reason": "",
+    }
+
+    if not sym or not entry_dt or entry_px <= 0:
+        out["reason"] = "missing_entry_context"
+        return out
+
+    try:
+        bars = fetch_1m_bars(sym, lookback_days=2, limit=3000, feed_override=_DATA_FEED_RAW or "iex")
+    except Exception as exc:
+        out["reason"] = "bar_fetch_error"
+        out["error"] = str(exc)
+        return out
+
+    normalized = []
+    for raw in list(bars or []):
+        bar = dict(raw or {})
+        ts = _p376_bar_ts_utc(bar)
+        if not ts or ts < entry_dt:
+            continue
+        close = _safe_float(bar.get("close"), 0.0)
+        high = _safe_float(bar.get("high"), close)
+        low = _safe_float(bar.get("low"), close)
+        if close <= 0:
+            continue
+        normalized.append({"ts_utc": ts, "close": close, "high": high, "low": low})
+
+    out["bar_count_after_entry"] = len(normalized)
+    if not normalized:
+        out["reason"] = "no_bars_after_entry"
+        return out
+
+    for minutes in (15, 30, 60):
+        end_dt = entry_dt + timedelta(minutes=minutes)
+        window = [b for b in normalized if b["ts_utc"] <= end_dt]
+        if not window:
+            out["windows"][f"{minutes}m"] = {"available": False}
+            continue
+
+        min_low = min(_safe_float(b.get("low"), 0.0) for b in window)
+        max_high = max(_safe_float(b.get("high"), 0.0) for b in window)
+        last_close = _safe_float(window[-1].get("close"), 0.0)
+
+        if side_l == "sell":
+            adverse_pct = ((max_high - entry_px) / entry_px) * -100.0
+            favorable_pct = ((entry_px - min_low) / entry_px) * 100.0
+        else:
+            adverse_pct = ((min_low - entry_px) / entry_px) * 100.0
+            favorable_pct = ((max_high - entry_px) / entry_px) * 100.0
+
+        out["windows"][f"{minutes}m"] = {
+            "available": True,
+            "bars": len(window),
+            "min_low": round(min_low, 4),
+            "max_high": round(max_high, 4),
+            "last_close": round(last_close, 4),
+            "adverse_pct": round(adverse_pct, 4),
+            "favorable_pct": round(favorable_pct, 4),
+            "close_return_pct": round(((last_close - entry_px) / entry_px) * 100.0, 4) if entry_px > 0 else None,
+        }
+
+    first_15 = dict(out["windows"].get("15m") or {})
+    first_30 = dict(out["windows"].get("30m") or {})
+    adverse_15 = _safe_float(first_15.get("adverse_pct"), 0.0)
+    adverse_30 = _safe_float(first_30.get("adverse_pct"), 0.0)
+
+    flags = []
+    if first_15.get("available") and adverse_15 <= -1.00:
+        flags.append("first_15m_adverse_move_gt_1pct")
+    if first_30.get("available") and adverse_30 <= -1.50:
+        flags.append("first_30m_adverse_move_gt_1_5pct")
+    if first_15.get("available") and _safe_float(first_15.get("favorable_pct"), 0.0) < 0.25:
+        flags.append("no_early_followthrough")
+
+    out["ok"] = True
+    out["reason"] = "ok"
+    out["flags"] = flags
+    out["kill_zone_triggered"] = bool(flags)
+    return out
+
+
+def _p376_classify_entry_loss(row: dict, entry_quality: dict, kill_zone: dict) -> list[str]:
+    reasons = []
+    pnl = _safe_float(row.get("gross_pnl"), 0.0)
+    rank_score = _safe_float(entry_quality.get("rank_score") or entry_quality.get("candidate_rank_score"), 0.0)
+    target_path_score = _safe_float(entry_quality.get("target_path_score"), 0.0)
+    risk_per_share_pct = _safe_float(entry_quality.get("risk_per_share_pct"), 0.0)
+
+    if pnl < 0:
+        reasons.append("broker_realized_loss")
+    if bool(kill_zone.get("kill_zone_triggered")):
+        reasons.append("entry_kill_zone_triggered")
+    if "no_early_followthrough" in list(kill_zone.get("flags") or []):
+        reasons.append("no_early_followthrough")
+    if rank_score > 0 and rank_score < 110:
+        reasons.append("rank_score_soft")
+    if target_path_score > 0 and target_path_score < 55:
+        reasons.append("target_path_score_soft")
+    if risk_per_share_pct > 0.18:
+        reasons.append("wide_risk_per_share")
+    if not entry_quality:
+        reasons.append("entry_quality_missing")
+    return _dedupe_keep_order(reasons)
+
+
+def _p376_same_day_breakout_loss_forensics(limit: int = 20) -> dict:
+    limit = max(1, min(int(limit or 20), 50))
+    broker_truth = _p374_broker_only_daily_loss_truth()
+    pnl_truth = today_pnl_truth_snapshot()
+    broker_orders = dict(pnl_truth.get("broker_orders_today") or {})
+    broker_rows = [
+        dict(r or {})
+        for r in list(broker_orders.get("rows") or [])
+        if isinstance(r, dict)
+        and bool(r.get("calc_ok"))
+        and str(r.get("symbol") or "").strip()
+    ]
+
+    rows = []
+    for row in broker_rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        gross = _safe_float(row.get("gross_pnl"), 0.0)
+        entry_px = _safe_float(row.get("entry_price"), 0.0)
+        exit_px = _safe_float(row.get("exit_price"), 0.0)
+        entry_order_id = str(row.get("entry_order_id") or "").strip()
+        exit_order_id = str(row.get("exit_order_id") or "").strip()
+        exit_ts = str(row.get("ts_utc") or "")
+
+        inferred = _infer_recovered_plan_attribution(sym, order_id=entry_order_id)
+        entry_quality = {
+            "strategy_name": inferred.get("strategy_name"),
+            "signal": inferred.get("signal"),
+            "rank_score": inferred.get("rank_score"),
+            "selection_quality_score": inferred.get("selection_quality_score"),
+            "entry_type": inferred.get("entry_type"),
+            "regime_mode": inferred.get("regime_mode"),
+            "target_path_score": inferred.get("target_path_score"),
+            "target_path_profit": inferred.get("target_path_profit"),
+            "breakout_level": inferred.get("breakout_level"),
+            "scan_ts": inferred.get("scan_ts"),
+            "attribution_source": inferred.get("attribution_source"),
+        }
+
+        entry_fill = _find_recent_entry_fill_for_symbol(sym, "buy", before_iso=exit_ts)
+        entry_ts = str(entry_fill.get("filled_at") or entry_fill.get("submitted_at") or inferred.get("entry_ts_utc") or inferred.get("scan_ts") or "")
+        kill_zone = _p376_entry_window_metrics(sym, entry_ts, entry_px, side="buy")
+
+        strategy_name = str(entry_quality.get("strategy_name") or row.get("strategy_name") or "").strip().lower()
+        is_breakout = strategy_name in {"daily_breakout", BREAKOUT_STRATEGY_NAME.lower()} or str(row.get("strategy_name") or "").strip().lower() == "daily_breakout"
+
+        item = {
+            "symbol": sym,
+            "strategy_name": strategy_name or row.get("strategy_name"),
+            "is_breakout": bool(is_breakout),
+            "broker_realized_loss": bool(gross < 0),
+            "gross_pnl": round(gross, 4),
+            "entry_price": round(entry_px, 4) if entry_px > 0 else None,
+            "exit_price": round(exit_px, 4) if exit_px > 0 else None,
+            "entry_order_id": entry_order_id,
+            "exit_order_id": exit_order_id,
+            "entry_ts_utc": entry_ts,
+            "exit_ts_utc": exit_ts,
+            "entry_quality": entry_quality,
+            "kill_zone": kill_zone,
+        }
+        item["classification"] = _p376_classify_entry_loss(item | row, entry_quality, kill_zone)
+        rows.append(item)
+
+    loss_rows = [r for r in rows if bool(r.get("broker_realized_loss"))]
+    breakout_loss_rows = [r for r in loss_rows if bool(r.get("is_breakout"))]
+    kill_zone_rows = [r for r in rows if bool((r.get("kill_zone") or {}).get("kill_zone_triggered"))]
+
+    class_counts = Counter()
+    for row in rows:
+        class_counts.update(list(row.get("classification") or []))
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "same_day_breakout_loss_forensics_entry_quality_kill_zone_audit",
+        "read_only": True,
+        "canonical_daily_loss_source": "broker_only_daily_loss_truth",
+        "broker_only_daily_loss_truth": {
+            "today_realized_pnl": broker_truth.get("today_realized_pnl"),
+            "today_unrealized_pnl": broker_truth.get("today_unrealized_pnl"),
+            "today_net_pnl": broker_truth.get("today_net_pnl"),
+            "account_daily_pnl": broker_truth.get("account_daily_pnl"),
+            "strategy_state_vs_broker_only_today_delta": broker_truth.get("strategy_state_vs_broker_only_today_delta"),
+        },
+        "summary": {
+            "broker_exit_rows_evaluated": len(rows),
+            "broker_loss_rows": len(loss_rows),
+            "breakout_loss_rows": len(breakout_loss_rows),
+            "kill_zone_triggered_rows": len(kill_zone_rows),
+            "class_counts": [{"reason": k, "count": int(v)} for k, v in class_counts.most_common()],
+            "symbols": sorted({str(r.get("symbol") or "") for r in rows if str(r.get("symbol") or "")}),
+            "loss_symbols": sorted({str(r.get("symbol") or "") for r in loss_rows if str(r.get("symbol") or "")}),
+        },
+        "rows": rows[-limit:],
+        "recommended_action": (
+            "review_entry_kill_zone_and_breakout_selection_quality"
+            if breakout_loss_rows or kill_zone_rows
+            else "no_same_day_breakout_loss_rows_detected"
+        ),
     }
 
 def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
@@ -44253,6 +44499,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/daily_goal_preservation_exit",
             f"{base}/broker_daily_goal_truth",
             f"{base}/broker_only_daily_loss_truth",
+            f"{base}/same_day_breakout_loss_forensics?limit=10",
         ],
         "after_hours_cleanup_check": [
             f"{base}/swing_cleanup_status",
@@ -44266,6 +44513,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/broker_preferred_daily_pnl_dedup",
             f"{base}/broker_preferred_loss_attribution_truth",
             f"{base}/broker_only_daily_loss_truth",
+            f"{base}/same_day_breakout_loss_forensics?limit=20",
             f"{base}/swing_performance_attribution",
             f"{base}/swing_pre_post_change_performance",
             f"{base}/target_path_opportunity_expansion_lab",
@@ -45501,6 +45749,15 @@ def diagnostics_broker_preferred_daily_pnl_dedup():
 @app.get("/diagnostics/broker_only_daily_loss_truth")
 def diagnostics_broker_only_daily_loss_truth():
     return JSONResponse(content=_p374_broker_only_daily_loss_truth())
+
+@app.get("/diagnostics/same_day_breakout_loss_forensics")
+def diagnostics_same_day_breakout_loss_forensics(limit: int = 20):
+    return JSONResponse(content=_p376_same_day_breakout_loss_forensics(limit=limit))
+
+
+@app.get("/diagnostics/entry_quality_kill_zone_audit")
+def diagnostics_entry_quality_kill_zone_audit(limit: int = 20):
+    return JSONResponse(content=_p376_same_day_breakout_loss_forensics(limit=limit))
 
 @app.get("/diagnostics/corrected_swing_capacity_truth")
 def diagnostics_corrected_swing_capacity_truth():
