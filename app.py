@@ -1792,6 +1792,32 @@ SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION = env_bool_any(
     "SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION",
     default=True,
 )
+BREAKOUT_EARLY_FOLLOW_THROUGH_GATE_ENABLED = env_bool_any(
+    "BREAKOUT_EARLY_FOLLOW_THROUGH_GATE_ENABLED",
+    default=True,
+)
+BREAKOUT_EARLY_FOLLOW_THROUGH_ADVISORY_ONLY = env_bool_any(
+    "BREAKOUT_EARLY_FOLLOW_THROUGH_ADVISORY_ONLY",
+    default=False,
+)
+BREAKOUT_EARLY_FOLLOW_THROUGH_MIN_ABOVE_BREAKOUT_PCT = getenv_float_any(
+    "BREAKOUT_EARLY_FOLLOW_THROUGH_MIN_ABOVE_BREAKOUT_PCT",
+    default=0.0025,
+)
+BREAKOUT_EARLY_FOLLOW_THROUGH_BLOCK_ENTRY_TYPES = {
+    s.strip()
+    for s in str(
+        getenv_any(
+            "BREAKOUT_EARLY_FOLLOW_THROUGH_BLOCK_ENTRY_TYPES",
+            default="swing_production_contract,swing_production_risk_calibrated_starter,swing_production_near_rank_revival,defensive_near_miss_relaxation",
+        )
+    ).split(",")
+    if s.strip()
+}
+BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT = getenv_float_any(
+    "BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT",
+    default=0.75,
+)
 SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
     "SWING_EXECUTABLE_SELECTION_MIN_QTY",
     default=1.0,
@@ -2482,7 +2508,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-376-same-day-breakout-loss-forensics-entry-quality-kill-zone-audit"
+PATCH_VERSION = "patch-377-breakout-early-follow-through-gate-pltr-profit-giveback-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7821,6 +7847,200 @@ def _p376_same_day_breakout_loss_forensics(limit: int = 20) -> dict:
             if breakout_loss_rows or kill_zone_rows
             else "no_same_day_breakout_loss_rows_detected"
         ),
+    }
+
+def _p377_candidate_float(row: dict, *keys, default: float = 0.0) -> float:
+    row = dict(row or {})
+    pools = [
+        row,
+        dict(row.get("thesis") or {}),
+        dict(row.get("swing_production_contract") or {}),
+        dict(row.get("checks") or {}),
+    ]
+    for pool in pools:
+        for key in keys:
+            val = _safe_float(pool.get(key), None)
+            if val is not None and val != 0:
+                return float(val)
+    return float(default)
+
+
+def _p377_is_breakout_candidate(row: dict) -> bool:
+    row = dict(row or {})
+    strategy = str(
+        row.get("strategy")
+        or row.get("strategy_name")
+        or row.get("signal")
+        or (row.get("thesis") or {}).get("strategy_name")
+        or (row.get("thesis") or {}).get("signal")
+        or ""
+    ).strip().lower()
+    return strategy in {"daily_breakout", str(BREAKOUT_STRATEGY_NAME or "").strip().lower()}
+
+
+def _p377_breakout_early_follow_through_gate(row: dict | None) -> dict:
+    row = dict(row or {})
+    sym = str(row.get("symbol") or "").strip().upper()
+    entry_type = str(row.get("entry_type") or row.get("selected_source") or "").strip()
+
+    result = {
+        "enabled": bool(BREAKOUT_EARLY_FOLLOW_THROUGH_GATE_ENABLED),
+        "advisory_only": bool(BREAKOUT_EARLY_FOLLOW_THROUGH_ADVISORY_ONLY),
+        "symbol": sym,
+        "is_breakout": _p377_is_breakout_candidate(row),
+        "entry_type": entry_type,
+        "blocked": False,
+        "reason": "not_applicable",
+    }
+
+    if not result["enabled"] or not result["is_breakout"]:
+        return result
+
+    if entry_type and entry_type not in BREAKOUT_EARLY_FOLLOW_THROUGH_BLOCK_ENTRY_TYPES:
+        result["reason"] = "entry_type_not_scoped"
+        return result
+
+    price = _p377_candidate_float(row, "last", "price", "close", "current_price", "entry_price")
+    breakout_level = _p377_candidate_float(row, "breakout_level", "breakout_price", "trigger_price")
+
+    result["price"] = round(price, 4) if price > 0 else None
+    result["breakout_level"] = round(breakout_level, 4) if breakout_level > 0 else None
+
+    if price <= 0 or breakout_level <= 0:
+        result["reason"] = "missing_breakout_price_context"
+        return result
+
+    distance_pct = (price - breakout_level) / breakout_level
+    min_distance_pct = float(BREAKOUT_EARLY_FOLLOW_THROUGH_MIN_ABOVE_BREAKOUT_PCT or 0.0)
+
+    result["above_breakout_pct"] = round(distance_pct, 6)
+    result["min_above_breakout_pct"] = round(min_distance_pct, 6)
+
+    if distance_pct < min_distance_pct:
+        result["blocked"] = not bool(BREAKOUT_EARLY_FOLLOW_THROUGH_ADVISORY_ONLY)
+        result["reason"] = "breakout_lacks_early_follow_through"
+    else:
+        result["reason"] = "breakout_follow_through_ok"
+
+    return result
+
+
+def _p377_apply_breakout_early_follow_through_gate(row: dict | None) -> dict:
+    out = dict(row or {})
+    gate = _p377_breakout_early_follow_through_gate(out)
+    out["breakout_early_follow_through_gate"] = gate
+
+    if bool(gate.get("blocked")):
+        reasons = list(out.get("rejection_reasons") or [])
+        reasons.append(str(gate.get("reason") or "breakout_lacks_early_follow_through"))
+        out["rejection_reasons"] = _dedupe_keep_order(reasons)
+        out["eligible"] = False
+        out["selected"] = False
+        out["would_trade"] = False
+        out["tradeable"] = False
+
+        contract = dict(out.get("swing_production_contract") or {})
+        contract["approved"] = False
+        contract["blocked"] = True
+        contract["p377_blocked"] = True
+        contract["p377_reason"] = gate.get("reason")
+        out["swing_production_contract"] = contract
+
+    return out
+
+
+def _p377_filter_rows_for_breakout_follow_through(rows: list | None) -> list[dict]:
+    return [_p377_apply_breakout_early_follow_through_gate(r) for r in list(rows or []) if isinstance(r, dict)]
+
+def _p377_pltr_profit_giveback_audit(limit: int = 20) -> dict:
+    base = _p376_same_day_breakout_loss_forensics(limit=max(20, int(limit or 20)))
+    rows = []
+
+    for row in list(base.get("rows") or []):
+        kill_zone = dict(row.get("kill_zone") or {})
+        windows = dict(kill_zone.get("windows") or {})
+        w30 = dict(windows.get("30m") or {})
+        favorable_30m = _safe_float(w30.get("favorable_pct"), 0.0)
+        gross_pnl = _safe_float(row.get("gross_pnl"), 0.0)
+
+        giveback = bool(
+            row.get("is_breakout")
+            and gross_pnl < 0
+            and not bool(kill_zone.get("kill_zone_triggered"))
+            and favorable_30m >= float(BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT or 0.0)
+        )
+
+        if giveback or str(row.get("symbol") or "").strip().upper() == "PLTR":
+            rows.append({
+                "symbol": row.get("symbol"),
+                "gross_pnl": row.get("gross_pnl"),
+                "entry_price": row.get("entry_price"),
+                "exit_price": row.get("exit_price"),
+                "entry_ts_utc": row.get("entry_ts_utc"),
+                "exit_ts_utc": row.get("exit_ts_utc"),
+                "favorable_30m_pct": round(favorable_30m, 4),
+                "kill_zone_triggered": bool(kill_zone.get("kill_zone_triggered")),
+                "profit_giveback_flag": giveback,
+                "classification": row.get("classification"),
+                "entry_quality": row.get("entry_quality"),
+                "recommended_action": (
+                    "review_daily_goal_preservation_or_trailing_profit_exit"
+                    if giveback
+                    else "pltr_context_row"
+                ),
+            })
+
+    flagged = [r for r in rows if bool(r.get("profit_giveback_flag"))]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "pltr_profit_giveback_audit",
+        "read_only": True,
+        "min_favorable_30m_pct": float(BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT or 0.0),
+        "flagged_count": len(flagged),
+        "flagged_symbols": sorted({str(r.get("symbol") or "") for r in flagged if str(r.get("symbol") or "")}),
+        "rows": rows[-max(1, min(int(limit or 20), 50)):],
+        "recommended_action": (
+            "tighten_profit_preservation_for_breakouts_that_show_early_followthrough"
+            if flagged
+            else "no_profit_giveback_after_valid_followthrough_detected"
+        ),
+    }
+
+def _p377_breakout_early_follow_through_gate_snapshot(limit: int = 20) -> dict:
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    rows = list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
+    checked = [_p377_apply_breakout_early_follow_through_gate(dict(r or {})) for r in rows if isinstance(r, dict)]
+
+    blocked = [
+        r for r in checked
+        if bool((r.get("breakout_early_follow_through_gate") or {}).get("blocked"))
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "breakout_early_follow_through_gate",
+        "read_only": True,
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "latest_scan_reason": latest_scan.get("reason"),
+        "enabled": bool(BREAKOUT_EARLY_FOLLOW_THROUGH_GATE_ENABLED),
+        "advisory_only": bool(BREAKOUT_EARLY_FOLLOW_THROUGH_ADVISORY_ONLY),
+        "blocked_count": len(blocked),
+        "blocked_symbols": [r.get("symbol") for r in blocked],
+        "rows": [
+            {
+                "symbol": r.get("symbol"),
+                "rank_score": r.get("rank_score"),
+                "entry_type": r.get("entry_type"),
+                "selected": bool(r.get("selected")),
+                "eligible": bool(r.get("eligible")),
+                "gate": r.get("breakout_early_follow_through_gate"),
+                "rejection_reasons": r.get("rejection_reasons"),
+            }
+            for r in checked[:max(1, min(int(limit or 20), 50))]
+        ],
     }
 
 def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
@@ -19207,6 +19427,7 @@ def _p323_enforce_production_contract_selection(
     global_block_reasons: list | None = None,
 ) -> list[dict]:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
+    rows = _p377_filter_rows_for_breakout_follow_through(rows)
     return swing_contract_enforce(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -19216,6 +19437,7 @@ def _p323_enforce_production_contract_selection(
 
 def _p323_contract_approved_rows(rows: list | None) -> list[dict]:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
+    rows = _p377_filter_rows_for_breakout_follow_through(rows)
     return swing_contract_approved_rows(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -19228,6 +19450,7 @@ def _p326_finalize_production_contract_selection(
     global_block_reasons: list | None = None,
 ) -> dict:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
+    rows = _p377_filter_rows_for_breakout_follow_through(rows)
     return swing_contract_finalize(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -44500,6 +44723,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/broker_daily_goal_truth",
             f"{base}/broker_only_daily_loss_truth",
             f"{base}/same_day_breakout_loss_forensics?limit=10",
+            f"{base}/pltr_profit_giveback_audit?limit=10",
         ],
         "after_hours_cleanup_check": [
             f"{base}/swing_cleanup_status",
@@ -44514,6 +44738,8 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/broker_preferred_loss_attribution_truth",
             f"{base}/broker_only_daily_loss_truth",
             f"{base}/same_day_breakout_loss_forensics?limit=20",
+            f"{base}/breakout_early_follow_through_gate?limit=20",
+            f"{base}/pltr_profit_giveback_audit?limit=20",
             f"{base}/swing_performance_attribution",
             f"{base}/swing_pre_post_change_performance",
             f"{base}/target_path_opportunity_expansion_lab",
@@ -45754,10 +45980,17 @@ def diagnostics_broker_only_daily_loss_truth():
 def diagnostics_same_day_breakout_loss_forensics(limit: int = 20):
     return JSONResponse(content=_p376_same_day_breakout_loss_forensics(limit=limit))
 
-
 @app.get("/diagnostics/entry_quality_kill_zone_audit")
 def diagnostics_entry_quality_kill_zone_audit(limit: int = 20):
     return JSONResponse(content=_p376_same_day_breakout_loss_forensics(limit=limit))
+
+@app.get("/diagnostics/breakout_early_follow_through_gate")
+def diagnostics_breakout_early_follow_through_gate(limit: int = 20):
+    return JSONResponse(content=_p377_breakout_early_follow_through_gate_snapshot(limit=limit))
+
+@app.get("/diagnostics/pltr_profit_giveback_audit")
+def diagnostics_pltr_profit_giveback_audit(limit: int = 20):
+    return JSONResponse(content=_p377_pltr_profit_giveback_audit(limit=limit))
 
 @app.get("/diagnostics/corrected_swing_capacity_truth")
 def diagnostics_corrected_swing_capacity_truth():
