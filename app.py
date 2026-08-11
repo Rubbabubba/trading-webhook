@@ -1818,6 +1818,14 @@ BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT = getenv_float_any(
     "BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT",
     default=0.75,
 )
+BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MIN_UNREALIZED_PCT = getenv_float_any(
+    "BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MIN_UNREALIZED_PCT",
+    default=1.00,
+)
+BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MAX_GIVEBACK_PCT = getenv_float_any(
+    "BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MAX_GIVEBACK_PCT",
+    default=0.50,
+)
 SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
     "SWING_EXECUTABLE_SELECTION_MIN_QTY",
     default=1.0,
@@ -2508,7 +2516,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-377-breakout-early-follow-through-gate-pltr-profit-giveback-audit"
+PATCH_VERSION = "patch-377-hotfix-breakout-gate-scope-normalization-profit-giveback-exit-trigger-evidence"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7882,6 +7890,10 @@ def _p377_breakout_early_follow_through_gate(row: dict | None) -> dict:
     row = dict(row or {})
     sym = str(row.get("symbol") or "").strip().upper()
     entry_type = str(row.get("entry_type") or row.get("selected_source") or "").strip()
+    scoped_entry_type = entry_type
+
+    if scoped_entry_type == "swing_production_reset_blocked":
+        scoped_entry_type = "swing_production_contract"
 
     result = {
         "enabled": bool(BREAKOUT_EARLY_FOLLOW_THROUGH_GATE_ENABLED),
@@ -7889,6 +7901,7 @@ def _p377_breakout_early_follow_through_gate(row: dict | None) -> dict:
         "symbol": sym,
         "is_breakout": _p377_is_breakout_candidate(row),
         "entry_type": entry_type,
+        "scoped_entry_type": scoped_entry_type,
         "blocked": False,
         "reason": "not_applicable",
     }
@@ -7896,7 +7909,7 @@ def _p377_breakout_early_follow_through_gate(row: dict | None) -> dict:
     if not result["enabled"] or not result["is_breakout"]:
         return result
 
-    if entry_type and entry_type not in BREAKOUT_EARLY_FOLLOW_THROUGH_BLOCK_ENTRY_TYPES:
+    if scoped_entry_type and scoped_entry_type not in BREAKOUT_EARLY_FOLLOW_THROUGH_BLOCK_ENTRY_TYPES:
         result["reason"] = "entry_type_not_scoped"
         return result
 
@@ -7923,7 +7936,6 @@ def _p377_breakout_early_follow_through_gate(row: dict | None) -> dict:
         result["reason"] = "breakout_follow_through_ok"
 
     return result
-
 
 def _p377_apply_breakout_early_follow_through_gate(row: dict | None) -> dict:
     out = dict(row or {})
@@ -7952,6 +7964,41 @@ def _p377_apply_breakout_early_follow_through_gate(row: dict | None) -> dict:
 def _p377_filter_rows_for_breakout_follow_through(rows: list | None) -> list[dict]:
     return [_p377_apply_breakout_early_follow_through_gate(r) for r in list(rows or []) if isinstance(r, dict)]
 
+def _p377_profit_giveback_exit_trigger_evidence(row: dict | None) -> dict:
+    row = dict(row or {})
+    kill_zone = dict(row.get("kill_zone") or {})
+    windows = dict(kill_zone.get("windows") or {})
+
+    favorable_30m = _safe_float((windows.get("30m") or {}).get("favorable_pct"), 0.0)
+    favorable_60m = _safe_float((windows.get("60m") or {}).get("favorable_pct"), 0.0)
+    gross_pnl = _safe_float(row.get("gross_pnl"), 0.0)
+    entry_price = _safe_float(row.get("entry_price"), 0.0)
+    exit_price = _safe_float(row.get("exit_price"), 0.0)
+
+    best_favorable_pct = max(favorable_30m, favorable_60m)
+    exit_return_pct = ((exit_price - entry_price) / entry_price) * 100.0 if entry_price > 0 and exit_price > 0 else 0.0
+    giveback_from_best_pct = best_favorable_pct - exit_return_pct
+
+    should_have_preserved = bool(
+        best_favorable_pct >= float(BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MIN_UNREALIZED_PCT or 0.0)
+        and giveback_from_best_pct >= float(BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MAX_GIVEBACK_PCT or 0.0)
+    )
+
+    return {
+        "best_favorable_pct": round(best_favorable_pct, 4),
+        "exit_return_pct": round(exit_return_pct, 4),
+        "giveback_from_best_pct": round(giveback_from_best_pct, 4),
+        "gross_pnl": round(gross_pnl, 4),
+        "min_unrealized_pct": float(BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MIN_UNREALIZED_PCT or 0.0),
+        "max_giveback_pct": float(BREAKOUT_PROFIT_GIVEBACK_EXIT_TRIGGER_MAX_GIVEBACK_PCT or 0.0),
+        "should_have_preserved": should_have_preserved,
+        "suggested_trigger": (
+            "daily_breakout_profit_giveback_preservation_exit"
+            if should_have_preserved
+            else "no_profit_giveback_preservation_trigger"
+        ),
+    }
+
 def _p377_pltr_profit_giveback_audit(limit: int = 20) -> dict:
     base = _p376_same_day_breakout_loss_forensics(limit=max(20, int(limit or 20)))
     rows = []
@@ -7962,6 +8009,7 @@ def _p377_pltr_profit_giveback_audit(limit: int = 20) -> dict:
         w30 = dict(windows.get("30m") or {})
         favorable_30m = _safe_float(w30.get("favorable_pct"), 0.0)
         gross_pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        trigger_evidence = _p377_profit_giveback_exit_trigger_evidence(row)
 
         giveback = bool(
             row.get("is_breakout")
@@ -7981,16 +8029,23 @@ def _p377_pltr_profit_giveback_audit(limit: int = 20) -> dict:
                 "favorable_30m_pct": round(favorable_30m, 4),
                 "kill_zone_triggered": bool(kill_zone.get("kill_zone_triggered")),
                 "profit_giveback_flag": giveback,
+                "profit_giveback_exit_trigger_evidence": trigger_evidence,
                 "classification": row.get("classification"),
                 "entry_quality": row.get("entry_quality"),
                 "recommended_action": (
-                    "review_daily_goal_preservation_or_trailing_profit_exit"
+                    "add_or_tighten_daily_breakout_profit_giveback_preservation_exit"
+                    if bool(trigger_evidence.get("should_have_preserved"))
+                    else "review_daily_goal_preservation_or_trailing_profit_exit"
                     if giveback
                     else "pltr_context_row"
                 ),
             })
 
     flagged = [r for r in rows if bool(r.get("profit_giveback_flag"))]
+    preserve_trigger_rows = [
+        r for r in rows
+        if bool((r.get("profit_giveback_exit_trigger_evidence") or {}).get("should_have_preserved"))
+    ]
 
     return {
         "ok": True,
@@ -8000,9 +8055,13 @@ def _p377_pltr_profit_giveback_audit(limit: int = 20) -> dict:
         "min_favorable_30m_pct": float(BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT or 0.0),
         "flagged_count": len(flagged),
         "flagged_symbols": sorted({str(r.get("symbol") or "") for r in flagged if str(r.get("symbol") or "")}),
+        "preservation_trigger_count": len(preserve_trigger_rows),
+        "preservation_trigger_symbols": sorted({str(r.get("symbol") or "") for r in preserve_trigger_rows if str(r.get("symbol") or "")}),
         "rows": rows[-max(1, min(int(limit or 20), 50)):],
         "recommended_action": (
-            "tighten_profit_preservation_for_breakouts_that_show_early_followthrough"
+            "add_daily_breakout_profit_giveback_preservation_exit"
+            if preserve_trigger_rows
+            else "tighten_profit_preservation_for_breakouts_that_show_early_followthrough"
             if flagged
             else "no_profit_giveback_after_valid_followthrough_detected"
         ),
