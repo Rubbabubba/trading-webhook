@@ -2516,7 +2516,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-377-hotfix-breakout-gate-scope-normalization-profit-giveback-exit-trigger-evidence"
+PATCH_VERSION = "patch-377-hotfix-2-safe-candidate-float-default"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7867,11 +7867,13 @@ def _p377_candidate_float(row: dict, *keys, default: float = 0.0) -> float:
     ]
     for pool in pools:
         for key in keys:
-            val = _safe_float(pool.get(key), None)
-            if val is not None and val != 0:
+            raw = pool.get(key)
+            if raw is None or raw == "":
+                continue
+            val = _safe_float(raw, 0.0)
+            if val != 0:
                 return float(val)
     return float(default)
-
 
 def _p377_is_breakout_candidate(row: dict) -> bool:
     row = dict(row or {})
