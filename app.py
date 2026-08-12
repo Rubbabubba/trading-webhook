@@ -2589,7 +2589,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-385-oversized-risk-capacity-adjustment-dollar-risk-add-slot-selection-sync"
+PATCH_VERSION = "patch-386-captured-position-truth-sync-oversized-risk-operator-action-clarity"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14035,6 +14035,99 @@ def _p320_active_position_truth_for_brief() -> dict:
         "position_truth": truth,
     }
 
+def _p386_captured_position_rows_from_truth(rows: list | None, active_truth: dict | None = None) -> dict:
+    source_rows = [dict(row or {}) for row in list(rows or []) if isinstance(row, dict)]
+    active = dict(active_truth or _p320_active_position_truth_for_brief())
+    active_symbols = {
+        str(sym or "").strip().upper()
+        for sym in list(active.get("symbols") or [])
+        if str(sym or "").strip()
+    }
+
+    by_symbol = {
+        str(row.get("symbol") or "").strip().upper(): dict(row or {})
+        for row in source_rows
+        if str(row.get("symbol") or "").strip()
+    }
+
+    captured_rows = []
+    captured_symbols = set()
+
+    for row in source_rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        captured = bool(
+            sym in active_symbols
+            or "position_already_open" in list(row.get("rejection_reasons") or [])
+            or "plan_or_pending_entry_exists" in list(row.get("rejection_reasons") or [])
+        )
+        if not captured:
+            continue
+        c = dict(row or {})
+        c["captured"] = True
+        c["active_position"] = sym in active_symbols
+        c["candidate_present"] = True
+        c["captured_truth_source"] = "candidate_row_plus_active_position_truth"
+        captured_rows.append(c)
+        captured_symbols.add(sym)
+
+    for sym in sorted(active_symbols - captured_symbols):
+        source = dict(by_symbol.get(sym) or {})
+        source.update({
+            "symbol": sym,
+            "captured": True,
+            "active_position": True,
+            "candidate_present": bool(by_symbol.get(sym)),
+            "eligible": False,
+            "selected": False,
+            "rejection_reasons": list(source.get("rejection_reasons") or []),
+            "captured_truth_source": "active_position_truth_no_candidate_row",
+        })
+        captured_rows.append(source)
+        captured_symbols.add(sym)
+
+    return {
+        "active_truth": active,
+        "active_symbols": sorted(active_symbols),
+        "captured_rows": captured_rows,
+        "captured_symbols": sorted(captured_symbols),
+        "captured_count": len(captured_symbols),
+        "missing_candidate_row_symbols": sorted(active_symbols - {
+            str(row.get("symbol") or "").strip().upper()
+            for row in source_rows
+            if str(row.get("symbol") or "").strip()
+        }),
+        "source": "active_position_truth_union_candidate_rows",
+    }
+
+
+def _p386_oversized_risk_operator_action(active_truth: dict | None = None) -> dict:
+    capacity = _p385_risk_adjusted_capacity_truth(active_truth or _p320_active_position_truth_for_brief())
+    advisory = _p384_oversized_position_remediation_advisory()
+    oversized_symbols = list(advisory.get("oversized_symbols") or [])
+
+    if oversized_symbols:
+        read = "oversized_position_active_capacity_capped"
+        recommended_action = "do_not_treat_raw_slots_as_available; allow_only_risk_adjusted_slots; review_reduce_or_tighten_stop_candidates"
+    else:
+        read = "no_oversized_position_risk"
+        recommended_action = "normal_capacity_truth"
+
+    return {
+        "enabled": True,
+        "read": read,
+        "recommended_action": recommended_action,
+        "oversized_symbols": oversized_symbols,
+        "oversized_count": len(oversized_symbols),
+        "risk_adjusted_capacity": capacity,
+        "advisory": {
+            "configured_risk_per_trade_dollars": advisory.get("configured_risk_per_trade_dollars"),
+            "advisory_multiple": advisory.get("advisory_multiple"),
+            "reduce_to_risk_multiple": advisory.get("reduce_to_risk_multiple"),
+            "rows": list(advisory.get("rows") or [])[:10],
+        },
+    }
 
 def _p320_swing_dead_path_phase1_status() -> dict:
     intraday_noise_suppressed = bool(_p317_intraday_separation_status().get("suppressed_for_swing_runtime"))
@@ -14308,6 +14401,7 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         active_truth=active_truth,
     )
     risk_adjusted_capacity = _p385_risk_adjusted_capacity_truth(active_truth)
+    oversized_risk_operator_action = _p386_oversized_risk_operator_action(active_truth)
 
     blockers = []
     if not bool(NEW_ENTRIES_ENABLED):
@@ -14400,6 +14494,7 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "raw_open_slots": int(risk_adjusted_capacity.get("raw_open_slots") or 0),
             "open_slots": int(risk_adjusted_capacity.get("risk_adjusted_open_slots") or 0),
             "risk_adjusted_capacity": risk_adjusted_capacity,
+            "oversized_risk_operator_action": oversized_risk_operator_action,
         },
         "watch_summary": {
             "truth_source": watch.get("truth_source"),
@@ -33582,30 +33677,23 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     if not selected_symbols:
         selected_symbols = _p298_selected_symbols_light(summary, _p298_recent_lifecycle_items(limit=50))
 
+    active_truth = _p320_active_position_truth_for_brief()
+    captured_truth = _p386_captured_position_rows_from_truth(rows, active_truth)
     active_symbols = {
         str(sym or "").strip().upper()
-        for sym, plan in dict(globals().get("TRADE_PLAN") or {}).items()
+        for sym in list(captured_truth.get("active_symbols") or [])
         if str(sym or "").strip()
-        and isinstance(plan, dict)
-        and bool(plan.get("active"))
     }
 
     approved_rows = [row for row in rows if isinstance(row, dict) and bool((row.get("swing_production_contract") or {}).get("approved"))]
     eligible_rows = approved_rows
-    captured_rows = [
-        row for row in rows
-        if isinstance(row, dict)
-        and (
-            str(row.get("symbol") or "").strip().upper() in active_symbols
-            or "position_already_open" in list(row.get("rejection_reasons") or [])
-            or "plan_or_pending_entry_exists" in list(row.get("rejection_reasons") or [])
-        )
-    ]
+    captured_rows = list(captured_truth.get("captured_rows") or [])
     captured_symbols = {
-        str(row.get("symbol") or "").strip().upper()
-        for row in captured_rows
-        if str(row.get("symbol") or "").strip()
+        str(sym or "").strip().upper()
+        for sym in list(captured_truth.get("captured_symbols") or [])
+        if str(sym or "").strip()
     }
+    oversized_risk_operator_action = _p386_oversized_risk_operator_action(active_truth)
     candidate_miss_rows = [
         row for row in rows
         if isinstance(row, dict)
@@ -33667,7 +33755,7 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
         selected_items=[row for row in true_missing_opportunity_rows if str(row.get("symbol") or "").strip().upper() in set(selected_symbols)],
         eligible_not_selected_items=[row for row in true_missing_opportunity_rows if str(row.get("symbol") or "").strip().upper() not in set(selected_symbols)],
         captured_items=captured_rows,
-        active_truth={"active_position_count": len(active_symbols)},
+        active_truth=active_truth,
     )
 
     if selected_symbols and true_missing_opportunity_rows:
@@ -33719,7 +33807,9 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
             "actionable_eligible_count": len(actionable_eligible_rows),
             "actionable_eligible_symbols": [r.get("symbol") for r in actionable_eligible_rows],
             "captured_count": len(captured_rows),
-            "captured_symbols": [r.get("symbol") for r in captured_rows],
+            "captured_symbols": list(captured_truth.get("captured_symbols") or [r.get("symbol") for r in captured_rows]),
+            "captured_truth": captured_truth,
+            "oversized_risk_operator_action": oversized_risk_operator_action,
             "candidate_miss_count": len(candidate_miss_rows),
             "candidate_miss_symbols": [r.get("symbol") for r in candidate_miss_rows],
             "captured_suppressed_from_actionable_top": True,
@@ -33772,7 +33862,9 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
                     reason for reason in ["position_already_open", "plan_or_pending_entry_exists"]
                     if reason in list(row.get("rejection_reasons") or [])
                 ],
-                "active_position": str(row.get("symbol") or "").strip().upper() in active_symbols,
+                "active_position": bool(row.get("active_position")) or str(row.get("symbol") or "").strip().upper() in active_symbols,
+                "candidate_present": bool(row.get("candidate_present")),
+                "captured_truth_source": row.get("captured_truth_source"),
             }
             for row in captured_rows
             if isinstance(row, dict)
@@ -46869,6 +46961,8 @@ def diagnostics_swing_runtime_config():
                 "oversized_reduce_to_risk_multiple": _cfg_float("SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE", 0.0),
                 "oversized_capacity_adjustment_enabled": _cfg_bool("SWING_OVERSIZED_POSITION_CAPACITY_ADJUSTMENT_ENABLED"),
                 "oversized_max_add_slots_while_oversized": _cfg_int("SWING_OVERSIZED_POSITION_MAX_ADD_SLOTS_WHILE_OVERSIZED", 0),
+                "captured_position_truth_sync": "active_position_truth_union_candidate_rows",
+                "operator_action_clarity": "oversized_risk_status_is_reported_with_capacity_truth",
                 "purpose": "prefer dollar-risk truth over percent-risk confusion",
             },
         },
