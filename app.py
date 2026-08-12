@@ -1485,6 +1485,11 @@ SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS = getenv_float_any("SWING_LO
 SWING_LOSS_DAY_ENTRY_THROTTLE_MAX_NEW_ENTRIES_AFTER_TRIGGER = getenv_int_any("SWING_LOSS_DAY_ENTRY_THROTTLE_MAX_NEW_ENTRIES_AFTER_TRIGGER", default=0)
 SWING_LOSS_DAY_ENTRY_THROTTLE_INCLUDE_UNREALIZED = env_bool_any("SWING_LOSS_DAY_ENTRY_THROTTLE_INCLUDE_UNREALIZED", default=False)
 SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY = env_bool_any("SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY", default=False)
+SWING_LOSS_DAY_RECOVERY_SLOT_ENABLED = env_bool_any("SWING_LOSS_DAY_RECOVERY_SLOT_ENABLED", default=True)
+SWING_LOSS_DAY_RECOVERY_SLOT_MAX_ENTRIES = getenv_int_any("SWING_LOSS_DAY_RECOVERY_SLOT_MAX_ENTRIES", default=1)
+SWING_LOSS_DAY_RECOVERY_SLOT_MIN_RANK_SCORE = getenv_float_any("SWING_LOSS_DAY_RECOVERY_SLOT_MIN_RANK_SCORE", default=108.0)
+SWING_LOSS_DAY_RECOVERY_SLOT_MIN_TARGET_PATH_SCORE = getenv_float_any("SWING_LOSS_DAY_RECOVERY_SLOT_MIN_TARGET_PATH_SCORE", default=55.0)
+SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT = getenv_float_any("SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT", default=0.10)
 SWING_SIMPLIFICATION_AUDIT_ENABLED = env_bool_any("SWING_SIMPLIFICATION_AUDIT_ENABLED", default=True)
 SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY = env_bool_any("SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY", default=True)
 SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
@@ -2576,7 +2581,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-382-protective-exit-idempotency-reason-coverage-over-close-prevention-guard"
+PATCH_VERSION = "patch-383-broker-native-position-risk-truth-loss-day-recovery-slot-policy"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -22340,7 +22345,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             global_block_reasons.append('portfolio_already_over_cap_total')
         if block_strategy_cap:
             global_block_reasons.append('portfolio_already_over_cap_strategy')
-    if loss_day_throttle.get("block_new_entries"):
+    loss_day_recovery_policy = _p383_loss_day_recovery_slot_policy_snapshot(loss_day_throttle)
+    loss_day_throttle_candidate_level = bool(
+        loss_day_throttle.get("block_new_entries")
+        and loss_day_recovery_policy.get("active")
+    )
+    if loss_day_throttle.get("block_new_entries") and not loss_day_throttle_candidate_level:
         new_entries_globally_blocked = True
         global_block_reasons.append("swing_loss_day_entry_throttle")
 
@@ -22383,10 +22393,22 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('same_day_symbol_loss_cooldown')
             c['swing_loss_day_entry_throttle'] = loss_day_throttle
+        candidate_global_block_reasons = list(global_block_reasons)
+        if c.get('eligible') and loss_day_throttle_candidate_level:
+            recovery_slot = _p383_loss_day_recovery_slot_candidate(c, loss_day_throttle)
+            c["loss_day_recovery_slot"] = recovery_slot
+            if recovery_slot.get("allowed"):
+                c["loss_day_recovery_slot_candidate"] = True
+            else:
+                c["eligible"] = False
+                c.setdefault("rejection_reasons", []).append("swing_loss_day_entry_throttle")
+                c.setdefault("rejection_reasons", []).extend(list(recovery_slot.get("blockers") or []))
+                c["swing_loss_day_entry_throttle"] = loss_day_throttle
+
         if c.get('eligible') and new_entries_globally_blocked:
-            if not (strategy_name == MEAN_REVERSION_STRATEGY_NAME and 'weak_tape' in global_block_reasons and SWING_MEAN_REVERSION_ENABLED):
+            if not (strategy_name == MEAN_REVERSION_STRATEGY_NAME and 'weak_tape' in candidate_global_block_reasons and SWING_MEAN_REVERSION_ENABLED):
                 c['eligible'] = False
-                c.setdefault('rejection_reasons', []).extend(global_block_reasons)
+                c.setdefault('rejection_reasons', []).extend(candidate_global_block_reasons)
         group_count = _open_group_position_count(sym)
         if c.get('eligible') and SWING_MAX_GROUP_POSITIONS > 0 and group_count >= SWING_MAX_GROUP_POSITIONS:
             c['eligible'] = False
@@ -22396,10 +22418,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         c['selection_quality_score'] = _candidate_selection_quality_score(c)
         c['target_path_profit'] = _p283_target_path_profit_score(c)
         c['target_path_score'] = (c.get('target_path_profit') or {}).get('score')
-        c = _p286_apply_target_path_recovery(c, global_block_reasons)
+        c = _p286_apply_target_path_recovery(c, candidate_global_block_reasons)
         c = _p296_apply_defensive_relaxation_promotion(
             c,
-            global_block_reasons,
+            candidate_global_block_reasons,
             daily_goal_progress=daily_goal_progress,
         )
         local_symbol_cap = float(symbol_cap)
@@ -22507,7 +22529,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         and not loss_day_throttle.get("advisory_only")
         and int(loss_day_throttle.get("max_new_entries_after_trigger") or 0) >= 0
     ):
-        max_new_entries = min(max_new_entries, int(loss_day_throttle.get("max_new_entries_after_trigger") or 0))
+        if loss_day_throttle_candidate_level:
+            max_new_entries = min(
+                max_new_entries,
+                max(0, int(SWING_LOSS_DAY_RECOVERY_SLOT_MAX_ENTRIES or 0)),
+            )
+        else:
+            max_new_entries = min(max_new_entries, int(loss_day_throttle.get("max_new_entries_after_trigger") or 0))
 
     max_new_entries = min(max_new_entries, remaining_today)
 
@@ -22632,6 +22660,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'early_entry_override_triggered': bool(entry_type == 'early_override'),
             'early_entry_override_reasons': list(override_live_reasons if entry_type == 'early_override' else (_candidate_qualifies_early_entry_override(c, regime=regime)[1] if SWING_EARLY_ENTRY_OVERRIDE_ENABLED else [])),
             'swing_loss_day_entry_throttle': loss_day_throttle,
+            'loss_day_recovery_slot': c.get('loss_day_recovery_slot'),
+            'loss_day_recovery_slot_candidate': bool(c.get('loss_day_recovery_slot_candidate')),
             'swing_quarantine': quarantine_decision,
             'same_day_symbol_loss_cooldown': c.get('same_day_symbol_loss_cooldown'),
             'executable_near_miss_entry': c.get('executable_near_miss_entry'),
@@ -35830,6 +35860,151 @@ def _p251_same_day_symbol_loss_cooldown_snapshot() -> dict:
         "recommended_action": "cooldown_active_for_loss_symbols" if symbols else "none",
     }
 
+def _p383_broker_native_position_risk_truth() -> dict:
+    rows = []
+    total_risk_to_stop = 0.0
+    total_reward_to_target = 0.0
+    configured_risk = max(0.0, float(SWING_RISK_PER_TRADE_DOLLARS or 0.0))
+
+    try:
+        positions = list_open_positions_details_allowed()
+    except Exception:
+        positions = []
+
+    for pos in list(positions or []):
+        sym = str((pos or {}).get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+
+        plan = TRADE_PLAN.get(sym) if isinstance(TRADE_PLAN.get(sym), dict) else {}
+        qty = abs(float(_safe_float((pos or {}).get("qty"), 0.0)))
+        entry = float(_safe_float((pos or {}).get("avg_entry_price") or (pos or {}).get("entry_price") or plan.get("entry_price"), 0.0))
+        last = float(_safe_float((pos or {}).get("current_price") or (pos or {}).get("last_price") or entry, 0.0))
+        stop = float(_safe_float(plan.get("stop_price") or plan.get("initial_stop_price"), 0.0))
+        target = float(_safe_float(plan.get("take_price") or plan.get("target_price"), 0.0))
+        side = "short" if float(_safe_float((pos or {}).get("qty"), 0.0)) < 0 else "long"
+
+        if side == "long":
+            risk_to_stop = max(0.0, entry - stop) * qty if stop > 0 else None
+            reward_to_target = max(0.0, target - entry) * qty if target > 0 else None
+            gap_down_2pct = (last * 0.98 - entry) * qty
+            gap_down_5pct = (last * 0.95 - entry) * qty
+            gap_up_2pct = (last * 1.02 - entry) * qty
+        else:
+            risk_to_stop = max(0.0, stop - entry) * qty if stop > 0 else None
+            reward_to_target = max(0.0, entry - target) * qty if target > 0 else None
+            gap_down_2pct = (entry - last * 0.98) * qty
+            gap_down_5pct = (entry - last * 0.95) * qty
+            gap_up_2pct = (entry - last * 1.02) * qty
+
+        if risk_to_stop is not None:
+            total_risk_to_stop += risk_to_stop
+        if reward_to_target is not None:
+            total_reward_to_target += reward_to_target
+
+        risk_multiple = None
+        if configured_risk > 0 and risk_to_stop is not None:
+            risk_multiple = risk_to_stop / configured_risk
+
+        rows.append({
+            "symbol": sym,
+            "side": side,
+            "qty": qty,
+            "entry_price": round(entry, 4),
+            "last_price": round(last, 4),
+            "stop_price": round(stop, 4) if stop > 0 else None,
+            "target_price": round(target, 4) if target > 0 else None,
+            "unrealized_pl": round(float(_safe_float((pos or {}).get("unrealized_pl"), 0.0)), 4),
+            "risk_to_stop_dollars": round(risk_to_stop, 4) if risk_to_stop is not None else None,
+            "reward_to_target_dollars": round(reward_to_target, 4) if reward_to_target is not None else None,
+            "risk_multiple_of_configured_trade_risk": round(risk_multiple, 2) if risk_multiple is not None else None,
+            "gap_down_2pct_pnl": round(gap_down_2pct, 4),
+            "gap_down_5pct_pnl": round(gap_down_5pct, 4),
+            "gap_up_2pct_pnl": round(gap_up_2pct, 4),
+            "risk_status": (
+                "missing_stop"
+                if stop <= 0
+                else "oversized_vs_config"
+                if risk_multiple is not None and risk_multiple > 2.0
+                else "ok"
+            ),
+        })
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_native_position_risk_truth",
+        "configured_risk_per_trade_dollars": configured_risk,
+        "position_count": len(rows),
+        "total_risk_to_stop_dollars": round(total_risk_to_stop, 4),
+        "total_reward_to_target_dollars": round(total_reward_to_target, 4),
+        "oversized_symbols": [r["symbol"] for r in rows if r.get("risk_status") == "oversized_vs_config"],
+        "missing_stop_symbols": [r["symbol"] for r in rows if r.get("risk_status") == "missing_stop"],
+        "rows": rows,
+        "recommended_action": "review_oversized_position_risk" if any(r.get("risk_status") != "ok" for r in rows) else "none",
+    }
+
+
+def _p383_loss_day_recovery_slot_policy_snapshot(throttle: dict | None = None) -> dict:
+    throttle = dict(throttle or {})
+    active = bool(throttle.get("block_new_entries"))
+    enabled = bool(SWING_LOSS_DAY_RECOVERY_SLOT_ENABLED)
+
+    return {
+        "enabled": enabled,
+        "active": bool(active and enabled),
+        "throttle_active": bool(active),
+        "max_entries": max(0, int(SWING_LOSS_DAY_RECOVERY_SLOT_MAX_ENTRIES or 0)),
+        "min_rank_score": float(SWING_LOSS_DAY_RECOVERY_SLOT_MIN_RANK_SCORE or 0.0),
+        "min_target_path_score": float(SWING_LOSS_DAY_RECOVERY_SLOT_MIN_TARGET_PATH_SCORE or 0.0),
+        "max_risk_per_share_pct": float(SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT or 0.0),
+        "read": "candidate_level_recovery_slot" if active and enabled else "normal_loss_day_throttle",
+    }
+
+
+def _p383_loss_day_recovery_slot_candidate(candidate: dict | None, throttle: dict | None = None) -> dict:
+    c = dict(candidate or {})
+    policy = _p383_loss_day_recovery_slot_policy_snapshot(throttle)
+    sym = str(c.get("symbol") or "").strip().upper()
+
+    out = {
+        "enabled": bool(policy.get("enabled")),
+        "active": bool(policy.get("active")),
+        "allowed": False,
+        "symbol": sym,
+        "reason": "not_active",
+        "policy": policy,
+    }
+
+    if not bool(policy.get("active")):
+        return out
+
+    target_path = c.get("target_path_profit")
+    if not isinstance(target_path, dict):
+        target_path = _p283_target_path_profit_score(c)
+
+    rank_score = float(_safe_float(c.get("rank_score"), 0.0))
+    target_path_score = float(_safe_float((target_path or {}).get("score") if isinstance(target_path, dict) else c.get("target_path_score"), 0.0))
+    risk_per_share_pct = abs(float(_safe_float(c.get("risk_per_share_pct"), 0.0)))
+
+    blockers = []
+    if rank_score < float(policy.get("min_rank_score") or 0.0):
+        blockers.append("rank_score_below_recovery_min")
+    if target_path_score < float(policy.get("min_target_path_score") or 0.0):
+        blockers.append("target_path_score_below_recovery_min")
+    if risk_per_share_pct > float(policy.get("max_risk_per_share_pct") or 0.0):
+        blockers.append("risk_per_share_above_recovery_max")
+
+    out.update({
+        "rank_score": round(rank_score, 4),
+        "target_path_score": round(target_path_score, 4),
+        "risk_per_share_pct": round(risk_per_share_pct, 6),
+        "blockers": blockers,
+        "allowed": not blockers,
+        "reason": "allowed_recovery_candidate" if not blockers else "blocked_by_recovery_quality",
+    })
+    return out
+
 def _p252_swing_loss_day_entry_throttle_snapshot() -> dict:
     try:
         pnl = dict(today_pnl_truth_snapshot() or {})
@@ -46337,6 +46512,14 @@ def diagnostics_swing_runtime_config():
                 "can_block_entries": not _cfg_bool("SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY"),
                 "threshold_dollars": _cfg_float("SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS", 0.0),
             },
+            "loss_day_recovery_slot": {
+                "enabled": _cfg_bool("SWING_LOSS_DAY_RECOVERY_SLOT_ENABLED"),
+                "max_entries": _cfg_int("SWING_LOSS_DAY_RECOVERY_SLOT_MAX_ENTRIES", 0),
+                "min_rank_score": _cfg_float("SWING_LOSS_DAY_RECOVERY_SLOT_MIN_RANK_SCORE", 0.0),
+                "min_target_path_score": _cfg_float("SWING_LOSS_DAY_RECOVERY_SLOT_MIN_TARGET_PATH_SCORE", 0.0),
+                "max_risk_per_share_pct": _cfg_float("SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT", 0.0),
+                "purpose": "allows_one_high_quality_candidate_after_loss_day_without_disabling_throttle",
+            },
         },
         exit_guards={
             "opening_damage_guard": {
@@ -46815,6 +46998,10 @@ def diagnostics_exit_guard_evidence_light(limit: int = 20):
 def diagnostics_active_exit_protection_truth():
     return JSONResponse(content=_p364_active_exit_protection_truth())
 
+
+@app.get("/diagnostics/broker_native_position_risk_truth")
+def diagnostics_broker_native_position_risk_truth():
+    return JSONResponse(content=_p383_broker_native_position_risk_truth())
 
 @app.get("/diagnostics/same_day_stall_exit_churn_audit")
 def diagnostics_same_day_stall_exit_churn_audit(limit: int = 25):
