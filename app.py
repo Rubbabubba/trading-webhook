@@ -2619,7 +2619,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-390-hotfix-worker-exit-heartbeat-age-variable-fix"
+PATCH_VERSION = "patch-390-hotfix-2-existing-exit-failure-retry-backfill-giveback-due-truth-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8535,6 +8535,63 @@ def _p390_classify_exit_submit_failure(symbol: str, source: str, reason: str, cl
         "patch_version": PATCH_VERSION,
     }
 
+def _p390_backfill_exit_failure_classification(symbol: str, plan: dict) -> dict:
+    if not isinstance(plan, dict):
+        return {}
+
+    existing = dict(plan.get("last_exit_submit_failure_classification") or {})
+    if existing:
+        return existing
+
+    symbol = str(symbol or "").strip().upper()
+    source = str(plan.get("last_exit_submit_error_source") or "worker_exit")
+    reason = str(plan.get("last_exit_submit_error_reason") or "")
+    err_text = str(plan.get("last_exit_submit_error") or "").strip()
+    close_side = "sell" if str(plan.get("side") or "buy").lower() == "buy" else "buy"
+    qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or 0.0))
+
+    if not reason or not err_text:
+        for row in reversed(list(DECISIONS or [])[-600:]):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("source") or "") != "worker_exit":
+                continue
+            if str(row.get("symbol") or "").strip().upper() != symbol:
+                continue
+            action = str(row.get("action") or "").lower()
+            if action != "submit_failed":
+                continue
+            reason = reason or str(row.get("reason") or "exit")
+            err_text = err_text or str(
+                row.get("error")
+                or row.get("err")
+                or row.get("message")
+                or "historical_submit_failed_without_error_text"
+            )
+            source = str(row.get("source") or source or "worker_exit")
+            break
+
+    if not reason and not err_text:
+        return {}
+
+    classification = _p390_classify_exit_submit_failure(
+        symbol,
+        source,
+        reason or "exit",
+        close_side,
+        qty,
+        err_text or "historical_submit_failed_without_error_text",
+    )
+    plan["last_exit_submit_failure_classification"] = dict(classification)
+    plan["last_exit_submit_retryable"] = bool(classification.get("retryable"))
+    plan["last_exit_submit_retry_timing"] = classification.get("retry_timing")
+    if reason and not plan.get("last_exit_submit_error_reason"):
+        plan["last_exit_submit_error_reason"] = reason
+    if err_text and not plan.get("last_exit_submit_error"):
+        plan["last_exit_submit_error"] = err_text
+    if source and not plan.get("last_exit_submit_error_source"):
+        plan["last_exit_submit_error_source"] = source
+    return classification
 
 def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
     rows = []
@@ -8545,7 +8602,7 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
         if not isinstance(plan, dict) or not bool(plan.get("active")):
             continue
 
-        classification = dict(plan.get("last_exit_submit_failure_classification") or {})
+        classification = _p390_backfill_exit_failure_classification(sym, plan)
         if not classification:
             continue
 
@@ -8578,16 +8635,18 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             blocked_reasons.append("pending_close_order_exists")
         if bool(idem_guard.get("blocked")):
             blocked_reasons.append("same_day_exit_submit_idempotency")
-        if not market_open and str(classification.get("retry_timing") or "") != "next_regular_market_open":
-            blocked_reasons.append("market_closed")
+        if not market_open:
+            blocked_reasons.append("market_closed_wait_for_next_regular_open")
         if not retryable:
             blocked_reasons.append("classification_not_retryable")
 
-        ready = bool(retryable and has_position and not pending_close and not idem_guard.get("blocked") and market_open)
+        ready_at_next_open = bool(retryable and has_position and not pending_close and not idem_guard.get("blocked"))
+        ready = bool(ready_at_next_open and market_open)
 
         rows.append({
             "symbol": symbol,
             "ready": ready,
+            "ready_at_next_regular_open": ready_at_next_open,
             "retryable": retryable,
             "retry_timing": classification.get("retry_timing"),
             "classification": classification.get("classification"),
@@ -48076,6 +48135,8 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "none"
     )
     exit_retry_readiness = _p390_exit_submit_retry_readiness(limit=limit)
+    active_exit_truth = _p364_active_exit_protection_truth()
+    active_exit_summary = dict(active_exit_truth.get("summary") or {})
 
     return {
         "ok": True,
@@ -48083,6 +48144,13 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "heartbeat": hb,
         "heartbeat_age_sec": age_sec,
         "exit_submit_retry_readiness": exit_retry_readiness,
+        "giveback_due_truth_sync": {
+            "heartbeat_giveback_exit_due_count": hb.get("giveback_exit_due_count"),
+            "heartbeat_giveback_exit_due_symbols": list(hb.get("giveback_exit_due_symbols") or []),
+            "active_exit_truth_giveback_exit_due_count": active_exit_summary.get("giveback_exit_due_count"),
+            "active_exit_truth_giveback_exit_due_symbols": list(active_exit_summary.get("giveback_exit_due_symbols") or []),
+            "in_sync": set(hb.get("giveback_exit_due_symbols") or []) == set(active_exit_summary.get("giveback_exit_due_symbols") or []),
+        },
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
