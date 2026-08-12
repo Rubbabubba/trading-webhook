@@ -1492,8 +1492,12 @@ SWING_LOSS_DAY_RECOVERY_SLOT_MIN_TARGET_PATH_SCORE = getenv_float_any("SWING_LOS
 SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT = getenv_float_any("SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT", default=0.10)
 SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED = env_bool_any("SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED", default=True)
 SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE = getenv_float_any("SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE", default=1.25)
+SWING_DOLLAR_RISK_ADD_SLOT_SELECTION_ENABLED = env_bool_any("SWING_DOLLAR_RISK_ADD_SLOT_SELECTION_ENABLED", default=True)
+SWING_DOLLAR_RISK_ADD_SLOT_MAX_PER_SCAN = getenv_int_any("SWING_DOLLAR_RISK_ADD_SLOT_MAX_PER_SCAN", default=1)
 SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE = getenv_float_any("SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE", default=2.0)
 SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE = getenv_float_any("SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE", default=1.25)
+SWING_OVERSIZED_POSITION_CAPACITY_ADJUSTMENT_ENABLED = env_bool_any("SWING_OVERSIZED_POSITION_CAPACITY_ADJUSTMENT_ENABLED", default=True)
+SWING_OVERSIZED_POSITION_MAX_ADD_SLOTS_WHILE_OVERSIZED = getenv_int_any("SWING_OVERSIZED_POSITION_MAX_ADD_SLOTS_WHILE_OVERSIZED", default=1)
 SWING_SIMPLIFICATION_AUDIT_ENABLED = env_bool_any("SWING_SIMPLIFICATION_AUDIT_ENABLED", default=True)
 SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY = env_bool_any("SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY", default=True)
 SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
@@ -2585,7 +2589,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-384-dollar-risk-selection-truth-oversized-position-remediation-advisory"
+PATCH_VERSION = "patch-385-oversized-risk-capacity-adjustment-dollar-risk-add-slot-selection-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14101,7 +14105,8 @@ def _p363_second_slot_truth(
     selected_count = int(watch.get("selected_total") or len(selected_items) or 0)
     captured_tradeable_count = int(watch.get("captured_tradeable_count") or len(captured_items) or 0)
     consumed_slot_count = max(selected_count, captured_tradeable_count)
-    open_slots = max(0, int(_effective_max_open_positions()) - int(active_truth.get("active_position_count") or 0))
+    risk_adjusted_capacity = _p385_risk_adjusted_capacity_truth(active_truth)
+    open_slots = int(risk_adjusted_capacity.get("risk_adjusted_open_slots") or 0)
 
     rows = []
     bug_symbols = []
@@ -14208,6 +14213,7 @@ def _p363_second_slot_truth(
         "consumed_slot_count": consumed_slot_count,
         "eligible_not_selected_count": len(eligible_not_selected_items),
         "open_slots": open_slots,
+        "risk_adjusted_capacity": risk_adjusted_capacity,
         "weak_tape_slot_cap_applies": bool(weak_tape_active and weak_tape_cap > 0),
         "weak_tape_slot_cap_reached": bool(weak_tape_active and weak_tape_cap > 0 and consumed_slot_count >= weak_tape_cap),
         "weak_cap_symbols": _dedupe_keep_order(weak_cap_symbols),
@@ -14301,6 +14307,7 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         captured_items=captured_items,
         active_truth=active_truth,
     )
+    risk_adjusted_capacity = _p385_risk_adjusted_capacity_truth(active_truth)
 
     blockers = []
     if not bool(NEW_ENTRIES_ENABLED):
@@ -14390,7 +14397,9 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "active_position_count": int(active_truth.get("active_position_count") or 0),
             "active_symbols": list(active_truth.get("symbols") or []),
             "effective_max_open_positions": int(_effective_max_open_positions()),
-            "open_slots": max(0, int(_effective_max_open_positions()) - int(active_truth.get("active_position_count") or 0)),
+            "raw_open_slots": int(risk_adjusted_capacity.get("raw_open_slots") or 0),
+            "open_slots": int(risk_adjusted_capacity.get("risk_adjusted_open_slots") or 0),
+            "risk_adjusted_capacity": risk_adjusted_capacity,
         },
         "watch_summary": {
             "truth_source": watch.get("truth_source"),
@@ -14424,7 +14433,8 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "daily_goal_high": float(globals().get("BROKER_DAILY_GOAL_HIGH_DOLLARS", 200) or 200),
             "missing_trade_opportunity_count": int(watch.get("missing_trade_opportunity_count") or 0),
             "captured_candidate_count": len(captured_items),
-            "open_slots": max(0, int(_effective_max_open_positions()) - int(active_truth.get("active_position_count") or 0)),
+            "raw_open_slots": int(risk_adjusted_capacity.get("raw_open_slots") or 0),
+            "open_slots": int(risk_adjusted_capacity.get("risk_adjusted_open_slots") or 0),t("active_position_count") or 0)),
             "operator_read": (
                 "selected_submit_rate_limited_retryable; inspect_protective_limit_submit_evidence"
                 if rate_limited_selected_symbols
@@ -19791,15 +19801,15 @@ def _p323_swing_production_contract(candidate: dict | None, global_block_reasons
         sizing_truth_fn=_p300_executable_sizing_truth,
     )
 
-
 def _p323_apply_swing_production_contract(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
     candidate = _p365_apply_stall_churn_reentry_cooldown(candidate)
-    return swing_contract_apply(
+    out = swing_contract_apply(
         candidate,
         config=_p333_swing_selection_contract_config(),
         global_block_reasons=global_block_reasons,
         sizing_truth_fn=_p300_executable_sizing_truth,
     )
+    return _p385_apply_dollar_risk_add_slot_contract(out)
 
 def _p323_swing_production_sort_key(candidate: dict | None) -> tuple:
     return swing_contract_sort_key(
@@ -19813,16 +19823,18 @@ def _p323_enforce_production_contract_selection(
 ) -> list[dict]:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     rows = _p377_filter_rows_for_breakout_follow_through(rows)
-    return swing_contract_enforce(
+    enforced = swing_contract_enforce(
         rows,
         config=_p333_swing_selection_contract_config(),
         global_block_reasons=global_block_reasons,
         sizing_truth_fn=_p300_executable_sizing_truth,
     )
+    return [_p385_apply_dollar_risk_add_slot_contract(row) for row in enforced]
 
 def _p323_contract_approved_rows(rows: list | None) -> list[dict]:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     rows = _p377_filter_rows_for_breakout_follow_through(rows)
+    rows = [_p385_apply_dollar_risk_add_slot_contract(row) for row in rows]
     return swing_contract_approved_rows(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -19836,13 +19848,14 @@ def _p326_finalize_production_contract_selection(
 ) -> dict:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     rows = _p377_filter_rows_for_breakout_follow_through(rows)
-    return swing_contract_finalize(
+    finalized = swing_contract_finalize(
         rows,
         config=_p333_swing_selection_contract_config(),
         max_new_entries=max_new_entries,
         global_block_reasons=global_block_reasons,
         sizing_truth_fn=_p300_executable_sizing_truth,
     )
+    return _p385_sync_dollar_risk_add_slot_finalizer(finalized, max_new_entries=max_new_entries)
 
 def _p344_sync_selected_from_approved_finalizer(
     finalizer: dict | None,
@@ -19886,6 +19899,10 @@ def _p344_sync_selected_from_approved_finalizer(
                 c["entry_type"] = "swing_production_risk_calibrated_starter"
                 c["selected_source"] = "swing_production_risk_calibration"
                 c["risk_calibration_applied"] = True
+            elif bool(checks.get("dollar_risk_add_slot_ok")):
+                c["entry_type"] = "swing_production_dollar_risk_add_slot"
+                c["selected_source"] = "swing_production_dollar_risk_add_slot"
+                c["dollar_risk_add_slot_selected"] = True
             else:
                 c["entry_type"] = "swing_production_contract"
                 c["selected_source"] = "swing_production_reset"
@@ -22574,6 +22591,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
 
     max_new_entries = min(max_new_entries, remaining_today)
 
+    risk_adjusted_capacity = _p385_risk_adjusted_capacity_truth()
+    if bool(risk_adjusted_capacity.get("enabled")):
+        max_new_entries = min(
+            max_new_entries,
+            int(risk_adjusted_capacity.get("risk_adjusted_open_slots") or 0),
+        )
+
     weak_tape_capacity_override = {
         "enabled": False,
         "weak_tape": bool(regime_mode == "defensive" or regime.get("favorable") is False),
@@ -22860,6 +22884,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'selection_finalizer_approved_symbols': list(production_selection_finalizer.get('approved_symbols') or []),
             'selected_sync_applied': bool(production_selection_finalizer.get('p344_selected_sync_applied')),
             'selected_sync_reason': production_selection_finalizer.get('p344_selected_sync_reason'),
+            'dollar_risk_add_slot_sync': dict(production_selection_finalizer.get('p385_dollar_risk_add_slot_sync') or {}),
+            'risk_adjusted_capacity': dict(risk_adjusted_capacity),
             'risk_calibrated_starter_count': len([
                 c for c in production_approved
                 if bool(((c.get("swing_production_contract") or {}).get("checks") or {}).get("risk_calibrated_starter_ok"))
@@ -35953,6 +35979,174 @@ def _p384_candidate_dollar_risk_truth(candidate: dict | None) -> dict:
         "percent_risk": c.get("risk_per_share_pct"),
     }
 
+def _p385_apply_dollar_risk_add_slot_contract(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    if not bool(SWING_DOLLAR_RISK_ADD_SLOT_SELECTION_ENABLED):
+        return c
+
+    contract = dict(c.get("swing_production_contract") or {})
+    checks = dict(contract.get("checks") or {})
+    blockers = [
+        str(r or "").strip()
+        for r in list(contract.get("blockers") or c.get("rejection_reasons") or [])
+        if str(r or "").strip()
+    ]
+
+    risk_blockers = {"production_contract_risk_too_wide", "risk_per_share", "gate:risk_per_share"}
+    non_risk_blockers = [r for r in blockers if r not in risk_blockers]
+    dollar_risk = _p384_candidate_dollar_risk_truth(c)
+
+    can_promote = bool(
+        dollar_risk.get("allowed")
+        and blockers
+        and not non_risk_blockers
+        and bool(checks.get("executable"))
+        and bool(checks.get("rank_score_ok"))
+        and bool(checks.get("liquidity_ok"))
+        and bool(checks.get("not_too_far_below_breakout"))
+        and bool(checks.get("not_too_extended_above_breakout"))
+        and bool(checks.get("close_to_high_ok"))
+        and bool(checks.get("return_20d_ok"))
+    )
+
+    c["dollar_risk_add_slot"] = {
+        "enabled": True,
+        "allowed": can_promote,
+        "dollar_risk_selection_truth": dollar_risk,
+        "original_blockers": blockers,
+        "non_risk_blockers": non_risk_blockers,
+    }
+
+    if not can_promote:
+        return c
+
+    checks["dollar_risk_add_slot_ok"] = True
+    checks["risk_ok"] = True
+    checks["contract_path_ok"] = True
+    contract["approved"] = True
+    contract["blockers"] = []
+    contract["checks"] = checks
+    contract.setdefault("advisory_legacy_reasons", [])
+    contract["advisory_legacy_reasons"] = _dedupe_keep_order(
+        list(contract.get("advisory_legacy_reasons") or []) + blockers + ["dollar_risk_add_slot_promoted"]
+    )
+
+    c["swing_production_contract"] = contract
+    c["eligible"] = True
+    c["production_contract_approved"] = True
+    c["rejection_reasons"] = []
+    c["entry_type"] = "swing_production_dollar_risk_add_slot"
+    c["selected_source"] = "swing_production_dollar_risk_add_slot"
+    c["dollar_risk_add_slot"]["promoted"] = True
+    return c
+
+
+def _p385_sync_dollar_risk_add_slot_finalizer(finalizer: dict | None, *, max_new_entries: int) -> dict:
+    out = dict(finalizer or {})
+    rows = [
+        _p385_apply_dollar_risk_add_slot_contract(dict(row or {}))
+        for row in list(out.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+
+    max_total = max(0, int(max_new_entries or 0))
+    max_add = max(0, int(SWING_DOLLAR_RISK_ADD_SLOT_MAX_PER_SCAN or 0))
+    selected = [dict(row or {}) for row in list(out.get("selected") or []) if isinstance(row, dict)]
+    selected_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in selected
+        if str(row.get("symbol") or "").strip()
+    }
+
+    add_slot_rows = [
+        row for row in rows
+        if bool((row.get("dollar_risk_add_slot") or {}).get("promoted"))
+        and str(row.get("symbol") or "").strip().upper() not in selected_symbols
+    ]
+    add_slot_rows.sort(
+        key=lambda row: (
+            float(_safe_float(row.get("rank_score"))),
+            float(_safe_float(row.get("target_path_score") or (row.get("target_path_profit") or {}).get("score"))),
+        ),
+        reverse=True,
+    )
+
+    added = []
+    for row in add_slot_rows:
+        if len(selected) >= max_total or len(added) >= max_add:
+            break
+        c = dict(row or {})
+        c["selected"] = True
+        c["entry_type"] = "swing_production_dollar_risk_add_slot"
+        c["selected_source"] = "swing_production_dollar_risk_add_slot"
+        c["selection_finalizer"] = "p385_dollar_risk_add_slot_selection_sync"
+        selected.append(c)
+        added.append(c)
+        selected_symbols.add(str(c.get("symbol") or "").strip().upper())
+
+    rebuilt_rows = []
+    for row in rows:
+        c = dict(row or {})
+        sym = str(c.get("symbol") or "").strip().upper()
+        c["selected"] = bool(sym and sym in selected_symbols)
+        rebuilt_rows.append(c)
+
+    approved = [
+        dict(row or {})
+        for row in rebuilt_rows
+        if bool((row.get("swing_production_contract") or {}).get("approved"))
+    ]
+
+    out["rows"] = rebuilt_rows
+    out["approved"] = approved
+    out["selected"] = selected
+    out["selected_symbols"] = [
+        str(row.get("symbol") or "").strip().upper()
+        for row in selected
+        if str(row.get("symbol") or "").strip()
+    ]
+    out["approved_symbols"] = [
+        str(row.get("symbol") or "").strip().upper()
+        for row in approved
+        if str(row.get("symbol") or "").strip()
+    ]
+    out["p385_dollar_risk_add_slot_sync"] = {
+        "enabled": bool(SWING_DOLLAR_RISK_ADD_SLOT_SELECTION_ENABLED),
+        "max_per_scan": max_add,
+        "added_count": len(added),
+        "added_symbols": [row.get("symbol") for row in added],
+    }
+    return out
+
+
+def _p385_risk_adjusted_capacity_truth(active_truth: dict | None = None) -> dict:
+    active = dict(active_truth or {})
+    active_count = int(active.get("active_position_count") or 0)
+    effective_max = int(_effective_max_open_positions())
+    raw_open_slots = max(0, effective_max - active_count)
+
+    advisory = _p384_oversized_position_remediation_advisory()
+    oversized_symbols = list(advisory.get("oversized_symbols") or [])
+    max_add_while_oversized = max(0, int(SWING_OVERSIZED_POSITION_MAX_ADD_SLOTS_WHILE_OVERSIZED or 0))
+
+    if bool(SWING_OVERSIZED_POSITION_CAPACITY_ADJUSTMENT_ENABLED) and oversized_symbols:
+        risk_adjusted_open_slots = min(raw_open_slots, max_add_while_oversized)
+        read = "oversized_position_capacity_capped"
+    else:
+        risk_adjusted_open_slots = raw_open_slots
+        read = "normal_capacity"
+
+    return {
+        "enabled": bool(SWING_OVERSIZED_POSITION_CAPACITY_ADJUSTMENT_ENABLED),
+        "effective_max_open_positions": effective_max,
+        "active_position_count": active_count,
+        "raw_open_slots": raw_open_slots,
+        "risk_adjusted_open_slots": risk_adjusted_open_slots,
+        "max_add_slots_while_oversized": max_add_while_oversized,
+        "oversized_symbols": oversized_symbols,
+        "oversized_count": len(oversized_symbols),
+        "read": read,
+    }
 
 def _p384_oversized_position_remediation_advisory() -> dict:
     risk_truth = _p383_broker_native_position_risk_truth()
@@ -46669,8 +46863,12 @@ def diagnostics_swing_runtime_config():
             "dollar_risk_selection_truth": {
                 "enabled": _cfg_bool("SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED"),
                 "max_multiple": _cfg_float("SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE", 0.0),
+                "add_slot_selection_enabled": _cfg_bool("SWING_DOLLAR_RISK_ADD_SLOT_SELECTION_ENABLED"),
+                "add_slot_max_per_scan": _cfg_int("SWING_DOLLAR_RISK_ADD_SLOT_MAX_PER_SCAN", 0),
                 "oversized_position_advisory_multiple": _cfg_float("SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE", 0.0),
                 "oversized_reduce_to_risk_multiple": _cfg_float("SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE", 0.0),
+                "oversized_capacity_adjustment_enabled": _cfg_bool("SWING_OVERSIZED_POSITION_CAPACITY_ADJUSTMENT_ENABLED"),
+                "oversized_max_add_slots_while_oversized": _cfg_int("SWING_OVERSIZED_POSITION_MAX_ADD_SLOTS_WHILE_OVERSIZED", 0),
                 "purpose": "prefer dollar-risk truth over percent-risk confusion",
             },
         },
