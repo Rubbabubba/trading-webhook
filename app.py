@@ -2515,7 +2515,7 @@ SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS = {
     str(x or "").strip().lower()
     for x in getenv_any(
         "SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS",
-        default="stall_loss_guard,stop,opening_damage_exit,daily_goal_preservation",
+        default="stall_loss_guard,stop,opening_damage_exit,daily_goal_preservation,daily_breakout_profit_giveback_preservation_exit",
     ).split(",")
     if str(x or "").strip()
 }
@@ -2552,7 +2552,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-378-hotfix-active-breakout-high-water-backfill-giveback-preservation-truth"
+PATCH_VERSION = "patch-379-exit-protection-truth-consolidation-giveback-exit-terminal-status"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8185,6 +8185,40 @@ def _p378_daily_breakout_profit_giveback_preservation_truth() -> dict:
             "worker_exit_should_close_triggered_breakout_giveback_symbols"
             if triggered
             else "monitor_active_breakout_winners"
+        ),
+    }
+
+def _p379_giveback_exit_due_snapshot() -> dict:
+    truth = _p378_daily_breakout_profit_giveback_preservation_truth()
+    rows = [
+        dict(row or {})
+        for row in list(truth.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    due_rows = [
+        row for row in rows
+        if bool(row.get("exit_would_trigger") or (row.get("state") or {}).get("triggered"))
+    ]
+    due_symbols = [
+        str(row.get("symbol") or "").strip().upper()
+        for row in due_rows
+        if str(row.get("symbol") or "").strip()
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "giveback_exit_due_snapshot",
+        "market_open": bool(in_market_hours()),
+        "due_count": len(due_rows),
+        "due_symbols": _dedupe_keep_order(due_symbols),
+        "due_rows": due_rows,
+        "recommended_action": (
+            "worker_exit_should_submit_giveback_preservation_exits_now"
+            if due_rows and in_market_hours()
+            else "giveback_exits_due_but_regular_market_closed"
+            if due_rows
+            else "none"
         ),
     }
 
@@ -32892,6 +32926,13 @@ def _p364_active_exit_protection_truth() -> dict:
         hit_target = bool(take_price > 0 and current_price > 0 and current_price >= take_price)
         time_exit_due = bool(has_plan and max_hold_days > 0 and hold_days is not None and hold_days >= max_hold_days)
 
+        giveback_state = (
+            _p378_daily_breakout_profit_giveback_state(symbol, plan, float(current_price))
+            if has_plan and current_price > 0
+            else {"triggered": False}
+        )
+        hit_giveback_preservation = bool(giveback_state.get("triggered"))
+
         closest_exit_reason = "none"
         if hit_stop:
             closest_exit_reason = "stop"
@@ -32899,6 +32940,8 @@ def _p364_active_exit_protection_truth() -> dict:
             closest_exit_reason = "profit_lock_stop"
         elif hit_target:
             closest_exit_reason = "target"
+        elif hit_giveback_preservation:
+            closest_exit_reason = "daily_breakout_profit_giveback_preservation_exit"
         elif time_exit_due:
             closest_exit_reason = "time_exit"
 
@@ -32936,7 +32979,8 @@ def _p364_active_exit_protection_truth() -> dict:
             "hold_days": hold_days,
             "max_hold_days": max_hold_days,
             "closest_exit_reason": closest_exit_reason,
-            "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target or time_exit_due),
+            "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target or hit_giveback_preservation or time_exit_due),
+            "daily_breakout_profit_giveback": giveback_state,
             "same_day_exit_blocked_for_closest_reason": bool(same_day_block),
             "exit_worker_has_enough_data": exit_worker_has_enough_data,
             "protection_status": protection_status,
@@ -32965,6 +33009,15 @@ def _p364_active_exit_protection_truth() -> dict:
             "row_count": len(rows),
             "missing_protection_count": len(missing_protection),
             "exit_watch_count": len(actionable_exit_watch),
+            "giveback_exit_due_count": len([
+                row for row in rows
+                if str(row.get("closest_exit_reason") or "") == "daily_breakout_profit_giveback_preservation_exit"
+            ]),
+            "giveback_exit_due_symbols": [
+                row.get("symbol")
+                for row in rows
+                if str(row.get("closest_exit_reason") or "") == "daily_breakout_profit_giveback_preservation_exit"
+            ],
             "all_active_positions_protected": len(missing_protection) == 0,
         },
         "missing_protection_symbols": missing_protection,
@@ -33868,22 +33921,32 @@ def worker_exit(body: dict = Body(default_factory=dict)):
     if ONLY_MARKET_HOURS and not in_market_hours():
         status = _eod_flatten_status_snapshot(live=True)
         daily_stop_context = _daily_stop_evaluation_context(now)
+        giveback_due = _p379_giveback_exit_due_snapshot()
+        giveback_due_symbols = list(giveback_due.get("due_symbols") or [])
+        worker_exit_status = (
+            "outside_market_hours_giveback_exit_due"
+            if giveback_due_symbols
+            else "outside_market_hours"
+        )
         snapshot = persist_positions_snapshot(
-            reason="worker_exit_outside_market_hours",
+            reason=worker_exit_status,
             extra={
-                "worker_exit_status": "outside_market_hours",
+                "worker_exit_status": worker_exit_status,
                 "market_open": False,
                 "strategy_mode": STRATEGY_MODE,
                 "daily_stop_evaluation": daily_stop_context,
+                "daily_breakout_profit_giveback_due": giveback_due,
                 "eod_flatten": status,
                 "reconcile_count": len(reconcile_actions),
                 "reconcile_actions": reconcile_actions[:20],
             },
         )
         update_exit_heartbeat(
-            status="outside_market_hours",
+            status=worker_exit_status,
             residual_count=status.get("residual_count"),
             still_open_symbols=status.get("residual_symbols"),
+            giveback_exit_due_count=len(giveback_due_symbols),
+            giveback_exit_due_symbols=giveback_due_symbols,
             daily_stop_evaluation_allowed=daily_stop_context.get("allowed"),
             daily_stop_evaluation_reasons=daily_stop_context.get("reasons"),
             snapshot_reason=snapshot.get("reason"),
@@ -33892,7 +33955,8 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         return {
             "ok": True,
             "skipped": True,
-            "reason": "outside_market_hours",
+            "reason": worker_exit_status,
+            "giveback_exit_due": giveback_due,
             "eod_flatten_status": status,
             "snapshot_persisted": True,
             "snapshot_reason": snapshot.get("reason"),
@@ -41544,7 +41608,9 @@ def diagnostics_regime_b(request: Request):
     state = _recompute_strategy_performance_state(); mr_perf = _strategy_perf_summary(MEAN_REVERSION_STRATEGY_NAME); kill_active, kill_reasons = _strategy_kill_switch_active(MEAN_REVERSION_STRATEGY_NAME); latest_scan = dict(LAST_SCAN or {}); summary = dict(latest_scan.get("summary") or {})
     return {"ok": True, "enabled": bool(SWING_MEAN_REVERSION_ENABLED), "strategy_name": MEAN_REVERSION_STRATEGY_NAME, "only_when_regime_unfavorable": bool(SWING_MEAN_REVERSION_ONLY_WHEN_REGIME_UNFAVORABLE), "kill_switch_active": bool(kill_active), "kill_switch_reasons": list(kill_reasons), "kill_switch_state": dict((state.get("kill_switch") or {}).get(MEAN_REVERSION_STRATEGY_NAME) or {}), "performance": mr_perf, "latest_scan_summary": {"mean_reversion_candidates_total": int(summary.get("mean_reversion_candidates_total") or 0), "mean_reversion_eligible_total": int(summary.get("mean_reversion_eligible_total") or 0), "selected_strategy": summary.get("selected_strategy"), "top_mean_reversion_candidates": list(summary.get("top_mean_reversion_candidates") or []), "regime": dict(summary.get("regime") or {})}, "config": {"target_pct": float(SWING_MEAN_REVERSION_TARGET_PCT), "stop_pct": float(SWING_MEAN_REVERSION_STOP_PCT), "max_hold_days": int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), "risk_multiplier": float(SWING_MEAN_REVERSION_RISK_MULTIPLIER), "symbol_exposure_multiplier": float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER), "weak_tape_max_new_entries": int(SWING_MEAN_REVERSION_WEAK_TAPE_MAX_NEW_ENTRIES)}}
 
-
+@app.get("/diagnostics/giveback_exit_due_snapshot")
+def diagnostics_giveback_exit_due_snapshot():
+    return JSONResponse(content=_p379_giveback_exit_due_snapshot())
 
 def _dashboard_entry_dispatch_truth(limit: int = 8) -> dict:
     """Read-only dashboard truth for scanner entry dispatch attempts."""
@@ -45145,6 +45211,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/worker_exit_status",
             f"{base}/daily_goal_preservation_exit",
             f"{base}/daily_breakout_profit_giveback_preservation_truth",
+            f"{base}/giveback_exit_due_snapshot",
             f"{base}/broker_daily_goal_truth",
             f"{base}/broker_only_daily_loss_truth",
             f"{base}/same_day_breakout_loss_forensics?limit=10",
