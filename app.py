@@ -2619,7 +2619,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-390-exit-submit-failure-classification-market-open-retry-readiness"
+PATCH_VERSION = "patch-390-hotfix-worker-exit-heartbeat-age-variable-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -48081,7 +48081,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "ok": True,
         "patch_version": PATCH_VERSION,
         "heartbeat": hb,
-        "heartbeat_age_sec": age,
+        "heartbeat_age_sec": age_sec,
         "exit_submit_retry_readiness": exit_retry_readiness,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
