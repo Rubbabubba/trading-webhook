@@ -2593,7 +2593,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-387-hotfix-backfill-current-rate-limited-submit-row-submit-trace-retry-awareness"
+PATCH_VERSION = "patch-387-hotfix-2-retry-queue-timestamp-helper-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -31914,7 +31914,7 @@ def _p387_rate_limit_retry_key(symbol: str, signal: str | None = None) -> str:
 
 def _p387_prune_rate_limit_selected_submit_retry_queue() -> None:
     ttl = max(1, int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC or 900))
-    now_ts = _utc_ts()
+    now_ts = datetime.now(timezone.utc).timestamp()
     for key, row in list(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.items()):
         try:
             queued_ts = float(row.get("queued_utc_ts") or 0.0)
@@ -31948,7 +31948,7 @@ def _p387_queue_rate_limited_selected_submit(candidate: dict | None, submit_row:
         "key": key,
         "queued_utc": datetime.now(timezone.utc).isoformat(),
         "queued_ny": now_ny().isoformat(),
-        "queued_utc_ts": _utc_ts(),
+        "queued_utc_ts": datetime.now(timezone.utc).timestamp(),
         "patch_version": PATCH_VERSION,
         "symbol": sym,
         "side": side,
