@@ -2619,7 +2619,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-389-legacy-oversized-position-normalization-risk-contract-backfill"
+PATCH_VERSION = "patch-390-exit-submit-failure-classification-market-open-retry-readiness"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8458,8 +8458,177 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
         "items": rows,
     }
 
+def _p390_classify_exit_submit_failure(symbol: str, source: str, reason: str, close_side: str, qty: float, err_text: str) -> dict:
+    text = str(err_text or "").strip()
+    low = text.lower()
+    market = _market_clock_snapshot()
+    market_open = bool(market.get("is_open"))
+
+    rate_limited = _p352_is_alpaca_rate_limit_error(text)
+    nonretryable = _is_nonretryable_alpaca_order_error(text)
+    market_closed = (
+        not market_open
+        or "market is closed" in low
+        or "outside market" in low
+        or "outside regular" in low
+        or "not open" in low
+    )
+    insufficient_qty = (
+        "insufficient qty" in low
+        or "insufficient quantity" in low
+        or "not enough" in low and "qty" in low
+        or "position does not exist" in low
+    )
+    buying_power = "buying power" in low or "insufficient buying power" in low
+
+    retryable = bool(
+        rate_limited
+        or market_closed
+        or ("timeout" in low)
+        or ("temporarily" in low)
+        or ("connection" in low)
+    ) and not bool(nonretryable or insufficient_qty or buying_power)
+
+    retry_timing = (
+        "next_regular_market_open"
+        if market_closed
+        else "after_rate_limit_cooldown"
+        if rate_limited
+        else "next_worker_exit_cycle"
+        if retryable
+        else "do_not_retry_without_new_broker_truth"
+    )
+
+    classification = (
+        "market_closed"
+        if market_closed
+        else "rate_limited"
+        if rate_limited
+        else "insufficient_position_qty"
+        if insufficient_qty
+        else "buying_power_or_account_restriction"
+        if buying_power
+        else "nonretryable_broker_reject"
+        if nonretryable
+        else "retryable_transport_or_unknown"
+        if retryable
+        else "unknown_terminal_failure"
+    )
+
+    return {
+        "classification": classification,
+        "retryable": bool(retryable),
+        "retry_timing": retry_timing,
+        "market_open": market_open,
+        "market_clock_reason": market.get("reason"),
+        "rate_limited": bool(rate_limited),
+        "nonretryable": bool(nonretryable),
+        "market_closed": bool(market_closed),
+        "insufficient_position_qty": bool(insufficient_qty),
+        "buying_power_or_account_restriction": bool(buying_power),
+        "symbol": str(symbol or "").upper(),
+        "source": source,
+        "exit_reason": reason or "exit",
+        "close_side": close_side,
+        "qty": qty,
+        "error": text,
+        "patch_version": PATCH_VERSION,
+    }
+
+
+def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
+    rows = []
+    market = _market_clock_snapshot()
+    market_open = bool(market.get("is_open"))
+
+    for sym, plan in list((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not bool(plan.get("active")):
+            continue
+
+        classification = dict(plan.get("last_exit_submit_failure_classification") or {})
+        if not classification:
+            continue
+
+        symbol = str(sym or "").upper()
+        reason = str(plan.get("last_exit_submit_error_reason") or classification.get("exit_reason") or "exit")
+        close_side = "sell" if str(plan.get("side") or "buy").lower() == "buy" else "buy"
+
+        qty_signed = 0.0
+        try:
+            qty_signed, _pos_side = get_position(symbol)
+        except Exception:
+            qty_signed = 0.0
+
+        has_position = abs(_safe_float(qty_signed, 0.0)) > 0
+        pending_close = _pending_close_order_for_symbol(symbol, close_side)
+        idem_guard = _p373_same_day_exit_submit_guard(
+            symbol,
+            reason=reason,
+            source=str(plan.get("last_exit_submit_error_source") or "worker_exit"),
+            qty=abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or 0.0)),
+            plan_ref=plan,
+            close_side=close_side,
+        )
+
+        retryable = bool(classification.get("retryable"))
+        blocked_reasons = []
+        if not has_position:
+            blocked_reasons.append("no_broker_position")
+        if pending_close:
+            blocked_reasons.append("pending_close_order_exists")
+        if bool(idem_guard.get("blocked")):
+            blocked_reasons.append("same_day_exit_submit_idempotency")
+        if not market_open and str(classification.get("retry_timing") or "") != "next_regular_market_open":
+            blocked_reasons.append("market_closed")
+        if not retryable:
+            blocked_reasons.append("classification_not_retryable")
+
+        ready = bool(retryable and has_position and not pending_close and not idem_guard.get("blocked") and market_open)
+
+        rows.append({
+            "symbol": symbol,
+            "ready": ready,
+            "retryable": retryable,
+            "retry_timing": classification.get("retry_timing"),
+            "classification": classification.get("classification"),
+            "exit_reason": reason,
+            "close_side": close_side,
+            "broker_qty_signed": round(_safe_float(qty_signed, 0.0), 8),
+            "has_position": has_position,
+            "pending_close_order": bool(pending_close),
+            "same_day_exit_idempotency_blocked": bool(idem_guard.get("blocked")),
+            "blocked_reasons": blocked_reasons,
+            "last_exit_submit_error_at": plan.get("last_exit_submit_error_at"),
+            "last_exit_submit_error": plan.get("last_exit_submit_error"),
+        })
+
+    rows = rows[:max(1, min(int(limit or 20), 50))]
+    ready_rows = [r for r in rows if bool(r.get("ready"))]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "exit_submit_retry_readiness",
+        "market_open": market_open,
+        "market_clock": market,
+        "row_count": len(rows),
+        "ready_count": len(ready_rows),
+        "ready_symbols": [r.get("symbol") for r in ready_rows],
+        "rows": rows,
+        "recommended_action": (
+            "worker_exit_should_retry_ready_exit_submits"
+            if ready_rows
+            else "wait_for_regular_market_open"
+            if rows and not market_open
+            else "inspect_nonretryable_exit_submit_failures"
+            if rows
+            else "none"
+        ),
+    }
+
 def _record_exit_submit_failure(symbol: str, source: str, reason: str, close_side: str, qty: float, err) -> dict:
     err_text = _alpaca_order_error_text(err)
+    classification = _p390_classify_exit_submit_failure(symbol, source, reason, close_side, qty, err_text)
     payload = {
         "closed": False,
         "submit_error": True,
@@ -8469,9 +8638,25 @@ def _record_exit_submit_failure(symbol: str, source: str, reason: str, close_sid
         "reason": "exit_submit_failed",
         "exit_reason": reason or "exit",
         "error": err_text,
-        "nonretryable": _is_nonretryable_alpaca_order_error(err_text),
+        "nonretryable": bool(classification.get("nonretryable")),
+        "retryable": bool(classification.get("retryable")),
+        "exit_submit_failure_classification": classification,
     }
-    record_decision("EXIT", source, symbol, side=close_side, action="submit_failed", reason=reason or "exit", qty=qty, meta={"error": err_text, "nonretryable": payload["nonretryable"]})
+    record_decision(
+        "EXIT",
+        source,
+        symbol,
+        side=close_side,
+        action="submit_failed",
+        reason=reason or "exit",
+        qty=qty,
+        meta={
+            "error": err_text,
+            "nonretryable": payload["nonretryable"],
+            "retryable": payload["retryable"],
+            "exit_submit_failure_classification": classification,
+        },
+    )
     try:
         if isinstance(TRADE_PLAN.get(str(symbol or "").upper()), dict):
             plan_ref = TRADE_PLAN[str(symbol or "").upper()]
@@ -8479,10 +8664,26 @@ def _record_exit_submit_failure(symbol: str, source: str, reason: str, close_sid
             plan_ref["last_exit_submit_error_at"] = datetime.now(timezone.utc).isoformat()
             plan_ref["last_exit_submit_error_reason"] = reason or "exit"
             plan_ref["last_exit_submit_error_source"] = source
+            plan_ref["last_exit_submit_failure_classification"] = dict(classification)
+            plan_ref["last_exit_submit_retryable"] = bool(classification.get("retryable"))
+            plan_ref["last_exit_submit_retry_timing"] = classification.get("retry_timing")
     except Exception:
         pass
     try:
-        persist_positions_snapshot(reason="close_position_submit_failed", extra={"symbol": str(symbol or "").upper(), "exit_reason": reason, "source": source, "close_side": close_side, "qty": qty, "error": err_text, "nonretryable": payload["nonretryable"]})
+        persist_positions_snapshot(
+            reason="close_position_submit_failed",
+            extra={
+                "symbol": str(symbol or "").upper(),
+                "exit_reason": reason,
+                "source": source,
+                "close_side": close_side,
+                "qty": qty,
+                "error": err_text,
+                "nonretryable": payload["nonretryable"],
+                "retryable": payload["retryable"],
+                "exit_submit_failure_classification": classification,
+            },
+        )
     except Exception:
         pass
     return payload
@@ -47874,11 +48075,14 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "inspect_recent_worker_exit_errors" if status in {"error", "failed"} or error_like else
         "none"
     )
+    exit_retry_readiness = _p390_exit_submit_retry_readiness(limit=limit)
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "heartbeat": hb,
-        "heartbeat_age_sec": age_sec,
+        "heartbeat_age_sec": age,
+        "exit_submit_retry_readiness": exit_retry_readiness,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
@@ -47893,6 +48097,10 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
 @app.get("/diagnostics/universe_shadow")
 def diagnostics_universe_shadow(limit: int = 10):
     return _universe_shadow_snapshot(limit=limit)
+
+@app.get("/diagnostics/exit_submit_retry_readiness")
+def diagnostics_exit_submit_retry_readiness(limit: int = 20):
+    return JSONResponse(content=_p390_exit_submit_retry_readiness(limit=limit))
 
 @app.get("/diagnostics/worker_exit_status")
 def diagnostics_worker_exit_status(limit: int = 20):
