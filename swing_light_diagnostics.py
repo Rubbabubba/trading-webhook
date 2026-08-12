@@ -68,7 +68,22 @@ def selected_submission_truth_light_snapshot(
         row.get("symbol")
         for row in rows
         if row.get("symbol")
-        and str(row.get("retry_evidence_status") or "") == "waiting_for_spread_retry"
+        and str(row.get("retry_evidence_status") or "") in {"waiting_for_spread_retry", "waiting_for_rate_limit_retry"}
+    ]
+    rate_limited_retry_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and bool(row.get("rate_limited_retryable"))
+    ]
+    submit_gap_unattempted_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and str(row.get("submit_gap_type") or "") == "unattempted"
+    ]
+    submit_gap_terminal_failed_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and str(row.get("submit_gap_type") or "") == "terminal_failed"
     ]
 
     return {
@@ -104,9 +119,17 @@ def selected_submission_truth_light_snapshot(
         "retry_resolved_count": len(retry_resolved_symbols),
         "retry_waiting_symbols": retry_waiting_symbols,
         "retry_waiting_count": len(retry_waiting_symbols),
+        "rate_limited_retry_symbols": rate_limited_retry_symbols,
+        "rate_limited_retry_count": len(rate_limited_retry_symbols),
+        "submit_gap_unattempted_symbols": submit_gap_unattempted_symbols,
+        "submit_gap_unattempted_count": len(submit_gap_unattempted_symbols),
+        "submit_gap_terminal_failed_symbols": submit_gap_terminal_failed_symbols,
+        "submit_gap_terminal_failed_count": len(submit_gap_terminal_failed_symbols),
         "rows": list(rows),
         "recommended_action": (
-            "selected_candidate_submit_gap_detected"
+            "rate_limited_selected_submit_waiting_for_retry"
+            if rate_limited_retry_symbols
+            else "selected_candidate_submit_gap_detected"
             if submit_gap_symbols
             else "selected_candidate_blocked_by_execution_quality"
             if execution_quality_block_symbols

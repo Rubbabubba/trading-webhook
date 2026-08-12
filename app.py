@@ -2461,6 +2461,7 @@ data_client = StockHistoricalDataClient(APCA_KEY, APCA_SECRET)
 TRADE_PLAN: dict[str, dict] = {}          # symbol -> plan dict
 P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE: list[dict] = []
 P352_RATE_LIMIT_SUBMIT_RECOVERY: list[dict] = []
+P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE: dict[str, dict] = {}
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
@@ -2528,6 +2529,9 @@ SCAN_RUNTIME_WARN_RATIO = max(0.10, float(getenv_any("SCAN_RUNTIME_WARN_RATIO", 
 ALPACA_SUBMIT_RATE_LIMIT_RETRY_ENABLED = env_bool_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_ENABLED", default="true")
 ALPACA_SUBMIT_RATE_LIMIT_RETRY_DELAY_SEC = max(0.0, float(getenv_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_DELAY_SEC", default="3") or 3))
 ALPACA_SUBMIT_RATE_LIMIT_RETRY_MAX_ATTEMPTS = max(1, int(getenv_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_MAX_ATTEMPTS", default="2") or 2))
+SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED = env_bool_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED", default=True)
+SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC = getenv_int_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC", default=900)
+SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN = getenv_int_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN", default=1)
 DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT = env_bool_any("DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT", default="true")
 DIAGNOSTIC_BUNDLE_MAX_ROWS = max(1, int(getenv_any("DIAGNOSTIC_BUNDLE_MAX_ROWS", default="10") or 10))
 DIAGNOSTIC_SCANNER_HISTORY_LIMIT = max(0, int(getenv_any("DIAGNOSTIC_SCANNER_HISTORY_LIMIT", default="10") or 10))
@@ -2589,7 +2593,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-386-captured-position-truth-sync-oversized-risk-operator-action-clarity"
+PATCH_VERSION = "patch-387-rate-limited-selected-submit-recovery-durable-submit-gap-retry"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -31868,6 +31872,120 @@ def _p352_response_rate_limited(resp: dict | None) -> bool:
         or _p352_is_alpaca_rate_limit_error((r.get("submit_diagnostics") or {}).get("error"))
     )
 
+def _p387_rate_limit_retry_key(symbol: str, signal: str | None = None) -> str:
+    sym = str(symbol or "").strip().upper()
+    sig = str(signal or "daily_breakout").strip().lower() or "daily_breakout"
+    return f"{sym}|{sig}"
+
+
+def _p387_prune_rate_limit_selected_submit_retry_queue() -> None:
+    ttl = max(1, int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC or 900))
+    now_ts = _utc_ts()
+    for key, row in list(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.items()):
+        try:
+            queued_ts = float(row.get("queued_utc_ts") or 0.0)
+        except Exception:
+            queued_ts = 0.0
+        if queued_ts <= 0 or (now_ts - queued_ts) > ttl:
+            P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.pop(key, None)
+
+
+def _p387_queue_rate_limited_selected_submit(candidate: dict | None, submit_row: dict | None) -> dict:
+    if not bool(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED):
+        return {"queued": False, "reason": "rate_limit_selected_submit_retry_disabled"}
+
+    c = dict(candidate or {})
+    row = dict(submit_row or {})
+    sym = str(c.get("symbol") or row.get("symbol") or "").strip().upper()
+    sig = str(c.get("signal") or row.get("signal") or row.get("strategy") or "daily_breakout").strip() or "daily_breakout"
+    side = str(c.get("side") or row.get("side") or "buy").strip().lower() or "buy"
+    reason = str(row.get("submit_reason") or row.get("reason") or "").strip()
+
+    if not sym:
+        return {"queued": False, "reason": "missing_symbol"}
+    if not _p352_is_alpaca_rate_limit_error(reason) and str(row.get("submit_state") or "").strip().lower() != "retryable_rate_limit":
+        return {"queued": False, "reason": "not_rate_limited"}
+
+    key = _p387_rate_limit_retry_key(sym, sig)
+    prior = dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.get(key) or {})
+    attempts = int(prior.get("attempts") or 0) + 1
+
+    queued = {
+        "key": key,
+        "queued_utc": datetime.now(timezone.utc).isoformat(),
+        "queued_ny": now_ny().isoformat(),
+        "queued_utc_ts": _utc_ts(),
+        "patch_version": PATCH_VERSION,
+        "symbol": sym,
+        "side": side,
+        "signal": sig,
+        "source": str(c.get("submit_source") or c.get("source") or row.get("source") or "swing_production_reset"),
+        "entry_type": str(c.get("entry_type") or row.get("entry_type") or "swing_production_contract"),
+        "rank_score": _safe_float(c.get("rank_score") or row.get("rank_score") or 0.0),
+        "signal_family": str(c.get("signal_family") or row.get("signal_family") or "primary"),
+        "attempts": attempts,
+        "first_reason": prior.get("first_reason") or reason,
+        "last_reason": reason,
+        "candidate": c,
+        "submit_row": row,
+    }
+    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key] = queued
+    _p352_record_rate_limit_submit_recovery(
+        sym,
+        side,
+        sig,
+        queued.get("source"),
+        "durable_retry_queued",
+        key=key,
+        attempts=attempts,
+        reason=reason,
+    )
+    return {"queued": True, "key": key, "attempts": attempts, "reason": "rate_limited_selected_submit_queued"}
+
+
+def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int | None = None) -> list[dict]:
+    if not bool(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED):
+        return []
+    _p387_prune_rate_limit_selected_submit_retry_queue()
+    lim = max(0, int(max_items if max_items is not None else SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1))
+    rows = sorted(
+        [dict(row or {}) for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()],
+        key=lambda row: float(row.get("queued_utc_ts") or 0.0),
+    )
+    out = []
+    for row in rows[:lim]:
+        candidate = dict(row.get("candidate") or {})
+        candidate.update({
+            "symbol": row.get("symbol"),
+            "side": row.get("side") or candidate.get("side") or "buy",
+            "signal": row.get("signal") or candidate.get("signal") or "daily_breakout",
+            "rank_score": row.get("rank_score") or candidate.get("rank_score"),
+            "signal_family": row.get("signal_family") or candidate.get("signal_family") or "primary",
+            "source": row.get("source") or candidate.get("source") or "swing_production_reset",
+            "submit_source": row.get("source") or candidate.get("submit_source") or "swing_production_reset",
+            "entry_type": row.get("entry_type") or candidate.get("entry_type") or "swing_production_contract",
+            "p387_rate_limit_retry": True,
+            "p387_rate_limit_retry_key": row.get("key"),
+            "p387_rate_limit_retry_attempt": int(row.get("attempts") or 0) + 1,
+            "p387_rate_limit_retry_first_reason": row.get("first_reason"),
+            "p387_rate_limit_retry_last_reason": row.get("last_reason"),
+        })
+        out.append(candidate)
+    return out
+
+def _p387_clear_rate_limit_selected_submit_retry(symbol: str, signal: str | None = None, reason: str = "cleared") -> None:
+    key = _p387_rate_limit_retry_key(symbol, signal)
+    row = P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.pop(key, None)
+    if isinstance(row, dict):
+        _p352_record_rate_limit_submit_recovery(
+            row.get("symbol"),
+            row.get("side"),
+            row.get("signal"),
+            row.get("source"),
+            "durable_retry_cleared",
+            key=key,
+            reason=reason,
+        )
 
 def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None, source: str = "worker_scan") -> dict:
     """Submit an order originating from the scanner through the shared execution path."""
@@ -33183,20 +33301,49 @@ def _p298_selected_submission_truth_light() -> dict:
             submit_meta.get("state"),
             submit_meta.get("reason"),
         )
+        rate_limited_retryable = bool(
+            str(submit_meta.get("state") or "").strip().lower() == "retryable_rate_limit"
+            or _p352_is_alpaca_rate_limit_error(submit_meta.get("reason"))
+        )
+        rate_limit_retry_key = _p387_rate_limit_retry_key(
+            sym,
+            submit_row.get("signal") or submit_row.get("strategy") or "daily_breakout",
+        )
+        rate_limit_retry_queued = bool(rate_limit_retry_key in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
         submit_gap = bool(
             not side_effect.get("actual_submit_side_effect")
             and not execution_quality_blocked
             and not bool(retryable_spread_block.get("retryable"))
+            and not rate_limited_retryable
+        )
+        submit_gap_type = (
+            "none"
+            if bool(side_effect.get("actual_submit_side_effect"))
+            else "rate_limited_retryable"
+            if rate_limited_retryable
+            else "spread_retryable"
+            if bool(retryable_spread_block.get("retryable"))
+            else "execution_quality_blocked"
+            if execution_quality_blocked
+            else "unattempted"
+            if not bool(submit_meta.get("attempted"))
+            else "terminal_failed"
+            if submit_gap
+            else "none"
         )
         retry_evidence_status = (
             "resolved_by_active_plan_or_submit_side_effect"
             if bool(side_effect.get("actual_submit_side_effect"))
+            else "waiting_for_rate_limit_retry"
+            if rate_limited_retryable
             else "waiting_for_spread_retry"
             if bool(retryable_spread_block.get("retryable"))
             else "blocked_by_execution_quality"
             if execution_quality_blocked
-            else "submit_gap"
-            if submit_gap
+            else "submit_gap_unattempted"
+            if submit_gap_type == "unattempted"
+            else "submit_gap_terminal_failed"
+            if submit_gap_type == "terminal_failed"
             else "no_retry_evidence_needed"
         )
 
@@ -33215,6 +33362,11 @@ def _p298_selected_submission_truth_light() -> dict:
             "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
             "candidate_selected_only": bool(candidate_selected_only_events and not side_effect.get("actual_submit_side_effect")),
             "submit_gap": bool(submit_gap),
+            "submit_gap_type": submit_gap_type,
+            "rate_limited_retryable": bool(rate_limited_retryable),
+            "rate_limit_retry_key": rate_limit_retry_key,
+            "rate_limit_retry_queued": bool(rate_limit_retry_queued),
+            "rate_limit_retry_queue_row": dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.get(rate_limit_retry_key) or {}),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": retryable_spread_block,
             "retry_evidence_status": retry_evidence_status,
@@ -48516,7 +48668,19 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     continue
                 ranked_candidates.append(plan)
 
-            allowed_submits = ranked_candidates[: max(0, min(candidate_slots, int(max(1, SCANNER_MAX_ENTRIES_PER_SCAN))))]
+            durable_retry_candidates = _p387_pending_rate_limited_selected_submit_retry_candidates(
+                max_items=max(0, min(candidate_slots, int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1)))
+            )
+            durable_retry_symbols = {
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in durable_retry_candidates
+                if str((row or {}).get("symbol") or "").strip()
+            }
+            normal_slot_count = max(0, min(candidate_slots, int(max(1, SCANNER_MAX_ENTRIES_PER_SCAN))) - len(durable_retry_candidates))
+            allowed_submits = durable_retry_candidates + [
+                row for row in ranked_candidates
+                if str((row or {}).get("symbol") or "").strip().upper() not in durable_retry_symbols
+            ][:normal_slot_count]
             for skipped in ranked_candidates[len(allowed_submits):]:
                 record_decision("SCAN", "worker_scan", symbol=skipped.get("symbol", ""), side=skipped.get("side", ""), signal=skipped.get("signal", ""), action="ignored", reason="lower_rank_than_top_slots", meta={"rank_score": float(skipped.get("rank_score", skipped.get("score", 0.0)) or 0.0), "candidate_slots": candidate_slots})
                 ignored_ranked_out.append({"symbol": skipped.get("symbol"), "signal": skipped.get("signal"), "rank_score": float(skipped.get("rank_score", skipped.get("score", 0.0)) or 0.0), "reason": "lower_rank_than_top_slots"})
@@ -48554,6 +48718,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     "trade_price": plan.get("close"),
                     "symbol": sym,
                     "signal": sig,
+                    "p387_rate_limit_retry": bool(plan.get("p387_rate_limit_retry")),
+                    "p387_rate_limit_retry_key": plan.get("p387_rate_limit_retry_key"),
+                    "p387_rate_limit_retry_attempt": plan.get("p387_rate_limit_retry_attempt"),
                 }, source=submit_source)
                 submit_meta = _classify_scan_submit_response(resp)
                 record_decision(
@@ -48587,7 +48754,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 except Exception as side_effect_err:
                     side_effect_reasons.append(f"side_effect_check_error:{side_effect_err}")
 
-                would_submit.append({
+                submit_row_for_summary = {
                     **payload,
                     **resp,
                     "submit_state": submit_meta.get("state"),
@@ -48597,7 +48764,20 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     "actual_submit_side_effect": bool(actual_side_effect),
                     "side_effect_reasons": _dedupe_candidate_reasons(side_effect_reasons),
                     "submit_gap": not bool(actual_side_effect),
-                })
+                    "p387_rate_limit_retry": bool(plan.get("p387_rate_limit_retry")),
+                    "p387_rate_limit_retry_key": plan.get("p387_rate_limit_retry_key"),
+                    "p387_rate_limit_retry_attempt": plan.get("p387_rate_limit_retry_attempt"),
+                }
+
+                if actual_side_effect:
+                    _p387_clear_rate_limit_selected_submit_retry(sym, sig, reason="submit_side_effect_detected")
+                elif str(submit_meta.get("state") or "").strip().lower() == "retryable_rate_limit":
+                    submit_row_for_summary["p387_rate_limit_retry_queue"] = _p387_queue_rate_limited_selected_submit(
+                        plan,
+                        submit_row_for_summary,
+                    )
+
+                would_submit.append(submit_row_for_summary)
             selected_symbols_for_summary = _dedupe_keep_order([
                 str((row or {}).get("symbol") or "").strip().upper()
                 for row in would_submit
@@ -48628,6 +48808,15 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     (row or {}).get("submit_reason"),
                 ).get("retryable"))
             ])
+            rate_limited_retry_symbols = _dedupe_keep_order([
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in would_submit
+                if str((row or {}).get("symbol") or "").strip()
+                and (
+                    str((row or {}).get("submit_state") or "").strip().lower() == "retryable_rate_limit"
+                    or _p352_is_alpaca_rate_limit_error((row or {}).get("submit_reason"))
+                )
+            ])
             submit_gap_symbols = [
                 str((row or {}).get("symbol") or "").strip().upper()
                 for row in would_submit
@@ -48635,6 +48824,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 and not bool((row or {}).get("actual_submit_side_effect"))
                 and str((row or {}).get("symbol") or "").strip().upper() not in set(execution_quality_block_symbols)
                 and str((row or {}).get("symbol") or "").strip().upper() not in set(retryable_spread_block_symbols)
+                and str((row or {}).get("symbol") or "").strip().upper() not in set(rate_limited_retry_symbols)
             ]
             scan_summary["selected_total"] = len(selected_symbols_for_summary)
             scan_summary["selected_symbols"] = selected_symbols_for_summary
@@ -48644,6 +48834,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             scan_summary["execution_quality_block_count"] = len(execution_quality_block_symbols)
             scan_summary["retryable_spread_block_symbols"] = retryable_spread_block_symbols
             scan_summary["retryable_spread_block_count"] = len(retryable_spread_block_symbols)
+            scan_summary["rate_limited_submit_retry_symbols"] = rate_limited_retry_symbols
+            scan_summary["rate_limited_submit_retry_count"] = len(rate_limited_retry_symbols)
+            scan_summary["rate_limited_submit_retry_queue_count"] = len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
+            scan_summary["rate_limited_submit_retry_queue_symbols"] = [
+                row.get("symbol") for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+            ]
             scan_summary["selected_submit_gap_symbols"] = submit_gap_symbols
             scan_summary["selected_submit_gap_count"] = len(submit_gap_symbols)
             if submit_gap_symbols:
@@ -48671,6 +48867,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 LAST_SCAN["execution_quality_block_count"] = len(execution_quality_block_symbols)
                 LAST_SCAN["retryable_spread_block_symbols"] = retryable_spread_block_symbols
                 LAST_SCAN["retryable_spread_block_count"] = len(retryable_spread_block_symbols)
+                LAST_SCAN["rate_limited_submit_retry_symbols"] = rate_limited_retry_symbols
+                LAST_SCAN["rate_limited_submit_retry_count"] = len(rate_limited_retry_symbols)
                 LAST_SCAN["selected_submit_gap_symbols"] = submit_gap_symbols
                 LAST_SCAN["selected_submit_gap_count"] = len(submit_gap_symbols)
             except Exception:
