@@ -2535,7 +2535,12 @@ SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS = {
     str(x or "").strip().lower()
     for x in getenv_any(
         "SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS",
-        default="stall_loss_guard,stop,opening_damage_exit,daily_goal_preservation,daily_breakout_profit_giveback_preservation_exit",
+        default=(
+            "stall_loss_guard,stop,opening_damage_exit,daily_goal_preservation,"
+            "daily_breakout_profit_giveback_preservation_exit,"
+            "daily_breakout_failed_followthrough_exit,"
+            "forbidden_short_position_cleanup"
+        ),
     ).split(",")
     if str(x or "").strip()
 }
@@ -2571,7 +2576,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-381-short-position-reversal-cleanup-exit-idempotency-side-aware-lock"
+PATCH_VERSION = "patch-382-protective-exit-idempotency-reason-coverage-over-close-prevention-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7262,7 +7267,6 @@ def find_open_order_for_symbol(symbol: str) -> dict:
             return dict(order)
     return {}
 
-
 def _pending_close_order_for_symbol(symbol: str, close_side: str) -> dict:
     sym = str(symbol or "").upper()
     side = str(close_side or "").lower()
@@ -7273,6 +7277,26 @@ def _pending_close_order_for_symbol(symbol: str, close_side: str) -> dict:
             return dict(order)
     return {}
 
+
+def _p382_pending_close_qty_for_symbol(symbol: str, close_side: str) -> float:
+    sym = str(symbol or "").strip().upper()
+    side = str(close_side or "").strip().lower()
+    if not sym or side not in {"buy", "sell"}:
+        return 0.0
+
+    total = 0.0
+    for order in list_open_orders_safe():
+        try:
+            if str((order or {}).get("symbol") or "").strip().upper() != sym:
+                continue
+            if str((order or {}).get("side") or "").strip().lower() != side:
+                continue
+            qty = _safe_float((order or {}).get("qty"), 0.0)
+            filled_qty = _safe_float((order or {}).get("filled_qty"), 0.0)
+            total += max(0.0, qty - filled_qty)
+        except Exception:
+            continue
+    return _normalize_close_qty(total)
 
 def _normalize_close_qty(qty: float) -> float:
     q = abs(float(qty or 0.0))
@@ -7329,7 +7353,9 @@ def _p350_broker_qty_exit_clamp(symbol: str, requested_qty: float, close_side: s
 
 def _p350_record_exit_qty_guard(symbol: str, source: str, reason: str, close_side: str, guard: dict) -> dict:
     sym = str(symbol or "").strip().upper()
-    action = "exit_blocked_broker_qty_zero" if guard.get("blocked") else "exit_qty_clamped_to_broker_qty"
+    action = str(guard.get("action") or "")
+    if not action:
+        action = "exit_blocked_broker_qty_zero" if guard.get("blocked") else "exit_qty_clamped_to_broker_qty"
     record_decision(
         "EXIT",
         source or "system",
@@ -7356,6 +7382,80 @@ def _p350_record_exit_qty_guard(symbol: str, source: str, reason: str, close_sid
         "exit_reason": reason or "exit",
         "broker_qty_exit_clamp": guard,
     }
+
+
+def _p382_exit_overclose_prevention_guard(
+    symbol: str,
+    requested_qty: float,
+    close_side: str,
+    reason: str = "",
+    source: str = "",
+    plan_ref: dict | None = None,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    side = str(close_side or "").strip().lower()
+    requested = _normalize_close_qty(requested_qty)
+    out = {
+        "ok": True,
+        "blocked": False,
+        "symbol": sym,
+        "requested_qty": requested,
+        "close_side": side,
+        "exit_reason": reason or "exit",
+        "source": source or "system",
+    }
+
+    if not sym or side not in {"buy", "sell"} or requested <= 0:
+        out.update({"blocked": True, "reason": "invalid_exit_overclose_guard_input", "clamped_qty": 0.0})
+        return out
+
+    try:
+        broker_qty_signed, _broker_side = get_position(sym)
+    except Exception as exc:
+        out.update({
+            "blocked": True,
+            "reason": "broker_qty_lookup_failed",
+            "broker_qty_signed": None,
+            "broker_available_qty": 0.0,
+            "pending_close_qty": 0.0,
+            "available_after_pending_close": 0.0,
+            "clamped_qty": 0.0,
+            "error": str(exc),
+        })
+        return out
+
+    broker_qty_signed = float(_safe_float(broker_qty_signed, 0.0))
+    broker_available = max(0.0, broker_qty_signed) if side == "sell" else max(0.0, abs(min(0.0, broker_qty_signed)))
+    pending_qty = _p382_pending_close_qty_for_symbol(sym, side)
+    available_after_pending = _normalize_close_qty(max(0.0, broker_available - pending_qty))
+    clamped_qty = _normalize_close_qty(min(requested, available_after_pending))
+
+    out.update({
+        "broker_qty_signed": round(broker_qty_signed, 8),
+        "broker_available_qty": round(broker_available, 8),
+        "pending_close_qty": pending_qty,
+        "available_after_pending_close": available_after_pending,
+        "clamped_qty": clamped_qty,
+    })
+
+    if clamped_qty <= 0:
+        out.update({
+            "blocked": True,
+            "action": "exit_blocked_overclose_risk",
+            "reason": "exit_blocked_overclose_risk",
+        })
+        return out
+
+    if clamped_qty < requested:
+        out.update({
+            "blocked": False,
+            "action": "exit_qty_clamped_to_available_after_pending_close",
+            "reason": "exit_qty_clamped_to_available_after_pending_close",
+        })
+        return out
+
+    out["reason"] = "exit_overclose_guard_ok"
+    return out
 
 def _p373_exit_reason_lockable(reason: str) -> bool:
     reason_l = str(reason or "exit").strip().lower()
@@ -8701,6 +8801,21 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
         record_decision("EXIT", source, symbol, side=close_side, action="pending_close_exists", reason=reason or "exit", qty=qty, order_id=order_id)
         return {"closed": False, "pending_close_order": True, "reason": "pending_close_order_exists", "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id}
 
+    plan_ref = TRADE_PLAN.get(symbol) if isinstance(TRADE_PLAN.get(symbol), dict) else None
+    overclose_guard = _p382_exit_overclose_prevention_guard(
+        symbol,
+        qty,
+        close_side,
+        reason=reason,
+        source=source,
+        plan_ref=plan_ref,
+    )
+    if overclose_guard.get("blocked"):
+        return _p350_record_exit_qty_guard(symbol, source, reason or "exit", close_side, overclose_guard)
+    if float(_safe_float(overclose_guard.get("clamped_qty"), qty)) < qty:
+        qty = _normalize_close_qty(overclose_guard.get("clamped_qty"))
+        _p350_record_exit_qty_guard(symbol, source, reason or "exit", close_side, overclose_guard)
+
     if not is_live_exit_permitted(source, reason=reason):
         payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED}
         record_decision("EXIT", source, symbol, side=close_side, action="dry_run", reason=reason or "dry_run", qty=qty)
@@ -8725,7 +8840,6 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
             pass
         return payload
 
-    plan_ref = TRADE_PLAN.get(symbol) if isinstance(TRADE_PLAN.get(symbol), dict) else None
     same_day_exit_guard = _p373_same_day_exit_submit_guard(
         symbol,
         reason=reason,
@@ -8808,6 +8922,23 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
         order_id = str(pending_close.get("id") or "")
         record_decision("EXIT", source, symbol, side=close_side, action="pending_partial_close_exists", reason=reason or "partial_exit", qty=qty, order_id=order_id)
         return {"closed": False, "pending_close_order": True, "reason": "pending_close_order_exists", "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id, "partial": True}
+
+    plan_ref = TRADE_PLAN.get(symbol) if isinstance(TRADE_PLAN.get(symbol), dict) else None
+    overclose_guard = _p382_exit_overclose_prevention_guard(
+        symbol,
+        qty,
+        close_side,
+        reason=reason or "partial_exit",
+        source=source,
+        plan_ref=plan_ref,
+    )
+    if overclose_guard.get("blocked"):
+        payload = _p350_record_exit_qty_guard(symbol, source, reason or "partial_exit", close_side, overclose_guard)
+        payload["partial"] = True
+        return payload
+    if float(_safe_float(overclose_guard.get("clamped_qty"), qty)) < qty:
+        qty = _normalize_close_qty(overclose_guard.get("clamped_qty"))
+        _p350_record_exit_qty_guard(symbol, source, reason or "partial_exit", close_side, overclose_guard)
 
     if not is_live_exit_permitted(source, reason=reason):
         payload = {"closed": False, "dry_run": True, "symbol": symbol, "qty": qty, "close_side": close_side, "live_trading_enabled": LIVE_TRADING_ENABLED, "partial": True}
@@ -46190,6 +46321,12 @@ def diagnostics_swing_runtime_config():
             "same_day_symbol_loss_cooldown": {
                 "enabled": _cfg_bool("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ENABLED"),
                 "can_block_entries": not _cfg_bool("SWING_SAME_DAY_SYMBOL_LOSS_COOLDOWN_ADVISORY_ONLY"),
+            },
+            "protective_exit_idempotency": {
+                "enabled": _cfg_bool("SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_ENABLED"),
+                "window_sec": SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_WINDOW_SEC,
+                "lockable_reasons": sorted(SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS),
+                "overclose_guard": True,
             },
             "same_day_stall_churn_reentry_cooldown": {
                 "enabled": _cfg_bool("SWING_STALL_CHURN_REENTRY_COOLDOWN_ENABLED"),
