@@ -2581,14 +2581,13 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-383-broker-native-position-risk-truth-loss-day-recovery-slot-policy"
+PATCH_VERSION = "patch-383-hotfix-broker-native-risk-constant-name"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
 SYSTEM_BOOT_ID = str(uuid.uuid4())
 PATCH_BUILD_TS_UTC = datetime.now(timezone.utc).isoformat()
-
 
 def patch_display_label(patch_version: str | None = None) -> str:
     text = str(patch_version or PATCH_VERSION or "unknown").strip()
@@ -2597,7 +2596,6 @@ def patch_display_label(patch_version: str | None = None) -> str:
         return text
     suffix = " ".join(part for part in str(match.group(2) or "").split("-") if part).strip()
     return f"Patch {match.group(1)}{(' ' + suffix) if suffix else ''}"
-
 
 def _dashboard_scanner_status_view(
     scanner_status: object,
@@ -35864,7 +35862,7 @@ def _p383_broker_native_position_risk_truth() -> dict:
     rows = []
     total_risk_to_stop = 0.0
     total_reward_to_target = 0.0
-    configured_risk = max(0.0, float(SWING_RISK_PER_TRADE_DOLLARS or 0.0))
+    configured_risk = max(0.0, float(RISK_DOLLARS or 0.0))
 
     try:
         positions = list_open_positions_details_allowed()
@@ -46642,18 +46640,15 @@ def diagnostics_promotion_selection(limit: int = 10):
         ][:max(1, min(int(limit or 10), 25))],
     }
 
-
 @app.get("/diagnostics/filter_pressure")
 def diagnostics_filter_pressure(limit: int = 10):
     return _filter_pressure_snapshot(limit=limit)
-
 
 @app.get("/diagnostics/defensive_unlock_lab")
 def diagnostics_defensive_unlock_lab(limit: int = 10):
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
     return _defensive_unlock_lab_snapshot(limit=limit)
-
 
 def _universe_shadow_snapshot(limit: int = 10) -> dict:
     limit = max(1, min(int(limit or 10), 25))
@@ -46806,9 +46801,6 @@ def _policy_shadow_snapshot(limit: int = 10) -> dict:
             'best_unlock_candidates_outside_runtime': outside_runtime[:limit],
         },
     }
-
-
-
 
 def _universe_redesign_snapshot(limit: int = 10, target_size: int | None = None) -> dict:
     limit = max(1, min(int(limit or 10), 25))
@@ -46998,7 +46990,6 @@ def diagnostics_exit_guard_evidence_light(limit: int = 20):
 def diagnostics_active_exit_protection_truth():
     return JSONResponse(content=_p364_active_exit_protection_truth())
 
-
 @app.get("/diagnostics/broker_native_position_risk_truth")
 def diagnostics_broker_native_position_risk_truth():
     return JSONResponse(content=_p383_broker_native_position_risk_truth())
@@ -47010,7 +47001,6 @@ def diagnostics_same_day_stall_exit_churn_audit(limit: int = 25):
 @app.get("/diagnostics/same_day_exit_submit_lock_truth")
 def diagnostics_same_day_exit_submit_lock_truth(limit: int = 20):
     return JSONResponse(content=_p373_same_day_exit_submit_lock_truth(limit=limit))
-
 
 @app.get("/diagnostics/broker_preferred_loss_attribution_truth")
 def diagnostics_broker_preferred_loss_attribution_truth():
