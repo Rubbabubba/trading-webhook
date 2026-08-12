@@ -112,12 +112,10 @@ class Bar:
     volume: float
     vwap: Optional[float] = None
 
-
 def _iso_utc(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
 
 def _parse_bar_ts(ts_raw):
     if not ts_raw:
@@ -135,7 +133,6 @@ def _parse_bar_ts(ts_raw):
         return ts.astimezone(timezone.utc)
     except Exception:
         return None
-
 
 def _normalize_bar_row(ts_utc: datetime, row) -> Optional[dict]:
     try:
@@ -173,7 +170,6 @@ def _coerce_dt_ny(value):
     except Exception:
         return None
 
-
 def _regular_session_date_for_bars(bars: list[dict]):
     latest = None
     for b in bars or []:
@@ -185,7 +181,6 @@ def _regular_session_date_for_bars(bars: list[dict]):
             if latest is None or d > latest:
                 latest = d
     return latest
-
 
 def _bars_for_regular_session_date(bars: list[dict], session_date) -> list[dict]:
     if not bars or not session_date:
@@ -202,16 +197,13 @@ def _bars_for_regular_session_date(bars: list[dict], session_date) -> list[dict]
             continue
     return out
 
-
 def _bars_for_latest_regular_session(bars: list[dict]) -> tuple[list[dict], Optional[str]]:
     session_date = _regular_session_date_for_bars(bars)
     rows = _bars_for_regular_session_date(bars, session_date)
     return rows, (session_date.isoformat() if session_date else None)
 
-
 def _alpaca_data_base_url() -> str:
     return (os.getenv("APCA_DATA_BASE_URL", "https://data.alpaca.markets").strip() or "https://data.alpaca.markets").rstrip("/")
-
 
 def _fetch_bars_via_rest(symbols: list[str], start: datetime, end: datetime, feed_override=None, limit: int = 10000) -> tuple[dict[str, list[dict]], dict]:
     symbols = [s.strip().upper() for s in (symbols or []) if s and s.strip()]
@@ -270,7 +262,6 @@ def _fetch_bars_via_rest(symbols: list[str], start: datetime, end: datetime, fee
         debug["error"] = str(e)
     return out, debug
 
-
 def _fetch_latest_quotes_via_rest(symbols: list[str]) -> tuple[dict[str, dict], dict]:
     symbols = [s.strip().upper() for s in (symbols or []) if s and s.strip()]
     out: dict[str, dict] = {s: {} for s in symbols}
@@ -303,7 +294,6 @@ def _fetch_latest_quotes_via_rest(symbols: list[str]) -> tuple[dict[str, dict], 
     except Exception as e:
         debug["error"] = str(e)
     return out, debug
-
 
 def _build_fallback_quote(bid, ask, last_trade_price):
     """Construct a synthetic quote when one side is missing using the latest trade price as fallback."""
@@ -342,7 +332,6 @@ def _build_fallback_quote(bid, ask, last_trade_price):
         "spread": spread,
         "spread_pct": spread_pct,
     }, synthetic
-
 
 def get_latest_quote_snapshot(symbol: str) -> dict:
     symbol = str(symbol or "").upper()
@@ -543,7 +532,6 @@ def _entry_spread_override_decision(snapshot: dict | None, meta: dict | None = N
         },
     }
 
-
 # =============================
 # App
 # =============================
@@ -571,7 +559,6 @@ app.add_middleware(
 NY_TZ = ZoneInfo("America/New_York")
 NY = NY_TZ  # backward-compat alias
 
-
 # =============================
 # Env helpers
 # =============================
@@ -582,7 +569,6 @@ def getenv_any(*names: str, default: str = "") -> str:
         if v is not None and str(v).strip() != "":
             return str(v).strip()
     return default
-
 
 def getenv_int(name: str, default: int) -> int:
     """Read an int env var with a safe fallback."""
@@ -599,11 +585,9 @@ def env_bool(name: str, default: str | bool = "false") -> bool:
         raw = str(default)
     return str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
 
-
 def env_bool_any(*names: str, default: str | bool = "false") -> bool:
     raw = getenv_any(*names, default=str(default))
     return str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
-
 
 def getenv_float_any(*names: str, default: float = 0.0) -> float:
     raw = getenv_any(*names, default=str(default))
@@ -612,7 +596,6 @@ def getenv_float_any(*names: str, default: float = 0.0) -> float:
     except Exception:
         return float(default)
 
-
 def getenv_int_any(*names: str, default: int = 0) -> int:
     raw = getenv_any(*names, default=str(default))
     try:
@@ -620,19 +603,15 @@ def getenv_int_any(*names: str, default: int = 0) -> int:
     except Exception:
         return int(default)
 
-
 def now_ny() -> datetime:
     return datetime.now(tz=NY_TZ)
-
 
 def utc_ts() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp())
 
-
 def parse_hhmm(hhmm: str) -> time:
     parts = hhmm.strip().split(":")
     return time(int(parts[0]), int(parts[1]))
-
 
 def parse_session_window(raw: str) -> tuple[time, time] | None:
     """Parse 'HH:MM-HH:MM' in NY (market) time."""
@@ -1139,7 +1118,6 @@ SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS = [
     if s.strip()
 ]
 
-
 # Exit worker
 WORKER_SECRET = os.getenv("WORKER_SECRET", "").strip()
 EOD_FLATTEN_TIME = getenv_any("EOD_FLATTEN_TIME", default=("" if getenv_any("STRATEGY_MODE", default="intraday").strip().lower() == "swing" else "15:55"))  # NY time
@@ -1359,6 +1337,37 @@ SWING_PARTIAL_PROFIT_ENABLED = env_bool_any("SWING_PARTIAL_PROFIT_ENABLED", defa
 SWING_PARTIAL_PROFIT_R = getenv_float_any("SWING_PARTIAL_PROFIT_R", default=1.0)
 SWING_PARTIAL_PROFIT_FRACTION = getenv_float_any("SWING_PARTIAL_PROFIT_FRACTION", default=0.5)
 SWING_PARTIAL_PROFIT_MIN_QTY = getenv_float_any("SWING_PARTIAL_PROFIT_MIN_QTY", default=0.25)
+
+SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED = env_bool_any(
+    "SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED",
+    default=True,
+)
+SWING_TRUE_DOLLAR_RISK_MIN_STARTER_QTY = getenv_float_any(
+    "SWING_TRUE_DOLLAR_RISK_MIN_STARTER_QTY",
+    default=1.0,
+)
+SWING_TRUE_DOLLAR_RISK_MAX_STARTER_RISK_MULTIPLE = getenv_float_any(
+    "SWING_TRUE_DOLLAR_RISK_MAX_STARTER_RISK_MULTIPLE",
+    default=1.5,
+)
+
+SWING_OVERSIZED_WINNER_PRESERVATION_ENABLED = env_bool_any(
+    "SWING_OVERSIZED_WINNER_PRESERVATION_ENABLED",
+    default=True,
+)
+SWING_OVERSIZED_WINNER_MIN_UNREALIZED_DOLLARS = getenv_float_any(
+    "SWING_OVERSIZED_WINNER_MIN_UNREALIZED_DOLLARS",
+    default=75.0,
+)
+SWING_OVERSIZED_WINNER_REDUCE_TO_RISK_MULTIPLE = getenv_float_any(
+    "SWING_OVERSIZED_WINNER_REDUCE_TO_RISK_MULTIPLE",
+    default=1.25,
+)
+SWING_OVERSIZED_WINNER_MIN_REMAINING_QTY = getenv_float_any(
+    "SWING_OVERSIZED_WINNER_MIN_REMAINING_QTY",
+    default=1.0,
+)
+
 SWING_TIME_EXIT_GRACE_R = getenv_float_any("SWING_TIME_EXIT_GRACE_R", default=0.75)
 SWING_TIME_EXIT_GRACE_DAYS = getenv_int_any("SWING_TIME_EXIT_GRACE_DAYS", default=1)
 SWING_CANDIDATE_TTL_HOURS = getenv_int_any("SWING_CANDIDATE_TTL_HOURS", default=24)
@@ -2593,7 +2602,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-387-hotfix-2-retry-queue-timestamp-helper-fix"
+PATCH_VERSION = "patch-388-true-dollar-risk-sizing-oversized-winner-preservation-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5298,8 +5307,6 @@ def record_decision(event: str, source: str, symbol: str = "", side: str = "", s
         # Never let tracing break trading.
         pass
 
-
-
 def _normalize_reject_reason(reason: str) -> str:
     r = str(reason or "").strip().lower()
     if not r:
@@ -5325,7 +5332,6 @@ def _normalize_reject_reason(reason: str) -> str:
             return label
     return re.sub(r"[^A-Z0-9]+", "_", r.upper()).strip("_") or "UNKNOWN"
 
-
 def _append_rejection_history(item: dict):
     try:
         with STATE_LOCK:
@@ -5336,7 +5342,6 @@ def _append_rejection_history(item: dict):
                     del REJECTION_HISTORY[:overflow]
     except Exception:
         pass
-
 
 def _append_alert_history(item: dict):
     try:
@@ -5349,7 +5354,6 @@ def _append_alert_history(item: dict):
     except Exception:
         pass
 
-
 def _update_alert_history_status(alert_id: str, **updates):
     try:
         with STATE_LOCK:
@@ -5360,7 +5364,6 @@ def _update_alert_history_status(alert_id: str, **updates):
                     break
     except Exception:
         pass
-
 
 def _alert_payload_for_destination(item: dict) -> tuple[bytes, dict]:
     title = str(item.get("title") or "Trading Bot Alert")
@@ -5388,7 +5391,6 @@ def _alert_payload_for_destination(item: dict) -> tuple[bytes, dict]:
         "user-agent": "trading-webhook/patch-007",
     }
 
-
 def _dispatch_alert_http(item: dict):
     alert_id = str(item.get("id") or "")
     if (not ALERTS_ENABLED) or (not ALERT_WEBHOOK_URL):
@@ -5411,7 +5413,6 @@ def _dispatch_alert_http(item: dict):
         _update_alert_history_status(alert_id, status="error", error=str(e))
     except Exception as e:
         _update_alert_history_status(alert_id, status="error", error=str(e))
-
 
 def send_alert(kind: str, title: str, text: str, level: str = "info", dedup_key: str = "", **payload):
     now_ts = _time.time()
@@ -5448,7 +5449,6 @@ def send_alert(kind: str, title: str, text: str, level: str = "info", dedup_key:
     t.start()
     return {"ok": True, "queued": True, "id": alert_id}
 
-
 def _decision_alert_text(item: dict) -> str:
     event = str(item.get("event") or "")
     action = str(item.get("action") or "")
@@ -5472,7 +5472,6 @@ def _decision_alert_text(item: dict) -> str:
     if order_id:
         parts.append(f"order_id={order_id}")
     return " | ".join([p for p in parts if p])
-
 
 def maybe_emit_alert_for_decision(item: dict):
     if not ALERTS_ENABLED or not ALERT_WEBHOOK_URL:
@@ -5536,17 +5535,14 @@ def maybe_emit_alert_for_decision(item: dict):
             details=(details if ALERT_INCLUDE_DETAILS else {}),
         )
 
-
 def _current_session_key() -> str:
     return now_ny().strftime("%Y-%m-%d")
-
 
 def _ensure_daily_halt_rollover():
     session = _current_session_key()
     if DAILY_HALT_STATE.get("session") != session:
         DAILY_HALT_STATE.clear()
         DAILY_HALT_STATE.update({"session": session, "active": False, "triggered_at": None, "reason": ""})
-
 
 def activate_daily_halt(reason: str = "daily_stop_hit"):
     _ensure_daily_halt_rollover()
@@ -5558,11 +5554,9 @@ def activate_daily_halt(reason: str = "daily_stop_hit"):
     })
     record_decision("RISK", "risk_guard", action="halted", reason=reason)
 
-
 def daily_halt_active() -> bool:
     _ensure_daily_halt_rollover()
     return bool(DAILY_HALT_STATE.get("active"))
-
 
 def update_exit_heartbeat(status: str = "ok", **extra):
     LAST_EXIT_HEARTBEAT.clear()
@@ -5574,7 +5568,6 @@ def update_exit_heartbeat(status: str = "ok", **extra):
     })
 
 _bootstrap_journal_decisions()
-
 
 def config_effective_snapshot() -> dict:
     return {
@@ -5622,7 +5615,6 @@ def config_effective_snapshot() -> dict:
         "decision_buffer_size": DECISION_BUFFER_SIZE,
     }
 
-
 def _safe_file_sha256(path_str: str) -> str:
     try:
         path = Path(path_str).expanduser().resolve()
@@ -5637,7 +5629,6 @@ def _safe_file_sha256(path_str: str) -> str:
         return h.hexdigest()
     except Exception:
         return ""
-
 
 def _artifact_integrity_snapshot() -> dict:
     base_dir = Path(__file__).resolve().parent
@@ -5662,7 +5653,6 @@ def _artifact_integrity_snapshot() -> dict:
         "healthy": len(missing) == 0,
     }
 
-
 def _build_fingerprint_snapshot() -> dict:
     artifact = _artifact_integrity_snapshot()
     material = "|".join([PATCH_VERSION, PATCH_BUILD_TS_UTC] + [f"{row['name']}:{row['sha256']}:{row['size_bytes']}" for row in artifact.get("expected_files") or []])
@@ -5676,7 +5666,6 @@ def _build_fingerprint_snapshot() -> dict:
         "release_stage_configured": SYSTEM_RELEASE_STAGE,
         "artifact_integrity": artifact,
     }
-
 
 def _routes_manifest_snapshot() -> dict:
     routes = []
@@ -5718,7 +5707,6 @@ def _routes_manifest_snapshot() -> dict:
         "routes": routes,
     }
 
-
 def _scanner_universe_runtime() -> list[str]:
     try:
         resolved = [str(s).upper() for s in (universe_symbols() or []) if str(s).strip()]
@@ -5732,7 +5720,6 @@ def _scanner_universe_runtime() -> list[str]:
     if ALLOWED_SYMBOLS:
         return _dedupe_keep_order(sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
     return []
-
 
 def _release_gate_policy_snapshot() -> dict:
     warnings = []
@@ -5750,7 +5737,6 @@ def _release_gate_policy_snapshot() -> dict:
         "warnings": warnings,
         "strict_execution_proof_required": len(warnings) == 0,
     }
-
 
 def _config_integrity_snapshot() -> dict:
     allowed = sorted(ALLOWED_SYMBOLS)
@@ -5797,7 +5783,6 @@ def _config_integrity_snapshot() -> dict:
         "healthy": not any(str((i or {}).get("severity") or "").lower() in {"error", "critical"} for i in issues),
     }
 
-
 def _latest_completed_scan_record() -> dict:
     def _usable_scan(scan_like: dict | None) -> bool:
         if not isinstance(scan_like, dict):
@@ -5827,7 +5812,6 @@ def _latest_completed_scan_record() -> dict:
             scan["_scan_source"] = "scan_history"
             return scan
     return {}
-
 
 def _recent_market_scan_status(max_age_sec: int | float | None = None, market_open_now: bool | None = None) -> dict:
     age_limit = max(60, int(max_age_sec or RELEASE_MAX_SCAN_AGE_SEC or 60))
@@ -5911,9 +5895,6 @@ def _recent_market_scan_status(max_age_sec: int | float | None = None, market_op
     primary["telemetry_fallback_source"] = telemetry.get("source")
     return primary
 
-
-
-
 def _paper_lifecycle_same_session_activity(session: dict | None = None) -> dict:
     session = dict(session or _session_boundary_snapshot())
     today_ny = str(session.get("today_ny") or "")
@@ -5944,7 +5925,6 @@ def _paper_lifecycle_same_session_activity(session: dict | None = None) -> dict:
         "latest_stage": latest_stage,
         "latest_status": latest_status,
     }
-
 
 def _aligned_last_scan_display(session: dict | None = None) -> dict:
     session = dict(session or _session_boundary_snapshot())
@@ -6028,7 +6008,6 @@ def _scan_summary_from_candidates(candidates: list[dict], symbols: list[str], re
         'global_block_reasons': list(global_block_reasons),
     }
 
-
 def _candidate_history_to_scan_record(hist: dict, scan_source: str = 'candidate_history') -> dict:
     hist = dict(hist or {})
     symbols = _dedupe_keep_order([str(s).strip().upper() for s in (hist.get('symbols') or []) if str(s).strip()])
@@ -6048,7 +6027,6 @@ def _candidate_history_to_scan_record(hist: dict, scan_source: str = 'candidate_
         '_scan_source': scan_source,
     }
     return scan
-
 
 def _latest_matching_scan_record(runtime_symbols: list[str] | None = None) -> dict:
     target = _dedupe_keep_order([str(s).strip().upper() for s in (runtime_symbols or universe_symbols() or []) if str(s).strip()])
@@ -6082,7 +6060,6 @@ def _latest_matching_scan_record(runtime_symbols: list[str] | None = None) -> di
             if rec:
                 return rec
     return {}
-
 
 def _preview_plan_from_candidate(candidate: dict | None = None) -> dict:
     row = dict(candidate or {})
@@ -6143,7 +6120,6 @@ def _preview_plan_from_candidate(candidate: dict | None = None) -> dict:
     plan['order_status'] = 'preview_planned'
     return plan
 
-
 def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
     preview = _current_runtime_preview_snapshot(limit=max(5, min(int(limit or 25), 100)))
     if not isinstance(preview, dict) or not preview:
@@ -6201,7 +6177,6 @@ def _current_runtime_truth_snapshot(limit: int = 25) -> dict:
         '_scan_source': 'current_runtime_preview',
     }
     return scan
-
 
 def _active_truth_scan(limit: int = 25) -> dict:
     current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
@@ -6339,7 +6314,6 @@ def _matching_candidate_history(runtime_symbols: list[str] | None = None, limit:
     out.reverse()
     return out
 
-
 def _active_filter_pressure_snapshot(limit: int = 10) -> dict:
     scan = _active_truth_scan(limit=max(10, min(int(limit or 10) * 2, 50)))
     summary = (scan.get("summary") if isinstance(scan, dict) else {}) or {}
@@ -6359,7 +6333,6 @@ def _active_filter_pressure_snapshot(limit: int = 10) -> dict:
     )
     payload["truth_source"] = scan.get("_scan_source") if isinstance(scan, dict) else None
     return payload
-
 
 def _trade_path_snapshot(limit: int = 20) -> dict:
     lifecycle_events = list(PAPER_LIFECYCLE_HISTORY or [])
@@ -6436,7 +6409,6 @@ def _trade_path_snapshot(limit: int = 20) -> dict:
         "stage_failures": list(proof.get("stage_failures") or []),
         "lifecycle_rows": list(proof.get("rows") or []),
     }
-
 
 def _promotion_failure_snapshot(limit: int = 10) -> dict:
     current_runtime = [str(s).strip().upper() for s in (universe_symbols() or []) if str(s).strip()]
@@ -6518,15 +6490,12 @@ def _promotion_failure_snapshot(limit: int = 10) -> dict:
         "defensive_unlock_lab": defensive_unlock_lab,
     }
 
-
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     # This is the missing piece: you will now see the real traceback in Render logs.
     log("UNHANDLED_EXCEPTION", path=str(request.url.path), err=str(exc))
     traceback.print_exc()
     return JSONResponse(status_code=500, content={"ok": False, "error": "Internal Server Error"})
-
-
 
 # Emit effective config once at startup (helps debug Render env mismatches)
 log("CONFIG_EFFECTIVE", **config_effective_snapshot())
@@ -6535,7 +6504,6 @@ log("CONFIG_EFFECTIVE", **config_effective_snapshot())
 # Core helpers
 # =============================
 _MARKET_CLOCK_CACHE: dict = {"ts": 0.0, "snapshot": {}}
-
 
 def _static_market_window_snapshot(dt_local=None) -> dict:
     dt_local = dt_local or now_ny()
@@ -6561,7 +6529,6 @@ def _static_market_window_snapshot(dt_local=None) -> dict:
         "reason": reason,
     }
 
-
 def _coerce_clock_dt(value) -> str | None:
     if not value:
         return None
@@ -6572,7 +6539,6 @@ def _coerce_clock_dt(value) -> str | None:
         return dt.astimezone(NY_TZ).isoformat()
     except Exception:
         return str(value)
-
 
 def _market_clock_snapshot(force: bool = False) -> dict:
     now_ts = _time.time()
@@ -6617,26 +6583,67 @@ def _market_clock_snapshot(force: bool = False) -> dict:
     _MARKET_CLOCK_CACHE["snapshot"] = dict(snap)
     return dict(snap)
 
-
 def _is_regular_market_day(dt_local=None) -> bool:
     return bool(_static_market_window_snapshot(dt_local).get("market_day"))
-
 
 def in_market_hours() -> bool:
     return bool(_market_clock_snapshot().get("is_open"))
 
+def _p388_entry_level_preview(side: str, price: float, meta: dict | None = None) -> dict:
+    meta = dict(meta or {})
+    side_l = str(side or "buy").lower()
+    price = float(price or 0.0)
+    stop_raw = meta.get("stop_price") or meta.get("initial_stop_price")
+    take_raw = meta.get("take_price") or meta.get("target_price")
 
-def compute_qty(price: float) -> float:
+    if stop_raw not in (None, "", 0, 0.0, "0", "0.0"):
+        stop_price = float(stop_raw)
+    elif side_l == "buy":
+        stop_price = price * (1.0 - float(STOP_PCT))
+    else:
+        stop_price = price * (1.0 + float(STOP_PCT))
+
+    if take_raw not in (None, "", 0, 0.0, "0", "0.0"):
+        take_price = float(take_raw)
+    elif side_l == "buy":
+        take_price = price * (1.0 + float(TAKE_PCT))
+    else:
+        take_price = price * (1.0 - float(TAKE_PCT))
+
+    risk_per_share = abs(price - stop_price)
+    return {
+        "price": round(price, 4),
+        "side": side_l,
+        "stop_price": round(stop_price, 4),
+        "take_price": round(take_price, 4),
+        "risk_per_share": round(risk_per_share, 4),
+        "source": "candidate_stop" if stop_raw not in (None, "", 0, 0.0, "0", "0.0") else "default_stop_pct",
+    }
+
+def compute_qty(price: float, side: str = "buy", meta: dict | None = None) -> float:
     if price <= 0:
         raise ValueError("Price must be > 0")
-    risk_per_share = price * STOP_PCT
+
+    levels = _p388_entry_level_preview(side, price, meta=meta)
+    risk_per_share = float(levels.get("risk_per_share") or 0.0)
+
     if risk_per_share <= 0:
-        raise ValueError("STOP_PCT must be > 0")
-    qty = RISK_DOLLARS / risk_per_share
+        raise ValueError("entry risk_per_share must be > 0")
+
+    qty = float(RISK_DOLLARS or 0.0) / risk_per_share
+
+    if bool(SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED):
+        min_starter = max(0.0, float(SWING_TRUE_DOLLAR_RISK_MIN_STARTER_QTY or 0.0))
+        max_starter_risk = float(RISK_DOLLARS or 0.0) * max(
+            0.0,
+            float(SWING_TRUE_DOLLAR_RISK_MAX_STARTER_RISK_MULTIPLE or 0.0),
+        )
+        if qty < min_starter and min_starter > 0 and risk_per_share * min_starter <= max_starter_risk:
+            qty = min_starter
+
     qty = max(qty, MIN_QTY)
     qty = min(qty, MAX_QTY)
     return round(qty, 2)
-
 
 def get_buying_power_snapshot() -> dict:
     try:
@@ -15485,6 +15492,8 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "target_path_recovery": meta.get("target_path_recovery"),
         "target_path_recovery_mode": bool(meta.get("target_path_recovery_mode")),
         "weak_tape_target_override": bool(meta.get("weak_tape_target_override")),
+        "true_dollar_risk_sizing": dict(meta.get("p388_true_dollar_risk_sizing") or {}),
+        "sizing_contract": "true_dollar_risk_from_active_stop",
     }
     plan["thesis"] = {
         "candidate_rank_score": meta.get("rank_score"),
@@ -31133,6 +31142,79 @@ def _p381_forbidden_short_cleanup_truth() -> dict:
         ),
     }
 
+def _p388_oversized_winner_preservation_plan(symbol: str, plan: dict, px: float) -> dict:
+    if not bool(SWING_OVERSIZED_WINNER_PRESERVATION_ENABLED):
+        return {"triggered": False, "reason": "disabled"}
+    if bool((plan or {}).get("oversized_winner_preservation_taken")):
+        return {"triggered": False, "reason": "already_taken"}
+
+    side = str((plan or {}).get("side") or "buy").lower()
+    if side != "buy":
+        return {"triggered": False, "reason": "not_long"}
+
+    qty = abs(_safe_float((plan or {}).get("filled_qty") or (plan or {}).get("qty") or 0.0))
+    entry = _safe_float((plan or {}).get("entry_price") or (plan or {}).get("avg_fill_price") or 0.0)
+    stop = _safe_float((plan or {}).get("stop_price") or (plan or {}).get("initial_stop_price") or 0.0)
+
+    if qty <= 0 or entry <= 0 or stop <= 0:
+        return {"triggered": False, "reason": "missing_qty_entry_or_stop"}
+
+    risk_per_share = max(0.0, entry - stop)
+    if risk_per_share <= 0:
+        return {"triggered": False, "reason": "invalid_risk_per_share"}
+
+    unrealized = (float(px or 0.0) - entry) * qty
+    if unrealized < float(SWING_OVERSIZED_WINNER_MIN_UNREALIZED_DOLLARS or 0.0):
+        return {
+            "triggered": False,
+            "reason": "winner_profit_below_threshold",
+            "unrealized_pl": round(unrealized, 4),
+        }
+
+    current_risk = qty * risk_per_share
+    configured_risk = max(0.0, float(RISK_DOLLARS or 0.0))
+    advisory_threshold = configured_risk * max(0.0, float(SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE or 0.0))
+    target_risk = configured_risk * max(0.0, float(SWING_OVERSIZED_WINNER_REDUCE_TO_RISK_MULTIPLE or 0.0))
+
+    if configured_risk <= 0 or current_risk <= advisory_threshold:
+        return {
+            "triggered": False,
+            "reason": "not_oversized_vs_config",
+            "current_risk_dollars": round(current_risk, 4),
+            "advisory_threshold_dollars": round(advisory_threshold, 4),
+        }
+
+    target_qty_by_risk = target_risk / risk_per_share if risk_per_share > 0 else qty
+    min_remaining = max(0.0, float(SWING_OVERSIZED_WINNER_MIN_REMAINING_QTY or 0.0))
+    target_qty = min(qty, max(min_remaining, target_qty_by_risk))
+    qty_to_close = max(0.0, qty - target_qty)
+
+    if qty_to_close < float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0) or qty_to_close >= qty:
+        return {
+            "triggered": False,
+            "reason": "trim_qty_not_actionable",
+            "qty": round(qty, 4),
+            "target_qty": round(target_qty, 4),
+            "qty_to_close": round(qty_to_close, 4),
+        }
+
+    return {
+        "triggered": True,
+        "reason": "oversized_winner_preservation_trim",
+        "symbol": str(symbol or "").upper(),
+        "qty": round(qty, 4),
+        "qty_to_close": round(qty_to_close, 4),
+        "target_remaining_qty": round(target_qty, 4),
+        "entry_price": round(entry, 4),
+        "current_price": round(float(px or 0.0), 4),
+        "stop_price": round(stop, 4),
+        "risk_per_share": round(risk_per_share, 4),
+        "unrealized_pl": round(unrealized, 4),
+        "current_risk_dollars": round(current_risk, 4),
+        "target_risk_dollars": round(target_risk, 4),
+        "configured_risk_dollars": round(configured_risk, 4),
+    }
+
 def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     out = {
         "updates": {},
@@ -31141,6 +31223,9 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         "stall_r": 0.0,
         "partial_profit_ready": False,
         "partial_profit_qty": 0.0,
+        "oversized_winner_preservation_ready": False,
+        "oversized_winner_preservation_qty": 0.0,
+        "oversized_winner_preservation": {},
         "time_exit_grace": False,
     }
     if STRATEGY_MODE != "swing":
@@ -31179,6 +31264,15 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     proposed_profit_lock = current_profit_lock
     if _safe_float(out.get("updates", {}).get("profit_lock_price") or 0.0, 0.0) > proposed_profit_lock:
         proposed_profit_lock = _safe_float(out.get("updates", {}).get("profit_lock_price"), proposed_profit_lock)
+    oversized_winner = _p388_oversized_winner_preservation_plan(symbol, plan, float(px))
+    out["oversized_winner_preservation"] = dict(oversized_winner)
+    if bool(oversized_winner.get("triggered")):
+        out["oversized_winner_preservation_ready"] = True
+        out["oversized_winner_preservation_qty"] = float(oversized_winner.get("qty_to_close") or 0.0)
+        out["flags"].append("oversized_winner_preservation_ready")
+        out["updates"]["break_even_armed"] = True
+        proposed_profit_lock = max(proposed_profit_lock, entry)
+
     partial_taken = bool((plan or {}).get("partial_profit_taken"))
 
     if SWING_PARTIAL_PROFIT_ENABLED and (not partial_taken) and unrealized_r >= float(SWING_PARTIAL_PROFIT_R):
@@ -31635,7 +31729,17 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="plan_active_after_lock", meta={"snapshot": snapshot, **(meta or {})})
             return {"ok": True, "ignored": True, "reason": "plan_active_after_lock", "symbol": symbol, "signal": signal, "snapshot": snapshot}
 
-        risk_qty = compute_qty(float(base_price)) if side == "buy" else round(abs(qty_signed), 2)
+        entry_level_preview = _p388_entry_level_preview(side, float(base_price), meta=meta)
+        meta.setdefault("stop_price", entry_level_preview.get("stop_price"))
+        meta.setdefault("take_price", entry_level_preview.get("take_price"))
+        meta.setdefault("target_price", entry_level_preview.get("take_price"))
+        meta["p388_true_dollar_risk_sizing"] = {
+            "enabled": bool(SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED),
+            "configured_risk_dollars": float(RISK_DOLLARS or 0.0),
+            **entry_level_preview,
+        }
+
+        risk_qty = compute_qty(float(base_price), side=side, meta=meta) if side == "buy" else round(abs(qty_signed), 2)
         qty = risk_qty
         affordability = None
         if side == "buy":
@@ -34985,6 +35089,30 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                     **out,
                 })
             continue
+        if dynamic_exit.get("oversized_winner_preservation_ready") and not bool(plan.get("oversized_winner_preservation_taken")):
+            qty_to_close = float(dynamic_exit.get("oversized_winner_preservation_qty") or 0.0)
+            if qty_to_close > 0:
+                plan["last_exit_attempt_ts"] = now_ts
+                reason = "oversized_winner_preservation_trim"
+                out = close_partial_position(symbol, qty_to_close, reason=reason, source="worker_exit")
+                if out.get("closed") or out.get("dry_run"):
+                    plan["oversized_winner_preservation_taken"] = True
+                    plan["oversized_winner_preservation_taken_at"] = now_ny().isoformat()
+                    plan["oversized_winner_preservation_qty"] = round(qty_to_close, 4)
+                    plan["oversized_winner_preservation"] = dict(dynamic_exit.get("oversized_winner_preservation") or {})
+                results.append({
+                    "symbol": symbol,
+                    "action": reason if out.get("closed") else f"{reason}_skipped",
+                    "price": px,
+                    "qty": qty_to_close,
+                    "days_held": hold_days,
+                    "oversized_winner_preservation": dynamic_exit.get("oversized_winner_preservation"),
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                    "stall_r": dynamic_exit.get("stall_r"),
+                    **out,
+                })
+                continue
+
         if dynamic_exit.get("partial_profit_ready") and not bool(plan.get("partial_profit_taken")):
             qty_to_close = float(dynamic_exit.get("partial_profit_qty") or 0.0)
             if qty_to_close > 0:
@@ -47164,7 +47292,13 @@ def diagnostics_swing_runtime_config():
                 "oversized_max_add_slots_while_oversized": _cfg_int("SWING_OVERSIZED_POSITION_MAX_ADD_SLOTS_WHILE_OVERSIZED", 0),
                 "captured_position_truth_sync": "active_position_truth_union_candidate_rows",
                 "operator_action_clarity": "oversized_risk_status_is_reported_with_capacity_truth",
-                "purpose": "prefer dollar-risk truth over percent-risk confusion",
+                "true_dollar_risk_sizing_enabled": _cfg_bool("SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED"),
+                "true_dollar_risk_min_starter_qty": _cfg_float("SWING_TRUE_DOLLAR_RISK_MIN_STARTER_QTY", 0.0),
+                "true_dollar_risk_max_starter_risk_multiple": _cfg_float("SWING_TRUE_DOLLAR_RISK_MAX_STARTER_RISK_MULTIPLE", 0.0),
+                "oversized_winner_preservation_enabled": _cfg_bool("SWING_OVERSIZED_WINNER_PRESERVATION_ENABLED"),
+                "oversized_winner_min_unrealized_dollars": _cfg_float("SWING_OVERSIZED_WINNER_MIN_UNREALIZED_DOLLARS", 0.0),
+                "oversized_winner_reduce_to_risk_multiple": _cfg_float("SWING_OVERSIZED_WINNER_REDUCE_TO_RISK_MULTIPLE", 0.0),
+                "purpose": "true dollar-risk sizing is enforced before submit; oversized winning positions are trimmed instead of advisory-only",
             },
         },
         exit_guards={
