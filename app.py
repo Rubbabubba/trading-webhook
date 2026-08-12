@@ -1878,6 +1878,10 @@ DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MAX_CURRENT_RETURN_PCT = getenv_float_any(
     "DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MAX_CURRENT_RETURN_PCT",
     default=-0.50,
 )
+FORBIDDEN_SHORT_POSITION_CLEANUP_ENABLED = env_bool_any(
+    "FORBIDDEN_SHORT_POSITION_CLEANUP_ENABLED",
+    default=True,
+)
 SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
     "SWING_EXECUTABLE_SELECTION_MIN_QTY",
     default=1.0,
@@ -2567,7 +2571,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-380-same-day-breakout-failed-followthrough-exit-active-truth-consolidation"
+PATCH_VERSION = "patch-381-short-position-reversal-cleanup-exit-idempotency-side-aware-lock"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -7359,10 +7363,9 @@ def _p373_exit_reason_lockable(reason: str) -> bool:
         reason_l = "exit"
     return reason_l in SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_REASONS
 
-
-def _p373_same_day_exit_lock_key(symbol: str) -> str:
-    return f"{str(symbol or '').strip().upper()}|{now_ny().date().isoformat()}"
-
+def _p373_same_day_exit_lock_key(symbol: str, close_side: str = "") -> str:
+    side = str(close_side or "any").strip().lower() or "any"
+    return f"{str(symbol or '').strip().upper()}|{side}|{now_ny().date().isoformat()}"
 
 def _p373_same_day_exit_submit_guard(
     symbol: str,
@@ -7370,10 +7373,12 @@ def _p373_same_day_exit_submit_guard(
     source: str = "system",
     qty: float | None = None,
     plan_ref: dict | None = None,
+    close_side: str = "",
 ) -> dict:
     sym = str(symbol or "").strip().upper()
     reason_l = str(reason or "exit").strip().lower()
     source_l = str(source or "system").strip().lower()
+    close_side_l = str(close_side or "").strip().lower()
     window_sec = max(1, int(SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_WINDOW_SEC or 900))
 
     out = {
@@ -7384,6 +7389,7 @@ def _p373_same_day_exit_submit_guard(
         "reason": reason_l,
         "source": source_l,
         "qty": qty,
+        "close_side": close_side_l or None,
         "window_sec": window_sec,
     }
 
@@ -7400,7 +7406,7 @@ def _p373_same_day_exit_submit_guard(
         out["status"] = "missing_symbol"
         return out
 
-    key = _p373_same_day_exit_lock_key(sym)
+    key = _p373_same_day_exit_lock_key(sym, close_side_l)
     now_utc = datetime.now(timezone.utc)
     existing = dict(SAME_DAY_EXIT_SUBMIT_LOCKS.get(key) or {})
     out["lock_key"] = key
@@ -7430,6 +7436,7 @@ def _p373_same_day_exit_submit_guard(
     if isinstance(plan_ref, dict):
         plan_order_id = str(plan_ref.get("last_exit_order_id") or "").strip()
         plan_reason = str(plan_ref.get("last_exit_submit_reason") or "").strip().lower()
+        plan_side = str(plan_ref.get("last_exit_submit_side") or "").strip().lower()
         plan_ts = str(plan_ref.get("last_exit_submit_ts_utc") or "").strip()
         plan_age_sec = None
         try:
@@ -7441,7 +7448,12 @@ def _p373_same_day_exit_submit_guard(
         except Exception:
             plan_age_sec = None
 
-        if plan_order_id and _p373_exit_reason_lockable(plan_reason or reason_l) and (plan_age_sec is None or plan_age_sec <= window_sec):
+        if (
+            plan_order_id
+            and _p373_exit_reason_lockable(plan_reason or reason_l)
+            and (not close_side_l or not plan_side or plan_side == close_side_l)
+            and (plan_age_sec is None or plan_age_sec <= window_sec)
+        ):
             out.update({
                 "blocked": True,
                 "status": "plan_exit_submit_recently_submitted",
@@ -7462,15 +7474,18 @@ def _p373_mark_same_day_exit_submit_lock(
     qty: float | None = None,
     order_id: str = "",
     plan_ref: dict | None = None,
+    close_side: str = "",
 ) -> dict:
     sym = str(symbol or "").strip().upper()
     reason_l = str(reason or "exit").strip().lower()
-    key = _p373_same_day_exit_lock_key(sym)
+    close_side_l = str(close_side or "").strip().lower()
+    key = _p373_same_day_exit_lock_key(sym, close_side_l)
     row = {
         "symbol": sym,
         "reason": reason_l,
         "source": str(source or "system"),
         "qty": qty,
+        "close_side": close_side_l or None,
         "order_id": str(order_id or ""),
         "submitted_utc": datetime.now(timezone.utc).isoformat(),
         "submitted_ny": now_ny().isoformat(),
@@ -7481,6 +7496,7 @@ def _p373_mark_same_day_exit_submit_lock(
     try:
         if isinstance(plan_ref, dict):
             plan_ref["last_exit_submit_reason"] = reason_l
+            plan_ref["last_exit_submit_side"] = close_side_l or None
             plan_ref["last_exit_submit_ts_utc"] = row["submitted_utc"]
             plan_ref["last_exit_submit_idempotency_key"] = key
     except Exception:
@@ -8716,6 +8732,7 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
         source=source,
         qty=qty,
         plan_ref=plan_ref,
+        close_side=close_side,
     )
     if same_day_exit_guard.get("blocked"):
         return _p373_record_exit_submit_idempotency_block(
@@ -8741,6 +8758,7 @@ def close_position(symbol: str, reason: str = "", source: str = "system") -> dic
         qty=qty,
         order_id=order_id,
         plan_ref=plan_ref,
+        close_side=close_side,
     )
     out["same_day_exit_submit_idempotency"] = same_day_exit_lock
     persist_positions_snapshot(reason="close_position_submitted", extra={"symbol": symbol, "order_id": order_id, "exit_reason": reason, "source": source})
@@ -30694,6 +30712,71 @@ def _p380_daily_breakout_failed_followthrough_state(symbol: str, plan: dict | No
     out["reason"] = "monitoring_failed_followthrough"
     return out
 
+def _p381_forbidden_short_cleanup_state(symbol: str, plan: dict | None, qty_signed: float | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    qty = _safe_float(qty_signed, 0.0)
+
+    out = {
+        "enabled": bool(FORBIDDEN_SHORT_POSITION_CLEANUP_ENABLED),
+        "symbol": sym,
+        "allow_short": bool(ALLOW_SHORT),
+        "qty_signed": round(qty, 8),
+        "triggered": False,
+        "reason": "not_applicable",
+        "close_side": None,
+    }
+
+    if not FORBIDDEN_SHORT_POSITION_CLEANUP_ENABLED:
+        out["reason"] = "disabled"
+        return out
+    if ALLOW_SHORT:
+        out["reason"] = "shorts_allowed"
+        return out
+    if qty >= 0:
+        out["reason"] = "not_short"
+        return out
+
+    out["triggered"] = True
+    out["reason"] = "forbidden_short_position_cleanup"
+    out["close_side"] = "buy"
+    out["qty_to_cover"] = _normalize_close_qty(abs(qty))
+    return out
+
+def _p381_forbidden_short_cleanup_truth() -> dict:
+    positions = _p364_snapshot_position_by_symbol()
+    rows = []
+
+    for symbol, pos in sorted(positions.items()):
+        sym = str(symbol or "").strip().upper()
+        qty = _safe_float((pos or {}).get("qty") or 0.0, 0.0)
+        plan = dict((TRADE_PLAN or {}).get(sym) or {})
+        state = _p381_forbidden_short_cleanup_state(sym, plan, qty)
+        rows.append({
+            "symbol": sym,
+            "qty": qty,
+            "has_active_plan": bool(plan.get("active")),
+            "state": state,
+        })
+
+    due = [r for r in rows if bool((r.get("state") or {}).get("triggered"))]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "forbidden_short_cleanup_truth",
+        "read_only": True,
+        "enabled": bool(FORBIDDEN_SHORT_POSITION_CLEANUP_ENABLED),
+        "allow_short": bool(ALLOW_SHORT),
+        "due_count": len(due),
+        "due_symbols": [r.get("symbol") for r in due],
+        "rows": rows,
+        "recommended_action": (
+            "worker_exit_should_buy_to_cover_forbidden_short_positions"
+            if due
+            else "none"
+        ),
+    }
+
 def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     out = {
         "updates": {},
@@ -33002,6 +33085,9 @@ def _p364_active_exit_protection_truth() -> dict:
         has_plan = bool(plan and plan.get("active"))
 
         qty = _safe_float(pos.get("qty") or plan.get("filled_qty") or plan.get("submitted_qty") or 0.0)
+        abs_qty = abs(qty)
+        forbidden_short_cleanup = _p381_forbidden_short_cleanup_state(symbol, plan, qty)
+        hit_forbidden_short_cleanup = bool(forbidden_short_cleanup.get("triggered"))
         current_price = _safe_float(pos.get("current_price") or pos.get("last_price") or 0.0)
         entry_price = _safe_float(
             pos.get("avg_entry_price")
@@ -33047,11 +33133,13 @@ def _p364_active_exit_protection_truth() -> dict:
             closest_exit_reason = "daily_breakout_profit_giveback_preservation_exit"
         elif hit_failed_followthrough:
             closest_exit_reason = "daily_breakout_failed_followthrough_exit"
+        elif hit_forbidden_short_cleanup:
+            closest_exit_reason = "forbidden_short_position_cleanup"
         elif time_exit_due:
             closest_exit_reason = "time_exit"
 
         has_hard_exit_level = bool(stop_price > 0 or profit_lock_price > 0 or take_price > 0)
-        exit_worker_has_enough_data = bool(has_plan and qty > 0 and current_price > 0 and entry_price > 0)
+        exit_worker_has_enough_data = bool(has_plan and abs_qty > 0 and current_price > 0 and entry_price > 0)
         protection_status = (
             "protected"
             if exit_worker_has_enough_data and has_hard_exit_level
@@ -33084,9 +33172,10 @@ def _p364_active_exit_protection_truth() -> dict:
             "hold_days": hold_days,
             "max_hold_days": max_hold_days,
             "closest_exit_reason": closest_exit_reason,
-            "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target or hit_giveback_preservation or hit_failed_followthrough or time_exit_due),
+            "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target or hit_giveback_preservation or hit_failed_followthrough or hit_forbidden_short_cleanup or time_exit_due),
             "daily_breakout_profit_giveback": giveback_state,
             "daily_breakout_failed_followthrough": failed_followthrough_state,
+            "forbidden_short_cleanup": forbidden_short_cleanup,
             "same_day_exit_blocked_for_closest_reason": bool(same_day_block),
             "exit_worker_has_enough_data": exit_worker_has_enough_data,
             "protection_status": protection_status,
@@ -33132,6 +33221,15 @@ def _p364_active_exit_protection_truth() -> dict:
                 row.get("symbol")
                 for row in rows
                 if str(row.get("closest_exit_reason") or "") == "daily_breakout_failed_followthrough_exit"
+            ],
+            "forbidden_short_cleanup_due_count": len([
+                row for row in rows
+                if str(row.get("closest_exit_reason") or "") == "forbidden_short_position_cleanup"
+            ]),
+            "forbidden_short_cleanup_due_symbols": [
+                row.get("symbol")
+                for row in rows
+                if str(row.get("closest_exit_reason") or "") == "forbidden_short_position_cleanup"
             ],
             "all_active_positions_protected": len(missing_protection) == 0,
         },
@@ -34164,6 +34262,33 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 continue
 
         qty_signed, _pos_side = get_position(symbol)
+        forbidden_short_cleanup = _p381_forbidden_short_cleanup_state(symbol, plan, qty_signed)
+        if bool(forbidden_short_cleanup.get("triggered")):
+            plan["last_exit_attempt_ts"] = utc_ts()
+            reason = "forbidden_short_position_cleanup"
+            out = close_position(symbol, reason=reason, source="worker_exit")
+            if out.get("closed"):
+                plan["active"] = False
+                try:
+                    px = get_latest_price(symbol)
+                except Exception:
+                    px = 0.0
+                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+                results.append({
+                    "symbol": symbol,
+                    "action": reason,
+                    "forbidden_short_cleanup": forbidden_short_cleanup,
+                    **out,
+                })
+            else:
+                results.append({
+                    "symbol": symbol,
+                    "action": f"{reason}_failed",
+                    "forbidden_short_cleanup": forbidden_short_cleanup,
+                    **dict(out or {}),
+                })
+            continue
+
         if qty_signed == 0:
             if _plan_is_pending_entry(plan):
                 results.append({"symbol": symbol, "action": "pending_entry_wait", "order_status": plan.get("order_status")})
@@ -45360,6 +45485,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/live_positions_light",
             f"{base}/reconcile_light",
             f"{base}/active_exit_protection_truth",
+            f"{base}/forbidden_short_cleanup_truth",
             f"{base}/same_day_stall_exit_churn_audit",
             f"{base}/same_day_exit_submit_lock_truth",
             f"{base}/exit_guard_evidence_light",
@@ -46772,6 +46898,10 @@ def diagnostics_policy_shadow(limit: int = 10):
 @app.get("/diagnostics/universe_recommendation")
 def diagnostics_universe_recommendation(limit: int = 10, target_size: int | None = None):
     return _universe_redesign_snapshot(limit=limit, target_size=target_size)
+
+@app.get("/diagnostics/forbidden_short_cleanup_truth")
+def diagnostics_forbidden_short_cleanup_truth():
+    return JSONResponse(content=_p381_forbidden_short_cleanup_truth())
 
 @app.post("/worker/swing_fast_scan")
 async def worker_swing_fast_scan(req: Request):
