@@ -1490,6 +1490,10 @@ SWING_LOSS_DAY_RECOVERY_SLOT_MAX_ENTRIES = getenv_int_any("SWING_LOSS_DAY_RECOVE
 SWING_LOSS_DAY_RECOVERY_SLOT_MIN_RANK_SCORE = getenv_float_any("SWING_LOSS_DAY_RECOVERY_SLOT_MIN_RANK_SCORE", default=108.0)
 SWING_LOSS_DAY_RECOVERY_SLOT_MIN_TARGET_PATH_SCORE = getenv_float_any("SWING_LOSS_DAY_RECOVERY_SLOT_MIN_TARGET_PATH_SCORE", default=55.0)
 SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT = getenv_float_any("SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT", default=0.10)
+SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED = env_bool_any("SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED", default=True)
+SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE = getenv_float_any("SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE", default=1.25)
+SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE = getenv_float_any("SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE", default=2.0)
+SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE = getenv_float_any("SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE", default=1.25)
 SWING_SIMPLIFICATION_AUDIT_ENABLED = env_bool_any("SWING_SIMPLIFICATION_AUDIT_ENABLED", default=True)
 SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY = env_bool_any("SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY", default=True)
 SWING_TREND_MIN_20D_RETURN_PCT = getenv_float_any("SWING_TREND_MIN_20D_RETURN_PCT", default=max(0.0, min(SWING_MIN_20D_RETURN_PCT, 0.02)))
@@ -2581,7 +2585,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-383-hotfix-broker-native-risk-constant-name"
+PATCH_VERSION = "patch-384-dollar-risk-selection-truth-oversized-position-remediation-advisory"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14116,10 +14120,23 @@ def _p363_second_slot_truth(
             for r in list(row.get("gate_blockers") or [])
             if str(r or "").strip()
         ]
+        dollar_risk = _p384_candidate_dollar_risk_truth(row)
+        dollar_risk_allowed = bool(dollar_risk.get("allowed"))
         risk_blocked = bool(
-            "gate:risk_per_share" in blocking
-            or "risk_per_share" in gate_blockers
-            or "production_contract_risk_too_wide" in list(row.get("rejection_reasons") or [])
+            (
+                "gate:risk_per_share" in blocking
+                or "risk_per_share" in gate_blockers
+                or "production_contract_risk_too_wide" in list(row.get("rejection_reasons") or [])
+            )
+            and not dollar_risk_allowed
+        )
+        reduced_size_candidate = bool(
+            (
+                "gate:risk_per_share" in blocking
+                or "risk_per_share" in gate_blockers
+                or "production_contract_risk_too_wide" in list(row.get("rejection_reasons") or [])
+            )
+            and dollar_risk_allowed
         )
         weak_cap_blocked = bool(
             weak_tape_active
@@ -14131,8 +14148,11 @@ def _p363_second_slot_truth(
             decision = "blocked_by_weak_tape_slot_cap"
             weak_cap_symbols.append(sym)
         elif risk_blocked:
-            decision = "blocked_by_risk_per_share"
+            decision = "blocked_by_dollar_risk"
             risk_symbols.append(sym)
+        elif reduced_size_candidate:
+            decision = "risk_percent_wide_but_dollar_risk_ok"
+            bug_symbols.append(sym)
         else:
             decision = "eligible_second_slot_not_selected_bug"
             bug_symbols.append(sym)
@@ -14146,12 +14166,22 @@ def _p363_second_slot_truth(
             "rank_score": row.get("rank_score"),
             "target_path_score": row.get("target_path_score"),
             "risk_per_share_pct": row.get("risk_per_share_pct"),
+            "dollar_risk_selection_truth": dollar_risk,
             "blocking_reasons": blocking,
             "gate_blockers": gate_blockers,
             "what_needs_to_change": list(row.get("what_needs_to_change") or []),
         })
 
-    if bug_symbols:
+    reduced_size_symbols = [
+        str(r.get("symbol") or "").strip().upper()
+        for r in rows
+        if str(r.get("decision") or "") == "risk_percent_wide_but_dollar_risk_ok"
+    ]
+
+    if reduced_size_symbols:
+        read = "eligible_second_slot_dollar_risk_ok_percent_risk_wide"
+        recommended_action = "allow_only_if_selection_uses_risk_sized_qty"
+    elif bug_symbols:
         read = "eligible_second_slot_not_selected_bug"
         recommended_action = "inspect_selection_slot_builder_before_relaxing_thresholds"
     elif weak_cap_symbols:
@@ -14182,7 +14212,8 @@ def _p363_second_slot_truth(
         "weak_tape_slot_cap_reached": bool(weak_tape_active and weak_tape_cap > 0 and consumed_slot_count >= weak_tape_cap),
         "weak_cap_symbols": _dedupe_keep_order(weak_cap_symbols),
         "risk_blocked_symbols": _dedupe_keep_order(risk_symbols),
-        "bug_symbols": _dedupe_keep_order(bug_symbols),
+        "reduced_size_candidate_symbols": _dedupe_keep_order(reduced_size_symbols),
+        "bug_symbols": _dedupe_keep_order([s for s in bug_symbols if s not in set(reduced_size_symbols)]),
         "rows": rows,
         "read": read,
         "recommended_action": recommended_action,
@@ -19571,11 +19602,17 @@ def _p300_executable_sizing_truth(candidate: dict | None, cap_truth: dict | None
             sizing_block_reason = "broker_insufficient_buying_power"
             broker_label_valid = True
 
+    dollar_risk_truth = _p384_candidate_dollar_risk_truth({
+        **c,
+        "estimated_qty": effective_estimated_qty,
+    })
+
     return {
         "enabled": bool(SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED),
         "executable": executable,
         "sizing_block_reason": sizing_block_reason,
         "broker_buying_power_label_valid": broker_label_valid,
+        "dollar_risk_selection_truth": dollar_risk_truth,
         "min_executable_qty": round(min_qty, 4),
         "close": round(close, 4),
         "requested_qty": round(requested_qty, 4),
@@ -22660,6 +22697,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'swing_loss_day_entry_throttle': loss_day_throttle,
             'loss_day_recovery_slot': c.get('loss_day_recovery_slot'),
             'loss_day_recovery_slot_candidate': bool(c.get('loss_day_recovery_slot_candidate')),
+            'dollar_risk_selection_truth': _p384_candidate_dollar_risk_truth(c),
             'swing_quarantine': quarantine_decision,
             'same_day_symbol_loss_cooldown': c.get('same_day_symbol_loss_cooldown'),
             'executable_near_miss_entry': c.get('executable_near_miss_entry'),
@@ -35858,6 +35896,116 @@ def _p251_same_day_symbol_loss_cooldown_snapshot() -> dict:
         "recommended_action": "cooldown_active_for_loss_symbols" if symbols else "none",
     }
 
+def _p384_candidate_dollar_risk_truth(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    sym = str(c.get("symbol") or "").strip().upper()
+    enabled = bool(SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED)
+    configured_risk = max(0.0, float(RISK_DOLLARS or 0.0))
+    max_multiple = max(0.0, float(SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE or 0.0))
+    max_dollar_risk = configured_risk * max_multiple if configured_risk > 0 and max_multiple > 0 else 0.0
+
+    qty = abs(float(_safe_float(c.get("estimated_qty") or c.get("requested_qty") or 0.0)))
+    entry = float(_safe_float(c.get("close") or c.get("price") or c.get("trade_price") or 0.0))
+    stop = float(_safe_float(c.get("stop_price") or c.get("initial_stop_price") or 0.0))
+    side = str(c.get("side") or "buy").strip().lower()
+
+    if side in {"sell", "short"}:
+        risk_per_share = max(0.0, stop - entry) if stop > 0 and entry > 0 else 0.0
+    else:
+        risk_per_share = max(0.0, entry - stop) if stop > 0 and entry > 0 else 0.0
+
+    dollar_risk = qty * risk_per_share
+    risk_multiple = dollar_risk / configured_risk if configured_risk > 0 else None
+
+    blockers = []
+    if not enabled:
+        reason = "disabled"
+    elif qty <= 0:
+        blockers.append("missing_or_zero_qty")
+        reason = "missing_or_zero_qty"
+    elif entry <= 0:
+        blockers.append("missing_entry_price")
+        reason = "missing_entry_price"
+    elif stop <= 0:
+        blockers.append("missing_stop_price")
+        reason = "missing_stop_price"
+    elif max_dollar_risk > 0 and dollar_risk > max_dollar_risk:
+        blockers.append("dollar_risk_above_selection_max")
+        reason = "dollar_risk_above_selection_max"
+    else:
+        reason = "dollar_risk_ok"
+
+    return {
+        "enabled": enabled,
+        "symbol": sym,
+        "allowed": enabled and not blockers,
+        "reason": reason,
+        "blockers": blockers,
+        "configured_risk_per_trade_dollars": round(configured_risk, 4),
+        "max_risk_multiple": round(max_multiple, 4),
+        "max_dollar_risk": round(max_dollar_risk, 4),
+        "qty": round(qty, 4),
+        "entry_price": round(entry, 4),
+        "stop_price": round(stop, 4) if stop > 0 else None,
+        "risk_per_share": round(risk_per_share, 4),
+        "dollar_risk": round(dollar_risk, 4),
+        "risk_multiple": round(risk_multiple, 4) if risk_multiple is not None else None,
+        "percent_risk": c.get("risk_per_share_pct"),
+    }
+
+
+def _p384_oversized_position_remediation_advisory() -> dict:
+    risk_truth = _p383_broker_native_position_risk_truth()
+    configured_risk = max(0.0, float(risk_truth.get("configured_risk_per_trade_dollars") or RISK_DOLLARS or 0.0))
+    advisory_multiple = max(0.0, float(SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE or 0.0))
+    reduce_multiple = max(0.0, float(SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE or 0.0))
+    advisory_threshold = configured_risk * advisory_multiple if configured_risk > 0 and advisory_multiple > 0 else 0.0
+    reduce_target = configured_risk * reduce_multiple if configured_risk > 0 and reduce_multiple > 0 else 0.0
+
+    rows = []
+    for row in list(risk_truth.get("rows") or []):
+        r = dict(row or {})
+        risk_to_stop = float(_safe_float(r.get("risk_to_stop_dollars"), 0.0))
+        qty = abs(float(_safe_float(r.get("qty"), 0.0)))
+        risk_per_share = risk_to_stop / qty if qty > 0 else 0.0
+        target_qty = qty
+        reduce_qty = 0.0
+
+        if risk_per_share > 0 and reduce_target > 0:
+            target_qty = max(0.0, reduce_target / risk_per_share)
+            reduce_qty = max(0.0, qty - target_qty)
+
+        oversized = bool(advisory_threshold > 0 and risk_to_stop > advisory_threshold)
+        r.update({
+            "oversized_advisory": oversized,
+            "advisory_threshold_dollars": round(advisory_threshold, 4),
+            "reduce_target_risk_dollars": round(reduce_target, 4),
+            "risk_per_share_dollars": round(risk_per_share, 4),
+            "suggested_target_qty": round(target_qty, 4),
+            "suggested_reduce_qty": round(reduce_qty, 4),
+            "remediation": (
+                "consider_reduce_or_tighten_stop"
+                if oversized
+                else "none"
+            ),
+        })
+        rows.append(r)
+
+    oversized_symbols = [r.get("symbol") for r in rows if r.get("oversized_advisory")]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "oversized_position_remediation_advisory",
+        "configured_risk_per_trade_dollars": round(configured_risk, 4),
+        "advisory_multiple": round(advisory_multiple, 4),
+        "reduce_to_risk_multiple": round(reduce_multiple, 4),
+        "oversized_count": len(oversized_symbols),
+        "oversized_symbols": oversized_symbols,
+        "rows": rows,
+        "recommended_action": "review_reduce_or_tighten_stop_candidates" if oversized_symbols else "none",
+    }
+
 def _p383_broker_native_position_risk_truth() -> dict:
     rows = []
     total_risk_to_stop = 0.0
@@ -35923,7 +36071,7 @@ def _p383_broker_native_position_risk_truth() -> dict:
                 "missing_stop"
                 if stop <= 0
                 else "oversized_vs_config"
-                if risk_multiple is not None and risk_multiple > 2.0
+                if risk_multiple is not None and risk_multiple > float(SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE or 2.0)
                 else "ok"
             ),
         })
@@ -46518,6 +46666,13 @@ def diagnostics_swing_runtime_config():
                 "max_risk_per_share_pct": _cfg_float("SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT", 0.0),
                 "purpose": "allows_one_high_quality_candidate_after_loss_day_without_disabling_throttle",
             },
+            "dollar_risk_selection_truth": {
+                "enabled": _cfg_bool("SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED"),
+                "max_multiple": _cfg_float("SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE", 0.0),
+                "oversized_position_advisory_multiple": _cfg_float("SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE", 0.0),
+                "oversized_reduce_to_risk_multiple": _cfg_float("SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE", 0.0),
+                "purpose": "prefer dollar-risk truth over percent-risk confusion",
+            },
         },
         exit_guards={
             "opening_damage_guard": {
@@ -46993,6 +47148,10 @@ def diagnostics_active_exit_protection_truth():
 @app.get("/diagnostics/broker_native_position_risk_truth")
 def diagnostics_broker_native_position_risk_truth():
     return JSONResponse(content=_p383_broker_native_position_risk_truth())
+
+@app.get("/diagnostics/oversized_position_remediation_advisory")
+def diagnostics_oversized_position_remediation_advisory():
+    return JSONResponse(content=_p384_oversized_position_remediation_advisory())
 
 @app.get("/diagnostics/same_day_stall_exit_churn_audit")
 def diagnostics_same_day_stall_exit_churn_audit(limit: int = 25):
