@@ -1368,6 +1368,23 @@ SWING_OVERSIZED_WINNER_MIN_REMAINING_QTY = getenv_float_any(
     default=1.0,
 )
 
+SWING_LEGACY_OVERSIZED_NORMALIZATION_ENABLED = env_bool_any(
+    "SWING_LEGACY_OVERSIZED_NORMALIZATION_ENABLED",
+    default=True,
+)
+SWING_LEGACY_OVERSIZED_NORMALIZATION_REDUCE_TO_RISK_MULTIPLE = getenv_float_any(
+    "SWING_LEGACY_OVERSIZED_NORMALIZATION_REDUCE_TO_RISK_MULTIPLE",
+    default=1.25,
+)
+SWING_LEGACY_OVERSIZED_NORMALIZATION_MIN_UNREALIZED_DOLLARS = getenv_float_any(
+    "SWING_LEGACY_OVERSIZED_NORMALIZATION_MIN_UNREALIZED_DOLLARS",
+    default=0.0,
+)
+SWING_LEGACY_OVERSIZED_NORMALIZATION_MIN_REMAINING_QTY = getenv_float_any(
+    "SWING_LEGACY_OVERSIZED_NORMALIZATION_MIN_REMAINING_QTY",
+    default=1.0,
+)
+
 SWING_TIME_EXIT_GRACE_R = getenv_float_any("SWING_TIME_EXIT_GRACE_R", default=0.75)
 SWING_TIME_EXIT_GRACE_DAYS = getenv_int_any("SWING_TIME_EXIT_GRACE_DAYS", default=1)
 SWING_CANDIDATE_TTL_HOURS = getenv_int_any("SWING_CANDIDATE_TTL_HOURS", default=24)
@@ -2602,7 +2619,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-388-true-dollar-risk-sizing-oversized-winner-preservation-contract"
+PATCH_VERSION = "patch-389-legacy-oversized-position-normalization-risk-contract-backfill"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -31215,6 +31232,93 @@ def _p388_oversized_winner_preservation_plan(symbol: str, plan: dict, px: float)
         "configured_risk_dollars": round(configured_risk, 4),
     }
 
+def _p389_legacy_oversized_position_normalization_plan(symbol: str, plan: dict, px: float) -> dict:
+    if not bool(SWING_LEGACY_OVERSIZED_NORMALIZATION_ENABLED):
+        return {"triggered": False, "reason": "disabled"}
+    if bool((plan or {}).get("legacy_oversized_normalization_taken")):
+        return {"triggered": False, "reason": "already_taken"}
+
+    sizing_contract = str((plan or {}).get("sizing_contract") or "").strip()
+    true_risk = (plan or {}).get("true_dollar_risk_sizing")
+    if sizing_contract == "true_dollar_risk_from_active_stop" and isinstance(true_risk, dict) and true_risk:
+        return {"triggered": False, "reason": "not_legacy_position"}
+
+    side = str((plan or {}).get("side") or "buy").lower()
+    if side != "buy":
+        return {"triggered": False, "reason": "not_long"}
+
+    qty = abs(_safe_float((plan or {}).get("filled_qty") or (plan or {}).get("qty") or 0.0))
+    entry = _safe_float((plan or {}).get("entry_price") or (plan or {}).get("avg_fill_price") or 0.0)
+    stop = _safe_float((plan or {}).get("stop_price") or (plan or {}).get("initial_stop_price") or 0.0)
+
+    if qty <= 0 or entry <= 0 or stop <= 0:
+        return {"triggered": False, "reason": "missing_qty_entry_or_stop"}
+
+    risk_per_share = max(0.0, entry - stop)
+    if risk_per_share <= 0:
+        return {"triggered": False, "reason": "invalid_risk_per_share"}
+
+    unrealized = (float(px or 0.0) - entry) * qty
+    min_unrealized = float(SWING_LEGACY_OVERSIZED_NORMALIZATION_MIN_UNREALIZED_DOLLARS or 0.0)
+    if unrealized < min_unrealized:
+        return {
+            "triggered": False,
+            "reason": "legacy_oversized_profit_below_threshold",
+            "unrealized_pl": round(unrealized, 4),
+            "min_unrealized_dollars": round(min_unrealized, 4),
+        }
+
+    configured_risk = max(0.0, float(RISK_DOLLARS or 0.0))
+    advisory_threshold = configured_risk * max(0.0, float(SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE or 0.0))
+    current_risk = qty * risk_per_share
+
+    if configured_risk <= 0 or current_risk <= advisory_threshold:
+        return {
+            "triggered": False,
+            "reason": "not_oversized_vs_config",
+            "current_risk_dollars": round(current_risk, 4),
+            "advisory_threshold_dollars": round(advisory_threshold, 4),
+        }
+
+    target_risk = configured_risk * max(
+        0.0,
+        float(SWING_LEGACY_OVERSIZED_NORMALIZATION_REDUCE_TO_RISK_MULTIPLE or 0.0),
+    )
+    min_remaining = max(0.0, float(SWING_LEGACY_OVERSIZED_NORMALIZATION_MIN_REMAINING_QTY or 0.0))
+    target_qty_by_risk = target_risk / risk_per_share if risk_per_share > 0 else qty
+    target_qty = min(qty, max(min_remaining, target_qty_by_risk))
+    qty_to_close = max(0.0, qty - target_qty)
+
+    if qty_to_close < float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0) or qty_to_close >= qty:
+        return {
+            "triggered": False,
+            "reason": "legacy_trim_qty_not_actionable",
+            "qty": round(qty, 4),
+            "target_qty": round(target_qty, 4),
+            "qty_to_close": round(qty_to_close, 4),
+        }
+
+    return {
+        "triggered": True,
+        "reason": "legacy_oversized_position_normalization_trim",
+        "symbol": str(symbol or "").upper(),
+        "qty": round(qty, 4),
+        "qty_to_close": round(qty_to_close, 4),
+        "target_remaining_qty": round(target_qty, 4),
+        "entry_price": round(entry, 4),
+        "current_price": round(float(px or 0.0), 4),
+        "stop_price": round(stop, 4),
+        "risk_per_share": round(risk_per_share, 4),
+        "unrealized_pl": round(unrealized, 4),
+        "current_risk_dollars": round(current_risk, 4),
+        "target_risk_dollars": round(target_risk, 4),
+        "configured_risk_dollars": round(configured_risk, 4),
+        "legacy_contract_backfill": {
+            "sizing_contract": "legacy_position_normalized_to_true_dollar_risk",
+            "normalization_patch": PATCH_VERSION,
+        },
+    }
+
 def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     out = {
         "updates": {},
@@ -31226,6 +31330,9 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         "oversized_winner_preservation_ready": False,
         "oversized_winner_preservation_qty": 0.0,
         "oversized_winner_preservation": {},
+        "legacy_oversized_normalization_ready": False,
+        "legacy_oversized_normalization_qty": 0.0,
+        "legacy_oversized_normalization": {},
         "time_exit_grace": False,
     }
     if STRATEGY_MODE != "swing":
@@ -31264,6 +31371,15 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     proposed_profit_lock = current_profit_lock
     if _safe_float(out.get("updates", {}).get("profit_lock_price") or 0.0, 0.0) > proposed_profit_lock:
         proposed_profit_lock = _safe_float(out.get("updates", {}).get("profit_lock_price"), proposed_profit_lock)
+    legacy_oversized = _p389_legacy_oversized_position_normalization_plan(symbol, plan, float(px))
+    out["legacy_oversized_normalization"] = dict(legacy_oversized)
+    if bool(legacy_oversized.get("triggered")):
+        out["legacy_oversized_normalization_ready"] = True
+        out["legacy_oversized_normalization_qty"] = float(legacy_oversized.get("qty_to_close") or 0.0)
+        out["flags"].append("legacy_oversized_normalization_ready")
+        out["updates"]["break_even_armed"] = True
+        proposed_profit_lock = max(proposed_profit_lock, entry)
+
     oversized_winner = _p388_oversized_winner_preservation_plan(symbol, plan, float(px))
     out["oversized_winner_preservation"] = dict(oversized_winner)
     if bool(oversized_winner.get("triggered")):
@@ -35089,6 +35205,34 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                     **out,
                 })
             continue
+        if dynamic_exit.get("legacy_oversized_normalization_ready") and not bool(plan.get("legacy_oversized_normalization_taken")):
+            qty_to_close = float(dynamic_exit.get("legacy_oversized_normalization_qty") or 0.0)
+            if qty_to_close > 0:
+                plan["last_exit_attempt_ts"] = now_ts
+                reason = "legacy_oversized_position_normalization_trim"
+                out = close_partial_position(symbol, qty_to_close, reason=reason, source="worker_exit")
+                if out.get("closed") or out.get("dry_run"):
+                    plan["legacy_oversized_normalization_taken"] = True
+                    plan["legacy_oversized_normalization_taken_at"] = now_ny().isoformat()
+                    plan["legacy_oversized_normalization_qty"] = round(qty_to_close, 4)
+                    plan["legacy_oversized_normalization"] = dict(dynamic_exit.get("legacy_oversized_normalization") or {})
+                    plan["sizing_contract"] = "legacy_position_normalized_to_true_dollar_risk"
+                    plan["true_dollar_risk_sizing"] = dict(
+                        (dynamic_exit.get("legacy_oversized_normalization") or {}).get("legacy_contract_backfill") or {}
+                    )
+                results.append({
+                    "symbol": symbol,
+                    "action": reason if out.get("closed") else f"{reason}_skipped",
+                    "price": px,
+                    "qty": qty_to_close,
+                    "days_held": hold_days,
+                    "legacy_oversized_normalization": dynamic_exit.get("legacy_oversized_normalization"),
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                    "stall_r": dynamic_exit.get("stall_r"),
+                    **out,
+                })
+                continue
+
         if dynamic_exit.get("oversized_winner_preservation_ready") and not bool(plan.get("oversized_winner_preservation_taken")):
             qty_to_close = float(dynamic_exit.get("oversized_winner_preservation_qty") or 0.0)
             if qty_to_close > 0:
@@ -47298,7 +47442,10 @@ def diagnostics_swing_runtime_config():
                 "oversized_winner_preservation_enabled": _cfg_bool("SWING_OVERSIZED_WINNER_PRESERVATION_ENABLED"),
                 "oversized_winner_min_unrealized_dollars": _cfg_float("SWING_OVERSIZED_WINNER_MIN_UNREALIZED_DOLLARS", 0.0),
                 "oversized_winner_reduce_to_risk_multiple": _cfg_float("SWING_OVERSIZED_WINNER_REDUCE_TO_RISK_MULTIPLE", 0.0),
-                "purpose": "true dollar-risk sizing is enforced before submit; oversized winning positions are trimmed instead of advisory-only",
+                "legacy_oversized_normalization_enabled": _cfg_bool("SWING_LEGACY_OVERSIZED_NORMALIZATION_ENABLED"),
+                "legacy_oversized_normalization_reduce_to_risk_multiple": _cfg_float("SWING_LEGACY_OVERSIZED_NORMALIZATION_REDUCE_TO_RISK_MULTIPLE", 0.0),
+                "legacy_oversized_normalization_min_unrealized_dollars": _cfg_float("SWING_LEGACY_OVERSIZED_NORMALIZATION_MIN_UNREALIZED_DOLLARS", 0.0),
+                "purpose": "true dollar-risk sizing is enforced before submit; existing legacy oversized positions are normalized through worker_exit",
             },
         },
         exit_guards={
@@ -47374,26 +47521,21 @@ def diagnostics_routes():
 def diagnostics_config_integrity():
     return _config_integrity_snapshot()
 
-
 @app.get("/diagnostics/trade_path")
 def diagnostics_trade_path(limit: int = 20):
     return _trade_path_snapshot(limit=limit)
-
 
 @app.get("/diagnostics/execution_proof")
 def diagnostics_execution_proof(limit: int = 10):
     return _execution_proof_snapshot(limit=limit)
 
-
 @app.get("/diagnostics/current_runtime_execution_proof")
 def diagnostics_current_runtime_execution_proof(limit: int = 10):
     return _execution_proof_snapshot(limit=limit)
 
-
 @app.get("/diagnostics/promotion_failures")
 def diagnostics_promotion_failures(limit: int = 10):
     return _promotion_failure_snapshot(limit=limit)
-
 
 @app.get("/diagnostics/promotion_selection")
 def diagnostics_promotion_selection(limit: int = 10):
@@ -47906,12 +48048,10 @@ def diagnostics_swing_control_surface():
     _ensure_runtime_state_loaded()
     return _p253_swing_control_surface_snapshot()
 
-
 @app.get("/diagnostics/broker_backed_exposure_truth")
 def diagnostics_broker_backed_exposure_truth():
     _ensure_runtime_state_loaded()
     return _p253_broker_backed_exposure_truth_snapshot()
-
 
 @app.get("/diagnostics/swing_simplification_audit")
 def diagnostics_swing_simplification_audit():
@@ -47949,7 +48089,6 @@ def diagnostics_current_scan_suppression_truth(limit: int = 50):
     _ensure_runtime_state_loaded()
     return _p277h_current_scan_suppression_truth(limit=limit)
 
-
 @app.get("/diagnostics/defensive_tier_near_miss_report")
 def diagnostics_defensive_tier_near_miss_report(limit: int = 50):
     _ensure_runtime_state_loaded()
@@ -47959,7 +48098,6 @@ def diagnostics_defensive_tier_near_miss_report(limit: int = 50):
 def diagnostics_entry_snapshot_guard():
     _ensure_runtime_state_loaded()
     return _p251_entry_snapshot_guard_snapshot()
-
 
 @app.get("/diagnostics/swing_replay_backtest_lab")
 def diagnostics_swing_replay_backtest_lab():
@@ -47993,7 +48131,6 @@ def diagnostics_eod_flatten_status():
 @app.get("/diagnostics/policy_shadow")
 def diagnostics_policy_shadow(limit: int = 10):
     return _policy_shadow_snapshot(limit=limit)
-
 
 @app.get("/diagnostics/universe_recommendation")
 def diagnostics_universe_recommendation(limit: int = 10, target_size: int | None = None):
