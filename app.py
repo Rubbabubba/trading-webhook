@@ -14434,7 +14434,7 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "missing_trade_opportunity_count": int(watch.get("missing_trade_opportunity_count") or 0),
             "captured_candidate_count": len(captured_items),
             "raw_open_slots": int(risk_adjusted_capacity.get("raw_open_slots") or 0),
-            "open_slots": int(risk_adjusted_capacity.get("risk_adjusted_open_slots") or 0),t("active_position_count") or 0)),
+            "open_slots": int(risk_adjusted_capacity.get("risk_adjusted_open_slots") or 0),
             "operator_read": (
                 "selected_submit_rate_limited_retryable; inspect_protective_limit_submit_evidence"
                 if rate_limited_selected_symbols
