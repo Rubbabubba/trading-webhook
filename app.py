@@ -1862,6 +1862,22 @@ DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_MIN_REFRESH_SEC = getenv_int_
     "DAILY_BREAKOUT_PROFIT_GIVEBACK_HIGH_WATER_BACKFILL_MIN_REFRESH_SEC",
     default=900,
 )
+DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_EXIT_ENABLED = env_bool_any(
+    "DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_EXIT_ENABLED",
+    default=True,
+)
+DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MIN_HOLD_MIN = getenv_int_any(
+    "DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MIN_HOLD_MIN",
+    default=15,
+)
+DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MIN_FAVORABLE_PCT = getenv_float_any(
+    "DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MIN_FAVORABLE_PCT",
+    default=0.25,
+)
+DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MAX_CURRENT_RETURN_PCT = getenv_float_any(
+    "DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MAX_CURRENT_RETURN_PCT",
+    default=-0.50,
+)
 SWING_EXECUTABLE_SELECTION_MIN_QTY = getenv_float_any(
     "SWING_EXECUTABLE_SELECTION_MIN_QTY",
     default=1.0,
@@ -2547,12 +2563,11 @@ STARTUP_STATE: dict[str, object] = {
     "error": "",
 }
 
-
 # Scan rotation state (in-memory). Keeps a moving window through the universe so we can
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-379-exit-protection-truth-consolidation-giveback-exit-terminal-status"
+PATCH_VERSION = "patch-380-same-day-breakout-failed-followthrough-exit-active-truth-consolidation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -17259,6 +17274,7 @@ def same_day_exit_blocked(plan: dict, reason: str = "") -> bool:
         "opening_damage_exit",
         "stall_loss_guard",
         "daily_breakout_profit_giveback_preservation_exit",
+        "daily_breakout_failed_followthrough_exit",
     }
     if (reason or "").strip().lower() in protective_reasons:
         return False
@@ -30603,6 +30619,81 @@ def _p378_daily_breakout_profit_giveback_state(symbol: str, plan: dict | None, p
     out["reason"] = "monitoring_profit_giveback"
     return out
 
+def _p380_daily_breakout_failed_followthrough_state(symbol: str, plan: dict | None, px: float) -> dict:
+    plan = plan if isinstance(plan, dict) else {}
+    sym = str(symbol or plan.get("symbol") or "").strip().upper()
+    entry = _safe_float(plan.get("entry_price") or plan.get("avg_fill_price") or 0.0, 0.0)
+    side = str(plan.get("side") or "buy").strip().lower()
+
+    out = {
+        "enabled": bool(DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_EXIT_ENABLED),
+        "symbol": sym,
+        "is_daily_breakout": _p378_is_daily_breakout_plan(plan),
+        "triggered": False,
+        "reason": "not_applicable",
+    }
+
+    if not DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_EXIT_ENABLED:
+        out["reason"] = "disabled"
+        return out
+    if STRATEGY_MODE != "swing":
+        out["reason"] = "strategy_mode_not_swing"
+        return out
+    if not out["is_daily_breakout"]:
+        out["reason"] = "not_daily_breakout"
+        return out
+    if side != "buy":
+        out["reason"] = "not_long"
+        return out
+    if entry <= 0 or px <= 0:
+        out["reason"] = "missing_entry_or_price"
+        return out
+
+    opened = _parse_plan_opened_dt(plan)
+    opened_today = bool(opened and opened.date() == now_ny().date())
+    hold_min = _p378_plan_opened_minutes_ago(plan)
+    current_return_pct = ((float(px) - entry) / entry) * 100.0
+
+    backfill = _p378_active_breakout_high_water_backfill(sym, plan, entry)
+    prior = dict(plan.get("daily_breakout_profit_giveback") or {})
+    prior_high_pct = _safe_float(prior.get("high_return_pct"), 0.0)
+    backfill_high_pct = _safe_float(backfill.get("max_favorable_return_pct"), 0.0) if bool(backfill.get("ok")) else 0.0
+    high_return_pct = max(prior_high_pct, backfill_high_pct, current_return_pct, 0.0)
+
+    min_hold = max(0, int(DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MIN_HOLD_MIN or 0))
+    min_favorable = float(DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MIN_FAVORABLE_PCT or 0.0)
+    max_current_return = float(DAILY_BREAKOUT_FAILED_FOLLOWTHROUGH_MAX_CURRENT_RETURN_PCT or 0.0)
+
+    out.update({
+        "opened_today": opened_today,
+        "hold_min": round(float(hold_min), 2) if hold_min is not None else None,
+        "min_hold_min": int(min_hold),
+        "entry_price": round(entry, 4),
+        "current_price": round(float(px), 4),
+        "current_return_pct": round(current_return_pct, 4),
+        "high_return_pct": round(high_return_pct, 4),
+        "min_favorable_pct": round(min_favorable, 4),
+        "max_current_return_pct": round(max_current_return, 4),
+        "high_water_backfill": backfill,
+    })
+
+    if not opened_today:
+        out["reason"] = "not_opened_today"
+        return out
+    if hold_min is None or hold_min < min_hold:
+        out["reason"] = "minimum_hold_window_active"
+        return out
+    if high_return_pct >= min_favorable:
+        out["reason"] = "had_enough_followthrough"
+        return out
+    if current_return_pct <= max_current_return:
+        out["triggered"] = True
+        out["reason"] = "daily_breakout_failed_followthrough_exit"
+        return out
+
+    out["reason"] = "monitoring_failed_followthrough"
+    return out
+
 def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     out = {
         "updates": {},
@@ -30638,6 +30729,12 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     if breakout_giveback.get("triggered"):
         out["daily_breakout_profit_giveback_exit"] = True
         out["flags"].append("daily_breakout_profit_giveback_preservation_exit")
+
+    failed_followthrough = _p380_daily_breakout_failed_followthrough_state(symbol, plan, float(px))
+    out["daily_breakout_failed_followthrough"] = failed_followthrough
+    if failed_followthrough.get("triggered"):
+        out["daily_breakout_failed_followthrough_exit"] = True
+        out["flags"].append("daily_breakout_failed_followthrough_exit")
 
     proposed_stop = current_stop
     proposed_profit_lock = current_profit_lock
@@ -32931,7 +33028,13 @@ def _p364_active_exit_protection_truth() -> dict:
             if has_plan and current_price > 0
             else {"triggered": False}
         )
+        failed_followthrough_state = (
+            _p380_daily_breakout_failed_followthrough_state(symbol, plan, float(current_price))
+            if has_plan and current_price > 0
+            else {"triggered": False}
+        )
         hit_giveback_preservation = bool(giveback_state.get("triggered"))
+        hit_failed_followthrough = bool(failed_followthrough_state.get("triggered"))
 
         closest_exit_reason = "none"
         if hit_stop:
@@ -32942,6 +33045,8 @@ def _p364_active_exit_protection_truth() -> dict:
             closest_exit_reason = "target"
         elif hit_giveback_preservation:
             closest_exit_reason = "daily_breakout_profit_giveback_preservation_exit"
+        elif hit_failed_followthrough:
+            closest_exit_reason = "daily_breakout_failed_followthrough_exit"
         elif time_exit_due:
             closest_exit_reason = "time_exit"
 
@@ -32979,8 +33084,9 @@ def _p364_active_exit_protection_truth() -> dict:
             "hold_days": hold_days,
             "max_hold_days": max_hold_days,
             "closest_exit_reason": closest_exit_reason,
-            "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target or hit_giveback_preservation or time_exit_due),
+            "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target or hit_giveback_preservation or hit_failed_followthrough or time_exit_due),
             "daily_breakout_profit_giveback": giveback_state,
+            "daily_breakout_failed_followthrough": failed_followthrough_state,
             "same_day_exit_blocked_for_closest_reason": bool(same_day_block),
             "exit_worker_has_enough_data": exit_worker_has_enough_data,
             "protection_status": protection_status,
@@ -33017,6 +33123,15 @@ def _p364_active_exit_protection_truth() -> dict:
                 row.get("symbol")
                 for row in rows
                 if str(row.get("closest_exit_reason") or "") == "daily_breakout_profit_giveback_preservation_exit"
+            ],
+            "failed_followthrough_exit_due_count": len([
+                row for row in rows
+                if str(row.get("closest_exit_reason") or "") == "daily_breakout_failed_followthrough_exit"
+            ]),
+            "failed_followthrough_exit_due_symbols": [
+                row.get("symbol")
+                for row in rows
+                if str(row.get("closest_exit_reason") or "") == "daily_breakout_failed_followthrough_exit"
             ],
             "all_active_positions_protected": len(missing_protection) == 0,
         },
@@ -34185,6 +34300,46 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                     "price": px,
                     "days_held": hold_days,
                     "daily_breakout_profit_giveback": dynamic_exit.get("daily_breakout_profit_giveback"),
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                    **out,
+                })
+            continue
+        if dynamic_exit.get("daily_breakout_failed_followthrough_exit"):
+            plan["last_exit_attempt_ts"] = now_ts
+            reason = "daily_breakout_failed_followthrough_exit"
+            if same_day_exit_blocked(plan, reason=reason):
+                results.append({
+                    "symbol": symbol,
+                    "action": "blocked_same_day_exit",
+                    "reason": reason,
+                    "days_held": hold_days,
+                    "daily_breakout_failed_followthrough": dynamic_exit.get("daily_breakout_failed_followthrough"),
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                })
+                continue
+            out = close_position(symbol, reason=reason, source="worker_exit")
+            if out.get("closed"):
+                plan["active"] = False
+                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+                results.append({
+                    "symbol": symbol,
+                    "action": reason,
+                    "price": px,
+                    "stop": stop_price,
+                    "profit_lock": profit_lock_price,
+                    "take": take_price,
+                    "days_held": hold_days,
+                    "daily_breakout_failed_followthrough": dynamic_exit.get("daily_breakout_failed_followthrough"),
+                    "dynamic_flags": dynamic_exit.get("flags", []),
+                    **out,
+                })
+            else:
+                results.append({
+                    "symbol": symbol,
+                    "action": f"{reason}_failed",
+                    "price": px,
+                    "days_held": hold_days,
+                    "daily_breakout_failed_followthrough": dynamic_exit.get("daily_breakout_failed_followthrough"),
                     "dynamic_flags": dynamic_exit.get("flags", []),
                     **out,
                 })
