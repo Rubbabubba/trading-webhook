@@ -2593,7 +2593,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-387-rate-limited-selected-submit-recovery-durable-submit-gap-retry"
+PATCH_VERSION = "patch-387-hotfix-backfill-current-rate-limited-submit-row-submit-trace-retry-awareness"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14381,6 +14381,31 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         )
         and str(row.get("symbol") or "").strip()
     ])
+
+    latest_scan, latest_summary = _p298_latest_scan_summary_light()
+    selected_submit_rows = [
+        dict(row or {})
+        for row in list((latest_summary or {}).get("selected_submission_rows") or [])
+        if isinstance(row, dict)
+    ]
+    rate_limited_symbols = _dedupe_keep_order(rate_limited_symbols + [
+        str(row.get("symbol") or "").strip().upper()
+        for row in selected_submit_rows
+        if str(row.get("symbol") or "").strip()
+        and (
+            str(row.get("submit_state") or "").strip().lower() == "retryable_rate_limit"
+            or bool(row.get("rate_limited"))
+            or _p352_is_alpaca_rate_limit_error(row.get("submit_reason"))
+            or _p352_is_alpaca_rate_limit_error(row.get("reason"))
+            or _p352_is_alpaca_rate_limit_error((row.get("submit_diagnostics") or {}).get("error"))
+        )
+    ])
+    queued_rate_limit_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+        if str((row or {}).get("symbol") or "").strip()
+    }
+
     rate_limited_selected_symbols = [
         sym for sym in raw_selected_symbols
         if str(sym or "").upper() in set(rate_limited_symbols)
@@ -14389,6 +14414,13 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
         sym for sym in raw_selected_symbols
         if str(sym or "").upper() not in set(rate_limited_symbols)
     ]
+
+    effective_missing_symbols = [
+        sym for sym in effective_missing_symbols
+        if str(sym or "").strip().upper() not in set(rate_limited_symbols)
+        and str(sym or "").strip().upper() not in queued_rate_limit_symbols
+    ]
+    effective_missing_count = len(effective_missing_symbols)
     direct_submit_enabled = bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE)
     direct_submit_status = {
         "active": direct_submit_enabled,
@@ -14459,6 +14491,8 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "selected_not_attempted_symbols": selected_not_attempted_symbols,
             "rate_limited_submit_count": len(rate_limited_selected_symbols),
             "rate_limited_submit_symbols": rate_limited_selected_symbols,
+            "rate_limit_retry_queue_count": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
+            "rate_limit_retry_queue_symbols": sorted(queued_rate_limit_symbols),
             "eligible_not_selected_count": len(eligible_not_selected_items),
             "eligible_not_selected_symbols": eligible_not_selected_symbols,
             "current_scan_selected_source": "latest_scan_summary_selected_symbols",
@@ -14535,10 +14569,10 @@ def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None 
             "raw_open_slots": int(risk_adjusted_capacity.get("raw_open_slots") or 0),
             "open_slots": int(risk_adjusted_capacity.get("risk_adjusted_open_slots") or 0),
             "operator_read": (
-                "selected_submit_rate_limited_retryable; inspect_protective_limit_submit_evidence"
-                if rate_limited_selected_symbols
+                "selected_submit_rate_limited_retryable; waiting_for_durable_retry"
+                if rate_limited_selected_symbols or queued_rate_limit_symbols
                 else "not_missing_current_trade; monitor_existing_positions_and_next_scan"
-                if int(watch.get("missing_trade_opportunity_count") or 0) <= 0
+                if effective_missing_count <= 0
                 else "actionable_trade_available; inspect_selected_items_now"
             ),
         },
@@ -33310,6 +33344,20 @@ def _p298_selected_submission_truth_light() -> dict:
             submit_row.get("signal") or submit_row.get("strategy") or "daily_breakout",
         )
         rate_limit_retry_queued = bool(rate_limit_retry_key in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
+        rate_limit_retry_queue_backfill = {"queued": False, "reason": "not_needed"}
+
+        if (
+            rate_limited_retryable
+            and not rate_limit_retry_queued
+            and submit_row
+            and not bool(side_effect.get("actual_submit_side_effect"))
+        ):
+            rate_limit_retry_queue_backfill = _p387_queue_rate_limited_selected_submit(
+                submit_row,
+                submit_row,
+            )
+            rate_limit_retry_queued = bool(rate_limit_retry_key in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
+
         submit_gap = bool(
             not side_effect.get("actual_submit_side_effect")
             and not execution_quality_blocked
@@ -33366,6 +33414,7 @@ def _p298_selected_submission_truth_light() -> dict:
             "rate_limited_retryable": bool(rate_limited_retryable),
             "rate_limit_retry_key": rate_limit_retry_key,
             "rate_limit_retry_queued": bool(rate_limit_retry_queued),
+            "rate_limit_retry_queue_backfill": rate_limit_retry_queue_backfill,
             "rate_limit_retry_queue_row": dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.get(rate_limit_retry_key) or {}),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": retryable_spread_block,
