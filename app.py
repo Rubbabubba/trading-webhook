@@ -2647,7 +2647,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-396-app-time-helper-deletion-phase-1-market-clock-wrapper-simplification"
+PATCH_VERSION = "patch-397-production-selected-submit-bridge-final-cleanup-legacy-gate-field-scrub"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -13648,6 +13648,14 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
             status = "watch"
             recommendation = "monitor_next_scan"
 
+        production_selected = bool(selected and status == "tradeable")
+        legacy_gate_truth = {
+            "gate_passed": bool(target_path.get("gate_passed")) if target_path else False,
+            "gate_blockers": blockers,
+            "diagnostic_only": bool(production_selected),
+            "ignored_when_production_selected": bool(production_selected),
+        }
+
         items.append({
             "symbol": sym,
             "status": status,
@@ -13665,8 +13673,9 @@ def _p316_swing_watchlist_trade_status(symbols: str | None = None, limit: int | 
             "target_path_score": target_score,
             "target_path_passed": bool(target_path.get("passed")) if target_path else False,
             "target_path_tier": target_path.get("tier") if target_path else None,
-            "gate_passed": bool(target_path.get("gate_passed")) if target_path else False,
-            "gate_blockers": blockers,
+            "legacy_gate_truth": legacy_gate_truth,
+            "gate_passed": True if production_selected else bool(target_path.get("gate_passed")) if target_path else False,
+            "gate_blockers": [] if production_selected else blockers,
             "rejection_reasons": reasons,
             "stale_rejection_reasons_removed": stale_rejection_reasons_removed,
             "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
@@ -20666,6 +20675,36 @@ def _p301_apply_executable_near_miss_entry(candidate: dict | None, daily_goal_pr
         c["selection_blockers"] = []
     return c
 
+def _p397_selected_submit_bridge_truth(selected_rows: list | None, submit_rows: list | None) -> dict:
+    selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(selected_rows or [])
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    submit_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(submit_rows or [])
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    submit_symbol_set = set(submit_symbols)
+    missing_submit_symbols = [
+        sym for sym in selected_symbols
+        if sym not in submit_symbol_set
+    ]
+    return {
+        "ok": True,
+        "selected_symbols": selected_symbols,
+        "submit_symbols": submit_symbols,
+        "missing_submit_symbols": missing_submit_symbols,
+        "missing_submit_count": len(missing_submit_symbols),
+        "bridge_complete": len(missing_submit_symbols) == 0,
+        "read": (
+            "production_selected_submit_bridge_complete"
+            if not missing_submit_symbols
+            else "production_selected_without_submit_row"
+        ),
+    }
+
 def _p302_fast_swing_scan_trigger(apply: bool = False, finalize: bool = True, limit: int = 25) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     generated_utc = datetime.now(timezone.utc).isoformat()
@@ -23664,17 +23703,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         except Exception as exc:
             intraday_shadow = {"enabled": True, "status": "error", "error": str(exc), "symbols_requested": shadow_symbols}
             logger.exception("INTRADAY_SHADOW_SCAN_FAILED")
+    production_submit_bridge = _p397_selected_submit_bridge_truth(selected, would_submit)
     selected_symbols_for_summary = _dedupe_keep_order([
         str((row or {}).get("symbol") or "").strip().upper()
         for row in list(would_submit or [])
         if str((row or {}).get("symbol") or "").strip()
     ])
-    if not selected_symbols_for_summary:
-        selected_symbols_for_summary = _dedupe_keep_order([
-            str((row or {}).get("symbol") or "").strip().upper()
-            for row in list(selected or [])
-            if str((row or {}).get("symbol") or "").strip()
-        ])
 
     actual_submit_symbols = _dedupe_keep_order([
         str((row or {}).get("symbol") or "").strip().upper()
@@ -23702,17 +23736,23 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             (row or {}).get("submit_reason"),
         ).get("retryable"))
     ])
-    submit_gap_symbols = [
-        str((row or {}).get("symbol") or "").strip().upper()
-        for row in list(would_submit or [])
-        if str((row or {}).get("symbol") or "").strip()
-        and not bool((row or {}).get("actual_submit_side_effect"))
-        and str((row or {}).get("symbol") or "").strip().upper() not in set(execution_quality_block_symbols)
-        and str((row or {}).get("symbol") or "").strip().upper() not in set(retryable_spread_block_symbols)
-    ]
+    submit_gap_symbols = _dedupe_keep_order([
+        *[
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in would_submit
+            if str((row or {}).get("symbol") or "").strip()
+            and not bool((row or {}).get("actual_submit_side_effect"))
+            and str((row or {}).get("symbol") or "").strip().upper() not in set(execution_quality_block_symbols)
+            and str((row or {}).get("symbol") or "").strip().upper() not in set(retryable_spread_block_symbols)
+            and str((row or {}).get("symbol") or "").strip().upper() not in set(rate_limited_retry_symbols)
+        ],
+        *list(production_submit_bridge.get("missing_submit_symbols") or []),
+    ])
 
     summary["selected_total"] = len(selected_symbols_for_summary)
     summary["selected_symbols"] = selected_symbols_for_summary
+    summary["production_contract_selected_symbols"] = list(production_submit_bridge.get("selected_symbols") or [])
+    summary["selected_submit_bridge"] = production_submit_bridge
     summary["selected_submission_rows"] = list(would_submit or [])
     summary["actual_submit_side_effect_symbols"] = actual_submit_symbols
     summary["execution_quality_block_symbols"] = execution_quality_block_symbols
@@ -49560,6 +49600,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     )
 
                 would_submit.append(submit_row_for_summary)
+            production_submit_bridge = _p397_selected_submit_bridge_truth(allowed_submits, would_submit)
             selected_symbols_for_summary = _dedupe_keep_order([
                 str((row or {}).get("symbol") or "").strip().upper()
                 for row in would_submit
@@ -49599,17 +49640,21 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     or _p352_is_alpaca_rate_limit_error((row or {}).get("submit_reason"))
                 )
             ])
-            submit_gap_symbols = [
-                str((row or {}).get("symbol") or "").strip().upper()
-                for row in would_submit
-                if str((row or {}).get("symbol") or "").strip()
-                and not bool((row or {}).get("actual_submit_side_effect"))
-                and str((row or {}).get("symbol") or "").strip().upper() not in set(execution_quality_block_symbols)
-                and str((row or {}).get("symbol") or "").strip().upper() not in set(retryable_spread_block_symbols)
-                and str((row or {}).get("symbol") or "").strip().upper() not in set(rate_limited_retry_symbols)
-            ]
+            submit_gap_symbols = _dedupe_keep_order([
+                *[
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in list(would_submit or [])
+                    if str((row or {}).get("symbol") or "").strip()
+                    and not bool((row or {}).get("actual_submit_side_effect"))
+                    and str((row or {}).get("symbol") or "").strip().upper() not in set(execution_quality_block_symbols)
+                    and str((row or {}).get("symbol") or "").strip().upper() not in set(retryable_spread_block_symbols)
+                ],
+                *list(production_submit_bridge.get("missing_submit_symbols") or []),
+            ])
             scan_summary["selected_total"] = len(selected_symbols_for_summary)
             scan_summary["selected_symbols"] = selected_symbols_for_summary
+            scan_summary["production_contract_selected_symbols"] = list(production_submit_bridge.get("selected_symbols") or [])
+            scan_summary["selected_submit_bridge"] = production_submit_bridge
             scan_summary["selected_submission_rows"] = list(would_submit)
             scan_summary["actual_submit_side_effect_symbols"] = actual_submit_symbols
             scan_summary["execution_quality_block_symbols"] = execution_quality_block_symbols
@@ -49645,6 +49690,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 else:
                     LAST_SCAN["summary"] = dict(scan_summary)
                 LAST_SCAN["selected_symbols"] = selected_symbols_for_summary
+                LAST_SCAN["production_contract_selected_symbols"] = list(production_submit_bridge.get("selected_symbols") or [])
+                LAST_SCAN["selected_submit_bridge"] = dict(production_submit_bridge)
                 LAST_SCAN["execution_quality_block_symbols"] = execution_quality_block_symbols
                 LAST_SCAN["execution_quality_block_count"] = len(execution_quality_block_symbols)
                 LAST_SCAN["retryable_spread_block_symbols"] = retryable_spread_block_symbols
