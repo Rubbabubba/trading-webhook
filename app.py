@@ -15,7 +15,7 @@ import math
 import time as _time
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import threading
 from collections import Counter
 from itertools import combinations
@@ -2647,7 +2647,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-397-production-selected-submit-bridge-final-cleanup-legacy-gate-field-scrub"
+PATCH_VERSION = "patch-398-durable-rate-limited-submit-retry-queue-scanner-runtime-budget-enforcement"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -3869,6 +3869,18 @@ def _p272_prune_scanner_dispatch_attempts() -> None:
             SCANNER_DISPATCH_ATTEMPTS.pop(key, None)
     except Exception:
         pass
+
+def _p398_runtime_budget_elapsed_sec(scan_started: float | None = None) -> float:
+    try:
+        if scan_started is None:
+            return 0.0
+        return max(0.0, float(_time.perf_counter() - float(scan_started)))
+    except Exception:
+        return 0.0
+
+
+def _p398_scan_runtime_over_budget(scan_started: float | None = None) -> bool:
+    return _p398_runtime_budget_elapsed_sec(scan_started) >= max(1.0, float(SCAN_RUNTIME_BUDGET_SEC or 1))
 
 def _p273_runtime_budget_snapshot(duration_ms: int | float = 0, timing_ms: dict | None = None) -> dict:
     duration_sec = max(0.0, float(duration_ms or 0) / 1000.0)
@@ -32584,6 +32596,27 @@ def _p352_response_rate_limited(resp: dict | None) -> bool:
         or _p352_is_alpaca_rate_limit_error((r.get("submit_diagnostics") or {}).get("error"))
     )
 
+def _p398_submit_row_rate_limited(row: dict | None, submit_meta: dict | None = None, resp: dict | None = None) -> bool:
+    r = dict(row or {})
+    meta = dict(submit_meta or {})
+    response = dict(resp or {})
+    diagnostics = dict(r.get("submit_diagnostics") or response.get("submit_diagnostics") or {})
+    state = str(r.get("submit_state") or meta.get("state") or "").strip().lower()
+    return bool(
+        state == "retryable_rate_limit"
+        or bool(r.get("rate_limited"))
+        or bool(r.get("retryable"))
+        or bool(meta.get("rate_limited"))
+        or bool(meta.get("retryable"))
+        or bool(response.get("rate_limited"))
+        or bool(response.get("retryable"))
+        or _p352_is_alpaca_rate_limit_error(r.get("submit_reason"))
+        or _p352_is_alpaca_rate_limit_error(r.get("reason"))
+        or _p352_is_alpaca_rate_limit_error(meta.get("reason"))
+        or _p352_is_alpaca_rate_limit_error(response.get("reason"))
+        or _p352_is_alpaca_rate_limit_error(diagnostics.get("error"))
+    )
+
 def _p387_rate_limit_retry_key(symbol: str, signal: str | None = None) -> str:
     sym = str(symbol or "").strip().upper()
     sig = str(signal or "daily_breakout").strip().lower() or "daily_breakout"
@@ -32615,7 +32648,7 @@ def _p387_queue_rate_limited_selected_submit(candidate: dict | None, submit_row:
 
     if not sym:
         return {"queued": False, "reason": "missing_symbol"}
-    if not _p352_is_alpaca_rate_limit_error(reason) and str(row.get("submit_state") or "").strip().lower() != "retryable_rate_limit":
+    if not _p398_submit_row_rate_limited(row):
         return {"queued": False, "reason": "not_rate_limited"}
 
     key = _p387_rate_limit_retry_key(sym, sig)
@@ -34014,8 +34047,7 @@ def _p298_selected_submission_truth_light() -> dict:
             submit_meta.get("reason"),
         )
         rate_limited_retryable = bool(
-            str(submit_meta.get("state") or "").strip().lower() == "retryable_rate_limit"
-            or _p352_is_alpaca_rate_limit_error(submit_meta.get("reason"))
+            _p398_submit_row_rate_limited(submit_row, submit_meta=submit_meta)
         )
         rate_limit_retry_key = _p387_rate_limit_retry_key(
             sym,
@@ -49254,13 +49286,62 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
         _stage_start()
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = [ex.submit(_eval_one, sym) for sym in syms]
-                for fut in as_completed(futures):
-                    out = fut.result()
-                    results.extend(out.get("results", []))
-                    signals.extend(out.get("signals", []))
-                    blocked += int(out.get("blocked", 0))
+        scan_runtime_budget_enforced = False
+        scan_runtime_budget_stopped_symbols = []
+        future_to_symbol = {}
+        ex = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            for sym in syms:
+                if _p398_scan_runtime_over_budget(scan_started):
+                    scan_runtime_budget_enforced = True
+                    scan_runtime_budget_stopped_symbols.append(sym)
+                    continue
+                fut = ex.submit(_eval_one, sym)
+                future_to_symbol[fut] = sym
+
+            pending = set(future_to_symbol.keys())
+            while pending:
+                remaining_sec = max(
+                    0.0,
+                    float(SCAN_RUNTIME_BUDGET_SEC or 1) - _p398_runtime_budget_elapsed_sec(scan_started),
+                )
+                if remaining_sec <= 0:
+                    scan_runtime_budget_enforced = True
+                    for fut in list(pending):
+                        sym = future_to_symbol.get(fut)
+                        if sym:
+                            scan_runtime_budget_stopped_symbols.append(sym)
+                        fut.cancel()
+                    break
+
+                done, pending = wait(pending, timeout=min(remaining_sec, 2.0), return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
+
+                for fut in done:
+                    sym = future_to_symbol.get(fut)
+                    try:
+                        out = fut.result()
+                        results.extend(out.get("results", []))
+                        signals.extend(out.get("signals", []))
+                        blocked += int(out.get("blocked", 0))
+                    except Exception as exc:
+                        logger.exception("SCAN_FUTURE_ERROR symbol=%s err=%s", sym, str(exc))
+                        blocked += 1
+                        results.append({
+                            "symbol": sym,
+                            "action": "blocked",
+                            "reason": "scan_future_exception",
+                            "err": str(exc),
+                            "price": None,
+                            "stop": None,
+                            "take": None,
+                        })
+        finally:
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                ex.shutdown(wait=False)
         _stage_end("eval_loop")            
 
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
@@ -49452,6 +49533,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             ],
             "timing_ms": dict(timing_ms),
             "runtime_budget": runtime_budget,
+            "runtime_budget_enforced": bool(scan_runtime_budget_enforced),
+            "runtime_budget_stopped_count": len(_dedupe_keep_order(scan_runtime_budget_stopped_symbols)),
+            "runtime_budget_stopped_symbols": _dedupe_keep_order(scan_runtime_budget_stopped_symbols)[:25],
             "fast_response_enabled": bool(fast_response),
         }
 
@@ -49593,7 +49677,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
 
                 if actual_side_effect:
                     _p387_clear_rate_limit_selected_submit_retry(sym, sig, reason="submit_side_effect_detected")
-                elif str(submit_meta.get("state") or "").strip().lower() == "retryable_rate_limit":
+                elif _p398_submit_row_rate_limited(submit_row_for_summary, submit_meta=submit_meta, resp=resp):
+                    submit_row_for_summary["submit_state"] = "retryable_rate_limit"
                     submit_row_for_summary["p387_rate_limit_retry_queue"] = _p387_queue_rate_limited_selected_submit(
                         plan,
                         submit_row_for_summary,
@@ -49635,10 +49720,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 str((row or {}).get("symbol") or "").strip().upper()
                 for row in would_submit
                 if str((row or {}).get("symbol") or "").strip()
-                and (
-                    str((row or {}).get("submit_state") or "").strip().lower() == "retryable_rate_limit"
-                    or _p352_is_alpaca_rate_limit_error((row or {}).get("submit_reason"))
-                )
+                and _p398_submit_row_rate_limited(row)
             ])
             submit_gap_symbols = _dedupe_keep_order([
                 *[
