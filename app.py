@@ -645,19 +645,18 @@ def in_session(raw: str, t: time | None = None) -> bool:
     except Exception:
         return True
 
-def _market_clock_compatibility_wrapper_status() -> dict:
+def _app_time_helper_status() -> dict:
     return {
         "ok": True,
-        "status": "temporary_compatibility_wrappers_active",
-        "deletion_prep": "app_time_helpers_delegate_to_market_clock_module",
-        "safe_to_delete_original_logic": True,
+        "status": "module_backed",
+        "module": "market_clock",
+        "behavior_change": False,
         "helpers": {
-            "now_ny": "delegated_to_market_clock",
-            "parse_hhmm": "delegated_to_market_clock",
-            "parse_session_window": "delegated_to_market_clock",
-            "in_session": "delegated_to_market_clock",
+            "now_ny": "market_clock.now_ny",
+            "parse_hhmm": "market_clock.parse_hhmm",
+            "parse_session_window": "market_clock.parse_session_window",
+            "in_session": "market_clock.in_session",
         },
-        "next_cleanup_step": "remove duplicated app-local helper logic after endpoint proves stable",
     }
 
 def parse_session_ranges(raw: str) -> list[tuple[time, time]]:
@@ -2648,7 +2647,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-395-market-clock-status-endpoint-app-time-helper-deletion-prep"
+PATCH_VERSION = "patch-396-app-time-helper-deletion-phase-1-market-clock-wrapper-simplification"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5727,7 +5726,7 @@ def _build_fingerprint_snapshot() -> dict:
         "module_status": {
             "broker_client": broker_module_status(),
             "market_clock": market_clock_module_status(),
-            "market_clock_compatibility_wrappers": _market_clock_compatibility_wrapper_status(),
+            "app_time_helpers": _app_time_helper_status(),
             "swing_core_module_version": SWING_CORE_MODULE_VERSION,
             "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
             "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
@@ -46348,7 +46347,7 @@ def diagnostics_market_clock(request: Request):
     require_admin_if_configured(request)
     clock = _market_clock_snapshot(force=True)
     module = market_clock_module_status()
-    wrapper_status = _market_clock_compatibility_wrapper_status()
+    helper_status = _app_time_helper_status()
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -46356,10 +46355,9 @@ def diagnostics_market_clock(request: Request):
         "in_market_hours": bool(in_market_hours()),
         "market_clock": clock,
         "module_status": module,
-        "compatibility_wrappers": wrapper_status,
-        "app_time_helper_deletion_prep": {
-            "ready": bool(module.get("ok")) and bool(wrapper_status.get("ok")),
-            "app_helpers_are_wrappers": True,
+        "app_time_helpers": helper_status,
+        "helper_split": {
+            "ready": bool(module.get("ok")) and bool(helper_status.get("ok")),
             "live_broker_clock_unchanged": True,
             "behavior_change": False,
         },
