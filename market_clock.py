@@ -11,7 +11,7 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 
-MARKET_CLOCK_MODULE_VERSION = "patch-392-broker-market-module-split-prep"
+MARKET_CLOCK_MODULE_VERSION = "patch-394-market-clock-compatibility-wrapper-split"
 
 NY_TZ = ZoneInfo("America/New_York")
 REGULAR_MARKET_OPEN_NY = time(9, 30)

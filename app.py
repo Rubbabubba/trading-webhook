@@ -114,7 +114,11 @@ from broker_client import (
 )
 from market_clock import (
     MARKET_CLOCK_MODULE_VERSION,
+    in_session as market_clock_in_session,
     market_clock_module_status,
+    now_ny as market_clock_now_ny,
+    parse_hhmm as market_clock_parse_hhmm,
+    parse_session_window as market_clock_parse_session_window,
 )
 
 @dataclass(frozen=True)
@@ -620,35 +624,26 @@ def getenv_int_any(*names: str, default: int = 0) -> int:
         return int(default)
 
 def now_ny() -> datetime:
-    return datetime.now(tz=NY_TZ)
+    return market_clock_now_ny()
 
 def utc_ts() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp())
 
 def parse_hhmm(hhmm: str) -> time:
-    parts = hhmm.strip().split(":")
-    return time(int(parts[0]), int(parts[1]))
+    return market_clock_parse_hhmm(hhmm)
 
 def parse_session_window(raw: str) -> tuple[time, time] | None:
     """Parse 'HH:MM-HH:MM' in NY (market) time."""
-    if not raw:
-        return None
-    s = raw.strip()
-    if "-" not in s:
-        return None
-    a, b = [x.strip() for x in s.split("-", 1)]
     try:
-        return parse_hhmm(a), parse_hhmm(b)
+        return market_clock_parse_session_window(raw)
     except Exception:
         return None
 
 def in_session(raw: str, t: time | None = None) -> bool:
-    win = parse_session_window(raw)
-    if not win:
+    try:
+        return market_clock_in_session(raw, current_time=t)
+    except Exception:
         return True
-    start, end = win
-    tt = t or now_ny().time()
-    return (tt >= start) and (tt <= end)
 
 def parse_session_ranges(raw: str) -> list[tuple[time, time]]:
     """Parse comma/semicolon separated session windows like '09:35-11:30,13:00-15:50'."""
@@ -2638,7 +2633,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-393-broker-client-runtime-import-build-artifact-integrity-registration"
+PATCH_VERSION = "patch-394-market-clock-compatibility-wrapper-split"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5717,6 +5712,13 @@ def _build_fingerprint_snapshot() -> dict:
         "module_status": {
             "broker_client": broker_module_status(),
             "market_clock": market_clock_module_status(),
+            "market_clock_compatibility_wrappers": {
+                "ok": True,
+                "now_ny": "delegated_to_market_clock",
+                "parse_hhmm": "delegated_to_market_clock",
+                "parse_session_window": "delegated_to_market_clock",
+                "in_session": "delegated_to_market_clock",
+            },
             "swing_core_module_version": SWING_CORE_MODULE_VERSION,
             "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
             "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
