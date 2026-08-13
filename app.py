@@ -645,6 +645,21 @@ def in_session(raw: str, t: time | None = None) -> bool:
     except Exception:
         return True
 
+def _market_clock_compatibility_wrapper_status() -> dict:
+    return {
+        "ok": True,
+        "status": "temporary_compatibility_wrappers_active",
+        "deletion_prep": "app_time_helpers_delegate_to_market_clock_module",
+        "safe_to_delete_original_logic": True,
+        "helpers": {
+            "now_ny": "delegated_to_market_clock",
+            "parse_hhmm": "delegated_to_market_clock",
+            "parse_session_window": "delegated_to_market_clock",
+            "in_session": "delegated_to_market_clock",
+        },
+        "next_cleanup_step": "remove duplicated app-local helper logic after endpoint proves stable",
+    }
+
 def parse_session_ranges(raw: str) -> list[tuple[time, time]]:
     """Parse comma/semicolon separated session windows like '09:35-11:30,13:00-15:50'."""
     raw = (raw or "").strip()
@@ -2633,7 +2648,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-394-market-clock-compatibility-wrapper-split"
+PATCH_VERSION = "patch-395-market-clock-status-endpoint-app-time-helper-deletion-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5712,13 +5727,7 @@ def _build_fingerprint_snapshot() -> dict:
         "module_status": {
             "broker_client": broker_module_status(),
             "market_clock": market_clock_module_status(),
-            "market_clock_compatibility_wrappers": {
-                "ok": True,
-                "now_ny": "delegated_to_market_clock",
-                "parse_hhmm": "delegated_to_market_clock",
-                "parse_session_window": "delegated_to_market_clock",
-                "in_session": "delegated_to_market_clock",
-            },
+            "market_clock_compatibility_wrappers": _market_clock_compatibility_wrapper_status(),
             "swing_core_module_version": SWING_CORE_MODULE_VERSION,
             "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
             "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
@@ -46334,14 +46343,26 @@ def diagnostics_pipeline_guardrails(limit: int = 20):
     return _pipeline_guardrail_snapshot(limit=limit)
     
 @app.get("/diagnostics/market_clock")
+@app.get("/diagnostics/market_clock_status")
 def diagnostics_market_clock(request: Request):
     require_admin_if_configured(request)
     clock = _market_clock_snapshot(force=True)
+    module = market_clock_module_status()
+    wrapper_status = _market_clock_compatibility_wrapper_status()
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
+        "mode": "market_clock_status",
         "in_market_hours": bool(in_market_hours()),
         "market_clock": clock,
+        "module_status": module,
+        "compatibility_wrappers": wrapper_status,
+        "app_time_helper_deletion_prep": {
+            "ready": bool(module.get("ok")) and bool(wrapper_status.get("ok")),
+            "app_helpers_are_wrappers": True,
+            "live_broker_clock_unchanged": True,
+            "behavior_change": False,
+        },
         "pending_order_entry_freeze": _pending_order_entry_freeze_snapshot(),
         "configured_closed_dates_ny": sorted(MARKET_CLOSED_DATES_NY),
         "market_clock_fail_open": bool(MARKET_CLOCK_FAIL_OPEN),

@@ -91,6 +91,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/live_unrealized_pnl_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/loss_cluster_report
 https://trading-webhook-q4d5.onrender.com/diagnostics/loss_control_incident
 https://trading-webhook-q4d5.onrender.com/diagnostics/market_clock
+https://trading-webhook-q4d5.onrender.com/diagnostics/market_clock_status
 https://trading-webhook-q4d5.onrender.com/diagnostics/market_open_selection_audit
 https://trading-webhook-q4d5.onrender.com/diagnostics/market_open_selection_audit_light
 https://trading-webhook-q4d5.onrender.com/diagnostics/mean_reversion_status
