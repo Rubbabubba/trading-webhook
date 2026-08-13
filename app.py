@@ -2584,6 +2584,22 @@ SWING_SCAN_HOT_PATH_DISABLE_INTRADAY_SHADOW = env_bool_any(
     "SWING_SCAN_HOT_PATH_DISABLE_INTRADAY_SHADOW",
     default="true",
 )
+SWING_SCAN_INCREMENTAL_EVAL_ENABLED = env_bool_any(
+    "SWING_SCAN_INCREMENTAL_EVAL_ENABLED",
+    default="true",
+)
+SWING_SCAN_DAILY_FETCH_CHUNK_SIZE = max(
+    1,
+    int(getenv_any("SWING_SCAN_DAILY_FETCH_CHUNK_SIZE", default="8") or 8),
+)
+SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP = max(
+    1,
+    int(getenv_any("SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP", default="8") or 8),
+)
+SWING_SCAN_BUDGET_RESERVE_SEC = max(
+    5,
+    int(getenv_any("SWING_SCAN_BUDGET_RESERVE_SEC", default="45") or 45),
+)
 SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC = max(
     60,
     int(getenv_any("SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC", default="900") or 900),
@@ -2659,7 +2675,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-401-swing-scanner-runtime-hot-path-slimming"
+PATCH_VERSION = "patch-402-swing-data-fetch-budget-incremental-candidate-evaluation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -20038,6 +20054,70 @@ def fetch_daily_bars_multi(symbols: list[str], lookback_days: int = 90) -> dict[
         out[symbol] = rows
     return out
 
+def _p402_fetch_daily_bars_multi_budgeted(
+    symbols: list[str],
+    lookback_days: int = 90,
+    scan_started: float | None = None,
+) -> tuple[dict[str, list[dict]], dict]:
+    requested = _dedupe_keep_order([str(s or "").strip().upper() for s in symbols or [] if str(s or "").strip()])
+    chunk_size = max(1, int(SWING_SCAN_DAILY_FETCH_CHUNK_SIZE or 8))
+    budget_sec = max(1.0, float(SCAN_RUNTIME_BUDGET_SEC or 1))
+    reserve_sec = max(0.0, float(SWING_SCAN_BUDGET_RESERVE_SEC or 0))
+    min_symbols = max(1, int(SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP or 1))
+
+    out: dict[str, list[dict]] = {}
+    errors: list[dict] = []
+    skipped: list[str] = []
+    fetched: list[str] = []
+    chunks_attempted = 0
+    stopped_for_budget = False
+
+    for idx in range(0, len(requested), chunk_size):
+        chunk = requested[idx: idx + chunk_size]
+        elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+        remaining = budget_sec - elapsed
+
+        if (
+            bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
+            and len(fetched) >= min_symbols
+            and remaining <= reserve_sec
+        ):
+            skipped.extend(chunk)
+            skipped.extend(requested[idx + chunk_size:])
+            stopped_for_budget = True
+            break
+
+        chunks_attempted += 1
+        try:
+            chunk_map = fetch_daily_bars_multi(chunk, lookback_days=lookback_days)
+            for sym in chunk:
+                out[sym] = list((chunk_map or {}).get(sym) or [])
+                fetched.append(sym)
+        except Exception as e:
+            errors.append({
+                "symbols": list(chunk),
+                "error": str(e),
+            })
+            for sym in chunk:
+                out.setdefault(sym, [])
+
+    return out, {
+        "enabled": bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
+        "requested_count": len(requested),
+        "fetched_count": len(fetched),
+        "skipped_count": len(skipped),
+        "fetched_symbols": list(fetched),
+        "skipped_symbols": list(_dedupe_keep_order(skipped)),
+        "chunk_size": chunk_size,
+        "chunks_attempted": chunks_attempted,
+        "stopped_for_budget": bool(stopped_for_budget),
+        "errors": errors,
+        "error_count": len(errors),
+        "budget_sec": int(budget_sec),
+        "reserve_sec": int(reserve_sec),
+        "elapsed_sec": round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
+    }
+
 def _sma(values: list[float], length: int) -> float | None:
     if len(values) < max(1, int(length)):
         return None
@@ -23409,6 +23489,8 @@ def _p401_swing_scan_hot_path_context(scan_options: dict | None = None) -> dict:
 def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None, scan_options: dict | None = None) -> dict:
     reconcile_actions = reconcile_actions or []
     scan_options = dict(scan_options or {})
+    scan_started = _time.perf_counter()
+    scan_reason = str(scan_options.get("reason") or scan_options.get("scan_reason") or "scheduled")
     p401_hot_path = _p401_swing_scan_hot_path_context(scan_options)
     original_syms = universe_symbols()
     runtime_slim = _p315_swing_runtime_scan_symbols(original_syms, scan_options=scan_options)
@@ -23419,7 +23501,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     else:
         syms_for_fetch = list(syms)
     lookback_days = max(int(SCANNER_LOOKBACK_DAYS or 20) + 40, SWING_REGIME_SLOW_MA_DAYS + REGIME_BREADTH_RETURN_LOOKBACK_DAYS + 30, SWING_SLOW_MA_DAYS + SWING_BREAKOUT_LOOKBACK_DAYS + 20)
-    daily_map = fetch_daily_bars_multi(syms_for_fetch, lookback_days=lookback_days)
+    daily_map, p402_fetch_truth = _p402_fetch_daily_bars_multi_budgeted(
+        syms_for_fetch,
+        lookback_days=lookback_days,
+        scan_started=scan_started,
+    )
+    syms = [sym for sym in syms if sym in daily_map]
+    scan_symbols = list(syms)
     index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
     regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, syms)
     regime_mode = _get_regime_mode(regime, index_ok) if SWING_REGIME_MODE_SWITCHING_ENABLED else ('trend' if regime.get('favorable') else 'defensive')
@@ -23625,10 +23713,53 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             breakout_candidates.append(c)
         return c
 
+    p402_eval_truth = {
+        "enabled": bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
+        "evaluated_symbols": [],
+        "skipped_symbols": [],
+        "stopped_for_budget": False,
+        "budget_sec": int(SCAN_RUNTIME_BUDGET_SEC or 0),
+        "reserve_sec": int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
+    }
+
     for sym in syms:
-        _finalize_candidate(evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode), sym)
-        if SWING_MEAN_REVERSION_ENABLED and regime.get('favorable') is False:
-            _finalize_candidate(evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode), sym)
+        elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+        remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - elapsed)
+        if (
+            bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
+            and len(p402_eval_truth["evaluated_symbols"]) >= int(SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP or 1)
+            and remaining <= float(SWING_SCAN_BUDGET_RESERVE_SEC or 0)
+        ):
+            p402_eval_truth["stopped_for_budget"] = True
+            p402_eval_truth["skipped_symbols"].extend([s for s in syms if s not in p402_eval_truth["evaluated_symbols"]])
+            break
+
+        p402_eval_truth["evaluated_symbols"].append(sym)
+        try:
+            _finalize_candidate(
+                evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode),
+                sym,
+            )
+            if SWING_MEAN_REVERSION_ENABLED and regime.get('favorable') is False:
+                _finalize_candidate(
+                    evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode),
+                    sym,
+                )
+        except Exception as e:
+            rejection_counts["candidate_eval_exception"] += 1
+            candidates.append({
+                "symbol": sym,
+                "eligible": False,
+                "selected": False,
+                "strategy": BREAKOUT_STRATEGY_NAME,
+                "rejection_reasons": ["candidate_eval_exception"],
+                "candidate_eval_exception": str(e),
+            })
+
+    p402_eval_truth["evaluated_count"] = len(p402_eval_truth["evaluated_symbols"])
+    p402_eval_truth["skipped_symbols"] = list(_dedupe_keep_order(p402_eval_truth["skipped_symbols"]))
+    p402_eval_truth["skipped_count"] = len(p402_eval_truth["skipped_symbols"])
+    p402_eval_truth["elapsed_sec"] = round(_p398_runtime_budget_elapsed_sec(scan_started), 3)
 
     candidates.sort(key=lambda x: (1 if str(x.get('strategy') or '').strip().lower() == BREAKOUT_STRATEGY_NAME else 0, float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     shadow_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
@@ -23773,7 +23904,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     p399_selected_submit = _p399_submit_swing_candidate_rows(
         selected,
         effective_dry_run=effective_dry_run,
-        scan_reason=summary.get("scan_reason") or "scheduled",
+        scan_reason=scan_reason,
         override_live_permitted=override_live_permitted,
         override_symbol=override_symbol,
         override_source=override_source,
@@ -23838,6 +23969,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'symbols': list(scan_symbols),
         'runtime_slim': dict(runtime_slim),
         'hot_path_slim': dict(p401_hot_path),
+        'incremental_scan': {
+            'fetch': dict(p402_fetch_truth),
+            'evaluation': dict(p402_eval_truth),
+        },
         'runtime_symbols_original_count': int(runtime_slim.get("original_count") or len(original_syms)),
         'runtime_symbols_used_count': len(scan_symbols),
         'runtime_symbols_excluded_count': int(runtime_slim.get("excluded_count") or 0),
@@ -23866,8 +24001,26 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'regime': dict(regime),
         'symbols': list(scan_symbols),
         'symbols_total': len(scan_symbols),
+        'symbols_requested_total': len(syms_for_fetch),
+        'symbols_fetched_total': int(p402_fetch_truth.get("fetched_count") or 0),
+        'symbols_eval_total': int(p402_eval_truth.get("evaluated_count") or 0),
+        'symbols_skipped_for_budget': list(
+            _dedupe_keep_order(
+                list(p402_fetch_truth.get("skipped_symbols") or [])
+                + list(p402_eval_truth.get("skipped_symbols") or [])
+            )
+        )[:50],
         'runtime_slim': dict(runtime_slim),
         'hot_path_slim': dict(p401_hot_path),
+        'incremental_scan': {
+            'fetch': dict(p402_fetch_truth),
+            'evaluation': dict(p402_eval_truth),
+            'partial_scan': bool(
+                p402_fetch_truth.get("stopped_for_budget")
+                or p402_eval_truth.get("stopped_for_budget")
+                or p402_fetch_truth.get("error_count")
+            ),
+        },
         'runtime_slim_applied': bool(runtime_slim.get("applied")),
         'runtime_symbols_original_count': int(runtime_slim.get("original_count") or len(original_syms)),
         'runtime_symbols_used_count': len(scan_symbols),
@@ -24324,12 +24477,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'ts_utc': datetime.now(timezone.utc).isoformat(),
             'universe_provider': SCANNER_UNIVERSE_PROVIDER,
             'symbols': syms,
-            'scanned': len(syms),
+            'scanned': int(p402_eval_truth.get("evaluated_count") or len(syms)),
             'signals': len(approved),
             'would_trade': len(selected),
             'blocked': max(0, len(candidates)-len(approved)),
             'duration_ms': duration_ms,
             'summary': summary,
+            'partial_scan': bool((summary.get("incremental_scan") or {}).get("partial_scan")),
             'results': LAST_SWING_CANDIDATES.copy(),
             'candidate_slots': candidate_slots_available(),
             'ignored_ranked_out': [c for c in candidates if not c.get('eligible')][:20],
@@ -24347,12 +24501,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'allow_live': SCANNER_ALLOW_LIVE,
             'effective_dry_run': effective_dry_run,
             'universe_provider': SCANNER_UNIVERSE_PROVIDER,
-            'symbols_scanned': len(syms),
+            'symbols_scanned': int(p402_eval_truth.get("evaluated_count") or len(syms)),
             'signals': len(approved),
             'would_trade': len(selected),
             'blocked': max(0, len(candidates)-len(approved)),
             'duration_ms': duration_ms,
             'summary': summary,
+            'incremental_scan': dict(summary.get("incremental_scan") or {}),
         },
         'reconcile': reconcile_actions,
         'would_submit': would_submit,
