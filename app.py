@@ -2647,7 +2647,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-398-durable-rate-limited-submit-retry-queue-scanner-runtime-budget-enforcement"
+PATCH_VERSION = "patch-399-partial-scan-submit-finalization-retry-queue-consumption-before-full-scan"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -22964,6 +22964,215 @@ def _build_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAULT, br
         'watchlist': rows[:lim],
     }
 
+def _p399_submit_swing_candidate_rows(
+    rows: list | None,
+    *,
+    effective_dry_run: bool,
+    scan_reason: str = "scheduled",
+    override_live_permitted: bool = False,
+    override_symbol: str | None = None,
+    override_source: str | None = None,
+    override_live_reasons: list | None = None,
+    loss_day_throttle: dict | None = None,
+    candidate_slots: int | None = None,
+) -> dict:
+    would_submit = []
+    selected_submission_payloads = []
+    live_allowed_base = bool(SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run))
+    slot_count = int(candidate_slots if candidate_slots is not None else candidate_slots_available())
+
+    for c0 in list(rows or []):
+        c = dict(c0 or {})
+        sym = str(c.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+
+        entry_type = str(c.get("entry_type") or "standard").strip() or "standard"
+        source_name = "worker_scan"
+        live_allowed = bool(live_allowed_base)
+
+        if c.get("adaptive_capacity_candidate"):
+            entry_type = "adaptive_capacity"
+            source_name = ADAPTIVE_CAPACITY_SOURCE
+
+        if bool(SWING_PRODUCTION_RESET_ENABLED):
+            entry_type = str(c.get("entry_type") or "swing_production_contract")
+            source_name = "swing_production_reset"
+        elif bool(c.get("executable_near_miss_entry", {}).get("applies")):
+            entry_type = "executable_near_miss"
+            source_name = "executable_near_miss_sleeve"
+
+        if override_live_permitted and override_symbol and sym == str(override_symbol or "").strip().upper():
+            entry_type = "early_override"
+            source_name = override_source or EARLY_ENTRY_OVERRIDE_SOURCE
+            live_allowed = True
+
+        quarantine_decision = _swing_quarantine_decision(sym, c.get("strategy"), entry_type)
+        if quarantine_decision.get("blocked"):
+            record_decision(
+                "SCAN",
+                "worker_scan",
+                symbol=sym,
+                side="buy",
+                signal=c.get("signal") or "daily_breakout",
+                action="ignored",
+                reason="swing_quarantine_enforced",
+                meta=quarantine_decision,
+            )
+            would_submit.append({
+                "symbol": sym,
+                "signal": c.get("signal"),
+                "rank_score": c.get("rank_score"),
+                "entry_type": entry_type,
+                "ignored": True,
+                "reason": "swing_quarantine_enforced",
+                "quarantine": quarantine_decision,
+                "submit_state": "ignored",
+                "submit_reason": "swing_quarantine_enforced",
+                "submit_attempted": False,
+                "actual_submit_side_effect": False,
+                "submit_gap": False,
+            })
+            continue
+
+        meta = {
+            "rank_score": c.get("rank_score"),
+            "selection_quality_score": c.get("selection_quality_score"),
+            "target_path_score": c.get("target_path_score"),
+            "target_path_profit": c.get("target_path_profit"),
+            "target_path_recovery": c.get("target_path_recovery"),
+            "target_path_recovery_mode": bool(c.get("target_path_recovery_mode")),
+            "weak_tape_target_override": bool(c.get("weak_tape_target_override")),
+            "defensive_near_miss_relaxation": c.get("defensive_near_miss_relaxation"),
+            "defensive_near_miss_live_promotion": c.get("defensive_near_miss_live_promotion"),
+            "defensive_near_miss_relaxation_entry": bool(c.get("defensive_near_miss_relaxation_entry")),
+            "avg_dollar_volume_20d": c.get("avg_dollar_volume_20d"),
+            "strategy_name": c.get("strategy"),
+            "breakout_level": c.get("breakout_level"),
+            "stop_price": c.get("stop_price"),
+            "target_price": c.get("target_price"),
+            "risk_per_share": c.get("risk_per_share"),
+            "max_hold_days": c.get("max_hold_days"),
+            "regime_mode": c.get("regime_mode"),
+            "strategy": c.get("strategy"),
+            "entry_type": entry_type,
+            "scan_ts_utc": c.get("scan_ts_utc"),
+            "close": c.get("close"),
+            "price": c.get("close"),
+            "trade_price": c.get("close"),
+            "symbol": sym,
+            "signal": c.get("signal"),
+            "selected_source": source_name,
+            "early_entry_override_enabled": bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED),
+            "early_entry_override_triggered": bool(entry_type == "early_override"),
+            "early_entry_override_reasons": list(override_live_reasons or []),
+            "swing_loss_day_entry_throttle": dict(loss_day_throttle or {}),
+            "loss_day_recovery_slot": c.get("loss_day_recovery_slot"),
+            "loss_day_recovery_slot_candidate": bool(c.get("loss_day_recovery_slot_candidate")),
+            "dollar_risk_selection_truth": _p384_candidate_dollar_risk_truth(c),
+            "swing_quarantine": quarantine_decision,
+            "same_day_symbol_loss_cooldown": c.get("same_day_symbol_loss_cooldown"),
+            "executable_near_miss_entry": c.get("executable_near_miss_entry"),
+            "near_miss_original_rejection_reasons": list(c.get("near_miss_original_rejection_reasons") or []),
+            "swing_production_contract": c.get("swing_production_contract"),
+            "legacy_gate_mode": c.get("legacy_gate_mode"),
+            "advisory_legacy_rejection_reasons": list(c.get("advisory_legacy_rejection_reasons") or []),
+            "p387_rate_limit_retry": bool(c.get("p387_rate_limit_retry")),
+            "p387_rate_limit_retry_key": c.get("p387_rate_limit_retry_key"),
+            "p387_rate_limit_retry_attempt": c.get("p387_rate_limit_retry_attempt"),
+        }
+
+        selected_submission_payloads.append({
+            "symbol": sym,
+            "candidate": dict(c),
+            "meta": dict(meta),
+            "source_name": source_name,
+            "entry_type": entry_type,
+            "live_allowed": bool(live_allowed),
+        })
+
+        selected_entry_intent = {
+            "queued": False,
+            "reason": "swing_production_core_direct_submit",
+            "production_core_cleanup_enabled": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
+        }
+        if (not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)) or bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE):
+            selected_entry_intent = _p299_queue_selected_entry_intent(
+                c,
+                meta=meta,
+                source_name=source_name,
+                live_allowed=bool(live_allowed),
+            )
+
+        if live_allowed:
+            resp = submit_scan_trade(sym, "buy", c.get("signal") or "daily_breakout", meta=meta, source=source_name)
+        else:
+            resp = execute_entry_signal(sym, "buy", c.get("signal") or "daily_breakout", source_name, meta=meta)
+
+        submit_meta = _classify_scan_submit_response(resp)
+
+        if (
+            str(submit_meta.get("state") or "").strip().lower() == "blocked"
+            and str(submit_meta.get("reason") or "").strip().lower() == "spread_too_wide"
+        ):
+            _p327_queue_spread_blocked_selected_candidate(c, meta=meta, resp=resp)
+
+        side_effect = _p312_scan_submit_side_effect(sym, submit_meta=submit_meta, resp=resp)
+
+        row = {
+            "symbol": sym,
+            "signal": c.get("signal"),
+            "rank_score": c.get("rank_score"),
+            "entry_type": entry_type,
+            **dict(resp or {}),
+            "submit_state": submit_meta.get("state"),
+            "submit_reason": submit_meta.get("reason"),
+            "submit_attempted": bool(submit_meta.get("attempted")),
+            "submit_order_id": submit_meta.get("order_id"),
+            "order_type": (resp or {}).get("order_type"),
+            "limit_price": (resp or {}).get("limit_price"),
+            "production_limit_required": bool(SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY and str(STRATEGY_MODE or "").strip().lower() == "swing"),
+            "limit_entry_unavailable": str((resp or {}).get("reason") or "").startswith("limit_entry_unavailable"),
+            "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
+            "side_effect_reasons": list(side_effect.get("side_effect_reasons") or []),
+            "submit_gap": bool(side_effect.get("submit_gap")),
+            "selected_entry_intent": selected_entry_intent,
+            "direct_submit_lineage": {
+                "active": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
+                "selection_source": c.get("selected_source") or "swing_production_contract",
+                "entry_type": entry_type,
+                "source": source_name,
+            },
+        }
+
+        if bool(row.get("actual_submit_side_effect")):
+            _p387_clear_rate_limit_selected_submit_retry(sym, c.get("signal") or "daily_breakout", reason="submit_side_effect_detected")
+        elif _p398_submit_row_rate_limited(row, submit_meta=submit_meta, resp=resp):
+            row["submit_state"] = "retryable_rate_limit"
+            row["p387_rate_limit_retry_queue"] = _p387_queue_rate_limited_selected_submit(c, row)
+
+        would_submit.append(row)
+
+    return {
+        "would_submit": would_submit,
+        "selected_submission_payloads": selected_submission_payloads,
+        "submitted_symbols": _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in would_submit
+            if bool((row or {}).get("actual_submit_side_effect"))
+        ]),
+        "attempted_symbols": _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in would_submit
+            if bool((row or {}).get("submit_attempted"))
+        ]),
+        "rate_limited_symbols": _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in would_submit
+            if _p398_submit_row_rate_limited(row)
+        ]),
+        "slot_count": slot_count,
+    }
 
 def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None, scan_options: dict | None = None) -> dict:
     reconcile_actions = reconcile_actions or []
@@ -23033,6 +23242,43 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     if loss_day_throttle.get("block_new_entries") and not loss_day_throttle_candidate_level:
         new_entries_globally_blocked = True
         global_block_reasons.append("swing_loss_day_entry_throttle")
+
+    p399_retry_slots = max(
+        0,
+        min(
+            int(candidate_slots_available()),
+            int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1),
+        ),
+    )
+    p399_pre_scan_retry_candidates = _p387_pending_rate_limited_selected_submit_retry_candidates(
+        max_items=p399_retry_slots,
+    )
+    if p399_pre_scan_retry_candidates:
+        p399_pre_scan_retry_submit = _p399_submit_swing_candidate_rows(
+            p399_pre_scan_retry_candidates,
+            effective_dry_run=effective_dry_run,
+            scan_reason="pre_full_scan_rate_limit_retry",
+            loss_day_throttle=loss_day_throttle,
+            candidate_slots=p399_retry_slots,
+        )
+
+    p399_pre_scan_retry_candidates = []
+    p399_pre_scan_retry_submit = {
+        "would_submit": [],
+        "selected_submission_payloads": [],
+        "submitted_symbols": [],
+        "attempted_symbols": [],
+        "rate_limited_symbols": [],
+        "slot_count": 0,
+    }
+    p399_partial_submit_finalization = {
+        "applied": False,
+        "reason": "not_needed",
+        "selected_symbols": [],
+        "attempted_symbols": [],
+        "rate_limited_symbols": [],
+        "submitted_symbols": [],
+    }
 
     candidates = []
     shadow_candidates = []
@@ -23291,129 +23537,29 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 override_selected = [override_candidates[0]]
                 override_symbol = str((override_candidates[0] or {}).get('symbol') or '').upper() or None
                 override_source = EARLY_ENTRY_OVERRIDE_SOURCE
-    would_submit = []
-    selected_submission_payloads = []
-    for c in selected:
-        entry_type = str(c.get('entry_type') or 'standard').strip() or 'standard'
-        source_name = 'worker_scan'
-        live_allowed = SCANNER_ALLOW_LIVE and (not SCANNER_DRY_RUN) and (not effective_dry_run)
-        if c.get('adaptive_capacity_candidate'):
-            entry_type = 'adaptive_capacity'
-            source_name = ADAPTIVE_CAPACITY_SOURCE
-        if bool(SWING_PRODUCTION_RESET_ENABLED):
-            entry_type = str(c.get("entry_type") or "swing_production_contract")
-            source_name = "swing_production_reset"
-        elif bool(c.get("executable_near_miss_entry", {}).get("applies")):
-            entry_type = "executable_near_miss"
-            source_name = "executable_near_miss_sleeve"
-        if override_live_permitted and override_symbol and str(c.get('symbol') or '').upper() == override_symbol:
-            entry_type = 'early_override'
-            source_name = override_source or EARLY_ENTRY_OVERRIDE_SOURCE
-            live_allowed = True
-        quarantine_decision = _swing_quarantine_decision(c.get('symbol'), c.get('strategy'), entry_type)
-        if quarantine_decision.get('blocked'):
-            record_decision("SCAN", "worker_scan", symbol=c.get('symbol', ''), side='buy', signal=c.get('signal') or 'daily_breakout', action='ignored', reason='swing_quarantine_enforced', meta=quarantine_decision)
-            would_submit.append({'symbol': c.get('symbol'), 'signal': c.get('signal'), 'rank_score': c.get('rank_score'), 'entry_type': entry_type, 'ignored': True, 'reason': 'swing_quarantine_enforced', 'quarantine': quarantine_decision})
-            continue    
-        meta = {
-            'rank_score': c.get('rank_score'),
-            'selection_quality_score': c.get('selection_quality_score'),
-            'target_path_score': c.get('target_path_score'),
-            'target_path_profit': c.get('target_path_profit'),
-            'target_path_recovery': c.get('target_path_recovery'),
-            'target_path_recovery_mode': bool(c.get('target_path_recovery_mode')),
-            'weak_tape_target_override': bool(c.get('weak_tape_target_override')),
-            'defensive_near_miss_relaxation': c.get('defensive_near_miss_relaxation'),
-            'defensive_near_miss_live_promotion': c.get('defensive_near_miss_live_promotion'),
-            'defensive_near_miss_relaxation_entry': bool(c.get('defensive_near_miss_relaxation_entry')),
-            'avg_dollar_volume_20d': c.get('avg_dollar_volume_20d'),
-            'strategy_name': c.get('strategy'),
-            'breakout_level': c.get('breakout_level'),
-            'stop_price': c.get('stop_price'),
-            'target_price': c.get('target_price'),
-            'risk_per_share': c.get('risk_per_share'),
-            'max_hold_days': c.get('max_hold_days'),
-            'regime_mode': c.get('regime_mode'),
-            'strategy': c.get('strategy'),
-            'entry_type': entry_type,
-            'scan_ts_utc': c.get('scan_ts_utc'),
-            'close': c.get('close'),
-            'price': c.get('close'),
-            'trade_price': c.get('close'),
-            'symbol': c.get('symbol'),
-            'signal': c.get('signal'),
-            'selected_source': source_name,
-            'early_entry_override_enabled': bool(SWING_EARLY_ENTRY_OVERRIDE_ENABLED),
-            'early_entry_override_triggered': bool(entry_type == 'early_override'),
-            'early_entry_override_reasons': list(override_live_reasons if entry_type == 'early_override' else (_candidate_qualifies_early_entry_override(c, regime=regime)[1] if SWING_EARLY_ENTRY_OVERRIDE_ENABLED else [])),
-            'swing_loss_day_entry_throttle': loss_day_throttle,
-            'loss_day_recovery_slot': c.get('loss_day_recovery_slot'),
-            'loss_day_recovery_slot_candidate': bool(c.get('loss_day_recovery_slot_candidate')),
-            'dollar_risk_selection_truth': _p384_candidate_dollar_risk_truth(c),
-            'swing_quarantine': quarantine_decision,
-            'same_day_symbol_loss_cooldown': c.get('same_day_symbol_loss_cooldown'),
-            'executable_near_miss_entry': c.get('executable_near_miss_entry'),
-            'near_miss_original_rejection_reasons': list(c.get('near_miss_original_rejection_reasons') or []),
-            'swing_production_contract': c.get('swing_production_contract'),
-            'legacy_gate_mode': c.get('legacy_gate_mode'),
-            'advisory_legacy_rejection_reasons': list(c.get('advisory_legacy_rejection_reasons') or []),
-        }
-        selected_submission_payloads.append({
-            "symbol": c.get("symbol"),
-            "candidate": dict(c),
-            "meta": dict(meta),
-            "source_name": source_name,
-            "entry_type": entry_type,
-            "live_allowed": bool(live_allowed),
-        })
-        selected_entry_intent = {
-            "queued": False,
-            "reason": "swing_production_core_direct_submit",
-            "production_core_cleanup_enabled": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED),
-        }
-        if (not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)) or bool(SWING_LIVE_USE_SELECTED_INTENT_QUEUE):
-            selected_entry_intent = _p299_queue_selected_entry_intent(
-                c,
-                meta=meta,
-                source_name=source_name,
-                live_allowed=bool(live_allowed),
-            )
-        if live_allowed:
-            resp = submit_scan_trade(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', meta=meta, source=source_name)
-        else:
-            resp = execute_entry_signal(c['symbol'], 'buy', c.get('signal') or 'daily_breakout', source_name, meta=meta)
+    p399_selected_submit = _p399_submit_swing_candidate_rows(
+        selected,
+        effective_dry_run=effective_dry_run,
+        scan_reason=summary.get("scan_reason") or "scheduled",
+        override_live_permitted=override_live_permitted,
+        override_symbol=override_symbol,
+        override_source=override_source,
+        override_live_reasons=override_live_reasons,
+        loss_day_throttle=loss_day_throttle,
+        candidate_slots=max_new_entries,
+    )
+    would_submit = list(p399_pre_scan_retry_submit.get("would_submit") or []) + list(p399_selected_submit.get("would_submit") or [])
+    selected_submission_payloads = list(p399_pre_scan_retry_submit.get("selected_submission_payloads") or []) + list(p399_selected_submit.get("selected_submission_payloads") or [])
 
-        submit_meta = _classify_scan_submit_response(resp)
-        if (
-            str(submit_meta.get("state") or "").strip().lower() == "blocked"
-            and str(submit_meta.get("reason") or "").strip().lower() == "spread_too_wide"
-        ):
-            _p327_queue_spread_blocked_selected_candidate(c, meta=meta, resp=resp)
-        side_effect = _p312_scan_submit_side_effect(c.get("symbol"), submit_meta=submit_meta, resp=resp)
-        would_submit.append({
-            'symbol': c['symbol'],
-            'signal': c.get('signal'),
-            'rank_score': c.get('rank_score'),
-            'entry_type': entry_type,
-            **resp,
-            "submit_state": submit_meta.get("state"),
-            "submit_reason": submit_meta.get("reason"),
-            "submit_attempted": bool(submit_meta.get("attempted")),
-            "submit_order_id": submit_meta.get("order_id"),
-            "order_type": resp.get("order_type"),
-            "limit_price": resp.get("limit_price"),
-            "production_limit_required": bool(SWING_PRODUCTION_REQUIRE_PROTECTIVE_LIMIT_ENTRY and str(STRATEGY_MODE or "").strip().lower() == "swing"),
-            "limit_entry_unavailable": str(resp.get("reason") or "").startswith("limit_entry_unavailable"),
-            "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
-            "side_effect_reasons": list(side_effect.get("side_effect_reasons") or []),
-            "submit_gap": bool(side_effect.get("submit_gap")),
-            "direct_submit_lineage": {
-                "active": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
-                "selection_source": c.get("selected_source") or "swing_production_contract",
-                "entry_type": entry_type,
-                "source": source_name,
-            },
-        })
+    p399_partial_submit_finalization = {
+        "applied": bool(p399_pre_scan_retry_submit.get("would_submit") or p399_selected_submit.get("would_submit")),
+        "reason": "pre_scan_retry_plus_selected_submit_finalized",
+        "selected_symbols": _dedupe_keep_order([str((c or {}).get("symbol") or "").strip().upper() for c in list(selected or []) if str((c or {}).get("symbol") or "").strip()]),
+        "pre_scan_retry_symbols": _dedupe_keep_order([str((c or {}).get("symbol") or "").strip().upper() for c in list(p399_pre_scan_retry_candidates or []) if str((c or {}).get("symbol") or "").strip()]),
+        "attempted_symbols": _dedupe_keep_order(list(p399_pre_scan_retry_submit.get("attempted_symbols") or []) + list(p399_selected_submit.get("attempted_symbols") or [])),
+        "rate_limited_symbols": _dedupe_keep_order(list(p399_pre_scan_retry_submit.get("rate_limited_symbols") or []) + list(p399_selected_submit.get("rate_limited_symbols") or [])),
+        "submitted_symbols": _dedupe_keep_order(list(p399_pre_scan_retry_submit.get("submitted_symbols") or []) + list(p399_selected_submit.get("submitted_symbols") or [])),
+    }
     selected_submission_finalizer = {
         "enabled": False,
         "reason": "swing_production_core_direct_submit",
@@ -23748,6 +23894,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             (row or {}).get("submit_reason"),
         ).get("retryable"))
     ])
+    rate_limited_retry_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and _p398_submit_row_rate_limited(row)
+    ])
     submit_gap_symbols = _dedupe_keep_order([
         *[
             str((row or {}).get("symbol") or "").strip().upper()
@@ -23771,6 +23923,19 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     summary["execution_quality_block_count"] = len(execution_quality_block_symbols)
     summary["retryable_spread_block_symbols"] = retryable_spread_block_symbols
     summary["retryable_spread_block_count"] = len(retryable_spread_block_symbols)
+    summary["rate_limited_submit_retry_symbols"] = rate_limited_retry_symbols
+    summary["rate_limited_submit_retry_count"] = len(rate_limited_retry_symbols)
+    summary["rate_limited_submit_retry_queue_count"] = len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
+    summary["rate_limited_submit_retry_queue_symbols"] = [
+        row.get("symbol") for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+    ]
+    summary["p399_pre_scan_retry_submit"] = {
+        "candidate_symbols": _dedupe_keep_order([str((c or {}).get("symbol") or "").strip().upper() for c in list(p399_pre_scan_retry_candidates or []) if str((c or {}).get("symbol") or "").strip()]),
+        "attempted_symbols": list(p399_pre_scan_retry_submit.get("attempted_symbols") or []),
+        "submitted_symbols": list(p399_pre_scan_retry_submit.get("submitted_symbols") or []),
+        "rate_limited_symbols": list(p399_pre_scan_retry_submit.get("rate_limited_symbols") or []),
+    }
+    summary["p399_partial_submit_finalization"] = p399_partial_submit_finalization
     summary["selected_submit_gap_symbols"] = submit_gap_symbols
     summary["selected_submit_gap_count"] = len(submit_gap_symbols)
     summary["selected_submit_gap_active"] = bool(submit_gap_symbols)
@@ -23912,6 +24077,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         },
         'reconcile': reconcile_actions,
         'would_submit': would_submit,
+        'p399_pre_scan_retry_submit': summary.get("p399_pre_scan_retry_submit"),
+        'p399_partial_submit_finalization': summary.get("p399_partial_submit_finalization"),
         'direct_submit_cleanup_status': _p320_swing_dead_path_phase1_status(),
         'production_contract_selection_finalizer': {
             'selected_symbols': list(production_selection_finalizer.get('selected_symbols') or []),
@@ -49881,6 +50048,20 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
     except Exception as e:
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
         try:
+            preserved_scan = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
+            preserved_summary = dict(preserved_scan.get("summary") or {})
+            preserved_selected_symbols = _p324_scan_selected_symbols(preserved_scan)
+            preserved_submit_rows = list(preserved_summary.get("selected_submission_rows") or preserved_scan.get("would_submit") or [])
+            preserved_attempted_symbols = _dedupe_keep_order([
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in preserved_submit_rows
+                if bool((row or {}).get("submit_attempted"))
+                and str((row or {}).get("symbol") or "").strip()
+            ])
+            preserved_gap_symbols = [
+                sym for sym in preserved_selected_symbols
+                if sym not in set(preserved_attempted_symbols)
+            ]
             _set_last_scan(
                 skipped=False,
                 reason='scan_exception',
@@ -49890,6 +50071,11 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 would_trade=0,
                 blocked=0,
                 duration_ms=duration_ms,
+                scan_exception_after_selection=bool(preserved_selected_symbols),
+                partial_selected_symbols=preserved_selected_symbols,
+                partial_submit_attempted_symbols=preserved_attempted_symbols,
+                partial_submit_gap_symbols=preserved_gap_symbols,
+                partial_submit_gap_count=len(preserved_gap_symbols),
                 last_successful_production_scan={
                     "ts_utc": LAST_SUCCESSFUL_PRODUCTION_SCAN.get("ts_utc"),
                     "reason": LAST_SUCCESSFUL_PRODUCTION_SCAN.get("reason"),
