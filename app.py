@@ -2619,7 +2619,7 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-390-hotfix-2-existing-exit-failure-retry-backfill-giveback-due-truth-sync"
+PATCH_VERSION = "patch-391-broker-qty-clamped-exit-retry-supersession-stale-giveback-heartbeat-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8593,10 +8593,94 @@ def _p390_backfill_exit_failure_classification(symbol: str, plan: dict) -> dict:
         plan["last_exit_submit_error_source"] = source
     return classification
 
+
+def _p391_extract_overclose_error_quantities(err_text: str) -> dict:
+    text = str(err_text or "")
+    out = {
+        "requested_qty": None,
+        "available_qty": None,
+        "is_overclose_qty_error": False,
+    }
+
+    req_match = re.search(r"requested\s*:\s*([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+    avail_match = re.search(r"available\s*:\s*([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+    if not req_match:
+        req_match = re.search(r'"requested"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?', text, re.IGNORECASE)
+    if not avail_match:
+        avail_match = re.search(r'"available"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?', text, re.IGNORECASE)
+
+    requested = _safe_float(req_match.group(1), 0.0) if req_match else 0.0
+    available = _safe_float(avail_match.group(1), 0.0) if avail_match else 0.0
+    low = text.lower()
+    is_qty_error = (
+        "insufficient qty available" in low
+        or "insufficient quantity" in low
+        or ("requested" in low and "available" in low and "qty" in low)
+    )
+
+    out["requested_qty"] = requested if requested > 0 else None
+    out["available_qty"] = available if available >= 0 else None
+    out["is_overclose_qty_error"] = bool(is_qty_error and requested > 0 and requested > available)
+    return out
+
+
+def _p391_supersede_stale_overclose_failure(
+    symbol: str,
+    plan: dict,
+    classification: dict,
+    broker_qty_signed: float,
+    close_side: str,
+) -> dict:
+    if not isinstance(classification, dict):
+        return {}
+
+    out = dict(classification)
+    err_text = str(plan.get("last_exit_submit_error") or out.get("error") or "")
+    qty_error = _p391_extract_overclose_error_quantities(err_text)
+    if not qty_error.get("is_overclose_qty_error"):
+        return out
+
+    side = str(close_side or "").strip().lower()
+    broker_qty_signed = _safe_float(broker_qty_signed, 0.0)
+    broker_available = (
+        max(0.0, broker_qty_signed)
+        if side == "sell"
+        else max(0.0, abs(min(0.0, broker_qty_signed)))
+    )
+    broker_retry_qty = _normalize_close_qty(broker_available)
+
+    if broker_retry_qty <= 0:
+        return out
+
+    out["original_classification"] = out.get("classification")
+    out["classification"] = "stale_overclose_failure_superseded"
+    out["retryable"] = True
+    out["retry_timing"] = "next_worker_exit_cycle" if bool(out.get("market_open")) else "next_regular_market_open"
+    out["failure_superseded"] = True
+    out["superseded_reason"] = "current_broker_qty_available_for_clamped_exit"
+    out["original_failed_qty"] = qty_error.get("requested_qty")
+    out["original_error_available_qty"] = qty_error.get("available_qty")
+    out["broker_retry_qty"] = broker_retry_qty
+    out["broker_qty_signed"] = round(broker_qty_signed, 8)
+    out["symbol"] = str(symbol or "").strip().upper()
+
+    plan["last_exit_submit_failure_classification"] = dict(out)
+    plan["last_exit_submit_retryable"] = True
+    plan["last_exit_submit_retry_timing"] = out.get("retry_timing")
+    plan["last_exit_submit_failure_superseded"] = True
+    plan["last_exit_submit_broker_retry_qty"] = broker_retry_qty
+    return out
+
 def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
     rows = []
     market = _market_clock_snapshot()
     market_open = bool(market.get("is_open"))
+    active_exit_truth = _p364_active_exit_protection_truth()
+    active_exit_rows = {
+        str(row.get("symbol") or "").strip().upper(): row
+        for row in list(active_exit_truth.get("rows") or [])
+        if isinstance(row, dict)
+    }
 
     for sym, plan in list((TRADE_PLAN or {}).items()):
         if not isinstance(plan, dict) or not bool(plan.get("active")):
@@ -8617,6 +8701,16 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             qty_signed = 0.0
 
         has_position = abs(_safe_float(qty_signed, 0.0)) > 0
+        active_exit_row = dict(active_exit_rows.get(symbol) or {})
+        current_exit_trigger_now = bool(active_exit_row.get("exit_trigger_now"))
+        current_exit_reason = str(active_exit_row.get("closest_exit_reason") or "none")
+        classification = _p391_supersede_stale_overclose_failure(
+            symbol,
+            plan,
+            classification,
+            qty_signed,
+            close_side,
+        )
         pending_close = _pending_close_order_for_symbol(symbol, close_side)
         idem_guard = _p373_same_day_exit_submit_guard(
             symbol,
@@ -8635,12 +8729,20 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             blocked_reasons.append("pending_close_order_exists")
         if bool(idem_guard.get("blocked")):
             blocked_reasons.append("same_day_exit_submit_idempotency")
+        if not current_exit_trigger_now:
+            blocked_reasons.append("current_exit_trigger_not_due")
         if not market_open:
             blocked_reasons.append("market_closed_wait_for_next_regular_open")
         if not retryable:
             blocked_reasons.append("classification_not_retryable")
 
-        ready_at_next_open = bool(retryable and has_position and not pending_close and not idem_guard.get("blocked"))
+        ready_at_next_open = bool(
+            retryable
+            and has_position
+            and current_exit_trigger_now
+            and not pending_close
+            and not idem_guard.get("blocked")
+        )
         ready = bool(ready_at_next_open and market_open)
 
         rows.append({
@@ -8653,7 +8755,12 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             "exit_reason": reason,
             "close_side": close_side,
             "broker_qty_signed": round(_safe_float(qty_signed, 0.0), 8),
+            "broker_retry_qty": classification.get("broker_retry_qty"),
+            "original_failed_qty": classification.get("original_failed_qty"),
+            "failure_superseded": bool(classification.get("failure_superseded")),
             "has_position": has_position,
+            "current_exit_trigger_now": current_exit_trigger_now,
+            "current_exit_reason": current_exit_reason,
             "pending_close_order": bool(pending_close),
             "same_day_exit_idempotency_blocked": bool(idem_guard.get("blocked")),
             "blocked_reasons": blocked_reasons,
@@ -48137,6 +48244,13 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     exit_retry_readiness = _p390_exit_submit_retry_readiness(limit=limit)
     active_exit_truth = _p364_active_exit_protection_truth()
     active_exit_summary = dict(active_exit_truth.get("summary") or {})
+    heartbeat_giveback_symbols = list(hb.get("giveback_exit_due_symbols") or [])
+    active_giveback_symbols = list(active_exit_summary.get("giveback_exit_due_symbols") or [])
+    stale_giveback_heartbeat = bool(
+        heartbeat_giveback_symbols
+        and not active_giveback_symbols
+        and str(hb.get("status") or "") == "outside_market_hours_giveback_exit_due"
+    )
 
     return {
         "ok": True,
@@ -48146,10 +48260,20 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "exit_submit_retry_readiness": exit_retry_readiness,
         "giveback_due_truth_sync": {
             "heartbeat_giveback_exit_due_count": hb.get("giveback_exit_due_count"),
-            "heartbeat_giveback_exit_due_symbols": list(hb.get("giveback_exit_due_symbols") or []),
+            "heartbeat_giveback_exit_due_symbols": heartbeat_giveback_symbols,
             "active_exit_truth_giveback_exit_due_count": active_exit_summary.get("giveback_exit_due_count"),
-            "active_exit_truth_giveback_exit_due_symbols": list(active_exit_summary.get("giveback_exit_due_symbols") or []),
-            "in_sync": set(hb.get("giveback_exit_due_symbols") or []) == set(active_exit_summary.get("giveback_exit_due_symbols") or []),
+            "active_exit_truth_giveback_exit_due_symbols": active_giveback_symbols,
+            "stale_giveback_heartbeat": stale_giveback_heartbeat,
+            "effective_giveback_exit_due_count": len(active_giveback_symbols),
+            "effective_giveback_exit_due_symbols": active_giveback_symbols,
+            "in_sync": set(heartbeat_giveback_symbols) == set(active_giveback_symbols),
+            "recommended_action": (
+                "ignore_stale_giveback_heartbeat_use_active_exit_truth"
+                if stale_giveback_heartbeat
+                else "monitor_active_exit_truth"
+                if active_giveback_symbols
+                else "none"
+            ),
         },
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
