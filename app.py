@@ -2572,6 +2572,18 @@ SCAN_HISTORY_RESULT_LIMIT = max(0, int(getenv_any("SCAN_HISTORY_RESULT_LIMIT", d
 SCAN_FAST_RESPONSE_ENABLED = env_bool_any("SCAN_FAST_RESPONSE_ENABLED", default="true")
 SCAN_FAST_RESPONSE_FOR_WORKER_ONLY = env_bool_any("SCAN_FAST_RESPONSE_FOR_WORKER_ONLY", default="true")
 SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", default=str(int(os.getenv("SCAN_TIMEOUT_SEC", "240") or 240) - 30)) or 210))
+SWING_SCAN_HOT_PATH_SLIM_ENABLED = env_bool_any(
+    "SWING_SCAN_HOT_PATH_SLIM_ENABLED",
+    default="true",
+)
+SWING_SCAN_HOT_PATH_DEFER_LABS = env_bool_any(
+    "SWING_SCAN_HOT_PATH_DEFER_LABS",
+    default="true",
+)
+SWING_SCAN_HOT_PATH_DISABLE_INTRADAY_SHADOW = env_bool_any(
+    "SWING_SCAN_HOT_PATH_DISABLE_INTRADAY_SHADOW",
+    default="true",
+)
 SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC = max(
     60,
     int(getenv_any("SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC", default="900") or 900),
@@ -2647,7 +2659,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-400-fast-submit-path-trace-snapshot-heavy-trace-opt-in"
+PATCH_VERSION = "patch-401-swing-scanner-runtime-hot-path-slimming"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -23370,9 +23382,34 @@ def _p399_submit_swing_candidate_rows(
         "slot_count": slot_count,
     }
 
+def _p401_swing_scan_hot_path_context(scan_options: dict | None = None) -> dict:
+    opts = dict(scan_options or {})
+    force_heavy = str(
+        opts.get("heavy") or opts.get("full_diagnostics") or ""
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    enabled = bool(SWING_SCAN_HOT_PATH_SLIM_ENABLED) and not force_heavy
+    defer_labs = bool(enabled and SWING_SCAN_HOT_PATH_DEFER_LABS)
+    disable_shadow = bool(enabled and SWING_SCAN_HOT_PATH_DISABLE_INTRADAY_SHADOW)
+
+    return {
+        "enabled": enabled,
+        "force_heavy": force_heavy,
+        "defer_labs": defer_labs,
+        "disable_intraday_shadow": disable_shadow,
+        "reason": (
+            "hot_path_slim_default"
+            if enabled
+            else "heavy_scan_requested"
+            if force_heavy
+            else "hot_path_slim_disabled"
+        ),
+    }
+
 def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_fn, reconcile_actions: list | None = None, scan_options: dict | None = None) -> dict:
     reconcile_actions = reconcile_actions or []
     scan_options = dict(scan_options or {})
+    p401_hot_path = _p401_swing_scan_hot_path_context(scan_options)
     original_syms = universe_symbols()
     runtime_slim = _p315_swing_runtime_scan_symbols(original_syms, scan_options=scan_options)
     syms = list(runtime_slim.get("symbols") or original_syms)
@@ -23458,15 +23495,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             candidate_slots=p399_retry_slots,
         )
 
-    p399_pre_scan_retry_candidates = []
-    p399_pre_scan_retry_submit = {
-        "would_submit": [],
-        "selected_submission_payloads": [],
-        "submitted_symbols": [],
-        "attempted_symbols": [],
-        "rate_limited_symbols": [],
-        "slot_count": 0,
-    }
+    if not p399_pre_scan_retry_candidates:
+        p399_pre_scan_retry_submit = {
+            "would_submit": [],
+            "selected_submission_payloads": [],
+            "submitted_symbols": [],
+            "attempted_symbols": [],
+            "rate_limited_symbols": [],
+            "slot_count": 0,
+        }
     p399_partial_submit_finalization = {
         "applied": False,
         "reason": "not_needed",
@@ -23800,6 +23837,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         },
         'symbols': list(scan_symbols),
         'runtime_slim': dict(runtime_slim),
+        'hot_path_slim': dict(p401_hot_path),
         'runtime_symbols_original_count': int(runtime_slim.get("original_count") or len(original_syms)),
         'runtime_symbols_used_count': len(scan_symbols),
         'runtime_symbols_excluded_count': int(runtime_slim.get("excluded_count") or 0),
@@ -23829,6 +23867,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'symbols': list(scan_symbols),
         'symbols_total': len(scan_symbols),
         'runtime_slim': dict(runtime_slim),
+        'hot_path_slim': dict(p401_hot_path),
         'runtime_slim_applied': bool(runtime_slim.get("applied")),
         'runtime_symbols_original_count': int(runtime_slim.get("original_count") or len(original_syms)),
         'runtime_symbols_used_count': len(scan_symbols),
@@ -23873,10 +23912,21 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 if bool(((c.get("swing_production_contract") or {}).get("checks") or {}).get("near_rank_revival_ok"))
             ],
         },
-        'production_contract_miss_reasons': _p325_build_production_contract_miss_snapshot(
-            candidates,
-            selected=selected,
-            limit=50,
+        'production_contract_miss_reasons': (
+            {
+                "ok": True,
+                "deferred": True,
+                "reason": "p401_hot_path_deferred",
+                "endpoint": "/diagnostics/production_contract_miss_reasons",
+                "selected_symbols": [c.get("symbol") for c in selected],
+                "candidate_count": len(candidates),
+            }
+            if bool(p401_hot_path.get("defer_labs"))
+            else _p325_build_production_contract_miss_snapshot(
+                candidates,
+                selected=selected,
+                limit=50,
+            )
         ),
         'breakout_candidates_total': len(breakout_candidates),
         'mean_reversion_candidates_total': len(mean_reversion_candidates),
@@ -23982,9 +24032,19 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'selected_symbols': [c.get('symbol') for c in selected if bool(c.get('defensive_near_miss_relaxation_entry'))],
         },
         'strong_target_path_weak_tape_override': dict(weak_tape_capacity_override),
-        'target_path_opportunity_expansion_lab': _p285_target_path_opportunity_expansion_lab(
-            candidates,
-            limit=SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT,
+        'target_path_opportunity_expansion_lab': (
+            {
+                "ok": True,
+                "deferred": True,
+                "reason": "p401_hot_path_deferred",
+                "endpoint": "/diagnostics/target_path_opportunity_expansion_lab",
+                "candidate_count": len(candidates),
+            }
+            if bool(p401_hot_path.get("defer_labs"))
+            else _p285_target_path_opportunity_expansion_lab(
+                candidates,
+                limit=SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT,
+            )
         ),
         'thrive_capacity_truth': {
             'base_daily_entry_cap': int(base_daily_entry_cap),
@@ -24045,11 +24105,19 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     intraday_shadow_enabled_for_swing = bool(
         INTRADAY_SHADOW_EVALUATION_ENABLE
         and ((not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)) or bool(SWING_SCAN_RUN_INTRADAY_SHADOW))
+        and not bool(p401_hot_path.get("disable_intraday_shadow"))
     )
     intraday_shadow = {
         "enabled": intraday_shadow_enabled_for_swing,
         "configured": bool(INTRADAY_SHADOW_EVALUATION_ENABLE),
-        "status": "not_run" if intraday_shadow_enabled_for_swing else "disabled_for_swing_production_core",
+        "status": (
+            "not_run"
+            if intraday_shadow_enabled_for_swing
+            else "deferred_by_p401_swing_hot_path"
+            if bool(p401_hot_path.get("disable_intraday_shadow"))
+            else "disabled_for_swing_production_core"
+        ),
+        "hot_path_slim": dict(p401_hot_path),
     }
     if intraday_shadow_enabled_for_swing:
         try:
@@ -24150,15 +24218,30 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         except Exception:
             pass
 
-    summary["target_path_gate_calibration"] = _p313_target_path_gate_calibration(
-        candidates,
-        summary=summary,
-        limit=SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT,
-    )
-    summary["fast_no_trade_recheck"] = _p313_fast_no_trade_recheck_hint(
-        summary=summary,
-        rows=candidates,
-    )
+    if bool(p401_hot_path.get("defer_labs")):
+        summary["target_path_gate_calibration"] = {
+            "ok": True,
+            "deferred": True,
+            "reason": "p401_hot_path_deferred",
+            "endpoint": "/diagnostics/target_path_gate_calibration",
+        }
+        summary["fast_no_trade_recheck"] = {
+            "ok": True,
+            "deferred": True,
+            "reason": "p401_hot_path_deferred",
+            "selected_symbols": list(summary.get("selected_symbols") or []),
+            "selected_submit_gap_symbols": list(summary.get("selected_submit_gap_symbols") or []),
+        }
+    else:
+        summary["target_path_gate_calibration"] = _p313_target_path_gate_calibration(
+            candidates,
+            summary=summary,
+            limit=SWING_TARGET_PATH_OPPORTUNITY_LAB_LIMIT,
+        )
+        summary["fast_no_trade_recheck"] = _p313_fast_no_trade_recheck_hint(
+            summary=summary,
+            rows=candidates,
+        )
 
     summary['intraday_shadow'] = intraday_shadow
     try:
