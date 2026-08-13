@@ -2647,7 +2647,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-399-partial-scan-submit-finalization-retry-queue-consumption-before-full-scan"
+PATCH_VERSION = "patch-400-fast-submit-path-trace-snapshot-heavy-trace-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14783,6 +14783,202 @@ def _p363_second_slot_truth(
         "rows": rows,
         "read": read,
         "recommended_action": recommended_action,
+    }
+
+def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int | None = None) -> dict:
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    latest_scan = dict(latest_scan or {})
+    summary = dict(summary or {})
+
+    requested_symbols = {
+        str(sym or "").strip().upper()
+        for sym in str(symbols or "").replace(",", " ").split()
+        if str(sym or "").strip()
+    }
+    lim = max(1, min(int(limit or 12), 50))
+
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    production_selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("production_contract_selected_symbols") or latest_scan.get("production_contract_selected_symbols") or selected_symbols)
+        if str(sym or "").strip()
+    ])
+
+    submit_rows_all = [
+        dict(row or {})
+        for row in list(summary.get("selected_submission_rows") or latest_scan.get("would_submit") or [])
+        if isinstance(row, dict)
+    ]
+    if requested_symbols:
+        submit_rows_all = [
+            row for row in submit_rows_all
+            if str(row.get("symbol") or "").strip().upper() in requested_symbols
+        ]
+        selected_symbols = [sym for sym in selected_symbols if sym in requested_symbols]
+        production_selected_symbols = [sym for sym in production_selected_symbols if sym in requested_symbols]
+
+    submit_rows = submit_rows_all[:lim]
+    submit_row_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_rows_all
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+
+    active_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip()
+        and isinstance(plan, dict)
+        and bool(plan.get("active"))
+    ])
+    pending_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip()
+        and isinstance(plan, dict)
+        and _plan_is_pending_entry(plan)
+    ])
+
+    actual_submit_side_effect_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_rows_all
+        if str((row or {}).get("symbol") or "").strip()
+        and bool((row or {}).get("actual_submit_side_effect"))
+    ])
+    rate_limited_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_rows_all
+        if str((row or {}).get("symbol") or "").strip()
+        and _p398_submit_row_rate_limited(row)
+    ])
+    queued_rate_limit_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    execution_quality_block_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("execution_quality_block_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    retryable_spread_block_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("retryable_spread_block_symbols") or [])
+        if str(sym or "").strip()
+    ])
+
+    submit_gap_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("selected_submit_gap_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    missing_submit_symbols = [
+        sym for sym in production_selected_symbols
+        if sym not in set(submit_row_symbols)
+        and sym not in set(active_symbols)
+        and sym not in set(pending_symbols)
+        and sym not in set(rate_limited_symbols)
+        and sym not in set(queued_rate_limit_symbols)
+    ]
+    selected_not_attempted_symbols = [
+        sym for sym in production_selected_symbols
+        if sym not in set(submit_row_symbols)
+        and sym not in set(active_symbols)
+        and sym not in set(pending_symbols)
+    ]
+
+    duration_ms = int(latest_scan.get("duration_ms") or 0)
+    budget_sec = int(SCAN_RUNTIME_BUDGET_SEC or 0)
+    runtime_over_budget = bool(budget_sec > 0 and duration_ms > budget_sec * 1000)
+
+    if missing_submit_symbols or submit_gap_symbols:
+        path_status = "selected_submit_gap_detected"
+        recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
+    elif rate_limited_symbols or queued_rate_limit_symbols:
+        path_status = "rate_limited_retry_pending"
+        recommended_action = "wait_for_retry_queue_consumption"
+    elif actual_submit_side_effect_symbols:
+        path_status = "selected_symbols_have_actual_submit_side_effect"
+        recommended_action = "monitor_active_positions"
+    elif active_symbols and not selected_symbols:
+        path_status = "captured_candidate_monitor_existing_position"
+        recommended_action = "monitor_active_positions"
+    elif selected_symbols:
+        path_status = "selected_candidate_needs_submit_truth"
+        recommended_action = "inspect_heavy_trace"
+    else:
+        path_status = "no_selected_candidate"
+        recommended_action = "monitor_next_scan"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_submit_path_trace",
+        "trace_mode": "light",
+        "heavy_available": True,
+        "heavy_url_hint": "/diagnostics/swing_submit_path_trace?heavy=true",
+        "read_only": True,
+        "source": "last_scan_runtime_snapshot",
+        "path_status": path_status,
+        "recommended_action": recommended_action,
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "duration_ms": duration_ms,
+            "duration_sec": round(duration_ms / 1000.0, 2),
+            "scan_runtime_budget_sec": budget_sec,
+            "runtime_over_budget": runtime_over_budget,
+            "scanner_runtime_still_slow": runtime_over_budget,
+            "scanner_speed_note": (
+                "submit_trace_is_fast_but_scanner_runtime_needs_separate_hot_path_cleanup"
+                if runtime_over_budget
+                else "scanner_runtime_within_budget"
+            ),
+            "selected_total": len(selected_symbols),
+            "selected_symbols": selected_symbols,
+            "eligible_total": int(summary.get("eligible_total") or latest_scan.get("eligible_total") or 0),
+        },
+        "direct_submit": {
+            "active": bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED and not SWING_LIVE_USE_SELECTED_INTENT_QUEUE),
+            "selection_source": "swing_production_contract",
+            "submission_source": "direct_submit",
+            "retired_queue_path_active": False,
+            "retired_finalizer_path_active": False,
+        },
+        "selected_opportunity_truth": {
+            "raw_selected_count": len(production_selected_symbols),
+            "raw_selected_symbols": production_selected_symbols,
+            "selected_not_attempted_count": len(selected_not_attempted_symbols),
+            "selected_not_attempted_symbols": selected_not_attempted_symbols,
+            "submit_row_symbols": submit_row_symbols,
+            "actual_submit_side_effect_symbols": actual_submit_side_effect_symbols,
+            "rate_limited_submit_symbols": rate_limited_symbols,
+            "rate_limit_retry_queue_count": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
+            "rate_limit_retry_queue_symbols": queued_rate_limit_symbols,
+            "execution_quality_block_symbols": execution_quality_block_symbols,
+            "retryable_spread_block_symbols": retryable_spread_block_symbols,
+            "submit_gap_symbols": submit_gap_symbols,
+            "missing_submit_symbols": missing_submit_symbols,
+        },
+        "active_capture_truth": {
+            "active_symbols": active_symbols,
+            "pending_symbols": pending_symbols,
+            "captured_selected_symbols": [
+                sym for sym in production_selected_symbols
+                if sym in set(active_symbols) or sym in set(pending_symbols)
+            ],
+        },
+        "p399": {
+            "pre_scan_retry_submit": dict(summary.get("p399_pre_scan_retry_submit") or {}),
+            "partial_submit_finalization": dict(summary.get("p399_partial_submit_finalization") or {}),
+        },
+        "rows": submit_rows,
+        "row_count": len(submit_rows),
+        "row_count_total": len(submit_rows_all),
     }
 
 def _p321_swing_submit_path_trace(symbols: str | None = None, limit: int | None = None) -> dict:
@@ -31078,13 +31274,22 @@ def diagnostics_swing_trade_readiness_morning_brief(request: Request, symbols: s
     ))
 
 @app.get("/diagnostics/swing_submit_path_trace")
-def diagnostics_swing_submit_path_trace(request: Request, symbols: str = "", limit: int = 12):
+def diagnostics_swing_submit_path_trace(request: Request, symbols: str = "", limit: int = 12, heavy: bool = False):
     require_admin_if_configured(request)
-    return JSONResponse(content=_p321_swing_submit_path_trace(
+    if bool(heavy):
+        payload = _p321_swing_submit_path_trace(
+            symbols=symbols,
+            limit=limit,
+        )
+        if isinstance(payload, dict):
+            payload["trace_mode"] = "heavy"
+            payload["light_url_hint"] = "/diagnostics/swing_submit_path_trace"
+        return JSONResponse(content=payload)
+
+    return JSONResponse(content=_p400_swing_submit_path_trace_light(
         symbols=symbols,
         limit=limit,
     ))
-
 
 @app.get("/diagnostics/candidate_gate_crossing_alert")
 def diagnostics_candidate_gate_crossing_alert(request: Request, symbols: str = "", limit: int = 12):
