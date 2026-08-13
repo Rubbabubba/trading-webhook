@@ -108,6 +108,14 @@ from swing_execution import (
     build_submit_decision as swing_exec_build_submit_decision,
     limit_entry_preview as swing_exec_limit_entry_preview,
 )
+from broker_client import (
+    BROKER_CLIENT_MODULE_VERSION,
+    broker_module_status,
+)
+from market_clock import (
+    MARKET_CLOCK_MODULE_VERSION,
+    market_clock_module_status,
+)
 
 @dataclass(frozen=True)
 class Bar:
@@ -2630,7 +2638,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-392-repo-archive-structure-broker-market-module-split-prep"
+PATCH_VERSION = "patch-393-broker-client-runtime-import-build-artifact-integrity-registration"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2830,7 +2838,20 @@ def _intraday_launch_action_plan(
         "optional_scaling": _unique_nonempty_actions(optional_scaling_actions),
         "recommended_env": env,
     }
-EXPECTED_ARTIFACT_FILES = ["app.py", "worker.py", "scanner.py", "swing_core.py", "swing_light_diagnostics.py", "swing_runtime_config.py", "requirements.txt", "DEPLOYMENT_NOTES.md"]
+EXPECTED_ARTIFACT_FILES = [
+    "app.py",
+    "worker.py",
+    "scanner.py",
+    "broker_client.py",
+    "market_clock.py",
+    "swing_core.py",
+    "swing_execution.py",
+    "swing_light_diagnostics.py",
+    "swing_runtime_config.py",
+    "swing_selection_contract.py",
+    "requirements.txt",
+    "DEPLOYMENT_NOTES.md",
+]
 BROKER_TRUTH_SYNC_LAST_TS = 0.0
 BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC = 60.0
 
@@ -5693,6 +5714,15 @@ def _build_fingerprint_snapshot() -> dict:
         "env_name": ENV_NAME,
         "release_stage_configured": SYSTEM_RELEASE_STAGE,
         "artifact_integrity": artifact,
+        "module_status": {
+            "broker_client": broker_module_status(),
+            "market_clock": market_clock_module_status(),
+            "swing_core_module_version": SWING_CORE_MODULE_VERSION,
+            "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
+            "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
+            "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
+            "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
+        },
     }
 
 def _routes_manifest_snapshot() -> dict:
