@@ -1,3 +1,11 @@
+# =============================================================================
+# Trading Webhook Runtime Shell
+# =============================================================================
+# This file remains the FastAPI compatibility shell while swing runtime code is
+# gradually moved into focused modules. Keep behavior changes separate from
+# module-split cleanup patches.
+#
+
 import os
 import logging
 import hashlib
@@ -532,9 +540,9 @@ def _entry_spread_override_decision(snapshot: dict | None, meta: dict | None = N
         },
     }
 
-# =============================
-# App
-# =============================
+# =============================================================================
+# FastAPI App Shell
+# =============================================================================
 app = FastAPI()
 
 # Standard library logger used by the scanner/worker endpoints.
@@ -669,9 +677,9 @@ def in_scanner_session(now_dt_ny: datetime | None = None) -> bool:
             return True
     return False
 
-# =============================
-# ENV
-# =============================
+# =============================================================================
+# Runtime Configuration
+# =============================================================================
 WEBHOOK_SECRET = getenv_any("WEBHOOK_SECRET", default="")
 
 # Alpaca (support APCA_* + ALPACA_*)
@@ -2619,7 +2627,10 @@ STARTUP_STATE: dict[str, object] = {
 # scan hundreds/thousands of symbols without hammering the provider each tick.
 _scan_rotation = {"ny_date": None, "idx": 0}
 
-PATCH_VERSION = "patch-391-broker-qty-clamped-exit-retry-supersession-stale-giveback-heartbeat-cleanup"
+# =============================================================================
+# Build / Patch Metadata
+# =============================================================================
+PATCH_VERSION = "patch-392-repo-archive-structure-broker-market-module-split-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
