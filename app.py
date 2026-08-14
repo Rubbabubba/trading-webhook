@@ -1693,6 +1693,16 @@ READINESS_EXIT_MAX_AGE_SEC = int(getenv_any("READINESS_EXIT_MAX_AGE_SEC", defaul
 WORKER_EXIT_STARTED_STALE_SEC = int(getenv_any("WORKER_EXIT_STARTED_STALE_SEC", default=str(max(180, READINESS_EXIT_MAX_AGE_SEC * 2))))
 POSITION_TRUTH_STALE_SEC = int(getenv_any("POSITION_TRUTH_STALE_SEC", default="180"))
 RISK_RECHECK_TOLERANCE_PCT = float(getenv_any("RISK_RECHECK_TOLERANCE_PCT", default="0.10"))
+POST_FILL_RISK_RECHECK_REDUCE_ENABLED = env_bool_any(
+    "POST_FILL_RISK_RECHECK_REDUCE_ENABLED",
+    "SWING_POST_FILL_RISK_RECHECK_REDUCE_ENABLED",
+    default=True,
+)
+POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE = getenv_float_any(
+    "POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE",
+    "SWING_POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE",
+    default=1.50,
+)
 
 # Patch 007: monitoring + alerts
 ALERTS_ENABLED = env_bool("ALERTS_ENABLED", False)
@@ -2740,7 +2750,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-416-hotfix-legacy-risk-recheck-metadata-backfill-second-path-risk-evidence-capture"
+PATCH_VERSION = "patch-417-post-fill-risk-recheck-reduce-not-exit-minor-overage-tolerance"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8729,7 +8739,7 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
 
             action = str(row.get("action") or "")
             reason = str(row.get("reason") or "")
-            if action not in {"risk_recheck", "risk_recheck_hold"} and reason != "risk_exceeded_after_fill":
+            if action not in {"risk_recheck", "risk_recheck_hold", "risk_recheck_reduce"} and reason not in {"risk_exceeded_after_fill", "risk_exceeded_after_fill_reduce_to_risk"}:
                 continue
 
             evidence = _p416_normalize_risk_recheck_evidence(row)
@@ -8780,6 +8790,7 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
             })
 
         exit_rows = [r for r in rows if str(r.get("decision") or "") == "exit"]
+        reduce_rows = [r for r in rows if str(r.get("decision") or "") == "reduce"]
         hold_rows = [r for r in rows if str(r.get("decision") or "") == "hold"]
 
         return {
@@ -8790,8 +8801,10 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
             "limit": limit,
             "decision_count": len(rows),
             "exit_count": len(exit_rows),
+            "reduce_count": len(reduce_rows),
             "hold_count": len(hold_rows),
             "exit_symbols": sorted({str(r.get("symbol") or "") for r in exit_rows if str(r.get("symbol") or "")}),
+            "reduce_symbols": sorted({str(r.get("symbol") or "") for r in reduce_rows if str(r.get("symbol") or "")}),
             "hold_symbols": sorted({str(r.get("symbol") or "") for r in hold_rows if str(r.get("symbol") or "")}),
             "active_plan_evidence_count": len(plan_rows),
             "active_plan_evidence": plan_rows[:limit],
@@ -8799,6 +8812,8 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
             "recommended_action": (
                 "review_post_fill_exit_risk_math"
                 if exit_rows
+                else "post_fill_risk_reduced_to_target_risk"
+                if reduce_rows
                 else "post_fill_risk_math_clean"
                 if hold_rows or plan_rows
                 else "no_post_fill_risk_recheck_decisions_yet"
@@ -10006,17 +10021,81 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
             out["post_fill_risk_recheck_evidence"] = risk_recheck_evidence
 
             if risk_exceeded:
+                hard_exit_threshold = round(
+                    float(risk_threshold) * max(float(POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE), 1.0),
+                    4,
+                )
+                hard_exit = bool(actual_risk >= hard_exit_threshold)
+
+                target_qty_for_risk = 0.0
+                reduce_qty = 0.0
+                if risk_per_share > 0:
+                    target_qty_for_risk = _normalize_close_qty(float(risk_threshold) / float(risk_per_share))
+                    reduce_qty = _normalize_close_qty(max(0.0, filled_qty_for_risk - target_qty_for_risk))
+
+                can_reduce = bool(
+                    POST_FILL_RISK_RECHECK_REDUCE_ENABLED
+                    and not hard_exit
+                    and reduce_qty > 0
+                    and reduce_qty < filled_qty_for_risk
+                )
+
+                risk_recheck_evidence["hard_exit_threshold_dollars"] = hard_exit_threshold
+                risk_recheck_evidence["hard_exit"] = hard_exit
+                risk_recheck_evidence["target_qty_for_risk"] = target_qty_for_risk
+                risk_recheck_evidence["reduce_qty"] = reduce_qty
+                risk_recheck_evidence["reduce_enabled"] = bool(POST_FILL_RISK_RECHECK_REDUCE_ENABLED)
+
+                if can_reduce:
+                    close_out = close_partial_position(
+                        symbol,
+                        reduce_qty,
+                        reason="risk_exceeded_after_fill_reduce_to_risk",
+                        source="risk_guard",
+                    )
+                    risk_recheck_evidence["decision"] = "reduce"
+                    risk_recheck_evidence["reason"] = "risk_exceeded_after_fill_reduce_to_risk"
+                    risk_recheck_evidence["close_out"] = close_out
+                    out["changes"].append("risk_recheck_reduce_after_fill")
+                    out["risk_close"] = close_out
+                    record_decision(
+                        "RECONCILE",
+                        "worker_exit",
+                        symbol,
+                        action="risk_recheck_reduce",
+                        reason="risk_exceeded_after_fill_reduce_to_risk",
+                        meta={"post_fill_risk_recheck": risk_recheck_evidence},
+                    )
+                    _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
+                    return out
+
                 close_out = close_position(symbol, reason="risk_exceeded_after_fill", source="risk_guard")
+                risk_recheck_evidence["decision"] = "exit"
+                risk_recheck_evidence["reason"] = "risk_exceeded_after_fill"
                 risk_recheck_evidence["close_out"] = close_out
                 out["changes"].append("risk_recheck_after_fill")
                 out["risk_close"] = close_out
-                record_decision("RECONCILE", "worker_exit", symbol, action="risk_recheck", reason="risk_exceeded_after_fill", meta={"post_fill_risk_recheck": risk_recheck_evidence})
+                record_decision(
+                    "RECONCILE",
+                    "worker_exit",
+                    symbol,
+                    action="risk_recheck",
+                    reason="risk_exceeded_after_fill",
+                    meta={"post_fill_risk_recheck": risk_recheck_evidence},
+                )
                 if close_out.get("closed"):
                     plan["active"] = False
                 _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
                 return out
 
-            record_decision("RECONCILE", "worker_exit", symbol, action="risk_recheck_hold", reason="risk_within_post_fill_threshold", meta={"post_fill_risk_recheck": risk_recheck_evidence})
+            record_decision(
+                "RECONCILE",
+                "worker_exit",
+                symbol,
+                action="risk_recheck_hold",
+                reason="risk_within_post_fill_threshold",
+                meta={"post_fill_risk_recheck": risk_recheck_evidence},
+            )
     elif age_sec is not None and age_sec >= PLAN_STALE_SUBMITTED_SEC and str(order_status.get("status") or "").lower() not in {"filled", "partially_filled"}:
         if _p342_broker_backed_filled_or_recovered_plan(plan, qty_signed=qty_signed):
             plan["active"] = True
