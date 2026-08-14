@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-365-same-day-target-exit-allowance-stall-churn-reentry-cooldown"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-411-first-2k-geometry-sleeve-production-contract-de-starification"
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,13 @@ class SwingProductionContractConfig:
     near_rank_revival_max_risk_pct: float = 0.08
     near_rank_revival_min_target_path_score: float = 10.0
     near_rank_revival_max_entries_per_scan: int = 1
+    first_2k_geometry_sleeve_enabled: bool = False
+    first_2k_geometry_sleeve_symbols: str = ""
+    first_2k_geometry_sleeve_min_rank_score: float = 97.0
+    first_2k_geometry_sleeve_max_below_breakout_pct: float = 0.01
+    first_2k_geometry_sleeve_min_close_to_high_pct: float = 0.985
+    first_2k_geometry_sleeve_max_risk_pct: float = 0.04
+    first_2k_geometry_sleeve_max_entries_per_scan: int = 1
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -70,7 +77,6 @@ def _value(candidate: dict | None, *keys):
             return val
     return None
 
-
 def _pct_decimal(value):
     if value is None or str(value).strip() == "":
         return None
@@ -79,6 +85,12 @@ def _pct_decimal(value):
         return val / 100.0
     return val
 
+def _symbol_set(csv_text: str | None) -> set[str]:
+    return {
+        str(part or "").strip().upper()
+        for part in str(csv_text or "").replace(";", ",").split(",")
+        if str(part or "").strip()
+    }
 
 def swing_production_contract(
     candidate: dict | None,
@@ -215,7 +227,29 @@ def swing_production_contract(
         and target_path_score >= float(config.near_rank_revival_min_target_path_score)
     )
 
-    contract_path_ok = bool(base_contract_ok or risk_calibrated_starter_ok or near_rank_revival_ok)
+    sleeve_symbols = _symbol_set(config.first_2k_geometry_sleeve_symbols)
+    first_2k_geometry_sleeve_ok = bool(
+        config.first_2k_geometry_sleeve_enabled
+        and symbol in sleeve_symbols
+        and executable
+        and liquidity_ok
+        and rank_score >= float(config.first_2k_geometry_sleeve_min_rank_score)
+        and risk_pct is not None
+        and risk_pct <= float(config.first_2k_geometry_sleeve_max_risk_pct)
+        and close_to_high_pct is not None
+        and close_to_high_pct >= float(config.first_2k_geometry_sleeve_min_close_to_high_pct)
+        and breakout_distance_pct is not None
+        and breakout_distance_pct >= -abs(float(config.first_2k_geometry_sleeve_max_below_breakout_pct))
+        and not_too_extended_above_breakout
+        and return_20d_ok
+    )
+
+    contract_path_ok = bool(
+        base_contract_ok
+        or risk_calibrated_starter_ok
+        or near_rank_revival_ok
+        or first_2k_geometry_sleeve_ok
+    )
 
     checks = {
         "executable": executable,
@@ -226,6 +260,7 @@ def swing_production_contract(
         "base_contract_ok": bool(base_contract_ok),
         "risk_calibrated_starter_ok": bool(risk_calibrated_starter_ok),
         "near_rank_revival_ok": bool(near_rank_revival_ok),
+        "first_2k_geometry_sleeve_ok": bool(first_2k_geometry_sleeve_ok),
         "not_too_far_below_breakout": not_too_far_below_breakout,
         "not_too_extended_above_breakout": not_too_extended_above_breakout,
         "close_to_high_ok": close_to_high_ok,
@@ -243,6 +278,16 @@ def swing_production_contract(
         if not original_eligible and not blockers:
             blockers.append("production_contract_mean_reversion_original_rules_not_met")
     elif not contract_path_ok:
+        if bool(config.first_2k_geometry_sleeve_enabled) and symbol in _symbol_set(config.first_2k_geometry_sleeve_symbols):
+            if rank_score < float(config.first_2k_geometry_sleeve_min_rank_score):
+                blockers.append("first_2k_geometry_rank_below_min")
+            if risk_pct is None or risk_pct > float(config.first_2k_geometry_sleeve_max_risk_pct):
+                blockers.append("first_2k_geometry_risk_too_wide")
+            if close_to_high_pct is None or close_to_high_pct < float(config.first_2k_geometry_sleeve_min_close_to_high_pct):
+                blockers.append("first_2k_geometry_not_close_to_high")
+            if breakout_distance_pct is None or breakout_distance_pct < -abs(float(config.first_2k_geometry_sleeve_max_below_breakout_pct)):
+                blockers.append("first_2k_geometry_too_far_below_breakout")
+
         if not rank_score_ok:
             blockers.append("production_contract_rank_below_min")
         if not liquidity_ok:
@@ -315,7 +360,11 @@ def apply_swing_production_contract(
 
         if approved:
             checks = dict(contract.get("checks") or {})
-            if bool(checks.get("near_rank_revival_ok")):
+            if bool(checks.get("first_2k_geometry_sleeve_ok")):
+                c["entry_type"] = "swing_production_first_2k_geometry_sleeve"
+                c["selected_source"] = "swing_production_first_2k_geometry_sleeve"
+                c["first_2k_geometry_sleeve_applied"] = True
+            elif bool(checks.get("near_rank_revival_ok")):
                 c["entry_type"] = "swing_production_near_rank_revival"
                 c["selected_source"] = "swing_production_near_rank_revival"
                 c["near_rank_revival_applied"] = True
@@ -411,23 +460,30 @@ def finalize_production_contract_selection(
     max_total = max(0, int(max_new_entries or 0))
     max_calibrated = max(0, int(config.risk_calibration_max_entries_per_scan or 0))
     max_near_rank = max(0, int(config.near_rank_revival_max_entries_per_scan or 0))
+    max_first_2k_geometry = max(0, int(config.first_2k_geometry_sleeve_max_entries_per_scan or 0))
     selected = []
     calibrated_count = 0
     near_rank_count = 0
+    first_2k_geometry_count = 0
 
     for row in approved:
         if len(selected) >= max_total:
             break
         contract = dict((row or {}).get("swing_production_contract") or {})
         checks = dict(contract.get("checks") or {})
-        is_near_rank = bool(checks.get("near_rank_revival_ok"))
-        is_calibrated = bool(checks.get("risk_calibrated_starter_ok")) and not is_near_rank
+        is_first_2k_geometry = bool(checks.get("first_2k_geometry_sleeve_ok"))
+        is_near_rank = bool(checks.get("near_rank_revival_ok")) and not is_first_2k_geometry
+        is_calibrated = bool(checks.get("risk_calibrated_starter_ok")) and not is_near_rank and not is_first_2k_geometry
+        if is_first_2k_geometry and first_2k_geometry_count >= max_first_2k_geometry:
+            continue
         if is_near_rank and near_rank_count >= max_near_rank:
             continue
         if is_calibrated and calibrated_count >= max_calibrated:
             continue
         selected.append(dict(row or {}))
-        if is_near_rank:
+        if is_first_2k_geometry:
+            first_2k_geometry_count += 1
+        elif is_near_rank:
             near_rank_count += 1
         elif is_calibrated:
             calibrated_count += 1
@@ -452,7 +508,11 @@ def finalize_production_contract_selection(
         if is_selected:
             contract = dict(c.get("swing_production_contract") or {})
             checks = dict(contract.get("checks") or {})
-            if bool(checks.get("near_rank_revival_ok")):
+            if bool(checks.get("first_2k_geometry_sleeve_ok")):
+                c["entry_type"] = "swing_production_first_2k_geometry_sleeve"
+                c["selected_source"] = "swing_production_first_2k_geometry_sleeve"
+                c["first_2k_geometry_sleeve_applied"] = True
+            elif bool(checks.get("near_rank_revival_ok")):
                 c["entry_type"] = "swing_production_near_rank_revival"
                 c["selected_source"] = "swing_production_near_rank_revival"
                 c["near_rank_revival_applied"] = True
@@ -492,4 +552,14 @@ def finalize_production_contract_selection(
             if str((row or {}).get("symbol") or "").strip()
         ],
         "max_new_entries": max(0, int(max_new_entries or 0)),
+        "first_2k_geometry_sleeve": {
+            "enabled": bool(config.first_2k_geometry_sleeve_enabled),
+            "max_entries_per_scan": int(config.first_2k_geometry_sleeve_max_entries_per_scan or 0),
+            "selected_count": int(first_2k_geometry_count),
+            "selected_symbols": [
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in selected_final
+                if bool(((row.get("swing_production_contract") or {}).get("checks") or {}).get("first_2k_geometry_sleeve_ok"))
+            ],
+        },
     }

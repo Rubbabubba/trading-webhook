@@ -1868,6 +1868,34 @@ SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN = getenv_int_any(
     "SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN",
     default=1,
 )
+SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED = env_bool_any(
+    "SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED",
+    default=True,
+)
+SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS = getenv_any(
+    "SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS",
+    default="QQQ,SPY,IWM,AAPL,MSFT,NVDA,AMD,AVGO,CRM,ADBE,PANW,ORCL,SNOW,META",
+)
+SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE",
+    default=97.0,
+)
+SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
+    "SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT",
+    default=0.01,
+)
+SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
+    "SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT",
+    default=0.985,
+)
+SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT = getenv_float_any(
+    "SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT",
+    default=0.04,
+)
+SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN",
+    default=1,
+)
 SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
     "SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT",
     default=0.055,
@@ -2712,7 +2740,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-410-hotfix-2-percent-field-no-double-scale-fix"
+PATCH_VERSION = "patch-411-first-2k-geometry-sleeve-production-contract-de-starification"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -20807,6 +20835,13 @@ def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
         near_rank_revival_max_risk_pct=float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_RISK_PCT),
         near_rank_revival_min_target_path_score=float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_TARGET_PATH_SCORE),
         near_rank_revival_max_entries_per_scan=int(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN),
+        first_2k_geometry_sleeve_enabled=bool(SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED),
+        first_2k_geometry_sleeve_symbols=str(SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS),
+        first_2k_geometry_sleeve_min_rank_score=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE),
+        first_2k_geometry_sleeve_max_below_breakout_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT),
+        first_2k_geometry_sleeve_min_close_to_high_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT),
+        first_2k_geometry_sleeve_max_risk_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT),
+        first_2k_geometry_sleeve_max_entries_per_scan=int(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN),
     )
 
 def _p323_value(candidate: dict | None, *keys):
@@ -49412,6 +49447,13 @@ def diagnostics_swing_selection_contract_module_status(limit: int = 10):
             "min_return_20d_pct": float(config.min_return_20d_pct),
             "allow_mean_reversion": bool(config.allow_mean_reversion),
             "max_entries_per_scan": int(config.max_entries_per_scan),
+            "first_2k_geometry_sleeve_enabled": bool(config.first_2k_geometry_sleeve_enabled),
+            "first_2k_geometry_sleeve_symbols": str(config.first_2k_geometry_sleeve_symbols),
+            "first_2k_geometry_sleeve_min_rank_score": float(config.first_2k_geometry_sleeve_min_rank_score),
+            "first_2k_geometry_sleeve_max_below_breakout_pct": float(config.first_2k_geometry_sleeve_max_below_breakout_pct),
+            "first_2k_geometry_sleeve_min_close_to_high_pct": float(config.first_2k_geometry_sleeve_min_close_to_high_pct),
+            "first_2k_geometry_sleeve_max_risk_pct": float(config.first_2k_geometry_sleeve_max_risk_pct),
+            "first_2k_geometry_sleeve_max_entries_per_scan": int(config.first_2k_geometry_sleeve_max_entries_per_scan),
         },
         "recommended_action": (
             "module_split_parity_ok"
@@ -49582,6 +49624,17 @@ def diagnostics_swing_runtime_config():
                 "min_target_path_score": _cfg_float("SWING_LOSS_DAY_RECOVERY_SLOT_MIN_TARGET_PATH_SCORE", 0.0),
                 "max_risk_per_share_pct": _cfg_float("SWING_LOSS_DAY_RECOVERY_SLOT_MAX_RISK_PER_SHARE_PCT", 0.0),
                 "purpose": "allows_one_high_quality_candidate_after_loss_day_without_disabling_throttle",
+            },
+            "first_2k_geometry_sleeve": {
+                "enabled": _cfg_bool("SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED"),
+                "can_block_entries": False,
+                "symbols": _cfg_str("SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS"),
+                "min_rank_score": _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE", 0.0),
+                "max_below_breakout_pct": _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT", 0.0),
+                "min_close_to_high_pct": _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT", 0.0),
+                "max_risk_pct": _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT", 0.0),
+                "max_entries_per_scan": _cfg_int("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN", 0),
+                "purpose": "single controlled near-breakout sleeve for first-2k/index style winners; replaces broad star-alignment loosening",
             },
             "dollar_risk_selection_truth": {
                 "enabled": _cfg_bool("SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED"),
