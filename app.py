@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-410-hotfix-geometry-percent-normalization-fix"
+PATCH_VERSION = "patch-410-hotfix-2-percent-field-no-double-scale-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -47978,24 +47978,11 @@ def _p409_rank_relaxation_replay(limit: int = 25) -> dict:
 def _p410_geometry_value_pct(row: dict, key: str) -> float:
     value = _safe_float((row or {}).get(key), 0.0)
 
-    # Most current candidate diagnostics already store these as percent-style values:
-    # close_to_high_pct=99.3, breakout_distance_pct=-0.57, risk_per_share_pct=1.9.
-    # Older snapshots sometimes stored ratios: close_to_high_pct=0.993, risk=0.019.
-    if key == "close_to_high_pct":
-        if 0 < value <= 1.5:
-            return value * 100.0
-        return value
-
-    if key in {"risk_per_share_pct", "return_20d_pct"}:
-        if -1.5 <= value <= 1.5:
-            return value * 100.0
-        return value
-
-    if key == "breakout_distance_pct":
-        # Values like -0.57 mean -0.57%, not -57%. Only tiny ratio-style values need scaling.
-        if -0.20 <= value <= 0.20:
-            return value * 100.0
-        return value
+    # Current candidate rows already store breakout distance, risk, and returns as
+    # percent-style values. Do not infer-scale those fields or valid near-misses
+    # such as IWM -0.149% become bogus -14.9%.
+    if key == "close_to_high_pct" and 0 < value <= 1.5:
+        return value * 100.0
 
     return value
 
