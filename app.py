@@ -2740,7 +2740,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-416-post-fill-risk-recheck-evidence-filled-position-risk-math-truth"
+PATCH_VERSION = "patch-416-hotfix-legacy-risk-recheck-metadata-backfill-second-path-risk-evidence-capture"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8614,6 +8614,106 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
         "items": rows,
     }
 
+def _p416_decision_meta(row: dict | None) -> dict:
+    row = dict(row or {})
+    details = row.get("details") if isinstance(row.get("details"), dict) else {}
+
+    if isinstance(details.get("meta"), dict):
+        return dict(details.get("meta") or {})
+
+    if isinstance(row.get("meta"), dict):
+        return dict(row.get("meta") or {})
+
+    if isinstance(details.get("post_fill_risk_recheck"), dict):
+        return {"post_fill_risk_recheck": dict(details.get("post_fill_risk_recheck") or {})}
+
+    return dict(details or {})
+
+
+def _p416_normalize_risk_recheck_evidence(row: dict | None) -> dict:
+    row = dict(row or {})
+    meta = _p416_decision_meta(row)
+    evidence = (
+        dict(meta.get("post_fill_risk_recheck") or {})
+        if isinstance(meta.get("post_fill_risk_recheck"), dict)
+        else dict(meta or {})
+    )
+
+    symbol = str(row.get("symbol") or evidence.get("symbol") or "").strip().upper()
+    action = str(row.get("action") or "")
+    reason = str(row.get("reason") or evidence.get("reason") or "")
+
+    configured_risk = evidence.get("configured_risk_dollars")
+    if configured_risk is None:
+        configured_risk = evidence.get("risk_dollars")
+    try:
+        configured_risk = float(configured_risk)
+    except Exception:
+        configured_risk = None
+
+    risk_threshold = evidence.get("risk_threshold_dollars")
+    try:
+        risk_threshold = float(risk_threshold)
+    except Exception:
+        risk_threshold = None
+
+    if risk_threshold is None and configured_risk is not None:
+        try:
+            risk_threshold = round(configured_risk * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT), 0.0)), 4)
+        except Exception:
+            risk_threshold = configured_risk
+
+    actual_risk = evidence.get("actual_risk_dollars")
+    try:
+        actual_risk = float(actual_risk)
+    except Exception:
+        actual_risk = None
+
+    decision = str(evidence.get("decision") or "").strip().lower()
+    if not decision:
+        if reason == "risk_exceeded_after_fill" or action == "risk_recheck":
+            decision = "exit"
+        elif action == "risk_recheck_hold":
+            decision = "hold"
+
+    excess_risk = evidence.get("excess_risk_dollars")
+    try:
+        excess_risk = float(excess_risk)
+    except Exception:
+        excess_risk = None
+    if excess_risk is None and actual_risk is not None and risk_threshold is not None:
+        excess_risk = round(actual_risk - risk_threshold, 4)
+
+    return {
+        "symbol": symbol,
+        "action": action,
+        "reason": reason,
+        "decision": decision or None,
+        "entry_price": evidence.get("entry_price"),
+        "stop_price": evidence.get("stop_price"),
+        "risk_per_share": evidence.get("risk_per_share"),
+        "filled_qty_used": evidence.get("filled_qty_used"),
+        "broker_qty_used": evidence.get("broker_qty_used"),
+        "actual_risk_dollars": actual_risk,
+        "configured_risk_dollars": configured_risk,
+        "risk_threshold_dollars": risk_threshold,
+        "excess_risk_dollars": excess_risk,
+        "order_id": evidence.get("order_id"),
+        "close_order_id": (
+            (evidence.get("close_out") or {}).get("order_id")
+            if isinstance(evidence.get("close_out"), dict)
+            else None
+        ),
+        "raw_evidence": evidence,
+        "metadata_source": (
+            "details.meta.post_fill_risk_recheck"
+            if isinstance(meta.get("post_fill_risk_recheck"), dict)
+            else "details.meta_legacy"
+            if meta
+            else "none"
+        ),
+    }
+
 def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
     limit = max(1, min(int(limit or 20), 50))
     rows = []
@@ -8632,14 +8732,13 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
             if action not in {"risk_recheck", "risk_recheck_hold"} and reason != "risk_exceeded_after_fill":
                 continue
 
-            meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
-            evidence = meta.get("post_fill_risk_recheck") if isinstance(meta.get("post_fill_risk_recheck"), dict) else dict(meta or {})
+            evidence = _p416_normalize_risk_recheck_evidence(row)
 
             rows.append({
                 "ts_utc": row.get("ts_utc"),
-                "symbol": str(row.get("symbol") or evidence.get("symbol") or "").strip().upper(),
-                "action": action,
-                "reason": reason,
+                "symbol": evidence.get("symbol"),
+                "action": evidence.get("action"),
+                "reason": evidence.get("reason"),
                 "decision": evidence.get("decision"),
                 "entry_price": evidence.get("entry_price"),
                 "stop_price": evidence.get("stop_price"),
@@ -8651,8 +8750,9 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
                 "risk_threshold_dollars": evidence.get("risk_threshold_dollars"),
                 "excess_risk_dollars": evidence.get("excess_risk_dollars"),
                 "order_id": evidence.get("order_id"),
-                "close_order_id": (evidence.get("close_out") or {}).get("order_id") if isinstance(evidence.get("close_out"), dict) else None,
-                "raw_evidence": evidence,
+                "close_order_id": evidence.get("close_order_id"),
+                "metadata_source": evidence.get("metadata_source"),
+                "raw_evidence": evidence.get("raw_evidence"),
             })
 
         plan_rows = []
@@ -8701,7 +8801,7 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
                 if exit_rows
                 else "post_fill_risk_math_clean"
                 if hold_rows or plan_rows
-                else "no_post_fill_risk_recheck_evidence_yet"
+                else "no_post_fill_risk_recheck_decisions_yet"
             ),
         }
     except Exception as exc:
@@ -50526,6 +50626,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "none"
     )
     exit_retry_readiness = _p390_exit_submit_retry_readiness(limit=limit)
+    post_fill_risk_recheck_evidence = _p416_post_fill_risk_recheck_evidence(limit=limit)
     active_exit_truth = _p364_active_exit_protection_truth()
     active_exit_summary = dict(active_exit_truth.get("summary") or {})
     heartbeat_giveback_symbols = list(hb.get("giveback_exit_due_symbols") or [])
@@ -50542,7 +50643,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "heartbeat": hb,
         "heartbeat_age_sec": age_sec,
         "exit_submit_retry_readiness": exit_retry_readiness,
-        "post_fill_risk_recheck_evidence": _p416_post_fill_risk_recheck_evidence(limit=limit),
+        "post_fill_risk_recheck_evidence": post_fill_risk_recheck_evidence,
         "giveback_due_truth_sync": {
             "heartbeat_giveback_exit_due_count": hb.get("giveback_exit_due_count"),
             "heartbeat_giveback_exit_due_symbols": heartbeat_giveback_symbols,
