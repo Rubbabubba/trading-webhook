@@ -1784,6 +1784,42 @@ SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
     "SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT",
     default=0.12,
 )
+SWING_LATE_DAY_ENTRY_QUALITY_TIGHTEN_ENABLED = env_bool_any(
+    "SWING_LATE_DAY_ENTRY_QUALITY_TIGHTEN_ENABLED",
+    default="true",
+)
+SWING_LATE_DAY_ENTRY_QUALITY_START_NY = getenv_any(
+    "SWING_LATE_DAY_ENTRY_QUALITY_START_NY",
+    default="15:00",
+)
+SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE",
+    default=112.0,
+)
+SWING_LATE_DAY_ENTRY_MIN_TARGET_PATH_SCORE = getenv_float_any(
+    "SWING_LATE_DAY_ENTRY_MIN_TARGET_PATH_SCORE",
+    default=70.0,
+)
+SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY = env_bool_any(
+    "SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY",
+    default="true",
+)
+SWING_WINNER_DAY_ADD_SLOT_ENABLED = env_bool_any(
+    "SWING_WINNER_DAY_ADD_SLOT_ENABLED",
+    default="true",
+)
+SWING_WINNER_DAY_ADD_SLOT_MIN_PNL = getenv_float_any(
+    "SWING_WINNER_DAY_ADD_SLOT_MIN_PNL",
+    default=25.0,
+)
+SWING_WINNER_DAY_ADD_SLOT_BELOW_LOW_TARGET_ONLY = env_bool_any(
+    "SWING_WINNER_DAY_ADD_SLOT_BELOW_LOW_TARGET_ONLY",
+    default="true",
+)
+SWING_WINNER_DAY_ADD_SLOT_MAX_EXTRA = getenv_int_any(
+    "SWING_WINNER_DAY_ADD_SLOT_MAX_EXTRA",
+    default=1,
+)
 SWING_PRODUCTION_RISK_CALIBRATION_ENABLED = env_bool_any(
     "SWING_PRODUCTION_RISK_CALIBRATION_ENABLED",
     default=True,
@@ -2676,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-402-hotfix-swing-scan-stage-checkpoints-fetch-timeout-failure-truth"
+PATCH_VERSION = "patch-403-late-day-entry-quality-tightening-winner-day-add-slot-calibration"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -20737,6 +20773,107 @@ def _p365_apply_stall_churn_reentry_cooldown(candidate: dict | None) -> dict:
 
     return c
 
+def _p403_late_day_entry_window_active(now_dt: datetime | None = None) -> bool:
+    if not bool(SWING_LATE_DAY_ENTRY_QUALITY_TIGHTEN_ENABLED):
+        return False
+    try:
+        dt = now_dt.astimezone(NY_TZ) if now_dt else now_ny()
+        raw = str(SWING_LATE_DAY_ENTRY_QUALITY_START_NY or "15:00").strip()
+        hh, mm = raw.split(":", 1)
+        start = dt.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        return bool(dt >= start)
+    except Exception:
+        return False
+
+
+def _p403_late_day_entry_quality(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    active = _p403_late_day_entry_window_active()
+    rank_score = _safe_float(c.get("rank_score"), 0.0)
+    target_path = dict(c.get("target_path_profit") or {})
+    target_path_score = _safe_float(target_path.get("score") or c.get("target_path_score"), 0.0)
+    entry_type = str(c.get("entry_type") or "").strip()
+    contract = dict(c.get("swing_production_contract") or {})
+    checks = dict(contract.get("checks") or {})
+
+    blockers = []
+    if active:
+        if rank_score < float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE):
+            blockers.append("late_day_rank_below_min")
+        if target_path_score < float(SWING_LATE_DAY_ENTRY_MIN_TARGET_PATH_SCORE):
+            blockers.append("late_day_target_path_below_min")
+        if (
+            bool(SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY)
+            and not bool(checks.get("risk_calibrated_starter_ok"))
+            and entry_type != "swing_production_risk_calibrated_starter"
+        ):
+            blockers.append("late_day_not_risk_calibrated_starter")
+
+    return {
+        "enabled": bool(SWING_LATE_DAY_ENTRY_QUALITY_TIGHTEN_ENABLED),
+        "active": bool(active),
+        "start_ny": str(SWING_LATE_DAY_ENTRY_QUALITY_START_NY),
+        "rank_score": rank_score,
+        "min_rank_score": float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE),
+        "target_path_score": target_path_score,
+        "min_target_path_score": float(SWING_LATE_DAY_ENTRY_MIN_TARGET_PATH_SCORE),
+        "risk_calibrated_only": bool(SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY),
+        "entry_type": entry_type,
+        "allowed": not blockers,
+        "blockers": blockers,
+    }
+
+
+def _p403_apply_late_day_entry_quality(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    truth = _p403_late_day_entry_quality(c)
+    c["late_day_entry_quality"] = truth
+    if bool(truth.get("active")) and not bool(truth.get("allowed")):
+        c["eligible"] = False
+        reasons = list(c.get("rejection_reasons") or [])
+        reasons.append("late_day_entry_quality_tightening")
+        reasons.extend(list(truth.get("blockers") or []))
+        c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+        contract = dict(c.get("swing_production_contract") or {})
+        contract["approved"] = False
+        contract["late_day_entry_quality"] = truth
+        c["swing_production_contract"] = contract
+    return c
+
+
+def _p403_winner_day_add_slot_adjustment(
+    base_max_new_entries: int,
+    daily_goal_progress: dict | None = None,
+) -> dict:
+    goal = dict(daily_goal_progress or {})
+    primary_pnl = _safe_float(goal.get("primary_daily_pnl"), 0.0)
+    target_low = _safe_float(goal.get("target_low"), 100.0)
+    below_low = primary_pnl < target_low
+
+    blockers = []
+    if not bool(SWING_WINNER_DAY_ADD_SLOT_ENABLED):
+        blockers.append("disabled")
+    if primary_pnl < float(SWING_WINNER_DAY_ADD_SLOT_MIN_PNL):
+        blockers.append("daily_pnl_below_winner_day_min")
+    if bool(SWING_WINNER_DAY_ADD_SLOT_BELOW_LOW_TARGET_ONLY) and not below_low:
+        blockers.append("daily_goal_low_already_hit")
+
+    extra = 0 if blockers else max(0, int(SWING_WINNER_DAY_ADD_SLOT_MAX_EXTRA or 0))
+    adjusted = max(0, int(base_max_new_entries or 0)) + int(extra)
+
+    return {
+        "enabled": bool(SWING_WINNER_DAY_ADD_SLOT_ENABLED),
+        "applied": bool(extra > 0),
+        "base_max_new_entries": int(base_max_new_entries or 0),
+        "effective_max_new_entries": int(adjusted),
+        "extra_slots": int(extra),
+        "primary_daily_pnl": round(primary_pnl, 4),
+        "target_low": round(target_low, 4),
+        "min_pnl": float(SWING_WINNER_DAY_ADD_SLOT_MIN_PNL),
+        "below_low_target_only": bool(SWING_WINNER_DAY_ADD_SLOT_BELOW_LOW_TARGET_ONLY),
+        "blockers": blockers,
+    }
+
 def _p323_swing_production_contract(candidate: dict | None, global_block_reasons: list | None = None) -> dict:
     candidate = _p365_apply_stall_churn_reentry_cooldown(candidate)
     return swing_contract_production_contract(
@@ -20774,12 +20911,14 @@ def _p323_enforce_production_contract_selection(
         global_block_reasons=global_block_reasons,
         sizing_truth_fn=_p300_executable_sizing_truth,
     )
-    return [_p385_apply_dollar_risk_add_slot_contract(row) for row in enforced]
+    enforced = [_p385_apply_dollar_risk_add_slot_contract(row) for row in enforced]
+    return [_p403_apply_late_day_entry_quality(row) for row in enforced]
 
 def _p323_contract_approved_rows(rows: list | None) -> list[dict]:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     rows = _p377_filter_rows_for_breakout_follow_through(rows)
     rows = [_p385_apply_dollar_risk_add_slot_contract(row) for row in rows]
+    rows = [_p403_apply_late_day_entry_quality(row) for row in rows]
     return swing_contract_approved_rows(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -20793,6 +20932,7 @@ def _p326_finalize_production_contract_selection(
 ) -> dict:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     rows = _p377_filter_rows_for_breakout_follow_through(rows)
+    rows = [_p403_apply_late_day_entry_quality(row) for row in rows]
     finalized = swing_contract_finalize(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -23931,7 +24071,23 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         else:
             max_new_entries = min(max_new_entries, int(loss_day_throttle.get("max_new_entries_after_trigger") or 0))
 
-    max_new_entries = min(max_new_entries, remaining_today)
+        max_new_entries = min(max_new_entries, remaining_today)
+
+    winner_day_add_slot = _p403_winner_day_add_slot_adjustment(
+        max_new_entries,
+        daily_goal_progress=daily_goal_progress,
+    )
+    if bool(winner_day_add_slot.get("applied")):
+        max_new_entries = min(
+            int(winner_day_add_slot.get("effective_max_new_entries") or max_new_entries),
+            int(candidate_slots_available()),
+            int(SCANNER_MAX_ENTRIES_PER_SCAN),
+            int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN) + int(winner_day_add_slot.get("extra_slots") or 0),
+            int(remaining_today) + int(winner_day_add_slot.get("extra_slots") or 0),
+        )
+        winner_day_add_slot["effective_max_new_entries_after_caps"] = int(max_new_entries)
+    else:
+        winner_day_add_slot["effective_max_new_entries_after_caps"] = int(max_new_entries)
 
     risk_adjusted_capacity = _p385_risk_adjusted_capacity_truth()
     if bool(risk_adjusted_capacity.get("enabled")):
@@ -24102,6 +24258,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'runtime_symbols_excluded_count': int(runtime_slim.get("excluded_count") or 0),
         'candidates': LAST_SWING_CANDIDATES.copy(),
         'selected': [c.get('symbol') for c in selected],
+        'late_day_entry_quality': {
+            'enabled': bool(SWING_LATE_DAY_ENTRY_QUALITY_TIGHTEN_ENABLED),
+            'active': bool(_p403_late_day_entry_window_active()),
+            'blocked_symbols': [
+                c.get('symbol') for c in candidates
+                if 'late_day_entry_quality_tightening' in list(c.get('rejection_reasons') or [])
+            ][:20],
+        },
+        'winner_day_add_slot': dict(winner_day_add_slot),
         'direct_submit_cleanup_status': _p320_swing_dead_path_phase1_status(),
         'executable_near_miss_candidates': [dict(c) for c in executable_near_miss_candidates[:5]],
         'adaptive_capacity_candidates': [dict(c) for c in adaptive_capacity_candidates[:5]],
@@ -24162,6 +24327,22 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'approved_count': len(production_approved),
             'approved_symbols': [c.get('symbol') for c in production_approved],
             'selected_symbols': [c.get('symbol') for c in selected],
+            'late_day_entry_quality': {
+            'enabled': bool(SWING_LATE_DAY_ENTRY_QUALITY_TIGHTEN_ENABLED),
+            'active': bool(_p403_late_day_entry_window_active()),
+            'start_ny': str(SWING_LATE_DAY_ENTRY_QUALITY_START_NY),
+            'min_rank_score': float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE),
+            'min_target_path_score': float(SWING_LATE_DAY_ENTRY_MIN_TARGET_PATH_SCORE),
+            'blocked_count': len([
+                c for c in candidates
+                if 'late_day_entry_quality_tightening' in list(c.get('rejection_reasons') or [])
+            ]),
+            'blocked_symbols': [
+                c.get('symbol') for c in candidates
+                if 'late_day_entry_quality_tightening' in list(c.get('rejection_reasons') or [])
+            ][:20],
+        },
+        'winner_day_add_slot': dict(winner_day_add_slot),
             'max_entries_per_scan': int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
             'min_rank_score': float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
             'max_risk_per_share_pct': float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
