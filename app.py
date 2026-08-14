@@ -2740,7 +2740,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-414-scheduled-scanner-eligible-contract-finalizer-sync"
+PATCH_VERSION = "patch-415-submitted-then-active-selection-truth-preservation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -15006,6 +15006,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif rate_limited_symbols or queued_rate_limit_symbols:
         path_status = "rate_limited_retry_pending"
         recommended_action = "wait_for_retry_queue_consumption"
+    elif actual_submit_side_effect_symbols and set(selected_symbols).issubset(set(actual_submit_side_effect_symbols)):
+        path_status = "selected_symbols_have_actual_submit_side_effect"
+        recommended_action = "monitor_active_positions"
     elif eligible_new_entry_symbols and not selected_symbols:
         path_status = "eligible_new_entry_not_selected"
         recommended_action = "scheduled_scanner_should_promote_current_eligible_contract_rows"
@@ -15014,9 +15017,6 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         recommended_action = "inspect_heavy_trace"
     elif actual_submit_side_effect_symbols:
         path_status = "selected_symbols_have_actual_submit_side_effect"
-        recommended_action = "monitor_active_positions"
-    elif active_symbols:
-        path_status = "captured_candidate_monitor_existing_position"
         recommended_action = "monitor_active_positions"
     else:
         path_status = "no_selected_candidate"
@@ -35364,16 +35364,31 @@ def _p298_selected_submission_truth_light() -> dict:
     p330_filled_plan_backfill_symbols = _p330_filled_plan_execution_backfill_symbols()
     selected_symbols = _dedupe_keep_order(list(selected_symbols or []) + p330_filled_plan_backfill_symbols)
 
-    open_symbols = set(_p404_active_position_symbols_light())
-    raw_selected_symbols_before_echo_suppression = list(selected_symbols)
-    open_position_echo_symbols = [sym for sym in selected_symbols if sym in open_symbols]
-    selected_symbols = [sym for sym in selected_symbols if sym not in open_symbols]
-
     submit_rows = {
         str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
         for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or [])
         if str((row or {}).get("symbol") or "").strip()
     }
+
+    open_symbols = set(_p404_active_position_symbols_light())
+    raw_selected_symbols_before_echo_suppression = list(selected_symbols)
+    submitted_then_active_symbols = [
+        sym for sym in selected_symbols
+        if sym in open_symbols
+        and sym in submit_rows
+        and bool((submit_rows.get(sym) or {}).get("actual_submit_side_effect"))
+    ]
+    submitted_then_active_set = set(submitted_then_active_symbols)
+    open_position_echo_symbols = [
+        sym for sym in selected_symbols
+        if sym in open_symbols
+        and sym not in submitted_then_active_set
+    ]
+    open_position_echo_set = set(open_position_echo_symbols)
+    selected_symbols = [
+        sym for sym in selected_symbols
+        if sym not in open_position_echo_set
+    ]
 
     rows = []
     for sym in selected_symbols:
@@ -35475,6 +35490,12 @@ def _p298_selected_submission_truth_light() -> dict:
 
         rows.append({
             "symbol": sym,
+            "submitted_then_active": bool(sym in submitted_then_active_set),
+            "selection_truth_status": (
+                "submitted_then_active"
+                if sym in submitted_then_active_set
+                else "selected_pending_submit_truth"
+            ),
             "p330_evidence_source": (
                 "filled_active_plan_backfill"
                 if sym in p330_filled_plan_backfill_symbols and not submit_row
@@ -35536,8 +35557,18 @@ def _p298_selected_submission_truth_light() -> dict:
     out["open_position_echo_suppression"] = {
         "applied": bool(open_position_echo_symbols),
         "raw_selected_symbols_before_echo_suppression": raw_selected_symbols_before_echo_suppression,
-        "open_position_echo_symbols": open_position_echo_symbols,
+        "stale_open_position_echo_symbols": open_position_echo_symbols,
+        "submitted_then_active_symbols_preserved": submitted_then_active_symbols,
         "selected_symbols_after_echo_suppression": selected_symbols,
+    }
+    out["submitted_then_active_truth"] = {
+        "count": len(submitted_then_active_symbols),
+        "symbols": submitted_then_active_symbols,
+        "status": (
+            "submitted_then_active_present"
+            if submitted_then_active_symbols
+            else "none"
+        ),
     }
     out["eligible_new_entry_truth"] = {
         "count": len(eligible_new_entry_symbols),
@@ -35554,7 +35585,9 @@ def _p298_selected_submission_truth_light() -> dict:
             else "no_eligible_new_entry"
         ),
     }
-    if eligible_new_entry_symbols and not selected_symbols:
+    if submitted_then_active_symbols:
+        out["recommended_action"] = "selected_symbols_have_actual_submit_side_effect"
+    elif eligible_new_entry_symbols and not selected_symbols:
         out["recommended_action"] = "scheduled_scanner_should_promote_current_eligible_contract_rows"
     return out
 
