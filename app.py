@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-403-late-day-entry-quality-tightening-winner-day-add-slot-calibration"
+PATCH_VERSION = "patch-404-production-contract-miss-truth-runtime-universe-coverage-open-position-scrub"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -30444,7 +30444,17 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
         if isinstance(row, dict)
     ]
 
-    reason_summary = _p277h_candidate_reason_counts(items)
+    open_symbols = set(_p404_active_position_symbols_light())
+    new_entry_items = [
+        row for row in items
+        if str(row.get("symbol") or "").strip().upper() not in open_symbols
+    ]
+    open_position_items = [
+        row for row in items
+        if str(row.get("symbol") or "").strip().upper() in open_symbols
+    ]
+
+    reason_summary = _p277h_candidate_reason_counts(new_entry_items)
     selected_symbols = [
         str(sym or "").strip().upper()
         for sym in list(payload.get("selected_symbols") or [])
@@ -30485,6 +30495,13 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
         "status": status,
         "recommended_action": recommended_action,
         "candidate_count": len(items),
+        "new_entry_candidate_count": len(new_entry_items),
+        "open_position_candidate_count": len(open_position_items),
+        "open_position_candidate_symbols": [
+            str(row.get("symbol") or "").strip().upper()
+            for row in open_position_items[:15]
+            if str(row.get("symbol") or "").strip()
+        ],
         "eligible_count": int(payload.get("eligible_count") or 0),
         "selected_total": int(payload.get("selected_total") or 0),
         "selected_symbols": selected_symbols,
@@ -30503,12 +30520,29 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
             {
                 "symbol": str(row.get("symbol") or "").strip().upper(),
                 "eligible": bool(row.get("eligible")),
+                "open_position": str(row.get("symbol") or "").strip().upper() in open_symbols,
+                "candidate_context": (
+                    "open_position_not_new_entry"
+                    if str(row.get("symbol") or "").strip().upper() in open_symbols
+                    else "new_entry_candidate"
+                ),
                 "regime_mode": row.get("regime_mode"),
                 "rank_score": row.get("rank_score"),
                 "selection_quality_score": row.get("selection_quality_score"),
                 "rejection_reasons": list(row.get("rejection_reasons") or []),
             }
             for row in items[:15]
+        ],
+        "top_new_entry_candidates": [
+            {
+                "symbol": str(row.get("symbol") or "").strip().upper(),
+                "eligible": bool(row.get("eligible")),
+                "regime_mode": row.get("regime_mode"),
+                "rank_score": row.get("rank_score"),
+                "selection_quality_score": row.get("selection_quality_score"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+            }
+            for row in new_entry_items[:15]
         ],
     }
 
@@ -34607,6 +34641,130 @@ def _p325_contract_miss_row(candidate: dict | None) -> dict:
         "sizing_block_reason": (contract.get("executable_sizing_truth") or {}).get("sizing_block_reason"),
     }
 
+def _p404_active_position_symbols_light() -> list[str]:
+    symbols = []
+    try:
+        snap = read_positions_snapshot()
+        for row in list((snap or {}).get("positions") or (snap or {}).get("items") or []):
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "").strip().upper()
+            qty = _safe_float(row.get("qty") or row.get("quantity"), 0.0)
+            if sym and abs(qty) > 0:
+                symbols.append(sym)
+    except Exception:
+        pass
+
+    for sym, plan in (TRADE_PLAN or {}).items():
+        if isinstance(plan, dict) and bool(plan.get("active")):
+            norm = str(sym or plan.get("symbol") or "").strip().upper()
+            if norm:
+                symbols.append(norm)
+
+    return _dedupe_keep_order(symbols)
+
+
+def _p404_current_candidate_rows_for_miss(summary: dict | None = None) -> tuple[list[dict], str]:
+    rows = [dict(r or {}) for r in list(LAST_SWING_CANDIDATES or []) if isinstance(r, dict)]
+    if rows:
+        return rows, "last_swing_candidates_current_runtime"
+
+    if CANDIDATE_HISTORY:
+        hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
+        rows = [
+            dict(r or {})
+            for r in list(hist.get("candidates") or hist.get("items") or [])
+            if isinstance(r, dict)
+        ]
+        if rows:
+            return rows, "candidate_history_latest"
+
+    summ = dict(summary or {})
+    rows = [
+        dict(r or {})
+        for r in list(summ.get("top_candidates") or summ.get("items") or [])
+        if isinstance(r, dict)
+    ]
+    if rows:
+        return rows, "scan_summary_candidates"
+
+    return [], "no_candidate_rows_available"
+
+
+def _p404_selected_symbol_list(selected: list | None, summary: dict | None = None) -> list[str]:
+    out = []
+    for row in list(selected or []):
+        if isinstance(row, dict):
+            sym = str(row.get("symbol") or "").strip().upper()
+        else:
+            sym = str(row or "").strip().upper()
+        if sym:
+            out.append(sym)
+
+    if not out:
+        summ = dict(summary or {})
+        out.extend([
+            str(sym or "").strip().upper()
+            for sym in list(summ.get("selected_symbols") or [])
+            if str(sym or "").strip()
+        ])
+
+    return _dedupe_keep_order(out)
+
+
+def _p404_runtime_universe_coverage(latest_scan: dict | None = None, summary: dict | None = None) -> dict:
+    latest_scan = dict(latest_scan or {})
+    summary = dict(summary or {})
+
+    runtime_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(universe_symbols() or [])
+        if str(sym or "").strip()
+    ])
+
+    scanned_symbols = []
+    for source in (
+        summary.get("symbols"),
+        summary.get("scanned_symbols"),
+        latest_scan.get("symbols"),
+        (latest_scan.get("summary") or {}).get("symbols") if isinstance(latest_scan.get("summary"), dict) else [],
+    ):
+        scanned_symbols = _dedupe_keep_order([
+            str(sym or "").strip().upper()
+            for sym in list(source or [])
+            if str(sym or "").strip()
+        ])
+        if scanned_symbols:
+            break
+
+    if not scanned_symbols and CANDIDATE_HISTORY:
+        hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
+        scanned_symbols = _dedupe_keep_order([
+            str(sym or "").strip().upper()
+            for sym in list(hist.get("symbols") or [])
+            if str(sym or "").strip()
+        ])
+
+    if not scanned_symbols and LAST_SWING_CANDIDATES:
+        scanned_symbols = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(LAST_SWING_CANDIDATES or [])
+            if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
+        ])
+
+    runtime_set = set(runtime_symbols)
+    scanned_set = set(scanned_symbols)
+
+    return {
+        "runtime_symbol_count": len(runtime_symbols),
+        "scanned_symbol_count": len(scanned_symbols),
+        "coverage_pct": round((len(scanned_set & runtime_set) / max(1, len(runtime_set))) * 100.0, 2),
+        "matches_runtime": bool(runtime_symbols and scanned_symbols == runtime_symbols),
+        "missing_runtime_symbols": [sym for sym in runtime_symbols if sym not in scanned_set],
+        "extra_scanned_symbols": [sym for sym in scanned_symbols if sym not in runtime_set],
+        "scanned_symbols": scanned_symbols,
+        "runtime_symbols": runtime_symbols,
+    }
 
 def _p325_build_production_contract_miss_snapshot(
     rows: list | None,
@@ -34614,16 +34772,26 @@ def _p325_build_production_contract_miss_snapshot(
     limit: int = 50,
 ) -> dict:
     lim = max(1, min(int(limit or 50), 200))
+    open_symbols = set(_p404_active_position_symbols_light())
     checked = []
+
     for row in list(rows or []):
         if not isinstance(row, dict):
             continue
         miss_row = _p325_contract_miss_row(row)
-        if miss_row.get("symbol"):
-            checked.append(miss_row)
+        sym = str(miss_row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        miss_row["open_position"] = sym in open_symbols
+        if miss_row["open_position"]:
+            miss_row["candidate_context"] = "open_position_not_new_entry"
+        else:
+            miss_row["candidate_context"] = "new_entry_candidate"
+        checked.append(miss_row)
 
-    approved = [r for r in checked if bool(r.get("approved"))]
-    missed = [r for r in checked if not bool(r.get("approved"))]
+    approved = [r for r in checked if bool(r.get("approved")) and not bool(r.get("open_position"))]
+    missed = [r for r in checked if not bool(r.get("approved")) and not bool(r.get("open_position"))]
+    open_position_rows = [r for r in checked if bool(r.get("open_position"))]
 
     reason_counts = Counter()
     for row in missed:
@@ -34648,18 +34816,21 @@ def _p325_build_production_contract_miss_snapshot(
     approved.sort(key=sort_key, reverse=True)
     near_approved.sort(key=sort_key, reverse=True)
     missed.sort(key=sort_key, reverse=True)
+    open_position_rows.sort(key=sort_key, reverse=True)
+
+    selected_symbols = _p404_selected_symbol_list(selected)
 
     return {
         "rows_checked": len(checked),
+        "new_entry_rows_checked": len([r for r in checked if not bool(r.get("open_position"))]),
+        "open_position_rows_checked": len(open_position_rows),
         "approved_count": len(approved),
         "missed_count": len(missed),
         "near_approved_count": len(near_approved),
+        "open_position_scrubbed_count": len(open_position_rows),
+        "open_position_scrubbed_symbols": [r.get("symbol") for r in open_position_rows[:lim]],
         "top_reason_counts": dict(reason_counts.most_common(12)),
-        "selected_symbols": [
-            str((r or {}).get("symbol") or "").strip().upper()
-            for r in list(selected or [])
-            if str((r or {}).get("symbol") or "").strip()
-        ],
+        "selected_symbols": selected_symbols,
         "thresholds": {
             "min_rank_score": float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
             "min_avg_dollar_volume": float(SWING_PRODUCTION_RESET_MIN_AVG_DOLLAR_VOLUME),
@@ -34689,6 +34860,7 @@ def _p325_build_production_contract_miss_snapshot(
         "approved": approved[:lim],
         "near_approved": near_approved[:lim],
         "missed": missed[:lim],
+        "open_position_rows": open_position_rows[:lim],
     }
 
 def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
@@ -34698,7 +34870,15 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
     snapshot = dict(summary.get("production_contract_miss_reasons") or {})
     source = "scan_summary_full_candidate_snapshot"
 
-    if not snapshot:
+    if int(snapshot.get("rows_checked") or 0) <= 0:
+        rows, source = _p404_current_candidate_rows_for_miss(summary=summary)
+        snapshot = _p325_build_production_contract_miss_snapshot(
+            rows,
+            selected=summary.get("selected_symbols") or [],
+            limit=lim,
+        )
+
+    if int(snapshot.get("rows_checked") or 0) <= 0:
         rows = []
         source = "last_swing_candidates_fallback"
         if LAST_SWING_CANDIDATES:
@@ -34708,14 +34888,20 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
             source = "candidate_history_fallback"
             rows = [
                 dict(r or {})
-                for r in list(hist.get("candidates") or [])
+                for r in list(hist.get("candidates") or hist.get("items") or [])
                 if isinstance(r, dict)
             ]
-        snapshot = _p325_build_production_contract_miss_snapshot(rows, selected=[], limit=lim)
+        snapshot = _p325_build_production_contract_miss_snapshot(
+            rows,
+            selected=summary.get("selected_symbols") or [],
+            limit=lim,
+        )
 
     approved = list(snapshot.get("approved") or [])[:lim]
     near_approved = list(snapshot.get("near_approved") or [])[:lim]
     missed = list(snapshot.get("missed") or [])[:lim]
+    open_position_rows = list(snapshot.get("open_position_rows") or [])[:lim]
+    coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
 
     return {
         "ok": True,
@@ -34731,24 +34917,35 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
             "blocked": latest_scan.get("blocked"),
             "duration_ms": latest_scan.get("duration_ms"),
         },
+        "runtime_universe_coverage": coverage,
         "summary": {
             "rows_checked": int(snapshot.get("rows_checked") or 0),
+            "new_entry_rows_checked": int(snapshot.get("new_entry_rows_checked") or 0),
+            "open_position_rows_checked": int(snapshot.get("open_position_rows_checked") or 0),
             "approved_count": int(snapshot.get("approved_count") or 0),
             "near_approved_count": int(snapshot.get("near_approved_count") or 0),
             "missed_count": int(snapshot.get("missed_count") or 0),
+            "open_position_scrubbed_count": int(snapshot.get("open_position_scrubbed_count") or 0),
+            "open_position_scrubbed_symbols": list(snapshot.get("open_position_scrubbed_symbols") or []),
             "top_reason_counts": dict(snapshot.get("top_reason_counts") or {}),
             "thresholds": dict(snapshot.get("thresholds") or {}),
-            "selected_symbols": list(snapshot.get("selected_symbols") or summary.get("selected_symbols") or []),
+            "selected_symbols": _p404_selected_symbol_list(
+                snapshot.get("selected_symbols") or [],
+                summary=summary,
+            ),
             "last_successful_production_selected_symbols": list(summary.get("last_successful_production_selected_symbols") or []),
         },
         "approved": approved,
         "near_approved": near_approved,
         "missed": missed,
+        "open_position_rows": open_position_rows,
         "recommended_action": (
             "production_contract_has_approved_candidates"
             if approved
             else "review_near_approved_candidates"
             if near_approved
+            else "runtime_universe_partial_scan_review_missing_symbols"
+            if not bool(coverage.get("matches_runtime"))
             else "review_top_miss_reasons_before_relaxing_contract"
         ),
     }
@@ -47638,6 +47835,10 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         'active_scan_symbols': active_symbols,
         'current_runtime_symbols': current_runtime,
         'active_scan_matches_current_runtime': bool(current_runtime and active_symbols == current_runtime),
+        'runtime_universe_coverage': _p404_runtime_universe_coverage(
+            latest_scan=active_scan if isinstance(active_scan, dict) else {},
+            summary=active_summary,
+        ),
         'eligible_count': len(eligible_items),
         'eligible_symbols': [str((item or {}).get('symbol') or '').upper() for item in eligible_items if str((item or {}).get('symbol') or '').strip()],
         'selected_total': int(active_summary.get('selected_total') or 0),
