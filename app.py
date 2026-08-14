@@ -2740,7 +2740,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-413-eligible-new-entry-selection-sync-open-position-echo-suppression"
+PATCH_VERSION = "patch-414-scheduled-scanner-eligible-contract-finalizer-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -15006,12 +15006,12 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif rate_limited_symbols or queued_rate_limit_symbols:
         path_status = "rate_limited_retry_pending"
         recommended_action = "wait_for_retry_queue_consumption"
+    elif eligible_new_entry_symbols and not selected_symbols:
+        path_status = "eligible_new_entry_not_selected"
+        recommended_action = "scheduled_scanner_should_promote_current_eligible_contract_rows"
     elif selected_symbols:
         path_status = "selected_candidate_needs_submit_truth"
         recommended_action = "inspect_heavy_trace"
-    elif eligible_new_entry_symbols:
-        path_status = "eligible_new_entry_not_selected"
-        recommended_action = "scheduled_scanner_should_promote_current_eligible_contract_rows"
     elif actual_submit_side_effect_symbols:
         path_status = "selected_symbols_have_actual_submit_side_effect"
         recommended_action = "monitor_active_positions"
@@ -21114,6 +21114,124 @@ def _p326_finalize_production_contract_selection(
     )
     return _p385_sync_dollar_risk_add_slot_finalizer(finalized, max_new_entries=max_new_entries)
 
+def _p414_sync_selected_from_current_eligible_contract_rows(
+    finalizer: dict | None,
+    *,
+    max_new_entries: int,
+) -> dict:
+    out = dict(finalizer or {})
+    rows = [
+        dict(row or {})
+        for row in list(out.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    approved = [
+        dict(row or {})
+        for row in list(out.get("approved") or [])
+        if isinstance(row, dict)
+    ]
+    selected = [
+        dict(row or {})
+        for row in list(out.get("selected") or [])
+        if isinstance(row, dict)
+    ]
+
+    open_symbols = set(_p404_active_position_symbols_light())
+    max_total = max(0, int(max_new_entries or 0))
+
+    selected_new_entry = [
+        row for row in selected
+        if str(row.get("symbol") or "").strip().upper()
+        and str(row.get("symbol") or "").strip().upper() not in open_symbols
+    ]
+    selected_open_echo = [
+        row for row in selected
+        if str(row.get("symbol") or "").strip().upper() in open_symbols
+    ]
+
+    approved_new_entry = [
+        row for row in approved
+        if str(row.get("symbol") or "").strip().upper()
+        and str(row.get("symbol") or "").strip().upper() not in open_symbols
+        and bool((row.get("swing_production_contract") or {}).get("approved"))
+    ]
+    approved_new_entry.sort(
+        key=lambda row: (
+            float(_safe_float(row.get("rank_score"), 0.0)),
+            float(_safe_float(row.get("selection_quality_score"), 0.0)),
+            float(_safe_float((row.get("target_path_profit") or {}).get("score") or row.get("target_path_score"), 0.0)),
+        ),
+        reverse=True,
+    )
+
+    applied = False
+    reason = "selected_new_entry_already_present"
+
+    if not selected_new_entry and approved_new_entry and max_total > 0:
+        selected = approved_new_entry[:max_total]
+        applied = True
+        reason = "selected_rebuilt_from_current_approved_new_entry_rows"
+    elif selected_open_echo and not selected_new_entry and not approved_new_entry:
+        selected = []
+        applied = True
+        reason = "open_position_selection_echo_removed_no_current_approved_new_entry"
+    elif selected_open_echo and selected_new_entry:
+        selected = selected_new_entry[:max_total]
+        applied = True
+        reason = "open_position_selection_echo_removed_selected_new_entries_preserved"
+
+    selected_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in selected
+        if str(row.get("symbol") or "").strip()
+    }
+
+    rebuilt_rows = []
+    for row in rows:
+        c = dict(row or {})
+        sym = str(c.get("symbol") or "").strip().upper()
+        c["selected"] = bool(sym and sym in selected_symbols)
+        rebuilt_rows.append(c)
+
+    selected_final = []
+    by_symbol = {
+        str(row.get("symbol") or "").strip().upper(): dict(row or {})
+        for row in rebuilt_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    for row in selected:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if sym and sym in by_symbol:
+            selected_final.append(by_symbol[sym])
+        elif sym:
+            selected_final.append(dict(row or {}))
+
+    out["rows"] = rebuilt_rows
+    out["selected"] = selected_final
+    out["selected_symbols"] = [
+        str(row.get("symbol") or "").strip().upper()
+        for row in selected_final
+        if str(row.get("symbol") or "").strip()
+    ]
+    out["p414_eligible_contract_finalizer_sync"] = {
+        "applied": bool(applied),
+        "reason": reason,
+        "max_new_entries": max_total,
+        "open_position_echo_symbols": [
+            str(row.get("symbol") or "").strip().upper()
+            for row in selected_open_echo
+            if str(row.get("symbol") or "").strip()
+        ],
+        "approved_new_entry_count": len(approved_new_entry),
+        "approved_new_entry_symbols": [
+            str(row.get("symbol") or "").strip().upper()
+            for row in approved_new_entry
+            if str(row.get("symbol") or "").strip()
+        ],
+        "selected_symbols": list(out.get("selected_symbols") or []),
+    }
+    return out
+
 def _p344_sync_selected_from_approved_finalizer(
     finalizer: dict | None,
     *,
@@ -24286,6 +24404,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         production_selection_finalizer,
         max_new_entries=max_new_entries,
     )
+    production_selection_finalizer = _p414_sync_selected_from_current_eligible_contract_rows(
+        production_selection_finalizer,
+        max_new_entries=max_new_entries,
+    )
     candidates = list(production_selection_finalizer.get("rows") or [])
     production_approved = list(production_selection_finalizer.get("approved") or [])
     approved = production_approved
@@ -24440,6 +24562,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         },
         'winner_day_add_slot': dict(winner_day_add_slot),
         'direct_submit_cleanup_status': _p320_swing_dead_path_phase1_status(),
+        'eligible_contract_finalizer_sync': dict(production_selection_finalizer.get('p414_eligible_contract_finalizer_sync') or {}),
         'executable_near_miss_candidates': [dict(c) for c in executable_near_miss_candidates[:5]],
         'adaptive_capacity_candidates': [dict(c) for c in adaptive_capacity_candidates[:5]],
         'adaptive_capacity_selected': [c.get('symbol') for c in adaptive_capacity_selected],
@@ -24524,6 +24647,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'selection_finalizer_approved_symbols': list(production_selection_finalizer.get('approved_symbols') or []),
             'selected_sync_applied': bool(production_selection_finalizer.get('p344_selected_sync_applied')),
             'selected_sync_reason': production_selection_finalizer.get('p344_selected_sync_reason'),
+            'eligible_contract_finalizer_sync': dict(production_selection_finalizer.get('p414_eligible_contract_finalizer_sync') or {}),
             'dollar_risk_add_slot_sync': dict(production_selection_finalizer.get('p385_dollar_risk_add_slot_sync') or {}),
             'risk_adjusted_capacity': dict(risk_adjusted_capacity),
             'risk_calibrated_starter_count': len([
