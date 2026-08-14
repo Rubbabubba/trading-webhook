@@ -1629,6 +1629,22 @@ SWING_PERFORMANCE_RISK_50_MIN_AVG_R = getenv_float_any("SWING_PERFORMANCE_RISK_5
 SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R = getenv_float_any("SWING_PERFORMANCE_RISK_SCALE_MAX_WORST_R", default=-2.0)
 SWING_TUNING_SIM_MAX_CANDIDATES = getenv_int_any("SWING_TUNING_SIM_MAX_CANDIDATES", default=12)
 SWING_TUNING_SIM_MIN_REMOVED_TRADES = getenv_int_any("SWING_TUNING_SIM_MIN_REMOVED_TRADES", default=1)
+SWING_ALIGNMENT_BRIEF_MIN_TRADES = getenv_int_any(
+    "SWING_ALIGNMENT_BRIEF_MIN_TRADES",
+    default=5,
+)
+SWING_ALIGNMENT_BRIEF_BREAKOUT_MAX_AVG_R = getenv_float_any(
+    "SWING_ALIGNMENT_BRIEF_BREAKOUT_MAX_AVG_R",
+    default=0.0,
+)
+SWING_ALIGNMENT_BRIEF_MEAN_REVERSION_MIN_WIN_RATE = getenv_float_any(
+    "SWING_ALIGNMENT_BRIEF_MEAN_REVERSION_MIN_WIN_RATE",
+    default=0.55,
+)
+SWING_ALIGNMENT_BRIEF_MEAN_REVERSION_MIN_AVG_R = getenv_float_any(
+    "SWING_ALIGNMENT_BRIEF_MEAN_REVERSION_MIN_AVG_R",
+    default=-0.05,
+)
 
 SWING_QUARANTINE_SYMBOLS = {s.strip().upper() for s in str(getenv_any("SWING_QUARANTINE_SYMBOLS", default="") or "").split(",") if s.strip()}
 SWING_QUARANTINE_STRATEGIES = {s.strip().lower() for s in str(getenv_any("SWING_QUARANTINE_STRATEGIES", default="") or "").split(",") if s.strip()}
@@ -2750,7 +2766,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-417-post-fill-risk-recheck-reduce-not-exit-minor-overage-tolerance"
+PATCH_VERSION = "patch-418-swing-performance-alignment-brief-runtime-coverage-truth-sleeve-rebalance"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -35253,6 +35269,13 @@ def _p404_runtime_universe_coverage(latest_scan: dict | None = None, summary: di
         if str(sym or "").strip()
     ])
 
+    runtime_slim = dict(summary.get("runtime_slim") or latest_scan.get("runtime_slim") or {})
+    runtime_slim_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(runtime_slim.get("symbols") or [])
+        if str(sym or "").strip()
+    ])
+
     scanned_symbols = []
     for source in (
         summary.get("symbols"),
@@ -35267,6 +35290,9 @@ def _p404_runtime_universe_coverage(latest_scan: dict | None = None, summary: di
         ])
         if scanned_symbols:
             break
+
+    if not scanned_symbols and runtime_slim_symbols:
+        scanned_symbols = list(runtime_slim_symbols)
 
     if not scanned_symbols and CANDIDATE_HISTORY:
         hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
@@ -35286,36 +35312,76 @@ def _p404_runtime_universe_coverage(latest_scan: dict | None = None, summary: di
     runtime_set = set(runtime_symbols)
     scanned_set = set(scanned_symbols)
 
-    missing_runtime_symbols = [sym for sym in runtime_symbols if sym not in scanned_set]
-    runtime_slim_enabled = bool(SWING_RUNTIME_SLIM_ENABLED)
-    configured_runtime_cap = max(1, int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
-    runtime_slim_applied = bool(
-        runtime_slim_enabled
-        and runtime_symbols
-        and len(scanned_symbols) < len(runtime_symbols)
-        and len(scanned_symbols) <= configured_runtime_cap
+    current_configured_cap = max(1, int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
+    last_scan_configured_cap = int(
+        runtime_slim.get("configured_max_symbols")
+        or runtime_slim.get("max_symbols")
+        or current_configured_cap
     )
+
+    last_scan_slim_applied = bool(
+        runtime_slim.get("applied")
+        or (
+            bool(SWING_RUNTIME_SLIM_ENABLED)
+            and runtime_symbols
+            and len(scanned_symbols) < len(runtime_symbols)
+            and len(scanned_symbols) <= last_scan_configured_cap
+        )
+    )
+
+    current_env_wants_full_coverage = bool(
+        not bool(SWING_RUNTIME_SLIM_ENABLED)
+        or current_configured_cap >= len(runtime_symbols)
+    )
+
+    missing_runtime_symbols = [sym for sym in runtime_symbols if sym not in scanned_set]
+
+    if runtime_symbols and scanned_symbols == runtime_symbols:
+        coverage_status = "full_runtime_scanned"
+    elif current_env_wants_full_coverage and missing_runtime_symbols:
+        coverage_status = "last_scan_partial_but_current_env_wants_full_coverage"
+    elif last_scan_slim_applied:
+        coverage_status = "intentional_runtime_slim_subset_at_scan_time"
+    else:
+        coverage_status = "partial_runtime_scan_unexplained"
 
     return {
         "runtime_symbol_count": len(runtime_symbols),
         "scanned_symbol_count": len(scanned_symbols),
         "coverage_pct": round((len(scanned_set & runtime_set) / max(1, len(runtime_set))) * 100.0, 2),
         "matches_runtime": bool(runtime_symbols and scanned_symbols == runtime_symbols),
-        "runtime_slim_enabled": runtime_slim_enabled,
-        "runtime_slim_applied": runtime_slim_applied,
-        "configured_runtime_slim_max_symbols": configured_runtime_cap,
-        "coverage_status": (
-            "full_runtime_scanned"
-            if bool(runtime_symbols and scanned_symbols == runtime_symbols)
-            else "intentional_runtime_slim_subset"
-            if runtime_slim_applied
-            else "partial_runtime_scan_unexplained"
-        ),
+        "runtime_slim_enabled_current_env": bool(SWING_RUNTIME_SLIM_ENABLED),
+        "current_configured_runtime_slim_max_symbols": current_configured_cap,
+        "current_env_wants_full_coverage": current_env_wants_full_coverage,
+        "last_scan_runtime_slim": {
+            "present": bool(runtime_slim),
+            "enabled": bool(runtime_slim.get("enabled")),
+            "applied": bool(last_scan_slim_applied),
+            "configured_max_symbols": last_scan_configured_cap,
+            "original_count": runtime_slim.get("original_count"),
+            "scanned_count": runtime_slim.get("scanned_count") or len(runtime_slim_symbols) or len(scanned_symbols),
+            "rotation_enabled": bool(runtime_slim.get("rotation_enabled")),
+            "rotation_slots": int(runtime_slim.get("rotation_slots") or 0),
+            "rotation_symbols": list(runtime_slim.get("rotation_symbols") or []),
+        },
+        "runtime_slim_enabled": bool(SWING_RUNTIME_SLIM_ENABLED),
+        "runtime_slim_applied": bool(last_scan_slim_applied),
+        "configured_runtime_slim_max_symbols": last_scan_configured_cap,
+        "coverage_status": coverage_status,
         "missing_runtime_symbols": missing_runtime_symbols,
-        "excluded_by_runtime_slim_symbols": missing_runtime_symbols if runtime_slim_applied else [],
+        "excluded_by_runtime_slim_symbols": missing_runtime_symbols if last_scan_slim_applied else [],
         "extra_scanned_symbols": [sym for sym in scanned_symbols if sym not in runtime_set],
         "scanned_symbols": scanned_symbols,
         "runtime_symbols": runtime_symbols,
+        "recommended_action": (
+            "coverage_clean"
+            if coverage_status == "full_runtime_scanned"
+            else "rerun_scan_to_confirm_new_runtime_env"
+            if coverage_status == "last_scan_partial_but_current_env_wants_full_coverage"
+            else "runtime_rotation_active_monitor_coverage"
+            if coverage_status == "intentional_runtime_slim_subset_at_scan_time"
+            else "investigate_partial_runtime_scan"
+        ),
     }
 
 def _p325_build_production_contract_miss_snapshot(
@@ -45067,12 +45133,183 @@ def _swing_performance_attribution(perf_state: dict | None = None) -> dict:
         },
     }
 
+def _p418_bucket_by_name(rows: list[dict], name: str) -> dict:
+    target = str(name or "").strip().lower()
+    for row in list(rows or []):
+        if str((row or {}).get("name") or "").strip().lower() == target:
+            return dict(row or {})
+    return {
+        "name": target,
+        "closed_trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "gross_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_r": None,
+    }
 
+
+def _p418_strategy_edge_state(bucket: dict | None) -> dict:
+    row = dict(bucket or {})
+    trades = int(row.get("closed_trades") or 0)
+    gross = float(_safe_float(row.get("gross_pnl"), 0.0))
+    win_rate = float(_safe_float(row.get("win_rate"), 0.0))
+    avg_r_raw = row.get("avg_r")
+    avg_r = None if avg_r_raw is None else float(_safe_float(avg_r_raw, 0.0))
+
+    if trades < int(SWING_ALIGNMENT_BRIEF_MIN_TRADES):
+        action = "monitor"
+        reason = "sample_below_alignment_min"
+    elif gross > 0 and (avg_r is None or avg_r >= 0):
+        action = "promote"
+        reason = "positive_gross_and_non_negative_avg_r"
+    elif win_rate >= float(SWING_ALIGNMENT_BRIEF_MEAN_REVERSION_MIN_WIN_RATE) and (avg_r is None or avg_r >= float(SWING_ALIGNMENT_BRIEF_MEAN_REVERSION_MIN_AVG_R)):
+        action = "preserve"
+        reason = "high_win_rate_with_acceptable_avg_r"
+    elif avg_r is not None and avg_r <= float(SWING_ALIGNMENT_BRIEF_BREAKOUT_MAX_AVG_R):
+        action = "reduce"
+        reason = "avg_r_not_supporting_more_risk"
+    else:
+        action = "monitor"
+        reason = "edge_not_decisive"
+
+    return {
+        "name": row.get("name"),
+        "closed_trades": trades,
+        "wins": int(row.get("wins") or 0),
+        "losses": int(row.get("losses") or 0),
+        "gross_pnl": round(gross, 4),
+        "win_rate": round(win_rate, 4),
+        "avg_r": round(avg_r, 4) if avg_r is not None else None,
+        "action": action,
+        "reason": reason,
+    }
+
+
+def _p418_sleeve_rebalance_from_attribution(attribution: dict | None = None) -> dict:
+    attribution = dict(attribution or _swing_performance_attribution())
+    by_strategy = list(attribution.get("by_strategy") or [])
+    by_exit_reason = list(attribution.get("by_exit_reason") or [])
+    by_entry_type = list(attribution.get("by_entry_type") or [])
+
+    breakout = _p418_strategy_edge_state(_p418_bucket_by_name(by_strategy, BREAKOUT_STRATEGY_NAME))
+    mean_reversion = _p418_strategy_edge_state(_p418_bucket_by_name(by_strategy, MEAN_REVERSION_STRATEGY_NAME))
+
+    target = _p418_bucket_by_name(by_exit_reason, "target")
+    stall_loss = _p418_bucket_by_name(by_exit_reason, "stall_loss_guard")
+    stall_exit = _p418_bucket_by_name(by_exit_reason, "stall_exit")
+    worker_exit = _p418_bucket_by_name(by_entry_type, "worker_exit")
+
+    if breakout.get("action") == "reduce" and mean_reversion.get("action") in {"promote", "preserve"}:
+        posture = "rebalance_toward_mean_reversion_preserve_breakout_quality_only"
+    elif breakout.get("action") == "promote":
+        posture = "breakout_edge_ok_keep_current_sleeve"
+    elif mean_reversion.get("action") in {"promote", "preserve"}:
+        posture = "preserve_mean_reversion_reduce_breakout_churn"
+    else:
+        posture = "hold_current_contract_collect_more_evidence"
+
+    return {
+        "breakout": breakout,
+        "mean_reversion": mean_reversion,
+        "exit_pressure": {
+            "target": target,
+            "stall_loss_guard": stall_loss,
+            "stall_exit": stall_exit,
+            "worker_exit_entry_type": worker_exit,
+        },
+        "posture": posture,
+        "recommended_action": (
+            "do_not_add_new_gate_rebalance_existing_sleeves"
+            if posture in {
+                "rebalance_toward_mean_reversion_preserve_breakout_quality_only",
+                "preserve_mean_reversion_reduce_breakout_churn",
+            }
+            else "keep_current_sleeve_mix"
+            if posture == "breakout_edge_ok_keep_current_sleeve"
+            else "monitor_current_contract"
+        ),
+    }
+
+
+def _p418_swing_performance_alignment_brief(limit: int = 10) -> dict:
+    lim = max(1, min(int(limit or 10), 50))
+    attribution = _swing_performance_attribution()
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
+    current_truth = _p277h_current_scan_suppression_truth(limit=lim)
+    sleeve = _p418_sleeve_rebalance_from_attribution(attribution)
+
+    selected_symbols = list(current_truth.get("selected_symbols") or [])
+    eligible_symbols = list(current_truth.get("eligible_symbols") or [])
+    reason_counts = dict(current_truth.get("reason_counts") or {})
+
+    blockers = []
+    if not bool(coverage.get("matches_runtime")) and bool(coverage.get("current_env_wants_full_coverage")):
+        blockers.append("runtime_coverage_not_confirmed_after_env_change")
+    if sleeve.get("posture") in {
+        "rebalance_toward_mean_reversion_preserve_breakout_quality_only",
+        "preserve_mean_reversion_reduce_breakout_churn",
+    }:
+        blockers.append("breakout_underperforming_relative_to_mean_reversion")
+    if not selected_symbols and not eligible_symbols:
+        blockers.append("no_current_eligible_new_entry")
+
+    if "runtime_coverage_not_confirmed_after_env_change" in blockers:
+        status = "confirm_runtime_coverage"
+        recommended_action = "rerun_scanner_then_review_current_scan_suppression_truth"
+    elif "breakout_underperforming_relative_to_mean_reversion" in blockers:
+        status = "rebalance_sleeves"
+        recommended_action = "preserve_mean_reversion_and_keep_breakout_quality_only"
+    elif "no_current_eligible_new_entry" in blockers:
+        status = "quality_wait"
+        recommended_action = "wait_for_clean_setup_do_not_force_trade"
+    else:
+        status = "aligned"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_performance_alignment_brief",
+        "read_only": True,
+        "status": status,
+        "mantra": "cleanup_simplify_align_with_first_2k_sweet_spot",
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "duration_ms": latest_scan.get("duration_ms"),
+            "selected_total": int(summary.get("selected_total") or 0),
+            "selected_symbols": list(summary.get("selected_symbols") or []),
+        },
+        "runtime_coverage_truth": coverage,
+        "sleeve_rebalance": sleeve,
+        "current_selection_truth": {
+            "eligible_count": int(current_truth.get("eligible_count") or 0),
+            "eligible_symbols": eligible_symbols,
+            "selected_total": int(current_truth.get("selected_total") or 0),
+            "selected_symbols": selected_symbols,
+            "reason_counts": reason_counts,
+            "top_candidates": list(current_truth.get("top_new_entry_candidates") or current_truth.get("top_candidates") or [])[:lim],
+        },
+        "performance_snapshot": {
+            "totals": dict(attribution.get("totals") or {}),
+            "by_strategy": list(attribution.get("by_strategy") or []),
+            "top_symbols": list(attribution.get("by_symbol") or [])[:lim],
+            "risk_scaling": dict(attribution.get("risk_scaling") or {}),
+        },
+        "blockers": blockers,
+        "recommended_action": recommended_action,
+    }
 
 @app.get("/diagnostics/swing_performance_attribution")
 def diagnostics_swing_performance_attribution(request: Request):
     require_admin_if_configured(request)
     return _swing_performance_attribution()
+
+@app.get("/diagnostics/swing_performance_alignment_brief")
+def diagnostics_swing_performance_alignment_brief(request: Request, limit: int = 10):
+    require_admin_if_configured(request)
+    return _p418_swing_performance_alignment_brief(limit=limit)
 
 @app.get("/diagnostics/swing_tuning_simulator")
 def diagnostics_swing_tuning_simulator(request: Request):
@@ -49537,6 +49774,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/breakout_early_follow_through_gate?limit=20",
             f"{base}/pltr_profit_giveback_audit?limit=20",
             f"{base}/swing_performance_attribution",
+            f"{base}/swing_performance_alignment_brief?limit=10",
             f"{base}/swing_pre_post_change_performance",
             f"{base}/target_path_opportunity_expansion_lab",
             f"{base}/missed_opportunity_replay_lab",

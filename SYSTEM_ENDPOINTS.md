@@ -172,6 +172,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/swing_execution_module_sta
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_fast_scan_trigger
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_full
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_loss_day_entry_throttle
+https://trading-webhook-q4d5.onrender.com/diagnostics/swing_performance_alignment_brief
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_performance_attribution
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_post_change_drawdown
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_pre_post_change_performance
