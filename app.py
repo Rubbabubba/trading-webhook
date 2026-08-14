@@ -2766,7 +2766,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-418-hotfix-broker-reconciled-sleeve-alignment-runtime-coverage-recommendation-sync"
+PATCH_VERSION = "patch-418-hotfix-2-broker-reconciled-bucket-shape-normalization"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -45135,11 +45135,27 @@ def _swing_performance_attribution(perf_state: dict | None = None) -> dict:
         },
     }
 
-def _p418_bucket_by_name(rows: list[dict], name: str) -> dict:
+def _p418_bucket_rows(value) -> list[dict]:
+    if isinstance(value, dict):
+        out = []
+        for key, row in value.items():
+            if isinstance(row, dict):
+                clean = dict(row)
+                clean.setdefault("name", str(key or "unknown"))
+                out.append(clean)
+        return out
+
+    out = []
+    for row in list(value or []):
+        if isinstance(row, dict):
+            out.append(dict(row))
+    return out
+
+def _p418_bucket_by_name(rows, name: str) -> dict:
     target = str(name or "").strip().lower()
-    for row in list(rows or []):
-        if str((row or {}).get("name") or "").strip().lower() == target:
-            return dict(row or {})
+    for row in _p418_bucket_rows(rows):
+        if str(row.get("name") or "").strip().lower() == target:
+            return dict(row)
     return {
         "name": target,
         "closed_trades": 0,
@@ -45149,7 +45165,6 @@ def _p418_bucket_by_name(rows: list[dict], name: str) -> dict:
         "win_rate": 0.0,
         "avg_r": None,
     }
-
 
 def _p418_strategy_edge_state(bucket: dict | None) -> dict:
     row = dict(bucket or {})
@@ -45213,9 +45228,9 @@ def _p418_broker_reconciled_attribution_for_alignment() -> dict:
 
 def _p418_sleeve_rebalance_from_attribution(attribution: dict | None = None) -> dict:
     attribution = dict(attribution or _p418_broker_reconciled_attribution_for_alignment())
-    by_strategy = list(attribution.get("by_strategy") or [])
-    by_exit_reason = list(attribution.get("by_exit_reason") or [])
-    by_entry_type = list(attribution.get("by_entry_type") or [])
+    by_strategy = _p418_bucket_rows(attribution.get("by_strategy") or [])
+    by_exit_reason = _p418_bucket_rows(attribution.get("by_exit_reason") or [])
+    by_entry_type = _p418_bucket_rows(attribution.get("by_entry_type") or [])
 
     breakout = _p418_strategy_edge_state(_p418_bucket_by_name(by_strategy, BREAKOUT_STRATEGY_NAME))
     mean_reversion = _p418_strategy_edge_state(_p418_bucket_by_name(by_strategy, MEAN_REVERSION_STRATEGY_NAME))
@@ -45319,8 +45334,8 @@ def _p418_swing_performance_alignment_brief(limit: int = 10) -> dict:
         "performance_snapshot": {
             "alignment_source": attribution.get("alignment_source") or "unknown",
             "totals": dict(attribution.get("totals") or {}),
-            "by_strategy": list(attribution.get("by_strategy") or []),
-            "top_symbols": list(attribution.get("by_symbol") or [])[:lim],
+            "by_strategy": _p418_bucket_rows(attribution.get("by_strategy") or []),
+            "top_symbols": _p418_bucket_rows(attribution.get("by_symbol") or [])[:lim],
             "risk_scaling": dict(attribution.get("risk_scaling") or {}),
         },
         "blockers": blockers,
