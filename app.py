@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-407-runtime-slim-priority-rotation-candidate-coverage-opportunity-audit"
+PATCH_VERSION = "patch-407-hotfix-fast-candidate-coverage-variable-restore"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -47850,6 +47850,20 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         for reason, count in dict(reason_summary.get("reason_counts") or {}).items()
         if _p277_reason_family(reason) == "protective"
     }
+
+    coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
+    try:
+        coverage_audit = _p407_candidate_coverage_opportunity_audit(limit=lim)
+    except Exception as exc:
+        coverage_audit = {
+            "ok": False,
+            "error": str(exc),
+            "runtime_slim": {},
+            "rotation_symbols": [],
+            "excluded_symbols": list(coverage.get("excluded_by_runtime_slim_symbols") or coverage.get("missing_runtime_symbols") or [])[:lim],
+            "symbols_due_next_rotation": [],
+            "recommended_action": "coverage_audit_unavailable_use_runtime_universe_coverage",
+        }
 
     if selected_context.get("selected_symbols"):
         status = "selecting"
