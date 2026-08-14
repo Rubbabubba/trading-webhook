@@ -2740,7 +2740,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-411-hotfix-first-2k-sleeve-percent-normalization-fix"
+PATCH_VERSION = "patch-412-current-scan-contract-rebuild-fast-trigger-retirement-honesty"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -34952,6 +34952,10 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
 
     if int(snapshot.get("rows_checked") or 0) <= 0:
         rows, source = _p404_current_candidate_rows_for_miss(summary=summary)
+        rows = _p412_rebuild_current_candidate_contract_rows(rows)
+        source = f"{source}_p412_contract_rebuilt"
+        rows = _p412_rebuild_current_candidate_contract_rows(rows)
+        source = f"{source}_p412_contract_rebuilt"
         snapshot = _p325_build_production_contract_miss_snapshot(
             rows,
             selected=summary.get("selected_symbols") or [],
@@ -34991,6 +34995,8 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
         "patch_version": PATCH_VERSION,
         "mode": "production_contract_miss_reasons",
         "source": source,
+        "contract_rebuild_applied": "_p412_contract_rebuilt" in str(source),
+        "contract_rebuild_source": "p412_current_scan_contract_rebuild",
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),
             "reason": latest_scan.get("reason"),
@@ -46272,12 +46278,22 @@ def diagnostics_swing_fast_scan_trigger(
             "patch_version": PATCH_VERSION,
             "mode": "main_web_fast_swing_scan_trigger",
             "disabled": True,
+            "retired": True,
             "reason": "retired_fast_scan_trigger_disabled_for_direct_swing_runtime",
             "applied": False,
+            "can_apply": False,
             "finalize": bool(finalize),
             "queued": [],
             "rows": [],
-            "recommended_action": "use_scheduled_scanner_direct_submit_path",
+            "operator_read": {
+                "status": "retired_diagnostic_only",
+                "why": "fast trigger was removed from the production swing flow during cleanup; do not use it to judge live selection",
+                "canonical_selection_truth": "/diagnostics/current_scan_suppression_truth?limit=25",
+                "canonical_submit_truth": "/diagnostics/swing_submit_path_trace",
+                "canonical_submission_light": "/diagnostics/selected_submission_truth_light",
+                "live_submit_path": "scheduled_scanner_direct_submit",
+            },
+            "recommended_action": "use_current_scan_and_submit_truth_not_fast_trigger",
         }
     return _p302_fast_swing_scan_trigger(
         apply=bool(apply),
@@ -47832,6 +47848,7 @@ def _p406_candidate_row_fast(item: dict, open_symbols: set[str] | None = None) -
     row = dict(item or {})
     sym = str(row.get("symbol") or "").strip().upper()
     open_symbols = open_symbols or set()
+    contract = dict(row.get("swing_production_contract") or {})
     return {
         "symbol": sym,
         "strategy": row.get("strategy") or row.get("signal"),
@@ -47848,11 +47865,42 @@ def _p406_candidate_row_fast(item: dict, open_symbols: set[str] | None = None) -
         "breakout_distance_pct": row.get("breakout_distance_pct"),
         "risk_per_share_pct": row.get("risk_per_share_pct"),
         "return_20d_pct": row.get("return_20d_pct"),
+        "entry_type": row.get("entry_type"),
+        "selected_source": row.get("selected_source"),
+        "production_contract_approved": bool(row.get("production_contract_approved") or contract.get("approved")),
+        "swing_production_contract": contract,
         "rejection_reasons": list(row.get("rejection_reasons") or []),
         "selection_blockers": list(row.get("selection_blockers") or []),
         "correlation_group_id": row.get("correlation_group_id"),
         "correlation_group_open_count": row.get("correlation_group_open_count"),
     }
+
+def _p412_rebuild_current_candidate_contract_rows(rows: list | None) -> list[dict]:
+    source_rows = [
+        dict(row or {})
+        for row in list(rows or [])
+        if isinstance(row, dict)
+    ]
+    if not source_rows:
+        return []
+
+    try:
+        rebuilt = _p323_enforce_production_contract_selection(
+            source_rows,
+            global_block_reasons=[],
+        )
+    except Exception as exc:
+        rebuilt = []
+        for row in source_rows:
+            c = dict(row or {})
+            c["p412_contract_rebuild_error"] = str(exc)
+            rebuilt.append(c)
+
+    return [
+        dict(row or {})
+        for row in list(rebuilt or [])
+        if isinstance(row, dict)
+    ]
 
 def _p409_current_near_miss_rows(limit: int = 25) -> list[dict]:
     payload = _p406_fast_current_candidate_payload(limit=limit)
@@ -48177,6 +48225,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         source = "candidate_history_latest"
 
     rows = rows[:lim]
+    rows = _p412_rebuild_current_candidate_contract_rows(rows)
     open_symbols = set(_p404_active_position_symbols_light())
     fast_rows = [_p406_candidate_row_fast(row, open_symbols=open_symbols) for row in rows]
 
@@ -48231,6 +48280,8 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "mode": "fast_current_candidate_truth",
         "payload_mode": "compact",
         "source": source,
+        "contract_rebuild_applied": True,
+        "contract_rebuild_source": "p412_current_scan_contract_rebuild",
         "heavy_available": True,
         "heavy_url_hint": "/diagnostics/candidates_full?heavy=true&limit=10",
         "status": status,
