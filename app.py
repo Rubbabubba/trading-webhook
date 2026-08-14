@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-405-open-position-selection-echo-removal-runtime-universe-scan-coverage-fix"
+PATCH_VERSION = "patch-406-fast-current-candidate-truth-heavy-candidates-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -30435,122 +30435,12 @@ def _p277h_defensive_tier_near_miss_row(row: dict | None) -> dict:
         "tier_gate_deltas": deltas,
     }
 
-
 def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
-    payload = _diagnostics_candidates_payload(limit=max(1, min(int(limit or 50), 100)), full=True)
-    items = [
-        dict(row)
-        for row in list(payload.get("items") or [])
-        if isinstance(row, dict)
-    ]
-
-    open_symbols = set(_p404_active_position_symbols_light())
-    new_entry_items = [
-        row for row in items
-        if str(row.get("symbol") or "").strip().upper() not in open_symbols
-    ]
-    open_position_items = [
-        row for row in items
-        if str(row.get("symbol") or "").strip().upper() in open_symbols
-    ]
-
-    reason_summary = _p277h_candidate_reason_counts(new_entry_items)
-    selected_context = _p405_selected_symbol_context(payload.get("selected_symbols") or [])
-    selected_symbols = list(selected_context.get("selected_symbols") or [])
-
-    defensive_blocked = [
-        row for row in items
-        if "defensive_daily_breakout_rollback" in [str(r) for r in list(row.get("rejection_reasons") or [])]
-    ]
-    protective_reasons = {
-        reason: count
-        for reason, count in dict(reason_summary.get("reason_counts") or {}).items()
-        if _p277_reason_family(reason) == "protective"
-    }
-
-    if selected_symbols:
-        status = "selecting"
-        recommended_action = "monitor_submissions"
-    elif selected_context.get("open_position_selected_symbols"):
-        status = "open_position_selection_echo_removed"
-        recommended_action = "review_new_entry_candidates_not_open_position_echo"
-    elif protective_reasons:
-        status = "suppressed_by_protection"
-        recommended_action = "review_protective_reasons_before_relaxing"
-    elif int(payload.get("eligible_count") or 0) > 0:
-        status = "eligible_but_not_selected"
-        recommended_action = "inspect_selection_capacity"
-    elif items:
-        status = "quality_wait"
-        recommended_action = "wait_for_better_setup_or_review_near_misses"
-    else:
-        status = "no_candidate_flow"
-        recommended_action = "inspect_scanner_runtime"
-
-    return {
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "current_scan_suppression_truth",
-        "read_only": True,
-        "status": status,
-        "recommended_action": recommended_action,
-        "candidate_count": len(items),
-        "new_entry_candidate_count": len(new_entry_items),
-        "open_position_candidate_count": len(open_position_items),
-        "open_position_candidate_symbols": [
-            str(row.get("symbol") or "").strip().upper()
-            for row in open_position_items[:15]
-            if str(row.get("symbol") or "").strip()
-        ],
-        "eligible_count": int(payload.get("eligible_count") or 0),
-        "selected_total": int(selected_context.get("selected_total") or 0),
-        "selected_symbols": selected_symbols,
-        "raw_selected_total": int(selected_context.get("raw_selected_total") or 0),
-        "raw_selected_symbols": list(selected_context.get("raw_selected_symbols") or []),
-        "open_position_selected_total": int(selected_context.get("open_position_selected_total") or 0),
-        "open_position_selected_symbols": list(selected_context.get("open_position_selected_symbols") or []),
-        "selection_echo_removed": bool(selected_context.get("selection_echo_removed")),
-        "regime_mode": (payload.get("blockers") or {}).get("regime_mode"),
-        "regime_favorable": (payload.get("blockers") or {}).get("regime_favorable"),
-        "market_open": (payload.get("blockers") or {}).get("market_open_now"),
-        "remaining_new_entries_today": (payload.get("blockers") or {}).get("remaining_new_entries_today"),
-        "portfolio_exposure_remaining": (payload.get("blockers") or {}).get("portfolio_exposure_remaining"),
-        "blocked_by_post_change_drawdown": bool(payload.get("blocked_by_post_change_drawdown")),
-        "blocked_by_defensive_daily_breakout_rollback": bool(payload.get("blocked_by_defensive_daily_breakout_rollback")),
-        "reason_counts": reason_summary.get("reason_counts"),
-        "reason_family_counts": reason_summary.get("reason_family_counts"),
-        "protective_reason_counts": protective_reasons,
-        "defensive_rollback_blocked_count": len(defensive_blocked),
-        "top_candidates": [
-            {
-                "symbol": str(row.get("symbol") or "").strip().upper(),
-                "eligible": bool(row.get("eligible")),
-                "open_position": str(row.get("symbol") or "").strip().upper() in open_symbols,
-                "candidate_context": (
-                    "open_position_not_new_entry"
-                    if str(row.get("symbol") or "").strip().upper() in open_symbols
-                    else "new_entry_candidate"
-                ),
-                "regime_mode": row.get("regime_mode"),
-                "rank_score": row.get("rank_score"),
-                "selection_quality_score": row.get("selection_quality_score"),
-                "rejection_reasons": list(row.get("rejection_reasons") or []),
-            }
-            for row in items[:15]
-        ],
-        "top_new_entry_candidates": [
-            {
-                "symbol": str(row.get("symbol") or "").strip().upper(),
-                "eligible": bool(row.get("eligible")),
-                "regime_mode": row.get("regime_mode"),
-                "rank_score": row.get("rank_score"),
-                "selection_quality_score": row.get("selection_quality_score"),
-                "rejection_reasons": list(row.get("rejection_reasons") or []),
-            }
-            for row in new_entry_items[:15]
-        ],
-    }
-
+    payload = _p406_fast_current_candidate_payload(limit=max(1, min(int(limit or 50), 100)))
+    payload["mode"] = "current_scan_suppression_truth"
+    payload["read_only"] = True
+    payload["source"] = "fast_cached_candidate_truth"
+    return payload
 
 def _p277h_defensive_tier_near_miss_report(limit: int = 50) -> dict:
     payload = _diagnostics_candidates_payload(limit=max(1, min(int(limit or 50), 100)), full=True)
@@ -47792,6 +47682,129 @@ def _candidate_row_compact(item: dict) -> dict:
         'correlation_group_open_count': row.get('correlation_group_open_count'),
     }
 
+def _p406_candidate_row_fast(item: dict, open_symbols: set[str] | None = None) -> dict:
+    row = dict(item or {})
+    sym = str(row.get("symbol") or "").strip().upper()
+    open_symbols = open_symbols or set()
+    return {
+        "symbol": sym,
+        "strategy": row.get("strategy") or row.get("signal"),
+        "eligible": bool(row.get("eligible")) and sym not in open_symbols,
+        "raw_eligible": bool(row.get("eligible")),
+        "selected": bool(row.get("selected")) and sym not in open_symbols,
+        "raw_selected": bool(row.get("selected")),
+        "open_position": sym in open_symbols,
+        "candidate_context": "open_position_not_new_entry" if sym in open_symbols else "new_entry_candidate",
+        "rank_score": row.get("rank_score"),
+        "selection_quality_score": row.get("selection_quality_score"),
+        "close": row.get("close"),
+        "close_to_high_pct": row.get("close_to_high_pct"),
+        "breakout_distance_pct": row.get("breakout_distance_pct"),
+        "risk_per_share_pct": row.get("risk_per_share_pct"),
+        "return_20d_pct": row.get("return_20d_pct"),
+        "rejection_reasons": list(row.get("rejection_reasons") or []),
+        "selection_blockers": list(row.get("selection_blockers") or []),
+        "correlation_group_id": row.get("correlation_group_id"),
+        "correlation_group_open_count": row.get("correlation_group_open_count"),
+    }
+
+
+def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    latest_scan, summary = _p298_latest_scan_summary_light()
+
+    rows = [
+        dict(row or {})
+        for row in list(LAST_SWING_CANDIDATES or [])
+        if isinstance(row, dict)
+    ]
+    source = "last_swing_candidates_memory"
+
+    if not rows and CANDIDATE_HISTORY:
+        hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
+        rows = [
+            dict(row or {})
+            for row in list(hist.get("candidates") or hist.get("items") or [])
+            if isinstance(row, dict)
+        ]
+        source = "candidate_history_latest"
+
+    rows = rows[:lim]
+    open_symbols = set(_p404_active_position_symbols_light())
+    fast_rows = [_p406_candidate_row_fast(row, open_symbols=open_symbols) for row in rows]
+
+    new_entry_rows = [row for row in fast_rows if not bool(row.get("open_position"))]
+    open_position_rows = [row for row in fast_rows if bool(row.get("open_position"))]
+    eligible_rows = [row for row in new_entry_rows if bool(row.get("eligible"))]
+    selected_context = _p405_selected_symbol_context(summary.get("selected_symbols") or [])
+
+    reason_summary = _p277h_candidate_reason_counts(new_entry_rows)
+    protective_reasons = {
+        reason: count
+        for reason, count in dict(reason_summary.get("reason_counts") or {}).items()
+        if _p277_reason_family(reason) == "protective"
+    }
+
+    if selected_context.get("selected_symbols"):
+        status = "selecting"
+        recommended_action = "monitor_submissions"
+    elif selected_context.get("open_position_selected_symbols"):
+        status = "open_position_selection_echo_removed"
+        recommended_action = "review_new_entry_candidates_not_open_position_echo"
+    elif protective_reasons:
+        status = "suppressed_by_protection"
+        recommended_action = "review_protective_reasons_before_relaxing"
+    elif eligible_rows:
+        status = "eligible_but_not_selected"
+        recommended_action = "inspect_selection_capacity"
+    elif new_entry_rows:
+        status = "quality_wait"
+        recommended_action = "wait_for_better_setup_or_review_near_misses"
+    else:
+        status = "no_candidate_flow"
+        recommended_action = "inspect_scanner_runtime"
+
+    coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "fast_current_candidate_truth",
+        "payload_mode": "compact",
+        "source": source,
+        "heavy_available": True,
+        "heavy_url_hint": "/diagnostics/candidates_full?heavy=true&limit=10",
+        "status": status,
+        "recommended_action": recommended_action,
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+            "would_trade": latest_scan.get("would_trade"),
+            "blocked": latest_scan.get("blocked"),
+            "duration_ms": latest_scan.get("duration_ms"),
+        },
+        "runtime_universe_coverage": coverage,
+        "candidate_count": len(fast_rows),
+        "new_entry_candidate_count": len(new_entry_rows),
+        "open_position_candidate_count": len(open_position_rows),
+        "open_position_candidate_symbols": [row.get("symbol") for row in open_position_rows],
+        "eligible_count": len(eligible_rows),
+        "eligible_symbols": [row.get("symbol") for row in eligible_rows],
+        "selected_total": int(selected_context.get("selected_total") or 0),
+        "selected_symbols": list(selected_context.get("selected_symbols") or []),
+        "raw_selected_total": int(selected_context.get("raw_selected_total") or 0),
+        "raw_selected_symbols": list(selected_context.get("raw_selected_symbols") or []),
+        "open_position_selected_total": int(selected_context.get("open_position_selected_total") or 0),
+        "open_position_selected_symbols": list(selected_context.get("open_position_selected_symbols") or []),
+        "selection_echo_removed": bool(selected_context.get("selection_echo_removed")),
+        "reason_counts": reason_summary.get("reason_counts"),
+        "reason_family_counts": reason_summary.get("reason_family_counts"),
+        "protective_reason_counts": protective_reasons,
+        "top_candidates": fast_rows[:15],
+        "top_new_entry_candidates": new_entry_rows[:15],
+    }
 
 def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict:
     _ensure_runtime_state_loaded()
@@ -47952,15 +47965,27 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
         })
     return payload
 
-
 @app.get("/diagnostics/candidates")
 def diagnostics_candidates(limit: int = 25):
-    return _diagnostics_candidates_payload(limit=limit, full=False)
-
+    payload = _p406_fast_current_candidate_payload(limit=limit)
+    payload["mode"] = "candidates_compact"
+    return payload
 
 @app.get("/diagnostics/candidates_full")
-def diagnostics_candidates_full(limit: int = 25):
-    return _diagnostics_candidates_payload(limit=limit, full=True)
+def diagnostics_candidates_full(limit: int = 25, heavy: bool = False):
+    if heavy:
+        payload = _diagnostics_candidates_payload(limit=limit, full=True)
+        payload["heavy"] = True
+        payload["compact_available"] = True
+        payload["compact_url_hint"] = "/diagnostics/candidates_full?limit=10"
+        return payload
+
+    payload = _p406_fast_current_candidate_payload(limit=limit)
+    payload["mode"] = "candidates_full_compact"
+    payload["heavy"] = False
+    payload["heavy_available"] = True
+    payload["heavy_url_hint"] = f"/diagnostics/candidates_full?heavy=true&limit={max(1, min(int(limit or 25), 100))}"
+    return payload
 
 @app.get("/diagnostics/swing_profit_opportunity")
 def diagnostics_swing_profit_opportunity():
