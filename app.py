@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-407-hotfix-fast-candidate-coverage-variable-restore"
+PATCH_VERSION = "patch-408-runtime-rotation-slot-reservation-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -19915,12 +19915,8 @@ def _p407_rotate_symbols(symbols: list[str], seed: int, take: int) -> list[str]:
 def _p407_runtime_rotation_slot_count(configured_max: int, protected_count: int, original_count: int) -> int:
     if configured_max <= 0 or original_count <= configured_max:
         return 0
-    free_slots = max(0, int(configured_max) - int(protected_count))
-    if free_slots <= 0:
-        return 0
-    target = max(2, int(round(float(configured_max) * 0.16)))
-    return max(0, min(free_slots, target))
-
+    target = max(3, int(round(float(configured_max) * 0.16)))
+    return max(1, min(target, max(1, int(configured_max) // 4)))
 
 def _p407_candidate_coverage_opportunity_audit(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
@@ -20047,29 +20043,35 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
 
     watch_symbols = _dedupe_keep_order(watch_symbols[: max(1, int(SWING_RUNTIME_SLIM_KEEP_PREVIOUS_TOP or 12))])
 
-    protected_priority = _dedupe_keep_order(
-        active_symbols
-        + list(SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS or [])
-        + watch_symbols
-    )
-    protected_priority = [s for s in protected_priority if s in set(original)]
+    original_set = set(original)
+    active_protected = [s for s in _dedupe_keep_order(active_symbols) if s in original_set]
+    anchor_protected = [
+        s for s in _dedupe_keep_order(list(SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS or []))
+        if s in original_set
+    ]
 
-    unprotected = [s for s in original if s not in set(protected_priority)]
     rotation_seed = _p407_runtime_rotation_seed(scan_options)
     rotation_slots = _p407_runtime_rotation_slot_count(
         configured_max=configured_max,
-        protected_count=len(protected_priority),
+        protected_count=len(active_protected) + len(anchor_protected),
         original_count=len(original),
     )
-    rotation_symbols = _p407_rotate_symbols(unprotected, rotation_seed, rotation_slots)
 
-    priority = _dedupe_keep_order(
-        protected_priority
-        + rotation_symbols
-        + original
-    )
+    protected_slot_cap = max(1, configured_max - rotation_slots)
+    protected_priority = _dedupe_keep_order(active_protected + anchor_protected + watch_symbols)
+    protected_priority = [s for s in protected_priority if s in original_set][:protected_slot_cap]
 
-    slimmed = [s for s in priority if s in set(original)][:configured_max]
+    rotation_pool = [s for s in original if s not in set(protected_priority)]
+    rotation_symbols = _p407_rotate_symbols(rotation_pool, rotation_seed, rotation_slots)
+
+    remaining_slots = max(0, configured_max - len(_dedupe_keep_order(protected_priority + rotation_symbols)))
+    filler_symbols = [
+        s for s in original
+        if s not in set(protected_priority)
+        and s not in set(rotation_symbols)
+    ][:remaining_slots]
+
+    slimmed = _dedupe_keep_order(protected_priority + rotation_symbols + filler_symbols)[:configured_max]
     if not slimmed:
         slimmed = original[:configured_max]
 
@@ -20087,10 +20089,13 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
         "watch_symbols": watch_symbols,
         "active_symbols": active_symbols,
         "anchor_symbols": [s for s in list(SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS or []) if s in set(original)],
-        "rotation_enabled": bool(rotation_slots > 0),
+        "rotation_enabled": bool(rotation_slots > 0 and rotation_symbols),
         "rotation_slots": int(rotation_slots),
         "rotation_seed": int(rotation_seed),
         "rotation_symbols": rotation_symbols,
+        "protected_slot_cap": int(protected_slot_cap),
+        "protected_symbols": protected_priority,
+        "filler_symbols": filler_symbols,
         "priority_symbols": slimmed,
     }
 
