@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-404-production-contract-miss-truth-runtime-universe-coverage-open-position-scrub"
+PATCH_VERSION = "patch-405-open-position-selection-echo-removal-runtime-universe-scan-coverage-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -30455,11 +30455,8 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
     ]
 
     reason_summary = _p277h_candidate_reason_counts(new_entry_items)
-    selected_symbols = [
-        str(sym or "").strip().upper()
-        for sym in list(payload.get("selected_symbols") or [])
-        if str(sym or "").strip()
-    ]
+    selected_context = _p405_selected_symbol_context(payload.get("selected_symbols") or [])
+    selected_symbols = list(selected_context.get("selected_symbols") or [])
 
     defensive_blocked = [
         row for row in items
@@ -30474,6 +30471,9 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
     if selected_symbols:
         status = "selecting"
         recommended_action = "monitor_submissions"
+    elif selected_context.get("open_position_selected_symbols"):
+        status = "open_position_selection_echo_removed"
+        recommended_action = "review_new_entry_candidates_not_open_position_echo"
     elif protective_reasons:
         status = "suppressed_by_protection"
         recommended_action = "review_protective_reasons_before_relaxing"
@@ -30503,8 +30503,13 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
             if str(row.get("symbol") or "").strip()
         ],
         "eligible_count": int(payload.get("eligible_count") or 0),
-        "selected_total": int(payload.get("selected_total") or 0),
+        "selected_total": int(selected_context.get("selected_total") or 0),
         "selected_symbols": selected_symbols,
+        "raw_selected_total": int(selected_context.get("raw_selected_total") or 0),
+        "raw_selected_symbols": list(selected_context.get("raw_selected_symbols") or []),
+        "open_position_selected_total": int(selected_context.get("open_position_selected_total") or 0),
+        "open_position_selected_symbols": list(selected_context.get("open_position_selected_symbols") or []),
+        "selection_echo_removed": bool(selected_context.get("selection_echo_removed")),
         "regime_mode": (payload.get("blockers") or {}).get("regime_mode"),
         "regime_favorable": (payload.get("blockers") or {}).get("regime_favorable"),
         "market_open": (payload.get("blockers") or {}).get("market_open_now"),
@@ -34711,6 +34716,24 @@ def _p404_selected_symbol_list(selected: list | None, summary: dict | None = Non
 
     return _dedupe_keep_order(out)
 
+def _p405_selected_symbol_context(selected_symbols: list | None) -> dict:
+    raw = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected_symbols or [])
+        if str(sym or "").strip()
+    ])
+    open_symbols = set(_p404_active_position_symbols_light())
+    open_position_selected = [sym for sym in raw if sym in open_symbols]
+    new_entry_selected = [sym for sym in raw if sym not in open_symbols]
+    return {
+        "raw_selected_symbols": raw,
+        "raw_selected_total": len(raw),
+        "selected_symbols": new_entry_selected,
+        "selected_total": len(new_entry_selected),
+        "open_position_selected_symbols": open_position_selected,
+        "open_position_selected_total": len(open_position_selected),
+        "selection_echo_removed": bool(open_position_selected),
+    }
 
 def _p404_runtime_universe_coverage(latest_scan: dict | None = None, summary: dict | None = None) -> dict:
     latest_scan = dict(latest_scan or {})
@@ -34755,12 +34778,33 @@ def _p404_runtime_universe_coverage(latest_scan: dict | None = None, summary: di
     runtime_set = set(runtime_symbols)
     scanned_set = set(scanned_symbols)
 
+    missing_runtime_symbols = [sym for sym in runtime_symbols if sym not in scanned_set]
+    runtime_slim_enabled = bool(SWING_RUNTIME_SLIM_ENABLED)
+    configured_runtime_cap = max(1, int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
+    runtime_slim_applied = bool(
+        runtime_slim_enabled
+        and runtime_symbols
+        and len(scanned_symbols) < len(runtime_symbols)
+        and len(scanned_symbols) <= configured_runtime_cap
+    )
+
     return {
         "runtime_symbol_count": len(runtime_symbols),
         "scanned_symbol_count": len(scanned_symbols),
         "coverage_pct": round((len(scanned_set & runtime_set) / max(1, len(runtime_set))) * 100.0, 2),
         "matches_runtime": bool(runtime_symbols and scanned_symbols == runtime_symbols),
-        "missing_runtime_symbols": [sym for sym in runtime_symbols if sym not in scanned_set],
+        "runtime_slim_enabled": runtime_slim_enabled,
+        "runtime_slim_applied": runtime_slim_applied,
+        "configured_runtime_slim_max_symbols": configured_runtime_cap,
+        "coverage_status": (
+            "full_runtime_scanned"
+            if bool(runtime_symbols and scanned_symbols == runtime_symbols)
+            else "intentional_runtime_slim_subset"
+            if runtime_slim_applied
+            else "partial_runtime_scan_unexplained"
+        ),
+        "missing_runtime_symbols": missing_runtime_symbols,
+        "excluded_by_runtime_slim_symbols": missing_runtime_symbols if runtime_slim_applied else [],
         "extra_scanned_symbols": [sym for sym in scanned_symbols if sym not in runtime_set],
         "scanned_symbols": scanned_symbols,
         "runtime_symbols": runtime_symbols,
@@ -34902,6 +34946,9 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
     missed = list(snapshot.get("missed") or [])[:lim]
     open_position_rows = list(snapshot.get("open_position_rows") or [])[:lim]
     coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
+    selected_context = _p405_selected_symbol_context(
+        snapshot.get("selected_symbols") or summary.get("selected_symbols") or []
+    )
 
     return {
         "ok": True,
@@ -34929,10 +34976,13 @@ def _p325_production_contract_miss_reason_rows(limit: int = 25) -> dict:
             "open_position_scrubbed_symbols": list(snapshot.get("open_position_scrubbed_symbols") or []),
             "top_reason_counts": dict(snapshot.get("top_reason_counts") or {}),
             "thresholds": dict(snapshot.get("thresholds") or {}),
-            "selected_symbols": _p404_selected_symbol_list(
-                snapshot.get("selected_symbols") or [],
-                summary=summary,
-            ),
+            "selected_symbols": list(selected_context.get("selected_symbols") or []),
+            "selected_total": int(selected_context.get("selected_total") or 0),
+            "raw_selected_symbols": list(selected_context.get("raw_selected_symbols") or []),
+            "raw_selected_total": int(selected_context.get("raw_selected_total") or 0),
+            "open_position_selected_symbols": list(selected_context.get("open_position_selected_symbols") or []),
+            "open_position_selected_total": int(selected_context.get("open_position_selected_total") or 0),
+            "selection_echo_removed": bool(selected_context.get("selection_echo_removed")),
             "last_successful_production_selected_symbols": list(summary.get("last_successful_production_selected_symbols") or []),
         },
         "approved": approved,
@@ -47787,6 +47837,7 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
     defensive_breakout_rollback = dict(
         blockers.get("defensive_daily_breakout_rollback") or {}
     )
+    selected_context = _p405_selected_symbol_context(active_summary.get('selected_symbols') or [])
     payload = {
         'ok': True,
         'strategy_mode': STRATEGY_MODE,
@@ -47839,10 +47890,23 @@ def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict
             latest_scan=active_scan if isinstance(active_scan, dict) else {},
             summary=active_summary,
         ),
-        'eligible_count': len(eligible_items),
-        'eligible_symbols': [str((item or {}).get('symbol') or '').upper() for item in eligible_items if str((item or {}).get('symbol') or '').strip()],
-        'selected_total': int(active_summary.get('selected_total') or 0),
-        'selected_symbols': list(active_summary.get('selected_symbols') or []),
+        'eligible_count': len([
+            item for item in eligible_items
+            if str((item or {}).get('symbol') or '').strip().upper() not in set(_p404_active_position_symbols_light())
+        ]),
+        'eligible_symbols': [
+            str((item or {}).get('symbol') or '').upper()
+            for item in eligible_items
+            if str((item or {}).get('symbol') or '').strip()
+            and str((item or {}).get('symbol') or '').strip().upper() not in set(_p404_active_position_symbols_light())
+        ],
+        'raw_selected_total': int(selected_context.get('raw_selected_total') or 0),
+        'raw_selected_symbols': list(selected_context.get('raw_selected_symbols') or []),
+        'open_position_selected_total': int(selected_context.get('open_position_selected_total') or 0),
+        'open_position_selected_symbols': list(selected_context.get('open_position_selected_symbols') or []),
+        'selection_echo_removed': bool(selected_context.get('selection_echo_removed')),
+        'selected_total': int(selected_context.get('selected_total') or 0),
+        'selected_symbols': list(selected_context.get('selected_symbols') or []),
         'selection_blocked_items': selection_blocked_items[:lim],
         'invalid_runtime_symbols': list(runtime_validation.get('invalid_runtime_symbols') or []),
         'adaptive_capacity': dict((active_summary.get('adaptive_capacity') or {})),
