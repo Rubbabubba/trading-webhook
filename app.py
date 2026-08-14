@@ -2028,6 +2028,7 @@ TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_fo
 TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
 LAST_SCAN: dict = {}
 LAST_SUCCESSFUL_PRODUCTION_SCAN: dict = {}
+SWING_SCAN_STAGE_CHECKPOINT: dict = {}
 SPREAD_BLOCKED_SELECTED_RETRY_QUEUE: dict = {}
 SAME_DAY_EXIT_SUBMIT_LOCKS: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
@@ -2675,7 +2676,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-402-swing-data-fetch-budget-incremental-candidate-evaluation"
+PATCH_VERSION = "patch-402-hotfix-swing-scan-stage-checkpoints-fetch-timeout-failure-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -20071,9 +20072,21 @@ def _p402_fetch_daily_bars_multi_budgeted(
     fetched: list[str] = []
     chunks_attempted = 0
     stopped_for_budget = False
+    over_budget_after_fetch = False
+    last_chunk_symbols: list[str] = []
+
+    _p402_stage_checkpoint(
+        "daily_fetch_start",
+        requested_count=len(requested),
+        lookback_days=int(lookback_days or 0),
+        chunk_size=chunk_size,
+        budget_sec=int(budget_sec),
+        reserve_sec=int(reserve_sec),
+    )
 
     for idx in range(0, len(requested), chunk_size):
         chunk = requested[idx: idx + chunk_size]
+        last_chunk_symbols = list(chunk)
         elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
         remaining = budget_sec - elapsed
 
@@ -20085,9 +20098,25 @@ def _p402_fetch_daily_bars_multi_budgeted(
             skipped.extend(chunk)
             skipped.extend(requested[idx + chunk_size:])
             stopped_for_budget = True
+            _p402_stage_checkpoint(
+                "daily_fetch_budget_stop",
+                fetched_count=len(fetched),
+                skipped_count=len(skipped),
+                elapsed_sec=round(elapsed, 3),
+                remaining_sec=round(max(0.0, remaining), 3),
+            )
             break
 
         chunks_attempted += 1
+        _p402_stage_checkpoint(
+            "daily_fetch_chunk",
+            chunk_index=chunks_attempted,
+            symbols=list(chunk),
+            fetched_count=len(fetched),
+            elapsed_sec=round(elapsed, 3),
+            remaining_sec=round(max(0.0, remaining), 3),
+        )
+
         try:
             chunk_map = fetch_daily_bars_multi(chunk, lookback_days=lookback_days)
             for sym in chunk:
@@ -20095,28 +20124,58 @@ def _p402_fetch_daily_bars_multi_budgeted(
                 fetched.append(sym)
         except Exception as e:
             errors.append({
+                "stage": "daily_fetch_chunk",
                 "symbols": list(chunk),
                 "error": str(e),
             })
             for sym in chunk:
                 out.setdefault(sym, [])
 
-    return out, {
+        elapsed_after = _p398_runtime_budget_elapsed_sec(scan_started)
+        if elapsed_after >= budget_sec:
+            over_budget_after_fetch = True
+            if idx + chunk_size < len(requested):
+                skipped.extend(requested[idx + chunk_size:])
+                stopped_for_budget = True
+            _p402_stage_checkpoint(
+                "daily_fetch_over_budget_after_chunk",
+                chunk_index=chunks_attempted,
+                symbols=list(chunk),
+                fetched_count=len(fetched),
+                skipped_count=len(skipped),
+                elapsed_sec=round(elapsed_after, 3),
+                budget_sec=int(budget_sec),
+            )
+            break
+
+    truth = {
         "enabled": bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
         "requested_count": len(requested),
         "fetched_count": len(fetched),
         "skipped_count": len(skipped),
         "fetched_symbols": list(fetched),
         "skipped_symbols": list(_dedupe_keep_order(skipped)),
+        "last_chunk_symbols": list(last_chunk_symbols),
         "chunk_size": chunk_size,
         "chunks_attempted": chunks_attempted,
         "stopped_for_budget": bool(stopped_for_budget),
+        "over_budget_after_fetch": bool(over_budget_after_fetch),
         "errors": errors,
         "error_count": len(errors),
         "budget_sec": int(budget_sec),
         "reserve_sec": int(reserve_sec),
         "elapsed_sec": round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
     }
+
+    _p402_stage_checkpoint(
+        "daily_fetch_complete",
+        fetched_count=truth["fetched_count"],
+        skipped_count=truth["skipped_count"],
+        error_count=truth["error_count"],
+        stopped_for_budget=truth["stopped_for_budget"],
+        elapsed_sec=truth["elapsed_sec"],
+    )
+    return out, truth
 
 def _sma(values: list[float], length: int) -> float | None:
     if len(values) < max(1, int(length)):
@@ -23462,6 +23521,25 @@ def _p399_submit_swing_candidate_rows(
         "slot_count": slot_count,
     }
 
+def _p402_stage_checkpoint(stage: str, **details) -> dict:
+    try:
+        row = {
+            "stage": str(stage or "unknown"),
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "details": dict(details or {}),
+        }
+        SWING_SCAN_STAGE_CHECKPOINT.clear()
+        SWING_SCAN_STAGE_CHECKPOINT.update(row)
+        return dict(row)
+    except Exception:
+        return {"stage": str(stage or "unknown"), "details": dict(details or {})}
+
+def _p402_stage_snapshot() -> dict:
+    try:
+        return dict(SWING_SCAN_STAGE_CHECKPOINT or {})
+    except Exception:
+        return {}
+
 def _p401_swing_scan_hot_path_context(scan_options: dict | None = None) -> dict:
     opts = dict(scan_options or {})
     force_heavy = str(
@@ -23491,9 +23569,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     scan_options = dict(scan_options or {})
     scan_started = _time.perf_counter()
     scan_reason = str(scan_options.get("reason") or scan_options.get("scan_reason") or "scheduled")
+    _p402_stage_checkpoint("swing_scan_start", scan_reason=scan_reason)
     p401_hot_path = _p401_swing_scan_hot_path_context(scan_options)
+    _p402_stage_checkpoint("universe_symbols_start", scan_reason=scan_reason)
     original_syms = universe_symbols()
+    _p402_stage_checkpoint("universe_symbols_complete", original_count=len(original_syms))
+    _p402_stage_checkpoint("runtime_slim_start", original_count=len(original_syms))
     runtime_slim = _p315_swing_runtime_scan_symbols(original_syms, scan_options=scan_options)
+    _p402_stage_checkpoint(
+        "runtime_slim_complete",
+        symbols_count=len(runtime_slim.get("symbols") or original_syms),
+        excluded_count=int(runtime_slim.get("excluded_count") or 0),
+    )
     syms = list(runtime_slim.get("symbols") or original_syms)
     scan_symbols = list(syms)
     if SWING_INDEX_SYMBOL and SWING_INDEX_SYMBOL not in syms:
@@ -23508,9 +23595,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     )
     syms = [sym for sym in syms if sym in daily_map]
     scan_symbols = list(syms)
+    _p402_stage_checkpoint("regime_start", symbols_count=len(syms))
     index_ok = _index_alignment_ok(daily_map.get(SWING_INDEX_SYMBOL, [])) if SWING_REQUIRE_INDEX_ALIGNMENT else None
     regime = _build_swing_regime(daily_map.get(SWING_INDEX_SYMBOL, []), daily_map, syms)
     regime_mode = _get_regime_mode(regime, index_ok) if SWING_REGIME_MODE_SWITCHING_ENABLED else ('trend' if regime.get('favorable') else 'defensive')
+    _p402_stage_checkpoint(
+        "regime_complete",
+        regime_mode=regime_mode,
+        index_alignment_ok=index_ok,
+        favorable=regime.get("favorable"),
+    )
     regime_thresholds = _regime_mode_thresholds(regime_mode)
     LAST_REGIME_SNAPSHOT.clear()
     LAST_REGIME_SNAPSHOT.update(regime)
@@ -23713,6 +23807,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             breakout_candidates.append(c)
         return c
 
+    _p402_stage_checkpoint("candidate_eval_start", symbols_count=len(syms))
     p402_eval_truth = {
         "enabled": bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
         "evaluated_symbols": [],
@@ -23760,7 +23855,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     p402_eval_truth["skipped_symbols"] = list(_dedupe_keep_order(p402_eval_truth["skipped_symbols"]))
     p402_eval_truth["skipped_count"] = len(p402_eval_truth["skipped_symbols"])
     p402_eval_truth["elapsed_sec"] = round(_p398_runtime_budget_elapsed_sec(scan_started), 3)
+    _p402_stage_checkpoint(
+        "candidate_eval_complete",
+        evaluated_count=p402_eval_truth.get("evaluated_count"),
+        skipped_count=p402_eval_truth.get("skipped_count"),
+        candidate_count=len(candidates),
+        rejection_count=sum(int(v or 0) for v in rejection_counts.values()),
+        elapsed_sec=p402_eval_truth.get("elapsed_sec"),
+    )
 
+    _p402_stage_checkpoint("selection_start", candidate_count=len(candidates))
     candidates.sort(key=lambda x: (1 if str(x.get('strategy') or '').strip().lower() == BREAKOUT_STRATEGY_NAME else 0, float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     shadow_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
     shadow_alignment_candidates.sort(key=lambda x: (float(x.get('selection_quality_score', 0.0) or 0.0), float(x.get('rank_score', 0.0) or 0.0)), reverse=True)
@@ -23859,6 +23963,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     approved = production_approved
     selected = list(production_selection_finalizer.get("selected") or [])
 
+    _p402_stage_checkpoint(
+        "selection_complete",
+        candidate_count=len(candidates),
+        approved_count=len(production_approved),
+        selected_count=len(selected),
+        selected_symbols=[c.get("symbol") for c in selected],
+    )
     selected_symbol_set = {
         str(c.get("symbol") or "").strip().upper()
         for c in selected
@@ -23901,6 +24012,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 override_selected = [override_candidates[0]]
                 override_symbol = str((override_candidates[0] or {}).get('symbol') or '').upper() or None
                 override_source = EARLY_ENTRY_OVERRIDE_SOURCE
+    _p402_stage_checkpoint(
+        "submit_start",
+        selected_count=len(selected),
+        selected_symbols=[c.get("symbol") for c in selected],
+    )
     p399_selected_submit = _p399_submit_swing_candidate_rows(
         selected,
         effective_dry_run=effective_dry_run,
@@ -23915,6 +24031,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     would_submit = list(p399_pre_scan_retry_submit.get("would_submit") or []) + list(p399_selected_submit.get("would_submit") or [])
     selected_submission_payloads = list(p399_pre_scan_retry_submit.get("selected_submission_payloads") or []) + list(p399_selected_submit.get("selected_submission_payloads") or [])
 
+    _p402_stage_checkpoint(
+        "submit_complete",
+        selected_count=len(selected),
+        attempted_symbols=_dedupe_keep_order(list(p399_pre_scan_retry_submit.get("attempted_symbols") or []) + list(p399_selected_submit.get("attempted_symbols") or [])),
+        submitted_symbols=_dedupe_keep_order(list(p399_pre_scan_retry_submit.get("submitted_symbols") or []) + list(p399_selected_submit.get("submitted_symbols") or [])),
+        rate_limited_symbols=_dedupe_keep_order(list(p399_pre_scan_retry_submit.get("rate_limited_symbols") or []) + list(p399_selected_submit.get("rate_limited_symbols") or [])),
+    )
     p399_partial_submit_finalization = {
         "applied": bool(p399_pre_scan_retry_submit.get("would_submit") or p399_selected_submit.get("would_submit")),
         "reason": "pre_scan_retry_plus_selected_submit_finalized",
@@ -23969,6 +24092,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         'symbols': list(scan_symbols),
         'runtime_slim': dict(runtime_slim),
         'hot_path_slim': dict(p401_hot_path),
+        'scan_stage_checkpoint': _p402_stage_snapshot(),
         'incremental_scan': {
             'fetch': dict(p402_fetch_truth),
             'evaluation': dict(p402_eval_truth),
@@ -24012,6 +24136,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         )[:50],
         'runtime_slim': dict(runtime_slim),
         'hot_path_slim': dict(p401_hot_path),
+        'scan_stage_checkpoint': _p402_stage_snapshot(),
         'incremental_scan': {
             'fetch': dict(p402_fetch_truth),
             'evaluation': dict(p402_eval_truth),
@@ -24403,6 +24528,14 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     except Exception:
         logger.exception("COHORT_EVIDENCE_PERSIST_FAILED")
     duration_ms = elapsed_ms_fn()
+    _p402_stage_checkpoint(
+        "swing_scan_complete",
+        duration_ms=duration_ms,
+        candidates_total=len(candidates),
+        approved_count=len(approved),
+        selected_count=len(selected),
+        selected_symbols=[c.get("symbol") for c in selected],
+    )
     set_last_scan_fn(skipped=False, reason='scan_completed', scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
     try:
         summary["spread_retry_auto_apply"] = _p369_auto_retry_after_scan_summary(summary)
@@ -50490,6 +50623,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         return response_payload
     except Exception as e:
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
+        p402_failure_checkpoint = _p402_stage_snapshot()
         try:
             preserved_scan = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
             preserved_summary = dict(preserved_scan.get("summary") or {})
@@ -50519,6 +50653,18 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 partial_submit_attempted_symbols=preserved_attempted_symbols,
                 partial_submit_gap_symbols=preserved_gap_symbols,
                 partial_submit_gap_count=len(preserved_gap_symbols),
+                scan_stage_checkpoint=dict(p402_failure_checkpoint),
+                scan_exception_stage=p402_failure_checkpoint.get("stage"),
+                scan_exception_stage_details=dict(p402_failure_checkpoint.get("details") or {}),
+                scan_exception_elapsed_sec=round(float(duration_ms or 0) / 1000.0, 3),
+                scan_exception_runtime_over_budget=bool(duration_ms >= int(SCAN_RUNTIME_BUDGET_SEC or 1) * 1000),
+                scan_exception_partial_truth={
+                    "stage": p402_failure_checkpoint.get("stage"),
+                    "details": dict(p402_failure_checkpoint.get("details") or {}),
+                    "preserved_selected_symbols": preserved_selected_symbols,
+                    "preserved_attempted_symbols": preserved_attempted_symbols,
+                    "preserved_gap_symbols": preserved_gap_symbols,
+                },
                 last_successful_production_scan={
                     "ts_utc": LAST_SUCCESSFUL_PRODUCTION_SCAN.get("ts_utc"),
                     "reason": LAST_SUCCESSFUL_PRODUCTION_SCAN.get("reason"),
@@ -50527,7 +50673,18 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 },
             )
             try:
-                _record_scanner_telemetry("scan_error", "exception", details={"error": str(e), "duration_ms": duration_ms, "scan_reason": requested_reason or "scheduled", **source_meta})
+                _record_scanner_telemetry(
+                    "scan_error",
+                    "exception",
+                    details={
+                        "error": str(e),
+                        "duration_ms": duration_ms,
+                        "scan_reason": requested_reason or "scheduled",
+                        "scan_exception_stage": p402_failure_checkpoint.get("stage"),
+                        "scan_exception_stage_details": dict(p402_failure_checkpoint.get("details") or {}),
+                        **source_meta,
+                    },
+                )
             except Exception:
                 pass
         except Exception:
@@ -50554,6 +50711,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 'ok': False,
                 'error': 'scan_exception',
                 'detail': str(e),
+                'scan_exception_stage': p402_failure_checkpoint.get("stage"),
+                'scan_exception_stage_details': dict(p402_failure_checkpoint.get("details") or {}),
+                'scan_exception_elapsed_sec': round(float(duration_ms or 0) / 1000.0, 3),
                 'last_successful_production_scan': {
                     'available': bool(LAST_SUCCESSFUL_PRODUCTION_SCAN),
                     'selected_symbols': _p324_scan_selected_symbols(LAST_SUCCESSFUL_PRODUCTION_SCAN),
