@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-408-runtime-rotation-slot-reservation-fix"
+PATCH_VERSION = "patch-409-first-2k-rank-relaxation-replay-current-near-miss-simulator"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -47819,6 +47819,161 @@ def _p406_candidate_row_fast(item: dict, open_symbols: set[str] | None = None) -
         "correlation_group_open_count": row.get("correlation_group_open_count"),
     }
 
+def _p409_current_near_miss_rows(limit: int = 25) -> list[dict]:
+    payload = _p406_fast_current_candidate_payload(limit=limit)
+    rows = [
+        dict(row or {})
+        for row in list(payload.get("top_new_entry_candidates") or [])
+        if isinstance(row, dict)
+    ]
+    if not rows:
+        rows = [
+            dict(row or {})
+            for row in list(payload.get("top_candidates") or [])
+            if isinstance(row, dict)
+            and not bool(row.get("open_position"))
+        ]
+    return rows[: max(1, min(int(limit or 25), 100))]
+
+
+def _p409_first_2k_symbol_profile() -> dict:
+    rows = [
+        dict(row or {})
+        for row in list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or [])
+        if isinstance(row, dict)
+    ]
+
+    # Use earliest profitable trades as the closest available proxy for the first-$2K window.
+    ordered = []
+    running = 0.0
+    for row in rows:
+        pnl = _safe_float(row.get("gross_pnl") or row.get("pnl") or row.get("realized_pnl"), 0.0)
+        ordered.append(row)
+        if pnl > 0:
+            running += pnl
+        if running >= 2000:
+            break
+
+    if not ordered:
+        ordered = rows[:50]
+
+    winners = [
+        row for row in ordered
+        if _safe_float(row.get("gross_pnl") or row.get("pnl") or row.get("realized_pnl"), 0.0) > 0
+    ]
+    winner_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in winners
+        if str(row.get("symbol") or "").strip()
+    ])
+
+    return {
+        "source": "strategy_performance_state_first_profitable_window_proxy",
+        "window_trade_count": len(ordered),
+        "winner_count": len(winners),
+        "winner_symbols": winner_symbols,
+        "top_winner_symbols": winner_symbols[:15],
+        "profit_accumulated": round(sum(
+            max(0.0, _safe_float(row.get("gross_pnl") or row.get("pnl") or row.get("realized_pnl"), 0.0))
+            for row in ordered
+        ), 4),
+    }
+
+
+def _p409_candidate_profile_match(row: dict, first_2k_profile: dict) -> dict:
+    symbol = str((row or {}).get("symbol") or "").strip().upper()
+    winner_symbols = set(first_2k_profile.get("winner_symbols") or [])
+    rank_score = _safe_float((row or {}).get("rank_score"), 0.0)
+    close_to_high = _safe_float((row or {}).get("close_to_high_pct"), 0.0)
+    breakout_distance = _safe_float((row or {}).get("breakout_distance_pct"), 0.0)
+    risk_pct = _safe_float((row or {}).get("risk_per_share_pct"), 0.0)
+    return_20d = _safe_float((row or {}).get("return_20d_pct"), 0.0)
+
+    match_score = 0
+    reasons = []
+
+    if symbol in winner_symbols:
+        match_score += 35
+        reasons.append("symbol_in_first_2k_winners")
+    if rank_score >= 97:
+        match_score += 20
+        reasons.append("rank_near_current_gate")
+    if close_to_high >= 99.0 or close_to_high >= 0.99:
+        match_score += 15
+        reasons.append("near_high")
+    if breakout_distance >= -1.0 or breakout_distance >= -0.01:
+        match_score += 15
+        reasons.append("near_breakout")
+    if 0 < risk_pct <= 2.5 or 0 < risk_pct <= 0.025:
+        match_score += 10
+        reasons.append("controlled_risk")
+    if return_20d > 0:
+        match_score += 5
+        reasons.append("positive_20d_return")
+
+    return {
+        "symbol": symbol,
+        "match_score": match_score,
+        "match_reasons": reasons,
+        "first_2k_winner_symbol": symbol in winner_symbols,
+    }
+
+
+def _p409_rank_relaxation_replay(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    rows = _p409_current_near_miss_rows(limit=lim)
+    profile = _p409_first_2k_symbol_profile()
+    scenarios = [103, 100, 99, 98, 97, 95, 92]
+
+    scenario_rows = []
+    for threshold in scenarios:
+        passed = []
+        for row in rows:
+            rank_score = _safe_float(row.get("rank_score"), 0.0)
+            reasons = [str(r) for r in list(row.get("rejection_reasons") or [])]
+            non_rank_blockers = [
+                r for r in reasons
+                if r not in {"production_contract_rank_below_min", "rank_score_below_min"}
+            ]
+            if rank_score >= float(threshold) and not non_rank_blockers:
+                enriched = dict(row)
+                enriched["profile_match"] = _p409_candidate_profile_match(row, profile)
+                passed.append(enriched)
+
+        passed.sort(
+            key=lambda r: (
+                _safe_float((r.get("profile_match") or {}).get("match_score"), 0.0),
+                _safe_float(r.get("rank_score"), 0.0),
+                _safe_float(r.get("selection_quality_score"), 0.0),
+            ),
+            reverse=True,
+        )
+
+        scenario_rows.append({
+            "rank_threshold": threshold,
+            "pass_count": len(passed),
+            "symbols": [r.get("symbol") for r in passed],
+            "rows": passed[:10],
+        })
+
+    best = next((row for row in scenario_rows if int(row.get("pass_count") or 0) > 0), None)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "first_2k_rank_relaxation_replay",
+        "read_only": True,
+        "production_threshold": float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
+        "candidate_count": len(rows),
+        "first_2k_profile": profile,
+        "scenarios": scenario_rows,
+        "best_non_empty_scenario": best,
+        "recommended_action": (
+            "review_best_non_empty_scenario_before_any_live_threshold_change"
+            if best
+            else "no_rank_only_relaxation_candidate_currently"
+        ),
+    }
 
 def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
@@ -47888,8 +48043,6 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     else:
         status = "no_candidate_flow"
         recommended_action = "inspect_scanner_runtime"
-
-    coverage_audit = _p407_candidate_coverage_opportunity_audit(limit=lim)
 
     return {
         "ok": True,
@@ -48106,6 +48259,10 @@ def diagnostics_candidates(limit: int = 25):
 @app.get("/diagnostics/candidate_coverage_opportunity_audit")
 def diagnostics_candidate_coverage_opportunity_audit(limit: int = 25):
     return _p407_candidate_coverage_opportunity_audit(limit=limit)
+
+@app.get("/diagnostics/first_2k_rank_relaxation_replay")
+def diagnostics_first_2k_rank_relaxation_replay(limit: int = 25):
+    return _p409_rank_relaxation_replay(limit=limit)
 
 @app.get("/diagnostics/candidates_full")
 def diagnostics_candidates_full(limit: int = 25, heavy: bool = False):

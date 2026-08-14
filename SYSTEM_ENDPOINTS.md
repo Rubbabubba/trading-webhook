@@ -61,6 +61,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/exit_guard_evidence_light
 https://trading-webhook-q4d5.onrender.com/diagnostics/expanded_swing_universe_discovery
 https://trading-webhook-q4d5.onrender.com/diagnostics/failure_decomp
 https://trading-webhook-q4d5.onrender.com/diagnostics/filter_pressure
+https://trading-webhook-q4d5.onrender.com/diagnostics/first_2k_rank_relaxation_replay
 https://trading-webhook-q4d5.onrender.com/diagnostics/first_profit_window_comparison
 https://trading-webhook-q4d5.onrender.com/diagnostics/freshness
 https://trading-webhook-q4d5.onrender.com/diagnostics/gatekeeper
