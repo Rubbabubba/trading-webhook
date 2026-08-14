@@ -9,6 +9,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/alerts
 https://trading-webhook-q4d5.onrender.com/diagnostics/alternate_entry_shadow
 https://trading-webhook-q4d5.onrender.com/diagnostics/bars_5m
 https://trading-webhook-q4d5.onrender.com/diagnostics/bars_debug
+https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_distance_relaxation_replay
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_backed_exposure_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_daily_goal_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_daily_pnl_dedup

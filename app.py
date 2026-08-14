@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-409-first-2k-rank-relaxation-replay-current-near-miss-simulator"
+PATCH_VERSION = "patch-410-breakout-distance-relaxation-replay-first-2k-winner-geometry-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -47975,6 +47975,136 @@ def _p409_rank_relaxation_replay(limit: int = 25) -> dict:
         ),
     }
 
+def _p410_geometry_value_pct(row: dict, key: str) -> float:
+    value = _safe_float((row or {}).get(key), 0.0)
+    if abs(value) <= 1.0:
+        return value * 100.0
+    return value
+
+
+def _p410_current_geometry_replay(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    rows = _p409_current_near_miss_rows(limit=lim)
+    profile = _p409_first_2k_symbol_profile()
+
+    scenarios = [
+        {"name": "production", "max_below_breakout_pct": 0.07, "min_rank_score": float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE)},
+        {"name": "below_1_pct_rank_103", "max_below_breakout_pct": 1.0, "min_rank_score": 103.0},
+        {"name": "below_1_pct_rank_97", "max_below_breakout_pct": 1.0, "min_rank_score": 97.0},
+        {"name": "below_2_pct_rank_97", "max_below_breakout_pct": 2.0, "min_rank_score": 97.0},
+        {"name": "below_3_pct_rank_97", "max_below_breakout_pct": 3.0, "min_rank_score": 97.0},
+        {"name": "below_3_pct_rank_92", "max_below_breakout_pct": 3.0, "min_rank_score": 92.0},
+    ]
+
+    scenario_rows = []
+    for scenario in scenarios:
+        max_below = float(scenario.get("max_below_breakout_pct") or 0.0)
+        min_rank = float(scenario.get("min_rank_score") or 0.0)
+        passed = []
+
+        for row in rows:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            rank_score = _safe_float(row.get("rank_score"), 0.0)
+            breakout_distance = _p410_geometry_value_pct(row, "breakout_distance_pct")
+            close_to_high = _p410_geometry_value_pct(row, "close_to_high_pct")
+            risk_pct = _p410_geometry_value_pct(row, "risk_per_share_pct")
+            reasons = [str(r) for r in list(row.get("rejection_reasons") or [])]
+
+            below_breakout_ok = breakout_distance >= -max_below
+            rank_ok = rank_score >= min_rank
+            close_to_high_ok = close_to_high >= 98.5
+            risk_ok = risk_pct <= 12.0
+
+            remaining_blockers = []
+            if not rank_ok:
+                remaining_blockers.append("rank_score")
+            if not below_breakout_ok:
+                remaining_blockers.append("breakout_distance")
+            if not close_to_high_ok:
+                remaining_blockers.append("close_to_high")
+            if not risk_ok:
+                remaining_blockers.append("risk_per_share")
+
+            if rank_ok and below_breakout_ok and close_to_high_ok and risk_ok:
+                enriched = dict(row)
+                enriched["geometry_replay"] = {
+                    "scenario": scenario.get("name"),
+                    "rank_score": rank_score,
+                    "breakout_distance_pct": breakout_distance,
+                    "close_to_high_pct": close_to_high,
+                    "risk_per_share_pct": risk_pct,
+                    "original_rejection_reasons": reasons,
+                }
+                enriched["profile_match"] = _p409_candidate_profile_match(row, profile)
+                passed.append(enriched)
+
+        passed.sort(
+            key=lambda r: (
+                _safe_float((r.get("profile_match") or {}).get("match_score"), 0.0),
+                _safe_float(r.get("rank_score"), 0.0),
+                _safe_float(r.get("selection_quality_score"), 0.0),
+            ),
+            reverse=True,
+        )
+
+        scenario_rows.append({
+            "scenario": scenario.get("name"),
+            "max_below_breakout_pct": max_below,
+            "min_rank_score": min_rank,
+            "pass_count": len(passed),
+            "symbols": [r.get("symbol") for r in passed],
+            "rows": passed[:10],
+        })
+
+    best = next((row for row in scenario_rows if int(row.get("pass_count") or 0) > 0), None)
+
+    first_2k_geometry_rows = []
+    for row in rows:
+        match = _p409_candidate_profile_match(row, profile)
+        first_2k_geometry_rows.append({
+            "symbol": row.get("symbol"),
+            "rank_score": row.get("rank_score"),
+            "selection_quality_score": row.get("selection_quality_score"),
+            "breakout_distance_pct": _p410_geometry_value_pct(row, "breakout_distance_pct"),
+            "close_to_high_pct": _p410_geometry_value_pct(row, "close_to_high_pct"),
+            "risk_per_share_pct": _p410_geometry_value_pct(row, "risk_per_share_pct"),
+            "return_20d_pct": _p410_geometry_value_pct(row, "return_20d_pct"),
+            "rejection_reasons": list(row.get("rejection_reasons") or []),
+            "profile_match": match,
+        })
+
+    first_2k_geometry_rows.sort(
+        key=lambda r: (
+            _safe_float((r.get("profile_match") or {}).get("match_score"), 0.0),
+            _safe_float(r.get("rank_score"), 0.0),
+            _safe_float(r.get("selection_quality_score"), 0.0),
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "breakout_distance_relaxation_replay",
+        "read_only": True,
+        "candidate_count": len(rows),
+        "production": {
+            "min_rank_score": float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
+            "max_below_breakout_pct": float(SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT),
+            "min_close_to_high_pct": float(SWING_PRODUCTION_RESET_MIN_CLOSE_TO_HIGH_PCT),
+            "max_risk_per_share_pct": float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
+        },
+        "first_2k_profile": profile,
+        "scenarios": scenario_rows,
+        "best_non_empty_scenario": best,
+        "first_2k_winner_geometry_audit": first_2k_geometry_rows[:15],
+        "recommended_action": (
+            "review_best_geometry_scenario_before_any_live_threshold_change"
+            if best
+            else "no_geometry_relaxation_candidate_currently"
+        ),
+    }
+
 def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
     latest_scan, summary = _p298_latest_scan_summary_light()
@@ -48263,6 +48393,10 @@ def diagnostics_candidate_coverage_opportunity_audit(limit: int = 25):
 @app.get("/diagnostics/first_2k_rank_relaxation_replay")
 def diagnostics_first_2k_rank_relaxation_replay(limit: int = 25):
     return _p409_rank_relaxation_replay(limit=limit)
+
+@app.get("/diagnostics/breakout_distance_relaxation_replay")
+def diagnostics_breakout_distance_relaxation_replay(limit: int = 25):
+    return _p410_current_geometry_replay(limit=limit)
 
 @app.get("/diagnostics/candidates_full")
 def diagnostics_candidates_full(limit: int = 25, heavy: bool = False):
