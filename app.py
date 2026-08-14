@@ -2766,7 +2766,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-418-swing-performance-alignment-brief-runtime-coverage-truth-sleeve-rebalance"
+PATCH_VERSION = "patch-418-hotfix-broker-reconciled-sleeve-alignment-runtime-coverage-recommendation-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -20354,7 +20354,9 @@ def _p407_candidate_coverage_opportunity_audit(limit: int = 25) -> dict:
         "excluded_symbols": skipped[:lim],
         "symbols_due_next_rotation": due_next[:lim],
         "recommended_action": (
-            "runtime_rotation_active_monitor_coverage"
+            "rerun_scan_to_confirm_new_runtime_env"
+            if str(coverage.get("recommended_action") or "") == "rerun_scan_to_confirm_new_runtime_env"
+            else "runtime_rotation_active_monitor_coverage"
             if bool(runtime_slim.get("rotation_enabled"))
             else "runtime_slim_not_rotating_review_scan_cap"
             if bool(runtime_slim.get("applied"))
@@ -45185,9 +45187,32 @@ def _p418_strategy_edge_state(bucket: dict | None) -> dict:
         "reason": reason,
     }
 
+def _p418_broker_reconciled_attribution_for_alignment() -> dict:
+    try:
+        preferred = _p245_broker_preferred_performance_snapshot()
+        rollup = dict(
+            preferred.get("strategy_state_broker_reconciled_estimate")
+            or preferred.get("broker_preferred")
+            or {}
+        )
+        if rollup and list(rollup.get("by_strategy") or []):
+            rollup["ok"] = True
+            rollup["patch_version"] = PATCH_VERSION
+            rollup["alignment_source"] = "strategy_state_broker_reconciled_estimate"
+            return rollup
+    except Exception as exc:
+        return {
+            "ok": False,
+            "alignment_source": "strategy_state_broker_reconciled_estimate_failed",
+            "error": str(exc),
+        }
+
+    fallback = _swing_performance_attribution()
+    fallback["alignment_source"] = "raw_strategy_performance_attribution"
+    return fallback
 
 def _p418_sleeve_rebalance_from_attribution(attribution: dict | None = None) -> dict:
-    attribution = dict(attribution or _swing_performance_attribution())
+    attribution = dict(attribution or _p418_broker_reconciled_attribution_for_alignment())
     by_strategy = list(attribution.get("by_strategy") or [])
     by_exit_reason = list(attribution.get("by_exit_reason") or [])
     by_entry_type = list(attribution.get("by_entry_type") or [])
@@ -45210,6 +45235,7 @@ def _p418_sleeve_rebalance_from_attribution(attribution: dict | None = None) -> 
         posture = "hold_current_contract_collect_more_evidence"
 
     return {
+        "alignment_source": attribution.get("alignment_source") or "unknown",
         "breakout": breakout,
         "mean_reversion": mean_reversion,
         "exit_pressure": {
@@ -45231,10 +45257,9 @@ def _p418_sleeve_rebalance_from_attribution(attribution: dict | None = None) -> 
         ),
     }
 
-
 def _p418_swing_performance_alignment_brief(limit: int = 10) -> dict:
     lim = max(1, min(int(limit or 10), 50))
-    attribution = _swing_performance_attribution()
+    attribution = _p418_broker_reconciled_attribution_for_alignment()
     latest_scan, summary = _p298_latest_scan_summary_light()
     coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
     current_truth = _p277h_current_scan_suppression_truth(limit=lim)
@@ -45292,6 +45317,7 @@ def _p418_swing_performance_alignment_brief(limit: int = 10) -> dict:
             "top_candidates": list(current_truth.get("top_new_entry_candidates") or current_truth.get("top_candidates") or [])[:lim],
         },
         "performance_snapshot": {
+            "alignment_source": attribution.get("alignment_source") or "unknown",
             "totals": dict(attribution.get("totals") or {}),
             "by_strategy": list(attribution.get("by_strategy") or []),
             "top_symbols": list(attribution.get("by_symbol") or [])[:lim],
