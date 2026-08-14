@@ -2740,7 +2740,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-415-submitted-then-active-selection-truth-preservation"
+PATCH_VERSION = "patch-416-post-fill-risk-recheck-evidence-filled-position-risk-math-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -8614,6 +8614,105 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
         "items": rows,
     }
 
+def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
+    limit = max(1, min(int(limit or 20), 50))
+    rows = []
+
+    try:
+        for row in reversed(list(DECISIONS or [])[-800:]):
+            if len(rows) >= limit:
+                break
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("source") or "") != "worker_exit":
+                continue
+
+            action = str(row.get("action") or "")
+            reason = str(row.get("reason") or "")
+            if action not in {"risk_recheck", "risk_recheck_hold"} and reason != "risk_exceeded_after_fill":
+                continue
+
+            meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+            evidence = meta.get("post_fill_risk_recheck") if isinstance(meta.get("post_fill_risk_recheck"), dict) else dict(meta or {})
+
+            rows.append({
+                "ts_utc": row.get("ts_utc"),
+                "symbol": str(row.get("symbol") or evidence.get("symbol") or "").strip().upper(),
+                "action": action,
+                "reason": reason,
+                "decision": evidence.get("decision"),
+                "entry_price": evidence.get("entry_price"),
+                "stop_price": evidence.get("stop_price"),
+                "risk_per_share": evidence.get("risk_per_share"),
+                "filled_qty_used": evidence.get("filled_qty_used"),
+                "broker_qty_used": evidence.get("broker_qty_used"),
+                "actual_risk_dollars": evidence.get("actual_risk_dollars"),
+                "configured_risk_dollars": evidence.get("configured_risk_dollars"),
+                "risk_threshold_dollars": evidence.get("risk_threshold_dollars"),
+                "excess_risk_dollars": evidence.get("excess_risk_dollars"),
+                "order_id": evidence.get("order_id"),
+                "close_order_id": (evidence.get("close_out") or {}).get("order_id") if isinstance(evidence.get("close_out"), dict) else None,
+                "raw_evidence": evidence,
+            })
+
+        plan_rows = []
+        for sym, plan in sorted((TRADE_PLAN or {}).items()):
+            if not isinstance(plan, dict):
+                continue
+            evidence = plan.get("post_fill_risk_recheck_evidence")
+            if not isinstance(evidence, dict):
+                continue
+            plan_rows.append({
+                "symbol": str(sym or evidence.get("symbol") or "").strip().upper(),
+                "active": bool(plan.get("active")),
+                "decision": evidence.get("decision"),
+                "reason": evidence.get("reason"),
+                "entry_price": evidence.get("entry_price"),
+                "stop_price": evidence.get("stop_price"),
+                "risk_per_share": evidence.get("risk_per_share"),
+                "filled_qty_used": evidence.get("filled_qty_used"),
+                "broker_qty_used": evidence.get("broker_qty_used"),
+                "actual_risk_dollars": evidence.get("actual_risk_dollars"),
+                "configured_risk_dollars": evidence.get("configured_risk_dollars"),
+                "risk_threshold_dollars": evidence.get("risk_threshold_dollars"),
+                "excess_risk_dollars": evidence.get("excess_risk_dollars"),
+                "order_id": evidence.get("order_id"),
+            })
+
+        exit_rows = [r for r in rows if str(r.get("decision") or "") == "exit"]
+        hold_rows = [r for r in rows if str(r.get("decision") or "") == "hold"]
+
+        return {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "post_fill_risk_recheck_evidence",
+            "read_only": True,
+            "limit": limit,
+            "decision_count": len(rows),
+            "exit_count": len(exit_rows),
+            "hold_count": len(hold_rows),
+            "exit_symbols": sorted({str(r.get("symbol") or "") for r in exit_rows if str(r.get("symbol") or "")}),
+            "hold_symbols": sorted({str(r.get("symbol") or "") for r in hold_rows if str(r.get("symbol") or "")}),
+            "active_plan_evidence_count": len(plan_rows),
+            "active_plan_evidence": plan_rows[:limit],
+            "rows": rows,
+            "recommended_action": (
+                "review_post_fill_exit_risk_math"
+                if exit_rows
+                else "post_fill_risk_math_clean"
+                if hold_rows or plan_rows
+                else "no_post_fill_risk_recheck_evidence_yet"
+            ),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "post_fill_risk_recheck_evidence",
+            "error": str(exc),
+            "rows": rows,
+        }
+
 def _p390_classify_exit_submit_failure(symbol: str, source: str, reason: str, close_side: str, qty: float, err_text: str) -> dict:
     text = str(err_text or "").strip()
     low = text.lower()
@@ -9760,20 +9859,64 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
             plan["avg_fill_price"] = float(fill_avg)
             plan["filled_qty"] = round(float(plan.get("filled_qty") or live_qty), 4)
             plan["requested_qty"] = float(plan.get("requested_qty") or plan.get("qty") or live_qty)
-            actual_risk = round(abs(float(plan.get("entry_price") or fill_avg) - float(plan.get("stop_price") or 0)) * abs(float(plan.get("filled_qty") or live_qty)), 4)
-            plan["actual_risk_dollars"] = actual_risk
             if _restore_recovered_plan_protection(plan):
                 out["changes"].append("recovered_stop_restored_from_initial")
+
+            entry_price_for_risk = float(plan.get("entry_price") or fill_avg or 0)
+            stop_price_for_risk = float(plan.get("stop_price") or 0)
+            filled_qty_for_risk = abs(float(plan.get("filled_qty") or live_qty or filled_qty or 0))
+            broker_qty_for_risk = abs(float(live_qty or qty_signed or 0))
+            risk_per_share = round(abs(entry_price_for_risk - stop_price_for_risk), 4)
+            actual_risk = round(risk_per_share * filled_qty_for_risk, 4)
+            risk_threshold = round(float(RISK_DOLLARS) * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT), 0.0)), 4) if RISK_DOLLARS > 0 else 0.0
+            risk_exceeded = bool(ENABLE_RISK_RECHECK_AFTER_FILL and risk_threshold > 0 and actual_risk > risk_threshold)
+
+            risk_recheck_evidence = {
+                "ts_utc": datetime.now(timezone.utc).isoformat(),
+                "ts_ny": now_ny().isoformat(),
+                "patch_version": PATCH_VERSION,
+                "symbol": symbol,
+                "enabled": bool(ENABLE_RISK_RECHECK_AFTER_FILL),
+                "decision": "exit" if risk_exceeded else "hold",
+                "reason": "risk_exceeded_after_fill" if risk_exceeded else "risk_within_post_fill_threshold",
+                "entry_price": entry_price_for_risk,
+                "stop_price": stop_price_for_risk,
+                "risk_per_share": risk_per_share,
+                "filled_qty_used": filled_qty_for_risk,
+                "broker_qty_used": broker_qty_for_risk,
+                "order_filled_qty": filled_qty,
+                "live_qty": live_qty,
+                "broker_position_qty": qty_signed,
+                "actual_risk_dollars": actual_risk,
+                "configured_risk_dollars": float(RISK_DOLLARS),
+                "tolerance_pct": float(RISK_RECHECK_TOLERANCE_PCT),
+                "risk_threshold_dollars": risk_threshold,
+                "excess_risk_dollars": round(actual_risk - risk_threshold, 4) if risk_threshold > 0 else 0.0,
+                "order_id": order_id,
+                "order_status": order_status,
+            }
+
+            plan["actual_risk_dollars"] = actual_risk
+            plan["post_fill_risk_recheck_evidence"] = risk_recheck_evidence
+            risk_history = list(plan.get("post_fill_risk_recheck_evidence_history") or [])
+            risk_history.append(risk_recheck_evidence)
+            plan["post_fill_risk_recheck_evidence_history"] = risk_history[-20:]
+
             out["changes"].append("entry_price_reconciled_to_fill")
-            if ENABLE_RISK_RECHECK_AFTER_FILL and RISK_DOLLARS > 0 and actual_risk > (float(RISK_DOLLARS) * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT), 0.0))):
+            out["post_fill_risk_recheck_evidence"] = risk_recheck_evidence
+
+            if risk_exceeded:
                 close_out = close_position(symbol, reason="risk_exceeded_after_fill", source="risk_guard")
+                risk_recheck_evidence["close_out"] = close_out
                 out["changes"].append("risk_recheck_after_fill")
                 out["risk_close"] = close_out
-                record_decision("RECONCILE", "worker_exit", symbol, action="risk_recheck", reason="risk_exceeded_after_fill", meta={"actual_risk_dollars": actual_risk, "risk_dollars": RISK_DOLLARS})
+                record_decision("RECONCILE", "worker_exit", symbol, action="risk_recheck", reason="risk_exceeded_after_fill", meta={"post_fill_risk_recheck": risk_recheck_evidence})
                 if close_out.get("closed"):
                     plan["active"] = False
                 _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
                 return out
+
+            record_decision("RECONCILE", "worker_exit", symbol, action="risk_recheck_hold", reason="risk_within_post_fill_threshold", meta={"post_fill_risk_recheck": risk_recheck_evidence})
     elif age_sec is not None and age_sec >= PLAN_STALE_SUBMITTED_SEC and str(order_status.get("status") or "").lower() not in {"filled", "partially_filled"}:
         if _p342_broker_backed_filled_or_recovered_plan(plan, qty_signed=qty_signed):
             plan["active"] = True
@@ -49189,6 +49332,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/same_day_stall_exit_churn_audit",
             f"{base}/same_day_exit_submit_lock_truth",
             f"{base}/exit_guard_evidence_light",
+            f"{base}/post_fill_risk_recheck_evidence",
             f"{base}/worker_exit_status",
             f"{base}/daily_goal_preservation_exit",
             f"{base}/daily_breakout_profit_giveback_preservation_truth",
@@ -50398,6 +50542,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "heartbeat": hb,
         "heartbeat_age_sec": age_sec,
         "exit_submit_retry_readiness": exit_retry_readiness,
+        "post_fill_risk_recheck_evidence": _p416_post_fill_risk_recheck_evidence(limit=limit),
         "giveback_due_truth_sync": {
             "heartbeat_giveback_exit_due_count": hb.get("giveback_exit_due_count"),
             "heartbeat_giveback_exit_due_symbols": heartbeat_giveback_symbols,
@@ -50449,6 +50594,10 @@ def diagnostics_worker_exit_status(limit: int = 20):
 @app.get("/diagnostics/exit_guard_evidence_light")
 def diagnostics_exit_guard_evidence_light(limit: int = 20):
     return JSONResponse(content=_p351_exit_guard_evidence_light(limit=limit))
+
+@app.get("/diagnostics/post_fill_risk_recheck_evidence")
+def diagnostics_post_fill_risk_recheck_evidence(limit: int = 20):
+    return JSONResponse(content=_p416_post_fill_risk_recheck_evidence(limit=limit))
 
 @app.get("/diagnostics/active_exit_protection_truth")
 def diagnostics_active_exit_protection_truth():
