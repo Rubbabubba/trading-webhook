@@ -2740,7 +2740,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-412-current-scan-contract-rebuild-fast-trigger-retirement-honesty"
+PATCH_VERSION = "patch-413-eligible-new-entry-selection-sync-open-position-echo-suppression"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -14906,6 +14906,10 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for row in list(summary.get("selected_submission_rows") or latest_scan.get("would_submit") or [])
         if isinstance(row, dict)
     ]
+
+    current_candidate_truth = _p406_fast_current_candidate_payload(limit=lim)
+    eligible_new_entry_rows = _p413_eligible_new_entry_rows_from_fast_payload(current_candidate_truth)
+    eligible_new_entry_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(current_candidate_truth)
     if requested_symbols:
         submit_rows_all = [
             row for row in submit_rows_all
@@ -14913,6 +14917,14 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         ]
         selected_symbols = [sym for sym in selected_symbols if sym in requested_symbols]
         production_selected_symbols = [sym for sym in production_selected_symbols if sym in requested_symbols]
+        eligible_new_entry_rows = [
+            row for row in eligible_new_entry_rows
+            if str(row.get("symbol") or "").strip().upper() in requested_symbols
+        ]
+        eligible_new_entry_symbols = [
+            sym for sym in eligible_new_entry_symbols
+            if sym in requested_symbols
+        ]
 
     submit_rows = submit_rows_all[:lim]
     submit_row_symbols = _dedupe_keep_order([
@@ -14994,15 +15006,18 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif rate_limited_symbols or queued_rate_limit_symbols:
         path_status = "rate_limited_retry_pending"
         recommended_action = "wait_for_retry_queue_consumption"
-    elif actual_submit_side_effect_symbols:
-        path_status = "selected_symbols_have_actual_submit_side_effect"
-        recommended_action = "monitor_active_positions"
-    elif active_symbols and not selected_symbols:
-        path_status = "captured_candidate_monitor_existing_position"
-        recommended_action = "monitor_active_positions"
     elif selected_symbols:
         path_status = "selected_candidate_needs_submit_truth"
         recommended_action = "inspect_heavy_trace"
+    elif eligible_new_entry_symbols:
+        path_status = "eligible_new_entry_not_selected"
+        recommended_action = "scheduled_scanner_should_promote_current_eligible_contract_rows"
+    elif actual_submit_side_effect_symbols:
+        path_status = "selected_symbols_have_actual_submit_side_effect"
+        recommended_action = "monitor_active_positions"
+    elif active_symbols:
+        path_status = "captured_candidate_monitor_existing_position"
+        recommended_action = "monitor_active_positions"
     else:
         path_status = "no_selected_candidate"
         recommended_action = "monitor_next_scan"
@@ -15047,6 +15062,16 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "raw_selected_symbols": production_selected_symbols,
             "selected_not_attempted_count": len(selected_not_attempted_symbols),
             "selected_not_attempted_symbols": selected_not_attempted_symbols,
+            "eligible_new_entry_count": len(eligible_new_entry_symbols),
+            "eligible_new_entry_symbols": eligible_new_entry_symbols,
+            "eligible_new_entry_not_selected_count": len([
+                sym for sym in eligible_new_entry_symbols
+                if sym not in set(production_selected_symbols)
+            ]),
+            "eligible_new_entry_not_selected_symbols": [
+                sym for sym in eligible_new_entry_symbols
+                if sym not in set(production_selected_symbols)
+            ],
             "submit_row_symbols": submit_row_symbols,
             "actual_submit_side_effect_symbols": actual_submit_side_effect_symbols,
             "rate_limited_submit_symbols": rate_limited_symbols,
@@ -15069,6 +15094,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "pre_scan_retry_submit": dict(summary.get("p399_pre_scan_retry_submit") or {}),
             "partial_submit_finalization": dict(summary.get("p399_partial_submit_finalization") or {}),
         },
+        "eligible_new_entry_rows": eligible_new_entry_rows[:lim],
         "rows": submit_rows,
         "row_count": len(submit_rows),
         "row_count_total": len(submit_rows_all),
@@ -35214,6 +35240,11 @@ def _p298_selected_submission_truth_light() -> dict:
     p330_filled_plan_backfill_symbols = _p330_filled_plan_execution_backfill_symbols()
     selected_symbols = _dedupe_keep_order(list(selected_symbols or []) + p330_filled_plan_backfill_symbols)
 
+    open_symbols = set(_p404_active_position_symbols_light())
+    raw_selected_symbols_before_echo_suppression = list(selected_symbols)
+    open_position_echo_symbols = [sym for sym in selected_symbols if sym in open_symbols]
+    selected_symbols = [sym for sym in selected_symbols if sym not in open_symbols]
+
     submit_rows = {
         str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
         for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or [])
@@ -35372,9 +35403,35 @@ def _p298_selected_submission_truth_light() -> dict:
         selected_symbols=selected_symbols,
         rows=rows,
     )
+    current_candidate_truth = _p406_fast_current_candidate_payload(limit=25)
+    eligible_new_entry_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(current_candidate_truth)
+
     out["p330_after_hours_truth"] = p330_after_hours_truth
     out["p330_filled_plan_backfill_symbols"] = p330_filled_plan_backfill_symbols
     out["p330_filled_plan_backfill_count"] = len(p330_filled_plan_backfill_symbols)
+    out["open_position_echo_suppression"] = {
+        "applied": bool(open_position_echo_symbols),
+        "raw_selected_symbols_before_echo_suppression": raw_selected_symbols_before_echo_suppression,
+        "open_position_echo_symbols": open_position_echo_symbols,
+        "selected_symbols_after_echo_suppression": selected_symbols,
+    }
+    out["eligible_new_entry_truth"] = {
+        "count": len(eligible_new_entry_symbols),
+        "symbols": eligible_new_entry_symbols,
+        "not_selected_symbols": [
+            sym for sym in eligible_new_entry_symbols
+            if sym not in set(selected_symbols)
+        ],
+        "status": (
+            "eligible_new_entry_not_selected"
+            if eligible_new_entry_symbols and not selected_symbols
+            else "selected_symbols_present"
+            if selected_symbols
+            else "no_eligible_new_entry"
+        ),
+    }
+    if eligible_new_entry_symbols and not selected_symbols:
+        out["recommended_action"] = "scheduled_scanner_should_promote_current_eligible_contract_rows"
     return out
 
 
@@ -47902,6 +47959,31 @@ def _p412_rebuild_current_candidate_contract_rows(rows: list | None) -> list[dic
         if isinstance(row, dict)
     ]
 
+def _p413_eligible_new_entry_rows_from_fast_payload(payload: dict | None) -> list[dict]:
+    data = dict(payload or {})
+    rows = [
+        dict(row or {})
+        for row in list(data.get("top_new_entry_candidates") or [])
+        if isinstance(row, dict)
+        and bool(row.get("eligible"))
+        and not bool(row.get("open_position"))
+    ]
+    rows.sort(
+        key=lambda row: (
+            float(_safe_float(row.get("rank_score"), 0.0)),
+            float(_safe_float(row.get("selection_quality_score"), 0.0)),
+        ),
+        reverse=True,
+    )
+    return rows
+
+def _p413_eligible_new_entry_symbols_from_fast_payload(payload: dict | None) -> list[str]:
+    return _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in _p413_eligible_new_entry_rows_from_fast_payload(payload)
+        if str(row.get("symbol") or "").strip()
+    ])
+
 def _p409_current_near_miss_rows(limit: int = 25) -> list[dict]:
     payload = _p406_fast_current_candidate_payload(limit=limit)
     rows = [
@@ -48258,15 +48340,15 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     if selected_context.get("selected_symbols"):
         status = "selecting"
         recommended_action = "monitor_submissions"
+    elif eligible_rows:
+        status = "eligible_new_entry_not_selected"
+        recommended_action = "sync_selected_symbols_from_current_eligible_contract_rows"
     elif selected_context.get("open_position_selected_symbols"):
         status = "open_position_selection_echo_removed"
-        recommended_action = "review_new_entry_candidates_not_open_position_echo"
+        recommended_action = "ignore_open_position_echo_and_wait_for_new_entry_selection"
     elif protective_reasons:
         status = "suppressed_by_protection"
         recommended_action = "review_protective_reasons_before_relaxing"
-    elif eligible_rows:
-        status = "eligible_but_not_selected"
-        recommended_action = "inspect_selection_capacity"
     elif new_entry_rows:
         status = "quality_wait"
         recommended_action = "wait_for_better_setup_or_review_near_misses"
@@ -48309,6 +48391,12 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "open_position_candidate_symbols": [row.get("symbol") for row in open_position_rows],
         "eligible_count": len(eligible_rows),
         "eligible_symbols": [row.get("symbol") for row in eligible_rows],
+        "eligible_not_selected_count": len(eligible_rows) if not selected_context.get("selected_symbols") else 0,
+        "eligible_not_selected_symbols": (
+            [row.get("symbol") for row in eligible_rows]
+            if not selected_context.get("selected_symbols")
+            else []
+        ),
         "selected_total": int(selected_context.get("selected_total") or 0),
         "selected_symbols": list(selected_context.get("selected_symbols") or []),
         "raw_selected_total": int(selected_context.get("raw_selected_total") or 0),
