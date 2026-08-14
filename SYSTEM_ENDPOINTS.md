@@ -16,6 +16,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_performan
 https://trading-webhook-q4d5.onrender.com/diagnostics/build
 https://trading-webhook-q4d5.onrender.com/diagnostics/bundle/{scope}
 https://trading-webhook-q4d5.onrender.com/diagnostics/canceled_entry_plan_cleanup
+https://trading-webhook-q4d5.onrender.com/diagnostics/candidate_coverage_opportunity_audit
 https://trading-webhook-q4d5.onrender.com/diagnostics/candidate_gate_crossing_alert
 https://trading-webhook-q4d5.onrender.com/diagnostics/candidates
 https://trading-webhook-q4d5.onrender.com/diagnostics/candidates_full

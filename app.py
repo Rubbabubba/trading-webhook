@@ -2712,7 +2712,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-406-fast-current-candidate-truth-heavy-candidates-opt-in"
+PATCH_VERSION = "patch-407-runtime-slim-priority-rotation-candidate-coverage-opportunity-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -19888,6 +19888,92 @@ def universe_symbols() -> list[str]:
 
     return _p295_apply_swing_pilot_symbols(sorted(ALLOWED_SYMBOLS)[:SCANNER_MAX_SYMBOLS_PER_CYCLE])
 
+def _p407_runtime_rotation_seed(scan_options: dict | None = None) -> int:
+    scan_options = dict(scan_options or {})
+    raw = str(scan_options.get("rotation_seed") or scan_options.get("scan_reason") or "").strip()
+    if raw:
+        return abs(hash(raw)) % 100000
+
+    now = now_ny()
+    # Rotate during the session without adding persistent state.
+    return int(now.strftime("%Y%m%d%H"))
+
+
+def _p407_rotate_symbols(symbols: list[str], seed: int, take: int) -> list[str]:
+    ordered = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(symbols or [])
+        if str(sym or "").strip()
+    ])
+    if not ordered or take <= 0:
+        return []
+    offset = int(seed or 0) % len(ordered)
+    rotated = ordered[offset:] + ordered[:offset]
+    return rotated[: max(0, min(int(take or 0), len(rotated)))]
+
+
+def _p407_runtime_rotation_slot_count(configured_max: int, protected_count: int, original_count: int) -> int:
+    if configured_max <= 0 or original_count <= configured_max:
+        return 0
+    free_slots = max(0, int(configured_max) - int(protected_count))
+    if free_slots <= 0:
+        return 0
+    target = max(2, int(round(float(configured_max) * 0.16)))
+    return max(0, min(free_slots, target))
+
+
+def _p407_candidate_coverage_opportunity_audit(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
+    runtime_slim = dict(summary.get("runtime_slim") or {})
+
+    skipped = list(
+        runtime_slim.get("excluded_symbols")
+        or coverage.get("excluded_by_runtime_slim_symbols")
+        or coverage.get("missing_runtime_symbols")
+        or []
+    )
+    rotated_in = list(runtime_slim.get("rotation_symbols") or [])
+    due_next = _p407_rotate_symbols(
+        [sym for sym in skipped if sym not in set(rotated_in)],
+        _p407_runtime_rotation_seed({"scan_reason": "candidate_coverage_opportunity_audit_next"}),
+        max(1, int(runtime_slim.get("rotation_slots") or 4)),
+    )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "candidate_coverage_opportunity_audit",
+        "source": "latest_scan_runtime_slim_summary",
+        "runtime_universe_coverage": coverage,
+        "runtime_slim": {
+            "enabled": bool(runtime_slim.get("enabled")),
+            "applied": bool(runtime_slim.get("applied")),
+            "reason": runtime_slim.get("reason"),
+            "configured_max_symbols": runtime_slim.get("configured_max_symbols"),
+            "original_count": runtime_slim.get("original_count"),
+            "scanned_count": len(runtime_slim.get("symbols") or []),
+            "excluded_count": int(runtime_slim.get("excluded_count") or 0),
+            "rotation_enabled": bool(runtime_slim.get("rotation_enabled")),
+            "rotation_slots": int(runtime_slim.get("rotation_slots") or 0),
+            "rotation_seed": runtime_slim.get("rotation_seed"),
+        },
+        "anchor_symbols": list(runtime_slim.get("anchor_symbols") or []),
+        "active_symbols": list(runtime_slim.get("active_symbols") or []),
+        "watch_symbols": list(runtime_slim.get("watch_symbols") or []),
+        "rotation_symbols": rotated_in[:lim],
+        "excluded_symbols": skipped[:lim],
+        "symbols_due_next_rotation": due_next[:lim],
+        "recommended_action": (
+            "runtime_rotation_active_monitor_coverage"
+            if bool(runtime_slim.get("rotation_enabled"))
+            else "runtime_slim_not_rotating_review_scan_cap"
+            if bool(runtime_slim.get("applied"))
+            else "full_runtime_scanned"
+        ),
+    }
+
 def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict | None = None) -> dict:
     scan_options = dict(scan_options or {})
     original = _dedupe_keep_order([str(s or "").strip().upper() for s in list(all_symbols or []) if str(s or "").strip()])
@@ -19961,10 +20047,25 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
 
     watch_symbols = _dedupe_keep_order(watch_symbols[: max(1, int(SWING_RUNTIME_SLIM_KEEP_PREVIOUS_TOP or 12))])
 
-    priority = _dedupe_keep_order(
+    protected_priority = _dedupe_keep_order(
         active_symbols
         + list(SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS or [])
         + watch_symbols
+    )
+    protected_priority = [s for s in protected_priority if s in set(original)]
+
+    unprotected = [s for s in original if s not in set(protected_priority)]
+    rotation_seed = _p407_runtime_rotation_seed(scan_options)
+    rotation_slots = _p407_runtime_rotation_slot_count(
+        configured_max=configured_max,
+        protected_count=len(protected_priority),
+        original_count=len(original),
+    )
+    rotation_symbols = _p407_rotate_symbols(unprotected, rotation_seed, rotation_slots)
+
+    priority = _dedupe_keep_order(
+        protected_priority
+        + rotation_symbols
         + original
     )
 
@@ -19986,6 +20087,11 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
         "watch_symbols": watch_symbols,
         "active_symbols": active_symbols,
         "anchor_symbols": [s for s in list(SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS or []) if s in set(original)],
+        "rotation_enabled": bool(rotation_slots > 0),
+        "rotation_slots": int(rotation_slots),
+        "rotation_seed": int(rotation_seed),
+        "rotation_symbols": rotation_symbols,
+        "priority_symbols": slimmed,
     }
 
 def _bars_for_today_regular_session(bars: list[dict]) -> list[dict]:
@@ -47764,7 +47870,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         status = "no_candidate_flow"
         recommended_action = "inspect_scanner_runtime"
 
-    coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
+    coverage_audit = _p407_candidate_coverage_opportunity_audit(limit=lim)
 
     return {
         "ok": True,
@@ -47786,6 +47892,13 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             "duration_ms": latest_scan.get("duration_ms"),
         },
         "runtime_universe_coverage": coverage,
+        "candidate_coverage_opportunity_audit": {
+            "runtime_slim": dict(coverage_audit.get("runtime_slim") or {}),
+            "rotation_symbols": list(coverage_audit.get("rotation_symbols") or []),
+            "excluded_symbols": list(coverage_audit.get("excluded_symbols") or [])[:lim],
+            "symbols_due_next_rotation": list(coverage_audit.get("symbols_due_next_rotation") or [])[:lim],
+            "recommended_action": coverage_audit.get("recommended_action"),
+        },
         "candidate_count": len(fast_rows),
         "new_entry_candidate_count": len(new_entry_rows),
         "open_position_candidate_count": len(open_position_rows),
@@ -47970,6 +48083,10 @@ def diagnostics_candidates(limit: int = 25):
     payload = _p406_fast_current_candidate_payload(limit=limit)
     payload["mode"] = "candidates_compact"
     return payload
+
+@app.get("/diagnostics/candidate_coverage_opportunity_audit")
+def diagnostics_candidate_coverage_opportunity_audit(limit: int = 25):
+    return _p407_candidate_coverage_opportunity_audit(limit=limit)
 
 @app.get("/diagnostics/candidates_full")
 def diagnostics_candidates_full(limit: int = 25, heavy: bool = False):
