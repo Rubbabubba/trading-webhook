@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-411-first-2k-geometry-sleeve-production-contract-de-starification"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-411-hotfix-first-2k-sleeve-percent-normalization-fix"
 
 
 @dataclass(frozen=True)
@@ -81,9 +81,12 @@ def _pct_decimal(value):
     if value is None or str(value).strip() == "":
         return None
     val = float(_safe_float(value))
-    if abs(val) > 1.0:
-        return val / 100.0
-    return val
+
+    # Candidate rows store percent fields as percent-style numbers:
+    # breakout_distance_pct=-0.67 means -0.67%, risk_per_share_pct=1.8 means 1.8%.
+    # Contract/env thresholds are decimal ratios: 0.01 means 1%.
+    # Convert all candidate pct values to decimal ratios before comparing.
+    return val / 100.0
 
 def _symbol_set(csv_text: str | None) -> set[str]:
     return {
