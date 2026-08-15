@@ -120,6 +120,10 @@ from swing_broker_submit import (
     order_id_from_submit_response as swing_broker_order_id_from_submit_response,
     swing_broker_submit_module_status,
 )
+from swing_broker_transport import (
+    SWING_BROKER_TRANSPORT_MODULE_VERSION,
+    swing_broker_transport_module_status,
+)
 from broker_client import (
     BROKER_CLIENT_MODULE_VERSION,
     broker_module_status,
@@ -2778,7 +2782,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-421-swing-broker-submit-function-extraction-prep"
+PATCH_VERSION = "patch-422-broker-submit-transport-wrapper-split-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2988,6 +2992,7 @@ EXPECTED_ARTIFACT_FILES = [
     "swing_execution.py",
     "swing_execution_submit.py",
     "swing_broker_submit.py",
+    "swing_broker_transport.py",
     "swing_light_diagnostics.py",
     "swing_runtime_config.py",
     "swing_selection_contract.py",
@@ -5878,6 +5883,8 @@ def _build_fingerprint_snapshot() -> dict:
             "swing_execution_submit": swing_execution_submit_module_status(),
             "swing_broker_submit_module_version": SWING_BROKER_SUBMIT_MODULE_VERSION,
             "swing_broker_submit": swing_broker_submit_module_status(actual_broker_submit_moved=False),
+            "swing_broker_transport_module_version": SWING_BROKER_TRANSPORT_MODULE_VERSION,
+            "swing_broker_transport": swing_broker_transport_module_status(production_submit_uses_transport=False),
             "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
             "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
             "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -50018,6 +50025,7 @@ def diagnostics_swing_core_status():
         "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
         "swing_execution_submit_module_version": SWING_EXECUTION_SUBMIT_MODULE_VERSION,
         "swing_broker_submit_module_version": SWING_BROKER_SUBMIT_MODULE_VERSION,
+        "swing_broker_transport_module_version": SWING_BROKER_TRANSPORT_MODULE_VERSION,
         "cleanup_phase": "swing_production_core_cleanup",
         "completed_cleanup": [
             "selection_contract_module_split",
@@ -50046,6 +50054,7 @@ def diagnostics_swing_core_status():
             "operator_pull_lists_consolidated",
             "swing_execution_submit_compatibility_module_split",
             "swing_broker_submit_pure_helper_boundary_added",
+            "swing_broker_transport_wrapper_boundary_added",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -50070,6 +50079,13 @@ def diagnostics_swing_core_status():
                 "reason": "client_order_id_and_error_classification_helpers_are_module_backed",
                 "module_version": SWING_BROKER_SUBMIT_MODULE_VERSION,
                 "actual_broker_submit_moved": False,
+            },
+            "broker_transport": {
+                "module": "swing_broker_transport",
+                "status": "transport_wrapper_boundary_added_production_submit_still_in_app_py",
+                "reason": "transport_interface_is_dependency_injected_and_not_live_routed_yet",
+                "module_version": SWING_BROKER_TRANSPORT_MODULE_VERSION,
+                "production_submit_uses_transport": False,
             },
         },
         "submit_proof_operator_brief": submit_proof_brief,
@@ -50345,6 +50361,8 @@ def diagnostics_swing_execution_module_status():
         "execution_submit_moved": False,
         "actual_broker_submit_moved": False,
         "broker_submit_pure_helpers_moved": True,
+        "broker_transport_wrapper_added": True,
+        "production_submit_uses_transport_wrapper": False,
         "pure_helpers_moved": [
             "format_order_qty",
             "build_market_order_payload",
@@ -50354,6 +50372,7 @@ def diagnostics_swing_execution_module_status():
         ],
         "submit_module_status": swing_execution_submit_module_status(),
         "broker_submit_module_status": swing_broker_submit_module_status(actual_broker_submit_moved=False),
+        "broker_transport_module_status": swing_broker_transport_module_status(production_submit_uses_transport=False),
         "checks": checks,
         "mismatch_count": len([k for k, v in checks.items() if not v]),
         "sample": {
