@@ -101,12 +101,16 @@ from swing_selection_contract import (
 )
 from swing_execution import (
     SWING_EXECUTION_MODULE_VERSION,
+)
+from swing_execution_submit import (
+    SWING_EXECUTION_SUBMIT_MODULE_VERSION,
     SwingLimitEntryConfig,
     format_order_qty as swing_exec_format_order_qty,
     build_market_order_payload as swing_exec_build_market_order_payload,
     build_limit_order_payload as swing_exec_build_limit_order_payload,
     build_submit_decision as swing_exec_build_submit_decision,
     limit_entry_preview as swing_exec_limit_entry_preview,
+    swing_execution_submit_module_status,
 )
 from broker_client import (
     BROKER_CLIENT_MODULE_VERSION,
@@ -2766,7 +2770,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-419-runtime-coverage-preview-without-market-hours-scan"
+PATCH_VERSION = "patch-420-swing-execution-submit-compatibility-module-split"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2974,6 +2978,7 @@ EXPECTED_ARTIFACT_FILES = [
     "market_clock.py",
     "swing_core.py",
     "swing_execution.py",
+    "swing_execution_submit.py",
     "swing_light_diagnostics.py",
     "swing_runtime_config.py",
     "swing_selection_contract.py",
@@ -5860,6 +5865,8 @@ def _build_fingerprint_snapshot() -> dict:
             "app_time_helpers": _app_time_helper_status(),
             "swing_core_module_version": SWING_CORE_MODULE_VERSION,
             "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
+            "swing_execution_submit_module_version": SWING_EXECUTION_SUBMIT_MODULE_VERSION,
+            "swing_execution_submit": swing_execution_submit_module_status(),
             "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
             "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
             "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -50013,6 +50020,7 @@ def diagnostics_swing_core_status():
         "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
         "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
         "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
+        "swing_execution_submit_module_version": SWING_EXECUTION_SUBMIT_MODULE_VERSION,
         "cleanup_phase": "swing_production_core_cleanup",
         "completed_cleanup": [
             "selection_contract_module_split",
@@ -50039,6 +50047,7 @@ def diagnostics_swing_core_status():
             "submit_proof_required_operator_brief_added",
             "swing_light_endpoint_manifest_added",
             "operator_pull_lists_consolidated",
+            "swing_execution_submit_compatibility_module_split",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -50052,9 +50061,10 @@ def diagnostics_swing_core_status():
                 "active_in_default_flow": True,
             },
             "execution_submit": {
-                "module": "app.py",
-                "status": "not_moved",
-                "reason": "awaiting_protective_limit_live_path_proof",
+                "module": "swing_execution_submit",
+                "status": "compatibility_module_split_broker_submit_still_in_app_py",
+                "reason": "broker_free_submit_decision_helpers_moved_actual_alpaca_submit_stays_in_app_py",
+                "module_version": SWING_EXECUTION_SUBMIT_MODULE_VERSION,
             },
         },
         "submit_proof_operator_brief": submit_proof_brief,
@@ -50322,10 +50332,13 @@ def diagnostics_swing_execution_module_status():
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "swing_execution_module_status",
-        "module": "swing_execution",
-        "module_version": SWING_EXECUTION_MODULE_VERSION,
+        "module": "swing_execution_submit",
+        "module_version": SWING_EXECUTION_SUBMIT_MODULE_VERSION,
+        "source_module": "swing_execution",
+        "source_module_version": SWING_EXECUTION_MODULE_VERSION,
         "broker_free": True,
         "execution_submit_moved": False,
+        "actual_broker_submit_moved": False,
         "pure_helpers_moved": [
             "format_order_qty",
             "build_market_order_payload",
@@ -50333,6 +50346,7 @@ def diagnostics_swing_execution_module_status():
             "build_submit_decision",
             "limit_entry_preview",
         ],
+        "submit_module_status": swing_execution_submit_module_status(),
         "checks": checks,
         "mismatch_count": len([k for k, v in checks.items() if not v]),
         "sample": {
