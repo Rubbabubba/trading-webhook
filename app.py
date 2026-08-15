@@ -112,6 +112,14 @@ from swing_execution_submit import (
     limit_entry_preview as swing_exec_limit_entry_preview,
     swing_execution_submit_module_status,
 )
+from swing_broker_submit import (
+    SWING_BROKER_SUBMIT_MODULE_VERSION,
+    alpaca_order_error_text as swing_broker_alpaca_order_error_text,
+    build_client_order_id as swing_broker_build_client_order_id,
+    is_nonretryable_alpaca_order_error as swing_broker_is_nonretryable_order_error,
+    order_id_from_submit_response as swing_broker_order_id_from_submit_response,
+    swing_broker_submit_module_status,
+)
 from broker_client import (
     BROKER_CLIENT_MODULE_VERSION,
     broker_module_status,
@@ -2770,7 +2778,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-420-swing-execution-submit-compatibility-module-split"
+PATCH_VERSION = "patch-421-swing-broker-submit-function-extraction-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -2979,6 +2987,7 @@ EXPECTED_ARTIFACT_FILES = [
     "swing_core.py",
     "swing_execution.py",
     "swing_execution_submit.py",
+    "swing_broker_submit.py",
     "swing_light_diagnostics.py",
     "swing_runtime_config.py",
     "swing_selection_contract.py",
@@ -5867,6 +5876,8 @@ def _build_fingerprint_snapshot() -> dict:
             "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
             "swing_execution_submit_module_version": SWING_EXECUTION_SUBMIT_MODULE_VERSION,
             "swing_execution_submit": swing_execution_submit_module_status(),
+            "swing_broker_submit_module_version": SWING_BROKER_SUBMIT_MODULE_VERSION,
+            "swing_broker_submit": swing_broker_submit_module_status(actual_broker_submit_moved=False),
             "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
             "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
             "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -7373,31 +7384,16 @@ def _alpaca_submit_limit_order_rest(symbol: str, side: str, qty: float, limit_pr
     return data
 
 def _order_id_from_submit_response(order) -> str:
-    return str(_order_attr(order, "id", "") or _order_attr(order, "order_id", "") or "")
-
+    return swing_broker_order_id_from_submit_response(order, _order_attr)
 
 def _alpaca_order_error_text(err) -> str:
-    return str(err or "").strip()
-
+    return swing_broker_alpaca_order_error_text(err)
 
 def _is_nonretryable_alpaca_order_error(err) -> bool:
-    text = _alpaca_order_error_text(err).lower()
-    if not text:
-        return False
-    nonretryable_markers = [
-        "fractional orders cannot be sold short",
-        "insufficient qty",
-        "insufficient quantity",
-        "requested asset is not available for trading",
-        "cannot be sold short",
-        "unprocessable entity",
-        "42210000",
-    ]
-    return any(marker in text for marker in nonretryable_markers)
-    
+    return swing_broker_is_nonretryable_order_error(err)
     
 def submit_market_order(symbol: str, side: str, qty: float):
-    client_order_id = f"scan-{str(uuid.uuid4())[:8]}-{str(symbol).lower()}"
+    client_order_id = swing_broker_build_client_order_id("scan", symbol, str(uuid.uuid4()))
     sdk_error = None
     try:
         try:
@@ -7431,7 +7427,7 @@ def submit_market_order(symbol: str, side: str, qty: float):
             raise RuntimeError(f"sdk:{sdk_error}; rest:{rest_e}")
 
 def submit_limit_order(symbol: str, side: str, qty: float, limit_price: float):
-    client_order_id = f"scanlim-{str(uuid.uuid4())[:8]}-{str(symbol).lower()}"
+    client_order_id = swing_broker_build_client_order_id("scanlim", symbol, str(uuid.uuid4()))
     return _alpaca_submit_limit_order_rest(symbol, side, qty, limit_price, client_order_id)
 
 def get_order_status(order_id: str) -> dict:
@@ -50021,6 +50017,7 @@ def diagnostics_swing_core_status():
         "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
         "swing_execution_module_version": SWING_EXECUTION_MODULE_VERSION,
         "swing_execution_submit_module_version": SWING_EXECUTION_SUBMIT_MODULE_VERSION,
+        "swing_broker_submit_module_version": SWING_BROKER_SUBMIT_MODULE_VERSION,
         "cleanup_phase": "swing_production_core_cleanup",
         "completed_cleanup": [
             "selection_contract_module_split",
@@ -50048,6 +50045,7 @@ def diagnostics_swing_core_status():
             "swing_light_endpoint_manifest_added",
             "operator_pull_lists_consolidated",
             "swing_execution_submit_compatibility_module_split",
+            "swing_broker_submit_pure_helper_boundary_added",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -50065,6 +50063,13 @@ def diagnostics_swing_core_status():
                 "status": "compatibility_module_split_broker_submit_still_in_app_py",
                 "reason": "broker_free_submit_decision_helpers_moved_actual_alpaca_submit_stays_in_app_py",
                 "module_version": SWING_EXECUTION_SUBMIT_MODULE_VERSION,
+            },
+            "broker_submit": {
+                "module": "swing_broker_submit",
+                "status": "pure_helper_boundary_added_actual_submit_still_in_app_py",
+                "reason": "client_order_id_and_error_classification_helpers_are_module_backed",
+                "module_version": SWING_BROKER_SUBMIT_MODULE_VERSION,
+                "actual_broker_submit_moved": False,
             },
         },
         "submit_proof_operator_brief": submit_proof_brief,
@@ -50339,6 +50344,7 @@ def diagnostics_swing_execution_module_status():
         "broker_free": True,
         "execution_submit_moved": False,
         "actual_broker_submit_moved": False,
+        "broker_submit_pure_helpers_moved": True,
         "pure_helpers_moved": [
             "format_order_qty",
             "build_market_order_payload",
@@ -50347,6 +50353,7 @@ def diagnostics_swing_execution_module_status():
             "limit_entry_preview",
         ],
         "submit_module_status": swing_execution_submit_module_status(),
+        "broker_submit_module_status": swing_broker_submit_module_status(actual_broker_submit_moved=False),
         "checks": checks,
         "mismatch_count": len([k for k, v in checks.items() if not v]),
         "sample": {
