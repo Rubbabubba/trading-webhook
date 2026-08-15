@@ -2766,7 +2766,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-418-hotfix-2-broker-reconciled-bucket-shape-normalization"
+PATCH_VERSION = "patch-419-runtime-coverage-preview-without-market-hours-scan"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -20309,6 +20309,87 @@ def _p407_runtime_rotation_slot_count(configured_max: int, protected_count: int,
         return 0
     target = max(3, int(round(float(configured_max) * 0.16)))
     return max(1, min(target, max(1, int(configured_max) // 4)))
+
+def _p419_runtime_coverage_preview_without_scan(limit: int = 100) -> dict:
+    lim = max(1, min(int(limit or 100), 250))
+
+    runtime_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(universe_symbols() or [])
+        if str(sym or "").strip()
+    ])
+
+    preview = _p315_swing_runtime_scan_symbols(
+        runtime_symbols,
+        scan_options={
+            "scan_reason": "runtime_coverage_preview_without_market_hours_scan",
+            "max_symbols": int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 0),
+        },
+    )
+
+    preview_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(preview.get("symbols") or [])
+        if str(sym or "").strip()
+    ])
+
+    runtime_set = set(runtime_symbols)
+    preview_set = set(preview_symbols)
+    missing = [sym for sym in runtime_symbols if sym not in preview_set]
+    extra = [sym for sym in preview_symbols if sym not in runtime_set]
+
+    configured_max = max(1, int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
+    full_expected = bool(
+        not bool(SWING_RUNTIME_SLIM_ENABLED)
+        or configured_max >= len(runtime_symbols)
+    )
+    full_preview = bool(runtime_symbols and preview_symbols == runtime_symbols)
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "runtime_coverage_preview_without_market_hours_scan",
+        "read_only": True,
+        "does_not_fetch_bars": True,
+        "does_not_submit_orders": True,
+        "does_not_change_state": True,
+        "runtime_symbol_count": len(runtime_symbols),
+        "preview_symbol_count": len(preview_symbols),
+        "coverage_pct": round((len(preview_set & runtime_set) / max(1, len(runtime_set))) * 100.0, 2),
+        "matches_runtime": full_preview,
+        "current_env": {
+            "SWING_RUNTIME_SLIM_ENABLED": bool(SWING_RUNTIME_SLIM_ENABLED),
+            "SWING_RUNTIME_SLIM_MAX_SYMBOLS": configured_max,
+            "SCANNER_MAX_SYMBOLS_PER_CYCLE": int(SCANNER_MAX_SYMBOLS_PER_CYCLE or 0),
+            "SCAN_RUNTIME_BUDGET_SEC": int(SCAN_RUNTIME_BUDGET_SEC or 0),
+        },
+        "full_coverage_expected_from_current_env": full_expected,
+        "runtime_selector_preview": {
+            "enabled": bool(preview.get("enabled")),
+            "applied": bool(preview.get("applied")),
+            "reason": preview.get("reason"),
+            "configured_max_symbols": preview.get("configured_max_symbols"),
+            "original_count": preview.get("original_count"),
+            "excluded_count": preview.get("excluded_count"),
+            "rotation_enabled": bool(preview.get("rotation_enabled")),
+            "rotation_slots": int(preview.get("rotation_slots") or 0),
+            "rotation_symbols": list(preview.get("rotation_symbols") or []),
+            "protected_symbols": list(preview.get("protected_symbols") or []),
+            "watch_symbols": list(preview.get("watch_symbols") or []),
+            "active_symbols": list(preview.get("active_symbols") or []),
+        },
+        "runtime_symbols": runtime_symbols[:lim],
+        "preview_symbols": preview_symbols[:lim],
+        "missing_runtime_symbols": missing[:lim],
+        "extra_preview_symbols": extra[:lim],
+        "recommended_action": (
+            "runtime_config_predicts_full_coverage_next_scan"
+            if full_preview and full_expected
+            else "runtime_config_still_predicts_partial_scan_review_envs"
+            if full_expected and not full_preview
+            else "runtime_slim_intentionally_predicts_subset"
+        ),
+    }
 
 def _p407_candidate_coverage_opportunity_audit(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
@@ -49337,6 +49418,11 @@ def diagnostics_candidates(limit: int = 25):
 def diagnostics_candidate_coverage_opportunity_audit(limit: int = 25):
     return _p407_candidate_coverage_opportunity_audit(limit=limit)
 
+@app.get("/diagnostics/runtime_coverage_preview")
+def diagnostics_runtime_coverage_preview(request: Request, limit: int = 100):
+    require_admin_if_configured(request)
+    return _p419_runtime_coverage_preview_without_scan(limit=limit)
+
 @app.get("/diagnostics/first_2k_rank_relaxation_replay")
 def diagnostics_first_2k_rank_relaxation_replay(limit: int = 25):
     return _p409_rank_relaxation_replay(limit=limit)
@@ -49766,6 +49852,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/live_positions_light",
             f"{base}/reconcile_light",
             f"{base}/orders",
+            f"{base}/runtime_coverage_preview",
         ],
         "no_trade_check": [
             f"{base}/scanner_light",
@@ -49773,6 +49860,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/swing_submit_path_trace",
             f"{base}/market_open_selection_audit_light",
             f"{base}/protective_limit_submit_evidence",
+            f"{base}/runtime_coverage_preview",
         ],
         "submit_fill_proof_check": [
             f"{base}/protective_limit_submit_evidence",

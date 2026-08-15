@@ -135,6 +135,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/release_workflow
 https://trading-webhook-q4d5.onrender.com/diagnostics/repeatability
 https://trading-webhook-q4d5.onrender.com/diagnostics/routes
 https://trading-webhook-q4d5.onrender.com/diagnostics/runtime
+https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_coverage_preview
 https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_preview
 https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/same_day_symbol_loss_cooldown
