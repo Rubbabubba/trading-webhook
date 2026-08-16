@@ -112,6 +112,11 @@ from swing_execution_submit import (
     limit_entry_preview as swing_exec_limit_entry_preview,
     swing_execution_submit_module_status,
 )
+from dashboard_rendering import (
+    DASHBOARD_RENDERING_MODULE_VERSION,
+    dashboard_html_response as _dashboard_html_response,
+    dashboard_no_store_headers as _dashboard_no_store_headers,
+)
 from swing_broker_submit import (
     SWING_BROKER_SUBMIT_MODULE_VERSION,
     alpaca_order_error_text as swing_broker_alpaca_order_error_text,
@@ -2784,7 +2789,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-428-dashboard-route-naming-cleanup-render-helper-split-prep"
+PATCH_VERSION = "patch-429-dashboard-internal-link-scrub-render-helper-extraction-phase-1"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES = env_bool_any(
@@ -47619,12 +47624,6 @@ def diagnostics_live_positions(request: Request):
     require_admin_if_configured(request)
     force = str(request.query_params.get("refresh") or request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes", "y"}
     return _live_operator_snapshot(force=force)
-
-def _dashboard_no_store_headers() -> dict:
-    return {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
-
-def _dashboard_html_response(html_doc: str) -> HTMLResponse:
-    return HTMLResponse(content=html_doc, headers=_dashboard_no_store_headers())
 
 @app.get("/dashboard/live", response_class=HTMLResponse)
 def dashboard_live(request: Request):
