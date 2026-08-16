@@ -2784,7 +2784,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-425-dashboard-fast-operator-surface-heavy-research-opt-in"
+PATCH_VERSION = "patch-426-fast-dashboard-scanner-snapshot-truth-live-link-label-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES = env_bool_any(
@@ -47686,7 +47686,7 @@ def dashboard_live(request: Request):
     refresh_meta = '<meta http-equiv="refresh" content="15">' if auto_refresh else ''
     html_doc = f'''<!doctype html><html><head><meta charset="utf-8"><title>Live Operator Dashboard</title>{refresh_meta}<style>
     body{{font-family:Inter,system-ui,Arial,sans-serif;background:#0b0b16;color:#f6f4ff;margin:18px}} a{{color:#b9a7ff}} .muted{{color:#a9a1c4;font-size:12px}} .top{{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}} .grid{{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:12px;margin:14px 0}} .card{{background:#151522;border:1px solid #30245a;border-radius:10px;padding:14px}} .metric{{font-size:28px;font-weight:800}} .good{{color:#61f2a9}} .bad{{color:#ff5c8a}} .neutral{{color:#ffd36a}} .signed-value{{font-weight:800}} table{{width:100%;border-collapse:collapse;font-size:12px}} th,td{{border-bottom:1px solid #2a2540;padding:7px;text-align:left;vertical-align:top}} th{{color:#d7cbff}} .badge{{border:1px solid #49368a;border-radius:999px;padding:3px 7px;background:#24164c;font-size:11px}} .actions a{{display:inline-block;margin-left:8px;padding:7px 10px;border:1px solid #4c3d89;border-radius:8px;text-decoration:none}}</style></head><body>
-    <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Broker-backed live view. This page intentionally makes live broker/account calls and caches for {int(data.get('cache_ttl_sec') or 0)}s. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}.</p></div><div class="actions"><a href="/dashboard/live?refresh=1">Refresh now</a><a href="/diagnostics/live_positions?refresh=1">JSON</a><a href="/dashboard">Research dashboard</a><a href="/dashboard?detail=full">Full diagnostics</a></div></div>
+    <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Broker-backed live view. This page intentionally makes live broker/account calls and caches for {int(data.get('cache_ttl_sec') or 0)}s. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}.</p></div><div class="actions"><a href="/dashboard/live?refresh=1">Refresh now</a><a href="/diagnostics/live_positions?refresh=1">JSON</a><a href="/dashboard">Fast dashboard</a><a href="/dashboard?detail=full">Full research</a></div></div>
     <div class="card"><div class="muted">Broker Daily Goal</div><div class="metric {'good' if _safe_float((pnl.get('daily_goal_progress') or {}).get('primary_daily_pnl'),0)>=0 else 'bad'}">{_dashboard_money((pnl.get('daily_goal_progress') or {}).get('primary_daily_pnl'))}</div><table>{_dashboard_rows([('goal_source', (pnl.get('daily_goal_progress') or {}).get('primary_source')),('low_target', _dashboard_money((pnl.get('daily_goal_progress') or {}).get('target_low'))),('progress_to_low', _dashboard_pct((pnl.get('daily_goal_progress') or {}).get('progress_to_low_pct'))),('remaining_to_low', _dashboard_money((pnl.get('daily_goal_progress') or {}).get('remaining_to_low'))),('strategy_attribution', _dashboard_money(pnl.get('strategy_attribution_pnl') or pnl.get('today_net_pnl')))])}</table></div>
     <div class="card"><h2>Active Positions Audit</h2><table><thead><tr><th>Symbol</th><th>Trust</th><th>Side</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>U P&amp;L %</th><th>Stop</th><th>Target</th><th>Signal</th><th>Warnings</th></tr></thead><tbody>{pos_rows}</tbody></table><p class="muted">Trust is based on live broker positions, in-memory/persisted active plans, and open orders. Any missing plan, stale plan, short position, or quantity mismatch is highlighted before you rely on the row.</p></div>
     <div class="card" style="margin-top:14px"><h2>Open Orders</h2><table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Filled</th><th>Status</th><th>Submitted</th></tr></thead><tbody>{order_rows}</tbody></table></div>
@@ -47696,7 +47696,7 @@ def dashboard_live(request: Request):
 
 @app.get("/dashboard/fast", response_class=HTMLResponse)
 def dashboard_fast(request: Request):
-    """Patch 425 hotfix: ultra-light operator dashboard with no heavy helper calls."""
+    """Patch 426: ultra-light operator dashboard with scanner light snapshot truth."""
     require_admin_if_configured(request)
     started = _time.perf_counter()
     generated_utc = datetime.now(timezone.utc).isoformat()
@@ -47741,21 +47741,30 @@ def dashboard_fast(request: Request):
     except Exception:
         active_plans = []
 
-    telemetry = _safe_dict(LAST_SCANNER_TELEMETRY if "LAST_SCANNER_TELEMETRY" in globals() else {})
-    latest_scan = _safe_dict(LAST_SCAN_RESULT if "LAST_SCAN_RESULT" in globals() else {})
-    if not latest_scan:
-        latest_scan = _safe_dict(LAST_SCAN_SUMMARY if "LAST_SCAN_SUMMARY" in globals() else {})
+    scanner_light = {}
+    scanner_error = None
+    try:
+        scanner_light = _safe_dict(_p298_scanner_light())
+    except Exception as exc:
+        scanner_error = str(exc)
+        scanner_light = {}
 
+    latest_scan = _safe_dict(scanner_light.get("latest_scan"))
     scanner_rows = [
-        ("last_event", telemetry.get("last_event")),
-        ("last_status", telemetry.get("last_status")),
-        ("in_flight_run", telemetry.get("in_flight_run")),
-        ("attempts_today", telemetry.get("attempts_today")),
-        ("success_today", telemetry.get("success_today")),
-        ("failure_today", telemetry.get("failure_today")),
+        ("ok", scanner_light.get("ok")),
+        ("last_event", scanner_light.get("last_event")),
+        ("last_status", scanner_light.get("last_status")),
+        ("in_flight_run", scanner_light.get("in_flight_run")),
+        ("attempts_today", scanner_light.get("attempts_today")),
+        ("success_today", scanner_light.get("success_today")),
+        ("failure_today", scanner_light.get("failure_today")),
+        ("active_warning_codes", ", ".join(str(x) for x in _safe_list(scanner_light.get("active_warning_codes")))),
         ("latest_scan_reason", latest_scan.get("reason")),
         ("latest_scan_scanned", latest_scan.get("scanned")),
-        ("latest_scan_selected", latest_scan.get("selected_total") or latest_scan.get("selected_symbols")),
+        ("latest_scan_selected_total", latest_scan.get("selected_total")),
+        ("latest_scan_selected_symbols", ", ".join(str(x) for x in _safe_list(latest_scan.get("selected_symbols")))),
+        ("latest_scan_duration_ms", latest_scan.get("duration_ms")),
+        ("scanner_error", scanner_error),
     ]
 
     position_rows = []
