@@ -114,11 +114,13 @@ from swing_execution_submit import (
 )
 from dashboard_rendering import (
     DASHBOARD_RENDERING_MODULE_VERSION,
+    dashboard_heavy_requested_from_params,
     dashboard_heavy_route_guard_html,
     dashboard_html_response as _dashboard_html_response,
     dashboard_no_store_headers as _dashboard_no_store_headers,
     dashboard_rendering_status_snapshot,
     dashboard_research_guard_html,
+    dashboard_route_heavy_allowed,
 )
 from swing_broker_submit import (
     SWING_BROKER_SUBMIT_MODULE_VERSION,
@@ -2792,7 +2794,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-432-dashboard-heavy-route-disable-semantics-remove-heavy-link-footgun"
+PATCH_VERSION = "patch-433-dashboard-rendering-module-extraction-phase-2-route-status-consolidation"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -47862,8 +47864,11 @@ th {{ color:#c4b5fd; font-weight:700; }}
 @app.get("/dashboard/full", response_class=HTMLResponse)
 def dashboard_full(request: Request):
     """Named route for guarded full swing dashboard."""
-    heavy_requested = str(request.query_params.get("heavy") or request.query_params.get("full") or "").strip().lower() in {"1", "true", "yes", "y"}
-    heavy_allowed = bool(DASHBOARD_FULL_HEAVY_ENABLED) and bool(heavy_requested)
+    heavy_requested = dashboard_heavy_requested_from_params(request.query_params)
+    heavy_allowed = dashboard_route_heavy_allowed(
+        heavy_enabled=bool(DASHBOARD_FULL_HEAVY_ENABLED),
+        heavy_requested=heavy_requested,
+    )
     if not heavy_allowed:
         return _dashboard_html_response(
             dashboard_heavy_route_guard_html(
@@ -47880,8 +47885,11 @@ def dashboard_full(request: Request):
 @app.get("/dashboard/research", response_class=HTMLResponse)
 def dashboard_research(request: Request):
     """Named route for guarded dashboard research panels."""
-    heavy_requested = str(request.query_params.get("heavy") or request.query_params.get("full") or "").strip().lower() in {"1", "true", "yes", "y"}
-    heavy_allowed = bool(DASHBOARD_RESEARCH_HEAVY_ENABLED) and bool(heavy_requested)
+    heavy_requested = dashboard_heavy_requested_from_params(request.query_params)
+    heavy_allowed = dashboard_route_heavy_allowed(
+        heavy_enabled=bool(DASHBOARD_RESEARCH_HEAVY_ENABLED),
+        heavy_requested=heavy_requested,
+    )
     if not heavy_allowed:
         return _dashboard_html_response(
             dashboard_research_guard_html(
