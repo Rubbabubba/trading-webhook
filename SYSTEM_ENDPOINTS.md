@@ -4,7 +4,9 @@ https://trading-webhook-q4d5.onrender.com/
 https://trading-webhook-q4d5.onrender.com/admin/release/promote/{target_stage}
 https://trading-webhook-q4d5.onrender.com/dashboard
 https://trading-webhook-q4d5.onrender.com/dashboard/fast
+https://trading-webhook-q4d5.onrender.com/dashboard/full
 https://trading-webhook-q4d5.onrender.com/dashboard/live
+https://trading-webhook-q4d5.onrender.com/dashboard/research
 https://trading-webhook-q4d5.onrender.com/diagnostics/actionable_watchlist
 https://trading-webhook-q4d5.onrender.com/diagnostics/alerts
 https://trading-webhook-q4d5.onrender.com/diagnostics/alternate_entry_shadow
