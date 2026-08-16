@@ -40,6 +40,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_attribution
 https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_circuit_release_criteria
 https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_rollback_lab
 https://trading-webhook-q4d5.onrender.com/diagnostics/daily_goal_preservation_exit
+https://trading-webhook-q4d5.onrender.com/diagnostics/dashboard_rendering_status
 https://trading-webhook-q4d5.onrender.com/diagnostics/decisions
 https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_near_miss_simulation
 https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_policy

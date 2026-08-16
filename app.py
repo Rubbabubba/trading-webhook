@@ -116,6 +116,8 @@ from dashboard_rendering import (
     DASHBOARD_RENDERING_MODULE_VERSION,
     dashboard_html_response as _dashboard_html_response,
     dashboard_no_store_headers as _dashboard_no_store_headers,
+    dashboard_rendering_status_snapshot,
+    dashboard_research_guard_html,
 )
 from swing_broker_submit import (
     SWING_BROKER_SUBMIT_MODULE_VERSION,
@@ -2789,9 +2791,10 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-429-dashboard-internal-link-scrub-render-helper-extraction-phase-1"
+PATCH_VERSION = "patch-430-dashboard-research-route-heavy-load-guard-dashboard-rendering-module-status"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
+DASHBOARD_RESEARCH_HEAVY_ENABLED = env_bool_any("DASHBOARD_RESEARCH_HEAVY_ENABLED", default=False)
 LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES = env_bool_any(
     "LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES",
     default=False,
@@ -47860,8 +47863,26 @@ def dashboard_full(request: Request):
 
 @app.get("/dashboard/research", response_class=HTMLResponse)
 def dashboard_research(request: Request):
-    """Named route for dashboard research panels."""
+    """Named route for guarded dashboard research panels."""
+    heavy_requested = str(request.query_params.get("heavy") or request.query_params.get("full") or "").strip().lower() in {"1", "true", "yes", "y"}
+    if not DASHBOARD_RESEARCH_HEAVY_ENABLED and not heavy_requested:
+        return _dashboard_html_response(
+            dashboard_research_guard_html(
+                patch_version=PATCH_VERSION,
+                research_heavy_enabled=bool(DASHBOARD_RESEARCH_HEAVY_ENABLED),
+                heavy_requested=heavy_requested,
+            )
+        )
     return dashboard(request, detail_override="research")
+
+@app.get("/diagnostics/dashboard_rendering_status")
+def diagnostics_dashboard_rendering_status(request: Request):
+    require_admin_if_configured(request)
+    return dashboard_rendering_status_snapshot(
+        patch_version=PATCH_VERSION,
+        fast_default=bool(DASHBOARD_FAST_DEFAULT),
+        research_heavy_enabled=bool(DASHBOARD_RESEARCH_HEAVY_ENABLED),
+    )
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, detail_override: str | None = None):
@@ -47945,7 +47966,7 @@ def dashboard(request: Request, detail_override: str | None = None):
             return "".join(f"<tr><th>{html.escape(str(k))}</th><td>{html.escape(str(v))}</td></tr>" for k, v in items)
 
     # Snapshot/state files only. The dashboard does not execute broker, reconcile, scanner, or exit work.
-    # Default /dashboard is summary-first; use /dashboard?detail=full for heavier analytics panels.
+    # Default /dashboard is summary-first; use /dashboard/full for heavier analytics panels.
     snap = _p210_safe_dict(_read_json(globals().get("POSITION_SNAPSHOT_PATH") or os.getenv("POSITION_SNAPSHOT_PATH") or "/var/data/positions_snapshot.json", {}))
     scan_state = _p210_safe_dict(_read_json(globals().get("SCAN_STATE_PATH") or os.getenv("SCAN_STATE_PATH") or "/var/data/scan_state.json", {}))
     regime_state = _p210_safe_dict(_read_json(globals().get("REGIME_STATE_PATH") or os.getenv("REGIME_STATE_PATH") or "/var/data/regime_state.json", {}))
@@ -48157,11 +48178,11 @@ def dashboard(request: Request, detail_override: str | None = None):
         rows = _sl(_sd(swing_attribution.get('recommendations')).get(kind))
         return ', '.join(f"{_sd(r).get('category')}:{_sd(r).get('name')}({_dashboard_fmt(_sd(r).get('avg_r'))}R)" for r in rows[:5]) or 'none'
 
-    p207_symbol_rows = _p207_rows(swing_attribution.get('by_symbol'), limit=8) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for symbol attribution.</td></tr>'
-    p207_strategy_rows = _p207_rows(swing_attribution.get('by_strategy'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for strategy attribution.</td></tr>'
-    p207_entry_rows = _p207_rows(swing_attribution.get('by_entry_type'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for entry attribution.</td></tr>'
-    p207_exit_rows = _p207_rows(swing_attribution.get('by_exit_reason'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for exit attribution.</td></tr>'
-    p207_holding_rows = _p207_rows(swing_attribution.get('by_holding_period'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard?detail=full for holding-period attribution.</td></tr>'
+    p207_symbol_rows = _p207_rows(swing_attribution.get('by_symbol'), limit=8) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard/full for symbol attribution.</td></tr>'
+    p207_strategy_rows = _p207_rows(swing_attribution.get('by_strategy'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard/full for strategy attribution.</td></tr>'
+    p207_entry_rows = _p207_rows(swing_attribution.get('by_entry_type'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard/full for entry attribution.</td></tr>'
+    p207_exit_rows = _p207_rows(swing_attribution.get('by_exit_reason'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard/full for exit attribution.</td></tr>'
+    p207_holding_rows = _p207_rows(swing_attribution.get('by_holding_period'), limit=6) if dashboard_full else '<tr><td colspan="5" class="muted">Open /dashboard/full for holding-period attribution.</td></tr>'
     p207_promote_text = _p207_reco_text('promote')
     p207_reduce_text = _p207_reco_text('reduce')
     p207_quarantine_text = _p207_reco_text('quarantine')
@@ -48225,7 +48246,7 @@ def dashboard(request: Request, detail_override: str | None = None):
         holding_bucket_rows = _quality_bucket_rows(trade_quality.get('closed_trades_by_holding_period'))
         exit_reason_rows = _quality_bucket_rows(trade_quality.get('closed_trades_by_exit_reason'))
     else:
-        rank_bucket_rows = symbol_bucket_rows = holding_bucket_rows = exit_reason_rows = '<tr><td colspan="7" class="muted">Heavy analytics are skipped on the summary dashboard. Open /dashboard?detail=full for this breakdown.</td></tr>'
+        rank_bucket_rows = symbol_bucket_rows = holding_bucket_rows = exit_reason_rows = '<tr><td colspan="7" class="muted">Heavy analytics are skipped on the summary dashboard. Open /dashboard/full for this breakdown.</td></tr>'
     open_book = _sd(trade_quality.get('open_book_risk'))
     focus_rejections = _sd(_sd(trade_quality.get('rejected_setup_follow_through')).get('focus_reasons'))
     focus_rejection_rows = ''.join(
@@ -48459,7 +48480,7 @@ def dashboard(request: Request, detail_override: str | None = None):
         intraday_projection_next_actions_text = "open_dashboard_detail_research"
         intraday_projection_optional_actions_text = "none"
         intraday_projection_capacity_ready = False
-        intraday_launch_env_text = "deferred; open /dashboard?detail=research"
+        intraday_launch_env_text = "deferred; open /dashboard/research"
         intraday_signal_debug = {
             "scan_ts_utc": latest_scan.get("ts_utc"),
             "actionable_state": "deferred_dashboard_research_opt_in",
@@ -48483,7 +48504,7 @@ def dashboard(request: Request, detail_override: str | None = None):
         hybrid_proof_recent_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_dashboard_fmt(_sd(r).get('latest_r'))}R" for r in _sl(HYBRID_PROOF_LEDGER)[-5:]) or "none"
     else:
         latest_intraday_shadow = {"enabled": False, "status": "deferred_dashboard_research_opt_in", "live_submission": False}
-        intraday_shadow_top_text = "deferred; open /dashboard?detail=research"
+        intraday_shadow_top_text = "deferred; open /dashboard/research"
         hybrid_proof_metrics = {
             "ledger_count": "deferred",
             "positive_rate": 0.0,
@@ -48500,7 +48521,7 @@ def dashboard(request: Request, detail_override: str | None = None):
             "min_shadow_trades": "deferred",
             "min_avg_r": "deferred",
         }
-        hybrid_proof_recent_text = "deferred; open /dashboard?detail=research"
+        hybrid_proof_recent_text = "deferred; open /dashboard/research"
 
     entry_control_status = "enabled" if NEW_ENTRIES_ENABLED else "exits_only"
     reclaim_debug = _sd(intraday_signal_debug.get('intraday_vwap_reclaim'))
@@ -48542,14 +48563,14 @@ def dashboard(request: Request, detail_override: str | None = None):
 '''
     else:
         performance_detail_html = f'''
-<div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R'),('sample_maturity', maturity)])}</table><p class="muted">Heavy rank, symbol, holding-period, exit-attribution, and follow-through analytics are skipped on the summary dashboard. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for the full diagnostic view.</p></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
+<div class="section grid"><div class="card"><h2>Performance Analytics</h2><table>{_rows([('closed_trades', closed_trades),('wins', wins),('losses', losses),('flat', flat),('win_rate', _pct(win_rate*100.0)),('gross_pnl', _money(gross_pnl)),('avg_r', f'{avg_r}R'),('sample_maturity', maturity)])}</table><p class="muted">Heavy rank, symbol, holding-period, exit-attribution, and follow-through analytics are skipped on the summary dashboard. Open <a href="/dashboard/full">/dashboard/full</a> for the full diagnostic view.</p></div><div class="card"><h2>Open Book Risk</h2><table>{_rows([('open_positions', open_book.get('open_positions')),('max_open_positions', open_book.get('max_open_positions')),('total_notional', _money(open_book.get('total_notional'))),('total_risk_to_stop', _money(open_book.get('total_risk_to_stop'))),('total_unrealized_pl', _money(open_book.get('total_unrealized_pl'))),('portfolio_exposure_cap_pct', _pct(open_book.get('portfolio_exposure_cap_pct'))),('symbol_exposure_cap_pct', _pct(open_book.get('symbol_exposure_cap_pct')))])}</table></div></div>
 '''
         diagnostic_detail_html = f'''
-<div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('risk_scale_next_required_fix', p208_risk_explanation.get('risk_scale_next_required_fix'))])}</table><p class="muted">Summary mode defers heavy attribution and tuning simulations. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> or <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a> for full promote / reduce / quarantine details.</p></div><div class="card"><h2>Post-Tuning Exit Validation</h2><table>{_rows([('post_tuning_validation_ready', post_tuning_validation.get('post_tuning_validation_ready')),('risk_scale_unlock_candidate', post_tuning_validation.get('risk_scale_unlock_candidate')),('risk_scale_unlock_blockers', ', '.join(_sl(post_tuning_validation.get('risk_scale_unlock_blockers'))) or 'none'),('recommended_action', post_tuning_validation.get('recommended_action'))])}</table><p class="muted">Detailed post-tuning validation is deferred on the fast dashboard. Full JSON: <a href="/diagnostics/post_tuning_exit_validation">/diagnostics/post_tuning_exit_validation</a>.</p></div></div>
+<div class="section grid"><div class="card"><h2>Swing Profit Acceleration</h2><table>{_rows([('risk_current_dollars', _money(swing_risk_scaling.get('current_risk_dollars'))),('risk_recommended_dollars', _money(swing_risk_scaling.get('recommended_risk_dollars'))),('risk_ready_for_40', swing_risk_scaling.get('ready_for_40_risk')),('risk_ready_for_50', swing_risk_scaling.get('ready_for_50_risk')),('risk_blockers', p207_risk_blockers_text),('risk_scale_next_required_fix', p208_risk_explanation.get('risk_scale_next_required_fix'))])}</table><p class="muted">Summary mode defers heavy attribution and tuning simulations. Open <a href="/dashboard/full">/dashboard/full</a> or <a href="/diagnostics/swing_performance_attribution">/diagnostics/swing_performance_attribution</a> for full promote / reduce / quarantine details.</p></div><div class="card"><h2>Post-Tuning Exit Validation</h2><table>{_rows([('post_tuning_validation_ready', post_tuning_validation.get('post_tuning_validation_ready')),('risk_scale_unlock_candidate', post_tuning_validation.get('risk_scale_unlock_candidate')),('risk_scale_unlock_blockers', ', '.join(_sl(post_tuning_validation.get('risk_scale_unlock_blockers'))) or 'none'),('recommended_action', post_tuning_validation.get('recommended_action'))])}</table><p class="muted">Detailed post-tuning validation is deferred on the fast dashboard. Full JSON: <a href="/diagnostics/post_tuning_exit_validation">/diagnostics/post_tuning_exit_validation</a>.</p></div></div>
 <div class="section grid"><div class="card"><h2>Swing Tuning Simulator</h2><table>{_rows([('mode', 'deferred_summary_fast_path'),('best_gross_pnl_delta', 'deferred'),('recommended_action', 'open_dashboard_detail_full_or_diagnostics')])}</table><p class="muted">Deferred on the fast dashboard. Full JSON: <a href="/diagnostics/swing_tuning_simulator">/diagnostics/swing_tuning_simulator</a>.</p></div><div class="card"><h2>Stall Exit Drilldown</h2><table>{_rows([('stall_exit_count', 'deferred'),('recommended_exit_tuning', 'open_full_dashboard'),('recommended_env_hint', 'open_full_dashboard')])}</table><p class="muted">Deferred on the fast dashboard. Full JSON: <a href="/diagnostics/swing_stall_exit_drilldown">/diagnostics/swing_stall_exit_drilldown</a>.</p></div></div>
-<div class="section grid"><div class="card"><h2>Exit Tightening Simulations</h2><p class="muted">Deferred on the fast dashboard. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for simulation rows.</p></div><div class="card"><h2>Stall Tuning Monitor</h2><table>{_rows([('active_SWING_STALL_MIN_R', SWING_STALL_MIN_R),('active_SWING_STALL_EXIT_DAYS', SWING_STALL_EXIT_DAYS),('active_SWING_STALL_MAX_LOSS_R', SWING_STALL_MAX_LOSS_R),('negative_stall_exit_count_since_tuning', 'deferred'),('assessment', stall_monitor.get('assessment'))])}</table><p class="muted">Deferred on the fast dashboard. Full JSON: <a href="/diagnostics/stall_exit_tuning_monitor">/diagnostics/stall_exit_tuning_monitor</a>.</p></div></div>
-<div class="section grid"><div class="card"><h2>Worst Trade Contributors</h2><p class="muted">Deferred on the fast dashboard. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for worst 10 closed trades by R.</p></div><div class="card"><h2>Quarantine Controls</h2><table>{_rows([('SWING_QUARANTINE_SYMBOLS', ', '.join(_sl(p208_quarantine_controls.get('symbols'))) or 'none'),('SWING_QUARANTINE_STRATEGIES', ', '.join(_sl(p208_quarantine_controls.get('strategies'))) or 'none'),('SWING_QUARANTINE_ENTRY_TYPES', ', '.join(_sl(p208_quarantine_controls.get('entry_types'))) or 'none'),('SWING_QUARANTINE_ENFORCE', p208_quarantine_controls.get('enforced'))])}</table><p class="muted">Quarantine drilldown is deferred unless <a href="/dashboard?detail=full">full dashboard</a> is opened.</p></div></div>
-<div class="section grid"><div class="card"><h2>Signal / Rejection Summary</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('top_reclaim_blockers', reclaim_breakdown_text),('top_continuation_blockers', continuation_breakdown_text),('dominant_recent_blocker', dominant_recent_blocker),('rejection_window', rejection_scan_window)])}</table><p class="muted">Detailed intraday signal debug, top rejection rows, rejection totals, and correlation relaxation are skipped in summary mode. Open <a href="/dashboard?detail=full">/dashboard?detail=full</a> for full diagnostics.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Summary mode shows current top persisted rows only. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
+<div class="section grid"><div class="card"><h2>Exit Tightening Simulations</h2><p class="muted">Deferred on the fast dashboard. Open <a href="/dashboard/full">/dashboard/full</a> for simulation rows.</p></div><div class="card"><h2>Stall Tuning Monitor</h2><table>{_rows([('active_SWING_STALL_MIN_R', SWING_STALL_MIN_R),('active_SWING_STALL_EXIT_DAYS', SWING_STALL_EXIT_DAYS),('active_SWING_STALL_MAX_LOSS_R', SWING_STALL_MAX_LOSS_R),('negative_stall_exit_count_since_tuning', 'deferred'),('assessment', stall_monitor.get('assessment'))])}</table><p class="muted">Deferred on the fast dashboard. Full JSON: <a href="/diagnostics/stall_exit_tuning_monitor">/diagnostics/stall_exit_tuning_monitor</a>.</p></div></div>
+<div class="section grid"><div class="card"><h2>Worst Trade Contributors</h2><p class="muted">Deferred on the fast dashboard. Open <a href="/dashboard/full">/dashboard/full</a> for worst 10 closed trades by R.</p></div><div class="card"><h2>Quarantine Controls</h2><table>{_rows([('SWING_QUARANTINE_SYMBOLS', ', '.join(_sl(p208_quarantine_controls.get('symbols'))) or 'none'),('SWING_QUARANTINE_STRATEGIES', ', '.join(_sl(p208_quarantine_controls.get('strategies'))) or 'none'),('SWING_QUARANTINE_ENTRY_TYPES', ', '.join(_sl(p208_quarantine_controls.get('entry_types'))) or 'none'),('SWING_QUARANTINE_ENFORCE', p208_quarantine_controls.get('enforced'))])}</table><p class="muted">Quarantine drilldown is deferred unless <a href="/dashboard/full">full dashboard</a> is opened.</p></div></div>
+<div class="section grid"><div class="card"><h2>Signal / Rejection Summary</h2><table>{_rows([('latest_scan_ts', intraday_signal_debug.get('scan_ts_utc')),('actionable_state', intraday_signal_debug.get('actionable_state')),('scanned', intraday_signal_debug.get('scanned')),('signals', intraday_signal_debug.get('signals')),('top_reclaim_blockers', reclaim_breakdown_text),('top_continuation_blockers', continuation_breakdown_text),('dominant_recent_blocker', dominant_recent_blocker),('rejection_window', rejection_scan_window)])}</table><p class="muted">Detailed intraday signal debug, top rejection rows, rejection totals, and correlation relaxation are skipped in summary mode. Open <a href="/dashboard/full">/dashboard/full</a> for full diagnostics.</p></div><div class="card"><h2>Top Candidate Rejections</h2><table><thead><tr><th>Symbol</th><th>Rank</th><th>Close</th><th>Breakout %</th><th>Reasons</th></tr></thead><tbody>{top_rejection_html}</tbody></table><p class="muted">Summary mode shows current top persisted rows only. Historical book-state rows: {html.escape(stale_book_rejection_note)}.</p></div></div>
 '''
     _mark_dashboard_phase("pre_html_ms")
     server_render_ms = round((_time.perf_counter() - dashboard_started) * 1000.0, 1)
