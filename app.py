@@ -114,6 +114,7 @@ from swing_execution_submit import (
 )
 from dashboard_rendering import (
     DASHBOARD_RENDERING_MODULE_VERSION,
+    dashboard_heavy_route_guard_html,
     dashboard_html_response as _dashboard_html_response,
     dashboard_no_store_headers as _dashboard_no_store_headers,
     dashboard_rendering_status_snapshot,
@@ -2791,9 +2792,11 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-430-dashboard-research-route-heavy-load-guard-dashboard-rendering-module-status"
+PATCH_VERSION = "patch-431-dashboard-full-route-time-budget-rendering-status-version-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
+DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
+DASHBOARD_FULL_ROUTE_BUDGET_MS = getenv_int_any("DASHBOARD_FULL_ROUTE_BUDGET_MS", default=2500)
 DASHBOARD_RESEARCH_HEAVY_ENABLED = env_bool_any("DASHBOARD_RESEARCH_HEAVY_ENABLED", default=False)
 LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES = env_bool_any(
     "LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES",
@@ -47858,7 +47861,19 @@ th {{ color:#c4b5fd; font-weight:700; }}
 
 @app.get("/dashboard/full", response_class=HTMLResponse)
 def dashboard_full(request: Request):
-    """Named route for full swing dashboard."""
+    """Named route for guarded full swing dashboard."""
+    heavy_requested = str(request.query_params.get("heavy") or request.query_params.get("full") or "").strip().lower() in {"1", "true", "yes", "y"}
+    if not DASHBOARD_FULL_HEAVY_ENABLED and not heavy_requested:
+        return _dashboard_html_response(
+            dashboard_heavy_route_guard_html(
+                patch_version=PATCH_VERSION,
+                route_title="Full Swing Dashboard Guard",
+                route_path="/dashboard/full",
+                heavy_enabled=bool(DASHBOARD_FULL_HEAVY_ENABLED),
+                heavy_requested=heavy_requested,
+                route_budget_ms=int(DASHBOARD_FULL_ROUTE_BUDGET_MS or 0),
+            )
+        )
     return dashboard(request, detail_override="full")
 
 @app.get("/dashboard/research", response_class=HTMLResponse)
@@ -47881,6 +47896,8 @@ def diagnostics_dashboard_rendering_status(request: Request):
     return dashboard_rendering_status_snapshot(
         patch_version=PATCH_VERSION,
         fast_default=bool(DASHBOARD_FAST_DEFAULT),
+        full_heavy_enabled=bool(DASHBOARD_FULL_HEAVY_ENABLED),
+        full_route_budget_ms=int(DASHBOARD_FULL_ROUTE_BUDGET_MS or 0),
         research_heavy_enabled=bool(DASHBOARD_RESEARCH_HEAVY_ENABLED),
     )
 
