@@ -2784,8 +2784,13 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-424-broker-submit-transport-shadow-parity-hook"
+PATCH_VERSION = "patch-425-dashboard-fast-operator-surface-heavy-research-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
+DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
+LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES = env_bool_any(
+    "LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES",
+    default=False,
+)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
 
@@ -40545,10 +40550,10 @@ def _live_operator_snapshot(force: bool = False) -> dict:
                 "recovered": bool(plan.get("recovered")),
                 "attribution_source": plan.get("attribution_source"),
             },
-            "defensive_open_guard": _p245_defensive_open_position_guard(sym, plan, pos),
-            "entry_quality_memory_guard": _p246_entry_quality_memory_guard(sym, plan, pos),
-            "entry_quality_exit_advisory": _p250_entry_quality_exit_advisory(sym, plan, pos),
-            "entry_memory_backfill_probe": _p247_entry_quality_backfill_probe_for_position(sym, plan),
+            "defensive_open_guard": _p245_defensive_open_position_guard(sym, plan, pos) if LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES else {"skipped": True, "reason": "live_dashboard_fast_path"},
+            "entry_quality_memory_guard": _p246_entry_quality_memory_guard(sym, plan, pos) if LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES else {"skipped": True, "reason": "live_dashboard_fast_path"},
+            "entry_quality_exit_advisory": _p250_entry_quality_exit_advisory(sym, plan, pos) if LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES else {"skipped": True, "reason": "live_dashboard_fast_path"},
+            "entry_memory_backfill_probe": _p247_entry_quality_backfill_probe_for_position(sym, plan) if LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES else {"skipped": True, "reason": "live_dashboard_fast_path"},
             "open_orders": symbol_orders,
         })
     halt_truth = daily_halt_truth_snapshot()
@@ -47689,6 +47694,174 @@ def dashboard_live(request: Request):
     </body></html>'''
     return HTMLResponse(content=html_doc, headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
 
+@app.get("/dashboard/fast", response_class=HTMLResponse)
+def dashboard_fast(request: Request):
+    """Patch 425: fast operator dashboard using light snapshots only."""
+    require_admin_if_configured(request)
+    started = _time.perf_counter()
+    generated_utc = datetime.now(timezone.utc).isoformat()
+
+    def _safe_dict(v):
+        return v if isinstance(v, dict) else {}
+
+    def _safe_list(v):
+        return v if isinstance(v, list) else []
+
+    def _esc(v):
+        return html.escape(str(v if v is not None else ""))
+
+    def _pick(row, *keys, default=""):
+        row = _safe_dict(row)
+        for key in keys:
+            value = row.get(key)
+            if value not in (None, ""):
+                return value
+        return default
+
+    def _card(title, rows):
+        body = "\n".join(
+            f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>"
+            for k, v in rows
+        )
+        return f"<section class='card'><h2>{_esc(title)}</h2><table>{body}</table></section>"
+
+    try:
+        scanner_light = _safe_dict(_p298_scanner_light())
+    except Exception as exc:
+        scanner_light = {"ok": False, "error": str(exc)}
+
+    try:
+        live_light = _safe_dict(_p298_live_positions_light())
+    except Exception as exc:
+        live_light = {"ok": False, "error": str(exc)}
+
+    try:
+        reconcile_light = _safe_dict(_p298_reconcile_light())
+    except Exception as exc:
+        reconcile_light = {"ok": False, "error": str(exc)}
+
+    scanner_summary = _safe_dict(scanner_light.get("latest_scan"))
+    live_summary = _safe_dict(live_light.get("summary"))
+    reconcile_summary = _safe_dict(reconcile_light.get("summary") or reconcile_light.get("reconcile"))
+    positions = _safe_list(live_light.get("positions"))[:12]
+
+    position_rows = []
+    for row in positions:
+        position_rows.append(
+            "<tr>"
+            f"<td>{_esc(_pick(row, 'symbol'))}</td>"
+            f"<td>{_esc(_pick(row, 'qty'))}</td>"
+            f"<td>{_esc(_pick(row, 'avg_entry_price', 'entry_price'))}</td>"
+            f"<td>{_esc(_pick(row, 'current_price', 'last_price'))}</td>"
+            f"<td>{_esc(_pick(row, 'unrealized_pl'))}</td>"
+            f"<td>{_esc(_pick(row, 'signal', 'strategy_name'))}</td>"
+            "</tr>"
+        )
+
+    if not position_rows:
+        position_rows.append("<tr><td colspan='6'>No snapshot positions.</td></tr>")
+
+    render_ms = round((_time.perf_counter() - started) * 1000.0, 1)
+
+    html_doc = f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fast Operator Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body {{
+    margin: 0;
+    padding: 18px;
+    background: #0d0b18;
+    color: #f5f2ff;
+    font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+}}
+a {{ color: #b9a7ff; }}
+.header {{
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 16px;
+}}
+.grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+}}
+.card {{
+    border: 1px solid #35255e;
+    border-radius: 8px;
+    padding: 14px;
+    background: #151223;
+}}
+h1 {{ margin: 0 0 6px; font-size: 26px; }}
+h2 {{ margin: 0 0 10px; font-size: 16px; }}
+.small {{ color: #c9c0ea; font-size: 12px; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+th, td {{ text-align: left; padding: 7px 4px; border-bottom: 1px solid #28213f; }}
+th {{ color: #c4b5fd; font-weight: 700; }}
+.actions a {{
+    display: inline-block;
+    margin-left: 8px;
+    padding: 7px 10px;
+    border: 1px solid #7c5cff;
+    border-radius: 6px;
+    text-decoration: none;
+}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <h1>Fast Operator Dashboard</h1>
+    <div class="small">Generated {generated_utc}. Render {render_ms} ms. Light endpoints only.</div>
+  </div>
+  <div class="actions">
+    <a href="/dashboard/fast">Refresh</a>
+    <a href="/dashboard/live">Live Broker View</a>
+    <a href="/dashboard?detail=full">Full Research</a>
+  </div>
+</div>
+
+<div class="grid">
+{_card("Scanner", [
+    ("ok", scanner_light.get("ok")),
+    ("last_event", scanner_light.get("last_event")),
+    ("last_status", scanner_light.get("last_status")),
+    ("in_flight_run", scanner_light.get("in_flight_run")),
+    ("active_warning_codes", ", ".join(str(x) for x in _safe_list(scanner_light.get("active_warning_codes")))),
+    ("scanned", scanner_summary.get("scanned")),
+    ("selected_total", scanner_summary.get("selected_total")),
+    ("eligible_total", scanner_summary.get("eligible_total")),
+    ("duration_ms", scanner_summary.get("duration_ms")),
+])}
+{_card("Positions", [
+    ("ok", live_light.get("ok")),
+    ("snapshot_position_count", live_summary.get("snapshot_position_count")),
+    ("active_plan_count", live_summary.get("active_plan_count")),
+    ("position_truth_status", live_summary.get("position_truth_status")),
+])}
+{_card("Reconcile", [
+    ("ok", reconcile_light.get("ok")),
+    ("broker_positions_count", reconcile_summary.get("broker_positions_count")),
+    ("active_plan_count", reconcile_summary.get("active_plan_count")),
+    ("open_order_count", reconcile_summary.get("open_order_count")),
+    ("truth_status", reconcile_summary.get("truth_status") or reconcile_summary.get("position_truth_status")),
+])}
+</div>
+
+<section class="card" style="margin-top:12px">
+<h2>Positions</h2>
+<table>
+<tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&L</th><th>Signal</th></tr>
+{''.join(position_rows)}
+</table>
+</section>
+</body>
+</html>"""
+    return HTMLResponse(content=html_doc, headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
@@ -47698,6 +47871,8 @@ def dashboard(request: Request):
     generated_utc = datetime.now(timezone.utc).isoformat()
     dashboard_detail = str(request.query_params.get("detail") or request.query_params.get("view") or "summary").strip().lower()
     dashboard_full = dashboard_detail in {"full", "heavy", "debug", "all"}
+    if DASHBOARD_FAST_DEFAULT and not dashboard_full:
+        return dashboard_fast(request)
     dashboard_timings: dict[str, float] = {}
 
     def _mark_dashboard_phase(name: str):
