@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-SWING_BROKER_TRANSPORT_MODULE_VERSION = "patch-422-broker-submit-transport-wrapper-split-prep"
+SWING_BROKER_TRANSPORT_MODULE_VERSION = "patch-423-broker-submit-transport-dry-run-parity-probe"
 
 
 @dataclass(frozen=True)
@@ -105,6 +105,88 @@ def submit_with_injected_transport(
         "order": None,
     }
 
+def broker_transport_dry_run_parity_probe() -> dict:
+    """Exercise injected transport paths without importing Alpaca or submitting."""
+
+    fake_sdk_order = {
+        "id": "sdk-order-1",
+        "client_order_id": "dry-sdk",
+        "status": "accepted",
+    }
+    fake_rest_order = {
+        "id": "rest-order-1",
+        "client_order_id": "dry-rest",
+        "status": "accepted",
+    }
+
+    sdk_success = submit_with_injected_transport(
+        sdk_submit_fn=lambda: fake_sdk_order,
+        rest_submit_fn=lambda: fake_rest_order,
+        nonretryable_error_fn=lambda err: False,
+        client_order_id="dry-sdk",
+        rest_fallback_enabled=True,
+    )
+
+    fallback_success = submit_with_injected_transport(
+        sdk_submit_fn=lambda: (_ for _ in ()).throw(RuntimeError("temporary sdk timeout")),
+        rest_submit_fn=lambda: fake_rest_order,
+        nonretryable_error_fn=lambda err: False,
+        client_order_id="dry-rest",
+        rest_fallback_enabled=True,
+    )
+
+    nonretryable_block = submit_with_injected_transport(
+        sdk_submit_fn=lambda: (_ for _ in ()).throw(RuntimeError("insufficient qty available")),
+        rest_submit_fn=lambda: fake_rest_order,
+        nonretryable_error_fn=lambda err: "insufficient qty" in str(err).lower(),
+        client_order_id="dry-nonretryable",
+        rest_fallback_enabled=True,
+    )
+
+    full_failure = submit_with_injected_transport(
+        sdk_submit_fn=lambda: (_ for _ in ()).throw(RuntimeError("sdk down")),
+        rest_submit_fn=lambda: (_ for _ in ()).throw(RuntimeError("rest down")),
+        nonretryable_error_fn=lambda err: False,
+        client_order_id="dry-fail",
+        rest_fallback_enabled=True,
+    )
+
+    checks = {
+        "sdk_success_ok": bool(sdk_success.get("ok")) and sdk_success.get("transport") == "sdk",
+        "fallback_success_ok": bool(fallback_success.get("ok")) and fallback_success.get("transport") == "rest_fallback",
+        "nonretryable_block_ok": (
+            not bool(nonretryable_block.get("ok"))
+            and bool(nonretryable_block.get("nonretryable"))
+            and nonretryable_block.get("transport") == "sdk"
+        ),
+        "full_failure_ok": (
+            not bool(full_failure.get("ok"))
+            and full_failure.get("transport") == "rest_fallback"
+            and "rest down" in str(full_failure.get("error") or "")
+        ),
+    }
+
+    return {
+        "ok": all(checks.values()),
+        "mode": "broker_submit_transport_dry_run_parity_probe",
+        "module": "swing_broker_transport",
+        "module_version": SWING_BROKER_TRANSPORT_MODULE_VERSION,
+        "broker_free": True,
+        "production_submit_uses_transport": False,
+        "checks": checks,
+        "mismatch_count": len([name for name, passed in checks.items() if not passed]),
+        "cases": {
+            "sdk_success": {k: v for k, v in sdk_success.items() if k != "order"},
+            "fallback_success": {k: v for k, v in fallback_success.items() if k != "order"},
+            "nonretryable_block": {k: v for k, v in nonretryable_block.items() if k != "order"},
+            "full_failure": {k: v for k, v in full_failure.items() if k != "order"},
+        },
+        "recommended_action": (
+            "transport_dry_run_parity_ok_ready_for_opt_in_shadow_routing"
+            if all(checks.values())
+            else "fix_transport_dry_run_parity_before_live_routing"
+        ),
+    }
 
 def swing_broker_transport_module_status(*, production_submit_uses_transport: bool = False) -> dict:
     return {
@@ -119,6 +201,7 @@ def swing_broker_transport_module_status(*, production_submit_uses_transport: bo
             "classify_transport_result",
             "classify_transport_error",
             "submit_with_injected_transport",
+            "broker_transport_dry_run_parity_probe",
         ],
         "recommended_action": (
             "transport_wrapper_live_in_production_verify_submit"

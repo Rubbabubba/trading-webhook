@@ -122,6 +122,7 @@ from swing_broker_submit import (
 )
 from swing_broker_transport import (
     SWING_BROKER_TRANSPORT_MODULE_VERSION,
+    broker_transport_dry_run_parity_probe,
     swing_broker_transport_module_status,
 )
 from broker_client import (
@@ -2782,7 +2783,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-422-broker-submit-transport-wrapper-split-prep"
+PATCH_VERSION = "patch-423-broker-submit-transport-dry-run-parity-probe"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 OPENING_WINDOW_REFRESH_MINUTES = int(os.getenv("OPENING_WINDOW_REFRESH_MINUTES", "15") or 15)
 OPENING_WINDOW_REGIME_MAX_AGE_SEC = int(os.getenv("OPENING_WINDOW_REGIME_MAX_AGE_SEC", "600") or 600)
@@ -5885,6 +5886,7 @@ def _build_fingerprint_snapshot() -> dict:
             "swing_broker_submit": swing_broker_submit_module_status(actual_broker_submit_moved=False),
             "swing_broker_transport_module_version": SWING_BROKER_TRANSPORT_MODULE_VERSION,
             "swing_broker_transport": swing_broker_transport_module_status(production_submit_uses_transport=False),
+            "swing_broker_transport_dry_run_probe": broker_transport_dry_run_parity_probe(),
             "swing_light_diagnostics_module_version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
             "swing_runtime_config_module_version": SWING_RUNTIME_CONFIG_MODULE_VERSION,
             "swing_selection_contract_module_version": SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -50055,6 +50057,7 @@ def diagnostics_swing_core_status():
             "swing_execution_submit_compatibility_module_split",
             "swing_broker_submit_pure_helper_boundary_added",
             "swing_broker_transport_wrapper_boundary_added",
+            "swing_broker_transport_dry_run_parity_probe_added",
         ],
         "module_split_status": {
             "selection_contract": {
@@ -50082,10 +50085,11 @@ def diagnostics_swing_core_status():
             },
             "broker_transport": {
                 "module": "swing_broker_transport",
-                "status": "transport_wrapper_boundary_added_production_submit_still_in_app_py",
+                "status": "transport_wrapper_dry_run_parity_probe_added_production_submit_still_in_app_py",
                 "reason": "transport_interface_is_dependency_injected_and_not_live_routed_yet",
                 "module_version": SWING_BROKER_TRANSPORT_MODULE_VERSION,
                 "production_submit_uses_transport": False,
+                "dry_run_probe_ok": bool(broker_transport_dry_run_parity_probe().get("ok")),
             },
         },
         "submit_proof_operator_brief": submit_proof_brief,
@@ -50339,6 +50343,8 @@ def diagnostics_swing_execution_module_status():
         fractional_limit_enabled=bool(config.fractional_enabled),
     )
 
+    transport_probe = broker_transport_dry_run_parity_probe()
+
     checks = {
         "format_order_qty_match": app_qty == module_qty,
         "market_payload_match": app_market == module_market,
@@ -50347,6 +50353,7 @@ def diagnostics_swing_execution_module_status():
         "submit_decision_broker_free": bool(module_submit_decision.get("broker_free")),
         "submit_decision_limit": str(module_submit_decision.get("order_type") or "").lower() == "limit",
         "submit_decision_marketable": bool(module_submit_decision.get("marketable")),
+        "broker_transport_dry_run_probe_ok": bool(transport_probe.get("ok")),
     }
 
     return {
@@ -50363,6 +50370,7 @@ def diagnostics_swing_execution_module_status():
         "broker_submit_pure_helpers_moved": True,
         "broker_transport_wrapper_added": True,
         "production_submit_uses_transport_wrapper": False,
+        "broker_transport_dry_run_probe_ok": bool(transport_probe.get("ok")),
         "pure_helpers_moved": [
             "format_order_qty",
             "build_market_order_payload",
@@ -50373,6 +50381,7 @@ def diagnostics_swing_execution_module_status():
         "submit_module_status": swing_execution_submit_module_status(),
         "broker_submit_module_status": swing_broker_submit_module_status(actual_broker_submit_moved=False),
         "broker_transport_module_status": swing_broker_transport_module_status(production_submit_uses_transport=False),
+        "broker_transport_dry_run_probe": transport_probe,
         "checks": checks,
         "mismatch_count": len([k for k, v in checks.items() if not v]),
         "sample": {
@@ -50398,6 +50407,14 @@ def diagnostics_swing_execution_module_status():
             else "execution_helper_module_mismatch_investigate_before_submit_split"
         ),
     }
+
+@app.get("/diagnostics/broker_submit_transport_dry_run_probe")
+def diagnostics_broker_submit_transport_dry_run_probe():
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        **broker_transport_dry_run_parity_probe(),
+    })
 
 @app.get("/diagnostics/swing_selection_contract_module_status")
 def diagnostics_swing_selection_contract_module_status(limit: int = 10):
