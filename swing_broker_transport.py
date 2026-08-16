@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-SWING_BROKER_TRANSPORT_MODULE_VERSION = "patch-423-broker-submit-transport-dry-run-parity-probe"
+SWING_BROKER_TRANSPORT_MODULE_VERSION = "patch-424-broker-submit-transport-shadow-parity-hook"
 
 
 @dataclass(frozen=True)
@@ -188,6 +188,57 @@ def broker_transport_dry_run_parity_probe() -> dict:
         ),
     }
 
+def broker_transport_shadow_parity_hook(
+    *,
+    symbol: str,
+    side: str,
+    qty: float,
+    order_type: str,
+    client_order_id: str,
+    limit_price: float | None = None,
+    production_submit_uses_transport: bool = False,
+) -> dict:
+    """Build a production-adjacent shadow transport payload without submitting."""
+
+    clean_order_type = str(order_type or "").strip().lower()
+    clean_symbol = str(symbol or "").strip().upper()
+    clean_side = str(side or "").strip().lower()
+
+    checks = {
+        "symbol_present": bool(clean_symbol),
+        "side_valid": clean_side in {"buy", "sell"},
+        "qty_positive": float(qty or 0) > 0,
+        "order_type_valid": clean_order_type in {"market", "limit"},
+        "client_order_id_present": bool(str(client_order_id or "").strip()),
+        "limit_price_valid": clean_order_type != "limit" or float(limit_price or 0) > 0,
+        "production_not_routed": not bool(production_submit_uses_transport),
+    }
+
+    return {
+        "ok": all(checks.values()),
+        "mode": "broker_submit_transport_shadow_parity_hook",
+        "module": "swing_broker_transport",
+        "module_version": SWING_BROKER_TRANSPORT_MODULE_VERSION,
+        "broker_free": True,
+        "shadow_only": True,
+        "production_submit_uses_transport": bool(production_submit_uses_transport),
+        "would_use_transport_wrapper": True,
+        "would_call_alpaca": False,
+        "symbol": clean_symbol,
+        "side": clean_side,
+        "qty": float(qty or 0),
+        "order_type": clean_order_type,
+        "limit_price": float(limit_price) if limit_price is not None else None,
+        "client_order_id": str(client_order_id or ""),
+        "checks": checks,
+        "mismatch_count": len([name for name, passed in checks.items() if not passed]),
+        "recommended_action": (
+            "shadow_hook_ready_for_opt_in_transport_routing"
+            if all(checks.values())
+            else "fix_shadow_hook_payload_before_transport_routing"
+        ),
+    }
+
 def swing_broker_transport_module_status(*, production_submit_uses_transport: bool = False) -> dict:
     return {
         "ok": True,
@@ -202,6 +253,7 @@ def swing_broker_transport_module_status(*, production_submit_uses_transport: bo
             "classify_transport_error",
             "submit_with_injected_transport",
             "broker_transport_dry_run_parity_probe",
+            "broker_transport_shadow_parity_hook",
         ],
         "recommended_action": (
             "transport_wrapper_live_in_production_verify_submit"

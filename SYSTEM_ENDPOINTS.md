@@ -15,6 +15,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/broker_daily_goal_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_daily_pnl_dedup
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_performance
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_submit_transport_dry_run_probe
+https://trading-webhook-q4d5.onrender.com/diagnostics/broker_submit_transport_shadow_hook
 https://trading-webhook-q4d5.onrender.com/diagnostics/build
 https://trading-webhook-q4d5.onrender.com/diagnostics/bundle/{scope}
 https://trading-webhook-q4d5.onrender.com/diagnostics/canceled_entry_plan_cleanup
