@@ -114,13 +114,18 @@ from swing_execution_submit import (
 )
 from dashboard_rendering import (
     DASHBOARD_RENDERING_MODULE_VERSION,
+    dashboard_escape as dashboard_render_escape,
     dashboard_heavy_requested_from_params,
     dashboard_heavy_route_guard_html,
     dashboard_html_response as _dashboard_html_response,
     dashboard_no_store_headers as _dashboard_no_store_headers,
+    dashboard_pick as dashboard_render_pick,
     dashboard_rendering_status_snapshot,
     dashboard_research_guard_html,
     dashboard_route_heavy_allowed,
+    dashboard_safe_dict as dashboard_render_safe_dict,
+    dashboard_safe_list as dashboard_render_safe_list,
+    render_fast_dashboard_html,
 )
 from swing_broker_submit import (
     SWING_BROKER_SUBMIT_MODULE_VERSION,
@@ -2794,7 +2799,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-433-dashboard-rendering-module-extraction-phase-2-route-status-consolidation"
+PATCH_VERSION = "patch-434-dashboard-fast-route-renderer-extraction-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -47713,22 +47718,10 @@ def dashboard_fast(request: Request):
     started = _time.perf_counter()
     generated_utc = datetime.now(timezone.utc).isoformat()
 
-    def _esc(v):
-        return html.escape(str(v if v is not None else ""))
-
-    def _safe_dict(v):
-        return v if isinstance(v, dict) else {}
-
-    def _safe_list(v):
-        return v if isinstance(v, list) else []
-
-    def _pick(row, *keys, default=""):
-        row = _safe_dict(row)
-        for key in keys:
-            value = row.get(key)
-            if value not in (None, ""):
-                return value
-        return default
+    _esc = dashboard_render_escape
+    _safe_dict = dashboard_render_safe_dict
+    _safe_list = dashboard_render_safe_list
+    _pick = dashboard_render_pick
 
     snapshot = {}
     snapshot_error = None
@@ -47795,70 +47788,21 @@ def dashboard_fast(request: Request):
     if not position_rows:
         position_rows.append("<tr><td colspan='6'>No snapshot positions.</td></tr>")
 
-    def _card(title, rows):
-        body = "\n".join(
-            f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>"
-            for k, v in rows
-        )
-        return f"<section class='card'><h2>{_esc(title)}</h2><table>{body}</table></section>"
-
     render_ms = round((_time.perf_counter() - started) * 1000.0, 1)
 
-    html_doc = f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Fast Operator Dashboard</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body {{ margin:0; padding:18px; background:#0d0b18; color:#f5f2ff; font-family:system-ui,-apple-system,Segoe UI,sans-serif; }}
-a {{ color:#b9a7ff; }}
-.header {{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:16px; }}
-.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }}
-.card {{ border:1px solid #35255e; border-radius:8px; padding:14px; background:#151223; }}
-h1 {{ margin:0 0 6px; font-size:26px; }}
-h2 {{ margin:0 0 10px; font-size:16px; }}
-.small {{ color:#c9c0ea; font-size:12px; }}
-table {{ width:100%; border-collapse:collapse; font-size:13px; }}
-th,td {{ text-align:left; padding:7px 4px; border-bottom:1px solid #28213f; }}
-th {{ color:#c4b5fd; font-weight:700; }}
-.actions a {{ display:inline-block; margin-left:8px; padding:7px 10px; border:1px solid #7c5cff; border-radius:6px; text-decoration:none; }}
-</style>
-</head>
-<body>
-<div class="header">
-  <div>
-    <h1>Fast Operator Dashboard</h1>
-    <div class="small">Generated {generated_utc}. Render {render_ms} ms. Snapshot-only fast path.</div>
-  </div>
-  <div class="actions">
-    <a href="/dashboard/fast">Refresh</a>
-    <a href="/dashboard/live">Live Broker View</a>
-    <a href="/dashboard/full">Full Swing</a>
-    <a href="/dashboard/research">Research</a>
-  </div>
-</div>
-
-<div class="grid">
-{_card("Scanner", scanner_rows)}
-{_card("Positions", [
-    ("snapshot_position_count", len(positions)),
-    ("active_plan_count", len(active_plans)),
-    ("snapshot_ts_utc", snapshot.get("ts_utc")),
-    ("snapshot_source", snapshot.get("source")),
-    ("snapshot_error", snapshot_error),
-])}
-</div>
-
-<section class="card" style="margin-top:12px">
-<h2>Positions</h2>
-<table>
-<tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&L</th><th>Signal</th></tr>
-{''.join(position_rows)}
-</table>
-</section>
-</body>
-</html>"""
+    html_doc = render_fast_dashboard_html(
+        generated_utc=generated_utc,
+        render_ms=render_ms,
+        scanner_rows=scanner_rows,
+        position_summary_rows=[
+            ("snapshot_position_count", len(positions)),
+            ("active_plan_count", len(active_plans)),
+            ("snapshot_ts_utc", snapshot.get("ts_utc")),
+            ("snapshot_source", snapshot.get("source")),
+            ("snapshot_error", snapshot_error),
+        ],
+        position_rows_html="".join(position_rows),
+    )
     return _dashboard_html_response(html_doc)
 
 @app.get("/dashboard/full", response_class=HTMLResponse)

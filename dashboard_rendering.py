@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from fastapi.responses import HTMLResponse
 
 
-DASHBOARD_RENDERING_MODULE_VERSION = "patch-433-dashboard-rendering-module-extraction-phase-2-route-status-consolidation"
+DASHBOARD_RENDERING_MODULE_VERSION = "patch-434-dashboard-fast-route-renderer-extraction-prep"
 
 
 DASHBOARD_ROUTE_CONFIG = {
@@ -29,6 +29,92 @@ def dashboard_no_store_headers() -> dict:
 def dashboard_html_response(html_doc: str) -> HTMLResponse:
     return HTMLResponse(content=html_doc, headers=dashboard_no_store_headers())
 
+def dashboard_escape(value) -> str:
+    return _html.escape(str(value if value is not None else ""))
+
+
+def dashboard_safe_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def dashboard_safe_list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def dashboard_pick(row: dict, *keys, default=""):
+    row = dashboard_safe_dict(row)
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def dashboard_card_html(title: str, rows: list[tuple[str, object]]) -> str:
+    body = "\n".join(
+        f"<tr><th>{dashboard_escape(key)}</th><td>{dashboard_escape(value)}</td></tr>"
+        for key, value in rows
+    )
+    return f"<section class='card'><h2>{dashboard_escape(title)}</h2><table>{body}</table></section>"
+
+
+def render_fast_dashboard_html(
+    *,
+    generated_utc: str,
+    render_ms: float,
+    scanner_rows: list[tuple[str, object]],
+    position_summary_rows: list[tuple[str, object]],
+    position_rows_html: str,
+) -> str:
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fast Operator Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body {{ margin:0; padding:18px; background:#0d0b18; color:#f5f2ff; font-family:system-ui,-apple-system,Segoe UI,sans-serif; }}
+a {{ color:#b9a7ff; }}
+.header {{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:16px; }}
+.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }}
+.card {{ border:1px solid #35255e; border-radius:8px; padding:14px; background:#151223; }}
+h1 {{ margin:0 0 6px; font-size:26px; }}
+h2 {{ margin:0 0 10px; font-size:16px; }}
+.small {{ color:#c9c0ea; font-size:12px; }}
+table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+th,td {{ text-align:left; padding:7px 4px; border-bottom:1px solid #28213f; }}
+th {{ color:#c4b5fd; font-weight:700; }}
+.actions a {{ display:inline-block; margin-left:8px; padding:7px 10px; border:1px solid #7c5cff; border-radius:6px; text-decoration:none; }}
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <h1>Fast Operator Dashboard</h1>
+    <div class="small">Generated {dashboard_escape(generated_utc)}. Render {dashboard_escape(render_ms)} ms. Snapshot-only fast path.</div>
+  </div>
+  <div class="actions">
+    <a href="/dashboard/fast">Refresh</a>
+    <a href="/dashboard/live">Live Broker View</a>
+    <a href="/dashboard/full">Full Swing</a>
+    <a href="/dashboard/research">Research</a>
+  </div>
+</div>
+
+<div class="grid">
+{dashboard_card_html("Scanner", scanner_rows)}
+{dashboard_card_html("Positions", position_summary_rows)}
+</div>
+
+<section class="card" style="margin-top:12px">
+<h2>Positions</h2>
+<table>
+<tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&L</th><th>Signal</th></tr>
+{position_rows_html}
+</table>
+</section>
+</body>
+</html>"""
 
 def dashboard_heavy_requested_from_params(params) -> bool:
     return str((params.get("heavy") if hasattr(params, "get") else "") or (params.get("full") if hasattr(params, "get") else "") or "").strip().lower() in {"1", "true", "yes", "y"}
