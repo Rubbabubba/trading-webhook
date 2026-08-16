@@ -2784,7 +2784,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-426-fast-dashboard-scanner-snapshot-truth-live-link-label-cleanup"
+PATCH_VERSION = "patch-427-full-dashboard-research-opt-in-intraday-panel-deferral"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 LIVE_DASHBOARD_INCLUDE_POSITION_ADVISORIES = env_bool_any(
@@ -47822,7 +47822,8 @@ th {{ color:#c4b5fd; font-weight:700; }}
   <div class="actions">
     <a href="/dashboard/fast">Refresh</a>
     <a href="/dashboard/live">Live Broker View</a>
-    <a href="/dashboard?detail=full">Full Research</a>
+    <a href="/dashboard?detail=full">Full Swing</a>
+    <a href="/dashboard?detail=research">Research</a>
   </div>
 </div>
 
@@ -47855,7 +47856,8 @@ def dashboard(request: Request):
     dashboard_started = _time.perf_counter()
     generated_utc = datetime.now(timezone.utc).isoformat()
     dashboard_detail = str(request.query_params.get("detail") or request.query_params.get("view") or "summary").strip().lower()
-    dashboard_full = dashboard_detail in {"full", "heavy", "debug", "all"}
+    dashboard_full = dashboard_detail in {"full", "heavy", "debug", "all", "research"}
+    dashboard_research = dashboard_detail in {"research", "intraday", "hybrid", "debug", "all"}
     if DASHBOARD_FAST_DEFAULT and not dashboard_full:
         return dashboard_fast(request)
     dashboard_timings: dict[str, float] = {}
@@ -48399,30 +48401,58 @@ def dashboard(request: Request):
         f"mismatch_symbols: {', '.join(position_truth.get('mismatch_symbols') or []) or 'none'}",
         f"worker_exit_started_stale: {bool(worker_exit_view.get('started_stale'))}",
     ])
-    intraday_projection = _intraday_launch_projection(open_count_override=len(merged))
-    intraday_active = _sd(intraday_projection.get('active'))
-    intraday_projected = _sd(intraday_projection.get('projected_intraday'))
-    intraday_projection_blockers = _sl(intraday_projection.get('blockers'))
-    intraday_projection_blockers_text = ', '.join(intraday_projection_blockers) or 'none'
-    intraday_launch_gate_blockers = list(intraday_projection_blockers)
-    if not market_open:
-        intraday_launch_gate_blockers.append("market_not_tradable_now")
-    if not regime_favorable:
-        intraday_launch_gate_blockers.append("regime_not_favorable")
-    intraday_launch_gate_blockers_text = ', '.join(intraday_launch_gate_blockers) or 'none'
-    intraday_launch_gate_actions = _intraday_launch_gate_actions(intraday_launch_gate_blockers)
-    intraday_launch_action_plan = _intraday_launch_action_plan(
-        gate_actions=intraday_launch_gate_actions,
-        required_actions=intraday_projection.get('next_actions'),
-        optional_scaling_actions=intraday_projection.get('optional_actions'),
-        recommended_env=intraday_projection.get('recommended_env'),
-    )
-    intraday_launch_gate_actions_text = ', '.join(intraday_launch_gate_actions) or 'none'
-    intraday_projection_next_actions_text = ', '.join(_sl(intraday_launch_action_plan.get('required_now'))[:6]) or 'none'
-    intraday_projection_optional_actions_text = ', '.join(_sl(intraday_launch_action_plan.get('optional_scaling'))[:6]) or 'none'
-    intraday_projection_capacity_ready = not bool(intraday_projection_blockers)
-    intraday_launch_env_text = "\n".join(f"{k}={v}" for k, v in _sd(intraday_launch_action_plan.get('recommended_env')).items()) or "none"
-    intraday_signal_debug = _intraday_signal_debug_from_scan(latest_scan)
+    if dashboard_research:
+        intraday_projection = _intraday_launch_projection(open_count_override=len(merged))
+        intraday_active = _sd(intraday_projection.get('active'))
+        intraday_projected = _sd(intraday_projection.get('projected_intraday'))
+        intraday_projection_blockers = _sl(intraday_projection.get('blockers'))
+        intraday_projection_blockers_text = ', '.join(intraday_projection_blockers) or 'none'
+        intraday_launch_gate_blockers = list(intraday_projection_blockers)
+        if not market_open:
+            intraday_launch_gate_blockers.append("market_not_tradable_now")
+        if not regime_favorable:
+            intraday_launch_gate_blockers.append("regime_not_favorable")
+        intraday_launch_gate_blockers_text = ', '.join(intraday_launch_gate_blockers) or 'none'
+        intraday_launch_gate_actions = _intraday_launch_gate_actions(intraday_launch_gate_blockers)
+        intraday_launch_action_plan = _intraday_launch_action_plan(
+            gate_actions=intraday_launch_gate_actions,
+            required_actions=intraday_projection.get('next_actions'),
+            optional_scaling_actions=intraday_projection.get('optional_actions'),
+            recommended_env=intraday_projection.get('recommended_env'),
+        )
+        intraday_launch_gate_actions_text = ', '.join(intraday_launch_gate_actions) or 'none'
+        intraday_projection_next_actions_text = ', '.join(_sl(intraday_launch_action_plan.get('required_now'))[:6]) or 'none'
+        intraday_projection_optional_actions_text = ', '.join(_sl(intraday_launch_action_plan.get('optional_scaling'))[:6]) or 'none'
+        intraday_projection_capacity_ready = not bool(intraday_projection_blockers)
+        intraday_launch_env_text = "\n".join(f"{k}={v}" for k, v in _sd(intraday_launch_action_plan.get('recommended_env')).items()) or "none"
+        intraday_signal_debug = _intraday_signal_debug_from_scan(latest_scan)
+    else:
+        intraday_projection = {
+            "launch_ready_now": False,
+            "projection_capacity_ready": False,
+            "blockers": ["dashboard_research_deferred"],
+            "recommended_action": "open_dashboard_detail_research_for_intraday_panels",
+        }
+        intraday_active = {"strategy_mode": STRATEGY_MODE, "open_slots": ""}
+        intraday_projected = {}
+        intraday_projection_blockers = ["dashboard_research_deferred"]
+        intraday_projection_blockers_text = "dashboard_research_deferred"
+        intraday_launch_gate_blockers = ["dashboard_research_deferred"]
+        intraday_launch_gate_blockers_text = "dashboard_research_deferred"
+        intraday_launch_gate_actions = ["open_dashboard_detail_research"]
+        intraday_launch_action_plan = {"recommended_env": {}, "required_now": ["open_dashboard_detail_research"], "optional_scaling": []}
+        intraday_launch_gate_actions_text = "open_dashboard_detail_research"
+        intraday_projection_next_actions_text = "open_dashboard_detail_research"
+        intraday_projection_optional_actions_text = "none"
+        intraday_projection_capacity_ready = False
+        intraday_launch_env_text = "deferred; open /dashboard?detail=research"
+        intraday_signal_debug = {
+            "scan_ts_utc": latest_scan.get("ts_utc"),
+            "actionable_state": "deferred_dashboard_research_opt_in",
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+        }
+
     eod_flatten_status = _sd(snap.get("extra")).get("eod_flatten") if isinstance(_sd(snap.get("extra")).get("eod_flatten"), dict) else _sd(globals().get("LAST_EOD_FLATTEN_STATUS"))
     eod_flatten_status = _sd(eod_flatten_status)
     if not eod_flatten_status:
@@ -48430,26 +48460,49 @@ def dashboard(request: Request):
     eod_residual_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("still_open_symbols") or eod_flatten_status.get("residual_symbols")) if str(s).strip()) or "none"
     eod_submitted_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("submitted_symbols")) if str(s).strip()) or "none"
     eod_pending_close_symbols_text = ", ".join(str(s) for s in _sl(eod_flatten_status.get("pending_close_order_symbols")) if str(s).strip()) or "none"
-    latest_intraday_shadow = _sd(scan_summary.get("intraday_shadow"))
+
     hybrid_capacity = _hybrid_capacity_plan(current_open_positions=len(merged))
-    intraday_shadow_top_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_dashboard_fmt(_sd(r).get('rank_score'))}" for r in _sl(latest_intraday_shadow.get('top_signals'))[:5]) or "none"
-    hybrid_proof_metrics = _hybrid_proof_metrics(capacity_plan=hybrid_capacity)
-    hybrid_proof_recent_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_dashboard_fmt(_sd(r).get('latest_r'))}R" for r in _sl(HYBRID_PROOF_LEDGER)[-5:]) or "none"
+    if dashboard_research:
+        latest_intraday_shadow = _sd(scan_summary.get("intraday_shadow"))
+        intraday_shadow_top_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_dashboard_fmt(_sd(r).get('rank_score'))}" for r in _sl(latest_intraday_shadow.get('top_signals'))[:5]) or "none"
+        hybrid_proof_metrics = _hybrid_proof_metrics(capacity_plan=hybrid_capacity)
+        hybrid_proof_recent_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_dashboard_fmt(_sd(r).get('latest_r'))}R" for r in _sl(HYBRID_PROOF_LEDGER)[-5:]) or "none"
+    else:
+        latest_intraday_shadow = {"enabled": False, "status": "deferred_dashboard_research_opt_in", "live_submission": False}
+        intraday_shadow_top_text = "deferred; open /dashboard?detail=research"
+        hybrid_proof_metrics = {
+            "ledger_count": "deferred",
+            "positive_rate": 0.0,
+            "avg_r": "deferred",
+            "best_r": "deferred",
+            "worst_r": "deferred",
+            "sample_ready": "deferred",
+            "avg_r_ready": "deferred",
+            "proof_ready_for_paper": "deferred",
+            "proof_ready_for_live": "deferred",
+            "recommended_action": "open_dashboard_detail_research",
+            "eod_flat_ok": "deferred",
+            "eod_readiness": {"mode": "deferred"},
+            "min_shadow_trades": "deferred",
+            "min_avg_r": "deferred",
+        }
+        hybrid_proof_recent_text = "deferred; open /dashboard?detail=research"
+
     entry_control_status = "enabled" if NEW_ENTRIES_ENABLED else "exits_only"
     reclaim_debug = _sd(intraday_signal_debug.get('intraday_vwap_reclaim'))
     continuation_debug = _sd(intraday_signal_debug.get('intraday_vwap_continuation'))
     reclaim_breakdown_rows = _sl(reclaim_debug.get('breakdown'))
     continuation_breakdown_rows = _sl(continuation_debug.get('breakdown'))
-    reclaim_breakdown_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in reclaim_breakdown_rows[:5]) or "none"
-    continuation_breakdown_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in continuation_breakdown_rows[:5]) or "none"
-    component_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_component_blockers'))[:5]) or "none"
-    macro_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_macro_blockers'))[:5]) or "none"
-    micro_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_micro_blockers'))[:5]) or "none"
-    near_miss_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('reason')}:{_sd(r).get('score')}" for r in _sl(intraday_signal_debug.get('near_miss_symbols'))[:5]) or "none"
-    top_pre_ranked_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('candidate_path') or _sd(r).get('signal_family')}:{_sd(r).get('reason')}:{_sd(r).get('rank_score')}" for r in _sl(intraday_signal_debug.get('top_pre_ranked_candidates'))[:5]) or "none"
-    top_signal_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_sd(r).get('score')}" for r in _sl(intraday_signal_debug.get('top_signals'))[:5]) or "none"
-    ignored_rank_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('reason')}:{_sd(r).get('rank_score')}" for r in _sl(intraday_signal_debug.get('ignored_ranked_out'))[:5]) or "none"
-    would_submit_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('submit_state') or _sd(r).get('reason') or _sd(r).get('ok')}" for r in _sl(intraday_signal_debug.get('would_submit'))[:5]) or "none"
+    reclaim_breakdown_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in reclaim_breakdown_rows[:5]) or ("deferred" if not dashboard_research else "none")
+    continuation_breakdown_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in continuation_breakdown_rows[:5]) or ("deferred" if not dashboard_research else "none")
+    component_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_component_blockers'))[:5]) or ("deferred" if not dashboard_research else "none")
+    macro_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_macro_blockers'))[:5]) or ("deferred" if not dashboard_research else "none")
+    micro_blocker_text = ", ".join(f"{_sd(r).get('reason')}:{_sd(r).get('count')}" for r in _sl(intraday_signal_debug.get('top_micro_blockers'))[:5]) or ("deferred" if not dashboard_research else "none")
+    near_miss_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('reason')}:{_sd(r).get('score')}" for r in _sl(intraday_signal_debug.get('near_miss_symbols'))[:5]) or ("deferred" if not dashboard_research else "none")
+    top_pre_ranked_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('candidate_path') or _sd(r).get('signal_family')}:{_sd(r).get('reason')}:{_sd(r).get('rank_score')}" for r in _sl(intraday_signal_debug.get('top_pre_ranked_candidates'))[:5]) or ("deferred" if not dashboard_research else "none")
+    top_signal_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('signal')}:{_sd(r).get('score')}" for r in _sl(intraday_signal_debug.get('top_signals'))[:5]) or ("deferred" if not dashboard_research else "none")
+    ignored_rank_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('reason')}:{_sd(r).get('rank_score')}" for r in _sl(intraday_signal_debug.get('ignored_ranked_out'))[:5]) or ("deferred" if not dashboard_research else "none")
+    would_submit_text = ", ".join(f"{_sd(r).get('symbol')}:{_sd(r).get('submit_state') or _sd(r).get('reason') or _sd(r).get('ok')}" for r in _sl(intraday_signal_debug.get('would_submit'))[:5]) or ("deferred" if not dashboard_research else "none")
     readiness_assessment = _dashboard_readiness_assessment(blockers, scanner_ready, intraday_launch_gate_blockers)
     _mark_dashboard_phase("intraday_readiness_ms")
     swing_profit_acceleration_html = f'''
