@@ -47696,19 +47696,19 @@ def dashboard_live(request: Request):
 
 @app.get("/dashboard/fast", response_class=HTMLResponse)
 def dashboard_fast(request: Request):
-    """Patch 425: fast operator dashboard using light snapshots only."""
+    """Patch 425 hotfix: ultra-light operator dashboard with no heavy helper calls."""
     require_admin_if_configured(request)
     started = _time.perf_counter()
     generated_utc = datetime.now(timezone.utc).isoformat()
+
+    def _esc(v):
+        return html.escape(str(v if v is not None else ""))
 
     def _safe_dict(v):
         return v if isinstance(v, dict) else {}
 
     def _safe_list(v):
         return v if isinstance(v, list) else []
-
-    def _esc(v):
-        return html.escape(str(v if v is not None else ""))
 
     def _pick(row, *keys, default=""):
         row = _safe_dict(row)
@@ -47718,32 +47718,45 @@ def dashboard_fast(request: Request):
                 return value
         return default
 
-    def _card(title, rows):
-        body = "\n".join(
-            f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>"
-            for k, v in rows
-        )
-        return f"<section class='card'><h2>{_esc(title)}</h2><table>{body}</table></section>"
-
+    snapshot = {}
+    snapshot_error = None
     try:
-        scanner_light = _safe_dict(_p298_scanner_light())
+        snapshot = read_positions_snapshot()
     except Exception as exc:
-        scanner_light = {"ok": False, "error": str(exc)}
+        snapshot_error = str(exc)
+        snapshot = {}
 
+    snapshot = _safe_dict(snapshot)
+    positions = _safe_list(snapshot.get("positions") or snapshot.get("items"))[:12]
+
+    active_plans = []
     try:
-        live_light = _safe_dict(_p298_live_positions_light())
-    except Exception as exc:
-        live_light = {"ok": False, "error": str(exc)}
+        for sym, plan in (TRADE_PLAN or {}).items():
+            if isinstance(plan, dict) and bool(plan.get("active")):
+                active_plans.append({
+                    "symbol": str(sym or plan.get("symbol") or "").upper(),
+                    "signal": plan.get("signal") or plan.get("strategy_name"),
+                    "status": plan.get("order_status") or plan.get("execution_state") or plan.get("lifecycle_state"),
+                })
+    except Exception:
+        active_plans = []
 
-    try:
-        reconcile_light = _safe_dict(_p298_reconcile_light())
-    except Exception as exc:
-        reconcile_light = {"ok": False, "error": str(exc)}
+    telemetry = _safe_dict(LAST_SCANNER_TELEMETRY if "LAST_SCANNER_TELEMETRY" in globals() else {})
+    latest_scan = _safe_dict(LAST_SCAN_RESULT if "LAST_SCAN_RESULT" in globals() else {})
+    if not latest_scan:
+        latest_scan = _safe_dict(LAST_SCAN_SUMMARY if "LAST_SCAN_SUMMARY" in globals() else {})
 
-    scanner_summary = _safe_dict(scanner_light.get("latest_scan"))
-    live_summary = _safe_dict(live_light.get("summary"))
-    reconcile_summary = _safe_dict(reconcile_light.get("summary") or reconcile_light.get("reconcile"))
-    positions = _safe_list(live_light.get("positions"))[:12]
+    scanner_rows = [
+        ("last_event", telemetry.get("last_event")),
+        ("last_status", telemetry.get("last_status")),
+        ("in_flight_run", telemetry.get("in_flight_run")),
+        ("attempts_today", telemetry.get("attempts_today")),
+        ("success_today", telemetry.get("success_today")),
+        ("failure_today", telemetry.get("failure_today")),
+        ("latest_scan_reason", latest_scan.get("reason")),
+        ("latest_scan_scanned", latest_scan.get("scanned")),
+        ("latest_scan_selected", latest_scan.get("selected_total") or latest_scan.get("selected_symbols")),
+    ]
 
     position_rows = []
     for row in positions:
@@ -47761,6 +47774,13 @@ def dashboard_fast(request: Request):
     if not position_rows:
         position_rows.append("<tr><td colspan='6'>No snapshot positions.</td></tr>")
 
+    def _card(title, rows):
+        body = "\n".join(
+            f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>"
+            for k, v in rows
+        )
+        return f"<section class='card'><h2>{_esc(title)}</h2><table>{body}</table></section>"
+
     render_ms = round((_time.perf_counter() - started) * 1000.0, 1)
 
     html_doc = f"""<!doctype html>
@@ -47770,53 +47790,25 @@ def dashboard_fast(request: Request):
 <title>Fast Operator Dashboard</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body {{
-    margin: 0;
-    padding: 18px;
-    background: #0d0b18;
-    color: #f5f2ff;
-    font-family: system-ui, -apple-system, Segoe UI, sans-serif;
-}}
-a {{ color: #b9a7ff; }}
-.header {{
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 16px;
-    margin-bottom: 16px;
-}}
-.grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 12px;
-}}
-.card {{
-    border: 1px solid #35255e;
-    border-radius: 8px;
-    padding: 14px;
-    background: #151223;
-}}
-h1 {{ margin: 0 0 6px; font-size: 26px; }}
-h2 {{ margin: 0 0 10px; font-size: 16px; }}
-.small {{ color: #c9c0ea; font-size: 12px; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-th, td {{ text-align: left; padding: 7px 4px; border-bottom: 1px solid #28213f; }}
-th {{ color: #c4b5fd; font-weight: 700; }}
-.actions a {{
-    display: inline-block;
-    margin-left: 8px;
-    padding: 7px 10px;
-    border: 1px solid #7c5cff;
-    border-radius: 6px;
-    text-decoration: none;
-}}
+body {{ margin:0; padding:18px; background:#0d0b18; color:#f5f2ff; font-family:system-ui,-apple-system,Segoe UI,sans-serif; }}
+a {{ color:#b9a7ff; }}
+.header {{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:16px; }}
+.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }}
+.card {{ border:1px solid #35255e; border-radius:8px; padding:14px; background:#151223; }}
+h1 {{ margin:0 0 6px; font-size:26px; }}
+h2 {{ margin:0 0 10px; font-size:16px; }}
+.small {{ color:#c9c0ea; font-size:12px; }}
+table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+th,td {{ text-align:left; padding:7px 4px; border-bottom:1px solid #28213f; }}
+th {{ color:#c4b5fd; font-weight:700; }}
+.actions a {{ display:inline-block; margin-left:8px; padding:7px 10px; border:1px solid #7c5cff; border-radius:6px; text-decoration:none; }}
 </style>
 </head>
 <body>
 <div class="header">
   <div>
     <h1>Fast Operator Dashboard</h1>
-    <div class="small">Generated {generated_utc}. Render {render_ms} ms. Light endpoints only.</div>
+    <div class="small">Generated {generated_utc}. Render {render_ms} ms. Snapshot-only fast path.</div>
   </div>
   <div class="actions">
     <a href="/dashboard/fast">Refresh</a>
@@ -47826,29 +47818,13 @@ th {{ color: #c4b5fd; font-weight: 700; }}
 </div>
 
 <div class="grid">
-{_card("Scanner", [
-    ("ok", scanner_light.get("ok")),
-    ("last_event", scanner_light.get("last_event")),
-    ("last_status", scanner_light.get("last_status")),
-    ("in_flight_run", scanner_light.get("in_flight_run")),
-    ("active_warning_codes", ", ".join(str(x) for x in _safe_list(scanner_light.get("active_warning_codes")))),
-    ("scanned", scanner_summary.get("scanned")),
-    ("selected_total", scanner_summary.get("selected_total")),
-    ("eligible_total", scanner_summary.get("eligible_total")),
-    ("duration_ms", scanner_summary.get("duration_ms")),
-])}
+{_card("Scanner", scanner_rows)}
 {_card("Positions", [
-    ("ok", live_light.get("ok")),
-    ("snapshot_position_count", live_summary.get("snapshot_position_count")),
-    ("active_plan_count", live_summary.get("active_plan_count")),
-    ("position_truth_status", live_summary.get("position_truth_status")),
-])}
-{_card("Reconcile", [
-    ("ok", reconcile_light.get("ok")),
-    ("broker_positions_count", reconcile_summary.get("broker_positions_count")),
-    ("active_plan_count", reconcile_summary.get("active_plan_count")),
-    ("open_order_count", reconcile_summary.get("open_order_count")),
-    ("truth_status", reconcile_summary.get("truth_status") or reconcile_summary.get("position_truth_status")),
+    ("snapshot_position_count", len(positions)),
+    ("active_plan_count", len(active_plans)),
+    ("snapshot_ts_utc", snapshot.get("ts_utc")),
+    ("snapshot_source", snapshot.get("source")),
+    ("snapshot_error", snapshot_error),
 ])}
 </div>
 
