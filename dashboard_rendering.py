@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from fastapi.responses import HTMLResponse
 
 
-DASHBOARD_RENDERING_MODULE_VERSION = "patch-431-dashboard-full-route-time-budget-rendering-status-version-sync"
+DASHBOARD_RENDERING_MODULE_VERSION = "patch-432-dashboard-heavy-route-disable-semantics-remove-heavy-link-footgun"
 
 
 def dashboard_no_store_headers() -> dict:
@@ -29,6 +29,8 @@ def dashboard_rendering_status_snapshot(
     full_route_budget_ms: int,
     research_heavy_enabled: bool,
 ) -> dict:
+    full_enabled = bool(full_heavy_enabled)
+    research_enabled = bool(research_heavy_enabled)
     return {
         "ok": True,
         "patch_version": patch_version,
@@ -37,9 +39,13 @@ def dashboard_rendering_status_snapshot(
         "broker_free": True,
         "side_effect_free": True,
         "fast_default": bool(fast_default),
-        "full_heavy_enabled": bool(full_heavy_enabled),
+        "full_heavy_enabled": full_enabled,
         "full_route_budget_ms": int(full_route_budget_ms or 0),
-        "research_heavy_enabled": bool(research_heavy_enabled),
+        "research_heavy_enabled": research_enabled,
+        "heavy_route_access": {
+            "full": "env_and_query_required" if full_enabled else "disabled_by_env",
+            "research": "env_and_query_required" if research_enabled else "disabled_by_env",
+        },
         "routes": {
             "fast": "/dashboard",
             "fast_alias": "/dashboard/fast",
@@ -48,8 +54,8 @@ def dashboard_rendering_status_snapshot(
             "research": "/dashboard/research",
         },
         "guarded_routes": {
-            "full": not bool(full_heavy_enabled),
-            "research": not bool(research_heavy_enabled),
+            "full": True,
+            "research": True,
         },
         "generated_utc": datetime.now(timezone.utc).isoformat(),
     }
@@ -67,9 +73,10 @@ def dashboard_heavy_route_guard_html(
     patch = _html.escape(str(patch_version or "unknown"))
     title = _html.escape(str(route_title or "Dashboard Route Guard"))
     path = _html.escape(str(route_path or "/dashboard"))
-    heavy_state = "enabled" if heavy_enabled else "disabled"
+    heavy_state = "enabled by env" if heavy_enabled else "disabled by env"
     requested = "true" if heavy_requested else "false"
     budget = "not configured" if route_budget_ms is None else f"{int(route_budget_ms or 0)} ms"
+    unlock_note = "Heavy rendering requires the env flag and an explicit query parameter. There is no dashboard link to trigger it accidentally."
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -103,13 +110,13 @@ td{{border-bottom:1px solid rgba(255,255,255,.08);padding:8px 6px}}
 <tr><td>route</td><td>{path}</td></tr>
 <tr><td>heavy_requested</td><td>{requested}</td></tr>
 <tr><td>route_budget</td><td>{budget}</td></tr>
-<tr><td>recommended_action</td><td>Use fast/light dashboards first. Open the heavy route only when intentionally investigating.</td></tr>
+<tr><td>heavy_access</td><td>{_html.escape(unlock_note)}</td></tr>
+<tr><td>recommended_action</td><td>Use fast/light dashboards first. Heavy rendering should be opened manually only during intentional debugging.</td></tr>
 </table>
 <div class="links">
 <a href="/dashboard">Fast dashboard</a>
 <a href="/dashboard/live">Live dashboard</a>
 <a href="/diagnostics/dashboard_rendering_status">Rendering status</a>
-<a href="{path}?heavy=1">Open heavy route once</a>
 </div>
 </div>
 </div>
