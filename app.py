@@ -2818,7 +2818,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-444-breakout-stall-loss-containment-partial-profit-preservation-bias"
+PATCH_VERSION = "patch-444-hotfix-dynamic-exit-preview-helper-name-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -37552,7 +37552,7 @@ def _p364_active_exit_protection_truth() -> dict:
             else {"triggered": False}
         )
         dynamic_preview = (
-            _dynamic_exit_update(symbol, plan, float(current_price))
+            _calc_swing_dynamic_levels(symbol, plan, float(current_price))
             if has_plan and current_price > 0
             else {"flags": []}
         )
