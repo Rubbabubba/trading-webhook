@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-439-hotfix-generic-stale-overclose-cleanup-current-risk-clean"
+PATCH_VERSION = "patch-440-worker-exit-historical-error-aging-healthy-status-recommendation-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -52030,7 +52030,34 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             "reason": row.get("reason"),
         })
     recent = recent[-max(1, min(int(limit or 20), 50)):]
-    error_like = [r for r in recent if "failed" in str(r.get("action") or "") or "error" in str(r.get("action") or "") or "failed" in str(r.get("reason") or "") or "error" in str(r.get("reason") or "")]
+    worker_error_fresh_window_sec = 900
+    error_like = []
+    historical_error_like = []
+    for r in recent:
+        is_error_like = (
+            "failed" in str(r.get("action") or "")
+            or "error" in str(r.get("action") or "")
+            or "failed" in str(r.get("reason") or "")
+            or "error" in str(r.get("reason") or "")
+        )
+        if not is_error_like:
+            continue
+        row = dict(r)
+        age = None
+        try:
+            ts = datetime.fromisoformat(str(r.get("ts_utc") or ""))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = max(0.0, (now_utc - ts.astimezone(timezone.utc)).total_seconds())
+            row["age_sec"] = round(age, 2)
+        except Exception:
+            age = None
+        if age is not None and age > worker_error_fresh_window_sec:
+            row["historical"] = True
+            historical_error_like.append(row)
+        else:
+            row["historical"] = False
+            error_like.append(row)
     sync_guard_rows = [
         r for r in recent
         if str(r.get("reason") or "") == "sync_trade_plan_with_broker_returned_non_dict"
@@ -52062,12 +52089,11 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
     started_stale = bool(status == "started" and age_sec is not None and age_sec > stale_threshold)
     terminal_status_seen = bool(status and status != "started")
-    healthy = bool(status not in {"error", "failed"} and not started_stale)
-    recommended_action = (
-        "investigate_worker_exit_started_without_completion" if started_stale else
-        "inspect_recent_worker_exit_errors" if status in {"error", "failed"} or error_like else
-        "none"
+    heartbeat_error_fresh = bool(
+        status in {"error", "failed"}
+        and (age_sec is None or age_sec <= worker_error_fresh_window_sec)
     )
+    healthy_base = bool(not heartbeat_error_fresh and not started_stale)
     exit_retry_readiness = _p390_exit_submit_retry_readiness(limit=limit)
     try:
         post_fill_risk_recheck_evidence = _p416_post_fill_risk_recheck_evidence(limit=limit)
@@ -52082,6 +52108,23 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         }
     risk_evidence_ok = bool(post_fill_risk_recheck_evidence.get("ok", False))
     risk_evidence_error = post_fill_risk_recheck_evidence.get("error")
+    exit_retry_action = str(exit_retry_readiness.get("recommended_action") or "none")
+    exit_retry_clean = exit_retry_action in {"", "none"}
+    final_healthy = bool(healthy_base and sync_contract_ok and risk_evidence_ok and exit_retry_clean)
+
+    if started_stale:
+        recommended_action = "investigate_worker_exit_started_without_completion"
+    elif not sync_contract_ok:
+        recommended_action = "inspect_fresh_sync_return_guard"
+    elif not risk_evidence_ok:
+        recommended_action = "inspect_post_fill_risk_recheck_evidence"
+    elif not exit_retry_clean:
+        recommended_action = exit_retry_action
+    elif heartbeat_error_fresh or error_like:
+        recommended_action = "inspect_recent_worker_exit_errors"
+    else:
+        recommended_action = "none"
+
     active_exit_truth = _p364_active_exit_protection_truth()
     active_exit_summary = dict(active_exit_truth.get("summary") or {})
     heartbeat_giveback_symbols = list(hb.get("giveback_exit_due_symbols") or [])
@@ -52124,13 +52167,16 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "active_plans": active_plans[:10],
         "recent_worker_exit_decisions": recent,
         "error_like_recent_count": len(error_like),
+        "historical_error_like_recent_count": len(historical_error_like),
+        "worker_error_fresh_window_sec": worker_error_fresh_window_sec,
+        "heartbeat_error_fresh": heartbeat_error_fresh,
         "sync_contract_ok": sync_contract_ok,
         "fresh_sync_guard_count": len(fresh_sync_guard_rows),
         "fresh_sync_guard_window_sec": fresh_window_sec,
         "fresh_sync_guard_rows": fresh_sync_guard_rows,
         "risk_evidence_ok": risk_evidence_ok,
         "risk_evidence_error": risk_evidence_error,
-        "healthy": bool(healthy and sync_contract_ok and risk_evidence_ok),
+        "healthy": final_healthy,
     }
 
 @app.get("/diagnostics/universe_shadow")
