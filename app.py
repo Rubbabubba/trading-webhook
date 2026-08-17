@@ -2818,7 +2818,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-444-hotfix-dynamic-exit-preview-helper-name-fix"
+PATCH_VERSION = "patch-445-broker-qty-dynamic-exit-preview-breakout-partial-qty-clamp"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -34168,11 +34168,32 @@ def _p378_daily_breakout_profit_giveback_state(symbol: str, plan: dict | None, p
     out["reason"] = "monitoring_profit_giveback"
     return out
 
+def _p445_plan_available_qty(plan: dict | None) -> float:
+    plan = plan if isinstance(plan, dict) else {}
+    broker_qty = abs(_safe_float(plan.get("_broker_available_qty") or 0.0, 0.0))
+    if broker_qty > 0:
+        return broker_qty
+    return abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or plan.get("submitted_qty") or 0.0, 0.0))
+
+
+def _p445_qty_source(plan: dict | None) -> str:
+    plan = plan if isinstance(plan, dict) else {}
+    if abs(_safe_float(plan.get("_broker_available_qty") or 0.0, 0.0)) > 0:
+        return str(plan.get("_broker_qty_source") or "broker_available_qty")
+    if _safe_float(plan.get("filled_qty") or 0.0, 0.0) > 0:
+        return "plan_filled_qty"
+    if _safe_float(plan.get("qty") or 0.0, 0.0) > 0:
+        return "plan_qty"
+    if _safe_float(plan.get("submitted_qty") or 0.0, 0.0) > 0:
+        return "plan_submitted_qty"
+    return "missing_qty"
+
 def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
     plan = plan if isinstance(plan, dict) else {}
     dyn = dict(dynamic_exit or {})
     sym = str(symbol or plan.get("symbol") or "").strip().upper()
-    qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or plan.get("submitted_qty") or 0.0, 0.0))
+    qty = _p445_plan_available_qty(plan)
+    qty_source = _p445_qty_source(plan)
     unrealized_r = _safe_float(dyn.get("stall_r"), _swing_unrealized_r(plan, px))
     partial_taken = bool(plan.get("partial_profit_taken") or plan.get("breakout_partial_profit_bias_taken"))
 
@@ -34199,6 +34220,7 @@ def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px:
         "unrealized_r": round(unrealized_r, 4),
         "trigger_r": float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.75),
         "qty": round(qty, 4),
+        "qty_source": qty_source,
         "qty_to_close": round(qty_to_close, 4),
         "fraction": round(fraction, 4),
         "partial_taken": partial_taken,
@@ -34211,7 +34233,8 @@ def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None,
     sym = str(symbol or plan.get("symbol") or "").strip().upper()
     flags = set(str(x or "") for x in list(dyn.get("flags") or []))
     stall_loss_due = bool("stall_loss_guard_ready" in flags or dyn.get("stall_loss_guard"))
-    qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or plan.get("submitted_qty") or 0.0, 0.0))
+    qty = _p445_plan_available_qty(plan)
+    qty_source = _p445_qty_source(plan)
     fraction = min(max(float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.5), 0.05), 0.95)
     qty_to_close = _normalize_close_qty(qty * fraction)
     min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
@@ -34234,6 +34257,7 @@ def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None,
         "stall_loss_due": bool(stall_loss_due),
         "unrealized_r": round(_safe_float(dyn.get("stall_r"), _swing_unrealized_r(plan, px)), 4),
         "qty": round(qty, 4),
+        "qty_source": qty_source,
         "qty_to_close": round(qty_to_close, 4),
         "fraction": round(fraction, 4),
         "already_taken": bool(plan.get("breakout_stall_loss_reduce_first_taken")),
@@ -34567,6 +34591,10 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     risk = _plan_risk_per_share(plan or {})
     if entry <= 0 or risk <= 0:
         return out
+
+    qty_now = _p445_plan_available_qty(plan or {})
+    out["effective_qty"] = round(qty_now, 4)
+    out["effective_qty_source"] = _p445_qty_source(plan or {})
 
     unrealized_r = _swing_unrealized_r(plan or {}, float(px))
     out["stall_r"] = round(unrealized_r, 4)
@@ -37518,6 +37546,10 @@ def _p364_active_exit_protection_truth() -> dict:
 
         qty = _safe_float(pos.get("qty") or plan.get("filled_qty") or plan.get("submitted_qty") or 0.0)
         abs_qty = abs(qty)
+        plan_for_dynamic = dict(plan)
+        if abs_qty > 0:
+            plan_for_dynamic["_broker_available_qty"] = abs_qty
+            plan_for_dynamic["_broker_qty_source"] = "active_exit_position_snapshot"
         forbidden_short_cleanup = _p381_forbidden_short_cleanup_state(symbol, plan, qty)
         hit_forbidden_short_cleanup = bool(forbidden_short_cleanup.get("triggered"))
         current_price = _safe_float(pos.get("current_price") or pos.get("last_price") or 0.0)
@@ -37552,17 +37584,17 @@ def _p364_active_exit_protection_truth() -> dict:
             else {"triggered": False}
         )
         dynamic_preview = (
-            _calc_swing_dynamic_levels(symbol, plan, float(current_price))
+            _calc_swing_dynamic_levels(symbol, plan_for_dynamic, float(current_price))
             if has_plan and current_price > 0
             else {"flags": []}
         )
         breakout_partial_profit_bias = (
-            _p444_breakout_partial_profit_bias_state(symbol, plan, float(current_price), dynamic_preview)
+            _p444_breakout_partial_profit_bias_state(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
             if has_plan and current_price > 0
             else {"applies": False}
         )
         breakout_stall_loss_reduce_first = (
-            _p444_breakout_stall_loss_reduce_first_state(symbol, plan, float(current_price), dynamic_preview)
+            _p444_breakout_stall_loss_reduce_first_state(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
             if has_plan and current_price > 0
             else {"applies": False}
         )
@@ -38709,6 +38741,9 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 continue
 
         qty_signed, _pos_side = get_position(symbol)
+        if abs(_safe_float(qty_signed or 0.0, 0.0)) > 0:
+            plan["_broker_available_qty"] = abs(_safe_float(qty_signed or 0.0, 0.0))
+            plan["_broker_qty_source"] = "worker_exit_broker_position"
         forbidden_short_cleanup = _p381_forbidden_short_cleanup_state(symbol, plan, qty_signed)
         if bool(forbidden_short_cleanup.get("triggered")):
             plan["last_exit_attempt_ts"] = utc_ts()
