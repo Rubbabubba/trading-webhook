@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-438-active-plan-risk-recheck-refresh-stale-closed-plan-cleanup"
+PATCH_VERSION = "patch-438-hotfix-broker-sync-return-contract-active-risk-refresh"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -8887,11 +8887,20 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
 
         plan_rows = []
         for sym, plan in sorted((TRADE_PLAN or {}).items()):
-            if not isinstance(plan, dict):
+            if not isinstance(plan, dict) or not plan.get("active"):
                 continue
-            evidence = plan.get("post_fill_risk_recheck_evidence")
-            if not isinstance(evidence, dict):
-                continue
+            qty_signed = 0.0
+            try:
+                qty_signed, _ = get_position(sym)
+            except Exception:
+                qty_signed = _safe_float(plan.get("qty") or plan.get("filled_qty") or 0.0, 0.0)
+
+            evidence = _p438_post_fill_risk_decision_for_active_plan(
+                sym,
+                plan,
+                qty_signed=qty_signed,
+                order_status=plan.get("broker_order") if isinstance(plan.get("broker_order"), dict) else {},
+            )
             plan_rows.append({
                 "symbol": str(sym or evidence.get("symbol") or "").strip().upper(),
                 "active": bool(plan.get("active")),
@@ -8902,10 +8911,14 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
                 "risk_per_share": evidence.get("risk_per_share"),
                 "filled_qty_used": evidence.get("filled_qty_used"),
                 "broker_qty_used": evidence.get("broker_qty_used"),
+                "qty_for_risk": evidence.get("qty_for_risk"),
                 "actual_risk_dollars": evidence.get("actual_risk_dollars"),
                 "configured_risk_dollars": evidence.get("configured_risk_dollars"),
                 "risk_threshold_dollars": evidence.get("risk_threshold_dollars"),
                 "excess_risk_dollars": evidence.get("excess_risk_dollars"),
+                "target_qty_for_risk": evidence.get("target_qty_for_risk"),
+                "reduce_qty": evidence.get("reduce_qty"),
+                "source": "computed_current_active_plan",
                 "order_id": evidence.get("order_id"),
             })
 
@@ -9986,8 +9999,9 @@ def _p438_post_fill_risk_decision_for_active_plan(
     live_qty = abs(float(_safe_float(qty_signed, 0.0)))
     filled_qty = abs(float(_safe_float(plan.get("filled_qty") or plan.get("qty") or live_qty or 0.0)))
     broker_qty = live_qty or filled_qty
+    qty_for_risk = broker_qty or filled_qty
     risk_per_share = round(abs(entry_price - stop_price), 4)
-    actual_risk = round(risk_per_share * filled_qty, 4)
+    actual_risk = round(risk_per_share * qty_for_risk, 4)
     risk_threshold = round(float(RISK_DOLLARS) * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT), 0.0)), 4) if RISK_DOLLARS > 0 else 0.0
     risk_exceeded = bool(ENABLE_RISK_RECHECK_AFTER_FILL and risk_threshold > 0 and actual_risk > risk_threshold)
 
@@ -9995,7 +10009,7 @@ def _p438_post_fill_risk_decision_for_active_plan(
     reduce_qty = 0.0
     if risk_per_share > 0:
         target_qty_for_risk = _normalize_close_qty(float(risk_threshold) / float(risk_per_share))
-        reduce_qty = _normalize_close_qty(max(0.0, filled_qty - target_qty_for_risk))
+        reduce_qty = _normalize_close_qty(max(0.0, qty_for_risk - target_qty_for_risk))
 
     submitted_at_age_sec = None
     try:
@@ -10028,7 +10042,7 @@ def _p438_post_fill_risk_decision_for_active_plan(
         risk_exceeded
         and POST_FILL_RISK_RECHECK_REDUCE_ENABLED
         and reduce_qty > 0
-        and reduce_qty < filled_qty
+        and reduce_qty < qty_for_risk
         and target_qty_for_risk > 0
     )
     full_exit_allowed = bool(
@@ -10065,6 +10079,7 @@ def _p438_post_fill_risk_decision_for_active_plan(
         "risk_per_share": risk_per_share,
         "filled_qty_used": filled_qty,
         "broker_qty_used": broker_qty,
+        "qty_for_risk": qty_for_risk,
         "order_filled_qty": order_status.get("filled_qty"),
         "live_qty": live_qty,
         "broker_position_qty": qty_signed,
@@ -10149,6 +10164,22 @@ def _p438_apply_active_plan_risk_refresh(
         return out
 
     if decision == "exit":
+        if POST_FILL_RISK_RECHECK_REDUCE_ENABLED and float(evidence.get("target_qty_for_risk") or 0.0) > 0:
+            out["acted"] = False
+            out["exit_suppressed"] = True
+            out["reason"] = "active_risk_full_exit_suppressed_reduce_first_contract"
+            evidence["decision"] = "hold"
+            evidence["reason"] = "active_risk_full_exit_suppressed_reduce_first_contract"
+            record_decision(
+                "RECONCILE",
+                "worker_exit",
+                symbol,
+                action="risk_recheck_hold",
+                reason="active_risk_full_exit_suppressed_reduce_first_contract",
+                meta={"post_fill_risk_recheck": evidence},
+            )
+            return out
+
         close_out = close_position(symbol, reason="risk_exceeded_after_fill", source="risk_guard")
         evidence["close_out"] = close_out
         out["close_out"] = close_out
@@ -10471,11 +10502,18 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
             if p438_risk_refresh.get("evaluated"):
                 out["p438_active_plan_risk_refresh"] = p438_risk_refresh
                 out["post_fill_risk_recheck_evidence"] = p438_risk_refresh.get("evidence")
+                out["changes"].append("p438_active_plan_risk_refresh")
                 if p438_risk_refresh.get("acted"):
                     out["changes"].append("p438_active_plan_risk_refresh_action")
                     out["risk_close"] = p438_risk_refresh.get("close_out")
                     _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
-                    return out        
+                    return out
+
+    _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
+    out["active"] = bool(plan.get("active"))
+    out["broker_position_qty"] = qty_signed
+    out["broker_position_side"] = pos_side
+    return out        
 
 def reconcile_trade_plans_from_alpaca() -> list[dict]:
     """
