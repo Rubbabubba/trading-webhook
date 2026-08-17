@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-437-post-fill-risk-reduce-first-same-minute-churn-guard"
+PATCH_VERSION = "patch-438-active-plan-risk-recheck-refresh-stale-closed-plan-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -9970,6 +9970,211 @@ def _p342_broker_backed_filled_or_recovered_plan(plan: dict | None, qty_signed: 
         )
     )
 
+def _p438_post_fill_risk_decision_for_active_plan(
+    symbol: str,
+    plan: dict | None,
+    *,
+    qty_signed: float | None = None,
+    order_status: dict | None = None,
+) -> dict:
+    plan = dict(plan or {})
+    order_status = dict(order_status or {})
+    symbol = str(symbol or plan.get("symbol") or "").strip().upper()
+
+    entry_price = float(_safe_float(plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price") or 0.0))
+    stop_price = float(_safe_float(plan.get("stop_price") or 0.0))
+    live_qty = abs(float(_safe_float(qty_signed, 0.0)))
+    filled_qty = abs(float(_safe_float(plan.get("filled_qty") or plan.get("qty") or live_qty or 0.0)))
+    broker_qty = live_qty or filled_qty
+    risk_per_share = round(abs(entry_price - stop_price), 4)
+    actual_risk = round(risk_per_share * filled_qty, 4)
+    risk_threshold = round(float(RISK_DOLLARS) * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT), 0.0)), 4) if RISK_DOLLARS > 0 else 0.0
+    risk_exceeded = bool(ENABLE_RISK_RECHECK_AFTER_FILL and risk_threshold > 0 and actual_risk > risk_threshold)
+
+    target_qty_for_risk = 0.0
+    reduce_qty = 0.0
+    if risk_per_share > 0:
+        target_qty_for_risk = _normalize_close_qty(float(risk_threshold) / float(risk_per_share))
+        reduce_qty = _normalize_close_qty(max(0.0, filled_qty - target_qty_for_risk))
+
+    submitted_at_age_sec = None
+    try:
+        submitted_at_raw = (
+            plan.get("submitted_at")
+            or order_status.get("submitted_at")
+            or order_status.get("filled_at")
+            or plan.get("created_at")
+        )
+        submitted_dt = _safe_iso_to_dt(submitted_at_raw)
+        if submitted_dt is not None:
+            submitted_at_age_sec = max(0.0, (datetime.now(timezone.utc) - submitted_dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        submitted_at_age_sec = None
+
+    hard_exit_threshold = round(
+        float(risk_threshold) * max(float(POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE), 1.0),
+        4,
+    ) if risk_threshold > 0 else 0.0
+    hard_exit = bool(risk_exceeded and actual_risk >= hard_exit_threshold)
+
+    full_exit_min_age_sec = max(0, int(POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC or 0))
+    same_minute_churn_guard_active = bool(
+        full_exit_min_age_sec > 0
+        and submitted_at_age_sec is not None
+        and submitted_at_age_sec < float(full_exit_min_age_sec)
+    )
+
+    can_reduce = bool(
+        risk_exceeded
+        and POST_FILL_RISK_RECHECK_REDUCE_ENABLED
+        and reduce_qty > 0
+        and reduce_qty < filled_qty
+        and target_qty_for_risk > 0
+    )
+    full_exit_allowed = bool(
+        risk_exceeded
+        and not can_reduce
+        and (
+            not same_minute_churn_guard_active
+            or target_qty_for_risk <= 0
+            or reduce_qty >= filled_qty
+        )
+    )
+
+    decision = "reduce" if can_reduce else "exit" if full_exit_allowed else "hold"
+    reason = (
+        "risk_exceeded_after_fill_reduce_to_risk"
+        if can_reduce
+        else "risk_exceeded_after_fill"
+        if full_exit_allowed
+        else "risk_within_post_fill_threshold"
+        if not risk_exceeded
+        else "risk_exceeded_after_fill_full_exit_blocked_by_churn_guard"
+    )
+
+    return {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "ts_ny": now_ny().isoformat(),
+        "patch_version": PATCH_VERSION,
+        "symbol": symbol,
+        "enabled": bool(ENABLE_RISK_RECHECK_AFTER_FILL),
+        "decision": decision,
+        "reason": reason,
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "risk_per_share": risk_per_share,
+        "filled_qty_used": filled_qty,
+        "broker_qty_used": broker_qty,
+        "order_filled_qty": order_status.get("filled_qty"),
+        "live_qty": live_qty,
+        "broker_position_qty": qty_signed,
+        "actual_risk_dollars": actual_risk,
+        "configured_risk_dollars": float(RISK_DOLLARS),
+        "tolerance_pct": float(RISK_RECHECK_TOLERANCE_PCT),
+        "risk_threshold_dollars": risk_threshold,
+        "excess_risk_dollars": round(actual_risk - risk_threshold, 4) if risk_threshold > 0 else 0.0,
+        "order_id": plan.get("order_id") or order_status.get("id"),
+        "order_status": order_status,
+        "hard_exit_threshold_dollars": hard_exit_threshold,
+        "hard_exit": hard_exit,
+        "target_qty_for_risk": target_qty_for_risk,
+        "reduce_qty": reduce_qty,
+        "reduce_enabled": bool(POST_FILL_RISK_RECHECK_REDUCE_ENABLED),
+        "post_fill_risk_action": decision,
+        "full_exit_min_age_sec": full_exit_min_age_sec,
+        "submitted_at_age_sec": submitted_at_age_sec,
+        "same_minute_churn_guard_active": same_minute_churn_guard_active,
+        "full_exit_blocked_by_reduce_first": bool(can_reduce and hard_exit),
+        "full_exit_allowed": full_exit_allowed,
+        "risk_exceeded": risk_exceeded,
+        "source": "p438_active_plan_risk_refresh",
+    }
+
+
+def _p438_apply_active_plan_risk_refresh(
+    symbol: str,
+    plan: dict,
+    *,
+    qty_signed: float | None = None,
+    order_status: dict | None = None,
+) -> dict:
+    out = {
+        "symbol": str(symbol or "").strip().upper(),
+        "evaluated": False,
+        "acted": False,
+        "decision": None,
+        "reason": None,
+    }
+    if not isinstance(plan, dict) or not plan.get("active"):
+        return out
+
+    evidence = _p438_post_fill_risk_decision_for_active_plan(
+        symbol,
+        plan,
+        qty_signed=qty_signed,
+        order_status=order_status,
+    )
+    out.update({
+        "evaluated": True,
+        "decision": evidence.get("decision"),
+        "reason": evidence.get("reason"),
+        "evidence": evidence,
+    })
+
+    plan["actual_risk_dollars"] = evidence.get("actual_risk_dollars")
+    plan["post_fill_risk_recheck_evidence"] = evidence
+    risk_history = list(plan.get("post_fill_risk_recheck_evidence_history") or [])
+    risk_history.append(evidence)
+    plan["post_fill_risk_recheck_evidence_history"] = risk_history[-20:]
+
+    decision = str(evidence.get("decision") or "").strip().lower()
+    if decision == "reduce":
+        close_out = close_partial_position(
+            symbol,
+            float(evidence.get("reduce_qty") or 0.0),
+            reason="risk_exceeded_after_fill_reduce_to_risk",
+            source="risk_guard",
+        )
+        evidence["close_out"] = close_out
+        out["close_out"] = close_out
+        out["acted"] = True
+        record_decision(
+            "RECONCILE",
+            "worker_exit",
+            symbol,
+            action="risk_recheck_reduce",
+            reason="risk_exceeded_after_fill_reduce_to_risk",
+            meta={"post_fill_risk_recheck": evidence},
+        )
+        return out
+
+    if decision == "exit":
+        close_out = close_position(symbol, reason="risk_exceeded_after_fill", source="risk_guard")
+        evidence["close_out"] = close_out
+        out["close_out"] = close_out
+        out["acted"] = True
+        record_decision(
+            "RECONCILE",
+            "worker_exit",
+            symbol,
+            action="risk_recheck",
+            reason="risk_exceeded_after_fill",
+            meta={"post_fill_risk_recheck": evidence},
+        )
+        if close_out.get("closed"):
+            plan["active"] = False
+        return out
+
+    record_decision(
+        "RECONCILE",
+        "worker_exit",
+        symbol,
+        action="risk_recheck_hold",
+        reason=str(evidence.get("reason") or "risk_within_post_fill_threshold"),
+        meta={"post_fill_risk_recheck": evidence},
+    )
+    return out
+
 def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
     """Best-effort sync between internal plan, broker order state, and live position."""
     out = {"symbol": symbol, "active": bool((plan or {}).get("active")), "changes": []}
@@ -10256,6 +10461,21 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                     plan["active"] = False
                 _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
                 return out
+        else:
+            p438_risk_refresh = _p438_apply_active_plan_risk_refresh(
+                symbol,
+                plan,
+                qty_signed=qty_signed,
+                order_status=order_status,
+            )
+            if p438_risk_refresh.get("evaluated"):
+                out["p438_active_plan_risk_refresh"] = p438_risk_refresh
+                out["post_fill_risk_recheck_evidence"] = p438_risk_refresh.get("evidence")
+                if p438_risk_refresh.get("acted"):
+                    out["changes"].append("p438_active_plan_risk_refresh_action")
+                    out["risk_close"] = p438_risk_refresh.get("close_out")
+                    _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
+                    return out        
 
 def reconcile_trade_plans_from_alpaca() -> list[dict]:
     """
@@ -36317,8 +36537,106 @@ def _p298_live_positions_light() -> dict:
         },
     }
 
+def _p438_stale_closed_plan_cleanup_from_snapshot(apply: bool = False) -> dict:
+    latest_snapshot = {}
+    try:
+        latest_snapshot = read_positions_snapshot()
+    except Exception:
+        latest_snapshot = {}
 
-def _p298_reconcile_light() -> dict:
+    snapshot_positions = []
+    if isinstance(latest_snapshot, dict):
+        snapshot_positions = list(latest_snapshot.get("positions") or latest_snapshot.get("items") or [])
+
+    snapshot_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in snapshot_positions
+        if str((row or {}).get("symbol") or "").strip()
+    }
+
+    active_pending_statuses = {"new", "accepted", "pending_new", "accepted_for_bidding", "held", "pending_replace", "partially_filled"}
+    terminal_or_closed_statuses = {"filled", "canceled", "cancelled", "rejected", "expired", "done_for_day"}
+
+    rows = []
+    deactivated = []
+
+    for sym, plan in sorted((TRADE_PLAN or {}).items()):
+        if not isinstance(plan, dict) or not bool(plan.get("active")):
+            continue
+
+        symbol = str(sym or plan.get("symbol") or "").strip().upper()
+        if not symbol or symbol in snapshot_symbols:
+            continue
+
+        order_status_lc = str(plan.get("order_status") or "").strip().lower()
+        has_pending_order = order_status_lc in active_pending_statuses
+        looks_closed = bool(
+            order_status_lc in terminal_or_closed_statuses
+            or plan.get("last_exit_submit_ts_utc")
+            or plan.get("closed_at")
+            or plan.get("exit_ts_utc")
+            or str(plan.get("execution_state") or "").strip().lower() in {"closed", "exited", "entry_canceled"}
+            or str(plan.get("lifecycle_state") or "").strip().lower() in {"closed", "exited", "entry_canceled"}
+        )
+
+        action = (
+            "preserve_pending_order_status"
+            if has_pending_order
+            else "deactivate_stale_closed_plan"
+            if looks_closed
+            else "preserve_unverified_no_snapshot_plan"
+        )
+
+        row = {
+            "symbol": symbol,
+            "order_status": order_status_lc,
+            "has_pending_order": has_pending_order,
+            "looks_closed": looks_closed,
+            "action": action,
+            "applied": False,
+        }
+
+        if apply and action == "deactivate_stale_closed_plan":
+            plan["active"] = False
+            plan["p438_stale_closed_plan_cleanup_at"] = datetime.now(timezone.utc).isoformat()
+            plan["p438_stale_closed_plan_cleanup_patch"] = PATCH_VERSION
+            row["applied"] = True
+            deactivated.append(symbol)
+            record_decision(
+                "RECONCILE",
+                "reconcile_light",
+                symbol,
+                action="deactivated",
+                reason="p438_stale_closed_plan_without_snapshot_position",
+                meta={"plan": {"order_status": order_status_lc}},
+            )
+
+        rows.append(row)
+
+    if apply and deactivated:
+        persist_positions_snapshot(
+            reason="p438_stale_closed_plan_cleanup",
+            extra={"deactivated_symbols": deactivated},
+        )
+
+    return {
+        "enabled": True,
+        "apply": bool(apply),
+        "snapshot_symbols": sorted(snapshot_symbols),
+        "candidate_count": len(rows),
+        "deactivated_count": len(deactivated),
+        "deactivated_symbols": deactivated,
+        "rows": rows,
+        "recommended_action": (
+            "cleanup_applied"
+            if deactivated
+            else "run_apply_true_to_deactivate_stale_closed_plans"
+            if any(r.get("action") == "deactivate_stale_closed_plan" for r in rows)
+            else "no_stale_closed_plan_cleanup_needed"
+        ),
+    }
+
+def _p298_reconcile_light(apply_cleanup: bool = False) -> dict:
     latest_snapshot = {}
     try:
         latest_snapshot = read_positions_snapshot()
@@ -36340,6 +36658,14 @@ def _p298_reconcile_light() -> dict:
         if isinstance(plan, dict) and bool(plan.get("active"))
     }
 
+    stale_cleanup = _p438_stale_closed_plan_cleanup_from_snapshot(apply=apply_cleanup)
+    if apply_cleanup:
+        active_plan_symbols = {
+            str(sym or "").strip().upper()
+            for sym, plan in (TRADE_PLAN or {}).items()
+            if isinstance(plan, dict) and bool(plan.get("active"))
+        }
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -36354,6 +36680,7 @@ def _p298_reconcile_light() -> dict:
         },
         "snapshot_symbols": sorted(snapshot_symbols),
         "active_plan_symbols": sorted(active_plan_symbols),
+        "p438_stale_closed_plan_cleanup": stale_cleanup,
         "startup_state": STARTUP_STATE,
     }
 
@@ -47632,17 +47959,15 @@ def diagnostics_market_open_selection_audit_light(request: Request, limit: int =
     require_admin_if_configured(request)
     return _p298_market_open_selection_audit_light(limit=limit)
 
-
 @app.get("/diagnostics/live_positions_light")
 def diagnostics_live_positions_light(request: Request):
     require_admin_if_configured(request)
     return _p298_live_positions_light()
 
-
 @app.get("/diagnostics/reconcile_light")
-def diagnostics_reconcile_light(request: Request):
+def diagnostics_reconcile_light(request: Request, apply_cleanup: bool = False):
     require_admin_if_configured(request)
-    return _p298_reconcile_light()
+    return _p298_reconcile_light(apply_cleanup=apply_cleanup)
 
 # Compatibility tombstone only. Selected intent queue runtime is retired; direct submit is authoritative.
 @app.get("/diagnostics/selected_entry_intent_queue")
