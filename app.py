@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-438-hotfix-3-full-exit-age-config-fallback-risk-evidence-health"
+PATCH_VERSION = "patch-439-stale-reduce-failure-cleanup-broker-available-reduce-clamp"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -9126,6 +9126,78 @@ def _p391_extract_overclose_error_quantities(err_text: str) -> dict:
     out["is_overclose_qty_error"] = bool(is_qty_error and requested > 0 and requested > available)
     return out
 
+def _p439_clear_stale_reduce_failure_if_risk_clean(
+    symbol: str,
+    plan: dict,
+    classification: dict,
+    broker_qty_signed: float,
+    close_side: str,
+) -> dict:
+    out = {
+        "cleared": False,
+        "reason": "not_applicable",
+        "symbol": str(symbol or "").strip().upper(),
+    }
+    if not isinstance(plan, dict) or not isinstance(classification, dict):
+        return out
+
+    err_text = str(plan.get("last_exit_submit_error") or classification.get("error") or "")
+    qty_error = _p391_extract_overclose_error_quantities(err_text)
+    if not qty_error.get("is_overclose_qty_error"):
+        out["reason"] = "not_overclose_failure"
+        return out
+
+    exit_reason = str(
+        plan.get("last_exit_submit_error_reason")
+        or classification.get("exit_reason")
+        or ""
+    ).strip().lower()
+    if "risk_exceeded_after_fill_reduce_to_risk" not in exit_reason and "reduce" not in exit_reason:
+        out["reason"] = "not_reduce_failure"
+        return out
+
+    broker_qty = abs(_safe_float(broker_qty_signed, 0.0))
+    entry = _safe_float(plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price") or 0.0, 0.0)
+    stop = _safe_float(plan.get("stop_price") or plan.get("initial_stop_price") or 0.0, 0.0)
+    risk_per_share = abs(entry - stop) if entry > 0 and stop > 0 else _safe_float(plan.get("risk_per_share") or 0.0, 0.0)
+    risk_threshold = round(float(RISK_DOLLARS or 0.0) * (1.0 + max(float(RISK_RECHECK_TOLERANCE_PCT or 0.0), 0.0)), 4) if float(RISK_DOLLARS or 0.0) > 0 else 0.0
+    current_risk = round(float(broker_qty) * float(risk_per_share or 0.0), 4)
+
+    out.update({
+        "broker_qty": round(broker_qty, 8),
+        "risk_per_share": round(float(risk_per_share or 0.0), 4),
+        "current_risk_dollars": current_risk,
+        "risk_threshold_dollars": risk_threshold,
+        "original_failed_qty": qty_error.get("requested_qty"),
+        "original_error_available_qty": qty_error.get("available_qty"),
+    })
+
+    if risk_threshold <= 0 or current_risk > risk_threshold:
+        out["reason"] = "current_risk_still_above_threshold"
+        return out
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    plan["last_exit_submit_failure_classification"] = {
+        **dict(classification),
+        "classification": "stale_reduce_failure_cleared_current_risk_clean",
+        "retryable": False,
+        "retry_timing": "terminal",
+        "stale_failure_cleared": True,
+        "stale_failure_cleared_at": now_iso,
+        "stale_failure_cleared_patch": PATCH_VERSION,
+        "current_risk_dollars": current_risk,
+        "risk_threshold_dollars": risk_threshold,
+        "broker_qty": round(broker_qty, 8),
+    }
+    plan["last_exit_submit_retryable"] = False
+    plan["last_exit_submit_retry_timing"] = "terminal"
+    plan["last_exit_submit_failure_terminal"] = True
+    plan["last_exit_submit_failure_cleared_at"] = now_iso
+    plan["last_exit_submit_failure_cleared_reason"] = "current_broker_position_risk_within_threshold"
+
+    out["cleared"] = True
+    out["reason"] = "current_broker_position_risk_within_threshold"
+    return out
 
 def _p391_supersede_stale_overclose_failure(
     symbol: str,
@@ -9136,6 +9208,8 @@ def _p391_supersede_stale_overclose_failure(
 ) -> dict:
     if not isinstance(classification, dict):
         return {}
+    if bool(classification.get("stale_failure_cleared")):
+        return dict(classification)
 
     out = dict(classification)
     err_text = str(plan.get("last_exit_submit_error") or out.get("error") or "")
@@ -9207,6 +9281,16 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
         active_exit_row = dict(active_exit_rows.get(symbol) or {})
         current_exit_trigger_now = bool(active_exit_row.get("exit_trigger_now"))
         current_exit_reason = str(active_exit_row.get("closest_exit_reason") or "none")
+        stale_reduce_cleanup = _p439_clear_stale_reduce_failure_if_risk_clean(
+            symbol,
+            plan,
+            classification,
+            qty_signed,
+            close_side,
+        )
+        if stale_reduce_cleanup.get("cleared"):
+            classification = dict(plan.get("last_exit_submit_failure_classification") or classification)
+
         classification = _p391_supersede_stale_overclose_failure(
             symbol,
             plan,
@@ -9261,6 +9345,8 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             "broker_retry_qty": classification.get("broker_retry_qty"),
             "original_failed_qty": classification.get("original_failed_qty"),
             "failure_superseded": bool(classification.get("failure_superseded")),
+            "stale_reduce_failure_cleanup": stale_reduce_cleanup,
+            "stale_failure_cleared": bool(classification.get("stale_failure_cleared")),
             "has_position": has_position,
             "current_exit_trigger_now": current_exit_trigger_now,
             "current_exit_reason": current_exit_reason,
@@ -9813,6 +9899,7 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
         return {"closed": False, "reason": "Invalid partial quantity"}
 
     qty = _normalize_close_qty(min(available_qty, requested_qty))
+    partial_qty_clamped = bool(qty < _normalize_close_qty(requested_qty))
     close_side = "sell" if qty_signed > 0 else "buy"
     if qty <= 0:
         return {"closed": False, "reason": "Invalid partial quantity"}
@@ -9874,7 +9961,39 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
         payload["partial"] = True
         return payload
     order_id = _order_id_from_submit_response(order)
-    out = {"closed": True, "symbol": symbol, "qty": qty, "close_side": close_side, "order_id": order_id, "partial": True, "broker_qty_exit_clamp": qty_guard}
+    out = {
+        "closed": True,
+        "symbol": symbol,
+        "qty": qty,
+        "requested_qty": _normalize_close_qty(requested_qty),
+        "available_qty": _normalize_close_qty(available_qty),
+        "partial_qty_clamped": partial_qty_clamped,
+        "close_side": close_side,
+        "order_id": order_id,
+        "partial": True,
+        "broker_qty_exit_clamp": qty_guard,
+    }
+        try:
+        if isinstance(TRADE_PLAN.get(symbol), dict):
+            plan_ref = TRADE_PLAN[symbol]
+            if str(plan_ref.get("last_exit_submit_error_reason") or "").strip().lower() in {
+                "risk_exceeded_after_fill_reduce_to_risk",
+                "partial_exit",
+            }:
+                plan_ref["last_exit_submit_failure_classification"] = {
+                    "classification": "superseded_by_successful_partial_close",
+                    "retryable": False,
+                    "retry_timing": "terminal",
+                    "stale_failure_cleared": True,
+                    "successful_order_id": order_id,
+                    "successful_qty": qty,
+                    "patch_version": PATCH_VERSION,
+                }
+                plan_ref["last_exit_submit_retryable"] = False
+                plan_ref["last_exit_submit_retry_timing"] = "terminal"
+                plan_ref["last_exit_submit_failure_terminal"] = True
+    except Exception:
+        pass
     record_decision("EXIT", source, symbol, side=close_side, action="partial_order_submitted", reason=reason or "partial_exit", qty=qty, order_id=order_id)
     persist_positions_snapshot(reason="partial_close_submitted", extra={"symbol": symbol, "order_id": order_id, "exit_reason": reason, "source": source, "qty": qty})
     try:
