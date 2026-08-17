@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-441-broker-reconciled-r-multiple-backfill-performance-attribution-cleanup"
+PATCH_VERSION = "patch-442-broker-reconciled-strategy-attribution-breakout-risk-size-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17711,6 +17711,243 @@ def _p245_broker_preferred_performance_snapshot() -> dict:
         "broker_fill_duplicate_rows": preferred.get("broker_fill_duplicate_rows") or [],
         "duplicate_exit_audit": _p244_duplicate_realized_exit_audit(),
         "recommended_action": "use_broker_only_daily_loss_truth_for_daily_pnl; use_this_endpoint_for_strategy_state_drift_only",
+    }
+
+def _p442_trade_ts_utc(row: dict | None) -> str:
+    r = dict(row or {})
+    return str(r.get("ts_utc") or r.get("closed_at") or r.get("exit_ts_utc") or r.get("exit_ts") or "")
+
+
+def _p442_trade_dollar_risk(row: dict | None) -> float:
+    r = dict(row or {})
+    qty = abs(_safe_float(r.get("qty"), 0.0))
+    risk_per_share = _safe_float(r.get("risk_per_share"), 0.0)
+    if risk_per_share <= 0:
+        entry = _safe_float(r.get("entry_price"), 0.0)
+        stop = _safe_float(r.get("stop_price") or r.get("initial_stop_price"), 0.0)
+        if entry > 0 and stop > 0:
+            risk_per_share = abs(entry - stop)
+    return max(0.0, qty * risk_per_share)
+
+
+def _p442_trade_notional(row: dict | None) -> float:
+    r = dict(row or {})
+    qty = abs(_safe_float(r.get("qty"), 0.0))
+    entry = _safe_float(r.get("entry_price"), 0.0)
+    return max(0.0, qty * entry)
+
+
+def _p442_bucket_summary(rows: list[dict] | None, key_fn, *, limit: int = 20) -> list[dict]:
+    buckets: dict[str, dict] = {}
+    for raw in list(rows or []):
+        row = dict(raw or {})
+        key = str(key_fn(row) or "unknown").strip().lower() or "unknown"
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        pnl_r = _safe_float(row.get("pnl_r"), 0.0)
+        dollar_risk = _p442_trade_dollar_risk(row)
+        notional = _p442_trade_notional(row)
+        qty = abs(_safe_float(row.get("qty"), 0.0))
+        risk_per_share = _safe_float(row.get("risk_per_share"), 0.0)
+        hold_hours = _safe_float(row.get("holding_hours"), 0.0)
+
+        b = buckets.setdefault(key, {
+            "name": key,
+            "closed_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "flat": 0,
+            "gross_pnl": 0.0,
+            "r_total": 0.0,
+            "dollar_risk_total": 0.0,
+            "position_notional_total": 0.0,
+            "qty_total": 0.0,
+            "risk_per_share_total": 0.0,
+            "holding_hours_total": 0.0,
+            "largest_win": None,
+            "largest_loss": None,
+            "worst_r": None,
+            "best_r": None,
+        })
+        b["closed_trades"] += 1
+        b["gross_pnl"] += pnl
+        b["r_total"] += pnl_r
+        b["dollar_risk_total"] += dollar_risk
+        b["position_notional_total"] += notional
+        b["qty_total"] += qty
+        b["risk_per_share_total"] += risk_per_share
+        b["holding_hours_total"] += hold_hours
+        if pnl > 0:
+            b["wins"] += 1
+        elif pnl < 0:
+            b["losses"] += 1
+        else:
+            b["flat"] += 1
+        b["largest_win"] = pnl if b["largest_win"] is None else max(float(b["largest_win"]), pnl)
+        b["largest_loss"] = pnl if b["largest_loss"] is None else min(float(b["largest_loss"]), pnl)
+        b["worst_r"] = pnl_r if b["worst_r"] is None else min(float(b["worst_r"]), pnl_r)
+        b["best_r"] = pnl_r if b["best_r"] is None else max(float(b["best_r"]), pnl_r)
+
+    out = []
+    for b in buckets.values():
+        count = max(1, int(b.get("closed_trades") or 0))
+        out.append({
+            "name": b.get("name"),
+            "closed_trades": int(b.get("closed_trades") or 0),
+            "wins": int(b.get("wins") or 0),
+            "losses": int(b.get("losses") or 0),
+            "flat": int(b.get("flat") or 0),
+            "win_rate": round(float(b.get("wins") or 0) / count, 4),
+            "gross_pnl": round(float(b.get("gross_pnl") or 0.0), 4),
+            "avg_pnl": round(float(b.get("gross_pnl") or 0.0) / count, 4),
+            "avg_r": round(float(b.get("r_total") or 0.0) / count, 4),
+            "avg_dollar_risk": round(float(b.get("dollar_risk_total") or 0.0) / count, 4),
+            "avg_position_notional": round(float(b.get("position_notional_total") or 0.0) / count, 4),
+            "avg_qty": round(float(b.get("qty_total") or 0.0) / count, 4),
+            "avg_risk_per_share": round(float(b.get("risk_per_share_total") or 0.0) / count, 4),
+            "avg_holding_hours": round(float(b.get("holding_hours_total") or 0.0) / count, 4),
+            "largest_win": round(float(b.get("largest_win") or 0.0), 4),
+            "largest_loss": round(float(b.get("largest_loss") or 0.0), 4),
+            "best_r": round(float(b.get("best_r") or 0.0), 4),
+            "worst_r": round(float(b.get("worst_r") or 0.0), 4),
+        })
+    out.sort(key=lambda x: (_safe_float(x.get("gross_pnl"), 0.0), _safe_float(x.get("avg_r"), 0.0)), reverse=True)
+    return out[: max(1, int(limit or 20))]
+
+
+def _p442_risk_tier(row: dict | None) -> str:
+    risk = _p442_trade_dollar_risk(row)
+    if risk <= 0:
+        return "unknown"
+    if risk <= 15:
+        return "risk_0_15"
+    if risk <= 30:
+        return "risk_15_30"
+    if risk <= 50:
+        return "risk_30_50"
+    return "risk_over_50"
+
+
+def _p442_size_tier(row: dict | None) -> str:
+    notional = _p442_trade_notional(row)
+    if notional <= 0:
+        return "unknown"
+    if notional <= 1200:
+        return "notional_0_1200"
+    if notional <= 2500:
+        return "notional_1200_2500"
+    if notional <= 5000:
+        return "notional_2500_5000"
+    return "notional_over_5000"
+
+
+def _p442_is_breakout_row(row: dict | None) -> bool:
+    r = dict(row or {})
+    blob = " ".join([
+        str(r.get("strategy_name") or ""),
+        str(r.get("signal") or ""),
+        str(r.get("entry_type") or ""),
+    ]).strip().lower()
+    return "breakout" in blob
+
+
+def _p442_broker_reconciled_strategy_attribution_report(limit: int = 20) -> dict:
+    preferred = _p245_broker_preferred_closed_rows()
+    rows = [
+        dict(r or {})
+        for r in list(preferred.get("kept_rows") or [])
+        if isinstance(r, dict) and _p245_is_broker_reconciled_exit(r)
+    ]
+    rows.sort(key=_p442_trade_ts_utc, reverse=True)
+
+    breakout_rows = [r for r in rows if _p442_is_breakout_row(r)]
+    non_breakout_rows = [r for r in rows if not _p442_is_breakout_row(r)]
+    rollup = _p245_performance_rollup(rows)
+    breakout_rollup = _p245_performance_rollup(breakout_rows)
+    non_breakout_rollup = _p245_performance_rollup(non_breakout_rows)
+
+    breakout_gross = _safe_float(breakout_rollup.get("gross_pnl"), 0.0)
+    breakout_avg_r = _safe_float(breakout_rollup.get("avg_r"), 0.0)
+    mean_reversion = dict((rollup.get("by_strategy") or {}).get("daily_mean_reversion") or {})
+
+    recommendations = []
+    if breakout_rows and (breakout_gross < 0 or breakout_avg_r < 0.05):
+        recommendations.append("reduce_or_segment_breakout_before_any_risk_scale")
+    if mean_reversion and _safe_float(mean_reversion.get("avg_r"), 0.0) > breakout_avg_r:
+        recommendations.append("preserve_mean_reversion_sleeve")
+    worst_breakout = sorted(breakout_rows, key=lambda r: _safe_float(r.get("pnl_r"), 0.0))[:5]
+    if worst_breakout and _safe_float(worst_breakout[0].get("pnl_r"), 0.0) <= -1.0:
+        recommendations.append("audit_breakout_tail_loss_by_exit_reason_and_entry_type")
+    if not recommendations:
+        recommendations.append("monitor_broker_reconciled_strategy_mix")
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_reconciled_strategy_attribution_report",
+        "source": "broker_reconciled_kept_rows_only",
+        "behavior_changed": False,
+        "row_counts": {
+            "broker_reconciled_rows": len(rows),
+            "breakout_rows": len(breakout_rows),
+            "non_breakout_rows": len(non_breakout_rows),
+            "shadowed_worker_rows_excluded": preferred.get("shadowed_worker_count"),
+            "broker_duplicate_rows_excluded": preferred.get("broker_fill_duplicate_count"),
+        },
+        "rollup": rollup,
+        "breakout_rollup": breakout_rollup,
+        "non_breakout_rollup": non_breakout_rollup,
+        "by_strategy": _p442_bucket_summary(rows, lambda r: r.get("strategy_name") or r.get("signal"), limit=limit),
+        "by_entry_type": _p442_bucket_summary(rows, lambda r: r.get("entry_type"), limit=limit),
+        "by_exit_reason": _p442_bucket_summary(rows, lambda r: r.get("attributed_exit_reason") or r.get("exit_reason") or r.get("reason"), limit=limit),
+        "by_symbol": _p442_bucket_summary(rows, lambda r: r.get("symbol"), limit=limit),
+        "breakout_by_entry_type": _p442_bucket_summary(breakout_rows, lambda r: r.get("entry_type"), limit=limit),
+        "breakout_by_exit_reason": _p442_bucket_summary(breakout_rows, lambda r: r.get("attributed_exit_reason") or r.get("exit_reason") or r.get("reason"), limit=limit),
+        "breakout_by_risk_tier": _p442_bucket_summary(breakout_rows, _p442_risk_tier, limit=limit),
+        "breakout_by_size_tier": _p442_bucket_summary(breakout_rows, _p442_size_tier, limit=limit),
+        "worst_breakout_trades": [
+            {
+                "symbol": r.get("symbol"),
+                "ts_utc": _p442_trade_ts_utc(r),
+                "strategy_name": r.get("strategy_name"),
+                "entry_type": r.get("entry_type"),
+                "exit_reason": r.get("attributed_exit_reason") or r.get("exit_reason") or r.get("reason"),
+                "gross_pnl": r.get("gross_pnl"),
+                "pnl_r": r.get("pnl_r"),
+                "qty": r.get("qty"),
+                "entry_price": r.get("entry_price"),
+                "exit_price": r.get("exit_price"),
+                "risk_per_share": r.get("risk_per_share"),
+                "dollar_risk": round(_p442_trade_dollar_risk(r), 4),
+                "position_notional": round(_p442_trade_notional(r), 4),
+                "rank_score": r.get("rank_score"),
+                "selection_quality_score": r.get("selection_quality_score"),
+                "holding_hours": r.get("holding_hours"),
+            }
+            for r in worst_breakout
+        ],
+        "best_breakout_trades": [
+            {
+                "symbol": r.get("symbol"),
+                "ts_utc": _p442_trade_ts_utc(r),
+                "strategy_name": r.get("strategy_name"),
+                "entry_type": r.get("entry_type"),
+                "exit_reason": r.get("attributed_exit_reason") or r.get("exit_reason") or r.get("reason"),
+                "gross_pnl": r.get("gross_pnl"),
+                "pnl_r": r.get("pnl_r"),
+                "qty": r.get("qty"),
+                "entry_price": r.get("entry_price"),
+                "exit_price": r.get("exit_price"),
+                "risk_per_share": r.get("risk_per_share"),
+                "dollar_risk": round(_p442_trade_dollar_risk(r), 4),
+                "position_notional": round(_p442_trade_notional(r), 4),
+                "rank_score": r.get("rank_score"),
+                "selection_quality_score": r.get("selection_quality_score"),
+                "holding_hours": r.get("holding_hours"),
+            }
+            for r in sorted(breakout_rows, key=lambda r: _safe_float(r.get("pnl_r"), 0.0), reverse=True)[:5]
+        ],
+        "recommended_actions": recommendations,
+        "recommended_action": recommendations[0],
     }
 
 def _sync_broker_realized_rows_to_strategy_performance(broker_realized: dict | None) -> dict:
@@ -50895,6 +51132,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
         ],
         "performance_review": [
             f"{base}/strategy_state_broker_reconciled_estimate",
+            f"{base}/broker_reconciled_strategy_attribution?limit=20",
             f"{base}/broker_preferred_daily_pnl_dedup",
             f"{base}/broker_preferred_loss_attribution_truth",
             f"{base}/broker_only_daily_loss_truth",
@@ -52361,6 +52599,12 @@ def diagnostics_broker_preferred_performance():
     payload["preferred_endpoint_for_daily_loss"] = "/diagnostics/broker_only_daily_loss_truth"
     payload["delta_note"] = "strategy_state_vs_broker_only_today_delta compares today-to-today only; all-time rollup is historical performance, not daily loss truth."
     return payload
+
+@app.get("/diagnostics/broker_reconciled_strategy_attribution")
+def diagnostics_broker_reconciled_strategy_attribution(limit: int = 20):
+    _ensure_runtime_state_loaded()
+    _recompute_strategy_performance_state()
+    return JSONResponse(content=_p442_broker_reconciled_strategy_attribution_report(limit=limit))
 
 @app.get("/diagnostics/broker_reconciled_performance_cleanup")
 def diagnostics_broker_reconciled_performance_cleanup():
