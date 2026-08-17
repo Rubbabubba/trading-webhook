@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-439-stale-reduce-failure-cleanup-broker-available-reduce-clamp"
+PATCH_VERSION = "patch-439-hotfix-generic-stale-overclose-cleanup-current-risk-clean"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -9126,12 +9126,13 @@ def _p391_extract_overclose_error_quantities(err_text: str) -> dict:
     out["is_overclose_qty_error"] = bool(is_qty_error and requested > 0 and requested > available)
     return out
 
-def _p439_clear_stale_reduce_failure_if_risk_clean(
+def _p439_clear_stale_overclose_failure_if_current_risk_clean(
     symbol: str,
     plan: dict,
     classification: dict,
     broker_qty_signed: float,
     close_side: str,
+    current_exit_trigger_now: bool = False,
 ) -> dict:
     out = {
         "cleared": False,
@@ -9152,8 +9153,10 @@ def _p439_clear_stale_reduce_failure_if_risk_clean(
         or classification.get("exit_reason")
         or ""
     ).strip().lower()
-    if "risk_exceeded_after_fill_reduce_to_risk" not in exit_reason and "reduce" not in exit_reason:
-        out["reason"] = "not_reduce_failure"
+
+    if current_exit_trigger_now:
+        out["reason"] = "current_exit_trigger_still_due"
+        out["exit_reason"] = exit_reason
         return out
 
     broker_qty = abs(_safe_float(broker_qty_signed, 0.0))
@@ -9164,6 +9167,7 @@ def _p439_clear_stale_reduce_failure_if_risk_clean(
     current_risk = round(float(broker_qty) * float(risk_per_share or 0.0), 4)
 
     out.update({
+        "exit_reason": exit_reason,
         "broker_qty": round(broker_qty, 8),
         "risk_per_share": round(float(risk_per_share or 0.0), 4),
         "current_risk_dollars": current_risk,
@@ -9172,14 +9176,18 @@ def _p439_clear_stale_reduce_failure_if_risk_clean(
         "original_error_available_qty": qty_error.get("available_qty"),
     })
 
-    if risk_threshold <= 0 or current_risk > risk_threshold:
+    if risk_threshold <= 0:
+        out["reason"] = "risk_threshold_unavailable"
+        return out
+
+    if current_risk > risk_threshold:
         out["reason"] = "current_risk_still_above_threshold"
         return out
 
     now_iso = datetime.now(timezone.utc).isoformat()
     plan["last_exit_submit_failure_classification"] = {
         **dict(classification),
-        "classification": "stale_reduce_failure_cleared_current_risk_clean",
+        "classification": "stale_overclose_failure_cleared_current_risk_clean",
         "retryable": False,
         "retry_timing": "terminal",
         "stale_failure_cleared": True,
@@ -9188,6 +9196,7 @@ def _p439_clear_stale_reduce_failure_if_risk_clean(
         "current_risk_dollars": current_risk,
         "risk_threshold_dollars": risk_threshold,
         "broker_qty": round(broker_qty, 8),
+        "exit_reason": exit_reason,
     }
     plan["last_exit_submit_retryable"] = False
     plan["last_exit_submit_retry_timing"] = "terminal"
@@ -9281,14 +9290,15 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
         active_exit_row = dict(active_exit_rows.get(symbol) or {})
         current_exit_trigger_now = bool(active_exit_row.get("exit_trigger_now"))
         current_exit_reason = str(active_exit_row.get("closest_exit_reason") or "none")
-        stale_reduce_cleanup = _p439_clear_stale_reduce_failure_if_risk_clean(
+        stale_overclose_cleanup = _p439_clear_stale_overclose_failure_if_current_risk_clean(
             symbol,
             plan,
             classification,
             qty_signed,
             close_side,
+            current_exit_trigger_now=current_exit_trigger_now,
         )
-        if stale_reduce_cleanup.get("cleared"):
+        if stale_overclose_cleanup.get("cleared"):
             classification = dict(plan.get("last_exit_submit_failure_classification") or classification)
 
         classification = _p391_supersede_stale_overclose_failure(
@@ -9345,7 +9355,7 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             "broker_retry_qty": classification.get("broker_retry_qty"),
             "original_failed_qty": classification.get("original_failed_qty"),
             "failure_superseded": bool(classification.get("failure_superseded")),
-            "stale_reduce_failure_cleanup": stale_reduce_cleanup,
+            "stale_overclose_failure_cleanup": stale_overclose_cleanup,
             "stale_failure_cleared": bool(classification.get("stale_failure_cleared")),
             "has_position": has_position,
             "current_exit_trigger_now": current_exit_trigger_now,
@@ -9359,6 +9369,7 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
 
     rows = rows[:max(1, min(int(limit or 20), 50))]
     ready_rows = [r for r in rows if bool(r.get("ready"))]
+    uncleared_rows = [r for r in rows if not bool(r.get("stale_failure_cleared"))]
 
     return {
         "ok": True,
@@ -9374,9 +9385,9 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             "worker_exit_should_retry_ready_exit_submits"
             if ready_rows
             else "wait_for_regular_market_open"
-            if rows and not market_open
+            if uncleared_rows and not market_open
             else "inspect_nonretryable_exit_submit_failures"
-            if rows
+            if uncleared_rows
             else "none"
         ),
     }
