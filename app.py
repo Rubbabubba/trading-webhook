@@ -1403,6 +1403,11 @@ SWING_PARTIAL_PROFIT_ENABLED = env_bool_any("SWING_PARTIAL_PROFIT_ENABLED", defa
 SWING_PARTIAL_PROFIT_R = getenv_float_any("SWING_PARTIAL_PROFIT_R", default=1.0)
 SWING_PARTIAL_PROFIT_FRACTION = getenv_float_any("SWING_PARTIAL_PROFIT_FRACTION", default=0.5)
 SWING_PARTIAL_PROFIT_MIN_QTY = getenv_float_any("SWING_PARTIAL_PROFIT_MIN_QTY", default=0.25)
+SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED = env_bool_any("SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED", default=True)
+SWING_BREAKOUT_PARTIAL_PROFIT_R = getenv_float_any("SWING_BREAKOUT_PARTIAL_PROFIT_R", default=0.75)
+SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION = getenv_float_any("SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION", default=0.5)
+SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED = env_bool_any("SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED", default=True)
+SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION = getenv_float_any("SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION", default=0.5)
 
 SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED = env_bool_any(
     "SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED",
@@ -2813,7 +2818,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-443-broker-exit-reason-attribution-recovery-breakout-dollar-risk-containment"
+PATCH_VERSION = "patch-444-breakout-stall-loss-containment-partial-profit-preservation-bias"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -34163,6 +34168,77 @@ def _p378_daily_breakout_profit_giveback_state(symbol: str, plan: dict | None, p
     out["reason"] = "monitoring_profit_giveback"
     return out
 
+def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
+    plan = plan if isinstance(plan, dict) else {}
+    dyn = dict(dynamic_exit or {})
+    sym = str(symbol or plan.get("symbol") or "").strip().upper()
+    qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or plan.get("submitted_qty") or 0.0, 0.0))
+    unrealized_r = _safe_float(dyn.get("stall_r"), _swing_unrealized_r(plan, px))
+    partial_taken = bool(plan.get("partial_profit_taken") or plan.get("breakout_partial_profit_bias_taken"))
+
+    fraction = min(max(float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.5), 0.05), 0.95)
+    qty_to_close = _normalize_close_qty(qty * fraction)
+    min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
+
+    applies = bool(
+        SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED
+        and _p378_is_daily_breakout_plan(plan)
+        and qty > 0
+        and not partial_taken
+        and unrealized_r >= float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.75)
+        and qty_to_close >= min_qty
+        and qty_to_close < qty
+    )
+
+    return {
+        "enabled": bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
+        "symbol": sym,
+        "is_daily_breakout": bool(_p378_is_daily_breakout_plan(plan)),
+        "applies": applies,
+        "reason": "breakout_partial_profit_bias_ready" if applies else "not_ready",
+        "unrealized_r": round(unrealized_r, 4),
+        "trigger_r": float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.75),
+        "qty": round(qty, 4),
+        "qty_to_close": round(qty_to_close, 4),
+        "fraction": round(fraction, 4),
+        "partial_taken": partial_taken,
+    }
+
+
+def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
+    plan = plan if isinstance(plan, dict) else {}
+    dyn = dict(dynamic_exit or {})
+    sym = str(symbol or plan.get("symbol") or "").strip().upper()
+    flags = set(str(x or "") for x in list(dyn.get("flags") or []))
+    stall_loss_due = bool("stall_loss_guard_ready" in flags or dyn.get("stall_loss_guard"))
+    qty = abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or plan.get("submitted_qty") or 0.0, 0.0))
+    fraction = min(max(float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.5), 0.05), 0.95)
+    qty_to_close = _normalize_close_qty(qty * fraction)
+    min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
+
+    applies = bool(
+        SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED
+        and _p378_is_daily_breakout_plan(plan)
+        and stall_loss_due
+        and qty_to_close >= min_qty
+        and qty_to_close < qty
+        and not bool(plan.get("breakout_stall_loss_reduce_first_taken"))
+    )
+
+    return {
+        "enabled": bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
+        "symbol": sym,
+        "is_daily_breakout": bool(_p378_is_daily_breakout_plan(plan)),
+        "applies": applies,
+        "reason": "breakout_stall_loss_reduce_first_ready" if applies else "not_ready",
+        "stall_loss_due": bool(stall_loss_due),
+        "unrealized_r": round(_safe_float(dyn.get("stall_r"), _swing_unrealized_r(plan, px)), 4),
+        "qty": round(qty, 4),
+        "qty_to_close": round(qty_to_close, 4),
+        "fraction": round(fraction, 4),
+        "already_taken": bool(plan.get("breakout_stall_loss_reduce_first_taken")),
+    }
+
 def _p380_daily_breakout_failed_followthrough_state(symbol: str, plan: dict | None, px: float) -> dict:
     plan = plan if isinstance(plan, dict) else {}
     sym = str(symbol or plan.get("symbol") or "").strip().upper()
@@ -34536,15 +34612,23 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     partial_taken = bool((plan or {}).get("partial_profit_taken"))
 
     if SWING_PARTIAL_PROFIT_ENABLED and (not partial_taken) and unrealized_r >= float(SWING_PARTIAL_PROFIT_R):
-        qty_now = abs(_safe_float((plan or {}).get("filled_qty") or (plan or {}).get("qty") or 0.0))
         fraction = min(max(float(SWING_PARTIAL_PROFIT_FRACTION), 0.05), 0.95)
-        qty_to_close = round(qty_now * fraction, 4)
+        qty_to_close = _normalize_close_qty(qty_now * fraction)
         if qty_to_close >= float(SWING_PARTIAL_PROFIT_MIN_QTY) and qty_to_close < qty_now:
             out["partial_profit_ready"] = True
             out["partial_profit_qty"] = qty_to_close
+            out["partial_profit_reason"] = "partial_profit"
             out["flags"].append("partial_profit_ready")
-            out["updates"]["break_even_armed"] = True
-            proposed_profit_lock = max(proposed_profit_lock, entry)
+
+    breakout_bias = _p444_breakout_partial_profit_bias_state(symbol, plan, px, out)
+    out["breakout_partial_profit_bias"] = breakout_bias
+    if breakout_bias.get("applies"):
+        out["partial_profit_ready"] = True
+        out["partial_profit_qty"] = breakout_bias.get("qty_to_close")
+        out["partial_profit_reason"] = "breakout_partial_profit_bias"
+        out["flags"].append("breakout_partial_profit_bias_ready")
+        out["updates"]["break_even_armed"] = True
+        proposed_profit_lock = max(proposed_profit_lock, entry)
 
     if SWING_ENABLE_BREAK_EVEN_STOP and unrealized_r >= float(SWING_BREAK_EVEN_R):
         out["updates"]["break_even_armed"] = True
@@ -34609,6 +34693,16 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         out["stall_exit"] = True
         out["stall_loss_guard"] = True
         out["flags"].append("stall_loss_guard_ready")
+
+        reduce_first = _p444_breakout_stall_loss_reduce_first_state(symbol, plan, px, out)
+        out["breakout_stall_loss_reduce_first"] = reduce_first
+        if reduce_first.get("applies"):
+            out["stall_exit"] = False
+            out["stall_loss_guard"] = False
+            out["partial_profit_ready"] = True
+            out["partial_profit_qty"] = reduce_first.get("qty_to_close")
+            out["partial_profit_reason"] = "breakout_stall_loss_reduce_first"
+            out["flags"].append("breakout_stall_loss_reduce_first_ready")
     
     if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R) and not out.get("time_exit_grace"):
         out["stall_exit"] = True
@@ -37457,6 +37551,21 @@ def _p364_active_exit_protection_truth() -> dict:
             if has_plan and current_price > 0
             else {"triggered": False}
         )
+        dynamic_preview = (
+            _dynamic_exit_update(symbol, plan, float(current_price))
+            if has_plan and current_price > 0
+            else {"flags": []}
+        )
+        breakout_partial_profit_bias = (
+            _p444_breakout_partial_profit_bias_state(symbol, plan, float(current_price), dynamic_preview)
+            if has_plan and current_price > 0
+            else {"applies": False}
+        )
+        breakout_stall_loss_reduce_first = (
+            _p444_breakout_stall_loss_reduce_first_state(symbol, plan, float(current_price), dynamic_preview)
+            if has_plan and current_price > 0
+            else {"applies": False}
+        )
         hit_giveback_preservation = bool(giveback_state.get("triggered"))
         hit_failed_followthrough = bool(failed_followthrough_state.get("triggered"))
 
@@ -37513,6 +37622,9 @@ def _p364_active_exit_protection_truth() -> dict:
             "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target or hit_giveback_preservation or hit_failed_followthrough or hit_forbidden_short_cleanup or time_exit_due),
             "daily_breakout_profit_giveback": giveback_state,
             "daily_breakout_failed_followthrough": failed_followthrough_state,
+            "breakout_partial_profit_bias": breakout_partial_profit_bias,
+            "breakout_stall_loss_reduce_first": breakout_stall_loss_reduce_first,
+            "dynamic_exit_preview": dynamic_preview,
             "forbidden_short_cleanup": forbidden_short_cleanup,
             "same_day_exit_blocked_for_closest_reason": bool(same_day_block),
             "exit_worker_has_enough_data": exit_worker_has_enough_data,
@@ -38858,15 +38970,21 @@ def worker_exit(body: dict = Body(default_factory=dict)):
 
         if dynamic_exit.get("partial_profit_ready") and not bool(plan.get("partial_profit_taken")):
             qty_to_close = float(dynamic_exit.get("partial_profit_qty") or 0.0)
+            partial_reason = str(dynamic_exit.get("partial_profit_reason") or "partial_profit")
             if qty_to_close > 0:
-                plan["last_exit_attempt_ts"] = now_ts
-                out = close_partial_position(symbol, qty_to_close, reason="partial_profit", source="worker_exit")
-                if out.get("closed") or out.get("dry_run"):
+                out = close_partial_position(symbol, qty_to_close, reason=partial_reason, source="worker_exit")
+                if out.get("closed"):
                     plan["partial_profit_taken"] = True
                     plan["partial_profit_taken_at"] = now_ny().isoformat()
                     plan["partial_profit_qty"] = round(qty_to_close, 4)
                     plan["partial_profit_trigger_r"] = round(float(dynamic_exit.get("stall_r") or 0.0), 4)
-                results.append({"symbol": symbol, "action": "partial_profit" if out.get("closed") else "partial_profit_skipped", "price": px, "qty": qty_to_close, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
+                    if partial_reason == "breakout_partial_profit_bias":
+                        plan["breakout_partial_profit_bias_taken"] = True
+                        plan["breakout_partial_profit_bias_taken_at"] = now_ny().isoformat()
+                    if partial_reason == "breakout_stall_loss_reduce_first":
+                        plan["breakout_stall_loss_reduce_first_taken"] = True
+                        plan["breakout_stall_loss_reduce_first_taken_at"] = now_ny().isoformat()
+                results.append({"symbol": symbol, "action": partial_reason if out.get("closed") else f"{partial_reason}_skipped", "price": px, "qty": qty_to_close, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
                 continue
 
         if STRATEGY_MODE == "swing" and max_hold_days > 0 and hold_days >= max_hold_days:
@@ -51278,6 +51396,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/live_positions_light",
             f"{base}/reconcile_light",
             f"{base}/active_exit_protection_truth",
+            f"{base}/breakout_stall_loss_containment",
             f"{base}/forbidden_short_cleanup_truth",
             f"{base}/same_day_stall_exit_churn_audit",
             f"{base}/same_day_exit_submit_lock_truth",
@@ -52722,6 +52841,68 @@ def diagnostics_post_fill_risk_recheck_evidence(limit: int = 20):
 @app.get("/diagnostics/active_exit_protection_truth")
 def diagnostics_active_exit_protection_truth():
     return JSONResponse(content=_p364_active_exit_protection_truth())
+
+@app.get("/diagnostics/breakout_stall_loss_containment")
+def diagnostics_breakout_stall_loss_containment():
+    truth = _p364_active_exit_protection_truth()
+    rows = []
+    for row in list(truth.get("rows") or []):
+        if not isinstance(row, dict):
+            continue
+        dynamic = dict(row.get("dynamic_exit_preview") or {})
+        partial_bias = dict(row.get("breakout_partial_profit_bias") or {})
+        reduce_first = dict(row.get("breakout_stall_loss_reduce_first") or {})
+        if partial_bias.get("is_daily_breakout") or reduce_first.get("is_daily_breakout"):
+            rows.append({
+                "symbol": row.get("symbol"),
+                "qty": row.get("qty"),
+                "entry_price": row.get("entry_price"),
+                "current_price": row.get("current_price"),
+                "unrealized_pl": row.get("unrealized_pl"),
+                "closest_exit_reason": row.get("closest_exit_reason"),
+                "dynamic_flags": dynamic.get("flags"),
+                "stall_r": dynamic.get("stall_r"),
+                "partial_profit_ready": dynamic.get("partial_profit_ready"),
+                "partial_profit_qty": dynamic.get("partial_profit_qty"),
+                "partial_profit_reason": dynamic.get("partial_profit_reason"),
+                "stall_exit": dynamic.get("stall_exit"),
+                "stall_loss_guard": dynamic.get("stall_loss_guard"),
+                "breakout_partial_profit_bias": partial_bias,
+                "breakout_stall_loss_reduce_first": reduce_first,
+            })
+
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "breakout_stall_loss_containment",
+        "enabled": {
+            "breakout_partial_profit_bias": bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
+            "breakout_stall_loss_reduce_first": bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
+        },
+        "config": {
+            "breakout_partial_profit_r": float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.0),
+            "breakout_partial_profit_fraction": float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.0),
+            "breakout_stall_loss_reduce_fraction": float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.0),
+            "partial_profit_min_qty": float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+        },
+        "breakout_position_count": len(rows),
+        "partial_profit_bias_ready_symbols": [
+            row.get("symbol") for row in rows
+            if bool((row.get("breakout_partial_profit_bias") or {}).get("applies"))
+        ],
+        "stall_loss_reduce_first_ready_symbols": [
+            row.get("symbol") for row in rows
+            if bool((row.get("breakout_stall_loss_reduce_first") or {}).get("applies"))
+        ],
+        "rows": rows,
+        "recommended_action": (
+            "worker_exit_should_reduce_breakout_stall_loss_candidates"
+            if any(bool((row.get("breakout_stall_loss_reduce_first") or {}).get("applies")) for row in rows)
+            else "worker_exit_should_take_breakout_partial_profit"
+            if any(bool((row.get("breakout_partial_profit_bias") or {}).get("applies")) for row in rows)
+            else "monitor_active_breakout_positions"
+        ),
+    })
 
 @app.get("/diagnostics/broker_native_position_risk_truth")
 def diagnostics_broker_native_position_risk_truth():
