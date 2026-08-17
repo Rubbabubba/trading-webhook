@@ -1157,11 +1157,19 @@ SWING_RUNTIME_SLIM_MIN_ORIGINAL_SYMBOLS = getenv_int_any(
 )
 SWING_RUNTIME_SLIM_KEEP_PREVIOUS_TOP = getenv_int_any(
     "SWING_RUNTIME_SLIM_KEEP_PREVIOUS_TOP",
-    default=12,
+    default=16,
 )
 SWING_RUNTIME_SLIM_MIN_RANK_SCORE = getenv_float_any(
     "SWING_RUNTIME_SLIM_MIN_RANK_SCORE",
-    default=103.0,
+    default=94.0,
+)
+SWING_THRIVE_FAST_SCAN_ENABLED = env_bool_any(
+    "SWING_THRIVE_FAST_SCAN_ENABLED",
+    default=True,
+)
+SWING_THRIVE_FAST_SCAN_MAX_SYMBOLS = getenv_int_any(
+    "SWING_THRIVE_FAST_SCAN_MAX_SYMBOLS",
+    default=25,
 )
 SWING_RUNTIME_SLIM_MIN_TARGET_PATH_SCORE = getenv_float_any(
     "SWING_RUNTIME_SLIM_MIN_TARGET_PATH_SCORE",
@@ -1171,7 +1179,7 @@ SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS = [
     s.strip().upper()
     for s in getenv_any(
         "SWING_RUNTIME_SLIM_ANCHOR_SYMBOLS",
-        default="SPY,QQQ,AAPL,MSFT,NVDA,MA,CRM,NET,SNOW",
+        default="SPY,QQQ,IWM,AAPL,MSFT,NVDA,AMD,AVGO,CRM,ADBE,PANW,ORCL,SNOW,META,MA,PLTR,CRWD,NET",
     ).split(",")
     if s.strip()
 ]
@@ -1937,11 +1945,11 @@ SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS = getenv_any(
 )
 SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE = getenv_float_any(
     "SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE",
-    default=97.0,
+    default=94.0,
 )
 SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
     "SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT",
-    default=0.01,
+    default=0.015,
 )
 SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
     "SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT",
@@ -1949,11 +1957,15 @@ SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
 )
 SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT = getenv_float_any(
     "SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT",
-    default=0.04,
+    default=0.06,
+)
+SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_TARGET_PATH_SCORE = getenv_float_any(
+    "SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_TARGET_PATH_SCORE",
+    default=40.0,
 )
 SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN = getenv_int_any(
     "SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN",
-    default=1,
+    default=2,
 )
 SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
     "SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT",
@@ -2799,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-434-dashboard-fast-route-renderer-extraction-prep"
+PATCH_VERSION = "patch-435-swing-thrive-fast-cycle-first-2k-productive-sleeve"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -20535,8 +20547,26 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
     except Exception:
         payload_max = 0
 
-    configured_max = max(1, int(payload_max or SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
+    configured_env_max = max(1, int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
+    configured_max = max(1, int(payload_max or configured_env_max))
     min_original = max(1, int(SWING_RUNTIME_SLIM_MIN_ORIGINAL_SYMBOLS or 26))
+    force_full_coverage = str(
+        scan_options.get("force_full_coverage")
+        or scan_options.get("full_coverage")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    thrive_fast_scan_applied = False
+    if (
+        bool(SWING_THRIVE_FAST_SCAN_ENABLED)
+        and not payload_max
+        and not force_full_coverage
+        and len(original) >= min_original
+    ):
+        thrive_max = max(1, int(SWING_THRIVE_FAST_SCAN_MAX_SYMBOLS or configured_max))
+        if thrive_max < configured_max:
+            configured_max = thrive_max
+            thrive_fast_scan_applied = True
 
     if (
         not bool(SWING_RUNTIME_SLIM_ENABLED)
@@ -20552,6 +20582,9 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
             "symbols": original,
             "excluded_symbols": [],
             "watch_symbols": [],
+            "thrive_fast_scan_enabled": bool(SWING_THRIVE_FAST_SCAN_ENABLED),
+            "thrive_fast_scan_applied": bool(thrive_fast_scan_applied),
+            "force_full_coverage": bool(force_full_coverage),
         }
 
     active_symbols = []
@@ -20635,7 +20668,7 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
     return {
         "enabled": True,
         "applied": len(slimmed) < len(original),
-        "reason": "main_web_swing_runtime_slim_applied",
+        "reason": "thrive_fast_scan_priority_cycle" if thrive_fast_scan_applied else "main_web_swing_runtime_slim_applied",
         "configured_max_symbols": configured_max,
         "original_count": len(original),
         "symbols": slimmed,
@@ -20652,6 +20685,9 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
         "protected_symbols": protected_priority,
         "filler_symbols": filler_symbols,
         "priority_symbols": slimmed,
+        "thrive_fast_scan_enabled": bool(SWING_THRIVE_FAST_SCAN_ENABLED),
+        "thrive_fast_scan_applied": bool(thrive_fast_scan_applied),
+        "force_full_coverage": bool(force_full_coverage),
     }
 
 def _bars_for_today_regular_session(bars: list[dict]) -> list[dict]:
@@ -21368,6 +21404,7 @@ def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
         first_2k_geometry_sleeve_max_below_breakout_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT),
         first_2k_geometry_sleeve_min_close_to_high_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT),
         first_2k_geometry_sleeve_max_risk_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT),
+        first_2k_geometry_sleeve_min_target_path_score=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_TARGET_PATH_SCORE),
         first_2k_geometry_sleeve_max_entries_per_scan=int(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN),
     )
 

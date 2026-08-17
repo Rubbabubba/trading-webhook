@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-411-hotfix-first-2k-sleeve-percent-normalization-fix"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-435-swing-thrive-fast-cycle-first-2k-productive-sleeve"
 
 
 @dataclass(frozen=True)
@@ -44,8 +44,9 @@ class SwingProductionContractConfig:
     first_2k_geometry_sleeve_min_rank_score: float = 97.0
     first_2k_geometry_sleeve_max_below_breakout_pct: float = 0.01
     first_2k_geometry_sleeve_min_close_to_high_pct: float = 0.985
-    first_2k_geometry_sleeve_max_risk_pct: float = 0.04
-    first_2k_geometry_sleeve_max_entries_per_scan: int = 1
+    first_2k_geometry_sleeve_max_risk_pct: float = 0.06
+    first_2k_geometry_sleeve_min_target_path_score: float = 40.0
+    first_2k_geometry_sleeve_max_entries_per_scan: int = 2
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -245,6 +246,7 @@ def swing_production_contract(
         and breakout_distance_pct >= -abs(float(config.first_2k_geometry_sleeve_max_below_breakout_pct))
         and not_too_extended_above_breakout
         and return_20d_ok
+        and target_path_score >= float(config.first_2k_geometry_sleeve_min_target_path_score)
     )
 
     contract_path_ok = bool(
@@ -258,7 +260,7 @@ def swing_production_contract(
         "executable": executable,
         "rank_score_ok": rank_score_ok,
         "liquidity_ok": liquidity_ok,
-        "risk_ok": bool(base_risk_ok or risk_calibrated_starter_ok or near_rank_revival_ok),
+        "risk_ok": bool(base_risk_ok or risk_calibrated_starter_ok or near_rank_revival_ok or first_2k_geometry_sleeve_ok),
         "base_risk_ok": bool(base_risk_ok),
         "base_contract_ok": bool(base_contract_ok),
         "risk_calibrated_starter_ok": bool(risk_calibrated_starter_ok),
@@ -290,6 +292,8 @@ def swing_production_contract(
                 blockers.append("first_2k_geometry_not_close_to_high")
             if breakout_distance_pct is None or breakout_distance_pct < -abs(float(config.first_2k_geometry_sleeve_max_below_breakout_pct)):
                 blockers.append("first_2k_geometry_too_far_below_breakout")
+            if target_path_score < float(config.first_2k_geometry_sleeve_min_target_path_score):
+                blockers.append("first_2k_geometry_target_path_score_below_min")
 
         if not rank_score_ok:
             blockers.append("production_contract_rank_below_min")
