@@ -1755,10 +1755,10 @@ POST_FILL_RISK_RECHECK_REDUCE_ENABLED = env_bool_any(
     "SWING_POST_FILL_RISK_RECHECK_REDUCE_ENABLED",
     default=True,
 )
-POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE = getenv_float_any(
-    "POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE",
-    "SWING_POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE",
-    default=1.50,
+POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC = getenv_int_any(
+    "POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC",
+    "SWING_POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC",
+    default=300,
 )
 
 # Patch 007: monitoring + alerts
@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-436-thrive-fast-cycle-enforcement-eligible-sleeve-selection-finalizer"
+PATCH_VERSION = "patch-437-post-fill-risk-reduce-first-same-minute-churn-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -8816,6 +8816,12 @@ def _p416_normalize_risk_recheck_evidence(row: dict | None) -> dict:
         "configured_risk_dollars": configured_risk,
         "risk_threshold_dollars": risk_threshold,
         "excess_risk_dollars": excess_risk,
+        "post_fill_risk_action": evidence.get("post_fill_risk_action") or decision or None,
+        "target_qty_for_risk": evidence.get("target_qty_for_risk"),
+        "reduce_qty": evidence.get("reduce_qty"),
+        "full_exit_blocked_by_reduce_first": bool(evidence.get("full_exit_blocked_by_reduce_first")),
+        "same_minute_churn_guard_active": bool(evidence.get("same_minute_churn_guard_active")),
+        "submitted_at_age_sec": evidence.get("submitted_at_age_sec"),
         "order_id": evidence.get("order_id"),
         "close_order_id": (
             (evidence.get("close_out") or {}).get("order_id")
@@ -8867,6 +8873,12 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
                 "configured_risk_dollars": evidence.get("configured_risk_dollars"),
                 "risk_threshold_dollars": evidence.get("risk_threshold_dollars"),
                 "excess_risk_dollars": evidence.get("excess_risk_dollars"),
+                "post_fill_risk_action": evidence.get("post_fill_risk_action"),
+                "target_qty_for_risk": evidence.get("target_qty_for_risk"),
+                "reduce_qty": evidence.get("reduce_qty"),
+                "full_exit_blocked_by_reduce_first": evidence.get("full_exit_blocked_by_reduce_first"),
+                "same_minute_churn_guard_active": evidence.get("same_minute_churn_guard_active"),
+                "submitted_at_age_sec": evidence.get("submitted_at_age_sec"),
                 "order_id": evidence.get("order_id"),
                 "close_order_id": evidence.get("close_order_id"),
                 "metadata_source": evidence.get("metadata_source"),
@@ -10141,11 +10153,39 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                     target_qty_for_risk = _normalize_close_qty(float(risk_threshold) / float(risk_per_share))
                     reduce_qty = _normalize_close_qty(max(0.0, filled_qty_for_risk - target_qty_for_risk))
 
+                submitted_at_age_sec = None
+                try:
+                    submitted_at_raw = (
+                        plan.get("submitted_at")
+                        or order_status.get("submitted_at")
+                        or order_status.get("filled_at")
+                    )
+                    submitted_dt = _parse_dt(submitted_at_raw)
+                    if submitted_dt is not None:
+                        submitted_at_age_sec = max(0.0, (datetime.now(timezone.utc) - submitted_dt.astimezone(timezone.utc)).total_seconds())
+                except Exception:
+                    submitted_at_age_sec = None
+
+                full_exit_min_age_sec = max(0, int(POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC or 0))
+                same_minute_churn_guard_active = bool(
+                    full_exit_min_age_sec > 0
+                    and submitted_at_age_sec is not None
+                    and submitted_at_age_sec < float(full_exit_min_age_sec)
+                )
+
                 can_reduce = bool(
                     POST_FILL_RISK_RECHECK_REDUCE_ENABLED
-                    and not hard_exit
                     and reduce_qty > 0
                     and reduce_qty < filled_qty_for_risk
+                    and target_qty_for_risk > 0
+                )
+                full_exit_allowed = bool(
+                    not can_reduce
+                    and (
+                        not same_minute_churn_guard_active
+                        or target_qty_for_risk <= 0
+                        or reduce_qty >= filled_qty_for_risk
+                    )
                 )
 
                 risk_recheck_evidence["hard_exit_threshold_dollars"] = hard_exit_threshold
@@ -10153,6 +10193,12 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                 risk_recheck_evidence["target_qty_for_risk"] = target_qty_for_risk
                 risk_recheck_evidence["reduce_qty"] = reduce_qty
                 risk_recheck_evidence["reduce_enabled"] = bool(POST_FILL_RISK_RECHECK_REDUCE_ENABLED)
+                risk_recheck_evidence["post_fill_risk_action"] = "reduce" if can_reduce else "exit" if full_exit_allowed else "hold"
+                risk_recheck_evidence["full_exit_min_age_sec"] = full_exit_min_age_sec
+                risk_recheck_evidence["submitted_at_age_sec"] = submitted_at_age_sec
+                risk_recheck_evidence["same_minute_churn_guard_active"] = same_minute_churn_guard_active
+                risk_recheck_evidence["full_exit_blocked_by_reduce_first"] = bool(can_reduce and hard_exit)
+                risk_recheck_evidence["full_exit_allowed"] = full_exit_allowed
 
                 if can_reduce:
                     close_out = close_partial_position(
@@ -10177,6 +10223,21 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                     _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
                     return out
 
+                if not full_exit_allowed:
+                    risk_recheck_evidence["decision"] = "hold"
+                    risk_recheck_evidence["reason"] = "risk_exceeded_after_fill_full_exit_blocked_by_churn_guard"
+                    out["changes"].append("risk_recheck_full_exit_blocked_by_churn_guard")
+                    record_decision(
+                        "RECONCILE",
+                        "worker_exit",
+                        symbol,
+                        action="risk_recheck_hold",
+                        reason="risk_exceeded_after_fill_full_exit_blocked_by_churn_guard",
+                        meta={"post_fill_risk_recheck": risk_recheck_evidence},
+                    )
+                    _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
+                    return out
+
                 close_out = close_position(symbol, reason="risk_exceeded_after_fill", source="risk_guard")
                 risk_recheck_evidence["decision"] = "exit"
                 risk_recheck_evidence["reason"] = "risk_exceeded_after_fill"
@@ -10195,46 +10256,6 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                     plan["active"] = False
                 _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
                 return out
-
-            record_decision(
-                "RECONCILE",
-                "worker_exit",
-                symbol,
-                action="risk_recheck_hold",
-                reason="risk_within_post_fill_threshold",
-                meta={"post_fill_risk_recheck": risk_recheck_evidence},
-            )
-    elif age_sec is not None and age_sec >= PLAN_STALE_SUBMITTED_SEC and str(order_status.get("status") or "").lower() not in {"filled", "partially_filled"}:
-        if _p342_broker_backed_filled_or_recovered_plan(plan, qty_signed=qty_signed):
-            plan["active"] = True
-            plan["execution_state"] = "filled"
-            plan["lifecycle_state"] = "filled"
-            plan["execution_state_reason"] = "broker_backed_recovered_plan_stale_deactivation_guard"
-            plan["order_status"] = "filled"
-            plan["p342_stale_deactivation_guard"] = True
-            plan["p342_stale_deactivation_guard_at"] = now_ny().isoformat()
-            out["changes"].append("blocked_stale_submitted_deactivation_for_broker_backed_filled_plan")
-            _apply_execution_lifecycle_reconcile(symbol, plan, broker_order={"status": "filled"}, broker_position_qty=qty_signed)
-            record_decision(
-                "RECONCILE",
-                "worker_exit",
-                symbol,
-                action="stale_deactivation_blocked",
-                reason="broker_backed_recovered_filled_plan",
-                meta={"age_sec": age_sec, "order_status": order_status, "recovered": bool(plan.get("recovered"))},
-            )
-            return out
-
-        plan["active"] = False
-        out["changes"].append("deactivated_stale_submitted_plan")
-        _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
-        record_decision("RECONCILE", "worker_exit", symbol, action="deactivated", reason="stale_submitted_plan", meta={"age_sec": age_sec, "order_status": order_status})
-        return out
-
-    _apply_execution_lifecycle_reconcile(symbol, plan, broker_order=order_status, broker_position_qty=qty_signed)
-    return out
-
-
 
 def reconcile_trade_plans_from_alpaca() -> list[dict]:
     """
