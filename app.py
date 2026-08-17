@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-440-worker-exit-historical-error-aging-healthy-status-recommendation-cleanup"
+PATCH_VERSION = "patch-441-broker-reconciled-r-multiple-backfill-performance-attribution-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17432,6 +17432,86 @@ def _p245_is_broker_reconciled_exit(row: dict | None) -> bool:
     reason = str(row.get("reason") or row.get("exit_reason") or "").strip().lower()
     return bool(row.get("broker_reconciled")) or source == "alpaca_orders_reconciled" or reason == "broker_exit_fill"
 
+def _p441_broker_reconciled_r_backfill(row: dict | None, attribution: dict | None = None) -> dict:
+    out = dict(row or {})
+    attribution = dict(attribution or {})
+    if not _p245_is_broker_reconciled_exit(out):
+        return out
+
+    out["accounting_source"] = out.get("accounting_source") or "broker_reconciled_fill"
+    out["broker_accounting_reason"] = out.get("broker_accounting_reason") or str(out.get("reason") or out.get("exit_reason") or "broker_exit_fill")
+
+    for key in (
+        "strategy_name",
+        "signal",
+        "entry_type",
+        "entry_regime_mode",
+        "regime_mode",
+        "rank_score",
+        "selection_quality_score",
+        "breakout_level",
+        "entry_ts_utc",
+        "holding_hours",
+        "holding_days",
+    ):
+        if out.get(key) in (None, "", [], {}) and attribution.get(key) not in (None, "", [], {}):
+            out[key] = attribution.get(key)
+
+    attributed_exit_reason = str(
+        attribution.get("exit_reason")
+        or attribution.get("reason")
+        or out.get("attributed_exit_reason")
+        or ""
+    ).strip().lower()
+    if attributed_exit_reason and attributed_exit_reason != "broker_exit_fill":
+        out["attributed_exit_reason"] = attributed_exit_reason
+        out["exit_reason"] = attributed_exit_reason
+        out["reason"] = attributed_exit_reason
+        out["broker_exit_reason"] = "broker_exit_fill"
+
+    if out.get("entry_type") in (None, "", "alpaca_orders_reconciled"):
+        recovered_entry_type = attribution.get("entry_type")
+        out["entry_type"] = recovered_entry_type if recovered_entry_type not in (None, "", [], {}) else "broker_reconciled"
+
+    entry_px = _safe_float(out.get("entry_price"), 0.0)
+    exit_px = _safe_float(out.get("exit_price"), 0.0)
+    qty = abs(_safe_float(out.get("qty"), 0.0))
+    gross = _safe_float(out.get("gross_pnl"), 0.0)
+
+    risk_per_share = _safe_float(
+        out.get("risk_per_share")
+        or attribution.get("risk_per_share")
+        or 0.0,
+        0.0,
+    )
+    stop_px = _safe_float(
+        out.get("stop_price")
+        or out.get("initial_stop_price")
+        or attribution.get("stop_price")
+        or attribution.get("initial_stop_price")
+        or 0.0,
+        0.0,
+    )
+    if risk_per_share <= 0 and entry_px > 0 and stop_px > 0:
+        risk_per_share = abs(entry_px - stop_px)
+
+    existing_r = _safe_float(out.get("pnl_r"), 0.0)
+    if qty > 0 and risk_per_share > 0 and abs(existing_r) <= 1e-9:
+        pnl_per_share = gross / qty
+        out["pnl_r"] = round(pnl_per_share / risk_per_share, 4)
+        out["attributed_pnl_r"] = out["pnl_r"]
+        out["r_backfill_source"] = "broker_fill_gross_pnl_over_qty_risk_per_share"
+        out["risk_per_share"] = round(risk_per_share, 4)
+    elif risk_per_share > 0:
+        out["risk_per_share"] = round(risk_per_share, 4)
+
+    if entry_px > 0 and exit_px > 0 and out.get("return_pct") in (None, "", 0, 0.0):
+        out["return_pct"] = round(((exit_px - entry_px) / entry_px) * 100.0, 4)
+
+    out["broker_reconciled_attribution_cleaned"] = True
+    out["broker_reconciled_attribution_patch"] = PATCH_VERSION
+    return out
+
 def _p375_broker_fill_economic_key(row: dict | None) -> str:
     row = dict(row or {})
     exit_order_id = str(row.get("exit_order_id") or row.get("order_id") or "").strip()
@@ -17487,7 +17567,11 @@ def _p245_broker_preferred_closed_rows(state: dict | None = None) -> dict:
                 duplicate["daily_loss_truth_included"] = False
                 broker_fill_duplicates.append(duplicate)
                 continue
-            clean = dict(row)
+            inferred = _infer_recovered_plan_attribution(
+                str(row.get("symbol") or ""),
+                order_id=str(row.get("entry_order_id") or ""),
+            )
+            clean = _p441_broker_reconciled_r_backfill(row, attribution=inferred)
             clean["broker_fill_economic_key"] = economic_key
             clean["preferred_basis"] = "strategy_state_broker_reconciled_estimate_row"
             clean["daily_loss_truth_included"] = True
@@ -17567,7 +17651,10 @@ def _p245_performance_rollup(rows: list[dict] | None) -> dict:
 
 def _p245_broker_preferred_performance_snapshot() -> dict:
     preferred = _p245_broker_preferred_closed_rows()
-    rollup = _p245_performance_rollup(preferred.get("kept_rows") or [])
+    kept_rows = list(preferred.get("kept_rows") or [])
+    rollup = _p245_performance_rollup(kept_rows)
+    broker_rows = [r for r in kept_rows if _p245_is_broker_reconciled_exit(r)]
+    broker_rows_with_r = [r for r in broker_rows if abs(_safe_float(r.get("pnl_r"), 0.0)) > 1e-9]
     raw_rollup = _p245_performance_rollup(list((STRATEGY_PERFORMANCE_STATE or {}).get("closed_trades") or []))
     broker_only = _p374_broker_only_daily_loss_truth() if "_p374_broker_only_daily_loss_truth" in globals() else {}
 
@@ -17586,6 +17673,15 @@ def _p245_broker_preferred_performance_snapshot() -> dict:
         "legacy_mode": "broker_preferred_performance_rollup",
         "canonical_daily_loss_source": "broker_only_daily_loss_truth",
         "accounting_note": "This endpoint is a strategy-state estimate only. Use /diagnostics/broker_only_daily_loss_truth for daily loss and halt truth.",
+        "broker_reconciled_attribution_cleanup": {
+            "broker_row_count": len(broker_rows),
+            "broker_rows_with_nonzero_r": len(broker_rows_with_r),
+            "broker_rows_missing_r": max(0, len(broker_rows) - len(broker_rows_with_r)),
+            "r_coverage_pct": round(len(broker_rows_with_r) / max(1, len(broker_rows)), 4) if broker_rows else 0.0,
+            "entry_type_scrubbed": True,
+            "broker_exit_fill_kept_as_accounting_source": True,
+            "recommended_action": "use_cleaned_r_for_risk_scaling_review" if broker_rows_with_r else "continue_backfilling_broker_r",
+        },
         "raw": raw_rollup,
         "strategy_state_broker_reconciled_estimate": rollup,
         "broker_preferred": rollup,
@@ -17652,12 +17748,14 @@ def _sync_broker_realized_rows_to_strategy_performance(broker_realized: dict | N
             "return_pct": round(((exit_px - entry_px) / entry_px * 100.0) if entry_px > 0 else 0.0, 4),
             "reason": "broker_exit_fill",
             "exit_reason": "broker_exit_fill",
+            "broker_accounting_reason": "broker_exit_fill",
             "source": "alpaca_orders_reconciled",
             "entry_order_id": str(row.get("entry_order_id") or ""),
             "exit_order_id": str(row.get("exit_order_id") or ""),
             "broker_reconciled": True,
             "attribution_source": inferred.get("attribution_source") or "broker_realized_sync",
         }
+        trade_row = _p441_broker_reconciled_r_backfill(trade_row, attribution=inferred)
         if trade_row.get("exit_order_id"):
             trade_row["close_fingerprint"] = f"broker_exit:{trade_row['exit_order_id']}"
         appended = _append_strategy_closed_trade_row(trade_row, reason="broker_realized_sync")
@@ -19760,7 +19858,13 @@ def _p254_broker_preferred_today_strategy_realized_pnl(perf_state: dict | None =
             wi, worker = _p228_find_match(broker, worker_rows, used_worker)
             if wi is not None:
                 used_worker.add(int(wi))
-            row = dict(broker)
+            attribution = dict(worker or {})
+            if not attribution:
+                attribution = _infer_recovered_plan_attribution(
+                    str(broker.get("symbol") or ""),
+                    order_id=str(broker.get("entry_order_id") or ""),
+                )
+            row = _p441_broker_reconciled_r_backfill(broker, attribution=attribution)
             row["preferred_basis"] = "broker_reconciled_strategy_row"
             row["paired_worker_exit"] = bool(worker)
             row["daily_loss_truth_included"] = True
@@ -52257,6 +52361,36 @@ def diagnostics_broker_preferred_performance():
     payload["preferred_endpoint_for_daily_loss"] = "/diagnostics/broker_only_daily_loss_truth"
     payload["delta_note"] = "strategy_state_vs_broker_only_today_delta compares today-to-today only; all-time rollup is historical performance, not daily loss truth."
     return payload
+
+@app.get("/diagnostics/broker_reconciled_performance_cleanup")
+def diagnostics_broker_reconciled_performance_cleanup():
+    _recompute_strategy_performance_state()
+    payload = _p245_broker_preferred_performance_snapshot()
+    cleanup = dict(payload.get("broker_reconciled_attribution_cleanup") or {})
+    rollup = dict(payload.get("strategy_state_broker_reconciled_estimate") or {})
+    today = _p254_broker_preferred_today_strategy_realized_pnl()
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_reconciled_performance_cleanup",
+        "cleanup": cleanup,
+        "today": {
+            "today_realized_pnl": today.get("today_realized_pnl"),
+            "closed_trades_today": today.get("closed_trades_today"),
+            "wins_today": today.get("wins_today"),
+            "losses_today": today.get("losses_today"),
+            "broker_reconciled_rows_today": today.get("broker_reconciled_rows_today"),
+            "worker_exit_shadow_quarantined_rows_today": today.get("worker_exit_shadow_quarantined_rows_today"),
+        },
+        "rollup": {
+            "closed_trades": rollup.get("closed_trades"),
+            "win_rate": rollup.get("win_rate"),
+            "gross_pnl": rollup.get("gross_pnl"),
+            "avg_r": rollup.get("avg_r"),
+            "sample_maturity": rollup.get("sample_maturity"),
+        },
+        "recommended_action": cleanup.get("recommended_action") or "review_cleaned_broker_reconciled_rollup",
+    }
 
 @app.get("/diagnostics/strategy_state_broker_reconciled_estimate")
 def diagnostics_strategy_state_broker_reconciled_estimate():
