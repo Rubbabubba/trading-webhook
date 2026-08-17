@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-438-hotfix-2-missing-risk-config-defaults-fresh-sync-guard"
+PATCH_VERSION = "patch-438-hotfix-3-full-exit-age-config-fallback-risk-evidence-health"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -10035,7 +10035,10 @@ def _p438_post_fill_risk_decision_for_active_plan(
     ) if risk_threshold > 0 else 0.0
     hard_exit = bool(risk_exceeded and actual_risk >= hard_exit_threshold)
 
-    full_exit_min_age_sec = max(0, int(POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC or 0))
+    full_exit_min_age_sec = max(
+        0,
+        int(globals().get("POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC", 300) or 300),
+    )
     same_minute_churn_guard_active = bool(
         full_exit_min_age_sec > 0
         and submitted_at_age_sec is not None
@@ -10411,7 +10414,10 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                 except Exception:
                     submitted_at_age_sec = None
 
-                full_exit_min_age_sec = max(0, int(POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC or 0))
+                full_exit_min_age_sec = max(
+                    0,
+                    int(globals().get("POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC", 300) or 300),
+                )
                 same_minute_churn_guard_active = bool(
                     full_exit_min_age_sec > 0
                     and submitted_at_age_sec is not None
@@ -51944,6 +51950,8 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             "rows": [],
             "active_plan_evidence": [],
         }
+    risk_evidence_ok = bool(post_fill_risk_recheck_evidence.get("ok", False))
+    risk_evidence_error = post_fill_risk_recheck_evidence.get("error")
     active_exit_truth = _p364_active_exit_protection_truth()
     active_exit_summary = dict(active_exit_truth.get("summary") or {})
     heartbeat_giveback_symbols = list(hb.get("giveback_exit_due_symbols") or [])
@@ -51990,7 +51998,9 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "fresh_sync_guard_count": len(fresh_sync_guard_rows),
         "fresh_sync_guard_window_sec": fresh_window_sec,
         "fresh_sync_guard_rows": fresh_sync_guard_rows,
-        "healthy": bool(healthy and sync_contract_ok and bool(post_fill_risk_recheck_evidence.get("ok", True))),
+        "risk_evidence_ok": risk_evidence_ok,
+        "risk_evidence_error": risk_evidence_error,
+        "healthy": bool(healthy and sync_contract_ok and risk_evidence_ok),
     }
 
 @app.get("/diagnostics/universe_shadow")
