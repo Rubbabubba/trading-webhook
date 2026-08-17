@@ -1755,10 +1755,10 @@ POST_FILL_RISK_RECHECK_REDUCE_ENABLED = env_bool_any(
     "SWING_POST_FILL_RISK_RECHECK_REDUCE_ENABLED",
     default=True,
 )
-POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC = getenv_int_any(
-    "POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC",
-    "SWING_POST_FILL_RISK_RECHECK_FULL_EXIT_MIN_AGE_SEC",
-    default=300,
+POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE = getenv_float_any(
+    "POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE",
+    "SWING_POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE",
+    default=1.50,
 )
 
 # Patch 007: monitoring + alerts
@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-438-hotfix-broker-sync-return-contract-active-risk-refresh"
+PATCH_VERSION = "patch-438-hotfix-2-missing-risk-config-defaults-fresh-sync-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -10025,8 +10025,12 @@ def _p438_post_fill_risk_decision_for_active_plan(
     except Exception:
         submitted_at_age_sec = None
 
+    hard_exit_multiple = max(
+        float(globals().get("POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE", 1.50) or 1.50),
+        1.0,
+    )
     hard_exit_threshold = round(
-        float(risk_threshold) * max(float(POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE), 1.0),
+        float(risk_threshold) * hard_exit_multiple,
         4,
     ) if risk_threshold > 0 else 0.0
     hard_exit = bool(risk_exceeded and actual_risk >= hard_exit_threshold)
@@ -10090,6 +10094,7 @@ def _p438_post_fill_risk_decision_for_active_plan(
         "excess_risk_dollars": round(actual_risk - risk_threshold, 4) if risk_threshold > 0 else 0.0,
         "order_id": plan.get("order_id") or order_status.get("id"),
         "order_status": order_status,
+        "hard_exit_multiple": hard_exit_multiple,
         "hard_exit_threshold_dollars": hard_exit_threshold,
         "hard_exit": hard_exit,
         "target_qty_for_risk": target_qty_for_risk,
@@ -10377,8 +10382,12 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
             out["post_fill_risk_recheck_evidence"] = risk_recheck_evidence
 
             if risk_exceeded:
+                hard_exit_multiple = max(
+                    float(globals().get("POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE", 1.50) or 1.50),
+                    1.0,
+                )
                 hard_exit_threshold = round(
-                    float(risk_threshold) * max(float(POST_FILL_RISK_RECHECK_HARD_EXIT_MULTIPLE), 1.0),
+                    float(risk_threshold) * hard_exit_multiple,
                     4,
                 )
                 hard_exit = bool(actual_risk >= hard_exit_threshold)
@@ -10424,6 +10433,7 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
                     )
                 )
 
+                risk_recheck_evidence["hard_exit_multiple"] = hard_exit_multiple
                 risk_recheck_evidence["hard_exit_threshold_dollars"] = hard_exit_threshold
                 risk_recheck_evidence["hard_exit"] = hard_exit
                 risk_recheck_evidence["target_qty_for_risk"] = target_qty_for_risk
@@ -51885,6 +51895,24 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         })
     recent = recent[-max(1, min(int(limit or 20), 50)):]
     error_like = [r for r in recent if "failed" in str(r.get("action") or "") or "error" in str(r.get("action") or "") or "failed" in str(r.get("reason") or "") or "error" in str(r.get("reason") or "")]
+    sync_guard_rows = [
+        r for r in recent
+        if str(r.get("reason") or "") == "sync_trade_plan_with_broker_returned_non_dict"
+        or str(r.get("action") or "") == "sync_return_guarded"
+    ]
+    fresh_sync_guard_rows = []
+    fresh_window_sec = 300
+    for r in sync_guard_rows:
+        try:
+            ts = datetime.fromisoformat(str(r.get("ts_utc") or ""))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = max(0.0, (now_utc - ts.astimezone(timezone.utc)).total_seconds())
+            if age <= fresh_window_sec:
+                fresh_sync_guard_rows.append({**r, "age_sec": round(age, 2)})
+        except Exception:
+            continue
+    sync_contract_ok = len(fresh_sync_guard_rows) == 0
     active_plans = []
     for sym, plan in sorted((TRADE_PLAN or {}).items()):
         if isinstance(plan, dict) and plan.get("active"):
@@ -51905,7 +51933,17 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "none"
     )
     exit_retry_readiness = _p390_exit_submit_retry_readiness(limit=limit)
-    post_fill_risk_recheck_evidence = _p416_post_fill_risk_recheck_evidence(limit=limit)
+    try:
+        post_fill_risk_recheck_evidence = _p416_post_fill_risk_recheck_evidence(limit=limit)
+    except Exception as exc:
+        post_fill_risk_recheck_evidence = {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "post_fill_risk_recheck_evidence",
+            "error": str(exc),
+            "rows": [],
+            "active_plan_evidence": [],
+        }
     active_exit_truth = _p364_active_exit_protection_truth()
     active_exit_summary = dict(active_exit_truth.get("summary") or {})
     heartbeat_giveback_symbols = list(hb.get("giveback_exit_due_symbols") or [])
@@ -51948,7 +51986,11 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "active_plans": active_plans[:10],
         "recent_worker_exit_decisions": recent,
         "error_like_recent_count": len(error_like),
-        "healthy": healthy,
+        "sync_contract_ok": sync_contract_ok,
+        "fresh_sync_guard_count": len(fresh_sync_guard_rows),
+        "fresh_sync_guard_window_sec": fresh_window_sec,
+        "fresh_sync_guard_rows": fresh_sync_guard_rows,
+        "healthy": bool(healthy and sync_contract_ok and bool(post_fill_risk_recheck_evidence.get("ok", True))),
     }
 
 @app.get("/diagnostics/universe_shadow")
