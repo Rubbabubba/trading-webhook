@@ -2,7 +2,8 @@ param(
     [string]$OutputDir = "$env:USERPROFILE\TradingDiagnostics\swing_two_week_replay",
     [int]$Days = 10,
     [int]$WarmupDays = 100,
-    [string]$Symbols = ""
+    [string]$Symbols = "",
+    [string]$PythonExe = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +23,23 @@ if ([string]::IsNullOrWhiteSpace($env:APCA_API_SECRET_KEY) -and [string]::IsNull
     throw "Missing Alpaca secret env. Set APCA_API_SECRET_KEY or ALPACA_SECRET_KEY."
 }
 
+if ([string]::IsNullOrWhiteSpace($PythonExe)) {
+    $bundledPython = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+    if (Test-Path -LiteralPath $bundledPython) {
+        $PythonExe = $bundledPython
+    }
+    else {
+        $cmd = Get-Command python -ErrorAction SilentlyContinue
+        if ($cmd) {
+            $PythonExe = $cmd.Source
+        }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($PythonExe) -or -not (Test-Path -LiteralPath $PythonExe)) {
+    throw "Python executable not found. Pass -PythonExe or install Python."
+}
+
 $argsList = @(
     $scriptPath,
     "--days", $Days,
@@ -35,7 +53,7 @@ if (-not [string]::IsNullOrWhiteSpace($Symbols)) {
 
 Push-Location $repoRoot
 try {
-    python @argsList
+    & $PythonExe @argsList
 }
 finally {
     Pop-Location

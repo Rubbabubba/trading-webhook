@@ -18,7 +18,7 @@ import json
 import math
 import os
 import statistics
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -40,7 +40,7 @@ except Exception as exc:
     ) from exc
 
 
-PATCH_VERSION = "patch-447-offline-two-week-swing-replay-harness"
+PATCH_VERSION = "patch-448-swing-two-week-scenario-matrix-goal-calibration"
 NY_TZ = "America/New_York"
 
 DEFAULT_SYMBOLS = (
@@ -749,6 +749,178 @@ def summarize(rows: list[dict], daily_rows: list[dict]) -> dict:
     }
 
 
+def parse_number_list(raw: str, defaults: list[float]) -> list[float]:
+    if not str(raw or "").strip():
+        return list(defaults)
+
+    out: list[float] = []
+    for part in str(raw or "").split(","):
+        try:
+            value = float(part.strip())
+            if math.isfinite(value):
+                out.append(value)
+        except Exception:
+            continue
+
+    return out or list(defaults)
+
+
+def parse_int_list(raw: str, defaults: list[int]) -> list[int]:
+    return [int(v) for v in parse_number_list(raw, [float(v) for v in defaults])]
+
+
+def scenario_name(config: ReplayConfig) -> str:
+    return (
+        f"risk_{int(config.risk_per_trade_dollars)}"
+        f"_entries_{int(config.max_entries_per_day)}"
+        f"_target_{str(config.target_r_mult).replace('.', 'p')}"
+        f"_stall_{int(config.stall_exit_days)}"
+    )
+
+
+def goal_score(summary: dict, low_goal: float = 100.0, high_goal: float = 200.0) -> float:
+    daily_avg = safe_float(summary.get("daily_average_realized_pnl"))
+    drawdown = abs(safe_float(summary.get("max_drawdown")))
+    trade_count = safe_float(summary.get("trade_count"))
+    win_rate = safe_float(summary.get("win_rate"))
+    avg_r = safe_float(summary.get("avg_r"))
+
+    goal_component = min(daily_avg / max(low_goal, 1.0), 1.5)
+    drawdown_penalty = min(drawdown / max(high_goal * 2.0, 1.0), 1.0)
+    sample_penalty = 0.25 if trade_count < 8 else 0.0
+
+    return round(
+        (goal_component * 100.0)
+        + (win_rate * 25.0)
+        + (avg_r * 20.0)
+        - (drawdown_penalty * 30.0)
+        - (sample_penalty * 100.0),
+        4,
+    )
+
+
+def scenario_recommendation(summary: dict, low_goal: float = 100.0) -> str:
+    daily_avg = safe_float(summary.get("daily_average_realized_pnl"))
+    drawdown = abs(safe_float(summary.get("max_drawdown")))
+    win_rate = safe_float(summary.get("win_rate"))
+    trade_count = int(safe_float(summary.get("trade_count")))
+
+    if trade_count < 8:
+        return "insufficient_trade_sample"
+    if daily_avg >= low_goal and win_rate >= 0.50 and drawdown <= low_goal * 2.5:
+        return "goal_candidate_review_for_live_calibration"
+    if daily_avg > 0 and win_rate >= 0.50:
+        return "profitable_but_below_goal"
+    if daily_avg > 0:
+        return "profitable_but_quality_weak"
+    return "reject_negative_expectancy"
+
+
+def run_scenario_matrix(base_config: ReplayConfig, bars_map: dict[str, list[dict]]) -> dict:
+    risk_values = parse_number_list(
+        os.getenv("SWING_REPLAY_SCENARIO_RISK_DOLLARS", ""),
+        [
+            float(base_config.risk_per_trade_dollars),
+            40.0,
+            50.0,
+            60.0,
+        ],
+    )
+    entry_values = parse_int_list(
+        os.getenv("SWING_REPLAY_SCENARIO_ENTRIES_PER_DAY", ""),
+        [
+            int(base_config.max_entries_per_day),
+            3,
+            4,
+        ],
+    )
+    target_values = parse_number_list(
+        os.getenv("SWING_REPLAY_SCENARIO_TARGET_R", ""),
+        [
+            float(base_config.target_r_mult),
+            1.5,
+        ],
+    )
+    stall_values = parse_int_list(
+        os.getenv("SWING_REPLAY_SCENARIO_STALL_DAYS", ""),
+        [
+            int(base_config.stall_exit_days),
+            2,
+            4,
+        ],
+    )
+
+    seen: set[str] = set()
+    rows: list[dict] = []
+
+    for risk in risk_values:
+        for entries in entry_values:
+            for target_r in target_values:
+                for stall_days in stall_values:
+                    scenario_config = replace(
+                        base_config,
+                        risk_per_trade_dollars=float(risk),
+                        max_entries_per_day=int(entries),
+                        target_r_mult=float(target_r),
+                        stall_exit_days=int(stall_days),
+                    )
+                    name = scenario_name(scenario_config)
+                    if name in seen:
+                        continue
+                    seen.add(name)
+
+                    replay = run_replay(scenario_config, bars_map)
+                    summary = summarize(replay["trades"], replay["daily_rows"])
+                    rows.append(
+                        {
+                            "scenario": name,
+                            "risk_per_trade_dollars": round(float(risk), 2),
+                            "max_entries_per_day": int(entries),
+                            "target_r_mult": round(float(target_r), 4),
+                            "stall_exit_days": int(stall_days),
+                            "trade_count": summary.get("trade_count"),
+                            "win_rate": summary.get("win_rate"),
+                            "gross_pnl": summary.get("gross_pnl"),
+                            "daily_average_realized_pnl": summary.get("daily_average_realized_pnl"),
+                            "avg_trade_pnl": summary.get("avg_trade_pnl"),
+                            "avg_r": summary.get("avg_r"),
+                            "max_drawdown": summary.get("max_drawdown"),
+                            "goal_score": goal_score(summary),
+                            "recommendation": scenario_recommendation(summary),
+                        }
+                    )
+
+    rows.sort(
+        key=lambda row: (
+            safe_float(row.get("goal_score")),
+            safe_float(row.get("daily_average_realized_pnl")),
+            safe_float(row.get("avg_r")),
+        ),
+        reverse=True,
+    )
+
+    goal_candidates = [
+        row for row in rows
+        if str(row.get("recommendation")) == "goal_candidate_review_for_live_calibration"
+    ]
+
+    return {
+        "enabled": True,
+        "scenario_count": len(rows),
+        "risk_values": risk_values,
+        "entry_values": entry_values,
+        "target_values": target_values,
+        "stall_values": stall_values,
+        "rows": rows,
+        "top_scenarios": rows[:10],
+        "goal_candidates": goal_candidates[:10],
+        "recommended_action": (
+            "review_goal_candidates_before_live_env_change"
+            if goal_candidates
+            else "no_goal_candidate_found_review_top_profitable_scenarios"
+        ),
+    }
+
 def write_csv(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -790,6 +962,7 @@ def main() -> int:
     bars_map = fetch_daily_bars(config)
     replay = run_replay(config, bars_map)
     summary = summarize(replay["trades"], replay["daily_rows"])
+    scenario_matrix = run_scenario_matrix(config, bars_map)
 
     payload = {
         "ok": True,
@@ -812,6 +985,13 @@ def main() -> int:
             "bars_by_symbol": {s: len(bars_map.get(s) or []) for s in config.symbols},
         },
         "summary": summary,
+        "scenario_matrix": {
+            "enabled": bool(scenario_matrix.get("enabled")),
+            "scenario_count": scenario_matrix.get("scenario_count"),
+            "top_scenarios": scenario_matrix.get("top_scenarios"),
+            "goal_candidates": scenario_matrix.get("goal_candidates"),
+            "recommended_action": scenario_matrix.get("recommended_action"),
+        },
         "test_dates": replay["test_dates"],
         "recommended_action": (
             "review_trade_and_missed_opportunity_csv_before_live_gate_changes"
@@ -826,6 +1006,8 @@ def main() -> int:
     latest_daily = output_dir / "latest_daily_pnl.csv"
     latest_candidates = output_dir / "latest_candidate_rows.csv"
     latest_missed = output_dir / "latest_missed_opportunities.csv"
+    latest_matrix = output_dir / "latest_scenario_matrix.csv"
+    latest_matrix_json = output_dir / "latest_scenario_matrix.json"
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -835,6 +1017,8 @@ def main() -> int:
     write_csv(latest_daily, replay["daily_rows"])
     write_csv(latest_candidates, replay["candidate_rows"])
     write_csv(latest_missed, replay["missed_rows"])
+    write_csv(latest_matrix, scenario_matrix["rows"])
+    latest_matrix_json.write_text(json.dumps(scenario_matrix, indent=2, sort_keys=True), encoding="utf-8")
 
     (run_dir / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     (run_dir / "config_snapshot.json").write_text(json.dumps(asdict(config), indent=2, sort_keys=True), encoding="utf-8")
@@ -842,6 +1026,8 @@ def main() -> int:
     write_csv(run_dir / "daily_pnl.csv", replay["daily_rows"])
     write_csv(run_dir / "candidate_rows.csv", replay["candidate_rows"])
     write_csv(run_dir / "missed_opportunities.csv", replay["missed_rows"])
+    write_csv(run_dir / "scenario_matrix.csv", scenario_matrix["rows"])
+    (run_dir / "scenario_matrix.json").write_text(json.dumps(scenario_matrix, indent=2, sort_keys=True), encoding="utf-8")
 
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
