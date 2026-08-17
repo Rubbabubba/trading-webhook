@@ -101,6 +101,9 @@ from swing_selection_contract import (
 )
 from swing_execution import (
     SWING_EXECUTION_MODULE_VERSION,
+    available_qty_from_plan as swing_exec_available_qty_from_plan,
+    clamp_exit_qty as swing_exec_clamp_exit_qty,
+    qty_source_from_plan as swing_exec_qty_source_from_plan,
 )
 from swing_execution_submit import (
     SWING_EXECUTION_SUBMIT_MODULE_VERSION,
@@ -2818,7 +2821,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-445-broker-qty-dynamic-exit-preview-breakout-partial-qty-clamp"
+PATCH_VERSION = "patch-446-broker-native-exit-qty-contract-closed-market-swing-test-puller"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -34169,24 +34172,15 @@ def _p378_daily_breakout_profit_giveback_state(symbol: str, plan: dict | None, p
     return out
 
 def _p445_plan_available_qty(plan: dict | None) -> float:
-    plan = plan if isinstance(plan, dict) else {}
-    broker_qty = abs(_safe_float(plan.get("_broker_available_qty") or 0.0, 0.0))
-    if broker_qty > 0:
-        return broker_qty
-    return abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or plan.get("submitted_qty") or 0.0, 0.0))
+    return float(swing_exec_available_qty_from_plan(plan))
 
 
 def _p445_qty_source(plan: dict | None) -> str:
-    plan = plan if isinstance(plan, dict) else {}
-    if abs(_safe_float(plan.get("_broker_available_qty") or 0.0, 0.0)) > 0:
-        return str(plan.get("_broker_qty_source") or "broker_available_qty")
-    if _safe_float(plan.get("filled_qty") or 0.0, 0.0) > 0:
-        return "plan_filled_qty"
-    if _safe_float(plan.get("qty") or 0.0, 0.0) > 0:
-        return "plan_qty"
-    if _safe_float(plan.get("submitted_qty") or 0.0, 0.0) > 0:
-        return "plan_submitted_qty"
-    return "missing_qty"
+    return str(swing_exec_qty_source_from_plan(plan))
+
+
+def _p446_clamp_exit_qty(qty_to_close: float, available_qty: float) -> float:
+    return _normalize_close_qty(float(swing_exec_clamp_exit_qty(qty_to_close, available_qty)))
 
 def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
     plan = plan if isinstance(plan, dict) else {}
@@ -34198,7 +34192,7 @@ def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px:
     partial_taken = bool(plan.get("partial_profit_taken") or plan.get("breakout_partial_profit_bias_taken"))
 
     fraction = min(max(float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.5), 0.05), 0.95)
-    qty_to_close = _normalize_close_qty(qty * fraction)
+    qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
     min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
 
     applies = bool(
@@ -34236,7 +34230,7 @@ def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None,
     qty = _p445_plan_available_qty(plan)
     qty_source = _p445_qty_source(plan)
     fraction = min(max(float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.5), 0.05), 0.95)
-    qty_to_close = _normalize_close_qty(qty * fraction)
+    qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
     min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
 
     applies = bool(
@@ -38952,7 +38946,10 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 })
             continue
         if dynamic_exit.get("legacy_oversized_normalization_ready") and not bool(plan.get("legacy_oversized_normalization_taken")):
-            qty_to_close = float(dynamic_exit.get("legacy_oversized_normalization_qty") or 0.0)
+            qty_to_close = _p446_clamp_exit_qty(
+                float(dynamic_exit.get("legacy_oversized_normalization_qty") or 0.0),
+                _p445_plan_available_qty(plan),
+            )
             if qty_to_close > 0:
                 plan["last_exit_attempt_ts"] = now_ts
                 reason = "legacy_oversized_position_normalization_trim"
@@ -38980,7 +38977,10 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 continue
 
         if dynamic_exit.get("oversized_winner_preservation_ready") and not bool(plan.get("oversized_winner_preservation_taken")):
-            qty_to_close = float(dynamic_exit.get("oversized_winner_preservation_qty") or 0.0)
+            qty_to_close = _p446_clamp_exit_qty(
+                float(dynamic_exit.get("oversized_winner_preservation_qty") or 0.0),
+                _p445_plan_available_qty(plan),
+            )
             if qty_to_close > 0:
                 plan["last_exit_attempt_ts"] = now_ts
                 reason = "oversized_winner_preservation_trim"
@@ -39004,7 +39004,10 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 continue
 
         if dynamic_exit.get("partial_profit_ready") and not bool(plan.get("partial_profit_taken")):
-            qty_to_close = float(dynamic_exit.get("partial_profit_qty") or 0.0)
+            qty_to_close = _p446_clamp_exit_qty(
+                float(dynamic_exit.get("partial_profit_qty") or 0.0),
+                _p445_plan_available_qty(plan),
+            )
             partial_reason = str(dynamic_exit.get("partial_profit_reason") or "partial_profit")
             if qty_to_close > 0:
                 out = close_partial_position(symbol, qty_to_close, reason=partial_reason, source="worker_exit")

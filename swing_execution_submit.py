@@ -10,11 +10,14 @@ from __future__ import annotations
 from swing_execution import (
     SWING_EXECUTION_MODULE_VERSION,
     SwingLimitEntryConfig,
+    available_qty_from_plan,
     build_limit_order_payload,
     build_market_order_payload,
     build_submit_decision,
+    clamp_exit_qty,
     format_order_qty,
     limit_entry_preview,
+    qty_source_from_plan,
 )
 
 
@@ -32,6 +35,9 @@ def swing_execution_submit_module_status() -> dict:
         "actual_broker_submit_moved": False,
         "exports": [
             "SwingLimitEntryConfig",
+            "available_qty_from_plan",
+            "qty_source_from_plan",
+            "clamp_exit_qty",
             "format_order_qty",
             "build_market_order_payload",
             "build_limit_order_payload",

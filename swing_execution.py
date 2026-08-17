@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SWING_EXECUTION_MODULE_VERSION = "patch-356-direct-submit-function-split-prep-protective-limit-live-proof-guard"
+SWING_EXECUTION_MODULE_VERSION = "patch-446-broker-native-exit-qty-contract"
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,33 @@ def safe_float(value: Any, default: float = 0.0) -> float:
     except Exception:
         return float(default)
 
+def available_qty_from_plan(plan: dict | None) -> float:
+    plan = plan if isinstance(plan, dict) else {}
+    broker_qty = abs(safe_float(plan.get("_broker_available_qty") or 0.0, 0.0))
+    if broker_qty > 0:
+        return broker_qty
+    return abs(safe_float(plan.get("filled_qty") or plan.get("qty") or plan.get("submitted_qty") or 0.0, 0.0))
+
+
+def qty_source_from_plan(plan: dict | None) -> str:
+    plan = plan if isinstance(plan, dict) else {}
+    if abs(safe_float(plan.get("_broker_available_qty") or 0.0, 0.0)) > 0:
+        return str(plan.get("_broker_qty_source") or "broker_available_qty")
+    if safe_float(plan.get("filled_qty") or 0.0, 0.0) > 0:
+        return "plan_filled_qty"
+    if safe_float(plan.get("qty") or 0.0, 0.0) > 0:
+        return "plan_qty"
+    if safe_float(plan.get("submitted_qty") or 0.0, 0.0) > 0:
+        return "plan_submitted_qty"
+    return "missing_qty"
+
+
+def clamp_exit_qty(qty_to_close: float, available_qty: float) -> float:
+    requested = max(0.0, safe_float(qty_to_close))
+    available = max(0.0, safe_float(available_qty))
+    if requested <= 0 or available <= 0:
+        return 0.0
+    return min(requested, available)
 
 def format_order_qty(qty: float) -> str:
     q = float(qty)
