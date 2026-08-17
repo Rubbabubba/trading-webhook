@@ -1586,6 +1586,8 @@ SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED = env_bool_any("SWING_DOLLAR_RISK_SELE
 SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE = getenv_float_any("SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE", default=1.25)
 SWING_DOLLAR_RISK_ADD_SLOT_SELECTION_ENABLED = env_bool_any("SWING_DOLLAR_RISK_ADD_SLOT_SELECTION_ENABLED", default=True)
 SWING_DOLLAR_RISK_ADD_SLOT_MAX_PER_SCAN = getenv_int_any("SWING_DOLLAR_RISK_ADD_SLOT_MAX_PER_SCAN", default=1)
+SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED = env_bool_any("SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED", default=True)
+SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS = getenv_float_any("SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS", default=50.0)
 SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE = getenv_float_any("SWING_OVERSIZED_POSITION_ADVISORY_MULTIPLE", default=2.0)
 SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE = getenv_float_any("SWING_OVERSIZED_POSITION_REDUCE_TO_RISK_MULTIPLE", default=1.25)
 SWING_OVERSIZED_POSITION_CAPACITY_ADJUSTMENT_ENABLED = env_bool_any("SWING_OVERSIZED_POSITION_CAPACITY_ADJUSTMENT_ENABLED", default=True)
@@ -2811,7 +2813,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-442-broker-reconciled-strategy-attribution-breakout-risk-size-audit"
+PATCH_VERSION = "patch-443-broker-exit-reason-attribution-recovery-breakout-dollar-risk-containment"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17432,6 +17434,132 @@ def _p245_is_broker_reconciled_exit(row: dict | None) -> bool:
     reason = str(row.get("reason") or row.get("exit_reason") or "").strip().lower()
     return bool(row.get("broker_reconciled")) or source == "alpaca_orders_reconciled" or reason == "broker_exit_fill"
 
+def _p443_known_exit_reason(value: object) -> str:
+    reason = str(value or "").strip().lower()
+    if not reason or reason in {"broker_exit_fill", "alpaca_orders_reconciled", "order_submitted", "partial_order_submitted"}:
+        return ""
+    return reason
+
+
+def _p443_dt_distance_seconds(a: object, b: object) -> float | None:
+    da = _p175_parse_dt(a)
+    db = _p175_parse_dt(b)
+    if not da or not db:
+        return None
+    return abs((da.astimezone(timezone.utc) - db.astimezone(timezone.utc)).total_seconds())
+
+
+def _p443_infer_broker_exit_attribution(row: dict | None) -> dict:
+    broker = dict(row or {})
+    sym = str(broker.get("symbol") or "").strip().upper()
+    if not sym:
+        return {}
+
+    broker_ts = broker.get("ts_utc") or broker.get("closed_at") or broker.get("exit_ts_utc")
+    candidates = []
+
+    decision_rows = [dict(r or {}) for r in list(DECISIONS or [])]
+    decision_rows.extend(_read_journal(limit=JOURNAL_BOOTSTRAP_LIMIT, symbol=sym))
+
+    for item in reversed(decision_rows):
+        if str(item.get("symbol") or "").strip().upper() != sym:
+            continue
+        event = str(item.get("event") or "").strip().upper()
+        if event not in {"EXIT", "RECONCILE"}:
+            continue
+
+        details = dict(item.get("details") or {}) if isinstance(item.get("details"), dict) else {}
+        reason = _p443_known_exit_reason(
+            item.get("exit_reason")
+            or item.get("reason")
+            or details.get("exit_reason")
+            or details.get("reason")
+            or item.get("action")
+            or details.get("action")
+        )
+        if not reason:
+            continue
+
+        distance = _p443_dt_distance_seconds(
+            broker_ts,
+            item.get("ts_utc") or item.get("timestamp") or details.get("ts_utc"),
+        )
+        if distance is not None and distance > 6 * 60 * 60:
+            continue
+
+        candidates.append({
+            "exit_reason": reason,
+            "reason": reason,
+            "attributed_exit_reason": reason,
+            "exit_attribution_source": "decision_exit_row",
+            "exit_attribution_ts_utc": item.get("ts_utc") or item.get("timestamp"),
+            "exit_attribution_distance_sec": round(distance, 2) if distance is not None else None,
+        })
+
+    if candidates:
+        candidates.sort(key=lambda r: (
+            r.get("exit_attribution_distance_sec") is None,
+            float(r.get("exit_attribution_distance_sec") or 999999.0),
+        ))
+        return candidates[0]
+
+    return {}
+
+
+def _p443_is_breakout_candidate(row: dict | None) -> bool:
+    r = dict(row or {})
+    blob = " ".join([
+        str(r.get("strategy") or ""),
+        str(r.get("strategy_name") or ""),
+        str(r.get("signal") or ""),
+        str(r.get("entry_type") or ""),
+        str(r.get("selected_source") or ""),
+    ]).strip().lower()
+    return "breakout" in blob
+
+
+def _p443_breakout_dollar_risk_containment(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    truth = _p384_candidate_dollar_risk_truth(c)
+    max_risk = max(0.0, float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0))
+    dollar_risk = float(_safe_float(truth.get("dollar_risk"), 0.0))
+    applies = bool(
+        SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED
+        and _p443_is_breakout_candidate(c)
+        and max_risk > 0
+        and dollar_risk > max_risk
+    )
+    return {
+        "enabled": bool(SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED),
+        "applies": applies,
+        "reason": "breakout_dollar_risk_above_containment_max" if applies else "ok",
+        "max_dollar_risk": round(max_risk, 4),
+        "dollar_risk": round(dollar_risk, 4),
+        "dollar_risk_selection_truth": truth,
+    }
+
+
+def _p443_apply_breakout_dollar_risk_containment(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    containment = _p443_breakout_dollar_risk_containment(c)
+    c["breakout_dollar_risk_containment"] = containment
+    if containment.get("applies"):
+        reasons = _dedupe_candidate_reasons(
+            list(c.get("rejection_reasons") or [])
+            + ["breakout_dollar_risk_above_containment_max"]
+        )
+        c["eligible"] = False
+        c["selected"] = False
+        c["production_contract_approved"] = False
+        c["rejection_reasons"] = reasons
+        contract = dict(c.get("swing_production_contract") or {})
+        contract["approved"] = False
+        contract["p443_breakout_dollar_risk_containment"] = containment
+        blockers = _dedupe_candidate_reasons(list(contract.get("blockers") or []) + ["breakout_dollar_risk_above_containment_max"])
+        contract["blockers"] = blockers
+        c["swing_production_contract"] = contract
+    return c
+
 def _p441_broker_reconciled_r_backfill(row: dict | None, attribution: dict | None = None) -> dict:
     out = dict(row or {})
     attribution = dict(attribution or {})
@@ -17571,7 +17699,12 @@ def _p245_broker_preferred_closed_rows(state: dict | None = None) -> dict:
                 str(row.get("symbol") or ""),
                 order_id=str(row.get("entry_order_id") or ""),
             )
+            exit_inferred = _p443_infer_broker_exit_attribution(row)
+            if exit_inferred:
+                inferred = {**inferred, **exit_inferred}
             clean = _p441_broker_reconciled_r_backfill(row, attribution=inferred)
+            if exit_inferred:
+                clean["exit_attribution_recovered"] = True
             clean["broker_fill_economic_key"] = economic_key
             clean["preferred_basis"] = "strategy_state_broker_reconciled_estimate_row"
             clean["daily_loss_truth_included"] = True
@@ -17886,6 +18019,11 @@ def _p442_broker_reconciled_strategy_attribution_report(limit: int = 20) -> dict
         "mode": "broker_reconciled_strategy_attribution_report",
         "source": "broker_reconciled_kept_rows_only",
         "behavior_changed": False,
+        "p443_breakout_dollar_risk_containment": {
+            "enabled": bool(SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED),
+            "max_dollar_risk": float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0),
+            "basis": "patch_442_broker_reconciled_risk_over_50_underperformed",
+        },
         "row_counts": {
             "broker_reconciled_rows": len(rows),
             "breakout_rows": len(breakout_rows),
@@ -22482,7 +22620,20 @@ def _p414_sync_selected_from_current_eligible_contract_rows(
         if sym and sym not in approved_by_symbol:
             approved_by_symbol[sym] = dict(row or {})
 
-    approved_new_entry = list(approved_by_symbol.values())
+    approved_new_entry_raw = list(approved_by_symbol.values())
+    approved_new_entry_checked = [
+        _p443_apply_breakout_dollar_risk_containment(row)
+        for row in approved_new_entry_raw
+    ]
+    approved_new_entry = [
+        row for row in approved_new_entry_checked
+        if not bool((row.get("breakout_dollar_risk_containment") or {}).get("applies"))
+    ]
+    p443_contained_rows = [
+        row for row in approved_new_entry_checked
+        if bool((row.get("breakout_dollar_risk_containment") or {}).get("applies"))
+    ]
+
     approved_new_entry.sort(
         key=lambda row: (
             float(_safe_float(row.get("rank_score"), 0.0)),
@@ -22514,10 +22665,18 @@ def _p414_sync_selected_from_current_eligible_contract_rows(
         if _row_symbol(row)
     }
 
+    p443_contained_by_symbol = {
+        _row_symbol(row): dict(row or {})
+        for row in p443_contained_rows
+        if _row_symbol(row)
+    }
+
     rebuilt_rows = []
     for row in rows:
         c = dict(row or {})
         sym = _row_symbol(c)
+        if sym and sym in p443_contained_by_symbol:
+            c = dict(p443_contained_by_symbol[sym])
         is_selected = bool(sym and sym in selected_symbols)
         c["selected"] = is_selected
         if is_selected:
@@ -22578,6 +22737,16 @@ def _p414_sync_selected_from_current_eligible_contract_rows(
             for row in approved_new_entry
             if _row_symbol(row)
         ],
+        "p443_breakout_dollar_risk_containment": {
+            "enabled": bool(SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED),
+            "max_dollar_risk": float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0),
+            "contained_count": len(p443_contained_rows),
+            "contained_symbols": [
+                _row_symbol(row)
+                for row in p443_contained_rows
+                if _row_symbol(row)
+            ],
+        },
         "row_approved_new_entry_count": len(row_approved_new_entry),
         "row_approved_new_entry_symbols": [
             _row_symbol(row)
@@ -51133,6 +51302,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
         "performance_review": [
             f"{base}/strategy_state_broker_reconciled_estimate",
             f"{base}/broker_reconciled_strategy_attribution?limit=20",
+            f"{base}/breakout_dollar_risk_containment?limit=20",
             f"{base}/broker_preferred_daily_pnl_dedup",
             f"{base}/broker_preferred_loss_attribution_truth",
             f"{base}/broker_only_daily_loss_truth",
@@ -52605,6 +52775,61 @@ def diagnostics_broker_reconciled_strategy_attribution(limit: int = 20):
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
     return JSONResponse(content=_p442_broker_reconciled_strategy_attribution_report(limit=limit))
+
+@app.get("/diagnostics/breakout_dollar_risk_containment")
+def diagnostics_breakout_dollar_risk_containment(limit: int = 20):
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    rows = [
+        _p443_apply_breakout_dollar_risk_containment(dict(row or {}))
+        for row in list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
+        if isinstance(row, dict)
+    ]
+    contained = [
+        row for row in rows
+        if bool((row.get("breakout_dollar_risk_containment") or {}).get("applies"))
+    ]
+    selected_symbols = {
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    }
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "breakout_dollar_risk_containment",
+        "enabled": bool(SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED),
+        "max_dollar_risk": float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0),
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "latest_scan_reason": latest_scan.get("reason"),
+        "selected_symbols": sorted(selected_symbols),
+        "contained_count": len(contained),
+        "contained_symbols": [
+            str(row.get("symbol") or "").strip().upper()
+            for row in contained[: max(1, int(limit or 20))]
+            if str(row.get("symbol") or "").strip()
+        ],
+        "selected_contained_symbols": [
+            str(row.get("symbol") or "").strip().upper()
+            for row in contained
+            if str(row.get("symbol") or "").strip().upper() in selected_symbols
+        ],
+        "rows": [
+            {
+                "symbol": row.get("symbol"),
+                "selected": bool(row.get("selected")),
+                "eligible": bool(row.get("eligible")),
+                "entry_type": row.get("entry_type"),
+                "signal": row.get("signal"),
+                "rank_score": row.get("rank_score"),
+                "estimated_qty": row.get("estimated_qty"),
+                "risk_per_share": row.get("risk_per_share"),
+                "containment": row.get("breakout_dollar_risk_containment"),
+                "rejection_reasons": row.get("rejection_reasons"),
+            }
+            for row in contained[: max(1, int(limit or 20))]
+        ],
+        "recommended_action": "contained_high_dollar_risk_breakout_candidates" if contained else "none",
+    })
 
 @app.get("/diagnostics/broker_reconciled_performance_cleanup")
 def diagnostics_broker_reconciled_performance_cleanup():
