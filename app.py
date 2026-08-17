@@ -9973,7 +9973,7 @@ def close_partial_position(symbol: str, qty_to_close: float, reason: str = "", s
         "partial": True,
         "broker_qty_exit_clamp": qty_guard,
     }
-        try:
+    try:
         if isinstance(TRADE_PLAN.get(symbol), dict):
             plan_ref = TRADE_PLAN[symbol]
             if str(plan_ref.get("last_exit_submit_error_reason") or "").strip().lower() in {
