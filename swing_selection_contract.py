@@ -333,6 +333,7 @@ def swing_production_contract(
     }
 
 
+
 def apply_swing_production_contract(
     candidate: dict | None,
     *,

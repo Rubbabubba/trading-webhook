@@ -21408,6 +21408,7 @@ def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
         first_2k_geometry_sleeve_max_entries_per_scan=int(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN),
     )
 
+
 def _p323_value(candidate: dict | None, *keys):
     c = dict(candidate or {})
     for key in keys:
