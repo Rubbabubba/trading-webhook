@@ -2811,7 +2811,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-435-swing-thrive-fast-cycle-first-2k-productive-sleeve"
+PATCH_VERSION = "patch-436-thrive-fast-cycle-enforcement-eligible-sleeve-selection-finalizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -20548,7 +20548,8 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
         payload_max = 0
 
     configured_env_max = max(1, int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
-    configured_max = max(1, int(payload_max or configured_env_max))
+    configured_max_before_thrive = max(1, int(payload_max or configured_env_max))
+    configured_max = configured_max_before_thrive
     min_original = max(1, int(SWING_RUNTIME_SLIM_MIN_ORIGINAL_SYMBOLS or 26))
     force_full_coverage = str(
         scan_options.get("force_full_coverage")
@@ -20559,7 +20560,6 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
     thrive_fast_scan_applied = False
     if (
         bool(SWING_THRIVE_FAST_SCAN_ENABLED)
-        and not payload_max
         and not force_full_coverage
         and len(original) >= min_original
     ):
@@ -20578,6 +20578,7 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
             "applied": False,
             "reason": "runtime_slim_not_needed_or_disabled",
             "configured_max_symbols": configured_max,
+            "configured_max_symbols_before_thrive": configured_max_before_thrive,
             "original_count": len(original),
             "symbols": original,
             "excluded_symbols": [],
@@ -20626,6 +20627,7 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
             or bool(row.get("defensive_near_miss_relaxation_entry"))
             or bool(row.get("risk_adjusted_near_miss_entry"))
             or bool(row.get("first_2k_similarity_revival_entry"))
+            or bool((row.get("swing_production_contract") or {}).get("approved"))
         ):
             watch_symbols.append(sym)
 
@@ -20670,6 +20672,7 @@ def _p315_swing_runtime_scan_symbols(all_symbols: list[str], scan_options: dict 
         "applied": len(slimmed) < len(original),
         "reason": "thrive_fast_scan_priority_cycle" if thrive_fast_scan_applied else "main_web_swing_runtime_slim_applied",
         "configured_max_symbols": configured_max,
+        "configured_max_symbols_before_thrive": configured_max_before_thrive,
         "original_count": len(original),
         "symbols": slimmed,
         "excluded_symbols": excluded,
@@ -21678,22 +21681,42 @@ def _p414_sync_selected_from_current_eligible_contract_rows(
     open_symbols = set(_p404_active_position_symbols_light())
     max_total = max(0, int(max_new_entries or 0))
 
+    def _row_symbol(row: dict) -> str:
+        return str((row or {}).get("symbol") or "").strip().upper()
+
+    def _contract_approved(row: dict) -> bool:
+        contract = dict((row or {}).get("swing_production_contract") or {})
+        return bool(contract.get("approved"))
+
     selected_new_entry = [
         row for row in selected
-        if str(row.get("symbol") or "").strip().upper()
-        and str(row.get("symbol") or "").strip().upper() not in open_symbols
+        if _row_symbol(row) and _row_symbol(row) not in open_symbols
     ]
     selected_open_echo = [
         row for row in selected
-        if str(row.get("symbol") or "").strip().upper() in open_symbols
+        if _row_symbol(row) in open_symbols
     ]
 
+    row_approved_new_entry = [
+        row for row in rows
+        if _row_symbol(row)
+        and _row_symbol(row) not in open_symbols
+        and _contract_approved(row)
+    ]
     approved_new_entry = [
         row for row in approved
-        if str(row.get("symbol") or "").strip().upper()
-        and str(row.get("symbol") or "").strip().upper() not in open_symbols
-        and bool((row.get("swing_production_contract") or {}).get("approved"))
+        if _row_symbol(row)
+        and _row_symbol(row) not in open_symbols
+        and _contract_approved(row)
     ]
+
+    approved_by_symbol = {}
+    for row in approved_new_entry + row_approved_new_entry:
+        sym = _row_symbol(row)
+        if sym and sym not in approved_by_symbol:
+            approved_by_symbol[sym] = dict(row or {})
+
+    approved_new_entry = list(approved_by_symbol.values())
     approved_new_entry.sort(
         key=lambda row: (
             float(_safe_float(row.get("rank_score"), 0.0)),
@@ -21709,7 +21732,7 @@ def _p414_sync_selected_from_current_eligible_contract_rows(
     if not selected_new_entry and approved_new_entry and max_total > 0:
         selected = approved_new_entry[:max_total]
         applied = True
-        reason = "selected_rebuilt_from_current_approved_new_entry_rows"
+        reason = "selected_rebuilt_from_current_approved_contract_rows"
     elif selected_open_echo and not selected_new_entry and not approved_new_entry:
         selected = []
         applied = True
@@ -21720,54 +21743,82 @@ def _p414_sync_selected_from_current_eligible_contract_rows(
         reason = "open_position_selection_echo_removed_selected_new_entries_preserved"
 
     selected_symbols = {
-        str(row.get("symbol") or "").strip().upper()
+        _row_symbol(row)
         for row in selected
-        if str(row.get("symbol") or "").strip()
+        if _row_symbol(row)
     }
 
     rebuilt_rows = []
     for row in rows:
         c = dict(row or {})
-        sym = str(c.get("symbol") or "").strip().upper()
-        c["selected"] = bool(sym and sym in selected_symbols)
+        sym = _row_symbol(c)
+        is_selected = bool(sym and sym in selected_symbols)
+        c["selected"] = is_selected
+        if is_selected:
+            contract = dict(c.get("swing_production_contract") or {})
+            checks = dict(contract.get("checks") or {})
+            if bool(checks.get("first_2k_geometry_sleeve_ok")):
+                c["entry_type"] = "swing_production_first_2k_geometry_sleeve"
+                c["selected_source"] = "swing_production_first_2k_geometry_sleeve"
+            elif bool(checks.get("near_rank_revival_ok")):
+                c["entry_type"] = "swing_production_near_rank_revival"
+                c["selected_source"] = "swing_production_near_rank_revival"
+                c["near_rank_revival_applied"] = True
+            elif bool(checks.get("risk_calibrated_starter_ok")):
+                c["entry_type"] = "swing_production_risk_calibrated_starter"
+                c["selected_source"] = "swing_production_risk_calibration"
+                c["risk_calibration_applied"] = True
+            else:
+                c["entry_type"] = "swing_production_contract"
+                c["selected_source"] = "swing_production_reset"
+            c["selection_finalizer"] = "p436_eligible_sleeve_selection_finalizer"
         rebuilt_rows.append(c)
 
     selected_final = []
     by_symbol = {
-        str(row.get("symbol") or "").strip().upper(): dict(row or {})
+        _row_symbol(row): dict(row or {})
         for row in rebuilt_rows
-        if str(row.get("symbol") or "").strip()
+        if _row_symbol(row)
     }
     for row in selected:
-        sym = str(row.get("symbol") or "").strip().upper()
+        sym = _row_symbol(row)
         if sym and sym in by_symbol:
             selected_final.append(by_symbol[sym])
         elif sym:
             selected_final.append(dict(row or {}))
 
+    selected_symbols_final = [
+        _row_symbol(row)
+        for row in selected_final
+        if _row_symbol(row)
+    ]
+
     out["rows"] = rebuilt_rows
     out["selected"] = selected_final
-    out["selected_symbols"] = [
-        str(row.get("symbol") or "").strip().upper()
-        for row in selected_final
-        if str(row.get("symbol") or "").strip()
-    ]
-    out["p414_eligible_contract_finalizer_sync"] = {
+    out["selected_symbols"] = selected_symbols_final
+    out["selected_count"] = len(selected_final)
+    out["p436_eligible_sleeve_selection_finalizer"] = {
         "applied": bool(applied),
         "reason": reason,
         "max_new_entries": max_total,
         "open_position_echo_symbols": [
-            str(row.get("symbol") or "").strip().upper()
+            _row_symbol(row)
             for row in selected_open_echo
-            if str(row.get("symbol") or "").strip()
+            if _row_symbol(row)
         ],
         "approved_new_entry_count": len(approved_new_entry),
         "approved_new_entry_symbols": [
-            str(row.get("symbol") or "").strip().upper()
+            _row_symbol(row)
             for row in approved_new_entry
-            if str(row.get("symbol") or "").strip()
+            if _row_symbol(row)
         ],
-        "selected_symbols": list(out.get("selected_symbols") or []),
+        "row_approved_new_entry_count": len(row_approved_new_entry),
+        "row_approved_new_entry_symbols": [
+            _row_symbol(row)
+            for row in row_approved_new_entry
+            if _row_symbol(row)
+        ],
+        "selected_symbols": selected_symbols_final,
     }
     return out
 

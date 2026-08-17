@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-435-swing-thrive-fast-cycle-first-2k-productive-sleeve"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-436-thrive-fast-cycle-enforcement-eligible-sleeve-selection-finalizer"
 
 
 @dataclass(frozen=True)
