@@ -139,6 +139,7 @@ def main() -> None:
     startup_retries = max(1, getenv_int("SCAN_STARTUP_RETRIES", 3))
     startup_retry_delay_sec = max(1, getenv_int("SCAN_STARTUP_RETRY_DELAY_SEC", 10))
     sleep_heartbeat_sec = max(15, getenv_int("SCAN_SLEEP_HEARTBEAT_SEC", 60))
+    background_accepted_recheck_sec = max(15, getenv_int("SCAN_BACKGROUND_ACCEPTED_RECHECK_SEC", 60))
     worker_secret = (os.getenv("WORKER_SECRET") or os.getenv("INTERNAL_API_KEY") or "").strip()
     scan_payload: dict = {}
     if worker_secret:
@@ -204,13 +205,27 @@ def main() -> None:
                     fast_recheck_sleep_sec = fast_no_trade_recheck_sleep_sec(body, interval)
                     if fast_recheck_sleep_sec is not None:
                         catchup_sleep_sec = fast_recheck_sleep_sec
+                    accepted_not_completed = False
+                    try:
+                        response_payload = json.loads(body or "{}")
+                        accepted_not_completed = (
+                            status == 202
+                            or str(response_payload.get("scan_contract") or "").strip().lower() == "accepted_not_completed"
+                            or str(response_payload.get("reason") or "").strip().lower() == "swing_scan_background_accepted"
+                        )
+                    except Exception:
+                        accepted_not_completed = status == 202
+                    if accepted_not_completed:
+                        catchup_sleep_sec = background_accepted_recheck_sec
                     state["success_total"] += 1
                     state["success_today"] += 1
                     state["consecutive_failures"] = 0
                     state["last_success_utc"] = ts_utc()
                     state["last_error"] = ""
-                    log(f"scan_ok loop={loop_n} attempt={attempt}/{retries} reason={reason} status={status} body={body_prefix}")
-                    heartbeat("scan_dispatch_ok", "success", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id, "catchup_sleep_sec": catchup_sleep_sec, "fast_no_trade_recheck": fast_recheck_sleep_sec is not None})
+                    event_name = "scan_dispatch_accepted" if accepted_not_completed else "scan_dispatch_ok"
+                    event_status = "accepted" if accepted_not_completed else "success"
+                    log(f"{event_name} loop={loop_n} attempt={attempt}/{retries} reason={reason} status={status} body={body_prefix}")
+                    heartbeat(event_name, event_status, {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": status, "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id, "catchup_sleep_sec": catchup_sleep_sec, "fast_no_trade_recheck": fast_recheck_sleep_sec is not None, "accepted_not_completed": accepted_not_completed})
                     if catchup_sleep_sec is not None:
                         state["market_open_catchup_sleep_sec"] = catchup_sleep_sec
                     break

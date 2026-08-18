@@ -2823,7 +2823,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-456-hotfix-early-swing-scan-accept-release-gate-dry-run-truth-background-failure-details"
+PATCH_VERSION = "patch-457-durable-background-scan-contract-accepted-vs-completed-scanner-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3149,6 +3149,7 @@ def persist_scan_runtime_state(reason: str = ""):
         "reason": reason,
         "last_scan": dict(LAST_SCAN or {}),
         "last_successful_production_scan": dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {}),
+        "swing_scan_background_completion": dict(SWING_SCAN_BACKGROUND_COMPLETION or {}),
         "spread_blocked_selected_retry_queue": dict(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE or {}),
         "same_day_exit_submit_locks": dict(SAME_DAY_EXIT_SUBMIT_LOCKS or {}),
         "scan_history": list(SCAN_HISTORY or []),
@@ -3157,15 +3158,15 @@ def persist_scan_runtime_state(reason: str = ""):
     }
     return _safe_json_write(SCAN_STATE_PATH, payload)
 
-
 def restore_scan_runtime_state() -> dict:
     payload = _safe_json_read(SCAN_STATE_PATH)
-    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "spread_blocked_retry_queue_restored": False, "same_day_exit_submit_locks_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
+    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "swing_scan_background_completion_restored": False, "swing_scan_background_lost_after_restart": False, "spread_blocked_retry_queue_restored": False, "same_day_exit_submit_locks_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
     if not payload:
         return restored
     try:
         last_scan = payload.get("last_scan") or {}
         last_successful_production_scan = payload.get("last_successful_production_scan") or {}
+        swing_scan_background_completion = payload.get("swing_scan_background_completion") or {}
         spread_blocked_retry_queue = payload.get("spread_blocked_selected_retry_queue") or {}
         same_day_exit_submit_locks = payload.get("same_day_exit_submit_locks") or {}
         scan_history = payload.get("scan_history") or []
@@ -3179,6 +3180,21 @@ def restore_scan_runtime_state() -> dict:
             LAST_SUCCESSFUL_PRODUCTION_SCAN.clear()
             LAST_SUCCESSFUL_PRODUCTION_SCAN.update(last_successful_production_scan)
             restored["last_successful_production_scan_restored"] = True
+                if isinstance(swing_scan_background_completion, dict) and swing_scan_background_completion:
+            restored_bg = dict(swing_scan_background_completion)
+            restored_bg["restored_after_restart"] = True
+            status_l = str(restored_bg.get("status") or "").strip().lower()
+            if status_l in {"accepted", "running"}:
+                restored_bg["status"] = "failed"
+                restored_bg["terminal"] = True
+                restored_bg["reason"] = "background_scan_lost_after_restart"
+                restored_bg["error"] = "background scan was active before process restart and cannot be resumed"
+                restored_bg["exception_type"] = "BackgroundScanLostAfterRestart"
+                restored_bg["completed_utc"] = datetime.now(timezone.utc).isoformat()
+                restored["swing_scan_background_lost_after_restart"] = True
+            SWING_SCAN_BACKGROUND_COMPLETION.clear()
+            SWING_SCAN_BACKGROUND_COMPLETION.update(restored_bg)
+            restored["swing_scan_background_completion_restored"] = True
         if isinstance(spread_blocked_retry_queue, dict) and spread_blocked_retry_queue:
             SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.clear()
             SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.update(spread_blocked_retry_queue)
@@ -25661,7 +25677,6 @@ def _p456_background_scan_truth() -> dict:
         "dry_run_truth": state.get("dry_run_truth"),
     }
 
-
 def _p456_mark_background_scan(**updates) -> dict:
     now_iso = datetime.now(timezone.utc).isoformat()
     with SWING_SCAN_BACKGROUND_LOCK:
@@ -25669,7 +25684,13 @@ def _p456_mark_background_scan(**updates) -> dict:
             SWING_SCAN_BACKGROUND_COMPLETION.update({"created_utc": now_iso})
         SWING_SCAN_BACKGROUND_COMPLETION.update(updates)
         SWING_SCAN_BACKGROUND_COMPLETION["updated_utc"] = now_iso
-        return dict(SWING_SCAN_BACKGROUND_COMPLETION)
+        SWING_SCAN_BACKGROUND_COMPLETION["boot_id"] = SYSTEM_BOOT_ID
+        snapshot = dict(SWING_SCAN_BACKGROUND_COMPLETION)
+    try:
+        persist_scan_runtime_state(reason=str(snapshot.get("reason") or snapshot.get("status") or "background_scan_state"))
+    except Exception:
+        pass
+    return snapshot
 
 def _p456_entry_dry_run_truth(source: str = "worker_scan", include_release_gate: bool = True) -> dict:
     blockers = []
@@ -25744,7 +25765,6 @@ def _p456_should_fast_close_swing_scan(source_kind: str, body: dict | None, fast
     if background_flag in {"0", "false", "no", "n", "off"}:
         return False
     return True
-
 
 def _p456_start_swing_scan_background(
     *,
@@ -25834,9 +25854,13 @@ def _p456_start_swing_scan_background(
                 stage="swing_scan_start",
                 stage_details={"reconcile_action_count": len(reconcile_actions or [])},
             )
+            def _bg_set_last_scan(**kwargs):
+                kwargs.setdefault("effective_dry_run", bg_effective_dry_run)
+                set_last_scan_fn(**kwargs)
+
             swing_resp = run_swing_daily_scan(
                 bg_effective_dry_run,
-                set_last_scan_fn,
+                _bg_set_last_scan,
                 _bg_elapsed_ms,
                 reconcile_actions=reconcile_actions,
                 scan_options=body_snapshot,
@@ -25861,7 +25885,7 @@ def _p456_start_swing_scan_background(
                 signals=int((scanner_payload or {}).get("signals") or 0),
                 would_trade=int((scanner_payload or {}).get("would_trade") or 0),
                 blocked=int((scanner_payload or {}).get("blocked") or 0),
-                reason=str((scanner_payload or {}).get("reason") or requested_reason or "scan_completed"),
+                reason="scan_completed",
                 error=None,
                 exception_type=None,
                 traceback_tail=None,
@@ -25979,11 +26003,14 @@ def _p456_start_swing_scan_background(
             "accepted": True,
             "fast_response": True,
             "background_completion": True,
-            "reason": "swing_scan_background_started",
+            "reason": "swing_scan_background_accepted",
+            "status": "accepted",
+            "scan_contract": "accepted_not_completed",
             "scan_attempt_id": scan_attempt_id,
             "idempotency_status": "background_in_flight",
             "scanner": {
                 "status": "accepted",
+                "scan_contract": "accepted_not_completed",
                 "strategy_mode": STRATEGY_MODE,
                 "effective_dry_run": effective_dry_run if effective_dry_run is not None else None,
                 "effective_dry_run_reason": "background_pending" if effective_dry_run is None else "precomputed",
