@@ -3180,7 +3180,7 @@ def restore_scan_runtime_state() -> dict:
             LAST_SUCCESSFUL_PRODUCTION_SCAN.clear()
             LAST_SUCCESSFUL_PRODUCTION_SCAN.update(last_successful_production_scan)
             restored["last_successful_production_scan_restored"] = True
-                if isinstance(swing_scan_background_completion, dict) and swing_scan_background_completion:
+        if isinstance(swing_scan_background_completion, dict) and swing_scan_background_completion:
             restored_bg = dict(swing_scan_background_completion)
             restored_bg["restored_after_restart"] = True
             status_l = str(restored_bg.get("status") or "").strip().lower()
