@@ -26341,6 +26341,30 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'max_new_entries_effective': int(max_new_entries),
             'candidate_slots_available': int(candidate_slots_available()),
             'scanner_max_entries_per_scan': int(SCANNER_MAX_ENTRIES_PER_SCAN),
+            'production_reset_max_entries_per_scan': int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
+            'daily_budget_calibration': {
+                'target_shape': 'up_to_4_per_day_max_2_per_scan',
+                'risk_per_trade_dollars': float(RISK_DOLLARS),
+                'daily_entry_budget_env': int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+                'scanner_per_scan_env': int(SCANNER_MAX_ENTRIES_PER_SCAN),
+                'production_per_scan_env': int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
+                'aligned': bool(
+                    int(SWING_MAX_NEW_ENTRIES_PER_DAY) >= 4
+                    and int(SCANNER_MAX_ENTRIES_PER_SCAN) == 2
+                    and int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN) == 2
+                    and float(RISK_DOLLARS) <= 30.0
+                ),
+                'recommended_action': (
+                    'daily_budget_shape_aligned_monitor_live_results'
+                    if (
+                        int(SWING_MAX_NEW_ENTRIES_PER_DAY) >= 4
+                        and int(SCANNER_MAX_ENTRIES_PER_SCAN) == 2
+                        and int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN) == 2
+                        and float(RISK_DOLLARS) <= 30.0
+                    )
+                    else 'align_daily_budget_to_4_and_per_scan_caps_to_2_before_increasing_risk'
+                ),
+            },
             'weak_tape': bool(regime_mode == "defensive" or regime.get("favorable") is False),
             'weak_tape_override_applied': bool(weak_tape_capacity_override.get("applies")),
             'selected_total': len(selected),
@@ -52191,6 +52215,17 @@ def diagnostics_swing_runtime_config():
             "sleeve_max_open_positions": _cfg_int("SWING_SLEEVE_MAX_OPEN_POSITIONS", 0),
             "max_new_entries_per_day": _cfg_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 0),
             "scanner_max_entries_per_scan": _cfg_int("SCANNER_MAX_ENTRIES_PER_SCAN", 0),
+            "production_reset_max_entries_per_scan": _cfg_int("SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN", 0),
+            "goal_calibrated_shape": {
+                "target": "up_to_4_per_day_max_2_per_scan",
+                "risk_per_trade_dollars": _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0),
+                "aligned": bool(
+                    _cfg_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 0) >= 4
+                    and _cfg_int("SCANNER_MAX_ENTRIES_PER_SCAN", 0) == 2
+                    and _cfg_int("SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN", 0) == 2
+                    and _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0) <= 30.0
+                ),
+            },
             "max_group_positions": _cfg_int("SWING_MAX_GROUP_POSITIONS", 0),
             "max_portfolio_exposure_pct": _cfg_float("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", 0.0),
             "max_symbol_exposure_pct": _cfg_float("SWING_MAX_SYMBOL_EXPOSURE_PCT", 0.0),

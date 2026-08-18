@@ -139,6 +139,8 @@ class ReplayConfig:
     risk_per_trade_dollars: float
     max_open_positions: int
     max_entries_per_day: int
+    max_entries_per_scan: int
+    compressed_daily_replay: bool
     min_price: float
     min_avg_dollar_volume: float
     fast_ma_days: int
@@ -197,10 +199,12 @@ def build_config(args: argparse.Namespace) -> ReplayConfig:
         warmup_days=int(args.warmup_days or getenv_int("SWING_REPLAY_WARMUP_DAYS", 100)),
         risk_per_trade_dollars=getenv_float("SWING_RISK_PER_TRADE_DOLLARS", getenv_float("RISK_DOLLARS", 30.0)),
         max_open_positions=getenv_int("SWING_MAX_OPEN_POSITIONS", 12),
-        max_entries_per_day=getenv_int(
+        max_entries_per_day=getenv_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 4),
+        max_entries_per_scan=getenv_int(
             "SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN",
             getenv_int("SCANNER_MAX_ENTRIES_PER_SCAN", 2),
         ),
+        compressed_daily_replay=True,
         min_price=getenv_float("SWING_MIN_PRICE", 5.0),
         min_avg_dollar_volume=getenv_float("SWING_PRODUCTION_RESET_MIN_AVG_DOLLAR_VOLUME", 20_000_000.0),
         fast_ma_days=getenv_int("SWING_FAST_MA_DAYS", 10),
@@ -572,7 +576,13 @@ def run_replay(config: ReplayConfig, bars_map: dict[str, list[dict]]) -> dict:
         eligible = [c for c in candidates if c.get("eligible")]
         eligible.sort(key=lambda r: (safe_float(r.get("rank_score")), r.get("strategy") == "daily_mean_reversion"), reverse=True)
 
-        slots = max(0, min(config.max_entries_per_day, config.max_open_positions - len(open_positions)))
+        daily_entry_budget = max(0, int(config.max_entries_per_day or 0))
+        per_scan_cap = max(1, int(config.max_entries_per_scan or 1))
+        simulated_scan_count = max(1, math.ceil(daily_entry_budget / per_scan_cap)) if daily_entry_budget else 0
+
+        # Daily bars compress the whole session, so this models the full daily entry budget.
+        # Live should still enforce max_entries_per_scan on each scanner cycle.
+        slots = max(0, min(daily_entry_budget, config.max_open_positions - len(open_positions)))
         selected = eligible[:slots]
 
         for row in eligible[slots:]:
@@ -637,6 +647,10 @@ def run_replay(config: ReplayConfig, bars_map: dict[str, list[dict]]) -> dict:
                 "eligible_count": len(eligible),
                 "selected_count": len(selected),
                 "selected_symbols": ",".join([str(r.get("symbol")) for r in selected]),
+                "daily_entry_budget": int(daily_entry_budget),
+                "max_entries_per_scan": int(per_scan_cap),
+                "simulated_scan_count": int(simulated_scan_count),
+                "compressed_daily_replay": bool(config.compressed_daily_replay),
             }
         )
 
@@ -772,7 +786,8 @@ def parse_int_list(raw: str, defaults: list[int]) -> list[int]:
 def scenario_name(config: ReplayConfig) -> str:
     return (
         f"risk_{int(config.risk_per_trade_dollars)}"
-        f"_entries_{int(config.max_entries_per_day)}"
+        f"_daily_{int(config.max_entries_per_day)}"
+        f"_scan_{int(config.max_entries_per_scan)}"
         f"_target_{str(config.target_r_mult).replace('.', 'p')}"
         f"_stall_{int(config.stall_exit_days)}"
     )
@@ -827,7 +842,7 @@ def run_scenario_matrix(base_config: ReplayConfig, bars_map: dict[str, list[dict
         ],
     )
     entry_values = parse_int_list(
-        os.getenv("SWING_REPLAY_SCENARIO_ENTRIES_PER_DAY", ""),
+        os.getenv("SWING_REPLAY_SCENARIO_DAILY_ENTRY_BUDGET", os.getenv("SWING_REPLAY_SCENARIO_ENTRIES_PER_DAY", "")),
         [
             int(base_config.max_entries_per_day),
             3,
@@ -849,46 +864,56 @@ def run_scenario_matrix(base_config: ReplayConfig, bars_map: dict[str, list[dict
             4,
         ],
     )
+    per_scan_values = parse_int_list(
+        os.getenv("SWING_REPLAY_SCENARIO_MAX_ENTRIES_PER_SCAN", ""),
+        [
+            int(base_config.max_entries_per_scan),
+        ],
+    )
 
     seen: set[str] = set()
     rows: list[dict] = []
 
     for risk in risk_values:
         for entries in entry_values:
-            for target_r in target_values:
-                for stall_days in stall_values:
-                    scenario_config = replace(
-                        base_config,
-                        risk_per_trade_dollars=float(risk),
-                        max_entries_per_day=int(entries),
-                        target_r_mult=float(target_r),
-                        stall_exit_days=int(stall_days),
-                    )
-                    name = scenario_name(scenario_config)
-                    if name in seen:
-                        continue
-                    seen.add(name)
+            for per_scan in per_scan_values:
+                for target_r in target_values:
+                    for stall_days in stall_values:
+                        scenario_config = replace(
+                            base_config,
+                            risk_per_trade_dollars=float(risk),
+                            max_entries_per_day=int(entries),
+                            max_entries_per_scan=int(per_scan),
+                            target_r_mult=float(target_r),
+                            stall_exit_days=int(stall_days),
+                        )
+                        name = scenario_name(scenario_config)
+                        if name in seen:
+                            continue
+                        seen.add(name)
 
-                    replay = run_replay(scenario_config, bars_map)
-                    summary = summarize(replay["trades"], replay["daily_rows"])
-                    rows.append(
-                        {
-                            "scenario": name,
-                            "risk_per_trade_dollars": round(float(risk), 2),
-                            "max_entries_per_day": int(entries),
-                            "target_r_mult": round(float(target_r), 4),
-                            "stall_exit_days": int(stall_days),
-                            "trade_count": summary.get("trade_count"),
-                            "win_rate": summary.get("win_rate"),
-                            "gross_pnl": summary.get("gross_pnl"),
-                            "daily_average_realized_pnl": summary.get("daily_average_realized_pnl"),
-                            "avg_trade_pnl": summary.get("avg_trade_pnl"),
-                            "avg_r": summary.get("avg_r"),
-                            "max_drawdown": summary.get("max_drawdown"),
-                            "goal_score": goal_score(summary),
-                            "recommendation": scenario_recommendation(summary),
-                        }
-                    )
+                        replay = run_replay(scenario_config, bars_map)
+                        summary = summarize(replay["trades"], replay["daily_rows"])
+                        rows.append(
+                            {
+                                "scenario": name,
+                                "risk_per_trade_dollars": round(float(risk), 2),
+                                "max_entries_per_day": int(entries),
+                                "max_entries_per_scan": int(per_scan),
+                                "compressed_daily_replay": True,
+                                "target_r_mult": round(float(target_r), 4),
+                                "stall_exit_days": int(stall_days),
+                                "trade_count": summary.get("trade_count"),
+                                "win_rate": summary.get("win_rate"),
+                                "gross_pnl": summary.get("gross_pnl"),
+                                "daily_average_realized_pnl": summary.get("daily_average_realized_pnl"),
+                                "avg_trade_pnl": summary.get("avg_trade_pnl"),
+                                "avg_r": summary.get("avg_r"),
+                                "max_drawdown": summary.get("max_drawdown"),
+                                "goal_score": goal_score(summary),
+                                "recommendation": scenario_recommendation(summary),
+                            }
+                        )
 
     rows.sort(
         key=lambda row: (
@@ -908,7 +933,8 @@ def run_scenario_matrix(base_config: ReplayConfig, bars_map: dict[str, list[dict
         "enabled": True,
         "scenario_count": len(rows),
         "risk_values": risk_values,
-        "entry_values": entry_values,
+        "daily_entry_budget_values": entry_values,
+        "per_scan_values": per_scan_values,
         "target_values": target_values,
         "stall_values": stall_values,
         "rows": rows,
@@ -974,9 +1000,22 @@ def main() -> int:
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "limitations": [
             "Uses daily bars and next-session open approximation.",
+            "Models daily entry budget as a compressed full-session selection pool.",
+            "Live trading must still enforce max_entries_per_scan on each scanner cycle.",
             "Does not model live spreads, Alpaca rejects, partial fills, or intraday quote timing.",
             "Does not import app.py, so this is a current-config strategy proxy rather than an exact live runtime replay.",
         ],
+        "live_parity_notes": {
+            "replay_daily_entry_budget": int(config.max_entries_per_day),
+            "replay_max_entries_per_scan": int(config.max_entries_per_scan),
+            "recommended_live_shape": {
+                "SWING_MAX_NEW_ENTRIES_PER_DAY": 4,
+                "SCANNER_MAX_ENTRIES_PER_SCAN": 2,
+                "SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN": 2,
+                "SWING_RISK_PER_TRADE_DOLLARS": 30,
+            },
+            "reason": "matrix_goal_candidates_reached_target_by_daily_budget_expansion_not_risk_increase",
+        },
         "config": asdict(config),
         "bar_coverage": {
             "symbol_count": len(config.symbols),
