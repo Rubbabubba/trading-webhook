@@ -2795,6 +2795,8 @@ WORKER_EXIT_SHADOW_QUARANTINE_ENABLED = env_bool_any(
     default=True,
 )
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
+SWING_SCAN_BACKGROUND_COMPLETION: dict = {}
+SWING_SCAN_BACKGROUND_LOCK = threading.RLock()
 
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
@@ -2821,7 +2823,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-455-scanner-failure-root-cause-truth-fresh-scan-completion-recovery"
+PATCH_VERSION = "patch-456-swing-scan-fast-close-response-background-completion-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -25581,6 +25583,242 @@ def _p455_scanner_failure_root_cause(
         "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
     }
 
+def _p456_background_scan_truth() -> dict:
+    with SWING_SCAN_BACKGROUND_LOCK:
+        state = dict(SWING_SCAN_BACKGROUND_COMPLETION or {})
+    status = str(state.get("status") or "idle").strip().lower()
+    return {
+        "enabled": bool(SCAN_FAST_RESPONSE_ENABLED),
+        "status": status or "idle",
+        "active": status in {"accepted", "running"},
+        "terminal": status in {"completed", "failed", "skipped"},
+        "scan_attempt_id": state.get("scan_attempt_id"),
+        "started_utc": state.get("started_utc"),
+        "updated_utc": state.get("updated_utc"),
+        "completed_utc": state.get("completed_utc"),
+        "duration_ms": state.get("duration_ms"),
+        "symbols_scanned": state.get("symbols_scanned"),
+        "signals": state.get("signals"),
+        "would_trade": state.get("would_trade"),
+        "blocked": state.get("blocked"),
+        "error": state.get("error"),
+        "reason": state.get("reason"),
+    }
+
+
+def _p456_mark_background_scan(**updates) -> dict:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with SWING_SCAN_BACKGROUND_LOCK:
+        if not SWING_SCAN_BACKGROUND_COMPLETION:
+            SWING_SCAN_BACKGROUND_COMPLETION.update({"created_utc": now_iso})
+        SWING_SCAN_BACKGROUND_COMPLETION.update(updates)
+        SWING_SCAN_BACKGROUND_COMPLETION["updated_utc"] = now_iso
+        return dict(SWING_SCAN_BACKGROUND_COMPLETION)
+
+
+def _p456_should_fast_close_swing_scan(source_kind: str, body: dict | None, fast_response: bool) -> bool:
+    payload = dict(body or {})
+    if str(STRATEGY_MODE or "").strip().lower() != "swing":
+        return False
+    if not bool(fast_response):
+        return False
+    if not bool(SCAN_FAST_RESPONSE_ENABLED):
+        return False
+    if str(source_kind or "").strip().lower() != "worker":
+        return False
+    background_flag = str(payload.get("background") or payload.get("background_completion") or "true").strip().lower()
+    if background_flag in {"0", "false", "no", "n", "off"}:
+        return False
+    return True
+
+
+def _p456_start_swing_scan_background(
+    *,
+    body: dict,
+    source_meta: dict,
+    scan_attempt_id: str,
+    effective_dry_run: bool,
+    requested_reason: str | None,
+    set_last_scan_fn,
+) -> JSONResponse:
+    body_snapshot = dict(body or {})
+    source_meta_snapshot = dict(source_meta or {})
+    started_utc = datetime.now(timezone.utc).isoformat()
+
+    _p456_mark_background_scan(
+        status="accepted",
+        scan_attempt_id=scan_attempt_id,
+        started_utc=started_utc,
+        completed_utc=None,
+        duration_ms=None,
+        symbols_scanned=None,
+        signals=None,
+        would_trade=None,
+        blocked=None,
+        error=None,
+        reason=requested_reason or "scheduled",
+    )
+
+    try:
+        _record_scanner_telemetry(
+            "scan_background_accepted",
+            "accepted",
+            details={
+                "scan_attempt_id": scan_attempt_id,
+                "scan_reason": requested_reason or "scheduled",
+                **source_meta_snapshot,
+            },
+        )
+    except Exception:
+        pass
+
+    def _run_background_scan():
+        bg_started = _time.perf_counter()
+
+        def _bg_elapsed_ms() -> int:
+            return int(max(0.0, (_time.perf_counter() - bg_started) * 1000.0))
+
+        try:
+            _p456_mark_background_scan(status="running")
+            _record_scanner_telemetry(
+                "scan_background_started",
+                "running",
+                details={
+                    "scan_attempt_id": scan_attempt_id,
+                    "scan_reason": requested_reason or "scheduled",
+                    **source_meta_snapshot,
+                },
+            )
+
+            reconcile_actions = reconcile_trade_plans_from_alpaca()
+            swing_resp = run_swing_daily_scan(
+                effective_dry_run,
+                set_last_scan_fn,
+                _bg_elapsed_ms,
+                reconcile_actions=reconcile_actions,
+                scan_options=body_snapshot,
+            )
+
+            scanner_payload = swing_resp.get("scanner") if isinstance(swing_resp, dict) else {}
+            compact_response = {
+                "ok": bool((swing_resp or {}).get("ok", True)) if isinstance(swing_resp, dict) else True,
+                "background_completion": True,
+                "scan_attempt_id": scan_attempt_id,
+                "scanner": scanner_payload,
+            }
+
+            duration_ms = int((scanner_payload or {}).get("duration_ms") or _bg_elapsed_ms() or 0)
+            _p456_mark_background_scan(
+                status="completed",
+                completed_utc=datetime.now(timezone.utc).isoformat(),
+                duration_ms=duration_ms,
+                symbols_scanned=int((scanner_payload or {}).get("symbols_scanned") or 0),
+                signals=int((scanner_payload or {}).get("signals") or 0),
+                would_trade=int((scanner_payload or {}).get("would_trade") or 0),
+                blocked=int((scanner_payload or {}).get("blocked") or 0),
+                reason=str((scanner_payload or {}).get("reason") or requested_reason or "scan_completed"),
+                error=None,
+            )
+
+            SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
+                **dict(SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {}),
+                "status": "completed",
+                "updated_utc": datetime.now(timezone.utc).isoformat(),
+                "completed_utc": datetime.now(timezone.utc).isoformat(),
+                "response": compact_response,
+                "source_meta": source_meta_snapshot,
+            }
+
+            _record_scanner_telemetry(
+                "scan_ok",
+                "success",
+                details={
+                    "status": 200,
+                    "symbols_scanned": int((scanner_payload or {}).get("symbols_scanned") or 0),
+                    "signals": int((scanner_payload or {}).get("signals") or 0),
+                    "blocked": int((scanner_payload or {}).get("blocked") or 0),
+                    "duration_ms": duration_ms,
+                    "scan_reason": requested_reason or "scheduled",
+                    "background_completion": True,
+                    **source_meta_snapshot,
+                },
+            )
+        except Exception as e:
+            err = str(e)
+            duration_ms = _bg_elapsed_ms()
+            _p456_mark_background_scan(
+                status="failed",
+                completed_utc=datetime.now(timezone.utc).isoformat(),
+                duration_ms=duration_ms,
+                error=err,
+                reason="background_scan_exception",
+            )
+            try:
+                set_last_scan_fn(
+                    skipped=False,
+                    reason="scan_exception",
+                    error=err,
+                    scan_exception_stage=str((_p402_stage_snapshot() or {}).get("stage") or "background_scan"),
+                    scan_stage_checkpoint=_p402_stage_snapshot(),
+                    scanned=0,
+                    signals=0,
+                    would_trade=0,
+                    blocked=0,
+                    duration_ms=duration_ms,
+                )
+            except Exception:
+                pass
+            SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
+                **dict(SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {}),
+                "status": "error",
+                "updated_utc": datetime.now(timezone.utc).isoformat(),
+                "completed_utc": datetime.now(timezone.utc).isoformat(),
+                "error": err,
+                "source_meta": source_meta_snapshot,
+            }
+            try:
+                _record_scanner_telemetry(
+                    "scan_error",
+                    "exception",
+                    details={
+                        "error": err,
+                        "duration_ms": duration_ms,
+                        "scan_reason": requested_reason or "scheduled",
+                        "background_completion": True,
+                        **source_meta_snapshot,
+                    },
+                )
+            except Exception:
+                pass
+            logger.exception("SWING_SCAN_BACKGROUND_FAILED scan_attempt_id=%s err=%s", scan_attempt_id, err)
+
+    thread = threading.Thread(
+        target=_run_background_scan,
+        name=f"swing-scan-bg-{str(scan_attempt_id)[-10:]}",
+        daemon=True,
+    )
+    thread.start()
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "ok": True,
+            "accepted": True,
+            "fast_response": True,
+            "background_completion": True,
+            "reason": "swing_scan_background_started",
+            "scan_attempt_id": scan_attempt_id,
+            "idempotency_status": "background_in_flight",
+            "scanner": {
+                "status": "accepted",
+                "strategy_mode": STRATEGY_MODE,
+                "effective_dry_run": bool(effective_dry_run),
+                "requested_reason": requested_reason or "scheduled",
+            },
+            "background_truth": _p456_background_scan_truth(),
+        },
+    )
+
 def _p401_swing_scan_hot_path_context(scan_options: dict | None = None) -> dict:
     opts = dict(scan_options or {})
     force_heavy = str(
@@ -37397,8 +37635,11 @@ def _p298_scanner_light() -> dict:
     telemetry_summary = _scanner_telemetry_summary(today_prefix=today_prefix)
 
     latest_scan = dict(latest_scan or {})
+    background_truth = _p456_background_scan_truth()
     latest_scan["scanner_exception_truth"] = summary.get("scanner_exception_truth")
     latest_scan["using_last_successful_production_scan"] = bool(summary.get("using_last_successful_production_scan"))
+    latest_scan["scan_background_completion_truth"] = background_truth
+    summary["scan_background_completion_truth"] = background_truth
 
     telemetry_summary = _p325_recover_scanner_warning_summary(
         telemetry_summary,
@@ -42509,6 +42750,7 @@ def diagnostics_scanner(history_limit: int = DIAGNOSTIC_SCANNER_HISTORY_LIMIT):
         "state_restore": dict(globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}),
         "summary": summary,
         "scanner_failure_root_cause": scanner_failure_root_cause,
+        "scan_background_completion_truth": _p456_background_scan_truth(),
         "side_effect_truth": dict(summary.get("side_effect_truth") or {}),
         "latest_runtime_budget": _p273_runtime_budget_snapshot(
             int((dict(LAST_SCAN or {}).get("duration_ms") or 0)),
@@ -53646,6 +53888,18 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
+
+# Fast-close worker-triggered swing scans so the scanner service does not time out
+# while the main webhook completes candidate evaluation and submission.
+        if _p456_should_fast_close_swing_scan(source_kind, body, fast_response):
+            return _p456_start_swing_scan_background(
+                body=body,
+                source_meta=source_meta,
+                scan_attempt_id=scan_attempt_id,
+                effective_dry_run=effective_dry_run,
+                requested_reason=requested_reason,
+                set_last_scan_fn=_set_last_scan,
+            )
 
 # Reconcile first: never place entries against stale internal state.
         _stage_start()

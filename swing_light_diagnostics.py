@@ -238,9 +238,17 @@ def scanner_light_snapshot(
         or latest_scan.get("scanner_failure_root_cause")
         or {}
     )
+    scan_background_completion_truth = dict(
+        scan_summary.get("scan_background_completion_truth")
+        or latest_scan.get("scan_background_completion_truth")
+        or {}
+    )
+    background_scan_active = str(scan_background_completion_truth.get("status") or "").strip().lower() in {"accepted", "running"}
 
     scanner_status = (
-        "scan_running_within_grace"
+        "background_scan_running"
+        if background_scan_active
+        else "scan_running_within_grace"
         if in_flight_grace_active and not in_flight_over_budget
         else "scan_running_over_budget"
         if in_flight_over_budget
@@ -270,7 +278,8 @@ def scanner_light_snapshot(
         "last_error_historical": current_error if scanner_currently_ok else None,
         "scanner_status": scanner_status,
         "scanner_failure_root_cause": scanner_failure_root_cause,
-        "in_flight_run": bool(effective_in_flight),
+        "scan_background_completion_truth": scan_background_completion_truth,
+        "in_flight_run": bool(effective_in_flight or background_scan_active),
         "raw_in_flight_run": bool(in_flight),
         "in_flight_grace_active": bool(in_flight_grace_active),
         "in_flight_over_grace": bool(in_flight_over_grace),
@@ -299,6 +308,7 @@ def scanner_light_snapshot(
             "dispatch_failure_recovered_by_scan_success": "dispatch_failure_recovered_by_scan_success" in recovered_warning_codes,
             "partial_run_open_reconciled_by_completed_scan": bool(in_flight_reconciled_by_completed_scan),
             "post_open_scan_missing": bool(post_open_scan_missing),
+            "background_scan_active": bool(background_scan_active),
         },
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),
@@ -313,6 +323,7 @@ def scanner_light_snapshot(
             "eligible_total": int(scan_summary.get("eligible_total") or scan_summary.get("eligible_count") or 0),
             "stale_preopen_scan": bool(scan_summary.get("stale_preopen_scan") or latest_scan.get("stale_preopen_scan")),
             "post_open_scan_missing": bool(post_open_scan_missing),
+            "scan_background_completion_truth": scan_background_completion_truth,
         },
     }
 
