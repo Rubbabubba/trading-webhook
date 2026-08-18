@@ -42,7 +42,55 @@ def get_text(url: str, timeout: int, user_agent: str = "equities-scanner/1.0") -
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status, resp.read().decode("utf-8", errors="replace")
 
+def transient_main_web_status(err: Exception) -> int | None:
+    if isinstance(err, urllib.error.HTTPError) and int(err.code or 0) in {502, 503, 504}:
+        return int(err.code)
+    return None
 
+
+def wait_for_main_web_ready(health_url: str, timeout: int, grace_sec: int, poll_sec: int) -> dict:
+    grace_sec = max(0, int(grace_sec or 0))
+    poll_sec = max(1, int(poll_sec or 1))
+    deadline = time.monotonic() + grace_sec
+    attempt = 0
+    last_status = None
+    last_kind = ""
+    last_detail = ""
+
+    while True:
+        attempt += 1
+        try:
+            status, body = get_text(health_url, timeout=min(timeout, 15))
+            return {
+                "ready": True,
+                "attempts": attempt,
+                "status": status,
+                "body_prefix": body[:500].replace("\n", " "),
+                "waited_sec": max(0, int(grace_sec - max(0, deadline - time.monotonic()))),
+            }
+        except Exception as e:
+            transient_status = transient_main_web_status(e)
+            last_status = transient_status
+            last_kind = type(e).__name__
+            last_detail = f"HTTP {transient_status}" if transient_status else repr(e)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {
+                    "ready": False,
+                    "attempts": attempt,
+                    "status": last_status,
+                    "error_kind": last_kind,
+                    "detail": last_detail,
+                    "waited_sec": grace_sec,
+                }
+
+            if transient_status:
+                log(f"main_web_not_ready attempt={attempt} status={transient_status} retry_in_sec={min(poll_sec, int(max(1, remaining)))}")
+            else:
+                log(f"main_web_readiness_wait attempt={attempt} kind={last_kind} retry_in_sec={min(poll_sec, int(max(1, remaining)))}")
+
+            time.sleep(min(poll_sec, max(1, remaining)))
 
 def is_timeout_error(err: Exception) -> bool:
     text = repr(err).lower()
@@ -140,6 +188,8 @@ def main() -> None:
     startup_retry_delay_sec = max(1, getenv_int("SCAN_STARTUP_RETRY_DELAY_SEC", 10))
     sleep_heartbeat_sec = max(15, getenv_int("SCAN_SLEEP_HEARTBEAT_SEC", 60))
     background_accepted_recheck_sec = max(15, getenv_int("SCAN_BACKGROUND_ACCEPTED_RECHECK_SEC", 60))
+    main_ready_grace_sec = max(0, getenv_int("SCAN_MAIN_READY_GRACE_SEC", 180))
+    main_ready_poll_sec = max(1, getenv_int("SCAN_MAIN_READY_POLL_SEC", 10))
     worker_secret = (os.getenv("WORKER_SECRET") or os.getenv("INTERNAL_API_KEY") or "").strip()
     scan_payload: dict = {}
     if worker_secret:
@@ -162,23 +212,33 @@ def main() -> None:
     scan_payload.setdefault("max_symbols", default_max_symbols)
     scan_payload.setdefault("runtime_slim", os.getenv("SCAN_RUNTIME_SLIM", "true"))
     boot_id = str(uuid.uuid4())
-    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec, "runtime_slim": scan_payload.get("runtime_slim"), "max_symbols": scan_payload.get("max_symbols")}
+    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec, "main_ready_grace_sec": main_ready_grace_sec, "main_ready_poll_sec": main_ready_poll_sec, "runtime_slim": scan_payload.get("runtime_slim"), "max_symbols": scan_payload.get("max_symbols")}
     def heartbeat(event: str, status: str = "ok", details: dict | None = None) -> None:
         payload = {"worker_secret": worker_secret, "event": event, "status": status, "details": {**state, **(details or {})}}
         try:
             post_json(heartbeat_url, payload, timeout=min(timeout, 15))
         except Exception as e:
             log(f"heartbeat_error event={event} err={e!r}")
-    log(f"boot url={url} base_url={base_url} interval_sec={interval} timeout_sec={timeout} run_on_start={run_on_start} jitter_sec={jitter_sec} startup_retries={startup_retries} startup_retry_delay_sec={startup_retry_delay_sec} sleep_heartbeat_sec={sleep_heartbeat_sec} has_worker_secret={bool(worker_secret)} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
-    heartbeat("boot", "ok", {"health_url": health_url})
-    try:
-        status, body = get_text(health_url, timeout=min(timeout, 15))
-        body_prefix = body[:500].replace("\n", " ")
-        log(f"preflight_ok status={status} body={body_prefix}")
-        heartbeat("preflight_ok", "success", {"status": status, "body_prefix": body_prefix})
-    except Exception as e:
-        log(f"preflight_error err={e!r}")
-        heartbeat("preflight_error", "error", {"error": repr(e)})
+    log(f"boot url={url} base_url={base_url} interval_sec={interval} timeout_sec={timeout} run_on_start={run_on_start} jitter_sec={jitter_sec} startup_retries={startup_retries} startup_retry_delay_sec={startup_retry_delay_sec} sleep_heartbeat_sec={sleep_heartbeat_sec} main_ready_grace_sec={main_ready_grace_sec} main_ready_poll_sec={main_ready_poll_sec} has_worker_secret={bool(worker_secret)} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
+
+    readiness = wait_for_main_web_ready(
+        health_url=health_url,
+        timeout=timeout,
+        grace_sec=main_ready_grace_sec,
+        poll_sec=main_ready_poll_sec,
+    )
+    state["main_ready"] = bool(readiness.get("ready"))
+    state["main_ready_attempts"] = readiness.get("attempts")
+    state["main_ready_waited_sec"] = readiness.get("waited_sec")
+
+    if readiness.get("ready"):
+        log(f"main_web_ready status={readiness.get('status')} attempts={readiness.get('attempts')} waited_sec={readiness.get('waited_sec')}")
+        heartbeat("boot", "ok", {"health_url": health_url, "main_web_readiness": readiness})
+        heartbeat("preflight_ok", "success", {"status": readiness.get("status"), "body_prefix": readiness.get("body_prefix"), "main_web_readiness": readiness})
+    else:
+        log(f"main_web_readiness_failed attempts={readiness.get('attempts')} waited_sec={readiness.get('waited_sec')} detail={readiness.get('detail')}")
+        heartbeat("boot", "main_web_not_ready", {"health_url": health_url, "main_web_readiness": readiness})
+        heartbeat("preflight_error", "error", {"error": readiness.get("detail"), "main_web_readiness": readiness})
     first = True
     loop_n = 0
     while True:
