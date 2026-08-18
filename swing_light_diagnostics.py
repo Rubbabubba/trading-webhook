@@ -233,6 +233,11 @@ def scanner_light_snapshot(
     )
 
     post_open_scan_missing = bool(scan_summary.get("post_open_scan_missing") or latest_scan.get("post_open_scan_missing"))
+    scanner_failure_root_cause = dict(
+        scan_summary.get("scanner_failure_root_cause")
+        or latest_scan.get("scanner_failure_root_cause")
+        or {}
+    )
 
     scanner_status = (
         "scan_running_within_grace"
@@ -264,6 +269,7 @@ def scanner_light_snapshot(
         "last_error": None if scanner_currently_ok else current_error,
         "last_error_historical": current_error if scanner_currently_ok else None,
         "scanner_status": scanner_status,
+        "scanner_failure_root_cause": scanner_failure_root_cause,
         "in_flight_run": bool(effective_in_flight),
         "raw_in_flight_run": bool(in_flight),
         "in_flight_grace_active": bool(in_flight_grace_active),

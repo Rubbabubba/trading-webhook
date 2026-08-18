@@ -3,6 +3,9 @@ param(
     [int]$Days = 10,
     [int]$WarmupDays = 100,
     [string]$Symbols = "",
+    [string]$StartDate = "",
+    [string]$EndDate = "",
+    [switch]$IncludeCurrentSession,
     [string]$PythonExe = ""
 )
 
@@ -49,6 +52,18 @@ $argsList = @(
 
 if (-not [string]::IsNullOrWhiteSpace($Symbols)) {
     $argsList += @("--symbols", $Symbols)
+}
+
+if (-not [string]::IsNullOrWhiteSpace($StartDate)) {
+    $argsList += @("--start-date", $StartDate)
+}
+
+if (-not [string]::IsNullOrWhiteSpace($EndDate)) {
+    $argsList += @("--end-date", $EndDate)
+}
+
+if ($IncludeCurrentSession) {
+    $argsList += @("--include-current-session")
 }
 
 Push-Location $repoRoot

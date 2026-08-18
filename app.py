@@ -2821,7 +2821,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-446-broker-native-exit-qty-contract-closed-market-swing-test-puller"
+PATCH_VERSION = "patch-455-scanner-failure-root-cause-truth-fresh-scan-completion-recovery"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -25503,6 +25503,84 @@ def _p402_stage_snapshot() -> dict:
     except Exception:
         return {}
 
+def _p455_scanner_failure_root_cause(
+    latest_scan: dict | None = None,
+    telemetry: dict | None = None,
+    telemetry_summary: dict | None = None,
+) -> dict:
+    scan = dict(latest_scan or LAST_SCAN or {})
+    tel = dict(telemetry or LAST_SCANNER_TELEMETRY or {})
+    summary = dict(telemetry_summary or {})
+    checkpoint = dict(scan.get("scan_stage_checkpoint") or _p402_stage_snapshot() or {})
+    checkpoint_details = dict(checkpoint.get("details") or {})
+    runtime_slim = dict(((scan.get("summary") or {}) if isinstance(scan.get("summary"), dict) else {}).get("runtime_slim") or scan.get("runtime_slim") or {})
+
+    scan_reason = str(scan.get("reason") or "").strip().lower()
+    last_event = str(tel.get("event") or tel.get("last_event") or summary.get("last_event") or "").strip().lower()
+    last_status = str(tel.get("status") or tel.get("last_status") or summary.get("last_event_status") or "").strip().lower()
+    last_closed_event = str(summary.get("last_closed_event") or tel.get("last_closed_event") or "").strip().lower()
+    last_closed_status = str(summary.get("last_closed_status") or tel.get("last_closed_status") or "").strip().lower()
+    error = str(scan.get("error") or tel.get("last_error") or tel.get("error") or "").strip()
+    stage = str(scan.get("scan_exception_stage") or checkpoint.get("stage") or "").strip()
+
+    active = [
+        str(code or "").strip().lower()
+        for code in list(summary.get("active_warning_codes") or [])
+        if str(code or "").strip()
+    ]
+
+    current_configured_cap = max(1, int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
+    payload_cap = runtime_slim.get("configured_max_symbols") or runtime_slim.get("max_symbols")
+    try:
+        payload_cap_int = int(payload_cap or 0)
+    except Exception:
+        payload_cap_int = 0
+
+    root_cause = "none"
+    recovery_action = "monitor_next_scan"
+
+    if scan_reason == "scan_exception":
+        root_cause = "scan_exception"
+        recovery_action = "review_scan_exception_stage_and_logs"
+    elif last_closed_event in {"scan_fail", "scan_error", "scan_dispatch_error", "scan_dispatch_http_error"} or last_closed_status in {"failure", "exception", "timeout_failure", "http_error"}:
+        if last_status == "timeout_failure":
+            root_cause = "scanner_worker_timeout"
+            recovery_action = "reduce_scan_work_or_raise_timeout"
+        elif payload_cap_int and payload_cap_int < current_configured_cap:
+            root_cause = "scanner_payload_cap_stale"
+            recovery_action = "redeploy_scanner_worker_with_current_symbol_cap"
+        else:
+            root_cause = "scanner_dispatch_failure"
+            recovery_action = "inspect_scanner_logs_for_last_failure"
+    elif "partial_run_open" in active:
+        root_cause = "scanner_run_in_flight"
+        recovery_action = "wait_for_scan_close_or_check_worker_logs"
+    elif scan_reason == "outside_market_hours" and bool(in_market_hours()):
+        root_cause = "post_open_scan_missing"
+        recovery_action = "force_or_wait_for_fresh_market_hours_scan"
+    elif payload_cap_int and payload_cap_int < current_configured_cap:
+        root_cause = "scanner_payload_cap_stale"
+        recovery_action = "redeploy_scanner_worker_with_current_symbol_cap"
+
+    return {
+        "active": root_cause != "none",
+        "root_cause": root_cause,
+        "recovery_action": recovery_action,
+        "scan_reason": scan_reason,
+        "last_event": last_event,
+        "last_status": last_status,
+        "last_closed_event": last_closed_event,
+        "last_closed_status": last_closed_status,
+        "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
+        "error": error,
+        "stage": stage,
+        "stage_details": checkpoint_details,
+        "runtime_symbol_count": len(universe_symbols()),
+        "current_configured_runtime_slim_max_symbols": current_configured_cap,
+        "scanner_payload_max_symbols": payload_cap_int or None,
+        "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
+    }
+
 def _p401_swing_scan_hot_path_context(scan_options: dict | None = None) -> dict:
     opts = dict(scan_options or {})
     force_heavy = str(
@@ -36400,6 +36478,11 @@ def _p298_latest_scan_summary_light() -> tuple[dict, dict]:
         latest_scan["stale_preopen_scan"] = True
 
     summary["scanner_exception_truth"] = _p324_latest_scan_exception_truth()
+    summary["scanner_failure_root_cause"] = _p455_scanner_failure_root_cause(
+        latest_scan=latest_scan,
+        telemetry=LAST_SCANNER_TELEMETRY,
+        telemetry_summary=_scanner_telemetry_summary(today_prefix=str(now_ny().date())),
+    )
     summary["last_successful_production_scan_available"] = bool(LAST_SUCCESSFUL_PRODUCTION_SCAN)
     summary["last_successful_production_selected_symbols"] = _p324_scan_selected_symbols(LAST_SUCCESSFUL_PRODUCTION_SCAN)
 
@@ -42387,6 +42470,11 @@ def diagnostics_scanner(history_limit: int = DIAGNOSTIC_SCANNER_HISTORY_LIMIT):
         pass
     today_prefix = str(now_ny().date())
     summary = _scanner_telemetry_summary(today_prefix=today_prefix)
+    scanner_failure_root_cause = _p455_scanner_failure_root_cause(
+        latest_scan=LAST_SCAN,
+        telemetry=tel,
+        telemetry_summary=summary,
+    )
     last_view = dict(tel)
     last_view.update({
         "attempts_total": summary.get("attempts_total"),
@@ -42420,6 +42508,7 @@ def diagnostics_scanner(history_limit: int = DIAGNOSTIC_SCANNER_HISTORY_LIMIT):
         "telemetry_state_path": SCANNER_TELEMETRY_STATE_PATH,
         "state_restore": dict(globals().get("SCANNER_TELEMETRY_STATE_RESTORE") or {}),
         "summary": summary,
+        "scanner_failure_root_cause": scanner_failure_root_cause,
         "side_effect_truth": dict(summary.get("side_effect_truth") or {}),
         "latest_runtime_budget": _p273_runtime_budget_snapshot(
             int((dict(LAST_SCAN or {}).get("duration_ms") or 0)),
@@ -50760,7 +50849,17 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             "recommended_action": "coverage_audit_unavailable_use_runtime_universe_coverage",
         }
 
-    if selected_context.get("selected_symbols"):
+    stale_scan_blocks_action = bool(
+        summary.get("post_open_scan_missing")
+        or str(latest_scan.get("reason") or "").strip().lower() in {"outside_market_hours", "scan_exception"}
+        or bool((summary.get("scanner_failure_root_cause") or {}).get("active"))
+    )
+
+    if stale_scan_blocks_action:
+        status = "stale_scan_not_actionable"
+        recommended_action = "recover_fresh_scan_before_evaluating_candidates"
+        eligible_rows = []
+    elif selected_context.get("selected_symbols"):
         status = "selecting"
         recommended_action = "monitor_submissions"
     elif eligible_rows:
@@ -50799,6 +50898,8 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             "would_trade": latest_scan.get("would_trade"),
             "blocked": latest_scan.get("blocked"),
             "duration_ms": latest_scan.get("duration_ms"),
+            "scanner_failure_root_cause": summary.get("scanner_failure_root_cause"),
+            "stale_scan_blocks_action": bool(stale_scan_blocks_action),
         },
         "runtime_universe_coverage": coverage,
         "candidate_coverage_opportunity_audit": {
@@ -54591,6 +54692,11 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 'scan_exception_stage': p402_failure_checkpoint.get("stage"),
                 'scan_exception_stage_details': dict(p402_failure_checkpoint.get("details") or {}),
                 'scan_exception_elapsed_sec': round(float(duration_ms or 0) / 1000.0, 3),
+                'scanner_failure_root_cause': _p455_scanner_failure_root_cause(
+                    latest_scan=LAST_SCAN,
+                    telemetry=LAST_SCANNER_TELEMETRY,
+                    telemetry_summary=_scanner_telemetry_summary(today_prefix=str(now_ny().date())),
+                ),
                 'last_successful_production_scan': {
                     'available': bool(LAST_SUCCESSFUL_PRODUCTION_SCAN),
                     'selected_symbols': _p324_scan_selected_symbols(LAST_SUCCESSFUL_PRODUCTION_SCAN),

@@ -19,7 +19,7 @@ import json
 import math
 import os
 import statistics
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -37,7 +37,7 @@ except Exception:
     AlpacaDataFeed = None
 
 
-PATCH_VERSION = "patch-451-minute-bar-swing-replay-scan-cycle-simulation"
+PATCH_VERSION = "patch-454-first-2k-window-replay-symbol-sleeve-attribution-matrix"
 NY = ZoneInfo("America/New_York")
 
 DEFAULT_SYMBOLS = (
@@ -76,6 +76,9 @@ class Config:
     same_bar_policy: str
     data_feed: str
     data_adjustment: str
+    start_date: str
+    end_date: str
+    include_current_session: bool
 
 
 @dataclass
@@ -113,6 +116,35 @@ def getenv_float(name: str, default: float) -> float:
         return float(str(os.getenv(name, default)).strip())
     except Exception:
         return default
+
+
+def getenv_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def parse_float_list_env(name: str, defaults: list[float]) -> list[float]:
+    raw = os.getenv(name, "")
+    values = []
+    for part in str(raw or "").split(","):
+        try:
+            values.append(float(part.strip()))
+        except Exception:
+            pass
+    return sorted(set(values or defaults))
+
+
+def parse_int_list_env(name: str, defaults: list[int]) -> list[int]:
+    raw = os.getenv(name, "")
+    values = []
+    for part in str(raw or "").split(","):
+        try:
+            values.append(int(float(part.strip())))
+        except Exception:
+            pass
+    return sorted(set(values or defaults))
 
 
 def pct_env(name: str, default: float) -> float:
@@ -215,6 +247,9 @@ def build_config(args: argparse.Namespace) -> Config:
         same_bar_policy=os.getenv("SWING_REPLAY_SAME_BAR_POLICY", "conservative_stop_first").strip().lower(),
         data_feed=os.getenv("DATA_FEED", "iex").strip().lower() or "iex",
         data_adjustment=os.getenv("DATA_ADJUSTMENT", "raw").strip().lower() or "raw",
+        start_date=str(args.start_date or os.getenv("SWING_MINUTE_REPLAY_START_DATE", "") or "").strip(),
+        end_date=str(args.end_date or os.getenv("SWING_MINUTE_REPLAY_END_DATE", "") or "").strip(),
+        include_current_session=bool(args.include_current_session or getenv_bool("SWING_MINUTE_REPLAY_INCLUDE_CURRENT_SESSION", False)),
     )
 
 
@@ -227,9 +262,20 @@ def client_from_env() -> StockHistoricalDataClient:
 
 
 def fetch_bars(client: StockHistoricalDataClient, config: Config, timeframe: TimeFrame) -> dict[str, list[dict]]:
-    end = datetime.now(timezone.utc)
-    days = max(45, config.warmup_days + config.test_days * 3 + 10)
-    start = end - timedelta(days=days)
+    requested_start = parse_iso_date_or_none(config.start_date)
+    requested_end = parse_iso_date_or_none(config.end_date)
+
+    if requested_end:
+        end = datetime.fromisoformat(requested_end).replace(hour=23, minute=59, second=59, tzinfo=NY).astimezone(timezone.utc)
+    else:
+        end = datetime.now(timezone.utc)
+
+    if requested_start:
+        start = datetime.fromisoformat(requested_start).replace(tzinfo=NY).astimezone(timezone.utc) - timedelta(days=max(10, config.warmup_days))
+    else:
+        days = max(45, config.warmup_days + config.test_days * 3 + 10)
+        start = end - timedelta(days=days)
+
     req = StockBarsRequest(
         symbol_or_symbols=config.symbols,
         timeframe=timeframe,
@@ -242,10 +288,11 @@ def fetch_bars(client: StockHistoricalDataClient, config: Config, timeframe: Tim
     data = getattr(result, "data", {}) or {}
     out: dict[str, list[dict]] = {}
     for symbol in config.symbols:
+        bars = data.get(symbol, []) or []
         rows = []
-        for bar in data.get(symbol, []) or []:
+        for bar in bars:
             ts = getattr(bar, "timestamp", None)
-            if ts is None:
+            if not ts:
                 continue
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
@@ -264,7 +311,6 @@ def fetch_bars(client: StockHistoricalDataClient, config: Config, timeframe: Tim
         rows.sort(key=lambda r: r["ts_utc"])
         out[symbol] = rows
     return out
-
 
 def regular_minutes(rows: list[dict]) -> list[dict]:
     out = []
@@ -484,14 +530,57 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
+def parse_iso_date_or_none(raw: str) -> str | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).date().isoformat()
+    except Exception:
+        return None
 
-def run(config: Config) -> dict:
-    client = client_from_env()
-    daily_map = fetch_bars(client, config, TimeFrame.Day)
-    minute_map = {s: regular_minutes(v) for s, v in fetch_bars(client, config, TimeFrame.Minute).items()}
 
+def select_test_dates(all_dates: list[str], config: Config) -> tuple[list[str], dict]:
+    today_ny = datetime.now(NY).date().isoformat()
+    requested_start_date = parse_iso_date_or_none(config.start_date)
+    requested_end_date = parse_iso_date_or_none(config.end_date)
+
+    excluded_current_session = False
+    if not config.include_current_session:
+        filtered = [d for d in all_dates if d < today_ny]
+        excluded_current_session = today_ny in set(all_dates)
+    else:
+        filtered = list(all_dates)
+
+    if requested_start_date:
+        filtered = [d for d in filtered if d >= requested_start_date]
+
+    if requested_end_date:
+        filtered = [d for d in filtered if d <= requested_end_date]
+
+    if requested_start_date or requested_end_date:
+        test_dates = filtered
+    else:
+        test_dates = filtered[-config.test_days:]
+
+    metadata = {
+        "completed_sessions_only": not config.include_current_session,
+        "include_current_session": bool(config.include_current_session),
+        "excluded_current_session": excluded_current_session,
+        "current_ny_date": today_ny,
+        "requested_start_date": requested_start_date,
+        "requested_end_date": requested_end_date,
+        "effective_start_date": test_dates[0] if test_dates else None,
+        "effective_end_date": test_dates[-1] if test_dates else None,
+        "available_dates": all_dates,
+        "effective_test_dates": test_dates,
+        "explicit_window": bool(requested_start_date or requested_end_date),
+    }
+    return test_dates, metadata
+
+def run_with_data(config: Config, daily_map: dict[str, list[dict]], minute_map: dict[str, list[dict]], collect_rows: bool = True) -> dict:
     dates = sorted({r["date"] for rows in minute_map.values() for r in rows})
-    test_dates = dates[-config.test_days:]
+    test_dates, session_filter = select_test_dates(dates, config)
 
     open_positions: list[Position] = []
     trades: list[dict] = []
@@ -505,6 +594,10 @@ def run(config: Config) -> dict:
     for session_date in test_dates:
         entries_today = 0
         realized_today = 0.0
+        daily_candidate_count = 0
+        daily_eligible_count = 0
+        daily_submitted_count = 0
+        daily_filled_count = 0
         session_rows_by_symbol = {
             sym: [r for r in rows if r["date"] == session_date]
             for sym, rows in minute_map.items()
@@ -550,9 +643,13 @@ def run(config: Config) -> dict:
                 if not rows_today:
                     continue
                 candidate = evaluate_candidate(sym, prior_daily_rows(daily_map.get(sym, []), session_date), rows_today, config)
+                candidate["session_date"] = session_date
                 candidate["scan_ts"] = ts_str
-                candidate_rows.append(candidate)
+                daily_candidate_count += 1
+                if collect_rows:
+                    candidate_rows.append(candidate)
                 if candidate.get("eligible"):
+                    daily_eligible_count += 1
                     candidates.append(candidate)
 
             candidates.sort(key=lambda c: safe_float(c.get("rank_score")), reverse=True)
@@ -566,6 +663,7 @@ def run(config: Config) -> dict:
                 sym = str(candidate["symbol"])
                 future_rows = [r for r in session_rows_by_symbol.get(sym, []) if r["ts_ny"] >= ts_str]
                 fill_row, fill_reason = fill_limit(candidate, future_rows, config)
+                daily_submitted_count += 1
                 submit_row = {
                     "session_date": session_date,
                     "scan_ts": ts_str,
@@ -577,13 +675,15 @@ def run(config: Config) -> dict:
                 }
 
                 if not fill_row:
-                    submit_rows.append({**submit_row, "filled": False})
+                    if collect_rows:
+                        submit_rows.append({**submit_row, "filled": False})
                     continue
 
                 entry_price = safe_float(fill_row["fill_price"])
                 stop_price = safe_float(candidate["stop_price"])
                 if stop_price >= entry_price:
-                    submit_rows.append({**submit_row, "filled": False, "fill_reason": "fill_invalid_stop_at_or_above_entry"})
+                    if collect_rows:
+                        submit_rows.append({**submit_row, "filled": False, "fill_reason": "fill_invalid_stop_at_or_above_entry"})
                     continue
 
                 risk_per_share = max(entry_price - stop_price, entry_price * 0.0025)
@@ -602,7 +702,9 @@ def run(config: Config) -> dict:
                     rank_score=safe_float(candidate["rank_score"]),
                 ))
                 entries_today += 1
-                submit_rows.append({**submit_row, "filled": True, "fill_ts": fill_row["ts_ny"], "fill_price": round(entry_price, 4), "qty": qty})
+                daily_filled_count += 1
+                if collect_rows:
+                    submit_rows.append({**submit_row, "filled": True, "fill_ts": fill_row["ts_ny"], "fill_price": round(entry_price, 4), "qty": qty})
 
         unrealized = 0.0
         for pos in open_positions:
@@ -616,8 +718,10 @@ def run(config: Config) -> dict:
             "unrealized_mark": round(unrealized, 2),
             "entries_today": entries_today,
             "open_positions": len(open_positions),
-            "submitted_count": len([r for r in submit_rows if r.get("session_date") == session_date]),
-            "filled_count": len([r for r in submit_rows if r.get("session_date") == session_date and r.get("filled") is True]),
+            "candidate_count": daily_candidate_count,
+            "eligible_count": daily_eligible_count,
+            "submitted_count": daily_submitted_count,
+            "filled_count": daily_filled_count,
         })
 
     final_date = test_dates[-1] if test_dates else None
@@ -647,11 +751,237 @@ def run(config: Config) -> dict:
 
     return {
         "test_dates": test_dates,
+        "session_filter": session_filter,
         "trades": trades,
         "candidate_rows": candidate_rows,
         "submit_rows": submit_rows,
         "daily_rows": daily_rows,
         "summary": summarize(trades, daily_rows),
+    }
+
+def symbol_attribution_rows(trades: list[dict], scenario: str = "baseline") -> list[dict]:
+    by_symbol: dict[str, list[dict]] = {}
+    for trade in trades:
+        symbol = str(trade.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        by_symbol.setdefault(symbol, []).append(trade)
+
+    rows = []
+    for symbol, items in sorted(by_symbol.items()):
+        pnl_values = [safe_float(t.get("pnl")) for t in items]
+        r_values = [safe_float(t.get("r_mult")) for t in items]
+        wins = len([p for p in pnl_values if p > 0])
+        losses = len([p for p in pnl_values if p < 0])
+        exit_reasons = [str(t.get("exit_reason") or "") for t in items]
+        rows.append({
+            "scenario": scenario,
+            "symbol": symbol,
+            "trade_count": len(items),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / len(items), 4) if items else 0.0,
+            "gross_pnl": round(sum(pnl_values), 2),
+            "avg_pnl": round(statistics.mean(pnl_values), 2) if pnl_values else 0.0,
+            "avg_r": round(statistics.mean(r_values), 4) if r_values else 0.0,
+            "target_count": len([x for x in exit_reasons if x.startswith("target")]),
+            "stop_count": len([x for x in exit_reasons if "stop" in x]),
+            "final_mark_count": len([x for x in exit_reasons if x == "final_mark_to_close"]),
+        })
+    rows.sort(key=lambda r: safe_float(r.get("gross_pnl")), reverse=True)
+    return rows
+
+def build_scenario_configs(config: Config) -> list[tuple[str, Config, dict]]:
+    risk_values = parse_float_list_env(
+        "SWING_MINUTE_REPLAY_MATRIX_RISK_DOLLARS",
+        sorted(set([config.risk_per_trade_dollars, 45.0, 60.0])),
+    )
+    daily_values = parse_int_list_env(
+        "SWING_MINUTE_REPLAY_MATRIX_DAILY_ENTRIES",
+        sorted(set([config.max_entries_per_day, 3, 5])),
+    )
+    scan_values = parse_int_list_env(
+        "SWING_MINUTE_REPLAY_MATRIX_SCAN_ENTRIES",
+        sorted(set([config.max_entries_per_scan, 1, 2])),
+    )
+    target_values = parse_float_list_env(
+        "SWING_MINUTE_REPLAY_MATRIX_TARGET_R",
+        sorted(set([config.target_r_mult, 1.5, 2.0])),
+    )
+    rank_values = parse_float_list_env(
+        "SWING_MINUTE_REPLAY_MATRIX_MIN_RANK",
+        sorted(set([config.min_rank_score, 100.0, 106.0])),
+    )
+    below_values = parse_float_list_env(
+        "SWING_MINUTE_REPLAY_MATRIX_MAX_BELOW_BREAKOUT_PCT",
+        sorted(set([config.max_below_breakout_pct, 0.05, 0.09])),
+    )
+
+    scenarios: list[tuple[str, Config, dict]] = []
+    seen = set()
+    for risk in risk_values:
+        for daily in daily_values:
+            for scan in scan_values:
+                for target in target_values:
+                    for rank in rank_values:
+                        for below in below_values:
+                            overrides = {
+                                "risk_per_trade_dollars": float(risk),
+                                "max_entries_per_day": int(daily),
+                                "max_entries_per_scan": int(scan),
+                                "target_r_mult": float(target),
+                                "min_rank_score": float(rank),
+                                "max_below_breakout_pct": float(below),
+                            }
+                            key = tuple(sorted(overrides.items()))
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            name = (
+                                f"risk_{risk:g}_daily_{daily}_scan_{scan}_"
+                                f"target_{str(target).replace('.', 'p')}_"
+                                f"rank_{rank:g}_below_{round(below * 100, 2):g}pct"
+                            )
+                            scenarios.append((name, replace(config, **overrides), overrides))
+    return scenarios
+
+
+def scenario_matrix(config: Config, daily_map: dict[str, list[dict]], minute_map: dict[str, list[dict]]) -> dict:
+    rows = []
+    best_result = None
+    best_name = None
+    best_overrides = None
+    symbol_matrix_rows = []
+
+    if not getenv_bool("SWING_MINUTE_REPLAY_SCENARIO_MATRIX_ENABLED", True):
+        return {"rows": rows, "best_scenario": None, "best_trades": [], "best_daily_rows": [], "symbol_matrix": [], "best_symbol_rows": []}
+
+    for name, scenario_config, overrides in build_scenario_configs(config):
+        result = run_with_data(scenario_config, daily_map, minute_map, collect_rows=False)
+        summary = result["summary"]
+        test_dates = result["test_dates"]
+        gross_per_day = safe_float(summary.get("gross_pnl")) / max(len(test_dates), 1)
+        realized_goal_days = len([
+            r for r in result["daily_rows"]
+            if safe_float(r.get("realized_pnl")) >= 100.0
+        ])
+        losing_days = len([
+            r for r in result["daily_rows"]
+            if safe_float(r.get("realized_pnl")) < 0.0
+        ])
+        row = {
+            "scenario": name,
+            "gross_pnl": summary.get("gross_pnl"),
+            "gross_per_day": round(gross_per_day, 2),
+            "daily_average_realized_pnl": summary.get("daily_average_realized_pnl"),
+            "trade_count": summary.get("trade_count"),
+            "win_rate": summary.get("win_rate"),
+            "avg_r": summary.get("avg_r"),
+            "max_drawdown": summary.get("max_drawdown"),
+            "realized_goal_days": realized_goal_days,
+            "losing_days": losing_days,
+            "goal_100_realized_avg_met": safe_float(summary.get("daily_average_realized_pnl")) >= 100.0,
+            "goal_100_gross_per_day_met": gross_per_day >= 100.0,
+            "risk_per_trade_dollars": overrides["risk_per_trade_dollars"],
+            "max_entries_per_day": overrides["max_entries_per_day"],
+            "max_entries_per_scan": overrides["max_entries_per_scan"],
+            "target_r_mult": overrides["target_r_mult"],
+            "min_rank_score": overrides["min_rank_score"],
+            "max_below_breakout_pct": overrides["max_below_breakout_pct"],
+        }
+        rows.append(row)
+        symbol_matrix_rows.extend(symbol_attribution_rows(result.get("trades") or [], scenario=name))
+
+        if best_result is None:
+            best_result = result
+            best_name = name
+            best_overrides = overrides
+        else:
+            current_key = (
+                safe_float(row.get("gross_per_day")),
+                safe_float(row.get("avg_r")),
+                -abs(safe_float(row.get("max_drawdown"))),
+            )
+            best_summary = best_result["summary"]
+            best_key = (
+                safe_float(best_summary.get("gross_pnl")) / max(len(best_result.get("test_dates") or []), 1),
+                safe_float(best_summary.get("avg_r")),
+                -abs(safe_float(best_summary.get("max_drawdown"))),
+            )
+            if current_key > best_key:
+                best_result = result
+                best_name = name
+                best_overrides = overrides
+
+    rows.sort(
+        key=lambda r: (
+            safe_float(r.get("gross_per_day")),
+            safe_float(r.get("avg_r")),
+            -abs(safe_float(r.get("max_drawdown"))),
+        ),
+        reverse=True,
+    )
+
+    best_scenario = None
+    best_trades = []
+    best_daily_rows = []
+    best_symbol_rows = []
+    if best_result is not None:
+        best_summary = best_result["summary"]
+        best_scenario = {
+            "scenario": best_name,
+            "overrides": best_overrides or {},
+            "summary": best_summary,
+            "test_dates": best_result.get("test_dates") or [],
+            "gross_per_day": round(
+                safe_float(best_summary.get("gross_pnl")) / max(len(best_result.get("test_dates") or []), 1),
+                2,
+            ),
+        }
+        best_trades = [
+            {"scenario": best_name, **row}
+            for row in best_result.get("trades", [])
+        ]
+        best_daily_rows = [
+            {"scenario": best_name, **row}
+            for row in best_result.get("daily_rows", [])
+        ]
+        best_symbol_rows = symbol_attribution_rows(best_result.get("trades") or [], scenario=str(best_name or "best"))
+
+    return {
+        "rows": rows,
+        "best_scenario": best_scenario,
+        "best_trades": best_trades,
+        "best_daily_rows": best_daily_rows,
+        "symbol_matrix": symbol_matrix_rows,
+        "best_symbol_rows": best_symbol_rows,
+    }
+
+def run(config: Config) -> dict:
+    client = client_from_env()
+    daily_map = fetch_bars(client, config, TimeFrame.Day)
+    minute_map = {s: regular_minutes(v) for s, v in fetch_bars(client, config, TimeFrame.Minute).items()}
+
+    base_result = run_with_data(config, daily_map, minute_map, collect_rows=True)
+    matrix_bundle = scenario_matrix(config, daily_map, minute_map)
+
+    return {
+        **base_result,
+        "scenario_matrix": matrix_bundle.get("rows") or [],
+        "best_scenario": matrix_bundle.get("best_scenario"),
+        "best_scenario_trades": matrix_bundle.get("best_trades") or [],
+        "best_scenario_daily_rows": matrix_bundle.get("best_daily_rows") or [],
+        "symbol_attribution": symbol_attribution_rows(base_result.get("trades") or [], scenario="baseline"),
+        "best_scenario_symbol_attribution": matrix_bundle.get("best_symbol_rows") or [],
+        "scenario_symbol_attribution_matrix": matrix_bundle.get("symbol_matrix") or [],
+        "positive_scenario_count": len([
+            r for r in matrix_bundle.get("rows") or []
+            if safe_float(r.get("gross_pnl")) > 0.0
+        ]),
+        "positive_avg_r_scenario_count": len([
+            r for r in matrix_bundle.get("rows") or []
+            if safe_float(r.get("avg_r")) > 0.0
+        ]),
         "bar_coverage": {
             "symbols": len(config.symbols),
             "symbols_with_daily_bars": len([s for s in config.symbols if daily_map.get(s)]),
@@ -662,12 +992,14 @@ def run(config: Config) -> dict:
         },
     }
 
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run minute-bar swing replay.")
     parser.add_argument("--days", type=int, default=None)
     parser.add_argument("--warmup-days", type=int, default=None)
     parser.add_argument("--symbols", default="")
+    parser.add_argument("--start-date", default="")
+    parser.add_argument("--end-date", default="")
+    parser.add_argument("--include-current-session", action="store_true")
     parser.add_argument("--output-dir", default=str(Path.home() / "TradingDiagnostics" / "swing_minute_replay"))
     args = parser.parse_args()
 
@@ -695,8 +1027,17 @@ def main() -> int:
         "config": asdict(config),
         "bar_coverage": result["bar_coverage"],
         "summary": result["summary"],
+        "scenario_matrix_enabled": getenv_bool("SWING_MINUTE_REPLAY_SCENARIO_MATRIX_ENABLED", True),
+        "scenario_count": len(result.get("scenario_matrix") or []),
+        "positive_scenario_count": result.get("positive_scenario_count"),
+        "positive_avg_r_scenario_count": result.get("positive_avg_r_scenario_count"),
+        "best_scenario": result.get("best_scenario"),
+        "top_scenarios": (result.get("scenario_matrix") or [])[:10],
+        "session_filter": result.get("session_filter") or {},
         "test_dates": result["test_dates"],
-        "recommended_action": "compare_minute_replay_to_actual_broker_fills_before_live_risk_changes",
+        "symbol_attribution_top": (result.get("symbol_attribution") or [])[:15],
+        "best_scenario_symbol_attribution_top": (result.get("best_scenario_symbol_attribution") or [])[:15],
+        "recommended_action": "compare_first_2k_window_against_recent_window_before_live_risk_changes",
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -706,6 +1047,16 @@ def main() -> int:
     write_csv(output_dir / "latest_daily_pnl.csv", result["daily_rows"])
     write_csv(output_dir / "latest_candidate_rows.csv", result["candidate_rows"])
     write_csv(output_dir / "latest_submit_rows.csv", result["submit_rows"])
+    write_csv(output_dir / "latest_scenario_matrix.csv", result.get("scenario_matrix") or [])
+    (output_dir / "latest_scenario_matrix.json").write_text(
+        json.dumps(result.get("scenario_matrix") or [], indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    write_csv(output_dir / "latest_best_scenario_trades.csv", result.get("best_scenario_trades") or [])
+    write_csv(output_dir / "latest_best_scenario_daily_pnl.csv", result.get("best_scenario_daily_rows") or [])
+    write_csv(output_dir / "latest_symbol_attribution.csv", result.get("symbol_attribution") or [])
+    write_csv(output_dir / "latest_best_scenario_symbol_attribution.csv", result.get("best_scenario_symbol_attribution") or [])
+    write_csv(output_dir / "latest_scenario_symbol_attribution_matrix.csv", result.get("scenario_symbol_attribution_matrix") or [])
 
     (run_dir / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     (run_dir / "config_snapshot.json").write_text(json.dumps(asdict(config), indent=2, sort_keys=True), encoding="utf-8")
@@ -713,6 +1064,16 @@ def main() -> int:
     write_csv(run_dir / "daily_pnl.csv", result["daily_rows"])
     write_csv(run_dir / "candidate_rows.csv", result["candidate_rows"])
     write_csv(run_dir / "submit_rows.csv", result["submit_rows"])
+    write_csv(run_dir / "scenario_matrix.csv", result.get("scenario_matrix") or [])
+    (run_dir / "scenario_matrix.json").write_text(
+        json.dumps(result.get("scenario_matrix") or [], indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    write_csv(run_dir / "best_scenario_trades.csv", result.get("best_scenario_trades") or [])
+    write_csv(run_dir / "best_scenario_daily_pnl.csv", result.get("best_scenario_daily_rows") or [])
+    write_csv(run_dir / "symbol_attribution.csv", result.get("symbol_attribution") or [])
+    write_csv(run_dir / "best_scenario_symbol_attribution.csv", result.get("best_scenario_symbol_attribution") or [])
+    write_csv(run_dir / "scenario_symbol_attribution_matrix.csv", result.get("scenario_symbol_attribution_matrix") or [])
 
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
