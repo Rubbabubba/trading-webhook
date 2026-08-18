@@ -40,7 +40,7 @@ except Exception as exc:
     ) from exc
 
 
-PATCH_VERSION = "patch-448-swing-two-week-scenario-matrix-goal-calibration"
+PATCH_VERSION = "patch-450-replay-gap-invalidation-realistic-fill-semantics"
 NY_TZ = "America/New_York"
 
 DEFAULT_SYMBOLS = (
@@ -462,6 +462,51 @@ def regime_weak(spy_history: list[dict], config: ReplayConfig) -> bool:
     return not (closes[-1] > fast > slow)
 
 
+def validate_replay_entry(candidate: dict, day_bar: dict, config: ReplayConfig) -> tuple[bool, dict | None]:
+    symbol = str(candidate.get("symbol") or "").upper()
+    strategy = str(candidate.get("strategy") or "")
+    entry_price = safe_float(day_bar.get("open") or candidate.get("signal_close"))
+    stop_price = safe_float(candidate.get("stop_price"))
+    target_r = safe_float(candidate.get("target_r") or config.target_r_mult)
+
+    if entry_price <= 0:
+        return False, {
+            "symbol": symbol,
+            "strategy": strategy,
+            "session_date": day_bar.get("date"),
+            "reason": "invalid_entry_price",
+            "entry_price": round(entry_price, 4),
+            "stop_price": round(stop_price, 4),
+            "target_r": round(target_r, 4),
+        }
+
+    if stop_price <= 0:
+        return False, {
+            "symbol": symbol,
+            "strategy": strategy,
+            "session_date": day_bar.get("date"),
+            "reason": "invalid_stop_price",
+            "entry_price": round(entry_price, 4),
+            "stop_price": round(stop_price, 4),
+            "target_r": round(target_r, 4),
+        }
+
+    if stop_price >= entry_price:
+        return False, {
+            "symbol": symbol,
+            "strategy": strategy,
+            "session_date": day_bar.get("date"),
+            "reason": "entry_gap_below_or_at_stop",
+            "entry_price": round(entry_price, 4),
+            "stop_price": round(stop_price, 4),
+            "target_r": round(target_r, 4),
+            "gap_pct": round(((entry_price / max(stop_price, 1e-9)) - 1.0) * 100.0, 4),
+            "rank_score": candidate.get("rank_score"),
+            "signal_close": candidate.get("signal_close"),
+        }
+
+    return True, None
+
 def simulate_position_exit(position: SimPosition, day_bar: dict, config: ReplayConfig) -> tuple[dict | None, SimPosition]:
     open_px = safe_float(day_bar.get("open"))
     high = safe_float(day_bar.get("high"))
@@ -478,23 +523,39 @@ def simulate_position_exit(position: SimPosition, day_bar: dict, config: ReplayC
 
     hit_stop = low <= position.stop_price
     hit_target = high >= position.target_price
+    gap_through_stop = open_px > 0 and open_px <= position.stop_price
+    gap_through_target = open_px > 0 and open_px >= position.target_price
 
     exit_reason = None
     exit_price = None
 
     if hit_stop and hit_target:
-        if config.same_bar_policy == "optimistic_target_first":
+        if gap_through_stop:
+            exit_reason = "gap_stop"
+            exit_price = open_px
+        elif gap_through_target and config.same_bar_policy == "optimistic_target_first":
+            exit_reason = "target_gap"
+            exit_price = open_px
+        elif config.same_bar_policy == "optimistic_target_first":
             exit_reason = "target_same_bar"
             exit_price = position.target_price
         else:
             exit_reason = "stop_same_bar_conservative"
             exit_price = position.stop_price
     elif hit_stop:
-        exit_reason = "stop"
-        exit_price = position.stop_price
+        if gap_through_stop:
+            exit_reason = "gap_stop"
+            exit_price = open_px
+        else:
+            exit_reason = "stop"
+            exit_price = position.stop_price
     elif hit_target:
-        exit_reason = "target"
-        exit_price = position.target_price
+        if gap_through_target:
+            exit_reason = "target_gap"
+            exit_price = open_px
+        else:
+            exit_reason = "target"
+            exit_price = position.target_price
     elif config.stall_exit_days > 0 and position.holding_days >= config.stall_exit_days and close_r < config.stall_exit_min_r:
         exit_reason = "stall_exit"
         exit_price = close
@@ -523,7 +584,6 @@ def simulate_position_exit(position: SimPosition, day_bar: dict, config: ReplayC
         "entry_reasons": ",".join(position.reasons),
     }, position
 
-
 def run_replay(config: ReplayConfig, bars_map: dict[str, list[dict]]) -> dict:
     all_dates = sorted({row["date"] for rows in bars_map.values() for row in rows})
     test_dates = all_dates[-config.test_days :]
@@ -534,6 +594,7 @@ def run_replay(config: ReplayConfig, bars_map: dict[str, list[dict]]) -> dict:
     daily_rows: list[dict] = []
     candidate_rows: list[dict] = []
     missed_rows: list[dict] = []
+    gap_invalidated_rows: list[dict] = []
 
     for session_date in test_dates:
         realized_today = 0.0
@@ -596,6 +657,11 @@ def run_replay(config: ReplayConfig, bars_map: dict[str, list[dict]]) -> dict:
             if not day_bar:
                 continue
 
+            valid_entry, invalidation = validate_replay_entry(candidate, day_bar, config)
+            if not valid_entry:
+                gap_invalidated_rows.append(dict(invalidation or {}))
+                continue
+
             entry_price = safe_float(day_bar.get("open") or candidate.get("signal_close"))
             stop_price = safe_float(candidate.get("stop_price"))
             risk_per_share = max(entry_price - stop_price, entry_price * 0.0025)
@@ -651,6 +717,12 @@ def run_replay(config: ReplayConfig, bars_map: dict[str, list[dict]]) -> dict:
                 "max_entries_per_scan": int(per_scan_cap),
                 "simulated_scan_count": int(simulated_scan_count),
                 "compressed_daily_replay": bool(config.compressed_daily_replay),
+                "gap_invalidated_count": len([r for r in gap_invalidated_rows if str(r.get("session_date")) == session_date]),
+                "gap_invalidated_symbols": ",".join([
+                    str(r.get("symbol") or "")
+                    for r in gap_invalidated_rows
+                    if str(r.get("session_date")) == session_date
+                ]),
             }
         )
 
@@ -689,6 +761,7 @@ def run_replay(config: ReplayConfig, bars_map: dict[str, list[dict]]) -> dict:
         "daily_rows": daily_rows,
         "candidate_rows": candidate_rows,
         "missed_rows": missed_rows,
+        "gap_invalidated_rows": gap_invalidated_rows,
     }
 
 
@@ -910,6 +983,12 @@ def run_scenario_matrix(base_config: ReplayConfig, bars_map: dict[str, list[dict
                                 "avg_trade_pnl": summary.get("avg_trade_pnl"),
                                 "avg_r": summary.get("avg_r"),
                                 "max_drawdown": summary.get("max_drawdown"),
+                                "gap_invalidated_count": len(replay.get("gap_invalidated_rows") or []),
+                                "gap_invalidated_symbols": ",".join(sorted({
+                                    str(r.get("symbol") or "")
+                                    for r in (replay.get("gap_invalidated_rows") or [])
+                                    if str(r.get("symbol") or "").strip()
+                                })),
                                 "goal_score": goal_score(summary),
                                 "recommendation": scenario_recommendation(summary),
                             }
@@ -1024,6 +1103,16 @@ def main() -> int:
             "bars_by_symbol": {s: len(bars_map.get(s) or []) for s in config.symbols},
         },
         "summary": summary,
+        "gap_invalidation": {
+            "count": len(replay.get("gap_invalidated_rows") or []),
+            "symbols": sorted({
+                str(r.get("symbol") or "")
+                for r in (replay.get("gap_invalidated_rows") or [])
+                if str(r.get("symbol") or "").strip()
+            }),
+            "rows": replay.get("gap_invalidated_rows") or [],
+            "reason": "long entries are invalidated when next-session open is at or below the computed stop",
+        },
         "scenario_matrix": {
             "enabled": bool(scenario_matrix.get("enabled")),
             "scenario_count": scenario_matrix.get("scenario_count"),
@@ -1045,6 +1134,7 @@ def main() -> int:
     latest_daily = output_dir / "latest_daily_pnl.csv"
     latest_candidates = output_dir / "latest_candidate_rows.csv"
     latest_missed = output_dir / "latest_missed_opportunities.csv"
+    latest_gap_invalidated = output_dir / "latest_gap_invalidated_entries.csv"
     latest_matrix = output_dir / "latest_scenario_matrix.csv"
     latest_matrix_json = output_dir / "latest_scenario_matrix.json"
 
@@ -1056,6 +1146,7 @@ def main() -> int:
     write_csv(latest_daily, replay["daily_rows"])
     write_csv(latest_candidates, replay["candidate_rows"])
     write_csv(latest_missed, replay["missed_rows"])
+    write_csv(latest_gap_invalidated, replay["gap_invalidated_rows"])
     write_csv(latest_matrix, scenario_matrix["rows"])
     latest_matrix_json.write_text(json.dumps(scenario_matrix, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -1065,6 +1156,7 @@ def main() -> int:
     write_csv(run_dir / "daily_pnl.csv", replay["daily_rows"])
     write_csv(run_dir / "candidate_rows.csv", replay["candidate_rows"])
     write_csv(run_dir / "missed_opportunities.csv", replay["missed_rows"])
+    write_csv(run_dir / "gap_invalidated_entries.csv", replay["gap_invalidated_rows"])
     write_csv(run_dir / "scenario_matrix.csv", scenario_matrix["rows"])
     (run_dir / "scenario_matrix.json").write_text(json.dumps(scenario_matrix, indent=2, sort_keys=True), encoding="utf-8")
 
