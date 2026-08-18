@@ -2823,7 +2823,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-456-swing-scan-fast-close-response-background-completion-truth"
+PATCH_VERSION = "patch-456-hotfix-early-swing-scan-accept-release-gate-dry-run-truth-background-failure-details"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -25541,6 +25541,55 @@ def _p455_scanner_failure_root_cause(
     root_cause = "none"
     recovery_action = "monitor_next_scan"
 
+    try:
+        background_truth = _p456_background_scan_truth()
+    except Exception:
+        background_truth = {}
+    background_status = str((background_truth or {}).get("status") or "").strip().lower()
+    if background_status in {"accepted", "running"}:
+        return {
+            "active": False,
+            "root_cause": "background_scan_running",
+            "recovery_action": "wait_for_background_scan_completion",
+            "scan_reason": scan_reason,
+            "last_event": last_event,
+            "last_status": last_status,
+            "last_closed_event": last_closed_event,
+            "last_closed_status": last_closed_status,
+            "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
+            "error": error,
+            "stage": (background_truth or {}).get("stage") or stage,
+            "stage_details": (background_truth or {}).get("stage_details") or checkpoint_details,
+            "runtime_symbol_count": len(universe_symbols()),
+            "current_configured_runtime_slim_max_symbols": current_configured_cap,
+            "scanner_payload_max_symbols": payload_cap_int or None,
+            "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
+            "scan_background_completion_truth": background_truth,
+        }
+
+    if background_status == "failed":
+        return {
+            "active": True,
+            "root_cause": "background_scan_failed",
+            "recovery_action": "review_background_scan_failure_details",
+            "scan_reason": scan_reason,
+            "last_event": last_event,
+            "last_status": last_status,
+            "last_closed_event": last_closed_event,
+            "last_closed_status": last_closed_status,
+            "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
+            "error": (background_truth or {}).get("error") or error,
+            "exception_type": (background_truth or {}).get("exception_type"),
+            "traceback_tail": (background_truth or {}).get("traceback_tail"),
+            "stage": (background_truth or {}).get("stage") or stage,
+            "stage_details": (background_truth or {}).get("stage_details") or checkpoint_details,
+            "runtime_symbol_count": len(universe_symbols()),
+            "current_configured_runtime_slim_max_symbols": current_configured_cap,
+            "scanner_payload_max_symbols": payload_cap_int or None,
+            "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
+            "scan_background_completion_truth": background_truth,
+        }
+
     if scan_reason == "scan_exception":
         root_cause = "scan_exception"
         recovery_action = "review_scan_exception_stage_and_logs"
@@ -25602,7 +25651,14 @@ def _p456_background_scan_truth() -> dict:
         "would_trade": state.get("would_trade"),
         "blocked": state.get("blocked"),
         "error": state.get("error"),
+        "exception_type": state.get("exception_type"),
+        "traceback_tail": state.get("traceback_tail"),
         "reason": state.get("reason"),
+        "stage": state.get("stage"),
+        "stage_details": state.get("stage_details"),
+        "effective_dry_run": state.get("effective_dry_run"),
+        "effective_dry_run_reason": state.get("effective_dry_run_reason"),
+        "dry_run_truth": state.get("dry_run_truth"),
     }
 
 
@@ -25615,6 +25671,64 @@ def _p456_mark_background_scan(**updates) -> dict:
         SWING_SCAN_BACKGROUND_COMPLETION["updated_utc"] = now_iso
         return dict(SWING_SCAN_BACKGROUND_COMPLETION)
 
+def _p456_entry_dry_run_truth(source: str = "worker_scan", include_release_gate: bool = True) -> dict:
+    blockers = []
+    release_gate = {}
+
+    if bool(DRY_RUN):
+        blockers.append("dry_run_true")
+    if not bool(LIVE_TRADING_ENABLED):
+        blockers.append("live_trading_disabled")
+    if source == "worker_scan" and not bool(NEW_ENTRIES_ENABLED):
+        blockers.append("new_entries_disabled")
+    if source == "worker_scan" and bool(realized_closed_trade_loss_halt_active()):
+        blockers.append("realized_loss_halt_active")
+    if source == "worker_scan" and not bool(SCANNER_ALLOW_LIVE):
+        blockers.append("scanner_allow_live_false")
+    if source == "worker_scan" and bool(SCANNER_DRY_RUN):
+        blockers.append("scanner_dry_run_true")
+
+    if include_release_gate and bool(RELEASE_GATE_ENFORCED):
+        try:
+            release_gate = dict(release_gate_status() or {})
+            if not bool(release_gate.get("live_orders_permitted")):
+                blockers.append("release_gate_live_orders_not_permitted")
+        except Exception as e:
+            release_gate = {
+                "error": str(e),
+                "exception_type": type(e).__name__,
+            }
+            blockers.append("release_gate_exception")
+
+    if source == "worker_scan":
+        effective = bool(blockers)
+    else:
+        effective = bool(blockers)
+
+    return {
+        "source": source,
+        "effective_dry_run": bool(effective),
+        "effective_dry_run_reason": "none" if not blockers else ",".join(_dedupe_keep_order(blockers)),
+        "blockers": _dedupe_keep_order(blockers),
+        "flags": {
+            "dry_run": bool(DRY_RUN),
+            "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+            "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "scanner_dry_run": bool(SCANNER_DRY_RUN),
+            "release_gate_enforced": bool(RELEASE_GATE_ENFORCED),
+        },
+        "release_gate": {
+            "live_orders_permitted": release_gate.get("live_orders_permitted"),
+            "go_live_eligible": release_gate.get("go_live_eligible"),
+            "unmet_conditions": list(release_gate.get("unmet_conditions") or []),
+            "system_release_stage": release_gate.get("system_release_stage"),
+            "configured_release_stage": release_gate.get("configured_release_stage"),
+            "effective_release_stage": release_gate.get("effective_release_stage"),
+            "error": release_gate.get("error"),
+            "exception_type": release_gate.get("exception_type"),
+        },
+    }
 
 def _p456_should_fast_close_swing_scan(source_kind: str, body: dict | None, fast_response: bool) -> bool:
     payload = dict(body or {})
@@ -25637,7 +25751,7 @@ def _p456_start_swing_scan_background(
     body: dict,
     source_meta: dict,
     scan_attempt_id: str,
-    effective_dry_run: bool,
+    effective_dry_run: bool | None,
     requested_reason: str | None,
     set_last_scan_fn,
 ) -> JSONResponse:
@@ -25656,7 +25770,14 @@ def _p456_start_swing_scan_background(
         would_trade=None,
         blocked=None,
         error=None,
+        exception_type=None,
+        traceback_tail=None,
         reason=requested_reason or "scheduled",
+        stage="accepted",
+        stage_details={},
+        effective_dry_run=effective_dry_run if effective_dry_run is not None else None,
+        effective_dry_run_reason="background_pending" if effective_dry_run is None else "precomputed",
+        dry_run_truth=None,
     )
 
     try:
@@ -25679,20 +25800,42 @@ def _p456_start_swing_scan_background(
             return int(max(0.0, (_time.perf_counter() - bg_started) * 1000.0))
 
         try:
-            _p456_mark_background_scan(status="running")
+            dry_run_truth = _p456_entry_dry_run_truth("worker_scan", include_release_gate=True)
+            bg_effective_dry_run = bool(dry_run_truth.get("effective_dry_run"))
+
+            _p456_mark_background_scan(
+                status="running",
+                stage="dry_run_truth_complete",
+                stage_details={
+                    "effective_dry_run": bg_effective_dry_run,
+                    "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
+                },
+                effective_dry_run=bg_effective_dry_run,
+                effective_dry_run_reason=dry_run_truth.get("effective_dry_run_reason"),
+                dry_run_truth=dry_run_truth,
+            )
             _record_scanner_telemetry(
                 "scan_background_started",
                 "running",
                 details={
                     "scan_attempt_id": scan_attempt_id,
                     "scan_reason": requested_reason or "scheduled",
+                    "effective_dry_run": bg_effective_dry_run,
+                    "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
                     **source_meta_snapshot,
                 },
             )
 
+            _p456_mark_background_scan(status="running", stage="reconcile_start", stage_details={})
             reconcile_actions = reconcile_trade_plans_from_alpaca()
+
+            _p456_mark_background_scan(
+                status="running",
+                stage="swing_scan_start",
+                stage_details={"reconcile_action_count": len(reconcile_actions or [])},
+            )
             swing_resp = run_swing_daily_scan(
-                effective_dry_run,
+                bg_effective_dry_run,
                 set_last_scan_fn,
                 _bg_elapsed_ms,
                 reconcile_actions=reconcile_actions,
@@ -25704,6 +25847,8 @@ def _p456_start_swing_scan_background(
                 "ok": bool((swing_resp or {}).get("ok", True)) if isinstance(swing_resp, dict) else True,
                 "background_completion": True,
                 "scan_attempt_id": scan_attempt_id,
+                "effective_dry_run": bg_effective_dry_run,
+                "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
                 "scanner": scanner_payload,
             }
 
@@ -25718,6 +25863,17 @@ def _p456_start_swing_scan_background(
                 blocked=int((scanner_payload or {}).get("blocked") or 0),
                 reason=str((scanner_payload or {}).get("reason") or requested_reason or "scan_completed"),
                 error=None,
+                exception_type=None,
+                traceback_tail=None,
+                stage="completed",
+                stage_details={
+                    "symbols_scanned": int((scanner_payload or {}).get("symbols_scanned") or 0),
+                    "signals": int((scanner_payload or {}).get("signals") or 0),
+                    "blocked": int((scanner_payload or {}).get("blocked") or 0),
+                },
+                effective_dry_run=bg_effective_dry_run,
+                effective_dry_run_reason=dry_run_truth.get("effective_dry_run_reason"),
+                dry_run_truth=dry_run_truth,
             )
 
             SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
@@ -25740,26 +25896,37 @@ def _p456_start_swing_scan_background(
                     "duration_ms": duration_ms,
                     "scan_reason": requested_reason or "scheduled",
                     "background_completion": True,
+                    "effective_dry_run": bg_effective_dry_run,
+                    "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
                     **source_meta_snapshot,
                 },
             )
         except Exception as e:
-            err = str(e)
+            err = str(e) or repr(e)
+            exc_type = type(e).__name__
             duration_ms = _bg_elapsed_ms()
+            stage_snapshot = _p402_stage_snapshot()
+            trace_tail = traceback.format_exc().splitlines()[-12:]
             _p456_mark_background_scan(
                 status="failed",
                 completed_utc=datetime.now(timezone.utc).isoformat(),
                 duration_ms=duration_ms,
                 error=err,
+                exception_type=exc_type,
+                traceback_tail=trace_tail,
                 reason="background_scan_exception",
+                stage=str((stage_snapshot or {}).get("stage") or "background_scan_exception"),
+                stage_details=dict((stage_snapshot or {}).get("details") or {}),
             )
             try:
                 set_last_scan_fn(
                     skipped=False,
                     reason="scan_exception",
                     error=err,
-                    scan_exception_stage=str((_p402_stage_snapshot() or {}).get("stage") or "background_scan"),
-                    scan_stage_checkpoint=_p402_stage_snapshot(),
+                    exception_type=exc_type,
+                    traceback_tail=trace_tail,
+                    scan_exception_stage=str((stage_snapshot or {}).get("stage") or "background_scan"),
+                    scan_stage_checkpoint=stage_snapshot,
                     scanned=0,
                     signals=0,
                     would_trade=0,
@@ -25774,6 +25941,8 @@ def _p456_start_swing_scan_background(
                 "updated_utc": datetime.now(timezone.utc).isoformat(),
                 "completed_utc": datetime.now(timezone.utc).isoformat(),
                 "error": err,
+                "exception_type": exc_type,
+                "traceback_tail": trace_tail,
                 "source_meta": source_meta_snapshot,
             }
             try:
@@ -25782,9 +25951,13 @@ def _p456_start_swing_scan_background(
                     "exception",
                     details={
                         "error": err,
+                        "exception_type": exc_type,
+                        "traceback_tail": trace_tail,
                         "duration_ms": duration_ms,
                         "scan_reason": requested_reason or "scheduled",
                         "background_completion": True,
+                        "scan_exception_stage": str((stage_snapshot or {}).get("stage") or "background_scan"),
+                        "scan_stage_checkpoint": stage_snapshot,
                         **source_meta_snapshot,
                     },
                 )
@@ -25812,7 +25985,8 @@ def _p456_start_swing_scan_background(
             "scanner": {
                 "status": "accepted",
                 "strategy_mode": STRATEGY_MODE,
-                "effective_dry_run": bool(effective_dry_run),
+                "effective_dry_run": effective_dry_run if effective_dry_run is not None else None,
+                "effective_dry_run_reason": "background_pending" if effective_dry_run is None else "precomputed",
                 "requested_reason": requested_reason or "scheduled",
             },
             "background_truth": _p456_background_scan_truth(),
@@ -42751,6 +42925,7 @@ def diagnostics_scanner(history_limit: int = DIAGNOSTIC_SCANNER_HISTORY_LIMIT):
         "summary": summary,
         "scanner_failure_root_cause": scanner_failure_root_cause,
         "scan_background_completion_truth": _p456_background_scan_truth(),
+        "effective_entry_dry_run_truth": _p456_entry_dry_run_truth("worker_scan", include_release_gate=True),
         "side_effect_truth": dict(summary.get("side_effect_truth") or {}),
         "latest_runtime_budget": _p273_runtime_budget_snapshot(
             int((dict(LAST_SCAN or {}).get("duration_ms") or 0)),
@@ -53746,7 +53921,10 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
     except Exception:
         pass
 
-    effective_dry_run = effective_entry_dry_run("worker_scan")
+    # Patch 456 hotfix: do not evaluate release-gate/dry-run truth before the
+    # fast worker response. That can call heavier readiness logic and delay the
+    # 202 handoff. The background scan computes the authoritative dry-run truth.
+    effective_dry_run = None
     requested_reason = str(body.get("reason") or "").strip() or None
     fast_response = _p273_should_fast_response(source_kind, body)
 
@@ -53758,7 +53936,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "enabled": SCANNER_ENABLED,
             "dry_run": SCANNER_DRY_RUN,
             "allow_live": SCANNER_ALLOW_LIVE,
-            "effective_dry_run": effective_dry_run,
+            "effective_dry_run": bool(effective_dry_run) if effective_dry_run is not None else bool(effective_entry_dry_run("worker_scan")),
             "universe_provider": SCANNER_UNIVERSE_PROVIDER,
             **kwargs
         })
@@ -53889,17 +54067,19 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
 
-# Fast-close worker-triggered swing scans so the scanner service does not time out
-# while the main webhook completes candidate evaluation and submission.
+# Fast-close worker-triggered swing scans so the scanner service does not time out.
+# Keep this before reconcile and before full release-gate dry-run evaluation.
         if _p456_should_fast_close_swing_scan(source_kind, body, fast_response):
             return _p456_start_swing_scan_background(
                 body=body,
                 source_meta=source_meta,
                 scan_attempt_id=scan_attempt_id,
-                effective_dry_run=effective_dry_run,
+                effective_dry_run=None,
                 requested_reason=requested_reason,
                 set_last_scan_fn=_set_last_scan,
             )
+
+        effective_dry_run = effective_entry_dry_run("worker_scan")
 
 # Reconcile first: never place entries against stale internal state.
         _stage_start()

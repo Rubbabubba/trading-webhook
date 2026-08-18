@@ -258,9 +258,9 @@ def scanner_light_snapshot(
     )
 
     scanner_currently_ok = bool(
-        scanner_status in {"healthy", "scan_running_within_grace"}
-        and not post_open_scan_missing
-        and not active_warning_codes
+        scanner_status in {"healthy", "scan_running_within_grace", "background_scan_running"}
+        and (background_scan_active or not post_open_scan_missing)
+        and (background_scan_active or not active_warning_codes)
     )
 
     return {
