@@ -141,7 +141,7 @@ def symbols_from_env(raw: str) -> list[str]:
 
 def parse_hhmm(value: str) -> time:
     hour, minute = str(value).split(":")[:2]
-    return time(int(hour), int(minute), tzinfo=NY)
+    return time(int(hour), int(minute))
 
 
 def sma(values: list[float], n: int) -> float | None:
@@ -268,9 +268,12 @@ def fetch_bars(client: StockHistoricalDataClient, config: Config, timeframe: Tim
 
 def regular_minutes(rows: list[dict]) -> list[dict]:
     out = []
+    regular_start = time(9, 30)
+    regular_end = time(16, 0)
     for row in rows:
         ts = datetime.fromisoformat(str(row["ts_ny"]))
-        if time(9, 30, tzinfo=NY) <= ts.timetz() <= time(16, 0, tzinfo=NY):
+        local_time = ts.time()
+        if regular_start <= local_time <= regular_end:
             out.append(row)
     return out
 
@@ -527,7 +530,8 @@ def run(config: Config) -> dict:
                 still_open.append(pos)
             open_positions = still_open
 
-            if ts.timetz() < scan_start or ts.timetz() > scan_end:
+            local_time = ts.time()
+            if local_time < scan_start or local_time > scan_end:
                 continue
 
             minutes_from_open = (ts.hour * 60 + ts.minute) - (9 * 60 + 30)
