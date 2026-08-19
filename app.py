@@ -1977,6 +1977,84 @@ SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN = getenv_int_any(
     "SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN",
     default=2,
 )
+
+# Patch 459 - First-$2K regime profile switch
+SWING_FIRST_2K_REGIME_PROFILE_SWITCH_ENABLED = env_bool_any(
+    "SWING_FIRST_2K_REGIME_PROFILE_SWITCH_ENABLED",
+    default=True,
+)
+SWING_FIRST_2K_REGIME_PROFILE_MODE = str(
+    getenv_any("SWING_FIRST_2K_REGIME_PROFILE_MODE", default="auto") or "auto"
+).strip().lower()
+SWING_FIRST_2K_REGIME_MOMENTUM_SCORE_MIN = getenv_float_any(
+    "SWING_FIRST_2K_REGIME_MOMENTUM_SCORE_MIN",
+    default=75.0,
+)
+SWING_FIRST_2K_REGIME_MOMENTUM_BREADTH_MIN = getenv_float_any(
+    "SWING_FIRST_2K_REGIME_MOMENTUM_BREADTH_MIN",
+    default=0.55,
+)
+SWING_FIRST_2K_MOMENTUM_RISK_DOLLARS = getenv_float_any(
+    "SWING_FIRST_2K_MOMENTUM_RISK_DOLLARS",
+    default=60.0,
+)
+SWING_FIRST_2K_MOMENTUM_TARGET_R_MULT = getenv_float_any(
+    "SWING_FIRST_2K_MOMENTUM_TARGET_R_MULT",
+    default=2.0,
+)
+SWING_FIRST_2K_MOMENTUM_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_FIRST_2K_MOMENTUM_MIN_RANK_SCORE",
+    default=103.0,
+)
+SWING_FIRST_2K_MOMENTUM_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
+    "SWING_FIRST_2K_MOMENTUM_MAX_BELOW_BREAKOUT_PCT",
+    default=0.09,
+)
+SWING_FIRST_2K_MOMENTUM_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_FIRST_2K_MOMENTUM_MAX_RISK_PER_SHARE_PCT",
+    default=0.12,
+)
+SWING_FIRST_2K_MOMENTUM_MAX_ENTRIES_PER_DAY = getenv_int_any(
+    "SWING_FIRST_2K_MOMENTUM_MAX_ENTRIES_PER_DAY",
+    default=5,
+)
+SWING_FIRST_2K_MOMENTUM_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_FIRST_2K_MOMENTUM_MAX_ENTRIES_PER_SCAN",
+    default=1,
+)
+SWING_FIRST_2K_MOMENTUM_SYMBOLS = getenv_any(
+    "SWING_FIRST_2K_MOMENTUM_SYMBOLS",
+    default="AMAT,SNOW,NOW,KLAC,PANW,LRCX,DDOG,CRWD,ORCL,MRVL,IWM,ANET",
+)
+SWING_FIRST_2K_CHOP_RISK_DOLLARS = getenv_float_any(
+    "SWING_FIRST_2K_CHOP_RISK_DOLLARS",
+    default=30.0,
+)
+SWING_FIRST_2K_CHOP_TARGET_R_MULT = getenv_float_any(
+    "SWING_FIRST_2K_CHOP_TARGET_R_MULT",
+    default=1.5,
+)
+SWING_FIRST_2K_CHOP_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_FIRST_2K_CHOP_MIN_RANK_SCORE",
+    default=100.0,
+)
+SWING_FIRST_2K_CHOP_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
+    "SWING_FIRST_2K_CHOP_MAX_BELOW_BREAKOUT_PCT",
+    default=0.09,
+)
+SWING_FIRST_2K_CHOP_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_FIRST_2K_CHOP_MAX_RISK_PER_SHARE_PCT",
+    default=0.08,
+)
+SWING_FIRST_2K_CHOP_MAX_ENTRIES_PER_DAY = getenv_int_any(
+    "SWING_FIRST_2K_CHOP_MAX_ENTRIES_PER_DAY",
+    default=4,
+)
+SWING_FIRST_2K_CHOP_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_FIRST_2K_CHOP_MAX_ENTRIES_PER_SCAN",
+    default=2,
+)
+
 SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
     "SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT",
     default=0.055,
@@ -2823,7 +2901,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-458-scanner-startup-grace-main-web-readiness-backoff"
+PATCH_VERSION = "patch-459-first-2k-regime-profile-switch-breakout-risk-target-calibration"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -6375,7 +6453,8 @@ def _preview_plan_from_candidate(candidate: dict | None = None) -> dict:
         'scan_ts': row.get('scan_ts_utc') or row.get('ts_utc') or datetime.now(timezone.utc).isoformat(),
         'breakout_lookback_days': SWING_BREAKOUT_LOOKBACK_DAYS,
         'stop_basis': SWING_STOP_MODE,
-        'target_r_mult': SWING_TARGET_R_MULT,
+        'target_r_mult': _p459_effective_swing_target_r_mult(),
+        'first_2k_regime_profile': _p459_active_swing_regime_profile(),
         'entry_type': row.get('entry_type'),
         'risk_adjusted_near_miss_entry': bool(row.get('risk_adjusted_near_miss_entry')),
         'target_path_risk_adjusted_near_miss': row.get('target_path_risk_adjusted_near_miss'),
@@ -6922,11 +7001,12 @@ def compute_qty(price: float, side: str = "buy", meta: dict | None = None) -> fl
     if risk_per_share <= 0:
         raise ValueError("entry risk_per_share must be > 0")
 
-    qty = float(RISK_DOLLARS or 0.0) / risk_per_share
+    effective_risk_dollars = _p459_effective_swing_risk_dollars()
+    qty = float(effective_risk_dollars or 0.0) / risk_per_share
 
     if bool(SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED):
         min_starter = max(0.0, float(SWING_TRUE_DOLLAR_RISK_MIN_STARTER_QTY or 0.0))
-        max_starter_risk = float(RISK_DOLLARS or 0.0) * max(
+        max_starter_risk = float(effective_risk_dollars or 0.0) * max(
             0.0,
             float(SWING_TRUE_DOLLAR_RISK_MAX_STARTER_RISK_MULTIPLE or 0.0),
         )
@@ -12911,7 +12991,7 @@ def _p291_apply_risk_adjusted_entry_sizing(candidate: dict | None, *, sleeve: st
     close = float(_safe_float(c.get("close") or c.get("entry") or c.get("last")))
     risk_per_share = float(_safe_float(c.get("risk_per_share")))
     multiplier = max(0.05, min(1.0, float(risk_multiplier if risk_multiplier is not None else 1.0)))
-    base_risk = float(RISK_DOLLARS or 0.0)
+    base_risk = float(_p459_effective_swing_risk_dollars() or RISK_DOLLARS or 0.0)
     effective_risk = max(0.01, base_risk * multiplier)
 
     if close <= 0 or risk_per_share <= 0:
@@ -22305,20 +22385,113 @@ def _p300_selection_contract_cleanup(rows: list | None) -> list[dict]:
         cleaned.append(c)
     return cleaned
 
+def _p459_active_swing_regime_profile() -> dict:
+    mode = str(SWING_FIRST_2K_REGIME_PROFILE_MODE or "auto").strip().lower()
+    regime = dict(globals().get("LAST_REGIME_SNAPSHOT") or {})
+    score = float(_safe_float(regime.get("score"), 0.0))
+    breadth = float(_safe_float(regime.get("breadth"), 0.0))
+    favorable = bool(regime.get("favorable"))
+
+    if not bool(SWING_FIRST_2K_REGIME_PROFILE_SWITCH_ENABLED):
+        profile = "static"
+        reason = "profile_switch_disabled"
+    elif mode in {"momentum", "momentum_thrive", "thrive"}:
+        profile = "momentum_thrive"
+        reason = "forced_momentum_profile"
+    elif mode in {"chop", "chop_preserve", "preserve"}:
+        profile = "chop_preserve"
+        reason = "forced_chop_profile"
+    elif (
+        favorable
+        and score >= float(SWING_FIRST_2K_REGIME_MOMENTUM_SCORE_MIN)
+        and breadth >= float(SWING_FIRST_2K_REGIME_MOMENTUM_BREADTH_MIN)
+    ):
+        profile = "momentum_thrive"
+        reason = "regime_score_and_breadth_match_first_2k_window"
+    else:
+        profile = "chop_preserve"
+        reason = "recent_window_chop_preservation_profile"
+
+    if profile == "momentum_thrive":
+        contract = {
+            "risk_dollars": float(SWING_FIRST_2K_MOMENTUM_RISK_DOLLARS),
+            "target_r_mult": float(SWING_FIRST_2K_MOMENTUM_TARGET_R_MULT),
+            "min_rank_score": float(SWING_FIRST_2K_MOMENTUM_MIN_RANK_SCORE),
+            "max_below_breakout_pct": float(SWING_FIRST_2K_MOMENTUM_MAX_BELOW_BREAKOUT_PCT),
+            "max_risk_per_share_pct": float(SWING_FIRST_2K_MOMENTUM_MAX_RISK_PER_SHARE_PCT),
+            "max_entries_per_day": int(SWING_FIRST_2K_MOMENTUM_MAX_ENTRIES_PER_DAY),
+            "max_entries_per_scan": int(SWING_FIRST_2K_MOMENTUM_MAX_ENTRIES_PER_SCAN),
+            "sleeve_symbols": str(SWING_FIRST_2K_MOMENTUM_SYMBOLS or ""),
+        }
+    elif profile == "chop_preserve":
+        contract = {
+            "risk_dollars": float(SWING_FIRST_2K_CHOP_RISK_DOLLARS),
+            "target_r_mult": float(SWING_FIRST_2K_CHOP_TARGET_R_MULT),
+            "min_rank_score": float(SWING_FIRST_2K_CHOP_MIN_RANK_SCORE),
+            "max_below_breakout_pct": float(SWING_FIRST_2K_CHOP_MAX_BELOW_BREAKOUT_PCT),
+            "max_risk_per_share_pct": float(SWING_FIRST_2K_CHOP_MAX_RISK_PER_SHARE_PCT),
+            "max_entries_per_day": int(SWING_FIRST_2K_CHOP_MAX_ENTRIES_PER_DAY),
+            "max_entries_per_scan": int(SWING_FIRST_2K_CHOP_MAX_ENTRIES_PER_SCAN),
+            "sleeve_symbols": str(SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS or ""),
+        }
+    else:
+        contract = {
+            "risk_dollars": float(RISK_DOLLARS or 0.0),
+            "target_r_mult": float(SWING_TARGET_R_MULT or 0.0),
+            "min_rank_score": float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
+            "max_below_breakout_pct": float(SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT),
+            "max_risk_per_share_pct": float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
+            "max_entries_per_day": int(SWING_MAX_NEW_ENTRIES_PER_DAY),
+            "max_entries_per_scan": int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
+            "sleeve_symbols": str(SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS or ""),
+        }
+
+    return {
+        "enabled": bool(SWING_FIRST_2K_REGIME_PROFILE_SWITCH_ENABLED),
+        "mode": mode,
+        "active_profile": profile,
+        "reason": reason,
+        "regime": {
+            "favorable": favorable,
+            "score": score,
+            "breadth": breadth,
+            "ts_utc": regime.get("ts_utc"),
+        },
+        "contract": contract,
+        "replay_basis": {
+            "momentum_window": "2026-05-26_to_2026-06-30",
+            "momentum_best": "risk_60_daily_5_scan_1_target_2p0_rank_103_below_9pct",
+            "chop_window": "2026-07-01_to_2026-07-31",
+            "chop_best": "risk_30_daily_4_scan_2_target_1p5_rank_100_below_9pct",
+        },
+    }
+
+def _p459_effective_swing_risk_dollars() -> float:
+    profile = _p459_active_swing_regime_profile()
+    contract = dict(profile.get("contract") or {})
+    return float(contract.get("risk_dollars") or RISK_DOLLARS or 0.0)
+
+def _p459_effective_swing_target_r_mult() -> float:
+    profile = _p459_active_swing_regime_profile()
+    contract = dict(profile.get("contract") or {})
+    return float(contract.get("target_r_mult") or SWING_TARGET_R_MULT or 0.0)
+
 def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
+    profile = _p459_active_swing_regime_profile()
+    contract = dict(profile.get("contract") or {})
     return SwingProductionContractConfig(
         production_reset_enabled=bool(SWING_PRODUCTION_RESET_ENABLED),
-        min_rank_score=float(SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
+        min_rank_score=float(contract.get("min_rank_score") or SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
         min_avg_dollar_volume=float(SWING_PRODUCTION_RESET_MIN_AVG_DOLLAR_VOLUME),
-        max_risk_per_share_pct=float(SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
-        max_below_breakout_pct=float(SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT),
+        max_risk_per_share_pct=float(contract.get("max_risk_per_share_pct") or SWING_PRODUCTION_RESET_MAX_RISK_PER_SHARE_PCT),
+        max_below_breakout_pct=float(contract.get("max_below_breakout_pct") or SWING_PRODUCTION_RESET_MAX_BELOW_BREAKOUT_PCT),
         max_above_breakout_pct=float(SWING_PRODUCTION_RESET_MAX_ABOVE_BREAKOUT_PCT),
         min_close_to_high_pct=float(SWING_PRODUCTION_RESET_MIN_CLOSE_TO_HIGH_PCT),
         min_return_20d_pct=float(SWING_PRODUCTION_RESET_MIN_RETURN_20D_PCT),
         allow_mean_reversion=bool(SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION),
         mean_reversion_strategy_name=str(MEAN_REVERSION_STRATEGY_NAME),
         breakout_strategy_name=str(BREAKOUT_STRATEGY_NAME),
-        max_entries_per_scan=int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
+        max_entries_per_scan=int(contract.get("max_entries_per_scan") or SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN),
         risk_calibration_enabled=bool(SWING_PRODUCTION_RISK_CALIBRATION_ENABLED),
         risk_calibration_max_risk_pct=float(SWING_PRODUCTION_RISK_CALIBRATION_MAX_RISK_PCT),
         risk_calibration_min_rank_score=float(SWING_PRODUCTION_RISK_CALIBRATION_MIN_RANK_SCORE),
@@ -22332,15 +22505,19 @@ def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
         near_rank_revival_min_target_path_score=float(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MIN_TARGET_PATH_SCORE),
         near_rank_revival_max_entries_per_scan=int(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN),
         first_2k_geometry_sleeve_enabled=bool(SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED),
-        first_2k_geometry_sleeve_symbols=str(SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS),
+        first_2k_geometry_sleeve_symbols=str(contract.get("sleeve_symbols") or SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS),
         first_2k_geometry_sleeve_min_rank_score=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE),
         first_2k_geometry_sleeve_max_below_breakout_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT),
         first_2k_geometry_sleeve_min_close_to_high_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT),
         first_2k_geometry_sleeve_max_risk_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT),
         first_2k_geometry_sleeve_min_target_path_score=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_TARGET_PATH_SCORE),
-        first_2k_geometry_sleeve_max_entries_per_scan=int(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN),
+        first_2k_geometry_sleeve_max_entries_per_scan=int(contract.get("max_entries_per_scan") or SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN),
+        regime_profile_enabled=bool(profile.get("enabled")),
+        active_regime_profile=str(profile.get("active_profile") or "static"),
+        active_regime_profile_reason=str(profile.get("reason") or ""),
+        active_profile_target_r_mult=float(contract.get("target_r_mult") or SWING_TARGET_R_MULT or 0.0),
+        active_profile_risk_dollars=float(contract.get("risk_dollars") or RISK_DOLLARS or 0.0),
     )
-
 
 def _p323_value(candidate: dict | None, *keys):
     c = dict(candidate or {})
@@ -22349,7 +22526,6 @@ def _p323_value(candidate: dict | None, *keys):
         if val is not None and str(val).strip() != "":
             return val
     return None
-
 
 def _p323_pct_decimal(value):
     if value is None or str(value).strip() == "":
@@ -23695,8 +23871,10 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
     range_pct = (high - low) / max(close, 1e-9)
     stop_price = min(trailing_low, breakout_ref * (1.0 - SWING_BREAKOUT_BUFFER_PCT))
     risk_per_share = max(close - stop_price, close * 0.0025)
-    target_price = close + (risk_per_share * SWING_TARGET_R_MULT)
-    requested_qty = min(MAX_QTY, max(MIN_QTY, round(RISK_DOLLARS / max(risk_per_share, 1e-9), 2)))
+    effective_target_r_mult = _p459_effective_swing_target_r_mult()
+    effective_risk_dollars = _p459_effective_swing_risk_dollars()
+    target_price = close + (risk_per_share * effective_target_r_mult)
+    requested_qty = min(MAX_QTY, max(MIN_QTY, round(effective_risk_dollars / max(risk_per_share, 1e-9), 2)))
     affordable = clip_qty_for_affordability(close, requested_qty)
     est_qty = float(affordable.get('submitted_qty') or 0.0)
     score = 0.0
@@ -52640,6 +52818,7 @@ def diagnostics_swing_selection_contract_module_status(limit: int = 10):
         "mismatch_symbols": mismatches,
         "rows": checked,
         "config": {
+            "first_2k_regime_profile": _p459_active_swing_regime_profile(),
             "production_reset_enabled": bool(config.production_reset_enabled),
             "min_rank_score": float(config.min_rank_score),
             "min_avg_dollar_volume": float(config.min_avg_dollar_volume),
@@ -52662,6 +52841,33 @@ def diagnostics_swing_selection_contract_module_status(limit: int = 10):
             "module_split_parity_ok"
             if not mismatches
             else "module_split_mismatch_investigate_before_removal"
+        ),
+    }
+
+@app.get("/diagnostics/first_2k_regime_profile")
+def diagnostics_first_2k_regime_profile():
+    profile = _p459_active_swing_regime_profile()
+    contract = dict(profile.get("contract") or {})
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "first_2k_regime_profile",
+        "read_only": True,
+        "profile": profile,
+        "effective": {
+            "risk_dollars": float(contract.get("risk_dollars") or 0.0),
+            "target_r_mult": float(contract.get("target_r_mult") or 0.0),
+            "min_rank_score": float(contract.get("min_rank_score") or 0.0),
+            "max_below_breakout_pct": float(contract.get("max_below_breakout_pct") or 0.0),
+            "max_risk_per_share_pct": float(contract.get("max_risk_per_share_pct") or 0.0),
+            "max_entries_per_day": int(contract.get("max_entries_per_day") or 0),
+            "max_entries_per_scan": int(contract.get("max_entries_per_scan") or 0),
+            "sleeve_symbols": str(contract.get("sleeve_symbols") or ""),
+        },
+        "recommended_action": (
+            "momentum_profile_active_press_only_if_scanner_finds_clean_candidates"
+            if str(profile.get("active_profile")) == "momentum_thrive"
+            else "chop_profile_active_keep_risk_small_and_capture_faster"
         ),
     }
 
@@ -52701,6 +52907,7 @@ def diagnostics_swing_runtime_config():
         and not _cfg_bool("DRY_RUN")
         and not _cfg_bool("SCANNER_DRY_RUN")
     )
+    first_2k_profile = _p459_active_swing_regime_profile()
 
     retired_paths = {
         "heavy_operator_bundle": {
@@ -52775,6 +52982,9 @@ def diagnostics_swing_runtime_config():
             "max_portfolio_exposure_pct": _cfg_float("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", 0.0),
             "max_symbol_exposure_pct": _cfg_float("SWING_MAX_SYMBOL_EXPOSURE_PCT", 0.0),
             "risk_per_trade_dollars": _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0),
+            "effective_profile_risk_dollars": float((first_2k_profile.get("contract") or {}).get("risk_dollars") or 0.0),
+            "effective_profile_target_r_mult": float((first_2k_profile.get("contract") or {}).get("target_r_mult") or 0.0),
+            "first_2k_regime_profile": first_2k_profile,
         },
         risk_controls={
             "daily_stop_dollars": _cfg_float("DAILY_STOP_DOLLARS", 0.0),

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-436-thrive-fast-cycle-enforcement-eligible-sleeve-selection-finalizer"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-459-first-2k-regime-profile-switch-breakout-risk-target-calibration"
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,11 @@ class SwingProductionContractConfig:
     first_2k_geometry_sleeve_max_risk_pct: float = 0.06
     first_2k_geometry_sleeve_min_target_path_score: float = 40.0
     first_2k_geometry_sleeve_max_entries_per_scan: int = 2
+    regime_profile_enabled: bool = False
+    active_regime_profile: str = "static"
+    active_regime_profile_reason: str = "profile_switch_disabled"
+    active_profile_target_r_mult: float = 2.0
+    active_profile_risk_dollars: float = 30.0
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -330,9 +335,14 @@ def swing_production_contract(
         "breakout_distance_pct": breakout_distance_pct,
         "close_to_high_pct": close_to_high_pct,
         "return_20d_pct": return_20d_pct,
+        "regime_profile": {
+            "enabled": bool(config.regime_profile_enabled),
+            "active_profile": str(config.active_regime_profile or "static"),
+            "reason": str(config.active_regime_profile_reason or ""),
+            "target_r_mult": float(config.active_profile_target_r_mult or 0.0),
+            "risk_dollars": float(config.active_profile_risk_dollars or 0.0),
+        },
     }
-
-
 
 def apply_swing_production_contract(
     candidate: dict | None,
