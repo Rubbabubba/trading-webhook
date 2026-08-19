@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-372-scanner-inflight-grace-window-dispatch-failure-aging-truth"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-460-effective-profile-runtime-truth-restart-lost-scanner-failure-aging"
 
 
 def selected_submission_truth_light_snapshot(
@@ -244,6 +244,13 @@ def scanner_light_snapshot(
         or {}
     )
     background_scan_active = str(scan_background_completion_truth.get("status") or "").strip().lower() in {"accepted", "running"}
+    background_restart_lost = bool(
+        str(scan_background_completion_truth.get("exception_type") or "").strip() == "BackgroundScanLostAfterRestart"
+        or str(scan_background_completion_truth.get("reason") or "").strip().lower() == "background_scan_lost_after_restart"
+        or str(scanner_failure_root_cause.get("exception_type") or "").strip() == "BackgroundScanLostAfterRestart"
+        or str(scanner_failure_root_cause.get("root_cause") or "").strip().lower() == "background_scan_failed"
+        and str(scanner_failure_root_cause.get("error") or "").strip().lower() == "background scan was active before process restart and cannot be resumed"
+    )
 
     scanner_status = (
         "background_scan_running"
@@ -263,6 +270,23 @@ def scanner_light_snapshot(
         and (background_scan_active or not active_warning_codes)
     )
 
+    scanner_failure_root_cause_historical = {}
+    if background_restart_lost and scanner_currently_ok and not background_scan_active:
+        scanner_failure_root_cause_historical = dict(scanner_failure_root_cause or {})
+        scanner_failure_root_cause_historical["active"] = False
+        scanner_failure_root_cause_historical["aged_reason"] = "restart_lost_background_scan_is_historical_after_healthy_heartbeat"
+        scanner_failure_root_cause = {
+            "active": False,
+            "root_cause": "none",
+            "recovery_action": "none",
+            "aged_from": "BackgroundScanLostAfterRestart",
+            "aged_reason": "restart_lost_background_scan_is_historical_after_healthy_heartbeat",
+        }
+        if "background_scan_lost_after_restart_aged" not in recovered_warning_codes:
+            recovered_warning_codes.append("background_scan_lost_after_restart_aged")
+        if "background_scan_lost_after_restart" not in historical_warning_codes:
+            historical_warning_codes.append("background_scan_lost_after_restart")
+
     return {
         "ok": True,
         "patch_version": patch_version,
@@ -278,6 +302,7 @@ def scanner_light_snapshot(
         "last_error_historical": current_error if scanner_currently_ok else None,
         "scanner_status": scanner_status,
         "scanner_failure_root_cause": scanner_failure_root_cause,
+        "scanner_failure_root_cause_historical": scanner_failure_root_cause_historical,
         "scan_background_completion_truth": scan_background_completion_truth,
         "in_flight_run": bool(effective_in_flight or background_scan_active),
         "raw_in_flight_run": bool(in_flight),
@@ -309,6 +334,7 @@ def scanner_light_snapshot(
             "partial_run_open_reconciled_by_completed_scan": bool(in_flight_reconciled_by_completed_scan),
             "post_open_scan_missing": bool(post_open_scan_missing),
             "background_scan_active": bool(background_scan_active),
+            "background_scan_lost_after_restart_aged": bool(scanner_failure_root_cause_historical),
         },
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),

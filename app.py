@@ -2901,7 +2901,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-459-first-2k-regime-profile-switch-breakout-risk-target-calibration"
+PATCH_VERSION = "patch-460-effective-profile-runtime-truth-restart-lost-scanner-failure-aging"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -52965,25 +52965,43 @@ def diagnostics_swing_runtime_config():
         capacity={
             "max_open_positions": _cfg_int(["MAX_OPEN_POSITIONS", "SWING_MAX_OPEN_POSITIONS"], 0),
             "sleeve_max_open_positions": _cfg_int("SWING_SLEEVE_MAX_OPEN_POSITIONS", 0),
-            "max_new_entries_per_day": _cfg_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 0),
-            "scanner_max_entries_per_scan": _cfg_int("SCANNER_MAX_ENTRIES_PER_SCAN", 0),
-            "production_reset_max_entries_per_scan": _cfg_int("SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN", 0),
-            "goal_calibrated_shape": {
-                "target": "up_to_4_per_day_max_2_per_scan",
+            "base_env": {
+                "max_new_entries_per_day": _cfg_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 0),
+                "scanner_max_entries_per_scan": _cfg_int("SCANNER_MAX_ENTRIES_PER_SCAN", 0),
+                "production_reset_max_entries_per_scan": _cfg_int("SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN", 0),
                 "risk_per_trade_dollars": _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0),
-                "aligned": bool(
-                    _cfg_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 0) >= 4
-                    and _cfg_int("SCANNER_MAX_ENTRIES_PER_SCAN", 0) == 2
-                    and _cfg_int("SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN", 0) == 2
-                    and _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0) <= 30.0
-                ),
+                "target_r_mult": _cfg_float("SWING_TARGET_R_MULT", 0.0),
+            },
+            "effective_live_profile": {
+                "active_profile": first_2k_profile.get("active_profile"),
+                "reason": first_2k_profile.get("reason"),
+                "risk_per_trade_dollars": float((first_2k_profile.get("contract") or {}).get("risk_dollars") or 0.0),
+                "target_r_mult": float((first_2k_profile.get("contract") or {}).get("target_r_mult") or 0.0),
+                "max_new_entries_per_day": int((first_2k_profile.get("contract") or {}).get("max_entries_per_day") or 0),
+                "max_entries_per_scan": int((first_2k_profile.get("contract") or {}).get("max_entries_per_scan") or 0),
+                "min_rank_score": float((first_2k_profile.get("contract") or {}).get("min_rank_score") or 0.0),
+                "max_below_breakout_pct": float((first_2k_profile.get("contract") or {}).get("max_below_breakout_pct") or 0.0),
+                "max_risk_per_share_pct": float((first_2k_profile.get("contract") or {}).get("max_risk_per_share_pct") or 0.0),
+                "sleeve_symbols": str((first_2k_profile.get("contract") or {}).get("sleeve_symbols") or ""),
+                "controls_new_entry_sizing": True,
+                "controls_breakout_target": True,
+                "controls_production_contract_thresholds": True,
+            },
+            "goal_calibrated_shape": {
+                "target": "profile_switch_uses_momentum_or_chop_shape_from_replay",
+                "base_env_risk_per_trade_dollars": _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0),
+                "effective_profile_risk_dollars": float((first_2k_profile.get("contract") or {}).get("risk_dollars") or 0.0),
+                "effective_profile_target_r_mult": float((first_2k_profile.get("contract") or {}).get("target_r_mult") or 0.0),
+                "aligned": bool(first_2k_profile.get("active_profile") in {"momentum_thrive", "chop_preserve"}),
             },
             "max_group_positions": _cfg_int("SWING_MAX_GROUP_POSITIONS", 0),
             "max_portfolio_exposure_pct": _cfg_float("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", 0.0),
             "max_symbol_exposure_pct": _cfg_float("SWING_MAX_SYMBOL_EXPOSURE_PCT", 0.0),
-            "risk_per_trade_dollars": _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0),
-            "effective_profile_risk_dollars": float((first_2k_profile.get("contract") or {}).get("risk_dollars") or 0.0),
-            "effective_profile_target_r_mult": float((first_2k_profile.get("contract") or {}).get("target_r_mult") or 0.0),
+            "risk_per_trade_dollars": float((first_2k_profile.get("contract") or {}).get("risk_dollars") or _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0)),
+            "target_r_mult": float((first_2k_profile.get("contract") or {}).get("target_r_mult") or _cfg_float("SWING_TARGET_R_MULT", 0.0)),
+            "max_new_entries_per_day": int((first_2k_profile.get("contract") or {}).get("max_entries_per_day") or _cfg_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 0)),
+            "scanner_max_entries_per_scan": int((first_2k_profile.get("contract") or {}).get("max_entries_per_scan") or _cfg_int("SCANNER_MAX_ENTRIES_PER_SCAN", 0)),
+            "production_reset_max_entries_per_scan": int((first_2k_profile.get("contract") or {}).get("max_entries_per_scan") or _cfg_int("SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN", 0)),
             "first_2k_regime_profile": first_2k_profile,
         },
         risk_controls={
