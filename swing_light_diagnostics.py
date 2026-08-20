@@ -244,14 +244,14 @@ def scanner_light_snapshot(
         or {}
     )
     background_scan_active = str(scan_background_completion_truth.get("status") or "").strip().lower() in {"accepted", "running"}
-    background_age_sec = _scanner_light_iso_age_sec(
-        scan_background_completion_truth.get("updated_utc")
-        or scan_background_completion_truth.get("started_utc")
-    )
+    background_started_age_sec = _scanner_light_iso_age_sec(scan_background_completion_truth.get("started_utc"))
+    background_heartbeat_age_sec = _scanner_light_iso_age_sec(scan_background_completion_truth.get("updated_utc"))
+    background_age_sec = background_started_age_sec
     background_budget_sec = max(60, int(scan_runtime_budget_sec or 240))
     background_timeout_sec = background_budget_sec + 60
-    background_over_budget = bool(background_scan_active and background_age_sec is not None and background_age_sec > background_budget_sec)
-    background_timed_out = bool(background_scan_active and background_age_sec is not None and background_age_sec > background_timeout_sec)
+    background_over_budget = bool(background_scan_active and background_started_age_sec is not None and background_started_age_sec > background_budget_sec)
+    background_timed_out = bool(background_scan_active and background_started_age_sec is not None and background_started_age_sec > background_timeout_sec)
+    background_heartbeat_stale = bool(background_scan_active and background_heartbeat_age_sec is not None and background_heartbeat_age_sec > 90)
     background_restart_lost = bool(
         str(scan_background_completion_truth.get("exception_type") or "").strip() == "BackgroundScanLostAfterRestart"
         or str(scan_background_completion_truth.get("reason") or "").strip().lower() == "background_scan_lost_after_restart"
@@ -336,6 +336,9 @@ def scanner_light_snapshot(
         "background_scan_runtime_truth": {
             "active": bool(background_scan_active),
             "age_sec": round(background_age_sec, 2) if background_age_sec is not None else None,
+            "started_age_sec": round(background_started_age_sec, 2) if background_started_age_sec is not None else None,
+            "heartbeat_age_sec": round(background_heartbeat_age_sec, 2) if background_heartbeat_age_sec is not None else None,
+            "heartbeat_stale": bool(background_heartbeat_stale),
             "budget_sec": int(background_budget_sec),
             "timeout_sec": int(background_timeout_sec),
             "over_budget": bool(background_over_budget),
@@ -375,6 +378,7 @@ def scanner_light_snapshot(
             "background_scan_active": bool(background_scan_active),
             "background_scan_over_budget": bool(background_over_budget),
             "background_scan_timed_out": bool(background_timed_out),
+            "background_scan_heartbeat_stale": bool(background_heartbeat_stale),
             "background_scan_lost_after_restart_aged": bool(scanner_failure_root_cause_historical),
         },
         "latest_scan": {

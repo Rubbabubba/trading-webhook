@@ -2876,6 +2876,7 @@ SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 SWING_SCAN_BACKGROUND_COMPLETION: dict = {}
 SWING_SCAN_BACKGROUND_LOCK = threading.RLock()
 SWING_SCAN_BACKGROUND_THREAD = None
+SWING_SCAN_THREAD_LOCAL = threading.local()
 
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
@@ -2902,7 +2903,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-462-hotfix-background-scan-runtime-timeout-stage-heartbeat-truth"
+PATCH_VERSION = "patch-463-background-scan-started-age-timeout-candidate-eval-budget-close"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -25693,16 +25694,30 @@ def _p399_submit_swing_candidate_rows(
 
 def _p402_stage_checkpoint(stage: str, **details) -> dict:
     try:
+        details_dict = dict(details or {})
+        scan_attempt_id = (
+            details_dict.pop("scan_attempt_id", None)
+            or getattr(SWING_SCAN_THREAD_LOCAL, "scan_attempt_id", None)
+        )
         row = {
             "stage": str(stage or "unknown"),
             "ts_utc": datetime.now(timezone.utc).isoformat(),
-            "details": dict(details or {}),
+            "details": details_dict,
         }
         SWING_SCAN_STAGE_CHECKPOINT.clear()
         SWING_SCAN_STAGE_CHECKPOINT.update(row)
         try:
             with SWING_SCAN_BACKGROUND_LOCK:
+                current_attempt_id = str((SWING_SCAN_BACKGROUND_COMPLETION or {}).get("scan_attempt_id") or "")
                 bg_status = str((SWING_SCAN_BACKGROUND_COMPLETION or {}).get("status") or "").strip().lower()
+                bg_terminal = bool((SWING_SCAN_BACKGROUND_COMPLETION or {}).get("terminal"))
+                bg_exception = str((SWING_SCAN_BACKGROUND_COMPLETION or {}).get("exception_type") or "").strip()
+
+                if scan_attempt_id and current_attempt_id and current_attempt_id != str(scan_attempt_id):
+                    return dict(row)
+                if bg_terminal and bg_exception == "BackgroundScanRuntimeTimeout":
+                    return dict(row)
+
                 if bg_status in {"accepted", "running"}:
                     SWING_SCAN_BACKGROUND_COMPLETION["status"] = "running"
                     SWING_SCAN_BACKGROUND_COMPLETION["stage"] = row["stage"]
@@ -25879,18 +25894,39 @@ def _p456_background_scan_truth() -> dict:
     }
 
 def _p456_mark_background_scan(**updates) -> dict:
+    expected_scan_attempt_id = updates.pop("expected_scan_attempt_id", None)
     now_iso = datetime.now(timezone.utc).isoformat()
+    ignored_update = False
+
     with SWING_SCAN_BACKGROUND_LOCK:
         if not SWING_SCAN_BACKGROUND_COMPLETION:
             SWING_SCAN_BACKGROUND_COMPLETION.update({"created_utc": now_iso})
-        SWING_SCAN_BACKGROUND_COMPLETION.update(updates)
-        SWING_SCAN_BACKGROUND_COMPLETION["updated_utc"] = now_iso
-        SWING_SCAN_BACKGROUND_COMPLETION["boot_id"] = SYSTEM_BOOT_ID
+
+        current_attempt_id = str((SWING_SCAN_BACKGROUND_COMPLETION or {}).get("scan_attempt_id") or "")
+        current_terminal = bool((SWING_SCAN_BACKGROUND_COMPLETION or {}).get("terminal"))
+        current_exception = str((SWING_SCAN_BACKGROUND_COMPLETION or {}).get("exception_type") or "").strip()
+
+        if expected_scan_attempt_id and current_attempt_id and current_attempt_id != str(expected_scan_attempt_id):
+            ignored_update = True
+        elif expected_scan_attempt_id and current_terminal and current_exception == "BackgroundScanRuntimeTimeout":
+            ignored_update = True
+
+        if not ignored_update:
+            SWING_SCAN_BACKGROUND_COMPLETION.update(updates)
+            SWING_SCAN_BACKGROUND_COMPLETION["updated_utc"] = now_iso
+            SWING_SCAN_BACKGROUND_COMPLETION["boot_id"] = SYSTEM_BOOT_ID
+
         snapshot = dict(SWING_SCAN_BACKGROUND_COMPLETION)
-    try:
-        persist_scan_runtime_state(reason=str(snapshot.get("reason") or snapshot.get("status") or "background_scan_state"))
-    except Exception:
-        pass
+        if ignored_update:
+            snapshot["ignored_stale_background_update"] = True
+            snapshot["ignored_expected_scan_attempt_id"] = expected_scan_attempt_id
+            snapshot["ignored_current_scan_attempt_id"] = current_attempt_id
+
+    if not ignored_update:
+        try:
+            persist_scan_runtime_state(reason=str(snapshot.get("reason") or snapshot.get("status") or "background_scan_state"))
+        except Exception:
+            pass
     return snapshot
 
 def _p461_background_scan_lost_after_restart_recovered(state: dict | None = None) -> bool:
@@ -25958,7 +25994,8 @@ def _p462_background_thread_alive() -> bool:
         return False
 
 def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: str, source_meta: dict) -> JSONResponse:
-    age_sec = _p462_iso_age_sec(existing.get("updated_utc") or existing.get("started_utc"))
+    age_sec = _p462_iso_age_sec(existing.get("started_utc"))
+    heartbeat_age_sec = _p462_iso_age_sec(existing.get("updated_utc"))
     return JSONResponse(
         status_code=202,
         content={
@@ -25973,6 +26010,7 @@ def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: st
             "existing_scan_attempt_id": existing.get("scan_attempt_id"),
             "idempotency_status": "background_single_flight_reused",
             "background_age_sec": round(age_sec, 2) if age_sec is not None else None,
+            "background_heartbeat_age_sec": round(heartbeat_age_sec, 2) if heartbeat_age_sec is not None else None,
             "recommended_recheck_sec": max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180)),
             "scanner": {
                 "status": "background_scan_running",
@@ -25988,18 +26026,21 @@ def _p462h_background_scan_timeout_truth(state: dict | None = None) -> dict:
     row = dict(state or _p456_background_scan_truth() or {})
     status = str(row.get("status") or "").strip().lower()
     active = status in {"accepted", "running"}
-    age_sec = _p462_iso_age_sec(row.get("updated_utc") or row.get("started_utc"))
     started_age_sec = _p462_iso_age_sec(row.get("started_utc"))
+    heartbeat_age_sec = _p462_iso_age_sec(row.get("updated_utc"))
     budget_sec = max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180))
     timeout_sec = budget_sec + 60
-    over_budget = bool(active and age_sec is not None and age_sec > budget_sec)
-    timed_out = bool(active and age_sec is not None and age_sec > timeout_sec)
+    over_budget = bool(active and started_age_sec is not None and started_age_sec > budget_sec)
+    timed_out = bool(active and started_age_sec is not None and started_age_sec > timeout_sec)
+    heartbeat_stale = bool(active and heartbeat_age_sec is not None and heartbeat_age_sec > 90)
     return {
         "active": active,
         "status": status or "idle",
         "stage": row.get("stage"),
-        "age_sec": round(age_sec, 2) if age_sec is not None else None,
+        "age_sec": round(started_age_sec, 2) if started_age_sec is not None else None,
         "started_age_sec": round(started_age_sec, 2) if started_age_sec is not None else None,
+        "heartbeat_age_sec": round(heartbeat_age_sec, 2) if heartbeat_age_sec is not None else None,
+        "heartbeat_stale": heartbeat_stale,
         "budget_sec": int(budget_sec),
         "timeout_sec": int(timeout_sec),
         "over_budget": over_budget,
@@ -26143,11 +26184,16 @@ def _p456_start_swing_scan_background(
     existing_bg = _p456_background_scan_truth()
     existing_status = str(existing_bg.get("status") or "").strip().lower()
     existing_active = existing_status in {"accepted", "running"}
-    existing_age_sec = _p462_iso_age_sec(existing_bg.get("updated_utc") or existing_bg.get("started_utc"))
+    existing_timeout_truth = _p462h_background_scan_timeout_truth(existing_bg)
+    existing_age_sec = existing_timeout_truth.get("started_age_sec")
     existing_thread_alive = _p462_background_thread_alive()
     stale_after_sec = max(90, int(SCAN_RUNTIME_BUDGET_SEC or 180) + 60)
 
-    if existing_active and (existing_thread_alive or existing_age_sec is None or existing_age_sec <= stale_after_sec):
+    if (
+        existing_active
+        and not bool(existing_timeout_truth.get("timed_out"))
+        and (existing_thread_alive or existing_age_sec is None or float(existing_age_sec) <= float(stale_after_sec))
+    ):
         try:
             _record_scanner_telemetry(
                 "scan_background_reused",
@@ -26223,15 +26269,20 @@ def _p456_start_swing_scan_background(
 
     def _run_background_scan():
         bg_started = _time.perf_counter()
+        SWING_SCAN_THREAD_LOCAL.scan_attempt_id = scan_attempt_id
 
         def _bg_elapsed_ms() -> int:
             return int(max(0.0, (_time.perf_counter() - bg_started) * 1000.0))
+
+        def _bg_mark(**updates) -> dict:
+            updates.setdefault("expected_scan_attempt_id", scan_attempt_id)
+            return _p456_mark_background_scan(**updates)
 
         try:
             dry_run_truth = _p456_entry_dry_run_truth("worker_scan", include_release_gate=True)
             bg_effective_dry_run = bool(dry_run_truth.get("effective_dry_run"))
 
-            _p456_mark_background_scan(
+            _bg_mark(
                 status="running",
                 stage="dry_run_truth_complete",
                 stage_details={
@@ -26254,10 +26305,10 @@ def _p456_start_swing_scan_background(
                 },
             )
 
-            _p456_mark_background_scan(status="running", stage="reconcile_start", stage_details={})
+            _bg_mark(status="running", stage="reconcile_start", stage_details={})
             reconcile_actions = reconcile_trade_plans_from_alpaca()
 
-            _p456_mark_background_scan(
+            _bg_mark(
                 status="running",
                 stage="swing_scan_start",
                 stage_details={"reconcile_action_count": len(reconcile_actions or [])},
@@ -26285,7 +26336,7 @@ def _p456_start_swing_scan_background(
             }
 
             duration_ms = int((scanner_payload or {}).get("duration_ms") or _bg_elapsed_ms() or 0)
-            _p456_mark_background_scan(
+            _bg_mark(
                 status="completed",
                 completed_utc=datetime.now(timezone.utc).isoformat(),
                 duration_ms=duration_ms,
@@ -26339,7 +26390,7 @@ def _p456_start_swing_scan_background(
             duration_ms = _bg_elapsed_ms()
             stage_snapshot = _p402_stage_snapshot()
             trace_tail = traceback.format_exc().splitlines()[-12:]
-            _p456_mark_background_scan(
+            _bg_mark(
                 status="failed",
                 completed_utc=datetime.now(timezone.utc).isoformat(),
                 duration_ms=duration_ms,
@@ -26720,10 +26771,27 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             and remaining <= float(SWING_SCAN_BUDGET_RESERVE_SEC or 0)
         ):
             p402_eval_truth["stopped_for_budget"] = True
+            p402_eval_truth["budget_stop_stage"] = "candidate_eval_pre_symbol"
             p402_eval_truth["skipped_symbols"].extend([s for s in syms if s not in p402_eval_truth["evaluated_symbols"]])
+            _p402_stage_checkpoint(
+                "candidate_eval_budget_close",
+                evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
+                skipped_count=len(p402_eval_truth["skipped_symbols"]),
+                elapsed_sec=round(elapsed, 3),
+                remaining_sec=round(remaining, 3),
+                budget_sec=int(SCAN_RUNTIME_BUDGET_SEC or 0),
+            )
             break
 
         p402_eval_truth["evaluated_symbols"].append(sym)
+        _p402_stage_checkpoint(
+            "candidate_eval_symbol_start",
+            symbol=sym,
+            evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
+            symbols_count=len(syms),
+            elapsed_sec=round(elapsed, 3),
+            remaining_sec=round(remaining, 3),
+        )
         try:
             _finalize_candidate(
                 evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode),
@@ -26734,6 +26802,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode),
                     sym,
                 )
+            _p402_stage_checkpoint(
+                "candidate_eval_symbol_complete",
+                symbol=sym,
+                evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
+                candidate_count=len(candidates),
+                elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
+            )
         except Exception as e:
             rejection_counts["candidate_eval_exception"] += 1
             candidates.append({
@@ -26744,6 +26819,35 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "rejection_reasons": ["candidate_eval_exception"],
                 "candidate_eval_exception": str(e),
             })
+            _p402_stage_checkpoint(
+                "candidate_eval_symbol_exception",
+                symbol=sym,
+                evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
+                exception_type=type(e).__name__,
+                error=str(e),
+                elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
+            )
+
+        post_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+        post_remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - post_elapsed)
+        if (
+            bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
+            and len(p402_eval_truth["evaluated_symbols"]) >= int(SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP or 1)
+            and post_remaining <= float(SWING_SCAN_BUDGET_RESERVE_SEC or 0)
+        ):
+            p402_eval_truth["stopped_for_budget"] = True
+            p402_eval_truth["budget_stop_stage"] = "candidate_eval_post_symbol"
+            p402_eval_truth["skipped_symbols"].extend([s for s in syms if s not in p402_eval_truth["evaluated_symbols"]])
+            _p402_stage_checkpoint(
+                "candidate_eval_budget_close",
+                evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
+                skipped_count=len(p402_eval_truth["skipped_symbols"]),
+                last_symbol=sym,
+                elapsed_sec=round(post_elapsed, 3),
+                remaining_sec=round(post_remaining, 3),
+                budget_sec=int(SCAN_RUNTIME_BUDGET_SEC or 0),
+            )
+            break
 
     p402_eval_truth["evaluated_count"] = len(p402_eval_truth["evaluated_symbols"])
     p402_eval_truth["skipped_symbols"] = list(_dedupe_keep_order(p402_eval_truth["skipped_symbols"]))
@@ -26994,7 +27098,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
 
         set_last_scan_fn(
             reason="scan_completed",
-            scanned=int((p402_eval_truth or {}).get("evaluated") or len(candidates)),
+            scanned=int((p402_eval_truth or {}).get("evaluated_count") or len(candidates)),
             signals=len(approved),
             would_trade=len(selected),
             blocked=max(0, len(candidates) - len(approved)),
@@ -27015,7 +27119,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
 
         set_last_scan_fn(
             reason="scan_completed",
-            scanned=int((p402_eval_truth or {}).get("evaluated") or len(candidates)),
+            scanned=int((p402_eval_truth or {}).get("evaluated_count") or len(candidates)),
             signals=len(approved),
             would_trade=len(selected),
             blocked=max(0, len(candidates) - len(approved)),
