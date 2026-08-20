@@ -2901,7 +2901,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-460-effective-profile-runtime-truth-restart-lost-scanner-failure-aging"
+PATCH_VERSION = "patch-461-background-scan-terminal-close-eligible-candidate-promotion-recovery"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26641,6 +26641,53 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     approved = production_approved
     selected = list(production_selection_finalizer.get("selected") or [])
 
+    p461_promotion_recovery = {
+        "applied": False,
+        "reason": "selected_already_present" if selected else "no_recovery_needed",
+        "eligible_symbols": [],
+        "promoted_symbols": [],
+        "max_new_entries": int(max_new_entries),
+    }
+    if not selected and max_new_entries > 0:
+        p461_eligible_rows = [
+            dict(row or {})
+            for row in list(production_approved or candidates or [])
+            if bool((row or {}).get("production_contract_approved"))
+            and bool((row or {}).get("eligible"))
+            and not bool((row or {}).get("already_open"))
+            and not _has_pending_entry_plan(str((row or {}).get("symbol") or "").strip().upper())
+        ]
+        p461_eligible_rows.sort(
+            key=lambda row: (
+                _safe_float(row.get("selection_quality_score"), 0.0),
+                _safe_float(row.get("rank_score"), 0.0),
+                _safe_float(row.get("target_path_score"), 0.0),
+            ),
+            reverse=True,
+        )
+        p461_promoted = p461_eligible_rows[:max(0, int(max_new_entries))]
+        if p461_promoted:
+            for row in p461_promoted:
+                row["selected"] = True
+                row["selection_source"] = "p461_eligible_candidate_promotion_recovery"
+                row["p461_promotion_recovery"] = True
+            selected = p461_promoted
+            p461_promotion_recovery = {
+                "applied": True,
+                "reason": "eligible_approved_rows_promoted_after_empty_finalizer_selection",
+                "eligible_symbols": _dedupe_keep_order([
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in p461_eligible_rows
+                    if str((row or {}).get("symbol") or "").strip()
+                ]),
+                "promoted_symbols": _dedupe_keep_order([
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in selected
+                    if str((row or {}).get("symbol") or "").strip()
+                ]),
+                "max_new_entries": int(max_new_entries),
+            }
+
     _p402_stage_checkpoint(
         "selection_complete",
         candidate_count=len(candidates),
@@ -26690,6 +26737,62 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 override_selected = [override_candidates[0]]
                 override_symbol = str((override_candidates[0] or {}).get('symbol') or '').upper() or None
                 override_source = EARLY_ENTRY_OVERRIDE_SOURCE
+    p461_pre_submit_selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(selected or [])
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    p461_terminal_close = {
+        "applied": bool(p461_pre_submit_selected_symbols),
+        "reason": "fresh_market_scan_terminally_closed_before_submit" if p461_pre_submit_selected_symbols else "no_selected_rows_to_terminally_close",
+        "selected_symbols": list(p461_pre_submit_selected_symbols),
+        "effective_dry_run_before": bool(effective_dry_run),
+        "effective_dry_run_after": bool(effective_dry_run),
+    }
+    if p461_pre_submit_selected_symbols:
+        summary["selected_total"] = len(p461_pre_submit_selected_symbols)
+        summary["selected_symbols"] = list(p461_pre_submit_selected_symbols)
+        summary["production_contract_selected_symbols"] = list(p461_pre_submit_selected_symbols)
+        summary["p461_promotion_recovery"] = dict(p461_promotion_recovery)
+        summary["p461_terminal_close_before_submit"] = dict(p461_terminal_close)
+
+        set_last_scan_fn(
+            reason="scan_completed",
+            scanned=int((p402_eval_truth or {}).get("evaluated") or len(candidates)),
+            signals=len(approved),
+            would_trade=len(selected),
+            blocked=max(0, len(candidates) - len(approved)),
+            duration_ms=int(elapsed_ms_fn()),
+            selected_total=len(p461_pre_submit_selected_symbols),
+            selected_symbols=list(p461_pre_submit_selected_symbols),
+            eligible_total=len(approved),
+            summary=dict(summary),
+            effective_dry_run=bool(effective_dry_run),
+            p461_terminal_candidate_evaluation=True,
+        )
+
+        p461_effective_dry_run_after = bool(effective_entry_dry_run("worker_scan"))
+        if bool(effective_dry_run) and not p461_effective_dry_run_after:
+            effective_dry_run = False
+        p461_terminal_close["effective_dry_run_after"] = bool(effective_dry_run)
+        summary["p461_terminal_close_before_submit"] = dict(p461_terminal_close)
+
+        set_last_scan_fn(
+            reason="scan_completed",
+            scanned=int((p402_eval_truth or {}).get("evaluated") or len(candidates)),
+            signals=len(approved),
+            would_trade=len(selected),
+            blocked=max(0, len(candidates) - len(approved)),
+            duration_ms=int(elapsed_ms_fn()),
+            selected_total=len(p461_pre_submit_selected_symbols),
+            selected_symbols=list(p461_pre_submit_selected_symbols),
+            eligible_total=len(approved),
+            summary=dict(summary),
+            effective_dry_run=bool(effective_dry_run),
+            p461_terminal_candidate_evaluation=True,
+            p461_release_gate_self_block_rechecked=True,
+        )
+
     _p402_stage_checkpoint(
         "submit_start",
         selected_count=len(selected),
@@ -27138,6 +27241,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         for row in list(would_submit or [])
         if str((row or {}).get("symbol") or "").strip()
     ])
+    if not selected_symbols_for_summary:
+        selected_symbols_for_summary = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(selected or [])
+            if str((row or {}).get("symbol") or "").strip()
+        ])
 
     actual_submit_symbols = _dedupe_keep_order([
         str((row or {}).get("symbol") or "").strip().upper()
