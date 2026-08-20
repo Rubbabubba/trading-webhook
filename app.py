@@ -2250,6 +2250,7 @@ TRADES_TODAY_TARGET_TRADES = int(getenv_any("TRADES_TODAY_TARGET_TRADES", defaul
 TRADES_TODAY_SIGNAL = getenv_any("TRADES_TODAY_SIGNAL", default="trades_today_force")
 TRADES_TODAY_PREFERRED_SYMBOLS = [s.strip().upper() for s in getenv_any("TRADES_TODAY_PREFERRED_SYMBOLS", default="SPY,QQQ,IWM,TQQQ").split(",") if s.strip()]
 LAST_SCAN: dict = {}
+LAST_ACTIONABLE_MARKET_SCAN: dict = {}
 LAST_SUCCESSFUL_PRODUCTION_SCAN: dict = {}
 SWING_SCAN_STAGE_CHECKPOINT: dict = {}
 SPREAD_BLOCKED_SELECTED_RETRY_QUEUE: dict = {}
@@ -2903,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-463-background-scan-started-age-timeout-candidate-eval-budget-close"
+PATCH_VERSION = "patch-464-market-scan-preservation-internal-runtime-budget-terminal-close"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3366,6 +3367,66 @@ def _p324_preserve_successful_production_scan(scan: dict | None, reason: str = "
     LAST_SUCCESSFUL_PRODUCTION_SCAN.update(preserved)
     return True
 
+
+def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
+    scan = dict(scan or {})
+    summary = dict(scan.get("summary") or {})
+    reason = str(scan.get("reason") or summary.get("scan_reason") or "").strip()
+
+    if reason != "scan_completed":
+        return False
+    if bool(scan.get("skipped")) or bool(summary.get("skipped")) or summary.get("skip_reason"):
+        return False
+    if str(scan.get("exception_type") or "").strip():
+        return False
+
+    return bool(
+        int(scan.get("scanned") or 0) > 0
+        or int(summary.get("symbols_eval_total") or 0) > 0
+        or int(summary.get("candidates_total") or 0) > 0
+        or int(summary.get("eligible_total") or 0) > 0
+        or int(summary.get("selected_total") or 0) > 0
+        or summary.get("top_candidates")
+        or summary.get("rejection_counts")
+        or summary.get("top_rejection_reasons")
+    )
+
+
+def _p464_preserve_actionable_market_scan(scan: dict | None, reason: str = "") -> bool:
+    scan = dict(scan or {})
+    if not _p464_is_actionable_market_scan(scan):
+        return False
+
+    preserved = dict(scan)
+    preserved["preserved_at_utc"] = datetime.now(timezone.utc).isoformat()
+    preserved["preserved_reason"] = reason or "actionable_market_scan"
+    preserved["source"] = "last_actionable_market_scan"
+
+    LAST_ACTIONABLE_MARKET_SCAN.clear()
+    LAST_ACTIONABLE_MARKET_SCAN.update(preserved)
+    return True
+
+
+def _p464_effective_market_scan(scan: dict | None = None) -> dict:
+    current = dict(scan or LAST_SCAN or {})
+    current_reason = str(current.get("reason") or "").strip()
+    if _p464_is_actionable_market_scan(current):
+        current["_scan_source"] = current.get("_scan_source") or "last_scan"
+        return current
+
+    preserved = dict(LAST_ACTIONABLE_MARKET_SCAN or {})
+    if preserved:
+        preserved["_scan_source"] = preserved.get("_scan_source") or "last_actionable_market_scan"
+        preserved["fallback_from_last_scan_reason"] = current_reason or None
+        preserved["fallback_from_last_scan_source"] = current.get("_scan_source") or "last_scan"
+        return preserved
+
+    return current
+
+
+class SwingScanRuntimeBudgetExceeded(RuntimeError):
+    pass
+
 def _p324_backfill_successful_production_scan_from_active_plans(reason: str = "") -> dict:
     rows = []
     selected_symbols = []
@@ -3506,11 +3567,14 @@ def _p324_latest_scan_exception_truth() -> dict:
         "preserved_selected_symbols": _p324_scan_selected_symbols(LAST_SUCCESSFUL_PRODUCTION_SCAN),
     }
 
-
 def _p324_effective_latest_scan_for_light() -> tuple[dict, dict]:
-    latest_scan = dict(LAST_SCAN or {})
+    raw_last_scan = dict(LAST_SCAN or {})
+    latest_scan = _p464_effective_market_scan(raw_last_scan)
     latest_summary = dict(latest_scan.get("summary") or {})
     exception_truth = _p324_latest_scan_exception_truth()
+    if latest_scan is not raw_last_scan and latest_scan.get("_scan_source") == "last_actionable_market_scan":
+        latest_summary["using_last_actionable_market_scan"] = True
+        latest_summary["last_scan_replaced_reason"] = raw_last_scan.get("reason")
 
     if exception_truth.get("active"):
         preserved = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
@@ -6182,6 +6246,11 @@ def _latest_completed_scan_record() -> dict:
             or int(summary.get("eligible_total") or 0) > 0
             or int(summary.get("selected_total") or 0) > 0
         )
+
+    actionable = dict(LAST_ACTIONABLE_MARKET_SCAN or {}) if _usable_scan(LAST_ACTIONABLE_MARKET_SCAN if isinstance(LAST_ACTIONABLE_MARKET_SCAN, dict) else {}) else {}
+    if actionable:
+        actionable["_scan_source"] = "last_actionable_market_scan"
+        return actionable
 
     preferred = dict(LAST_SCAN or {}) if _usable_scan(LAST_SCAN if isinstance(LAST_SCAN, dict) else {}) else {}
     if preferred:
@@ -26336,6 +26405,38 @@ def _p456_start_swing_scan_background(
             }
 
             duration_ms = int((scanner_payload or {}).get("duration_ms") or _bg_elapsed_ms() or 0)
+            runtime_budget_ms = int(max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180)) * 1000)
+            if duration_ms > runtime_budget_ms:
+                _bg_mark(
+                    status="failed",
+                    active=False,
+                    terminal=True,
+                    completed_utc=datetime.now(timezone.utc).isoformat(),
+                    duration_ms=duration_ms,
+                    symbols_scanned=int((scanner_payload or {}).get("symbols_scanned") or 0),
+                    signals=int((scanner_payload or {}).get("signals") or 0),
+                    would_trade=int((scanner_payload or {}).get("would_trade") or 0),
+                    blocked=int((scanner_payload or {}).get("blocked") or 0),
+                    reason="background_scan_runtime_budget_exceeded",
+                    error="background scan completed after runtime budget and was not accepted as healthy current truth",
+                    exception_type="BackgroundScanRuntimeBudgetExceeded",
+                    traceback_tail=None,
+                    stage="runtime_budget_exceeded_after_completion",
+                    stage_details={
+                        "duration_ms": duration_ms,
+                        "runtime_budget_ms": runtime_budget_ms,
+                        "symbols_scanned": int((scanner_payload or {}).get("symbols_scanned") or 0),
+                        "signals": int((scanner_payload or {}).get("signals") or 0),
+                        "blocked": int((scanner_payload or {}).get("blocked") or 0),
+                    },
+                    effective_dry_run=bg_effective_dry_run,
+                    effective_dry_run_reason=dry_run_truth.get("effective_dry_run_reason"),
+                    dry_run_truth=dry_run_truth,
+                )
+                raise SwingScanRuntimeBudgetExceeded(
+                    f"background scan exceeded runtime budget: duration_ms={duration_ms} budget_ms={runtime_budget_ms}"
+                )
+
             _bg_mark(
                 status="completed",
                 completed_utc=datetime.now(timezone.utc).isoformat(),
@@ -26384,6 +26485,40 @@ def _p456_start_swing_scan_background(
                     **source_meta_snapshot,
                 },
             )
+        except SwingScanRuntimeBudgetExceeded as e:
+            err = str(e) or repr(e)
+            exc_type = type(e).__name__
+            duration_ms = _bg_elapsed_ms()
+            stage_snapshot = _p402_stage_snapshot()
+            trace_tail = traceback.format_exc().splitlines()[-12:]
+            _bg_mark(
+                status="failed",
+                active=False,
+                terminal=True,
+                completed_utc=datetime.now(timezone.utc).isoformat(),
+                duration_ms=duration_ms,
+                error=err,
+                exception_type=exc_type,
+                traceback_tail=trace_tail,
+                reason="background_scan_runtime_budget_exceeded",
+                stage=str((stage_snapshot or {}).get("stage") or "runtime_budget_exceeded"),
+                stage_details=dict((stage_snapshot or {}).get("details") or {}),
+            )
+            try:
+                _record_scanner_telemetry(
+                    "scan_error",
+                    "timeout_failure",
+                    details={
+                        "error": err,
+                        "duration_ms": duration_ms,
+                        "scan_reason": requested_reason or "scheduled",
+                        "scan_exception_stage": stage_snapshot.get("stage"),
+                        "scan_exception_stage_details": dict(stage_snapshot.get("details") or {}),
+                        **source_meta_snapshot,
+                    },
+                )
+            except Exception:
+                pass
         except Exception as e:
             err = str(e) or repr(e)
             exc_type = type(e).__name__
@@ -26773,6 +26908,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             p402_eval_truth["stopped_for_budget"] = True
             p402_eval_truth["budget_stop_stage"] = "candidate_eval_pre_symbol"
             p402_eval_truth["skipped_symbols"].extend([s for s in syms if s not in p402_eval_truth["evaluated_symbols"]])
+            candidate_eval_budget_tripped = True
             _p402_stage_checkpoint(
                 "candidate_eval_budget_close",
                 evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
@@ -26838,6 +26974,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             p402_eval_truth["stopped_for_budget"] = True
             p402_eval_truth["budget_stop_stage"] = "candidate_eval_post_symbol"
             p402_eval_truth["skipped_symbols"].extend([s for s in syms if s not in p402_eval_truth["evaluated_symbols"]])
+            candidate_eval_budget_tripped = True
             _p402_stage_checkpoint(
                 "candidate_eval_budget_close",
                 evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
@@ -26853,6 +26990,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     p402_eval_truth["skipped_symbols"] = list(_dedupe_keep_order(p402_eval_truth["skipped_symbols"]))
     p402_eval_truth["skipped_count"] = len(p402_eval_truth["skipped_symbols"])
     p402_eval_truth["elapsed_sec"] = round(_p398_runtime_budget_elapsed_sec(scan_started), 3)
+    if candidate_eval_budget_tripped:
+        p402_eval_truth["terminal_reason"] = "candidate_eval_runtime_budget_closed"
+        if not candidates:
+            raise SwingScanRuntimeBudgetExceeded("candidate evaluation runtime budget closed before usable candidate truth")
     _p402_stage_checkpoint(
         "candidate_eval_complete",
         evaluated_count=p402_eval_truth.get("evaluated_count"),
@@ -51920,10 +52061,15 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             "recommended_action": "coverage_audit_unavailable_use_runtime_universe_coverage",
         }
 
+    latest_reason = str(latest_scan.get("reason") or "").strip().lower()
+    using_preserved_market_scan = str(latest_scan.get("_scan_source") or "").strip() == "last_actionable_market_scan"
     stale_scan_blocks_action = bool(
-        summary.get("post_open_scan_missing")
-        or str(latest_scan.get("reason") or "").strip().lower() in {"outside_market_hours", "scan_exception"}
-        or bool((summary.get("scanner_failure_root_cause") or {}).get("active"))
+        (
+            summary.get("post_open_scan_missing")
+            or latest_reason in {"outside_market_hours", "scan_exception"}
+            or bool((summary.get("scanner_failure_root_cause") or {}).get("active"))
+        )
+        and not using_preserved_market_scan
     )
 
     if stale_scan_blocks_action:
@@ -54647,10 +54793,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         if requested_reason and not LAST_SCAN.get('reason'):
             LAST_SCAN['reason'] = requested_reason
         try:
-            _p324_preserve_successful_production_scan(
-                LAST_SCAN,
-                reason=str(LAST_SCAN.get("reason") or kwargs.get("reason") or "set_last_scan"),
-            )
+            preserve_reason = str(LAST_SCAN.get("reason") or kwargs.get("reason") or "set_last_scan")
+            _p464_preserve_actionable_market_scan(LAST_SCAN, reason=preserve_reason)
+            _p324_preserve_successful_production_scan(LAST_SCAN, reason=preserve_reason)
         except Exception:
             pass
         try:
