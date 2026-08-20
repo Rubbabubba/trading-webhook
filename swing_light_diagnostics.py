@@ -244,6 +244,14 @@ def scanner_light_snapshot(
         or {}
     )
     background_scan_active = str(scan_background_completion_truth.get("status") or "").strip().lower() in {"accepted", "running"}
+    background_age_sec = _scanner_light_iso_age_sec(
+        scan_background_completion_truth.get("updated_utc")
+        or scan_background_completion_truth.get("started_utc")
+    )
+    background_budget_sec = max(60, int(scan_runtime_budget_sec or 240))
+    background_timeout_sec = background_budget_sec + 60
+    background_over_budget = bool(background_scan_active and background_age_sec is not None and background_age_sec > background_budget_sec)
+    background_timed_out = bool(background_scan_active and background_age_sec is not None and background_age_sec > background_timeout_sec)
     background_restart_lost = bool(
         str(scan_background_completion_truth.get("exception_type") or "").strip() == "BackgroundScanLostAfterRestart"
         or str(scan_background_completion_truth.get("reason") or "").strip().lower() == "background_scan_lost_after_restart"
@@ -268,7 +276,11 @@ def scanner_light_snapshot(
             recovered_warning_codes.append("background_scan_lost_after_restart_aged")
 
     scanner_status = (
-        "background_scan_running"
+        "background_scan_timeout"
+        if background_timed_out
+        else "background_scan_over_budget"
+        if background_over_budget
+        else "background_scan_running"
         if background_scan_active
         else "scan_running_within_grace"
         if in_flight_grace_active and not in_flight_over_budget
@@ -281,6 +293,8 @@ def scanner_light_snapshot(
 
     scanner_currently_ok = bool(
         scanner_status in {"healthy", "scan_running_within_grace", "background_scan_running"}
+        and not background_over_budget
+        and not background_timed_out
         and (background_scan_active or not post_open_scan_missing)
         and (background_scan_active or not active_warning_codes)
     )
@@ -319,7 +333,17 @@ def scanner_light_snapshot(
         "scanner_failure_root_cause": scanner_failure_root_cause,
         "scanner_failure_root_cause_historical": scanner_failure_root_cause_historical,
         "scan_background_completion_truth": scan_background_completion_truth,
-        "in_flight_run": bool(effective_in_flight or background_scan_active),
+        "background_scan_runtime_truth": {
+            "active": bool(background_scan_active),
+            "age_sec": round(background_age_sec, 2) if background_age_sec is not None else None,
+            "budget_sec": int(background_budget_sec),
+            "timeout_sec": int(background_timeout_sec),
+            "over_budget": bool(background_over_budget),
+            "timed_out": bool(background_timed_out),
+            "stage": scan_background_completion_truth.get("stage"),
+            "scan_attempt_id": scan_background_completion_truth.get("scan_attempt_id"),
+        },
+        "in_flight_run": bool(effective_in_flight or (background_scan_active and not background_timed_out)),
         "raw_in_flight_run": bool(in_flight),
         "in_flight_grace_active": bool(in_flight_grace_active),
         "in_flight_over_grace": bool(in_flight_over_grace),
@@ -349,6 +373,8 @@ def scanner_light_snapshot(
             "partial_run_open_reconciled_by_completed_scan": bool(in_flight_reconciled_by_completed_scan),
             "post_open_scan_missing": bool(post_open_scan_missing),
             "background_scan_active": bool(background_scan_active),
+            "background_scan_over_budget": bool(background_over_budget),
+            "background_scan_timed_out": bool(background_timed_out),
             "background_scan_lost_after_restart_aged": bool(scanner_failure_root_cause_historical),
         },
         "latest_scan": {

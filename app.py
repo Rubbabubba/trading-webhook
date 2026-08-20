@@ -2902,7 +2902,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-462-single-flight-background-scan-guard-thread-safe-state-writes"
+PATCH_VERSION = "patch-462-hotfix-background-scan-runtime-timeout-stage-heartbeat-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -25700,6 +25700,18 @@ def _p402_stage_checkpoint(stage: str, **details) -> dict:
         }
         SWING_SCAN_STAGE_CHECKPOINT.clear()
         SWING_SCAN_STAGE_CHECKPOINT.update(row)
+        try:
+            with SWING_SCAN_BACKGROUND_LOCK:
+                bg_status = str((SWING_SCAN_BACKGROUND_COMPLETION or {}).get("status") or "").strip().lower()
+                if bg_status in {"accepted", "running"}:
+                    SWING_SCAN_BACKGROUND_COMPLETION["status"] = "running"
+                    SWING_SCAN_BACKGROUND_COMPLETION["stage"] = row["stage"]
+                    SWING_SCAN_BACKGROUND_COMPLETION["stage_details"] = dict(row.get("details") or {})
+                    SWING_SCAN_BACKGROUND_COMPLETION["stage_utc"] = row["ts_utc"]
+                    SWING_SCAN_BACKGROUND_COMPLETION["updated_utc"] = row["ts_utc"]
+                    SWING_SCAN_BACKGROUND_COMPLETION["boot_id"] = SYSTEM_BOOT_ID
+        except Exception:
+            pass
         return dict(row)
     except Exception:
         return {"stage": str(stage or "unknown"), "details": dict(details or {})}
@@ -25972,6 +25984,75 @@ def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: st
         },
     )
 
+def _p462h_background_scan_timeout_truth(state: dict | None = None) -> dict:
+    row = dict(state or _p456_background_scan_truth() or {})
+    status = str(row.get("status") or "").strip().lower()
+    active = status in {"accepted", "running"}
+    age_sec = _p462_iso_age_sec(row.get("updated_utc") or row.get("started_utc"))
+    started_age_sec = _p462_iso_age_sec(row.get("started_utc"))
+    budget_sec = max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180))
+    timeout_sec = budget_sec + 60
+    over_budget = bool(active and age_sec is not None and age_sec > budget_sec)
+    timed_out = bool(active and age_sec is not None and age_sec > timeout_sec)
+    return {
+        "active": active,
+        "status": status or "idle",
+        "stage": row.get("stage"),
+        "age_sec": round(age_sec, 2) if age_sec is not None else None,
+        "started_age_sec": round(started_age_sec, 2) if started_age_sec is not None else None,
+        "budget_sec": int(budget_sec),
+        "timeout_sec": int(timeout_sec),
+        "over_budget": over_budget,
+        "timed_out": timed_out,
+        "scan_attempt_id": row.get("scan_attempt_id"),
+    }
+
+def _p462h_close_timed_out_background_scan(reason: str = "background_scan_runtime_timeout") -> dict:
+    with SWING_SCAN_BACKGROUND_LOCK:
+        current = dict(SWING_SCAN_BACKGROUND_COMPLETION or {})
+        timeout_truth = _p462h_background_scan_timeout_truth(current)
+        if not bool(timeout_truth.get("timed_out")):
+            return {"closed": False, "reason": "background_scan_not_timed_out", "timeout_truth": timeout_truth}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        SWING_SCAN_BACKGROUND_COMPLETION.clear()
+        SWING_SCAN_BACKGROUND_COMPLETION.update({
+            **current,
+            "status": "failed",
+            "active": False,
+            "terminal": True,
+            "completed_utc": now_iso,
+            "updated_utc": now_iso,
+            "reason": reason,
+            "error": "background scan exceeded runtime timeout",
+            "exception_type": "BackgroundScanRuntimeTimeout",
+            "traceback_tail": None,
+            "stage": current.get("stage") or "unknown",
+            "stage_details": {
+                **dict(current.get("stage_details") or {}),
+                "timeout_truth": timeout_truth,
+            },
+            "timeout_truth": timeout_truth,
+            "boot_id": SYSTEM_BOOT_ID,
+        })
+        snapshot = dict(SWING_SCAN_BACKGROUND_COMPLETION)
+    try:
+        persist_scan_runtime_state(reason=reason)
+    except Exception:
+        pass
+    try:
+        _record_scanner_telemetry(
+            "scan_error",
+            "timeout_failure",
+            details={
+                "reason": reason,
+                "exception_type": "BackgroundScanRuntimeTimeout",
+                "timeout_truth": timeout_truth,
+            },
+        )
+    except Exception:
+        pass
+    return {"closed": True, "reason": reason, "timeout_truth": timeout_truth, "state": snapshot}
+
 def _p456_entry_dry_run_truth(source: str = "worker_scan", include_release_gate: bool = True) -> dict:
     blockers = []
     release_gate = {}
@@ -26058,6 +26139,7 @@ def _p456_start_swing_scan_background(
     body_snapshot = dict(body or {})
     source_meta_snapshot = dict(source_meta or {})
 
+    timeout_close = _p462h_close_timed_out_background_scan("background_scan_runtime_timeout_before_retry")
     existing_bg = _p456_background_scan_truth()
     existing_status = str(existing_bg.get("status") or "").strip().lower()
     existing_active = existing_status in {"accepted", "running"}
@@ -26123,6 +26205,7 @@ def _p456_start_swing_scan_background(
         effective_dry_run_reason="background_pending" if effective_dry_run is None else "precomputed",
         dry_run_truth=None,
         p461_retry_unlock=p461_retry_unlock,
+        p462_timeout_close=timeout_close,
     )
 
     try:
