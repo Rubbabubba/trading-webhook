@@ -2875,6 +2875,7 @@ WORKER_EXIT_SHADOW_QUARANTINE_ENABLED = env_bool_any(
 SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
 SWING_SCAN_BACKGROUND_COMPLETION: dict = {}
 SWING_SCAN_BACKGROUND_LOCK = threading.RLock()
+SWING_SCAN_BACKGROUND_THREAD = None
 
 # Guards in-memory shared state when scan evaluation runs concurrently
 STATE_LOCK = threading.RLock()
@@ -2901,7 +2902,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-461-hotfix-lost-background-scan-recovery-fresh-scan-retry-unlock"
+PATCH_VERSION = "patch-462-single-flight-background-scan-guard-thread-safe-state-writes"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3197,17 +3198,22 @@ def _read_journal(limit: int = 100, event: str = "", symbol: str = "") -> list[d
 
 
 def _safe_json_write(path_str: str, payload: dict):
+    tmp = None
     try:
         _ensure_parent_dir(path_str)
         path = Path(path_str).expanduser().resolve()
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         tmp.replace(path)
         return True
     except Exception as e:
         logger.warning("SAFE_JSON_WRITE_FAILED path=%s err=%s", path_str, e)
+        try:
+            if tmp is not None and tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
         return False
-
 
 def _safe_json_read(path_str: str) -> dict:
     try:
@@ -25920,6 +25926,52 @@ def _p461_clear_lost_background_scan_for_retry(reason: str = "fresh_scan_retry_u
         pass
     return {"cleared": True, "reason": reason, "state": snapshot}
 
+def _p462_iso_age_sec(value) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        return None
+
+def _p462_background_thread_alive() -> bool:
+    try:
+        thread = globals().get("SWING_SCAN_BACKGROUND_THREAD")
+        return bool(thread is not None and thread.is_alive())
+    except Exception:
+        return False
+
+def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: str, source_meta: dict) -> JSONResponse:
+    age_sec = _p462_iso_age_sec(existing.get("updated_utc") or existing.get("started_utc"))
+    return JSONResponse(
+        status_code=202,
+        content={
+            "ok": True,
+            "accepted": True,
+            "fast_response": True,
+            "background_completion": True,
+            "reason": "background_scan_already_running",
+            "status": "accepted",
+            "scan_contract": "existing_background_scan_in_flight",
+            "scan_attempt_id": scan_attempt_id,
+            "existing_scan_attempt_id": existing.get("scan_attempt_id"),
+            "idempotency_status": "background_single_flight_reused",
+            "background_age_sec": round(age_sec, 2) if age_sec is not None else None,
+            "recommended_recheck_sec": max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180)),
+            "scanner": {
+                "status": "background_scan_running",
+                "scan_contract": "existing_background_scan_in_flight",
+                "strategy_mode": STRATEGY_MODE,
+                "requested_reason": source_meta.get("requested_reason") or "scheduled",
+            },
+            "background_truth": _p456_background_scan_truth(),
+        },
+    )
+
 def _p456_entry_dry_run_truth(source: str = "worker_scan", include_release_gate: bool = True) -> dict:
     blockers = []
     release_gate = {}
@@ -26005,6 +26057,49 @@ def _p456_start_swing_scan_background(
 ) -> JSONResponse:
     body_snapshot = dict(body or {})
     source_meta_snapshot = dict(source_meta or {})
+
+    existing_bg = _p456_background_scan_truth()
+    existing_status = str(existing_bg.get("status") or "").strip().lower()
+    existing_active = existing_status in {"accepted", "running"}
+    existing_age_sec = _p462_iso_age_sec(existing_bg.get("updated_utc") or existing_bg.get("started_utc"))
+    existing_thread_alive = _p462_background_thread_alive()
+    stale_after_sec = max(90, int(SCAN_RUNTIME_BUDGET_SEC or 180) + 60)
+
+    if existing_active and (existing_thread_alive or existing_age_sec is None or existing_age_sec <= stale_after_sec):
+        try:
+            _record_scanner_telemetry(
+                "scan_background_reused",
+                "accepted",
+                details={
+                    "reason": "background_scan_already_running",
+                    "existing_scan_attempt_id": existing_bg.get("scan_attempt_id"),
+                    "background_age_sec": existing_age_sec,
+                    **source_meta_snapshot,
+                },
+            )
+        except Exception:
+            pass
+        return _p462_active_background_scan_response(existing_bg, scan_attempt_id=scan_attempt_id, source_meta=source_meta_snapshot)
+
+    if existing_active and existing_age_sec is not None and existing_age_sec > stale_after_sec and not existing_thread_alive:
+        _p456_mark_background_scan(
+            status="skipped",
+            active=False,
+            terminal=True,
+            completed_utc=datetime.now(timezone.utc).isoformat(),
+            reason="stale_background_scan_recovered_before_retry",
+            error=None,
+            exception_type=None,
+            traceback_tail=None,
+            stage="stale_background_scan_recovered",
+            stage_details={
+                "previous_scan_attempt_id": existing_bg.get("scan_attempt_id"),
+                "previous_status": existing_status,
+                "background_age_sec": existing_age_sec,
+                "stale_after_sec": stale_after_sec,
+            },
+        )
+
     p461_retry_unlock = _p461_clear_lost_background_scan_for_retry("new_background_scan_requested")
     started_utc = datetime.now(timezone.utc).isoformat()
 
@@ -26224,7 +26319,13 @@ def _p456_start_swing_scan_background(
         name=f"swing-scan-bg-{str(scan_attempt_id)[-10:]}",
         daemon=True,
     )
+    globals()["SWING_SCAN_BACKGROUND_THREAD"] = thread
     thread.start()
+    _p456_mark_background_scan(
+        status="running",
+        stage="thread_started",
+        stage_details={"scan_attempt_id": scan_attempt_id},
+    )
 
     return JSONResponse(
         status_code=202,

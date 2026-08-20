@@ -187,7 +187,7 @@ def main() -> None:
     startup_retries = max(1, getenv_int("SCAN_STARTUP_RETRIES", 3))
     startup_retry_delay_sec = max(1, getenv_int("SCAN_STARTUP_RETRY_DELAY_SEC", 10))
     sleep_heartbeat_sec = max(15, getenv_int("SCAN_SLEEP_HEARTBEAT_SEC", 60))
-    background_accepted_recheck_sec = max(15, getenv_int("SCAN_BACKGROUND_ACCEPTED_RECHECK_SEC", 60))
+    background_accepted_recheck_sec = max(60, getenv_int("SCAN_BACKGROUND_ACCEPTED_RECHECK_SEC", 240))
     main_ready_grace_sec = max(0, getenv_int("SCAN_MAIN_READY_GRACE_SEC", 180))
     main_ready_poll_sec = max(1, getenv_int("SCAN_MAIN_READY_POLL_SEC", 10))
     worker_secret = (os.getenv("WORKER_SECRET") or os.getenv("INTERNAL_API_KEY") or "").strip()
