@@ -252,6 +252,21 @@ def scanner_light_snapshot(
         and str(scanner_failure_root_cause.get("error") or "").strip().lower() == "background scan was active before process restart and cannot be resumed"
     )
 
+    if background_restart_lost and not background_scan_active:
+        effective_in_flight = False
+        in_flight_grace_active = False
+        in_flight_over_grace = False
+        in_flight_over_budget = False
+        active_warning_codes = [
+            code for code in active_warning_codes
+            if code not in {"partial_run_open", "dispatch_failure"}
+        ]
+        for code in ["background_scan_lost_after_restart_aged", "partial_run_open", "dispatch_failure"]:
+            if code not in historical_warning_codes:
+                historical_warning_codes.append(code)
+        if "background_scan_lost_after_restart_aged" not in recovered_warning_codes:
+            recovered_warning_codes.append("background_scan_lost_after_restart_aged")
+
     scanner_status = (
         "background_scan_running"
         if background_scan_active
@@ -271,16 +286,16 @@ def scanner_light_snapshot(
     )
 
     scanner_failure_root_cause_historical = {}
-    if background_restart_lost and scanner_currently_ok and not background_scan_active:
+    if background_restart_lost and not background_scan_active:
         scanner_failure_root_cause_historical = dict(scanner_failure_root_cause or {})
         scanner_failure_root_cause_historical["active"] = False
-        scanner_failure_root_cause_historical["aged_reason"] = "restart_lost_background_scan_is_historical_after_healthy_heartbeat"
+        scanner_failure_root_cause_historical["aged_reason"] = "restart_lost_background_scan_is_historical_and_next_scan_is_unlocked"
         scanner_failure_root_cause = {
             "active": False,
             "root_cause": "none",
-            "recovery_action": "none",
+            "recovery_action": "run_or_wait_for_fresh_market_scan",
             "aged_from": "BackgroundScanLostAfterRestart",
-            "aged_reason": "restart_lost_background_scan_is_historical_after_healthy_heartbeat",
+            "aged_reason": "restart_lost_background_scan_is_historical_and_next_scan_is_unlocked",
         }
         if "background_scan_lost_after_restart_aged" not in recovered_warning_codes:
             recovered_warning_codes.append("background_scan_lost_after_restart_aged")

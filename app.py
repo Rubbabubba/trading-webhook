@@ -2901,7 +2901,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-461-background-scan-terminal-close-eligible-candidate-promotion-recovery"
+PATCH_VERSION = "patch-461-hotfix-lost-background-scan-recovery-fresh-scan-retry-unlock"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3263,12 +3263,17 @@ def restore_scan_runtime_state() -> dict:
             restored_bg["restored_after_restart"] = True
             status_l = str(restored_bg.get("status") or "").strip().lower()
             if status_l in {"accepted", "running"}:
-                restored_bg["status"] = "failed"
+                now_iso = datetime.now(timezone.utc).isoformat()
+                restored_bg["status"] = "skipped"
                 restored_bg["terminal"] = True
-                restored_bg["reason"] = "background_scan_lost_after_restart"
-                restored_bg["error"] = "background scan was active before process restart and cannot be resumed"
-                restored_bg["exception_type"] = "BackgroundScanLostAfterRestart"
-                restored_bg["completed_utc"] = datetime.now(timezone.utc).isoformat()
+                restored_bg["active"] = False
+                restored_bg["reason"] = "background_scan_lost_after_restart_recovered"
+                restored_bg["error"] = None
+                restored_bg["exception_type"] = None
+                restored_bg["completed_utc"] = now_iso
+                restored_bg["updated_utc"] = now_iso
+                restored_bg["recovered_after_restart"] = True
+                restored_bg["recovery_reason"] = "previous_process_background_scan_cannot_resume_next_scan_unlocked"
                 restored["swing_scan_background_lost_after_restart"] = True
             SWING_SCAN_BACKGROUND_COMPLETION.clear()
             SWING_SCAN_BACKGROUND_COMPLETION.update(restored_bg)
@@ -25870,6 +25875,51 @@ def _p456_mark_background_scan(**updates) -> dict:
         pass
     return snapshot
 
+def _p461_background_scan_lost_after_restart_recovered(state: dict | None = None) -> bool:
+    row = dict(state or SWING_SCAN_BACKGROUND_COMPLETION or {})
+    status = str(row.get("status") or "").strip().lower()
+    reason = str(row.get("reason") or "").strip().lower()
+    exc_type = str(row.get("exception_type") or "").strip()
+    err = str(row.get("error") or "").strip().lower()
+    return bool(
+        row.get("recovered_after_restart")
+        or reason in {"background_scan_lost_after_restart", "background_scan_lost_after_restart_recovered"}
+        or exc_type == "BackgroundScanLostAfterRestart"
+        or "background scan was active before process restart" in err
+    ) and status in {"failed", "skipped", "completed", "idle", ""}
+
+def _p461_clear_lost_background_scan_for_retry(reason: str = "fresh_scan_retry_unlock") -> dict:
+    with SWING_SCAN_BACKGROUND_LOCK:
+        current = dict(SWING_SCAN_BACKGROUND_COMPLETION or {})
+        if not _p461_background_scan_lost_after_restart_recovered(current):
+            return {"cleared": False, "reason": "no_lost_background_scan_to_clear", "state": current}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        SWING_SCAN_BACKGROUND_COMPLETION.clear()
+        SWING_SCAN_BACKGROUND_COMPLETION.update({
+            "status": "skipped",
+            "active": False,
+            "terminal": True,
+            "reason": "background_scan_lost_after_restart_recovered",
+            "recovery_reason": reason,
+            "recovered_after_restart": True,
+            "started_utc": current.get("started_utc"),
+            "completed_utc": current.get("completed_utc") or now_iso,
+            "updated_utc": now_iso,
+            "previous_scan_attempt_id": current.get("scan_attempt_id"),
+            "previous_stage": current.get("stage"),
+            "previous_reason": current.get("reason"),
+            "error": None,
+            "exception_type": None,
+            "traceback_tail": None,
+            "boot_id": SYSTEM_BOOT_ID,
+        })
+        snapshot = dict(SWING_SCAN_BACKGROUND_COMPLETION)
+    try:
+        persist_scan_runtime_state(reason="p461_lost_background_scan_retry_unlock")
+    except Exception:
+        pass
+    return {"cleared": True, "reason": reason, "state": snapshot}
+
 def _p456_entry_dry_run_truth(source: str = "worker_scan", include_release_gate: bool = True) -> dict:
     blockers = []
     release_gate = {}
@@ -25955,6 +26005,7 @@ def _p456_start_swing_scan_background(
 ) -> JSONResponse:
     body_snapshot = dict(body or {})
     source_meta_snapshot = dict(source_meta or {})
+    p461_retry_unlock = _p461_clear_lost_background_scan_for_retry("new_background_scan_requested")
     started_utc = datetime.now(timezone.utc).isoformat()
 
     _p456_mark_background_scan(
@@ -25976,6 +26027,7 @@ def _p456_start_swing_scan_background(
         effective_dry_run=effective_dry_run if effective_dry_run is not None else None,
         effective_dry_run_reason="background_pending" if effective_dry_run is None else "precomputed",
         dry_run_truth=None,
+        p461_retry_unlock=p461_retry_unlock,
     )
 
     try:
