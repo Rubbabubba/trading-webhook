@@ -2916,7 +2916,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-479-no-thread-candidate-eval-fast-path-broker-free-selection-finalization"
+PATCH_VERSION = "patch-480-preserve-candidate-bearing-scan-p479-runtime-proof"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3675,22 +3675,71 @@ def _p464_effective_market_scan(scan: dict | None = None) -> dict:
         dict(scan or LAST_SCAN or {}),
         source="effective_market_scan_current",
     )
-    current_reason = str(current.get("reason") or "").strip()
+    current = _p475_normalize_scan_truth_contract(current, source="effective_market_scan_current")
+    current_reason = str(current.get("reason") or (current.get("summary") or {}).get("scan_reason") or "").strip()
+    current_truth = _p475_scan_candidate_bearing_truth(current)
+
     if _p464_is_actionable_market_scan(current):
         current["_scan_source"] = current.get("_scan_source") or "last_scan"
+        current["_p480_effective_scan_source"] = current["_scan_source"]
+        current["_p480_after_hours_skip_preserved"] = False
+        current["_p480_raw_latest_scan"] = {
+            "ts_utc": current.get("ts_utc"),
+            "reason": current_reason,
+            "scanned": current.get("scanned"),
+            "duration_ms": current.get("duration_ms"),
+            "candidate_bearing": bool(current_truth.get("candidate_bearing")),
+            "trade_judgable": bool(current_truth.get("trade_judgable")),
+        }
         return current
 
     preserved = _p464_sanitize_persisted_over_budget_scan(
         dict(LAST_ACTIONABLE_MARKET_SCAN or {}),
         source="effective_market_scan_preserved",
     )
-    if _p464_is_actionable_market_scan(preserved):
-        preserved["_scan_source"] = preserved.get("_scan_source") or "last_actionable_market_scan"
+    preserved = _p475_normalize_scan_truth_contract(preserved, source="effective_market_scan_preserved")
+    preserved_truth = _p475_scan_candidate_bearing_truth(preserved)
+
+    use_preserved = bool(
+        _p464_is_actionable_market_scan(preserved)
+        and (
+            current_reason in {"outside_market_hours", "outside_scanner_session", "scanner_disabled"}
+            or bool(current.get("skipped"))
+            or not bool(current_truth.get("trade_judgable"))
+        )
+    )
+
+    if use_preserved:
+        preserved["_scan_source"] = "last_actionable_market_scan"
+        preserved["_p480_effective_scan_source"] = "last_actionable_market_scan"
+        preserved["_p480_after_hours_skip_preserved"] = bool(current_reason == "outside_market_hours")
+        preserved["_p480_preserved_scan_available"] = True
+        preserved["_p480_preserved_scan_trade_judgable"] = bool(preserved_truth.get("trade_judgable"))
         preserved["fallback_from_last_scan_reason"] = current_reason or None
         preserved["fallback_from_last_scan_source"] = current.get("_scan_source") or "last_scan"
+        preserved["_p480_raw_latest_scan"] = {
+            "ts_utc": current.get("ts_utc"),
+            "reason": current_reason,
+            "scanned": current.get("scanned"),
+            "duration_ms": current.get("duration_ms"),
+            "candidate_bearing": bool(current_truth.get("candidate_bearing")),
+            "trade_judgable": bool(current_truth.get("trade_judgable")),
+        }
         return preserved
 
     current["_scan_source"] = current.get("_scan_source") or "last_scan"
+    current["_p480_effective_scan_source"] = current["_scan_source"]
+    current["_p480_after_hours_skip_preserved"] = False
+    current["_p480_preserved_scan_available"] = bool(preserved)
+    current["_p480_preserved_scan_trade_judgable"] = bool(preserved_truth.get("trade_judgable"))
+    current["_p480_raw_latest_scan"] = {
+        "ts_utc": current.get("ts_utc"),
+        "reason": current_reason,
+        "scanned": current.get("scanned"),
+        "duration_ms": current.get("duration_ms"),
+        "candidate_bearing": bool(current_truth.get("candidate_bearing")),
+        "trade_judgable": bool(current_truth.get("trade_judgable")),
+    }
     return current
 
 class SwingScanRuntimeBudgetExceeded(RuntimeError):
@@ -29012,6 +29061,22 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "open_position_symbol_count": len(p479_open_position_symbols),
                 "goal": "candidate_eval_hot_path_uses_snapshots_not_per_symbol_broker_calls",
             },
+            "p480_runtime_proof": {
+                "enabled": True,
+                "patch": "patch-480-preserve-candidate-bearing-scan-p479-runtime-proof",
+                "broker_free_selection_finalization": True,
+                "thread_isolation_default_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "broker_snapshot_reused": bool(p479_scan_broker_snapshot),
+                "symbols_eval_total": int(p402_eval_truth.get("evaluated_count") or 0),
+                "symbols_skipped_for_budget": list(p402_eval_truth.get("skipped_symbols") or [])[:25],
+                "candidate_count": len(candidates),
+                "approved_count": len(approved),
+                "selected_count": len(selected_symbols),
+                "runtime_budget_sec": int(SCAN_RUNTIME_BUDGET_SEC or 0),
+                "candidate_eval_stopped_for_budget": bool(p402_eval_truth.get("stopped_for_budget")),
+                "candidate_eval_partial_publishable": bool(p402_eval_truth.get("partial_scan_publishable")),
+                "goal": "prove_patch_479_fast_path_ran_without_per_symbol_broker_dependency",
+            },
             "p474_regime_to_candidate_fast_publish": {
                 "foreground_fallback": bool(scan_options.get("p474_foreground_fallback")),
                 "fast_publish_pre_eval_applied": bool(p474_fast_publish_summary),
@@ -35693,9 +35758,20 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
     payload["trade_judgable"] = bool(p475_effective_truth.get("trade_judgable"))
     payload["regime_only_non_actionable"] = bool(p475_effective_truth.get("regime_only_non_actionable"))
     payload["p475_scan_truth_contract"] = dict(p475_effective_truth)
+    payload["p480_effective_scan_truth"] = {
+        "effective_scan_source": (effective_scan or {}).get("_p480_effective_scan_source") or (effective_scan or {}).get("_scan_source"),
+        "after_hours_skip_preserved": bool((effective_scan or {}).get("_p480_after_hours_skip_preserved")),
+        "preserved_scan_available": bool((effective_scan or {}).get("_p480_preserved_scan_available")),
+        "preserved_scan_trade_judgable": bool((effective_scan or {}).get("_p480_preserved_scan_trade_judgable")),
+        "raw_latest_scan": dict((effective_scan or {}).get("_p480_raw_latest_scan") or {}),
+    }
+
     if not bool(p475_effective_truth.get("trade_judgable")):
         payload["status"] = "scan_not_trade_judgable"
         payload["recommended_action"] = "wait_for_candidate_bearing_scan_completion"
+    elif bool((effective_scan or {}).get("_p480_after_hours_skip_preserved")):
+        payload["status"] = "preserved_candidate_bearing_scan"
+        payload["recommended_action"] = "use_preserved_market_scan_until_next_market_scan"
     return payload
 
 def _p277h_defensive_tier_near_miss_report(limit: int = 50) -> dict:
