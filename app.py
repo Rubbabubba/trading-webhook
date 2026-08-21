@@ -3367,13 +3367,105 @@ def _p324_preserve_successful_production_scan(scan: dict | None, reason: str = "
     LAST_SUCCESSFUL_PRODUCTION_SCAN.update(preserved)
     return True
 
-et("candidates_total") or 0) > 0
+
+def _p464_scan_runtime_budget_sec() -> int:
+    return max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180))
+
+
+def _p464_scan_duration_ms(scan: dict | None) -> int:
+    scan = dict(scan or {})
+    summary = dict(scan.get("summary") or {})
+    background = dict(scan.get("scan_background_completion_truth") or summary.get("scan_background_completion_truth") or {})
+    for value in (scan.get("duration_ms"), summary.get("duration_ms"), background.get("duration_ms")):
+        try:
+            if value is not None:
+                return int(float(value or 0))
+        except Exception:
+            continue
+    return 0
+
+
+def _p464_scan_over_runtime_budget(scan: dict | None) -> bool:
+    duration_ms = _p464_scan_duration_ms(scan)
+    budget_ms = int(_p464_scan_runtime_budget_sec() * 1000)
+    return bool(duration_ms > budget_ms)
+
+
+def _p464_sanitize_persisted_over_budget_scan(scan: dict | None, source: str = "") -> dict:
+    row = dict(scan or {})
+    if not row:
+        return row
+
+    summary = dict(row.get("summary") or {})
+    background = dict(row.get("scan_background_completion_truth") or summary.get("scan_background_completion_truth") or {})
+    duration_ms = _p464_scan_duration_ms(row)
+    budget_ms = int(_p464_scan_runtime_budget_sec() * 1000)
+    over_budget = bool(duration_ms > budget_ms)
+
+    if not over_budget:
+        return row
+
+    reason = str(row.get("reason") or summary.get("scan_reason") or "").strip()
+    row["runtime_budget_sanitized"] = True
+    row["runtime_budget_sanitized_source"] = source or "p464_hotfix"
+    row["runtime_budget_sanitized_at_utc"] = datetime.now(timezone.utc).isoformat()
+    row["runtime_budget_ms"] = budget_ms
+    row["duration_ms"] = duration_ms
+    row["reason_before_runtime_budget_sanitize"] = reason
+    row["reason"] = "scan_runtime_budget_exceeded"
+    row["error"] = row.get("error") or "persisted scan exceeded runtime budget and is not actionable market truth"
+    row["exception_type"] = row.get("exception_type") or "BackgroundScanRuntimeBudgetExceeded"
+
+    summary["runtime_budget_sanitized"] = True
+    summary["runtime_budget_ms"] = budget_ms
+    summary["duration_ms"] = duration_ms
+    summary["scan_reason_before_runtime_budget_sanitize"] = reason
+    summary["scan_reason"] = "scan_runtime_budget_exceeded"
+    row["summary"] = summary
+
+    if background:
+        background["runtime_budget_sanitized"] = True
+        background["runtime_budget_ms"] = budget_ms
+        background["duration_ms"] = duration_ms
+        background["reason_before_runtime_budget_sanitize"] = background.get("reason")
+        background["reason"] = "background_scan_runtime_budget_exceeded"
+        background["status"] = "failed"
+        background["active"] = False
+        background["terminal"] = True
+        background["exception_type"] = background.get("exception_type") or "BackgroundScanRuntimeBudgetExceeded"
+        background["error"] = background.get("error") or "persisted background scan exceeded runtime budget"
+        row["scan_background_completion_truth"] = background
+        summary["scan_background_completion_truth"] = background
+        row["summary"] = summary
+
+    return row
+
+
+def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
+    scan = _p464_sanitize_persisted_over_budget_scan(scan, source="actionable_market_scan_check")
+    summary = dict(scan.get("summary") or {})
+    reason = str(scan.get("reason") or summary.get("scan_reason") or "").strip()
+
+    if reason != "scan_completed":
+        return False
+    if _p464_scan_over_runtime_budget(scan):
+        return False
+    if bool(scan.get("skipped")) or bool(summary.get("skipped")) or summary.get("skip_reason"):
+        return False
+    if str(scan.get("exception_type") or "").strip():
+        return False
+
+    return bool(
+        int(scan.get("scanned") or 0) > 0
+        or int(summary.get("symbols_eval_total") or 0) > 0
+        or int(summary.get("candidates_total") or 0) > 0
         or int(summary.get("eligible_total") or 0) > 0
         or int(summary.get("selected_total") or 0) > 0
         or summary.get("top_candidates")
         or summary.get("rejection_counts")
         or summary.get("top_rejection_reasons")
     )
+
 
 def _p464_preserve_actionable_market_scan(scan: dict | None, reason: str = "") -> bool:
     scan = dict(scan or {})
