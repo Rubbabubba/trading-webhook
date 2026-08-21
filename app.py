@@ -15,7 +15,7 @@ import math
 import time as _time
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED, TimeoutError as FuturesTimeoutError
 import threading
 from collections import Counter
 from itertools import combinations
@@ -2825,6 +2825,18 @@ SWING_SCAN_BUDGET_RESERVE_SEC = max(
     5,
     int(getenv_any("SWING_SCAN_BUDGET_RESERVE_SEC", default="45") or 45),
 )
+SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED = env_bool_any(
+    "SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED",
+    default="true",
+)
+SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC = max(
+    3,
+    int(getenv_any("SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC", default="12") or 12),
+)
+SWING_SCAN_SYMBOL_EVAL_TIMEOUT_MAX_PER_SCAN = max(
+    1,
+    int(getenv_any("SWING_SCAN_SYMBOL_EVAL_TIMEOUT_MAX_PER_SCAN", default="3") or 3),
+)
 SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC = max(
     60,
     int(getenv_any("SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC", default="900") or 900),
@@ -2904,7 +2916,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-477-scanner-candidate-eval-batch-budget-terminal-partial-scan-close"
+PATCH_VERSION = "patch-478-candidate-eval-isolation-terminal-partial-publish-scanner-stall-elimination"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -27952,7 +27964,28 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             rejection_counts[str(reason)] += 1
         return row
 
-    def _finalize_candidate(candidate: dict, sym: str):
+    def _record_finalized_candidate(c: dict) -> dict:
+        c = dict(c or {})
+        strategy_name = str(c.get("strategy") or "").strip().lower()
+
+        c.update(_classify_shadow_candidate(c))
+        if c.get("shadow_regime_candidate"):
+            shadow_candidates.append(c)
+            for r in c.get("shadow_market_gate_reasons", []):
+                shadow_rejection_counts[str(r)] += 1
+        if c.get("shadow_alignment_only_candidate"):
+            shadow_alignment_candidates.append(c)
+            shadow_alignment_rejection_counts["index_alignment_failed"] += 1
+        for r in c.get("rejection_reasons", []):
+            rejection_counts[str(r)] += 1
+        candidates.append(c)
+        if strategy_name == MEAN_REVERSION_STRATEGY_NAME:
+            mean_reversion_candidates.append(c)
+        else:
+            breakout_candidates.append(c)
+        return c
+
+    def _finalize_candidate(candidate: dict, sym: str, record: bool = True):
         c = dict(candidate or {})
         strategy_name = str(c.get('strategy') or '').strip().lower()
         if _has_pending_entry_plan(sym):
@@ -28030,21 +28063,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         _canonical_portfolio_cap_gate(c, projected_notional, exposure, portfolio_cap, restore_eligibility=True)
 
         c = _p323_apply_swing_production_contract(c, global_block_reasons=global_block_reasons)
-        c.update(_classify_shadow_candidate(c))
-        if c.get('shadow_regime_candidate'):
-            shadow_candidates.append(c)
-            for r in c.get('shadow_market_gate_reasons', []):
-                shadow_rejection_counts[str(r)] += 1
-        if c.get('shadow_alignment_only_candidate'):
-            shadow_alignment_candidates.append(c)
-            shadow_alignment_rejection_counts['index_alignment_failed'] += 1
-        for r in c.get('rejection_reasons', []):
-            rejection_counts[str(r)] += 1
-        candidates.append(c)
-        if strategy_name == MEAN_REVERSION_STRATEGY_NAME:
-            mean_reversion_candidates.append(c)
-        else:
-            breakout_candidates.append(c)
+        if record:
+            _record_finalized_candidate(c)
         return c
 
     _p402_stage_checkpoint("candidate_eval_start", symbols_count=len(syms))
@@ -28299,6 +28319,117 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "results": list(candidates[:10]),
         }
 
+        def _p478_symbol_eval_timeout_row(sym: str, elapsed_sec: float, timeout_sec: float, stage: str) -> dict:
+        return {
+            "symbol": str(sym or "").strip().upper(),
+            "eligible": False,
+            "selected": False,
+            "strategy": BREAKOUT_STRATEGY_NAME,
+            "signal": "daily_breakout",
+            "scan_ts_utc": datetime.now(timezone.utc).isoformat(),
+            "rejection_reasons": ["candidate_eval_timeout"],
+            "candidate_eval_timeout": True,
+            "p478_symbol_eval_isolation": {
+                "enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "timeout_sec": round(float(timeout_sec or 0.0), 3),
+                "elapsed_sec": round(float(elapsed_sec or 0.0), 3),
+                "stage": stage,
+                "reason": "symbol_eval_exceeded_timeout",
+            },
+        }
+
+    def _p478_eval_symbol_rows(sym: str) -> list[dict]:
+        rows = [
+            _finalize_candidate(
+                evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode),
+                sym,
+                record=False,
+            )
+        ]
+        if SWING_MEAN_REVERSION_ENABLED and regime.get("favorable") is False:
+            rows.append(
+                _finalize_candidate(
+                    evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode),
+                    sym,
+                    record=False,
+                )
+            )
+        return rows
+
+    def _p478_run_symbol_eval_isolated(sym: str, remaining_sec: float) -> dict:
+        symbol = str(sym or "").strip().upper()
+        timeout_sec = max(
+            3.0,
+            min(
+                float(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC or 12),
+                max(3.0, float(remaining_sec or 0.0) - max(1.0, float(SWING_SCAN_BUDGET_RESERVE_SEC or 0.0))),
+            ),
+        )
+        started = _time.perf_counter()
+
+        if not bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED):
+            rows = _p478_eval_symbol_rows(symbol)
+            return {
+                "ok": True,
+                "status": "completed",
+                "symbol": symbol,
+                "rows": rows,
+                "elapsed_sec": round(max(0.0, _time.perf_counter() - started), 3),
+                "timeout_sec": round(timeout_sec, 3),
+                "isolated": False,
+            }
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"swing-eval-{symbol}")
+        future = executor.submit(_p478_eval_symbol_rows, symbol)
+        try:
+            rows = future.result(timeout=timeout_sec)
+            return {
+                "ok": True,
+                "status": "completed",
+                "symbol": symbol,
+                "rows": list(rows or []),
+                "elapsed_sec": round(max(0.0, _time.perf_counter() - started), 3),
+                "timeout_sec": round(timeout_sec, 3),
+                "isolated": True,
+            }
+        except FuturesTimeoutError:
+            future.cancel()
+            elapsed = max(0.0, _time.perf_counter() - started)
+            return {
+                "ok": False,
+                "status": "timeout",
+                "symbol": symbol,
+                "rows": [],
+                "elapsed_sec": round(elapsed, 3),
+                "timeout_sec": round(timeout_sec, 3),
+                "isolated": True,
+                "timeout_row": _p478_symbol_eval_timeout_row(symbol, elapsed, timeout_sec, "candidate_eval_symbol_timeout"),
+            }
+        except Exception as e:
+            elapsed = max(0.0, _time.perf_counter() - started)
+            return {
+                "ok": False,
+                "status": "exception",
+                "symbol": symbol,
+                "rows": [{
+                    "symbol": symbol,
+                    "eligible": False,
+                    "selected": False,
+                    "strategy": BREAKOUT_STRATEGY_NAME,
+                    "rejection_reasons": ["candidate_eval_exception"],
+                    "candidate_eval_exception": str(e),
+                    "exception_type": type(e).__name__,
+                }],
+                "elapsed_sec": round(elapsed, 3),
+                "timeout_sec": round(timeout_sec, 3),
+                "isolated": True,
+            }
+        finally:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+
     candidate_eval_start_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
     candidate_eval_start_remaining = max(
         0.0,
@@ -28404,17 +28535,45 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             remaining_sec=round(remaining, 3),
         )
         try:
-            _finalize_candidate(
-                evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode),
-                sym,
-            )
-            if SWING_MEAN_REVERSION_ENABLED and regime.get('favorable') is False:
-                _finalize_candidate(
-                    evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode),
-                    sym,
-                )
+            p478_eval_result = _p478_run_symbol_eval_isolated(sym, remaining)
+            symbol_elapsed = float(p478_eval_result.get("elapsed_sec") or max(0.0, _time.perf_counter() - symbol_eval_started))
 
-            symbol_elapsed = max(0.0, _time.perf_counter() - symbol_eval_started)
+            if p478_eval_result.get("status") == "timeout":
+                timeout_row = dict(p478_eval_result.get("timeout_row") or _p478_symbol_eval_timeout_row(
+                    sym,
+                    symbol_elapsed,
+                    float(p478_eval_result.get("timeout_sec") or SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC),
+                    "candidate_eval_symbol_timeout",
+                ))
+                _record_finalized_candidate(timeout_row)
+                p472_symbol_timeout_symbols.append(sym)
+                p472_symbol_timeout_rows.append({
+                    "symbol": sym,
+                    "elapsed_sec": round(symbol_elapsed, 3),
+                    "threshold_sec": round(float(p478_eval_result.get("timeout_sec") or SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC), 3),
+                    "reason": "candidate_eval_symbol_timeout",
+                    "p478_isolated_timeout": True,
+                })
+                p402_eval_truth["p478_timeout_count"] = int(p402_eval_truth.get("p478_timeout_count") or 0) + 1
+                p402_eval_truth["p478_symbol_eval_isolation_enabled"] = bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED)
+            else:
+                for finalized_row in list(p478_eval_result.get("rows") or []):
+                    _record_finalized_candidate(finalized_row)
+
+            if int(p402_eval_truth.get("p478_timeout_count") or 0) >= int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_MAX_PER_SCAN):
+                p402_eval_truth["stopped_for_budget"] = True
+                p402_eval_truth["budget_stop_stage"] = "candidate_eval_symbol_timeout_limit"
+                p402_eval_truth["terminal_reason"] = "candidate_eval_symbol_timeout_limit"
+                p402_eval_truth["skipped_symbols"].extend([
+                    s for s in syms
+                    if s not in p402_eval_truth["evaluated_symbols"]
+                    and s not in p472_fast_skip_symbols
+                ])
+                return _p477_terminal_partial_scan_response(
+                    "candidate_eval_symbol_timeout_limit_terminal_close",
+                    "candidate_eval_symbol_timeout_limit",
+                    max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - _p398_runtime_budget_elapsed_sec(scan_started)),
+                )
             if symbol_elapsed > max(8.0, symbol_budget_floor_sec):
                 p472_symbol_timeout_symbols.append(sym)
                 p472_symbol_timeout_rows.append({
@@ -28807,6 +28966,14 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "last_candidate_count": int(p476_candidate_progress_publish.get("last_candidate_count") or 0),
             },
             "p477_terminal_partial_close": dict(p477_terminal_partial_close),
+            "p478_candidate_eval_isolation": {
+                "enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "timeout_sec": int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC),
+                "max_timeouts_per_scan": int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_MAX_PER_SCAN),
+                "timeout_symbols": list(p402_eval_truth.get("symbol_timeout_symbols") or []),
+                "timeout_count": int(p402_eval_truth.get("symbol_timeout_count") or 0),
+                "isolated_timeout_count": int(p402_eval_truth.get("p478_timeout_count") or 0),
+            },
             "p474_regime_to_candidate_fast_publish": {
                 "foreground_fallback": bool(scan_options.get("p474_foreground_fallback")),
                 "fast_publish_pre_eval_applied": bool(p474_fast_publish_summary),
