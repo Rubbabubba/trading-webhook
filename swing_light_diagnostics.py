@@ -243,12 +243,34 @@ def scanner_light_snapshot(
         or latest_scan.get("scan_background_completion_truth")
         or {}
     )
-    background_scan_active = str(scan_background_completion_truth.get("status") or "").strip().lower() in {"accepted", "running"}
+    background_status = str(scan_background_completion_truth.get("status") or "").strip().lower()
+    background_duration_ms = 0
+    try:
+        background_duration_ms = int(float(scan_background_completion_truth.get("duration_ms") or 0))
+    except Exception:
+        background_duration_ms = 0
+    background_budget_sec = max(60, int(scan_runtime_budget_sec or 240))
+    background_timeout_sec = background_budget_sec + 60
+    background_completed_over_budget = bool(
+        background_status == "completed"
+        and background_duration_ms > int(background_budget_sec * 1000)
+    )
+    if background_completed_over_budget:
+        scan_background_completion_truth["status"] = "failed"
+        scan_background_completion_truth["active"] = False
+        scan_background_completion_truth["terminal"] = True
+        scan_background_completion_truth["reason_before_runtime_budget_sanitize"] = scan_background_completion_truth.get("reason")
+        scan_background_completion_truth["reason"] = "background_scan_runtime_budget_exceeded"
+        scan_background_completion_truth["exception_type"] = scan_background_completion_truth.get("exception_type") or "BackgroundScanRuntimeBudgetExceeded"
+        scan_background_completion_truth["error"] = scan_background_completion_truth.get("error") or "persisted completed background scan exceeded runtime budget"
+        scan_background_completion_truth["runtime_budget_sanitized"] = True
+        scan_background_completion_truth["runtime_budget_ms"] = int(background_budget_sec * 1000)
+        background_status = "failed"
+
+    background_scan_active = background_status in {"accepted", "running"}
     background_started_age_sec = _scanner_light_iso_age_sec(scan_background_completion_truth.get("started_utc"))
     background_heartbeat_age_sec = _scanner_light_iso_age_sec(scan_background_completion_truth.get("updated_utc"))
     background_age_sec = background_started_age_sec
-    background_budget_sec = max(60, int(scan_runtime_budget_sec or 240))
-    background_timeout_sec = background_budget_sec + 60
     background_over_budget = bool(background_scan_active and background_started_age_sec is not None and background_started_age_sec > background_budget_sec)
     background_timed_out = bool(background_scan_active and background_started_age_sec is not None and background_started_age_sec > background_timeout_sec)
     background_heartbeat_stale = bool(background_scan_active and background_heartbeat_age_sec is not None and background_heartbeat_age_sec > 90)
@@ -276,7 +298,9 @@ def scanner_light_snapshot(
             recovered_warning_codes.append("background_scan_lost_after_restart_aged")
 
     scanner_status = (
-        "background_scan_timeout"
+        "background_scan_runtime_budget_exceeded"
+        if background_completed_over_budget
+        else "background_scan_timeout"
         if background_timed_out
         else "background_scan_over_budget"
         if background_over_budget
@@ -343,6 +367,8 @@ def scanner_light_snapshot(
             "timeout_sec": int(background_timeout_sec),
             "over_budget": bool(background_over_budget),
             "timed_out": bool(background_timed_out),
+            "completed_over_budget_sanitized": bool(background_completed_over_budget),
+            "duration_ms": int(background_duration_ms),
             "stage": scan_background_completion_truth.get("stage"),
             "scan_attempt_id": scan_background_completion_truth.get("scan_attempt_id"),
         },
@@ -378,6 +404,7 @@ def scanner_light_snapshot(
             "background_scan_active": bool(background_scan_active),
             "background_scan_over_budget": bool(background_over_budget),
             "background_scan_timed_out": bool(background_timed_out),
+            "background_completed_over_budget_sanitized": bool(background_completed_over_budget),
             "background_scan_heartbeat_stale": bool(background_heartbeat_stale),
             "background_scan_lost_after_restart_aged": bool(scanner_failure_root_cause_historical),
         },

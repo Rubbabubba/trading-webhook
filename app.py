@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-464-market-scan-preservation-internal-runtime-budget-terminal-close"
+PATCH_VERSION = "patch-464-hotfix-persisted-over-budget-scan-sanitizer-effective-scan-consumer-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3367,30 +3367,13 @@ def _p324_preserve_successful_production_scan(scan: dict | None, reason: str = "
     LAST_SUCCESSFUL_PRODUCTION_SCAN.update(preserved)
     return True
 
-
-def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
-    scan = dict(scan or {})
-    summary = dict(scan.get("summary") or {})
-    reason = str(scan.get("reason") or summary.get("scan_reason") or "").strip()
-
-    if reason != "scan_completed":
-        return False
-    if bool(scan.get("skipped")) or bool(summary.get("skipped")) or summary.get("skip_reason"):
-        return False
-    if str(scan.get("exception_type") or "").strip():
-        return False
-
-    return bool(
-        int(scan.get("scanned") or 0) > 0
-        or int(summary.get("symbols_eval_total") or 0) > 0
-        or int(summary.get("candidates_total") or 0) > 0
+et("candidates_total") or 0) > 0
         or int(summary.get("eligible_total") or 0) > 0
         or int(summary.get("selected_total") or 0) > 0
         or summary.get("top_candidates")
         or summary.get("rejection_counts")
         or summary.get("top_rejection_reasons")
     )
-
 
 def _p464_preserve_actionable_market_scan(scan: dict | None, reason: str = "") -> bool:
     scan = dict(scan or {})
@@ -3408,21 +3391,27 @@ def _p464_preserve_actionable_market_scan(scan: dict | None, reason: str = "") -
 
 
 def _p464_effective_market_scan(scan: dict | None = None) -> dict:
-    current = dict(scan or LAST_SCAN or {})
+    current = _p464_sanitize_persisted_over_budget_scan(
+        dict(scan or LAST_SCAN or {}),
+        source="effective_market_scan_current",
+    )
     current_reason = str(current.get("reason") or "").strip()
     if _p464_is_actionable_market_scan(current):
         current["_scan_source"] = current.get("_scan_source") or "last_scan"
         return current
 
-    preserved = dict(LAST_ACTIONABLE_MARKET_SCAN or {})
-    if preserved:
+    preserved = _p464_sanitize_persisted_over_budget_scan(
+        dict(LAST_ACTIONABLE_MARKET_SCAN or {}),
+        source="effective_market_scan_preserved",
+    )
+    if _p464_is_actionable_market_scan(preserved):
         preserved["_scan_source"] = preserved.get("_scan_source") or "last_actionable_market_scan"
         preserved["fallback_from_last_scan_reason"] = current_reason or None
         preserved["fallback_from_last_scan_source"] = current.get("_scan_source") or "last_scan"
         return preserved
 
+    current["_scan_source"] = current.get("_scan_source") or "last_scan"
     return current
-
 
 class SwingScanRuntimeBudgetExceeded(RuntimeError):
     pass
@@ -15924,8 +15913,8 @@ def _p363_second_slot_truth(
 
 def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int | None = None) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
-    latest_scan = dict(latest_scan or {})
-    summary = dict(summary or {})
+    latest_scan = _p464_effective_market_scan(latest_scan)
+    summary = dict((latest_scan or {}).get("summary") or summary or {})
 
     requested_symbols = {
         str(sym or "").strip().upper()
@@ -16074,12 +16063,16 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "heavy_available": True,
         "heavy_url_hint": "/diagnostics/swing_submit_path_trace?heavy=true",
         "read_only": True,
-        "source": "last_scan_runtime_snapshot",
+         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
         "path_status": path_status,
         "recommended_action": recommended_action,
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),
             "reason": latest_scan.get("reason"),
+            "source": latest_scan.get("_scan_source"),
+            "fallback_from_last_scan_reason": latest_scan.get("fallback_from_last_scan_reason"),
+            "runtime_budget_sanitized": bool(latest_scan.get("runtime_budget_sanitized")),
+            "exception_type": latest_scan.get("exception_type"),
             "duration_ms": duration_ms,
             "duration_sec": round(duration_ms / 1000.0, 2),
             "scan_runtime_budget_sec": budget_sec,
@@ -33575,9 +33568,27 @@ def _p277h_defensive_tier_near_miss_row(row: dict | None) -> dict:
 
 def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
     payload = _p406_fast_current_candidate_payload(limit=max(1, min(int(limit or 50), 100)))
+    effective_scan = _p464_effective_market_scan(LAST_SCAN)
+    latest = dict(payload.get("latest_scan") or {})
+    if effective_scan and str(effective_scan.get("_scan_source") or "") == "last_actionable_market_scan":
+        payload["status"] = "cached_market_scan_truth" if payload.get("status") == "stale_scan_not_actionable" else payload.get("status")
+        payload["recommended_action"] = "use_preserved_market_scan_until_next_market_scan" if payload.get("recommended_action") == "recover_fresh_scan_before_evaluating_candidates" else payload.get("recommended_action")
+        latest.update({
+            "ts_utc": effective_scan.get("ts_utc"),
+            "reason": effective_scan.get("reason"),
+            "source": effective_scan.get("_scan_source"),
+            "fallback_from_last_scan_reason": effective_scan.get("fallback_from_last_scan_reason"),
+            "runtime_budget_sanitized": bool(effective_scan.get("runtime_budget_sanitized")),
+        })
+        payload["latest_scan"] = latest
+    else:
+        latest["source"] = effective_scan.get("_scan_source") if isinstance(effective_scan, dict) else latest.get("source")
+        latest["runtime_budget_sanitized"] = bool((effective_scan or {}).get("runtime_budget_sanitized")) if isinstance(effective_scan, dict) else False
+        payload["latest_scan"] = latest
     payload["mode"] = "current_scan_suppression_truth"
     payload["read_only"] = True
     payload["source"] = "fast_cached_candidate_truth"
+    payload["effective_market_scan_source"] = (effective_scan or {}).get("_scan_source") if isinstance(effective_scan, dict) else None
     return payload
 
 def _p277h_defensive_tier_near_miss_report(limit: int = 50) -> dict:
@@ -38596,15 +38607,19 @@ def _p298_selected_submission_truth_light() -> dict:
         out["recommended_action"] = "scheduled_scanner_should_promote_current_eligible_contract_rows"
     return out
 
-
 def _p298_scanner_light() -> dict:
     tel = dict(LAST_SCANNER_TELEMETRY or {})
     latest_scan, summary = _p298_latest_scan_summary_light()
     today_prefix = str(now_ny().date())
     telemetry_summary = _scanner_telemetry_summary(today_prefix=today_prefix)
 
-    latest_scan = dict(latest_scan or {})
-    background_truth = _p456_background_scan_truth()
+    latest_scan = _p464_sanitize_persisted_over_budget_scan(dict(latest_scan or {}), source="scanner_light_latest_scan")
+    background_truth = dict(_p456_background_scan_truth() or {})
+    sanitized_background_wrapper = _p464_sanitize_persisted_over_budget_scan(
+        {"reason": background_truth.get("reason") or "scan_completed", "scan_background_completion_truth": background_truth},
+        source="scanner_light_background_truth",
+    )
+    background_truth = dict(sanitized_background_wrapper.get("scan_background_completion_truth") or background_truth)
     latest_scan["scanner_exception_truth"] = summary.get("scanner_exception_truth")
     latest_scan["using_last_successful_production_scan"] = bool(summary.get("using_last_successful_production_scan"))
     latest_scan["scan_background_completion_truth"] = background_truth
