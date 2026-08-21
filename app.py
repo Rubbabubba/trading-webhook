@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-470-precomputed-regime-snapshot-candidate-eval-before-heavy-persistence"
+PATCH_VERSION = "patch-471-exit-worker-readiness-truth-reconciliation-worker-scan-release-cache-refresh"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17094,13 +17094,110 @@ def _restore_snapshot_plan_classification(plan: dict) -> dict:
     return plan
 
 
+def _p471_exit_worker_readiness_truth(worker_status: dict | None = None, diagnostic: dict | None = None) -> dict:
+    ws = dict(worker_status or {})
+    if not ws:
+        try:
+            ws = dict(_worker_status_snapshot() or {})
+        except Exception:
+            ws = {}
+
+    diag = dict(diagnostic or {})
+    diag_error = ""
+    if not diag and not bool(ws.get("exit_worker_running")):
+        try:
+            diag = dict(_worker_exit_status_snapshot(limit=5) or {})
+        except Exception as exc:
+            diag_error = str(exc)
+
+    hb = dict(diag.get("heartbeat") or LAST_EXIT_HEARTBEAT or {})
+    hb_status = str(hb.get("status") or ws.get("exit_worker_status") or "").strip().lower()
+    age_sec = ws.get("exit_worker_age_sec")
+    if age_sec is None:
+        age_sec = diag.get("heartbeat_age_sec")
+
+    max_age_sec = max(int(READINESS_EXIT_MAX_AGE_SEC or 0), 15)
+    direct_running = bool(ws.get("exit_worker_running"))
+    diagnostic_healthy = bool(diag.get("healthy"))
+    started_stale = bool(diag.get("started_stale"))
+    heartbeat_error_fresh = bool(diag.get("heartbeat_error_fresh"))
+    sync_contract_ok = bool(diag.get("sync_contract_ok", True))
+    risk_evidence_ok = bool(diag.get("risk_evidence_ok", True))
+    retry_action = str((diag.get("exit_submit_retry_readiness") or {}).get("recommended_action") or diag.get("recommended_action") or "none").strip().lower()
+    retry_clean = retry_action in {"", "none", "monitor_active_exit_truth", "ignore_stale_giveback_heartbeat_use_active_exit_truth"}
+    recent_terminal_ok = bool(
+        hb_status in {
+            "ok",
+            "idle",
+            "heartbeat",
+            "completed",
+            "complete",
+            "success",
+            "outside_market_hours",
+            "outside_market_hours_noop",
+            "no_active_positions",
+            "no_positions",
+        }
+        and age_sec is not None
+        and float(age_sec) <= max(max_age_sec * 2, 60)
+    )
+
+    ready = bool(
+        direct_running
+        or diagnostic_healthy
+        or (
+            recent_terminal_ok
+            and not started_stale
+            and not heartbeat_error_fresh
+            and sync_contract_ok
+            and risk_evidence_ok
+            and retry_clean
+        )
+    )
+
+    if direct_running:
+        reason = "exit_worker_running"
+    elif diagnostic_healthy:
+        reason = "worker_exit_status_healthy"
+    elif recent_terminal_ok:
+        reason = "recent_terminal_exit_heartbeat_clean"
+    elif diag_error:
+        reason = "worker_exit_diagnostic_unavailable"
+    else:
+        reason = "exit_worker_not_ready"
+
+    return {
+        "ok": True,
+        "ready": ready,
+        "reason": reason,
+        "direct_exit_worker_running": direct_running,
+        "diagnostic_healthy": diagnostic_healthy,
+        "heartbeat_status": hb_status,
+        "heartbeat_age_sec": age_sec,
+        "max_age_sec": max_age_sec,
+        "started_stale": started_stale,
+        "heartbeat_error_fresh": heartbeat_error_fresh,
+        "sync_contract_ok": sync_contract_ok,
+        "risk_evidence_ok": risk_evidence_ok,
+        "retry_action": retry_action,
+        "retry_clean": retry_clean,
+        "diagnostic_error": diag_error,
+    }
+
+
 def _normalize_worker_unmet_conditions(unmet: list[str], worker_status: dict | None = None) -> list[str]:
     items = [str(x or "").strip() for x in list(unmet or []) if str(x or "").strip()]
     ws = dict(worker_status or {})
     if bool(ws.get("scanner_running")):
         items = [x for x in items if x != "scanner_worker_not_ready"]
-    if bool(ws.get("exit_worker_running")):
-        items = [x for x in items if x != "exit_worker_not_ready"]
+    if "exit_worker_not_ready" in items:
+        try:
+            exit_truth = _p471_exit_worker_readiness_truth(ws)
+            if bool(exit_truth.get("ready")):
+                items = [x for x in items if x != "exit_worker_not_ready"]
+        except Exception:
+            if bool(ws.get("exit_worker_running")):
+                items = [x for x in items if x != "exit_worker_not_ready"]
     return list(dict.fromkeys(items))
 
 def startup_restore_state() -> dict:
@@ -19871,8 +19968,17 @@ def release_gate_status() -> dict:
     status = _build_release_gate_snapshot(stage, include_stage_check=True)
     paper_gate = _paper_proof_gate_snapshot()
     current_worker_status = _worker_status_snapshot()
+    raw_unmet_conditions = list(status.get("unmet_conditions") or [])
+    p471_exit_truth = _p471_exit_worker_readiness_truth(current_worker_status)
+    normalized_unmet_conditions = _normalize_worker_unmet_conditions(raw_unmet_conditions, current_worker_status)
+    p471_exit_truth["suppressed_exit_worker_not_ready"] = bool(
+        "exit_worker_not_ready" in raw_unmet_conditions
+        and "exit_worker_not_ready" not in normalized_unmet_conditions
+    )
+
     status["worker_status"] = current_worker_status
-    status["unmet_conditions"] = _normalize_worker_unmet_conditions(status.get("unmet_conditions") or [], current_worker_status)
+    status["p471_exit_worker_readiness_truth"] = p471_exit_truth
+    status["unmet_conditions"] = normalized_unmet_conditions
     status["go_live_eligible"] = len(status.get("unmet_conditions") or []) == 0
     status.update({
         "system_release_stage": stage,
@@ -26362,6 +26468,17 @@ def _p469_release_gate_snapshot_cached(force: bool = False) -> dict:
     now_ts = _time.monotonic()
     cached = dict(P469_RELEASE_GATE_SNAPSHOT_CACHE or {})
     cached_age = now_ts - float(cached.get("cached_monotonic") or 0.0)
+    cached_status = dict(cached.get("status") or {})
+    cached_unmet = {
+        str(x or "").strip().lower()
+        for x in list(cached_status.get("unmet_conditions") or [])
+        if str(x or "").strip()
+    }
+    force_refresh_reason = ""
+
+    if not force and "exit_worker_not_ready" in cached_unmet:
+        force = True
+        force_refresh_reason = "cached_exit_worker_not_ready"
 
     if (
         not force
@@ -26369,10 +26486,11 @@ def _p469_release_gate_snapshot_cached(force: bool = False) -> dict:
         and cached_age >= 0
         and cached_age <= float(P469_RELEASE_GATE_SNAPSHOT_TTL_SEC)
     ):
-        status = dict(cached.get("status") or {})
+        status = dict(cached_status)
         status["p469_cache_hit"] = True
         status["p469_cache_age_sec"] = round(cached_age, 3)
         status["p469_cache_ttl_sec"] = int(P469_RELEASE_GATE_SNAPSHOT_TTL_SEC)
+        status["p471_cache_force_refresh_reason"] = None
         return status
 
     if not bool(RELEASE_GATE_ENFORCED):
@@ -26391,6 +26509,8 @@ def _p469_release_gate_snapshot_cached(force: bool = False) -> dict:
         status["p469_cache_hit"] = False
         status["p469_release_gate_enforced"] = True
 
+    status["p471_cache_force_refresh_reason"] = force_refresh_reason or ("manual_force" if force else None)
+
     P469_RELEASE_GATE_SNAPSHOT_CACHE.clear()
     P469_RELEASE_GATE_SNAPSHOT_CACHE.update({
         "cached_monotonic": now_ts,
@@ -26400,7 +26520,6 @@ def _p469_release_gate_snapshot_cached(force: bool = False) -> dict:
     status["p469_cache_age_sec"] = 0.0
     status["p469_cache_ttl_sec"] = int(P469_RELEASE_GATE_SNAPSHOT_TTL_SEC)
     return status
-
 
 def _p469_fast_worker_entry_dry_run_truth(
     source: str = "worker_scan",
@@ -26432,6 +26551,15 @@ def _p469_fast_worker_entry_dry_run_truth(
                 for x in list(release_gate.get("unmet_conditions") or [])
                 if str(x).strip()
             }
+            if "exit_worker_not_ready" in unmet_conditions:
+                release_gate = _p469_release_gate_snapshot_cached(force=True)
+                release_gate["p471_worker_scan_forced_refresh"] = True
+                unmet_conditions = {
+                    str(x).strip().lower()
+                    for x in list(release_gate.get("unmet_conditions") or [])
+                    if str(x).strip()
+                }
+
             release_gate_bootstrap_ignored = bool(
                 bootstrap_recent_scan_missing
                 and not bool(release_gate.get("live_orders_permitted"))
@@ -26473,6 +26601,9 @@ def _p469_fast_worker_entry_dry_run_truth(
             "p469_cache_hit": bool(release_gate.get("p469_cache_hit")),
             "p469_cache_age_sec": release_gate.get("p469_cache_age_sec"),
             "p469_cache_ttl_sec": release_gate.get("p469_cache_ttl_sec"),
+            "p471_cache_force_refresh_reason": release_gate.get("p471_cache_force_refresh_reason"),
+            "p471_worker_scan_forced_refresh": bool(release_gate.get("p471_worker_scan_forced_refresh")),
+            "p471_exit_worker_readiness_truth": release_gate.get("p471_exit_worker_readiness_truth"),
             "error": release_gate.get("error"),
             "exception_type": release_gate.get("exception_type"),
         },
