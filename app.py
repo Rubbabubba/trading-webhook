@@ -2916,7 +2916,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-481-scanner-canonical-scan-truth-after-hours-non-replacement"
+PATCH_VERSION = "patch-481-hotfix-canonical-candidate-cache-adoption-submit-trace-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3702,6 +3702,54 @@ def _p481_scan_brief(scan: dict | None) -> dict:
         "regime_only_non_actionable": bool(truth.get("regime_only_non_actionable")),
     }
 
+def _p481_candidate_cache_scan_fallback() -> dict:
+    rows = [
+        dict(row or {})
+        for row in list(LAST_SWING_CANDIDATES or [])
+        if isinstance(row, dict)
+    ]
+    if not rows:
+        return {}
+
+    rows = _p412_rebuild_current_candidate_contract_rows(rows)
+    candidates_total = len(rows)
+    eligible_total = len([row for row in rows if bool(row.get("eligible"))])
+    selected_total = len([row for row in rows if bool(row.get("selected"))])
+    selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if bool((row or {}).get("selected"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+
+    if candidates_total <= 0 and eligible_total <= 0 and selected_total <= 0:
+        return {}
+
+    latest = dict(LAST_SCAN or {})
+    latest_summary = dict(latest.get("summary") or {})
+    scan = {
+        "ts_utc": latest.get("ts_utc"),
+        "reason": latest_summary.get("scan_reason") or latest.get("reason") or "candidate_cache_fallback",
+        "_scan_source": "last_swing_candidates_memory",
+        "source": "last_swing_candidates_memory",
+        "scanned": latest_summary.get("symbols_eval_total") or latest.get("scanned"),
+        "signals": latest.get("signals"),
+        "would_trade": latest.get("would_trade"),
+        "blocked": latest.get("blocked"),
+        "duration_ms": latest.get("duration_ms"),
+        "summary": {
+            "scan_truth_phase": "candidate_cache_fallback",
+            "candidate_cache_adopted": True,
+            "candidate_cache_source": "last_swing_candidates_memory",
+            "symbols_eval_total": int(latest_summary.get("symbols_eval_total") or latest.get("scanned") or 0),
+            "candidates_total": candidates_total,
+            "eligible_total": eligible_total,
+            "selected_total": selected_total,
+            "selected_symbols": selected_symbols,
+            "top_candidates": rows[:25],
+        },
+    }
+    return _p475_normalize_scan_truth_contract(scan, source="candidate_cache_fallback")
 
 def _p481_candidate_history_scan_fallback() -> dict:
     if not CANDIDATE_HISTORY:
@@ -3754,6 +3802,10 @@ def _p481_last_candidate_bearing_scan() -> dict:
         completed["_scan_source"] = completed.get("_scan_source") or "latest_completed_scan"
         candidates.append(completed)
 
+    cache_fallback = _p481_candidate_cache_scan_fallback()
+    if cache_fallback:
+        candidates.append(cache_fallback)
+
     history_fallback = _p481_candidate_history_scan_fallback()
     if history_fallback:
         candidates.append(history_fallback)
@@ -3766,7 +3818,6 @@ def _p481_last_candidate_bearing_scan() -> dict:
             return row
 
     return {}
-
 
 def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
     raw = _p464_sanitize_persisted_over_budget_scan(
@@ -16345,6 +16396,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan = _p464_effective_market_scan(latest_scan)
     summary = dict((latest_scan or {}).get("summary") or summary or {})
+    p481_canonical_scan_truth = dict((latest_scan or {}).get("_p481_canonical_scan_truth") or {})
 
     requested_symbols = {
         str(sym or "").strip().upper()
@@ -16493,7 +16545,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "heavy_available": True,
         "heavy_url_hint": "/diagnostics/swing_submit_path_trace?heavy=true",
         "read_only": True,
-         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
+        "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
+        "p481_canonical_scan_truth": p481_canonical_scan_truth,
         "path_status": path_status,
         "recommended_action": recommended_action,
         "latest_scan": {
@@ -16502,6 +16555,10 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "source": latest_scan.get("_scan_source"),
             "fallback_from_last_scan_reason": latest_scan.get("fallback_from_last_scan_reason"),
             "runtime_budget_sanitized": bool(latest_scan.get("runtime_budget_sanitized")),
+            "candidate_cache_adopted": bool(summary.get("candidate_cache_adopted")),
+            "candidate_cache_source": summary.get("candidate_cache_source"),
+            "after_hours_does_not_replace_candidate_truth": bool(p481_canonical_scan_truth.get("after_hours_does_not_replace_candidate_truth")),
+            "used_candidate_bearing_fallback": bool(p481_canonical_scan_truth.get("used_candidate_bearing_fallback")),
             "exception_type": latest_scan.get("exception_type"),
             "duration_ms": duration_ms,
             "duration_sec": round(duration_ms / 1000.0, 2),
