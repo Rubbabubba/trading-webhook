@@ -2256,6 +2256,7 @@ SWING_SCAN_STAGE_CHECKPOINT: dict = {}
 SPREAD_BLOCKED_SELECTED_RETRY_QUEUE: dict = {}
 SAME_DAY_EXIT_SUBMIT_LOCKS: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
+P481_FAST_PAYLOAD_ADOPTION_IN_PROGRESS = False
 STRATEGY_PERFORMANCE_STATE: dict = {"closed_trades": [], "by_strategy": {}, "kill_switch": {}}
 LAST_REGIME_SNAPSHOT: dict = {}
 SCAN_STATE_RESTORE: dict = {}
@@ -2916,7 +2917,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-481-hotfix-canonical-candidate-cache-adoption-submit-trace-sync"
+PATCH_VERSION = "patch-481-hotfix-2-canonical-fast-payload-adoption-candidate-cache-source-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3702,6 +3703,72 @@ def _p481_scan_brief(scan: dict | None) -> dict:
         "regime_only_non_actionable": bool(truth.get("regime_only_non_actionable")),
     }
 
+def _p481_fast_payload_scan_fallback(limit: int = 25) -> dict:
+    global P481_FAST_PAYLOAD_ADOPTION_IN_PROGRESS
+
+    if bool(P481_FAST_PAYLOAD_ADOPTION_IN_PROGRESS):
+        return {}
+
+    P481_FAST_PAYLOAD_ADOPTION_IN_PROGRESS = True
+    try:
+        payload = _p406_fast_current_candidate_payload(limit=max(1, min(int(limit or 25), 100)))
+    except Exception as exc:
+        return {
+            "p481_fast_payload_error": str(exc),
+            "_scan_source": "fast_payload_unavailable",
+        }
+    finally:
+        P481_FAST_PAYLOAD_ADOPTION_IN_PROGRESS = False
+
+    rows = [
+        dict(row or {})
+        for row in list(payload.get("top_candidates") or payload.get("top_new_entry_candidates") or [])
+        if isinstance(row, dict)
+    ]
+    if not rows:
+        return {}
+
+    candidates_total = int(payload.get("candidate_count") or len(rows) or 0)
+    eligible_total = int(payload.get("eligible_count") or 0)
+    selected_total = int(payload.get("selected_total") or 0)
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(payload.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+
+    if candidates_total <= 0 and eligible_total <= 0 and selected_total <= 0:
+        return {}
+
+    latest = dict(payload.get("latest_scan") or LAST_SCAN or {})
+    scan = {
+        "ts_utc": latest.get("ts_utc"),
+        "reason": latest.get("reason") or "fast_payload_candidate_fallback",
+        "_scan_source": "fast_current_candidate_payload",
+        "source": "fast_current_candidate_payload",
+        "scanned": latest.get("scanned"),
+        "signals": latest.get("signals"),
+        "would_trade": latest.get("would_trade"),
+        "blocked": latest.get("blocked"),
+        "duration_ms": latest.get("duration_ms"),
+        "summary": {
+            "scan_truth_phase": "fast_payload_candidate_fallback",
+            "candidate_cache_adopted": True,
+            "candidate_cache_source": str(payload.get("source") or "fast_current_candidate_payload"),
+            "fast_payload_status": payload.get("status"),
+            "fast_payload_recommended_action": payload.get("recommended_action"),
+            "symbols_eval_total": int((payload.get("runtime_universe_coverage") or {}).get("scanned_symbol_count") or latest.get("scanned") or 0),
+            "candidates_total": candidates_total,
+            "eligible_total": eligible_total,
+            "selected_total": selected_total,
+            "selected_symbols": selected_symbols,
+            "reason_counts": dict(payload.get("reason_counts") or {}),
+            "reason_family_counts": dict(payload.get("reason_family_counts") or {}),
+            "top_candidates": rows[:25],
+        },
+    }
+    return _p475_normalize_scan_truth_contract(scan, source="fast_payload_candidate_fallback")
+
 def _p481_candidate_cache_scan_fallback() -> dict:
     rows = [
         dict(row or {})
@@ -3802,6 +3869,10 @@ def _p481_last_candidate_bearing_scan() -> dict:
         completed["_scan_source"] = completed.get("_scan_source") or "latest_completed_scan"
         candidates.append(completed)
 
+    fast_payload_fallback = _p481_fast_payload_scan_fallback(limit=25)
+    if fast_payload_fallback and not fast_payload_fallback.get("p481_fast_payload_error"):
+        candidates.append(fast_payload_fallback)
+
     cache_fallback = _p481_candidate_cache_scan_fallback()
     if cache_fallback:
         candidates.append(cache_fallback)
@@ -3872,6 +3943,8 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
             "effective_trade_scan": _p481_scan_brief(effective),
             "after_hours_does_not_replace_candidate_truth": bool(use_candidate and raw_reason == "outside_market_hours"),
             "effective_scan_source": effective.get("_scan_source"),
+            "candidate_cache_adopted": bool((effective.get("summary") or {}).get("candidate_cache_adopted")),
+            "candidate_cache_source": (effective.get("summary") or {}).get("candidate_cache_source"),
             "used_candidate_bearing_fallback": bool(use_candidate),
             "raw_latest_reason": raw_reason,
         },
