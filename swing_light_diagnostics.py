@@ -273,6 +273,7 @@ def scanner_light_snapshot(
     background_age_sec = background_started_age_sec
     background_over_budget = bool(background_scan_active and background_started_age_sec is not None and background_started_age_sec > background_budget_sec)
     background_timed_out = bool(background_scan_active and background_started_age_sec is not None and background_started_age_sec > background_timeout_sec)
+    background_heartbeat_stale = bool(background_scan_active and background_heartbeat_age_sec is not None and background_heartbeat_age_sec > 90)
     background_stage = str(scan_background_completion_truth.get("stage") or "").strip().lower()
     background_thread_start_proof_timeout_sec = max(15, min(45, int(background_budget_sec // 4)))
     background_thread_entry_missing = bool(
