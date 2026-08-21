@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-474-hotfix-inline-fast-close-guard-startup-fallback-reference-fix"
+PATCH_VERSION = "patch-475-scanner-state-machine-reset-candidate-bearing-truth-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3390,10 +3390,99 @@ def _p464_scan_over_runtime_budget(scan: dict | None) -> bool:
     budget_ms = int(_p464_scan_runtime_budget_sec() * 1000)
     return bool(duration_ms > budget_ms)
 
-def _p473_scan_has_atomic_candidate_truth(scan: dict | None) -> bool:
+def _p475_scan_candidate_bearing_truth(scan: dict | None) -> dict:
     scan = dict(scan or {})
     summary = dict(scan.get("summary") or {})
     incremental = dict(summary.get("incremental_scan") or {})
+    evaluation = dict(incremental.get("evaluation") or {})
+
+    symbols_eval_total = int(
+        summary.get("symbols_eval_total")
+        or evaluation.get("evaluated_count")
+        or scan.get("scanned")
+        or 0
+    )
+    candidates_total = int(summary.get("candidates_total") or 0)
+    eligible_total = int(summary.get("eligible_total") or scan.get("eligible_total") or 0)
+    selected_total = int(summary.get("selected_total") or scan.get("selected_total") or 0)
+
+    has_candidate_rows = bool(
+        summary.get("top_candidates")
+        or summary.get("top_rejection_reasons")
+        or summary.get("rejection_counts")
+    )
+
+    candidate_bearing = bool(
+        symbols_eval_total > 0
+        or candidates_total > 0
+        or eligible_total > 0
+        or selected_total > 0
+        or has_candidate_rows
+    )
+
+    phase = str(summary.get("scan_truth_phase") or "").strip()
+    regime_only = bool(
+        phase in {
+            "regime_to_candidate_fast_publish",
+            "regime_truth_only_before_candidate_eval",
+        }
+        or summary.get("p474_regime_fast_publish")
+        or summary.get("p470_regime_budget_close")
+        or (
+            int(scan.get("scanned") or 0) <= 0
+            and symbols_eval_total <= 0
+            and not has_candidate_rows
+        )
+    )
+
+    return {
+        "candidate_bearing": candidate_bearing,
+        "trade_judgable": bool(candidate_bearing and not regime_only),
+        "regime_only_non_actionable": bool(regime_only and not candidate_bearing),
+        "symbols_eval_total": symbols_eval_total,
+        "candidates_total": candidates_total,
+        "eligible_total": eligible_total,
+        "selected_total": selected_total,
+        "has_candidate_rows": has_candidate_rows,
+        "scan_truth_phase": phase or None,
+    }
+
+
+def _p475_normalize_scan_truth_contract(scan: dict | None, source: str = "") -> dict:
+    row = dict(scan or {})
+    if not row:
+        return row
+
+    summary = dict(row.get("summary") or {})
+    truth = _p475_scan_candidate_bearing_truth(row)
+
+    row["candidate_bearing_scan"] = bool(truth.get("candidate_bearing"))
+    row["trade_judgable"] = bool(truth.get("trade_judgable"))
+    row["regime_only_non_actionable"] = bool(truth.get("regime_only_non_actionable"))
+    row["p475_scan_truth_contract"] = dict(truth)
+    row["p475_scan_truth_source"] = source or "scan_truth_contract"
+
+    summary["candidate_bearing_scan"] = bool(truth.get("candidate_bearing"))
+    summary["trade_judgable"] = bool(truth.get("trade_judgable"))
+    summary["regime_only_non_actionable"] = bool(truth.get("regime_only_non_actionable"))
+    summary["p475_scan_truth_contract"] = dict(truth)
+
+    reason = str(row.get("reason") or summary.get("scan_reason") or "").strip()
+    if bool(truth.get("regime_only_non_actionable")):
+        if reason in {"scan_completed", "partial_scan_completed", ""}:
+            row["reason_before_p475_contract"] = reason or None
+            row["reason"] = "regime_only_non_actionable"
+        if str(summary.get("scan_reason") or "") in {"scan_completed", "partial_scan_completed", ""}:
+            summary["scan_reason_before_p475_contract"] = summary.get("scan_reason") or None
+            summary["scan_reason"] = "regime_only_non_actionable"
+
+    row["summary"] = summary
+    return row
+
+
+def _p473_scan_has_atomic_candidate_truth(scan: dict | None) -> bool:
+    scan = dict(scan or {})
+    summary = dict(scan.get("summary") or {})
 
     published = bool(
         scan.get("p468_candidate_truth_published")
@@ -3402,18 +3491,8 @@ def _p473_scan_has_atomic_candidate_truth(scan: dict | None) -> bool:
         or summary.get("scan_truth_phase") == "candidate_truth_before_heavy_reports"
     )
 
-    has_candidate_truth = bool(
-        int(scan.get("scanned") or 0) > 0
-        or int(summary.get("symbols_eval_total") or 0) > 0
-        or int(summary.get("candidates_total") or 0) > 0
-        or int(summary.get("eligible_total") or 0) > 0
-        or int(summary.get("selected_total") or 0) > 0
-        or summary.get("top_candidates")
-        or summary.get("top_rejection_reasons")
-        or summary.get("rejection_counts")
-    )
-
-    return bool(published and has_candidate_truth)
+    truth = _p475_scan_candidate_bearing_truth(scan)
+    return bool(published and truth.get("candidate_bearing"))
 
 
 def _p473_accept_over_budget_candidate_truth(scan: dict | None, source: str = "") -> dict:
@@ -3486,6 +3565,7 @@ def _p464_sanitize_persisted_over_budget_scan(scan: dict | None, source: str = "
     if not row:
         return row
 
+    row = _p475_normalize_scan_truth_contract(row, source=source or "p464_sanitize")
     summary = dict(row.get("summary") or {})
     background = dict(row.get("scan_background_completion_truth") or summary.get("scan_background_completion_truth") or {})
     duration_ms = _p464_scan_duration_ms(row)
@@ -3545,16 +3625,13 @@ def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
     summary = dict(scan.get("summary") or {})
     reason = str(scan.get("reason") or summary.get("scan_reason") or "").strip()
 
+    truth = _p475_scan_candidate_bearing_truth(scan)
+    if not bool(truth.get("trade_judgable")):
+        return False
+
     if reason not in {"scan_completed", "partial_scan_completed"}:
         if reason == "scan_runtime_budget_exceeded" and bool(scan.get("actionable_for_diagnostics")):
-            return bool(
-                int(scan.get("scanned") or 0) > 0
-                or int(summary.get("symbols_eval_total") or 0) > 0
-                or int(summary.get("candidates_total") or 0) > 0
-                or summary.get("top_candidates")
-                or summary.get("rejection_counts")
-                or summary.get("top_rejection_reasons")
-            )
+            return bool(truth.get("candidate_bearing"))
         return False
     if _p464_scan_over_runtime_budget(scan) and not bool(scan.get("actionable_for_diagnostics")):
         return False
@@ -3563,16 +3640,7 @@ def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
     if str(scan.get("exception_type") or "").strip():
         return False
 
-    return bool(
-        int(scan.get("scanned") or 0) > 0
-        or int(summary.get("symbols_eval_total") or 0) > 0
-        or int(summary.get("candidates_total") or 0) > 0
-        or int(summary.get("eligible_total") or 0) > 0
-        or int(summary.get("selected_total") or 0) > 0
-        or summary.get("top_candidates")
-        or summary.get("rejection_counts")
-        or summary.get("top_rejection_reasons")
-    )
+    return bool(truth.get("candidate_bearing"))
 
 
 def _p464_preserve_actionable_market_scan(scan: dict | None, reason: str = "") -> bool:
@@ -6470,10 +6538,24 @@ def _recent_market_scan_status(max_age_sec: int | float | None = None, market_op
             if scan_ts.tzinfo is None:
                 scan_ts = scan_ts.replace(tzinfo=timezone.utc)
             age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
-            ok = (reason in {"scan_completed", "partial_scan_completed"} and age_sec <= age_limit)
+            truth = _p475_scan_candidate_bearing_truth(scan)
+            ok = (
+                reason in {"scan_completed", "partial_scan_completed"}
+                and age_sec <= age_limit
+                and bool(truth.get("trade_judgable"))
+            )
             if (not market_open_now) and (not ok):
                 ok = (reason == "outside_market_hours" and age_sec <= age_limit)
-            return {"ok": bool(ok), "age_sec": age_sec, "reason": reason, "source": scan.get("_scan_source") or "last_scan", "ts_utc": scan_ts.astimezone(timezone.utc).isoformat()}
+            return {
+                "ok": bool(ok),
+                "age_sec": age_sec,
+                "reason": reason,
+                "source": scan.get("_scan_source") or "last_scan",
+                "ts_utc": scan_ts.astimezone(timezone.utc).isoformat(),
+                "candidate_bearing_scan": bool(truth.get("candidate_bearing")),
+                "trade_judgable": bool(truth.get("trade_judgable")),
+                "regime_only_non_actionable": bool(truth.get("regime_only_non_actionable")),
+            }
         except Exception:
             return {"ok": False, "age_sec": None, "reason": reason, "source": scan.get("_scan_source") or "invalid", "ts_utc": None}
 
@@ -27063,7 +27145,17 @@ def _p456_start_swing_scan_background(
             runtime_budget_ms = int(max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180)) * 1000)
             scanner_summary = dict((scanner_payload or {}).get("summary") or {})
             scanner_incremental = dict(scanner_summary.get("incremental_scan") or {})
-            completion_reason = "partial_scan_completed" if bool(scanner_incremental.get("partial_scan")) else "scan_completed"
+            p475_completion_truth = _p475_scan_candidate_bearing_truth({
+                "scanned": int((scanner_payload or {}).get("symbols_scanned") or 0),
+                "signals": int((scanner_payload or {}).get("signals") or 0),
+                "would_trade": int((scanner_payload or {}).get("would_trade") or 0),
+                "blocked": int((scanner_payload or {}).get("blocked") or 0),
+                "summary": scanner_summary,
+            })
+            if bool(p475_completion_truth.get("regime_only_non_actionable")):
+                completion_reason = "regime_only_non_actionable"
+            else:
+                completion_reason = "partial_scan_completed" if bool(scanner_incremental.get("partial_scan")) else "scan_completed"
             p468_fast_closed = bool((scanner_payload or {}).get("p468_fast_close_after_submit"))
             p473_candidate_truth_published = _p473_scan_has_atomic_candidate_truth({
                 "reason": completion_reason,
@@ -27424,7 +27516,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "strategy_name": SWING_STRATEGY_NAME,
             "scan_reason": scan_reason,
             "scan_truth_phase": "regime_to_candidate_fast_publish",
-            "candidate_truth_published_before_reports": True,
+            "candidate_truth_published_before_reports": False,
+            "candidate_bearing_scan": False,
+            "trade_judgable": False,
+            "regime_only_non_actionable": True,
             "p474_regime_fast_publish": True,
             "p474_regime_fast_publish_reason": reason,
             "p474_elapsed_sec": round(elapsed_sec, 3),
@@ -27457,8 +27552,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     "reserve_sec": int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
                 },
                 "partial_scan": True,
-                "partial_scan_publishable": True,
-                "partial_publish_reason": "regime_truth_available_before_candidate_eval",
+                "partial_scan_publishable": False,
+                "partial_publish_reason": "regime_truth_available_before_candidate_eval_non_actionable",
             },
             "candidates_total": 0,
             "eligible_total": 0,
@@ -27488,7 +27583,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         duration_ms = int(elapsed_ms_fn())
         set_last_scan_fn(
             skipped=False,
-            reason="partial_scan_completed",
+            reason="regime_only_non_actionable",
             scanned=0,
             signals=0,
             would_trade=0,
@@ -27499,7 +27594,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             eligible_total=0,
             summary=summary,
             effective_dry_run=bool(effective_dry_run),
-            p468_candidate_truth_published=True,
+            p468_candidate_truth_published=False,
             p474_regime_fast_publish=True,
         )
         return summary
@@ -27584,6 +27679,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "p470_post_regime_elapsed_sec": round(p470_post_regime_elapsed, 3),
             "p470_post_regime_remaining_sec": round(p470_post_regime_remaining, 3),
             "candidate_truth_published_before_reports": False,
+            "candidate_bearing_scan": False,
+            "trade_judgable": False,
+            "regime_only_non_actionable": True,
             "heavy_reports_deferred_from_hot_path": True,
             "index_symbol": SWING_INDEX_SYMBOL,
             "index_alignment_ok": index_ok,
@@ -27648,7 +27746,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         )
         set_last_scan_fn(
             skipped=False,
-            reason="scan_completed",
+            reason="regime_only_non_actionable",
             scanned=0,
             signals=0,
             would_trade=0,
@@ -35018,10 +35116,18 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
         latest["source"] = effective_scan.get("_scan_source") if isinstance(effective_scan, dict) else latest.get("source")
         latest["runtime_budget_sanitized"] = bool((effective_scan or {}).get("runtime_budget_sanitized")) if isinstance(effective_scan, dict) else False
         payload["latest_scan"] = latest
+    p475_effective_truth = _p475_scan_candidate_bearing_truth(effective_scan)
     payload["mode"] = "current_scan_suppression_truth"
     payload["read_only"] = True
     payload["source"] = "fast_cached_candidate_truth"
     payload["effective_market_scan_source"] = (effective_scan or {}).get("_scan_source") if isinstance(effective_scan, dict) else None
+    payload["candidate_bearing_scan"] = bool(p475_effective_truth.get("candidate_bearing"))
+    payload["trade_judgable"] = bool(p475_effective_truth.get("trade_judgable"))
+    payload["regime_only_non_actionable"] = bool(p475_effective_truth.get("regime_only_non_actionable"))
+    payload["p475_scan_truth_contract"] = dict(p475_effective_truth)
+    if not bool(p475_effective_truth.get("trade_judgable")):
+        payload["status"] = "scan_not_trade_judgable"
+        payload["recommended_action"] = "wait_for_candidate_bearing_scan_completion"
     return payload
 
 def _p277h_defensive_tier_near_miss_report(limit: int = 50) -> dict:
@@ -40047,6 +40153,8 @@ def _p298_scanner_light() -> dict:
     telemetry_summary = _scanner_telemetry_summary(today_prefix=today_prefix)
 
     latest_scan = _p464_sanitize_persisted_over_budget_scan(dict(latest_scan or {}), source="scanner_light_latest_scan")
+    latest_scan = _p475_normalize_scan_truth_contract(latest_scan, source="scanner_light")
+    p475_latest_truth = dict(latest_scan.get("p475_scan_truth_contract") or {})
     background_truth = dict(_p456_background_scan_truth() or {})
     sanitized_background_wrapper = _p464_sanitize_persisted_over_budget_scan(
         {"reason": background_truth.get("reason") or "scan_completed", "scan_background_completion_truth": background_truth},
@@ -40066,8 +40174,15 @@ def _p298_scanner_light() -> dict:
     latest_scan["using_last_successful_production_scan"] = bool(summary.get("using_last_successful_production_scan"))
     latest_scan["scan_background_completion_truth"] = background_truth
     latest_scan["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
+    latest_scan["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
+    latest_scan["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
+    latest_scan["regime_only_non_actionable"] = bool(p475_latest_truth.get("regime_only_non_actionable"))
     summary["scan_background_completion_truth"] = background_truth
     summary["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
+    summary["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
+    summary["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
+    summary["regime_only_non_actionable"] = bool(p475_latest_truth.get("regime_only_non_actionable"))
+    summary["p475_scan_truth_contract"] = dict(p475_latest_truth)
 
     telemetry_summary = _p325_recover_scanner_warning_summary(
         telemetry_summary,
