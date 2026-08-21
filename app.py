@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-472-open-position-fast-skip-candidate-eval-per-symbol-timeout-partial-scan-publish"
+PATCH_VERSION = "patch-473-atomic-scan-completion-publish-stale-over-budget-scan-replacement"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3390,6 +3390,96 @@ def _p464_scan_over_runtime_budget(scan: dict | None) -> bool:
     budget_ms = int(_p464_scan_runtime_budget_sec() * 1000)
     return bool(duration_ms > budget_ms)
 
+def _p473_scan_has_atomic_candidate_truth(scan: dict | None) -> bool:
+    scan = dict(scan or {})
+    summary = dict(scan.get("summary") or {})
+    incremental = dict(summary.get("incremental_scan") or {})
+
+    published = bool(
+        scan.get("p468_candidate_truth_published")
+        or summary.get("candidate_truth_published_before_reports")
+        or summary.get("p468_candidate_truth_published")
+        or summary.get("scan_truth_phase") == "candidate_truth_before_heavy_reports"
+    )
+
+    has_candidate_truth = bool(
+        int(scan.get("scanned") or 0) > 0
+        or int(summary.get("symbols_eval_total") or 0) > 0
+        or int(summary.get("candidates_total") or 0) > 0
+        or int(summary.get("eligible_total") or 0) > 0
+        or int(summary.get("selected_total") or 0) > 0
+        or summary.get("top_candidates")
+        or summary.get("top_rejection_reasons")
+        or summary.get("rejection_counts")
+    )
+
+    return bool(published and has_candidate_truth)
+
+
+def _p473_accept_over_budget_candidate_truth(scan: dict | None, source: str = "") -> dict:
+    row = dict(scan or {})
+    if not row:
+        return row
+
+    if not _p473_scan_has_atomic_candidate_truth(row):
+        return row
+
+    duration_ms = _p464_scan_duration_ms(row)
+    budget_ms = int(_p464_scan_runtime_budget_sec() * 1000)
+    if duration_ms <= budget_ms:
+        return row
+
+    summary = dict(row.get("summary") or {})
+    background = dict(row.get("scan_background_completion_truth") or summary.get("scan_background_completion_truth") or {})
+    existing_reason = str(row.get("reason") or summary.get("scan_reason") or "").strip()
+    accepted_reason = "partial_scan_completed" if bool((summary.get("incremental_scan") or {}).get("partial_scan")) else "scan_completed"
+
+    if existing_reason in {"scan_completed", "partial_scan_completed", "scan_runtime_budget_exceeded", "background_scan_runtime_budget_exceeded", ""}:
+        row["reason"] = accepted_reason
+
+    row["p473_over_budget_candidate_truth_accepted"] = True
+    row["p473_over_budget_candidate_truth_source"] = source or "candidate_truth_atomic_publish"
+    row["runtime_budget_sanitized"] = False
+    row["runtime_budget_ms"] = budget_ms
+    row["duration_ms"] = duration_ms
+    row["actionable_for_diagnostics"] = True
+    row["fresh_but_over_budget"] = False
+
+    if str(row.get("exception_type") or "") == "BackgroundScanRuntimeBudgetExceeded":
+        row["exception_type"] = None
+    if str(row.get("error") or "").lower().strip() in {
+        "persisted scan exceeded runtime budget",
+        "background scan exceeded runtime budget",
+    }:
+        row["error"] = None
+
+    summary["scan_reason"] = row.get("reason")
+    summary["p473_over_budget_candidate_truth_accepted"] = True
+    summary["runtime_budget_ms"] = budget_ms
+    summary["duration_ms"] = duration_ms
+    summary["actionable_for_diagnostics"] = True
+    summary["fresh_but_over_budget"] = False
+
+    if background:
+        background["status"] = "completed"
+        background["active"] = False
+        background["terminal"] = True
+        background["reason"] = row.get("reason")
+        background["duration_ms"] = duration_ms
+        background["runtime_budget_ms"] = budget_ms
+        background["p473_over_budget_candidate_truth_accepted"] = True
+        if str(background.get("exception_type") or "") == "BackgroundScanRuntimeBudgetExceeded":
+            background["exception_type"] = None
+        if str(background.get("error") or "").lower().strip() in {
+            "persisted background scan exceeded runtime budget",
+            "background scan exceeded runtime budget",
+        }:
+            background["error"] = None
+        row["scan_background_completion_truth"] = background
+        summary["scan_background_completion_truth"] = background
+
+    row["summary"] = summary
+    return row
 
 def _p464_sanitize_persisted_over_budget_scan(scan: dict | None, source: str = "") -> dict:
     row = dict(scan or {})
@@ -3401,6 +3491,11 @@ def _p464_sanitize_persisted_over_budget_scan(scan: dict | None, source: str = "
     duration_ms = _p464_scan_duration_ms(row)
     budget_ms = int(_p464_scan_runtime_budget_sec() * 1000)
     over_budget = bool(duration_ms > budget_ms)
+
+    if over_budget:
+        accepted = _p473_accept_over_budget_candidate_truth(row, source=source or "p464_sanitize")
+        if bool(accepted.get("p473_over_budget_candidate_truth_accepted")):
+            return accepted
 
     if not over_budget:
         return row
@@ -3450,7 +3545,7 @@ def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
     summary = dict(scan.get("summary") or {})
     reason = str(scan.get("reason") or summary.get("scan_reason") or "").strip()
 
-    if reason != "scan_completed":
+    if reason not in {"scan_completed", "partial_scan_completed"}:
         if reason == "scan_runtime_budget_exceeded" and bool(scan.get("actionable_for_diagnostics")):
             return bool(
                 int(scan.get("scanned") or 0) > 0
@@ -3481,7 +3576,7 @@ def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
 
 
 def _p464_preserve_actionable_market_scan(scan: dict | None, reason: str = "") -> bool:
-    scan = dict(scan or {})
+    scan = _p473_accept_over_budget_candidate_truth(dict(scan or {}), source="preserve_actionable_market_scan")
     if not _p464_is_actionable_market_scan(scan):
         return False
 
@@ -6375,7 +6470,7 @@ def _recent_market_scan_status(max_age_sec: int | float | None = None, market_op
             if scan_ts.tzinfo is None:
                 scan_ts = scan_ts.replace(tzinfo=timezone.utc)
             age_sec = max(0.0, (now_utc - scan_ts.astimezone(timezone.utc)).total_seconds())
-            ok = (reason == "scan_completed" and age_sec <= age_limit)
+            ok = (reason in {"scan_completed", "partial_scan_completed"} and age_sec <= age_limit)
             if (not market_open_now) and (not ok):
                 ok = (reason == "outside_market_hours" and age_sec <= age_limit)
             return {"ok": bool(ok), "age_sec": age_sec, "reason": reason, "source": scan.get("_scan_source") or "last_scan", "ts_utc": scan_ts.astimezone(timezone.utc).isoformat()}
@@ -26942,8 +27037,21 @@ def _p456_start_swing_scan_background(
 
             duration_ms = int((scanner_payload or {}).get("duration_ms") or _bg_elapsed_ms() or 0)
             runtime_budget_ms = int(max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180)) * 1000)
+            scanner_summary = dict((scanner_payload or {}).get("summary") or {})
+            scanner_incremental = dict(scanner_summary.get("incremental_scan") or {})
+            completion_reason = "partial_scan_completed" if bool(scanner_incremental.get("partial_scan")) else "scan_completed"
             p468_fast_closed = bool((scanner_payload or {}).get("p468_fast_close_after_submit"))
-            if duration_ms > runtime_budget_ms and not p468_fast_closed:
+            p473_candidate_truth_published = _p473_scan_has_atomic_candidate_truth({
+                "reason": completion_reason,
+                "scanned": int((scanner_payload or {}).get("symbols_scanned") or 0),
+                "signals": int((scanner_payload or {}).get("signals") or 0),
+                "would_trade": int((scanner_payload or {}).get("would_trade") or 0),
+                "blocked": int((scanner_payload or {}).get("blocked") or 0),
+                "duration_ms": duration_ms,
+                "summary": scanner_summary,
+                "p468_candidate_truth_published": True,
+            })
+            if duration_ms > runtime_budget_ms and not (p468_fast_closed or p473_candidate_truth_published):
                 _bg_mark(
                     status="failed",
                     active=False,
@@ -27002,7 +27110,7 @@ def _p456_start_swing_scan_background(
                 signals=int((scanner_payload or {}).get("signals") or 0),
                 would_trade=int((scanner_payload or {}).get("would_trade") or 0),
                 blocked=int((scanner_payload or {}).get("blocked") or 0),
-                reason="scan_completed",
+                reason=completion_reason,
                 error=None,
                 exception_type=None,
                 traceback_tail=None,
@@ -27015,6 +27123,8 @@ def _p456_start_swing_scan_background(
                 effective_dry_run=bg_effective_dry_run,
                 effective_dry_run_reason=dry_run_truth.get("effective_dry_run_reason"),
                 dry_run_truth=dry_run_truth,
+                p473_over_budget_candidate_truth_accepted=bool(duration_ms > runtime_budget_ms and p473_candidate_truth_published),
+                runtime_budget_ms=runtime_budget_ms,
             )
 
             SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
@@ -27037,6 +27147,8 @@ def _p456_start_swing_scan_background(
                     "duration_ms": duration_ms,
                     "scan_reason": requested_reason or "scheduled",
                     "background_completion": True,
+                    "completion_reason": completion_reason,
+                    "p473_over_budget_candidate_truth_accepted": bool(duration_ms > runtime_budget_ms and p473_candidate_truth_published),
                     "effective_dry_run": bg_effective_dry_run,
                     "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
                     **source_meta_snapshot,
@@ -55980,6 +56092,15 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         })
         if requested_reason and not LAST_SCAN.get('reason'):
             LAST_SCAN['reason'] = requested_reason
+
+        accepted_last_scan = _p473_accept_over_budget_candidate_truth(
+            dict(LAST_SCAN),
+            source="set_last_scan",
+        )
+        if bool(accepted_last_scan.get("p473_over_budget_candidate_truth_accepted")):
+            LAST_SCAN.clear()
+            LAST_SCAN.update(accepted_last_scan)
+
         try:
             preserve_reason = str(LAST_SCAN.get("reason") or kwargs.get("reason") or "set_last_scan")
             _p464_preserve_actionable_market_scan(LAST_SCAN, reason=preserve_reason)
