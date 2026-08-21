@@ -89,6 +89,13 @@ from swing_runtime_config import (
     SWING_RUNTIME_CONFIG_MODULE_VERSION,
     build_swing_runtime_config_snapshot,
 )
+from swing_scan_state import (
+    SWING_SCAN_STATE_MODULE_VERSION,
+    build_scan_brief as swing_scan_state_build_scan_brief,
+    build_canonical_scan_contract as swing_scan_state_build_canonical_scan_contract,
+    tombstone_historical_background_failure as swing_scan_state_tombstone_background_failure,
+    scan_state_module_status as swing_scan_state_module_status,
+)
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
     SwingProductionContractConfig,
@@ -2917,7 +2924,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-482-canonical-scan-reason-normalization-background-failure-tombstone"
+PATCH_VERSION = "patch-483-swing-scan-state-module-extraction-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3686,22 +3693,8 @@ def _p464_effective_market_scan(scan: dict | None = None) -> dict:
 
 def _p481_scan_brief(scan: dict | None) -> dict:
     scan = dict(scan or {})
-    summary = dict(scan.get("summary") or {})
     truth = _p475_scan_candidate_bearing_truth(scan)
-    return {
-        "ts_utc": scan.get("ts_utc"),
-        "reason": scan.get("reason") or summary.get("scan_reason"),
-        "source": scan.get("_scan_source") or scan.get("source"),
-        "scanned": scan.get("scanned"),
-        "duration_ms": scan.get("duration_ms"),
-        "symbols_eval_total": int(truth.get("symbols_eval_total") or 0),
-        "candidates_total": int(truth.get("candidates_total") or 0),
-        "eligible_total": int(truth.get("eligible_total") or 0),
-        "selected_total": int(truth.get("selected_total") or 0),
-        "candidate_bearing": bool(truth.get("candidate_bearing")),
-        "trade_judgable": bool(truth.get("trade_judgable")),
-        "regime_only_non_actionable": bool(truth.get("regime_only_non_actionable")),
-    }
+    return swing_scan_state_build_scan_brief(scan, truth)
 
 def _p481_fast_payload_scan_fallback(limit: int = 25) -> dict:
     global P481_FAST_PAYLOAD_ADOPTION_IN_PROGRESS
@@ -3941,21 +3934,23 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
     effective["_p481_last_candidate_bearing_scan"] = _p481_scan_brief(last_candidate)
     effective["_p481_effective_trade_scan"] = _p481_scan_brief(effective)
 
+    contract = swing_scan_state_build_canonical_scan_contract(
+        raw_latest_scan=_p481_scan_brief(raw),
+        last_candidate_bearing_scan=_p481_scan_brief(last_candidate),
+        effective_trade_scan=_p481_scan_brief(effective),
+        after_hours_does_not_replace_candidate_truth=bool(use_candidate and raw_reason == "outside_market_hours"),
+        effective_scan_source=effective.get("_scan_source"),
+        candidate_cache_adopted=bool((effective.get("summary") or {}).get("candidate_cache_adopted")),
+        candidate_cache_source=(effective.get("summary") or {}).get("candidate_cache_source"),
+        used_candidate_bearing_fallback=bool(use_candidate),
+        raw_latest_reason=raw_reason,
+    )
+
     return {
         "raw_latest_scan": raw,
         "last_candidate_bearing_scan": last_candidate,
         "effective_trade_scan": effective,
-        "contract": {
-            "raw_latest_scan": _p481_scan_brief(raw),
-            "last_candidate_bearing_scan": _p481_scan_brief(last_candidate),
-            "effective_trade_scan": _p481_scan_brief(effective),
-            "after_hours_does_not_replace_candidate_truth": bool(use_candidate and raw_reason == "outside_market_hours"),
-            "effective_scan_source": effective.get("_scan_source"),
-            "candidate_cache_adopted": bool((effective.get("summary") or {}).get("candidate_cache_adopted")),
-            "candidate_cache_source": (effective.get("summary") or {}).get("candidate_cache_source"),
-            "used_candidate_bearing_fallback": bool(use_candidate),
-            "raw_latest_reason": raw_reason,
-        },
+        "contract": contract,
     }
 
 class SwingScanRuntimeBudgetExceeded(RuntimeError):
@@ -41016,51 +41011,7 @@ def _p298_selected_submission_truth_light() -> dict:
     return out
 
 def _p482_tombstone_historical_background_failure(background_truth: dict | None) -> dict:
-    bg = dict(background_truth or {})
-    if not bg:
-        return {}
-
-    active = bool(bg.get("active"))
-    terminal = bool(bg.get("terminal"))
-    status = str(bg.get("status") or "").strip().lower()
-    reason = str(bg.get("reason") or "").strip()
-    exception_type = str(bg.get("exception_type") or "").strip()
-
-    historical_failure = bool(
-        terminal
-        and not active
-        and (
-            status == "failed"
-            or reason == "background_scan_runtime_budget_exceeded"
-            or exception_type == "BackgroundScanRuntimeBudgetExceeded"
-        )
-    )
-
-    if not historical_failure:
-        bg["tombstoned_historical_failure"] = False
-        return bg
-
-    return {
-        "enabled": bool(bg.get("enabled", True)),
-        "status": "historical_tombstone",
-        "active": False,
-        "terminal": True,
-        "historical": True,
-        "tombstoned_historical_failure": True,
-        "reason": "historical_background_failure_tombstoned",
-        "original_reason": reason or None,
-        "original_status": status or None,
-        "original_exception_type": exception_type or None,
-        "scan_attempt_id": bg.get("scan_attempt_id"),
-        "started_utc": bg.get("started_utc"),
-        "completed_utc": bg.get("completed_utc"),
-        "duration_ms": bg.get("duration_ms"),
-        "symbols_scanned": bg.get("symbols_scanned"),
-        "signals": bg.get("signals"),
-        "would_trade": bg.get("would_trade"),
-        "blocked": bg.get("blocked"),
-        "recommended_action": "ignore_historical_background_failure_monitor_current_scanner_status",
-    }
+    return swing_scan_state_tombstone_background_failure(background_truth)
 
 def _p298_scanner_light() -> dict:
     tel = dict(LAST_SCANNER_TELEMETRY or {})
@@ -41098,6 +41049,8 @@ def _p298_scanner_light() -> dict:
     latest_scan["after_hours_does_not_replace_candidate_truth"] = bool(
         (latest_scan.get("_p481_canonical_scan_truth") or {}).get("after_hours_does_not_replace_candidate_truth")
     )
+    latest_scan["swing_scan_state_module_version"] = SWING_SCAN_STATE_MODULE_VERSION
+    latest_scan["swing_scan_state_module_status"] = swing_scan_state_module_status(patch_version=PATCH_VERSION)
     summary["scan_background_completion_truth"] = background_truth
     summary["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
     summary["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
@@ -41105,6 +41058,7 @@ def _p298_scanner_light() -> dict:
     summary["regime_only_non_actionable"] = bool(p475_latest_truth.get("regime_only_non_actionable"))
     summary["p475_scan_truth_contract"] = dict(p475_latest_truth)
     summary["p481_canonical_scan_truth"] = dict(latest_scan.get("_p481_canonical_scan_truth") or {})
+    summary["swing_scan_state_module_version"] = SWING_SCAN_STATE_MODULE_VERSION
 
     telemetry_summary = _p325_recover_scanner_warning_summary(
         telemetry_summary,
