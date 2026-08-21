@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-466-release-gate-scan-bootstrap-candidate-eval-stage-budget"
+PATCH_VERSION = "patch-467-terminal-background-scan-lock-over-budget-truth-salvage"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3413,14 +3413,18 @@ def _p464_sanitize_persisted_over_budget_scan(scan: dict | None, source: str = "
     row["duration_ms"] = duration_ms
     row["reason_before_runtime_budget_sanitize"] = reason
     row["reason"] = "scan_runtime_budget_exceeded"
-    row["error"] = row.get("error") or "persisted scan exceeded runtime budget and is not actionable market truth"
+    row["error"] = row.get("error") or "persisted scan exceeded runtime budget"
     row["exception_type"] = row.get("exception_type") or "BackgroundScanRuntimeBudgetExceeded"
+    row["fresh_but_over_budget"] = True
+    row["actionable_for_diagnostics"] = True
 
     summary["runtime_budget_sanitized"] = True
     summary["runtime_budget_ms"] = budget_ms
     summary["duration_ms"] = duration_ms
     summary["scan_reason_before_runtime_budget_sanitize"] = reason
     summary["scan_reason"] = "scan_runtime_budget_exceeded"
+    summary["fresh_but_over_budget"] = True
+    summary["actionable_for_diagnostics"] = True
     row["summary"] = summary
 
     if background:
@@ -3447,8 +3451,17 @@ def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
     reason = str(scan.get("reason") or summary.get("scan_reason") or "").strip()
 
     if reason != "scan_completed":
+        if reason == "scan_runtime_budget_exceeded" and bool(scan.get("actionable_for_diagnostics")):
+            return bool(
+                int(scan.get("scanned") or 0) > 0
+                or int(summary.get("symbols_eval_total") or 0) > 0
+                or int(summary.get("candidates_total") or 0) > 0
+                or summary.get("top_candidates")
+                or summary.get("rejection_counts")
+                or summary.get("top_rejection_reasons")
+            )
         return False
-    if _p464_scan_over_runtime_budget(scan):
+    if _p464_scan_over_runtime_budget(scan) and not bool(scan.get("actionable_for_diagnostics")):
         return False
     if bool(scan.get("skipped")) or bool(summary.get("skipped")) or summary.get("skip_reason"):
         return False
@@ -25869,7 +25882,13 @@ def _p402_stage_checkpoint(stage: str, **details) -> dict:
 
                 if scan_attempt_id and current_attempt_id and current_attempt_id != str(scan_attempt_id):
                     return dict(row)
-                if bg_terminal and bg_exception == "BackgroundScanRuntimeTimeout":
+                if bg_terminal or bg_exception in {
+                    "BackgroundScanRuntimeTimeout",
+                    "BackgroundScanRuntimeBudgetExceeded",
+                    "BackgroundThreadStartProofMissing",
+                    "BackgroundThreadStartException",
+                    "BackgroundPreScanException",
+                }:
                     return dict(row)
 
                 if bg_status in {"accepted", "running"}:
@@ -26689,9 +26708,29 @@ def _p456_start_swing_scan_background(
                     effective_dry_run_reason=dry_run_truth.get("effective_dry_run_reason"),
                     dry_run_truth=dry_run_truth,
                 )
-                raise SwingScanRuntimeBudgetExceeded(
-                    f"background scan exceeded runtime budget: duration_ms={duration_ms} budget_ms={runtime_budget_ms}"
+                SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
+                    **dict(SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {}),
+                    "status": "timeout_failure",
+                    "updated_utc": datetime.now(timezone.utc).isoformat(),
+                    "completed_utc": datetime.now(timezone.utc).isoformat(),
+                    "error": "background scan exceeded runtime budget",
+                    "exception_type": "BackgroundScanRuntimeBudgetExceeded",
+                    "response": compact_response,
+                    "source_meta": source_meta_snapshot,
+                }
+                _record_scanner_telemetry(
+                    "scan_error",
+                    "timeout_failure",
+                    details={
+                        "error": "background scan exceeded runtime budget",
+                        "duration_ms": duration_ms,
+                        "runtime_budget_ms": runtime_budget_ms,
+                        "scan_reason": requested_reason or "scheduled",
+                        "background_completion": True,
+                        **source_meta_snapshot,
+                    },
                 )
+                return
 
             _bg_mark(
                 status="completed",
