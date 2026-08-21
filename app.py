@@ -28202,7 +28202,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "publish_count": int(p476_candidate_progress_publish.get("publish_count") or 0),
         }
         
-        def _p477_terminal_partial_scan_response(reason: str, stage: str, remaining_sec: float | None = None) -> dict:
+    def _p477_terminal_partial_scan_response(reason: str, stage: str, remaining_sec: float | None = None) -> dict:
         evaluated_count = len(p402_eval_truth.get("evaluated_symbols") or [])
         candidate_count = len(candidates)
         elapsed_sec = _p398_runtime_budget_elapsed_sec(scan_started)
