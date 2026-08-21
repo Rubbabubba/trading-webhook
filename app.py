@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-473-atomic-scan-completion-publish-stale-over-budget-scan-replacement"
+PATCH_VERSION = "patch-474-regime-to-candidate-fast-publish-startup-scan-foreground-fallback"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26789,20 +26789,44 @@ def _p456_entry_dry_run_truth(
         },
     }
 
-def _p456_should_fast_close_swing_scan(source_kind: str, body: dict | None, fast_response: bool) -> bool:
+def _p474_startup_scan_foreground_fallback_truth(source_kind: str, body: dict | None) -> dict:
     payload = dict(body or {})
-    if str(STRATEGY_MODE or "").strip().lower() != "swing":
-        return False
-    if not bool(fast_response):
-        return False
-    if not bool(SCAN_FAST_RESPONSE_ENABLED):
-        return False
-    if str(source_kind or "").strip().lower() != "worker":
-        return False
-    background_flag = str(payload.get("background") or payload.get("background_completion") or "true").strip().lower()
-    if background_flag in {"0", "false", "no", "n", "off"}:
-        return False
-    return True
+    reason = str(payload.get("reason") or payload.get("scan_reason") or "").strip().lower()
+    background = dict(_p456_background_scan_truth() or {})
+    background_reason = str(background.get("reason") or "").strip().lower()
+    background_status = str(background.get("status") or "").strip().lower()
+    latest = dict(LAST_SCAN or {})
+    latest_reason = str(latest.get("reason") or "").strip().lower()
+
+    startup_request = reason == "startup"
+    worker_request = str(source_kind or "").strip().lower() == "worker"
+    no_current_scan = not bool(latest.get("ts_utc")) or latest_reason in {"", "scan_runtime_budget_exceeded", "scan_exception"}
+    lost_or_stale_background = bool(
+        background_reason in {
+            "background_scan_lost_after_restart_recovered",
+            "background_scan_lost_after_restart",
+            "stale_background_scan_recovered_before_retry",
+        }
+        or background.get("recovered_after_restart")
+        or (
+            background_status in {"failed", "skipped"}
+            and str(background.get("stage") or "").strip().lower() in {"swing_scan_start", "dry_run_truth_start", "regime_complete"}
+        )
+    )
+
+    enabled = bool(worker_request and startup_request and no_current_scan and lost_or_stale_background)
+
+    return {
+        "enabled": enabled,
+        "worker_request": worker_request,
+        "startup_request": startup_request,
+        "no_current_scan": no_current_scan,
+        "lost_or_stale_background": lost_or_stale_background,
+        "background_status": background_status,
+        "background_reason": background_reason,
+        "latest_reason": latest_reason,
+        "mode": "foreground_fallback" if enabled else "background_default",
+    }
 
 def _p456_start_swing_scan_background(
     *,
@@ -27392,6 +27416,134 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         index_alignment_ok=index_ok,
         favorable=regime.get("favorable"),
     )
+
+    def _p474_publish_regime_fast_truth(reason: str = "regime_fast_publish") -> dict:
+        elapsed_sec = _p398_runtime_budget_elapsed_sec(scan_started)
+        remaining_sec = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - elapsed_sec)
+        summary = {
+            "strategy_name": SWING_STRATEGY_NAME,
+            "scan_reason": scan_reason,
+            "scan_truth_phase": "regime_to_candidate_fast_publish",
+            "candidate_truth_published_before_reports": True,
+            "p474_regime_fast_publish": True,
+            "p474_regime_fast_publish_reason": reason,
+            "p474_elapsed_sec": round(elapsed_sec, 3),
+            "p474_remaining_sec": round(remaining_sec, 3),
+            "heavy_reports_deferred_from_hot_path": True,
+            "index_symbol": SWING_INDEX_SYMBOL,
+            "index_alignment_ok": index_ok,
+            "regime": dict(regime),
+            "regime_mode": regime_mode,
+            "symbols": list(scan_symbols),
+            "symbols_total": len(scan_symbols),
+            "symbols_requested_total": len(syms_for_fetch),
+            "symbols_fetched_total": int(p402_fetch_truth.get("fetched_count") or 0),
+            "symbols_eval_total": 0,
+            "symbols_skipped_for_budget": list(scan_symbols)[:50],
+            "runtime_slim": dict(runtime_slim),
+            "hot_path_slim": dict(p401_hot_path),
+            "scan_stage_checkpoint": _p402_stage_snapshot(),
+            "incremental_scan": {
+                "fetch": dict(p402_fetch_truth),
+                "evaluation": {
+                    "enabled": bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
+                    "evaluated_symbols": [],
+                    "evaluated_count": 0,
+                    "skipped_symbols": list(scan_symbols),
+                    "skipped_count": len(scan_symbols),
+                    "stopped_for_budget": True,
+                    "budget_stop_stage": "regime_to_candidate_fast_publish",
+                    "budget_sec": int(SCAN_RUNTIME_BUDGET_SEC or 0),
+                    "reserve_sec": int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
+                },
+                "partial_scan": True,
+                "partial_scan_publishable": True,
+                "partial_publish_reason": "regime_truth_available_before_candidate_eval",
+            },
+            "candidates_total": 0,
+            "eligible_total": 0,
+            "selected_total": 0,
+            "selected_symbols": [],
+            "production_contract_selected_symbols": [],
+            "approved_symbols": [],
+            "top_candidates": [],
+            "top_rejection_reasons": [],
+            "production_contract_miss_reasons": {
+                "ok": True,
+                "deferred": True,
+                "reason": "p474_regime_fast_publish_before_candidate_eval",
+                "endpoint": "/diagnostics/production_contract_miss_reasons",
+            },
+            "target_path_opportunity_expansion_lab": {
+                "ok": True,
+                "deferred": True,
+                "reason": "p474_regime_fast_publish_before_candidate_eval",
+                "endpoint": "/diagnostics/target_path_opportunity_expansion_lab",
+            },
+            "intraday_shadow": {
+                "enabled": False,
+                "status": "deferred_by_p474_regime_fast_publish",
+            },
+        }
+        duration_ms = int(elapsed_ms_fn())
+        set_last_scan_fn(
+            skipped=False,
+            reason="partial_scan_completed",
+            scanned=0,
+            signals=0,
+            would_trade=0,
+            blocked=0,
+            duration_ms=duration_ms,
+            selected_total=0,
+            selected_symbols=[],
+            eligible_total=0,
+            summary=summary,
+            effective_dry_run=bool(effective_dry_run),
+            p468_candidate_truth_published=True,
+            p474_regime_fast_publish=True,
+        )
+        return summary
+
+    p474_foreground_fallback = bool(scan_options.get("p474_foreground_fallback"))
+    p474_post_regime_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+    p474_post_regime_remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - p474_post_regime_elapsed)
+    p474_fast_publish_summary = {}
+    if (
+        bool(p401_hot_path.get("enabled"))
+        and (
+            p474_foreground_fallback
+            or p474_post_regime_remaining <= max(45.0, float(SWING_SCAN_BUDGET_RESERVE_SEC or 0) + 30.0)
+        )
+    ):
+        p474_fast_publish_summary = _p474_publish_regime_fast_truth(
+            "startup_foreground_fallback"
+            if p474_foreground_fallback
+            else "post_regime_budget_guard"
+        )
+        if p474_foreground_fallback:
+            return {
+                "ok": True,
+                "scanner": {
+                    "enabled": SCANNER_ENABLED,
+                    "dry_run": SCANNER_DRY_RUN,
+                    "allow_live": SCANNER_ALLOW_LIVE,
+                    "effective_dry_run": effective_dry_run,
+                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "symbols_scanned": 0,
+                    "signals": 0,
+                    "would_trade": 0,
+                    "blocked": 0,
+                    "duration_ms": int(elapsed_ms_fn()),
+                    "summary": p474_fast_publish_summary,
+                    "incremental_scan": dict(p474_fast_publish_summary.get("incremental_scan") or {}),
+                    "p474_foreground_fallback": True,
+                    "p474_regime_fast_publish": True,
+                },
+                "reconcile": reconcile_actions,
+                "would_submit": [],
+                "results": [],
+            }
+
     regime_thresholds = _regime_mode_thresholds(regime_mode)
     LAST_REGIME_SNAPSHOT.clear()
     LAST_REGIME_SNAPSHOT.update(regime)
@@ -28193,6 +28345,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "symbol_timeout_symbols": list(p402_eval_truth.get("symbol_timeout_symbols") or []),
                 "symbol_timeout_count": int(p402_eval_truth.get("symbol_timeout_count") or 0),
                 "partial_scan_publishable": bool(p402_eval_truth.get("partial_scan_publishable")),
+            },
+            "p474_regime_to_candidate_fast_publish": {
+                "foreground_fallback": bool(scan_options.get("p474_foreground_fallback")),
+                "fast_publish_pre_eval_applied": bool(p474_fast_publish_summary),
+                "fast_publish_reason": (p474_fast_publish_summary or {}).get("p474_regime_fast_publish_reason"),
+                "post_regime_elapsed_sec": round(float(p474_post_regime_elapsed or 0.0), 3),
+                "post_regime_remaining_sec": round(float(p474_post_regime_remaining or 0.0), 3),
             },
             "runtime_slim_applied": bool(runtime_slim.get("applied")),
             "runtime_symbols_original_count": int(runtime_slim.get("original_count") or len(original_syms)),
@@ -56056,6 +56215,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "scan_attempt_id": scan_attempt_id,
             "idempotency_status": "in_flight",
             "side_effect_truth": side_effect_truth,
+            "p474_note": "existing_in_flight_scan_reused_no_new_background_started",
         }
 
     SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
@@ -56076,6 +56236,10 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
     # 202 handoff. The background scan computes the authoritative dry-run truth.
     effective_dry_run = None
     requested_reason = str(body.get("reason") or "").strip() or None
+    p474_startup_foreground_fallback = _p474_startup_scan_foreground_fallback_truth(source_kind, body)
+    if bool(p474_startup_foreground_fallback.get("enabled")):
+        body["p474_foreground_fallback"] = True
+        body["background"] = False
     fast_response = _p273_should_fast_response(source_kind, body)
 
     def _set_last_scan(**kwargs):
@@ -56264,6 +56428,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                         "blocked": int((scanner_payload or {}).get("blocked") or 0),
                         "duration_ms": int((scanner_payload or {}).get("duration_ms") or _elapsed_ms() or 0),
                         "scan_reason": requested_reason or "scheduled",
+                        "p474_startup_foreground_fallback": bool(p474_startup_foreground_fallback.get("enabled")),
                         **source_meta,
                     },
                 )
