@@ -28058,7 +28058,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "budget_sec": int(SCAN_RUNTIME_BUDGET_SEC or 0),
         "reserve_sec": int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
     }
-        p476_candidate_progress_publish = {
+    p476_candidate_progress_publish = {
         "published": False,
         "publish_count": 0,
         "last_reason": None,
