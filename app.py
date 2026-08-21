@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-474-regime-to-candidate-fast-publish-startup-scan-foreground-fallback"
+PATCH_VERSION = "patch-474-hotfix-inline-fast-close-guard-startup-fallback-reference-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -56391,7 +56391,19 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
 
 # Fast-close worker-triggered swing scans so the scanner service does not time out.
 # Keep this before reconcile and before full release-gate dry-run evaluation.
-        if _p456_should_fast_close_swing_scan(source_kind, body, fast_response):
+        p474_background_flag = str(
+            body.get("background") or body.get("background_completion") or "true"
+        ).strip().lower()
+
+        p474_should_fast_close_swing_scan = bool(
+            str(STRATEGY_MODE or "").strip().lower() == "swing"
+            and bool(fast_response)
+            and bool(SCAN_FAST_RESPONSE_ENABLED)
+            and str(source_kind or "").strip().lower() == "worker"
+            and p474_background_flag not in {"0", "false", "no", "n", "off"}
+        )
+
+        if p474_should_fast_close_swing_scan:
             return _p456_start_swing_scan_background(
                 body=body,
                 source_meta=source_meta,
