@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-465-background-thread-start-proof-pre-scan-exception-capture"
+PATCH_VERSION = "patch-466-release-gate-scan-bootstrap-candidate-eval-stage-budget"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26337,7 +26337,11 @@ def _p462h_close_timed_out_background_scan(reason: str = "background_scan_runtim
         pass
     return {"closed": True, "reason": reason, "timeout_truth": timeout_truth, "state": snapshot}
 
-def _p456_entry_dry_run_truth(source: str = "worker_scan", include_release_gate: bool = True) -> dict:
+def _p456_entry_dry_run_truth(
+    source: str = "worker_scan",
+    include_release_gate: bool = True,
+    bootstrap_recent_scan_missing: bool = False,
+) -> dict:
     blockers = []
     release_gate = {}
 
@@ -26354,10 +26358,23 @@ def _p456_entry_dry_run_truth(source: str = "worker_scan", include_release_gate:
     if source == "worker_scan" and bool(SCANNER_DRY_RUN):
         blockers.append("scanner_dry_run_true")
 
+    release_gate_bootstrap_ignored = False
     if include_release_gate and bool(RELEASE_GATE_ENFORCED):
         try:
             release_gate = dict(release_gate_status() or {})
-            if not bool(release_gate.get("live_orders_permitted")):
+            unmet_conditions = {
+                str(x).strip().lower()
+                for x in list(release_gate.get("unmet_conditions") or [])
+                if str(x).strip()
+            }
+            release_gate_bootstrap_ignored = bool(
+                bootstrap_recent_scan_missing
+                and source == "worker_scan"
+                and not bool(release_gate.get("live_orders_permitted"))
+                and unmet_conditions
+                and unmet_conditions.issubset({"recent_market_scan_missing"})
+            )
+            if not bool(release_gate.get("live_orders_permitted")) and not release_gate_bootstrap_ignored:
                 blockers.append("release_gate_live_orders_not_permitted")
         except Exception as e:
             release_gate = {
@@ -26391,6 +26408,7 @@ def _p456_entry_dry_run_truth(source: str = "worker_scan", include_release_gate:
             "system_release_stage": release_gate.get("system_release_stage"),
             "configured_release_stage": release_gate.get("configured_release_stage"),
             "effective_release_stage": release_gate.get("effective_release_stage"),
+            "bootstrap_recent_scan_missing_ignored": bool(release_gate_bootstrap_ignored),
             "error": release_gate.get("error"),
             "exception_type": release_gate.get("exception_type"),
         },
@@ -26546,7 +26564,11 @@ def _p456_start_swing_scan_background(
 
             _bg_mark(status="running", active=True, terminal=False, stage="dry_run_truth_start", stage_details={})
             try:
-                dry_run_truth = _p456_entry_dry_run_truth("worker_scan", include_release_gate=True)
+                dry_run_truth = _p456_entry_dry_run_truth(
+                    "worker_scan",
+                    include_release_gate=True,
+                    bootstrap_recent_scan_missing=True,
+                )
             except Exception as e:
                 err = str(e) or repr(e)
                 exc_type = type(e).__name__
@@ -27023,7 +27045,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     if p399_pre_scan_retry_candidates:
         p399_pre_scan_retry_submit = _p399_submit_swing_candidate_rows(
             p399_pre_scan_retry_candidates,
-            effective_dry_run=effective_dry_run,
+            effective_dry_run=bool(effective_dry_run or effective_entry_dry_run("worker_scan")),
             scan_reason="pre_full_scan_rate_limit_retry",
             loss_day_throttle=loss_day_throttle,
             candidate_slots=p399_retry_slots,
@@ -27160,6 +27182,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         return c
 
     _p402_stage_checkpoint("candidate_eval_start", symbols_count=len(syms))
+    candidate_eval_budget_tripped = False
+    candidate_eval_stage_budget_closed = False
     p402_eval_truth = {
         "enabled": bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
         "evaluated_symbols": [],
@@ -27169,12 +27193,35 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "reserve_sec": int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
     }
 
-    for sym in syms:
+    candidate_eval_start_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+    candidate_eval_start_remaining = max(
+        0.0,
+        float(SCAN_RUNTIME_BUDGET_SEC or 1) - candidate_eval_start_elapsed,
+    )
+    if (
+        bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
+        and candidate_eval_start_remaining <= float(SWING_SCAN_BUDGET_RESERVE_SEC or 0)
+    ):
+        p402_eval_truth["stopped_for_budget"] = True
+        p402_eval_truth["budget_stop_stage"] = "candidate_eval_pre_first_symbol"
+        p402_eval_truth["skipped_symbols"].extend(list(syms))
+        candidate_eval_budget_tripped = True
+        candidate_eval_stage_budget_closed = True
+        _p402_stage_checkpoint(
+            "candidate_eval_budget_close",
+            evaluated_count=0,
+            skipped_count=len(p402_eval_truth["skipped_symbols"]),
+            elapsed_sec=round(candidate_eval_start_elapsed, 3),
+            remaining_sec=round(candidate_eval_start_remaining, 3),
+            budget_sec=int(SCAN_RUNTIME_BUDGET_SEC or 0),
+            reason="candidate_eval_budget_reserved_before_first_symbol",
+        )
+
+    for sym in ([] if candidate_eval_stage_budget_closed else syms):
         elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
         remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - elapsed)
         if (
             bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
-            and len(p402_eval_truth["evaluated_symbols"]) >= int(SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP or 1)
             and remaining <= float(SWING_SCAN_BUDGET_RESERVE_SEC or 0)
         ):
             p402_eval_truth["stopped_for_budget"] = True
@@ -27240,7 +27287,6 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         post_remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - post_elapsed)
         if (
             bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
-            and len(p402_eval_truth["evaluated_symbols"]) >= int(SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP or 1)
             and post_remaining <= float(SWING_SCAN_BUDGET_RESERVE_SEC or 0)
         ):
             p402_eval_truth["stopped_for_budget"] = True
@@ -27265,7 +27311,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     if candidate_eval_budget_tripped:
         p402_eval_truth["terminal_reason"] = "candidate_eval_runtime_budget_closed"
         if not candidates:
-            raise SwingScanRuntimeBudgetExceeded("candidate evaluation runtime budget closed before usable candidate truth")
+            p402_eval_truth["empty_partial_scan"] = True
+            p402_eval_truth["empty_partial_scan_reason"] = "candidate_eval_runtime_budget_closed_before_usable_candidate_truth"
     _p402_stage_checkpoint(
         "candidate_eval_complete",
         evaluated_count=p402_eval_truth.get("evaluated_count"),
@@ -27525,8 +27572,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         )
 
         p461_effective_dry_run_after = bool(effective_entry_dry_run("worker_scan"))
+        p461_terminal_close["release_gate_rechecked_after_fresh_scan"] = True
+        p461_terminal_close["effective_dry_run_recheck_value"] = bool(p461_effective_dry_run_after)
         if bool(effective_dry_run) and not p461_effective_dry_run_after:
             effective_dry_run = False
+            p461_terminal_close["release_gate_bootstrap_unlocked_submit"] = True
+        else:
+            p461_terminal_close["release_gate_bootstrap_unlocked_submit"] = False
         p461_terminal_close["effective_dry_run_after"] = bool(effective_dry_run)
         summary["p461_terminal_close_before_submit"] = dict(p461_terminal_close)
 
