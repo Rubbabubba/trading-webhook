@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-469-fast-worker-dry-run-truth-release-gate-snapshot-cache"
+PATCH_VERSION = "patch-470-precomputed-regime-snapshot-candidate-eval-before-heavy-persistence"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -27155,7 +27155,139 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     REGIME_HISTORY.append(dict(regime))
     if len(REGIME_HISTORY) > SWING_REGIME_HISTORY_SIZE:
         del REGIME_HISTORY[: len(REGIME_HISTORY) - SWING_REGIME_HISTORY_SIZE]
-    persist_regime_runtime_state(reason="run_swing_daily_scan")
+
+    p470_regime_persistence = {
+        "deferred": bool(p401_hot_path.get("enabled")),
+        "persisted_before_candidate_eval": False,
+        "persisted_after_candidate_truth": False,
+        "reason": "p470_deferred_until_after_candidate_truth" if bool(p401_hot_path.get("enabled")) else "hot_path_disabled",
+    }
+    if not bool(p401_hot_path.get("enabled")):
+        try:
+            persist_regime_runtime_state(reason="run_swing_daily_scan")
+            p470_regime_persistence["persisted_before_candidate_eval"] = True
+            p470_regime_persistence["deferred"] = False
+            p470_regime_persistence["reason"] = "persisted_legacy_path"
+        except Exception as exc:
+            p470_regime_persistence["error"] = str(exc)
+            logger.exception("REGIME_RUNTIME_PERSIST_FAILED")
+
+    p470_post_regime_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+    p470_post_regime_remaining = max(
+        0.0,
+        float(SCAN_RUNTIME_BUDGET_SEC or 1) - p470_post_regime_elapsed,
+    )
+    if (
+        bool(p401_hot_path.get("enabled"))
+        and p470_post_regime_remaining <= max(5.0, float(SWING_SCAN_BUDGET_RESERVE_SEC or 0))
+    ):
+        p470_regime_only_summary = {
+            "strategy_name": SWING_STRATEGY_NAME,
+            "scan_reason": scan_reason,
+            "scan_truth_phase": "regime_truth_only_before_candidate_eval",
+            "p470_regime_budget_close": True,
+            "p470_post_regime_elapsed_sec": round(p470_post_regime_elapsed, 3),
+            "p470_post_regime_remaining_sec": round(p470_post_regime_remaining, 3),
+            "candidate_truth_published_before_reports": False,
+            "heavy_reports_deferred_from_hot_path": True,
+            "index_symbol": SWING_INDEX_SYMBOL,
+            "index_alignment_ok": index_ok,
+            "regime": dict(regime),
+            "regime_mode": regime_mode,
+            "symbols": list(scan_symbols),
+            "symbols_total": len(scan_symbols),
+            "symbols_requested_total": len(syms_for_fetch),
+            "symbols_fetched_total": int(p402_fetch_truth.get("fetched_count") or 0),
+            "symbols_eval_total": 0,
+            "symbols_skipped_for_budget": list(scan_symbols)[:50],
+            "runtime_slim": dict(runtime_slim),
+            "hot_path_slim": dict(p401_hot_path),
+            "scan_stage_checkpoint": _p402_stage_snapshot(),
+            "incremental_scan": {
+                "fetch": dict(p402_fetch_truth),
+                "evaluation": {
+                    "enabled": bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
+                    "evaluated_symbols": [],
+                    "evaluated_count": 0,
+                    "skipped_symbols": list(scan_symbols),
+                    "skipped_count": len(scan_symbols),
+                    "stopped_for_budget": True,
+                    "budget_stop_stage": "post_regime_pre_candidate_eval",
+                    "budget_sec": int(SCAN_RUNTIME_BUDGET_SEC or 0),
+                    "reserve_sec": int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
+                },
+                "partial_scan": True,
+            },
+            "candidates_total": 0,
+            "eligible_total": 0,
+            "selected_total": 0,
+            "selected_symbols": [],
+            "production_contract_selected_symbols": [],
+            "top_candidates": [],
+            "top_rejection_reasons": [],
+            "production_contract_miss_reasons": {
+                "ok": True,
+                "deferred": True,
+                "reason": "p470_regime_budget_close_before_candidate_eval",
+                "endpoint": "/diagnostics/production_contract_miss_reasons",
+            },
+            "target_path_opportunity_expansion_lab": {
+                "ok": True,
+                "deferred": True,
+                "reason": "p470_regime_budget_close_before_candidate_eval",
+                "endpoint": "/diagnostics/target_path_opportunity_expansion_lab",
+            },
+            "intraday_shadow": {
+                "enabled": False,
+                "status": "deferred_by_p470_regime_budget_close",
+            },
+            "p470_regime_persistence": dict(p470_regime_persistence),
+        }
+        duration_ms = int(elapsed_ms_fn())
+        _p402_stage_checkpoint(
+            "swing_scan_complete_regime_only_budget_close",
+            duration_ms=duration_ms,
+            elapsed_sec=round(p470_post_regime_elapsed, 3),
+            remaining_sec=round(p470_post_regime_remaining, 3),
+            symbols_total=len(scan_symbols),
+        )
+        set_last_scan_fn(
+            skipped=False,
+            reason="scan_completed",
+            scanned=0,
+            signals=0,
+            would_trade=0,
+            blocked=0,
+            duration_ms=duration_ms,
+            selected_total=0,
+            selected_symbols=[],
+            eligible_total=0,
+            summary=p470_regime_only_summary,
+            effective_dry_run=bool(effective_dry_run),
+            p470_regime_budget_close=True,
+        )
+        return {
+            "ok": True,
+            "scanner": {
+                "enabled": SCANNER_ENABLED,
+                "dry_run": SCANNER_DRY_RUN,
+                "allow_live": SCANNER_ALLOW_LIVE,
+                "effective_dry_run": effective_dry_run,
+                "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                "symbols_scanned": 0,
+                "signals": 0,
+                "would_trade": 0,
+                "blocked": 0,
+                "duration_ms": duration_ms,
+                "summary": p470_regime_only_summary,
+                "incremental_scan": dict(p470_regime_only_summary.get("incremental_scan") or {}),
+                "p470_regime_budget_close": True,
+            },
+            "reconcile": reconcile_actions,
+            "would_submit": [],
+            "results": [],
+        }
+
     exposure = _current_portfolio_exposure_breakdown()
     open_total = float(exposure.get('total') or 0.0)
     open_strategy = float(exposure.get('strategy_managed') or 0.0)
@@ -27202,34 +27334,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         new_entries_globally_blocked = True
         global_block_reasons.append("swing_loss_day_entry_throttle")
 
-    p399_retry_slots = max(
-        0,
-        min(
-            int(candidate_slots_available()),
-            int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1),
-        ),
-    )
-    p399_pre_scan_retry_candidates = _p387_pending_rate_limited_selected_submit_retry_candidates(
-        max_items=p399_retry_slots,
-    )
-    if p399_pre_scan_retry_candidates:
-        p399_pre_scan_retry_submit = _p399_submit_swing_candidate_rows(
-            p399_pre_scan_retry_candidates,
-            effective_dry_run=bool(effective_dry_run or effective_entry_dry_run("worker_scan")),
-            scan_reason="pre_full_scan_rate_limit_retry",
-            loss_day_throttle=loss_day_throttle,
-            candidate_slots=p399_retry_slots,
-        )
-
-    if not p399_pre_scan_retry_candidates:
-        p399_pre_scan_retry_submit = {
-            "would_submit": [],
-            "selected_submission_payloads": [],
-            "submitted_symbols": [],
-            "attempted_symbols": [],
-            "rate_limited_symbols": [],
-            "slot_count": 0,
-        }
+    p399_retry_slots = 0
+    p399_pre_scan_retry_candidates = []
+    p399_pre_scan_retry_submit = {
+        "would_submit": [],
+        "selected_submission_payloads": [],
+        "submitted_symbols": [],
+        "attempted_symbols": [],
+        "rate_limited_symbols": [],
+        "slot_count": 0,
+        "deferred_by_p470": True,
+        "reason": "retry_submit_deferred_until_after_candidate_truth",
+    }
     p399_partial_submit_finalization = {
         "applied": False,
         "reason": "not_needed",
@@ -27910,6 +28026,28 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         selected_count=len(selected),
         selected_symbols=[c.get("symbol") for c in selected],
     )
+
+    p399_retry_slots = max(
+        0,
+        min(
+            int(candidate_slots_available()),
+            int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1),
+        ),
+    )
+    p399_pre_scan_retry_candidates = _p387_pending_rate_limited_selected_submit_retry_candidates(
+        max_items=p399_retry_slots,
+    )
+    if p399_pre_scan_retry_candidates:
+        p399_pre_scan_retry_submit = _p399_submit_swing_candidate_rows(
+            p399_pre_scan_retry_candidates,
+            effective_dry_run=bool(effective_dry_run or effective_entry_dry_run("worker_scan")),
+            scan_reason="post_candidate_truth_rate_limit_retry",
+            loss_day_throttle=loss_day_throttle,
+            candidate_slots=p399_retry_slots,
+        )
+        p399_pre_scan_retry_submit["deferred_by_p470"] = True
+        p399_pre_scan_retry_submit["reason"] = "retry_submit_ran_after_candidate_truth"
+
     p399_selected_submit = _p399_submit_swing_candidate_rows(
         selected,
         effective_dry_run=effective_dry_run,
@@ -28182,6 +28320,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             ),
         },
         'runtime_slim_applied': bool(runtime_slim.get("applied")),
+        'p470_regime_persistence': dict(p470_regime_persistence),
         'runtime_symbols_original_count': int(runtime_slim.get("original_count") or len(original_syms)),
         'runtime_symbols_used_count': len(scan_symbols),
         'runtime_symbols_excluded_count': int(runtime_slim.get("excluded_count") or 0),
@@ -28604,6 +28743,17 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         )
 
     summary['intraday_shadow'] = intraday_shadow
+
+    if bool(p470_regime_persistence.get("deferred")):
+        try:
+            persist_regime_runtime_state(reason="p470_after_candidate_truth")
+            p470_regime_persistence["persisted_after_candidate_truth"] = True
+            p470_regime_persistence["reason"] = "persisted_after_candidate_truth"
+        except Exception as exc:
+            p470_regime_persistence["error"] = str(exc)
+            logger.exception("REGIME_RUNTIME_PERSIST_FAILED")
+        summary["p470_regime_persistence"] = dict(p470_regime_persistence)
+
     try:
         _append_cohort_evidence_event(CANDIDATE_HISTORY[-1] if CANDIDATE_HISTORY else {})
         persist_cohort_evidence_state(reason="worker_scan_entries")
