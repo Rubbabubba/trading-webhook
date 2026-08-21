@@ -2916,7 +2916,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-480-preserve-candidate-bearing-scan-p479-runtime-proof"
+PATCH_VERSION = "patch-481-scanner-canonical-scan-truth-after-hours-non-replacement"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3669,78 +3669,162 @@ def _p464_preserve_actionable_market_scan(scan: dict | None, reason: str = "") -
     LAST_ACTIONABLE_MARKET_SCAN.update(preserved)
     return True
 
-
 def _p464_effective_market_scan(scan: dict | None = None) -> dict:
-    current = _p464_sanitize_persisted_over_budget_scan(
-        dict(scan or LAST_SCAN or {}),
-        source="effective_market_scan_current",
+    canonical = _p481_canonical_scan_truth(scan)
+    effective = dict(canonical.get("effective_trade_scan") or {})
+    contract = dict(canonical.get("contract") or {})
+
+    effective["_scan_source"] = contract.get("effective_scan_source") or effective.get("_scan_source") or "last_scan"
+    effective["_p480_effective_scan_source"] = effective["_scan_source"]
+    effective["_p480_after_hours_skip_preserved"] = bool(contract.get("after_hours_does_not_replace_candidate_truth"))
+    effective["_p480_preserved_scan_available"] = bool(contract.get("last_candidate_bearing_scan", {}).get("candidate_bearing"))
+    effective["_p480_preserved_scan_trade_judgable"] = bool(contract.get("last_candidate_bearing_scan", {}).get("trade_judgable"))
+    effective["_p480_raw_latest_scan"] = dict(contract.get("raw_latest_scan") or {})
+    effective["_p481_canonical_scan_truth"] = contract
+    return effective
+
+def _p481_scan_brief(scan: dict | None) -> dict:
+    scan = dict(scan or {})
+    summary = dict(scan.get("summary") or {})
+    truth = _p475_scan_candidate_bearing_truth(scan)
+    return {
+        "ts_utc": scan.get("ts_utc"),
+        "reason": scan.get("reason") or summary.get("scan_reason"),
+        "source": scan.get("_scan_source") or scan.get("source"),
+        "scanned": scan.get("scanned"),
+        "duration_ms": scan.get("duration_ms"),
+        "symbols_eval_total": int(truth.get("symbols_eval_total") or 0),
+        "candidates_total": int(truth.get("candidates_total") or 0),
+        "eligible_total": int(truth.get("eligible_total") or 0),
+        "selected_total": int(truth.get("selected_total") or 0),
+        "candidate_bearing": bool(truth.get("candidate_bearing")),
+        "trade_judgable": bool(truth.get("trade_judgable")),
+        "regime_only_non_actionable": bool(truth.get("regime_only_non_actionable")),
+    }
+
+
+def _p481_candidate_history_scan_fallback() -> dict:
+    if not CANDIDATE_HISTORY:
+        return {}
+
+    latest_candidate = dict((CANDIDATE_HISTORY or [])[-1] or {})
+    summary = dict(latest_candidate.get("summary") or latest_candidate or {})
+    rows = list(summary.get("top_candidates") or summary.get("items") or summary.get("rows") or [])
+
+    candidates_total = int(summary.get("candidates_total") or len(rows) or 0)
+    eligible_total = int(summary.get("eligible_total") or len([r for r in rows if bool((r or {}).get("eligible"))]) or 0)
+    selected_total = int(summary.get("selected_total") or len([r for r in rows if bool((r or {}).get("selected"))]) or 0)
+
+    if candidates_total <= 0 and eligible_total <= 0 and selected_total <= 0:
+        return {}
+
+    scan = {
+        "ts_utc": latest_candidate.get("ts_utc") or latest_candidate.get("scan_ts_utc") or latest_candidate.get("generated_utc"),
+        "reason": summary.get("scan_reason") or latest_candidate.get("reason") or "candidate_history_fallback",
+        "_scan_source": "candidate_history",
+        "source": "candidate_history",
+        "scanned": summary.get("symbols_eval_total") or summary.get("scanned"),
+        "signals": summary.get("signals"),
+        "would_trade": summary.get("would_trade"),
+        "blocked": summary.get("blocked"),
+        "duration_ms": summary.get("duration_ms") or latest_candidate.get("duration_ms"),
+        "summary": {
+            **summary,
+            "scan_truth_phase": summary.get("scan_truth_phase") or "candidate_history_fallback",
+            "candidates_total": candidates_total,
+            "eligible_total": eligible_total,
+            "selected_total": selected_total,
+            "top_candidates": rows[:25],
+        },
+    }
+    return _p475_normalize_scan_truth_contract(scan, source="candidate_history_fallback")
+
+
+def _p481_last_candidate_bearing_scan() -> dict:
+    candidates = []
+
+    if LAST_ACTIONABLE_MARKET_SCAN:
+        row = dict(LAST_ACTIONABLE_MARKET_SCAN or {})
+        row["_scan_source"] = row.get("_scan_source") or "last_actionable_market_scan"
+        candidates.append(row)
+
+    completed = _latest_completed_scan_record()
+    if completed:
+        completed = dict(completed)
+        completed["_scan_source"] = completed.get("_scan_source") or "latest_completed_scan"
+        candidates.append(completed)
+
+    history_fallback = _p481_candidate_history_scan_fallback()
+    if history_fallback:
+        candidates.append(history_fallback)
+
+    for row in candidates:
+        row = _p464_sanitize_persisted_over_budget_scan(dict(row or {}), source="p481_last_candidate_bearing_scan")
+        row = _p475_normalize_scan_truth_contract(row, source="p481_last_candidate_bearing_scan")
+        truth = _p475_scan_candidate_bearing_truth(row)
+        if bool(truth.get("candidate_bearing")):
+            return row
+
+    return {}
+
+
+def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
+    raw = _p464_sanitize_persisted_over_budget_scan(
+        dict(raw_scan or LAST_SCAN or {}),
+        source="p481_raw_latest_scan",
     )
-    current = _p475_normalize_scan_truth_contract(current, source="effective_market_scan_current")
-    current_reason = str(current.get("reason") or (current.get("summary") or {}).get("scan_reason") or "").strip()
-    current_truth = _p475_scan_candidate_bearing_truth(current)
+    raw = _p475_normalize_scan_truth_contract(raw, source="p481_raw_latest_scan")
+    raw_summary = dict(raw.get("summary") or {})
+    raw_reason = str(raw.get("reason") or raw_summary.get("scan_reason") or "").strip()
+    raw_truth = _p475_scan_candidate_bearing_truth(raw)
 
-    if _p464_is_actionable_market_scan(current):
-        current["_scan_source"] = current.get("_scan_source") or "last_scan"
-        current["_p480_effective_scan_source"] = current["_scan_source"]
-        current["_p480_after_hours_skip_preserved"] = False
-        current["_p480_raw_latest_scan"] = {
-            "ts_utc": current.get("ts_utc"),
-            "reason": current_reason,
-            "scanned": current.get("scanned"),
-            "duration_ms": current.get("duration_ms"),
-            "candidate_bearing": bool(current_truth.get("candidate_bearing")),
-            "trade_judgable": bool(current_truth.get("trade_judgable")),
-        }
-        return current
+    last_candidate = _p481_last_candidate_bearing_scan()
+    candidate_truth = _p475_scan_candidate_bearing_truth(last_candidate) if last_candidate else {}
 
-    preserved = _p464_sanitize_persisted_over_budget_scan(
-        dict(LAST_ACTIONABLE_MARKET_SCAN or {}),
-        source="effective_market_scan_preserved",
+    raw_is_skip = bool(
+        raw.get("skipped")
+        or raw_summary.get("skipped")
+        or raw_summary.get("skip_reason")
+        or raw_reason in {"outside_market_hours", "outside_scanner_session", "scanner_disabled"}
     )
-    preserved = _p475_normalize_scan_truth_contract(preserved, source="effective_market_scan_preserved")
-    preserved_truth = _p475_scan_candidate_bearing_truth(preserved)
 
-    use_preserved = bool(
-        _p464_is_actionable_market_scan(preserved)
+    use_candidate = bool(
+        last_candidate
+        and bool(candidate_truth.get("candidate_bearing"))
         and (
-            current_reason in {"outside_market_hours", "outside_scanner_session", "scanner_disabled"}
-            or bool(current.get("skipped"))
-            or not bool(current_truth.get("trade_judgable"))
+            raw_is_skip
+            or not bool(raw_truth.get("trade_judgable"))
         )
     )
 
-    if use_preserved:
-        preserved["_scan_source"] = "last_actionable_market_scan"
-        preserved["_p480_effective_scan_source"] = "last_actionable_market_scan"
-        preserved["_p480_after_hours_skip_preserved"] = bool(current_reason == "outside_market_hours")
-        preserved["_p480_preserved_scan_available"] = True
-        preserved["_p480_preserved_scan_trade_judgable"] = bool(preserved_truth.get("trade_judgable"))
-        preserved["fallback_from_last_scan_reason"] = current_reason or None
-        preserved["fallback_from_last_scan_source"] = current.get("_scan_source") or "last_scan"
-        preserved["_p480_raw_latest_scan"] = {
-            "ts_utc": current.get("ts_utc"),
-            "reason": current_reason,
-            "scanned": current.get("scanned"),
-            "duration_ms": current.get("duration_ms"),
-            "candidate_bearing": bool(current_truth.get("candidate_bearing")),
-            "trade_judgable": bool(current_truth.get("trade_judgable")),
-        }
-        return preserved
+    effective = dict(last_candidate if use_candidate else raw)
+    effective["_scan_source"] = (
+        last_candidate.get("_scan_source")
+        if use_candidate
+        else raw.get("_scan_source") or "last_scan"
+    )
+    effective["_p481_canonical_effective"] = True
+    effective["_p481_after_hours_does_not_replace_candidate_truth"] = bool(
+        use_candidate and raw_reason == "outside_market_hours"
+    )
+    effective["_p481_raw_latest_scan"] = _p481_scan_brief(raw)
+    effective["_p481_last_candidate_bearing_scan"] = _p481_scan_brief(last_candidate)
+    effective["_p481_effective_trade_scan"] = _p481_scan_brief(effective)
 
-    current["_scan_source"] = current.get("_scan_source") or "last_scan"
-    current["_p480_effective_scan_source"] = current["_scan_source"]
-    current["_p480_after_hours_skip_preserved"] = False
-    current["_p480_preserved_scan_available"] = bool(preserved)
-    current["_p480_preserved_scan_trade_judgable"] = bool(preserved_truth.get("trade_judgable"))
-    current["_p480_raw_latest_scan"] = {
-        "ts_utc": current.get("ts_utc"),
-        "reason": current_reason,
-        "scanned": current.get("scanned"),
-        "duration_ms": current.get("duration_ms"),
-        "candidate_bearing": bool(current_truth.get("candidate_bearing")),
-        "trade_judgable": bool(current_truth.get("trade_judgable")),
+    return {
+        "raw_latest_scan": raw,
+        "last_candidate_bearing_scan": last_candidate,
+        "effective_trade_scan": effective,
+        "contract": {
+            "raw_latest_scan": _p481_scan_brief(raw),
+            "last_candidate_bearing_scan": _p481_scan_brief(last_candidate),
+            "effective_trade_scan": _p481_scan_brief(effective),
+            "after_hours_does_not_replace_candidate_truth": bool(use_candidate and raw_reason == "outside_market_hours"),
+            "effective_scan_source": effective.get("_scan_source"),
+            "used_candidate_bearing_fallback": bool(use_candidate),
+            "raw_latest_reason": raw_reason,
+        },
     }
-    return current
 
 class SwingScanRuntimeBudgetExceeded(RuntimeError):
     pass
@@ -35765,6 +35849,7 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
         "preserved_scan_trade_judgable": bool((effective_scan or {}).get("_p480_preserved_scan_trade_judgable")),
         "raw_latest_scan": dict((effective_scan or {}).get("_p480_raw_latest_scan") or {}),
     }
+    payload["p481_canonical_scan_truth"] = dict((effective_scan or {}).get("_p481_canonical_scan_truth") or {})
 
     if not bool(p475_effective_truth.get("trade_judgable")):
         payload["status"] = "scan_not_trade_judgable"
@@ -40821,12 +40906,17 @@ def _p298_scanner_light() -> dict:
     latest_scan["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
     latest_scan["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
     latest_scan["regime_only_non_actionable"] = bool(p475_latest_truth.get("regime_only_non_actionable"))
+    latest_scan["p481_canonical_scan_truth"] = dict(latest_scan.get("_p481_canonical_scan_truth") or {})
+    latest_scan["after_hours_does_not_replace_candidate_truth"] = bool(
+        (latest_scan.get("_p481_canonical_scan_truth") or {}).get("after_hours_does_not_replace_candidate_truth")
+    )
     summary["scan_background_completion_truth"] = background_truth
     summary["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
     summary["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
     summary["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
     summary["regime_only_non_actionable"] = bool(p475_latest_truth.get("regime_only_non_actionable"))
     summary["p475_scan_truth_contract"] = dict(p475_latest_truth)
+    summary["p481_canonical_scan_truth"] = dict(latest_scan.get("_p481_canonical_scan_truth") or {})
 
     telemetry_summary = _p325_recover_scanner_warning_summary(
         telemetry_summary,
@@ -57015,6 +57105,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         })
         if requested_reason and not LAST_SCAN.get('reason'):
             LAST_SCAN['reason'] = requested_reason
+
+        skip_reason = str(LAST_SCAN.get("reason") or "").strip()
+        if bool(LAST_SCAN.get("skipped")) or skip_reason in {"outside_market_hours", "outside_scanner_session", "scanner_disabled"}:
+            LAST_SCAN["does_not_replace_candidate_truth"] = True
+            LAST_SCAN["non_replacement_scan"] = True
+            LAST_SCAN["candidate_truth_replacement_allowed"] = False
 
         accepted_last_scan = _p473_accept_over_budget_candidate_truth(
             dict(LAST_SCAN),
