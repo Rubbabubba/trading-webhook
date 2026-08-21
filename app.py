@@ -2917,7 +2917,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-481-hotfix-2-canonical-fast-payload-adoption-candidate-cache-source-truth"
+PATCH_VERSION = "patch-482-canonical-scan-reason-normalization-background-failure-tombstone"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3741,9 +3741,11 @@ def _p481_fast_payload_scan_fallback(limit: int = 25) -> dict:
         return {}
 
     latest = dict(payload.get("latest_scan") or LAST_SCAN or {})
+    raw_latest_reason = str(latest.get("reason") or "").strip()
     scan = {
         "ts_utc": latest.get("ts_utc"),
-        "reason": latest.get("reason") or "fast_payload_candidate_fallback",
+        "reason": "fast_payload_candidate_fallback",
+        "raw_latest_reason": raw_latest_reason or None,
         "_scan_source": "fast_current_candidate_payload",
         "source": "fast_current_candidate_payload",
         "scanned": latest.get("scanned"),
@@ -3755,6 +3757,8 @@ def _p481_fast_payload_scan_fallback(limit: int = 25) -> dict:
             "scan_truth_phase": "fast_payload_candidate_fallback",
             "candidate_cache_adopted": True,
             "candidate_cache_source": str(payload.get("source") or "fast_current_candidate_payload"),
+            "raw_latest_reason": raw_latest_reason or None,
+            "effective_reason_normalized": True,
             "fast_payload_status": payload.get("status"),
             "fast_payload_recommended_action": payload.get("recommended_action"),
             "symbols_eval_total": int((payload.get("runtime_universe_coverage") or {}).get("scanned_symbol_count") or latest.get("scanned") or 0),
@@ -3794,9 +3798,11 @@ def _p481_candidate_cache_scan_fallback() -> dict:
 
     latest = dict(LAST_SCAN or {})
     latest_summary = dict(latest.get("summary") or {})
+    raw_latest_reason = str(latest_summary.get("scan_reason") or latest.get("reason") or "").strip()
     scan = {
         "ts_utc": latest.get("ts_utc"),
-        "reason": latest_summary.get("scan_reason") or latest.get("reason") or "candidate_cache_fallback",
+        "reason": "candidate_cache_fallback",
+        "raw_latest_reason": raw_latest_reason or None,
         "_scan_source": "last_swing_candidates_memory",
         "source": "last_swing_candidates_memory",
         "scanned": latest_summary.get("symbols_eval_total") or latest.get("scanned"),
@@ -3808,6 +3814,8 @@ def _p481_candidate_cache_scan_fallback() -> dict:
             "scan_truth_phase": "candidate_cache_fallback",
             "candidate_cache_adopted": True,
             "candidate_cache_source": "last_swing_candidates_memory",
+            "raw_latest_reason": raw_latest_reason or None,
+            "effective_reason_normalized": True,
             "symbols_eval_total": int(latest_summary.get("symbols_eval_total") or latest.get("scanned") or 0),
             "candidates_total": candidates_total,
             "eligible_total": eligible_total,
@@ -16630,6 +16638,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "runtime_budget_sanitized": bool(latest_scan.get("runtime_budget_sanitized")),
             "candidate_cache_adopted": bool(summary.get("candidate_cache_adopted")),
             "candidate_cache_source": summary.get("candidate_cache_source"),
+            "raw_latest_reason": summary.get("raw_latest_reason") or latest_scan.get("raw_latest_reason"),
+            "effective_reason_normalized": bool(summary.get("effective_reason_normalized")),
             "after_hours_does_not_replace_candidate_truth": bool(p481_canonical_scan_truth.get("after_hours_does_not_replace_candidate_truth")),
             "used_candidate_bearing_fallback": bool(p481_canonical_scan_truth.get("used_candidate_bearing_fallback")),
             "exception_type": latest_scan.get("exception_type"),
@@ -41005,6 +41015,53 @@ def _p298_selected_submission_truth_light() -> dict:
         out["recommended_action"] = "scheduled_scanner_should_promote_current_eligible_contract_rows"
     return out
 
+def _p482_tombstone_historical_background_failure(background_truth: dict | None) -> dict:
+    bg = dict(background_truth or {})
+    if not bg:
+        return {}
+
+    active = bool(bg.get("active"))
+    terminal = bool(bg.get("terminal"))
+    status = str(bg.get("status") or "").strip().lower()
+    reason = str(bg.get("reason") or "").strip()
+    exception_type = str(bg.get("exception_type") or "").strip()
+
+    historical_failure = bool(
+        terminal
+        and not active
+        and (
+            status == "failed"
+            or reason == "background_scan_runtime_budget_exceeded"
+            or exception_type == "BackgroundScanRuntimeBudgetExceeded"
+        )
+    )
+
+    if not historical_failure:
+        bg["tombstoned_historical_failure"] = False
+        return bg
+
+    return {
+        "enabled": bool(bg.get("enabled", True)),
+        "status": "historical_tombstone",
+        "active": False,
+        "terminal": True,
+        "historical": True,
+        "tombstoned_historical_failure": True,
+        "reason": "historical_background_failure_tombstoned",
+        "original_reason": reason or None,
+        "original_status": status or None,
+        "original_exception_type": exception_type or None,
+        "scan_attempt_id": bg.get("scan_attempt_id"),
+        "started_utc": bg.get("started_utc"),
+        "completed_utc": bg.get("completed_utc"),
+        "duration_ms": bg.get("duration_ms"),
+        "symbols_scanned": bg.get("symbols_scanned"),
+        "signals": bg.get("signals"),
+        "would_trade": bg.get("would_trade"),
+        "blocked": bg.get("blocked"),
+        "recommended_action": "ignore_historical_background_failure_monitor_current_scanner_status",
+    }
+
 def _p298_scanner_light() -> dict:
     tel = dict(LAST_SCANNER_TELEMETRY or {})
     latest_scan, summary = _p298_latest_scan_summary_light()
@@ -41020,6 +41077,7 @@ def _p298_scanner_light() -> dict:
         source="scanner_light_background_truth",
     )
     background_truth = dict(sanitized_background_wrapper.get("scan_background_completion_truth") or background_truth)
+    background_truth = _p482_tombstone_historical_background_failure(background_truth)
     p469_release_gate_cache_truth = {
         "cached": bool(P469_RELEASE_GATE_SNAPSHOT_CACHE),
         "cached_utc": (P469_RELEASE_GATE_SNAPSHOT_CACHE or {}).get("cached_utc"),
