@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-475-scanner-state-machine-reset-candidate-bearing-truth-contract"
+PATCH_VERSION = "patch-476-candidate-evaluation-terminal-publish-background-scan-stall-elimination"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26870,6 +26870,43 @@ def _p456_entry_dry_run_truth(
             "exception_type": release_gate.get("exception_type"),
         },
     }
+def _p476_background_scan_fast_dry_run_truth() -> dict:
+    """Keep background scanner startup from stalling on heavy release/readiness checks."""
+    try:
+        truth = _p469_fast_worker_entry_dry_run_truth(
+            source="worker_scan",
+            include_release_gate=False,
+            bootstrap_recent_scan_missing=True,
+        )
+    except Exception as exc:
+        truth = {
+            "source": "worker_scan",
+            "effective_dry_run": True,
+            "effective_dry_run_reason": "fast_dry_run_truth_exception",
+            "blockers": ["fast_dry_run_truth_exception"],
+            "error": str(exc),
+            "exception_type": type(exc).__name__,
+            "p476_fast_background_dry_run_truth": True,
+        }
+
+    release_gate_cache = dict(P469_RELEASE_GATE_SNAPSHOT_CACHE or {})
+    release_gate_status_cached = dict(release_gate_cache.get("status") or {})
+    cached_unmet = [
+        str(x or "").strip()
+        for x in list(release_gate_status_cached.get("unmet_conditions") or [])
+        if str(x or "").strip()
+    ]
+
+    truth["p476_fast_background_dry_run_truth"] = True
+    truth["release_gate_deferred_from_background_start"] = bool(RELEASE_GATE_ENFORCED)
+    truth["release_gate_cache"] = {
+        "cached": bool(release_gate_cache),
+        "cached_utc": release_gate_cache.get("cached_utc"),
+        "live_orders_permitted": release_gate_status_cached.get("live_orders_permitted"),
+        "go_live_eligible": release_gate_status_cached.get("go_live_eligible"),
+        "unmet_conditions": cached_unmet,
+    }
+    return truth
 
 def _p474_startup_scan_foreground_fallback_truth(source_kind: str, body: dict | None) -> dict:
     payload = dict(body or {})
@@ -27043,13 +27080,9 @@ def _p456_start_swing_scan_background(
             except Exception:
                 pass
 
-            _bg_mark(status="running", active=True, terminal=False, stage="dry_run_truth_start", stage_details={})
+            _bg_mark(status="running", active=True, terminal=False, stage="dry_run_truth_start", stage_details={"p476_fast_path": True})
             try:
-                dry_run_truth = _p456_entry_dry_run_truth(
-                    "worker_scan",
-                    include_release_gate=True,
-                    bootstrap_recent_scan_missing=True,
-                )
+                dry_run_truth = _p476_background_scan_fast_dry_run_truth()
             except Exception as e:
                 err = str(e) or repr(e)
                 exc_type = type(e).__name__
@@ -28025,6 +28058,139 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "budget_sec": int(SCAN_RUNTIME_BUDGET_SEC or 0),
         "reserve_sec": int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
     }
+        p476_candidate_progress_publish = {
+        "published": False,
+        "publish_count": 0,
+        "last_reason": None,
+        "last_symbols_eval_total": 0,
+        "last_candidate_count": 0,
+    }
+
+    def _p476_publish_candidate_eval_progress(reason: str = "candidate_eval_progress", force: bool = False) -> dict:
+        evaluated_count = len(p402_eval_truth.get("evaluated_symbols") or [])
+        candidate_count = len(candidates)
+        if candidate_count <= 0 and not force:
+            return {"published": False, "reason": "no_candidate_rows_yet"}
+
+        if (
+            p476_candidate_progress_publish.get("published")
+            and not force
+            and evaluated_count % 5 != 0
+        ):
+            return {"published": False, "reason": "publish_throttled"}
+
+        rejection_rows = [
+            {"reason": k, "count": int(v)}
+            for k, v in rejection_counts.most_common(10)
+        ]
+        selected_symbols = [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(candidates or [])
+            if bool((row or {}).get("selected"))
+            and str((row or {}).get("symbol") or "").strip()
+        ]
+        approved_rows = [
+            row for row in list(candidates or [])
+            if bool((row or {}).get("production_contract_approved"))
+            or bool((row or {}).get("eligible"))
+        ]
+        approved_symbols = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in approved_rows
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+
+        progress_summary = {
+            "strategy_name": SWING_STRATEGY_NAME,
+            "scan_reason": scan_reason,
+            "scan_truth_phase": "candidate_eval_progress",
+            "candidate_truth_published_before_reports": True,
+            "p476_candidate_eval_progress_publish": True,
+            "p476_publish_reason": reason,
+            "heavy_reports_deferred_from_hot_path": True,
+            "index_symbol": SWING_INDEX_SYMBOL,
+            "index_alignment_ok": index_ok,
+            "regime": dict(regime),
+            "regime_mode": regime_mode,
+            "symbols": list(scan_symbols),
+            "symbols_total": len(scan_symbols),
+            "symbols_requested_total": len(syms_for_fetch),
+            "symbols_fetched_total": int(p402_fetch_truth.get("fetched_count") or 0),
+            "symbols_eval_total": int(evaluated_count),
+            "symbols_skipped_for_budget": list(
+                _dedupe_keep_order(
+                    list(p402_fetch_truth.get("skipped_symbols") or [])
+                    + list(p402_eval_truth.get("skipped_symbols") or [])
+                )
+            )[:50],
+            "runtime_slim": dict(runtime_slim),
+            "hot_path_slim": dict(p401_hot_path),
+            "scan_stage_checkpoint": _p402_stage_snapshot(),
+            "incremental_scan": {
+                "fetch": dict(p402_fetch_truth),
+                "evaluation": dict(p402_eval_truth),
+                "partial_scan": True,
+                "partial_scan_publishable": bool(candidate_count > 0),
+                "partial_publish_reason": "candidate_eval_progress_before_selection",
+            },
+            "candidates_total": int(candidate_count),
+            "eligible_total": len(approved_rows),
+            "selected_total": len(selected_symbols),
+            "selected_symbols": list(_dedupe_keep_order(selected_symbols)),
+            "production_contract_selected_symbols": list(_dedupe_keep_order(selected_symbols)),
+            "approved_symbols": list(approved_symbols),
+            "candidate_bearing_scan": bool(candidate_count > 0 or evaluated_count > 0),
+            "trade_judgable": bool(candidate_count > 0 or evaluated_count > 0),
+            "regime_only_non_actionable": False,
+            "top_candidates": [dict(c) for c in list(candidates or [])[:5]],
+            "top_rejection_reasons": rejection_rows,
+            "production_contract_miss_reasons": {
+                "ok": True,
+                "deferred": True,
+                "reason": "p476_candidate_eval_progress_before_selection",
+                "endpoint": "/diagnostics/production_contract_miss_reasons",
+                "candidate_count": int(candidate_count),
+                "selected_symbols": list(_dedupe_keep_order(selected_symbols)),
+            },
+            "target_path_opportunity_expansion_lab": {
+                "ok": True,
+                "deferred": True,
+                "reason": "p476_candidate_eval_progress_before_selection",
+                "endpoint": "/diagnostics/target_path_opportunity_expansion_lab",
+                "candidate_count": int(candidate_count),
+            },
+        }
+
+        set_last_scan_fn(
+            skipped=False,
+            reason="partial_scan_completed",
+            scanned=max(int(evaluated_count), int(candidate_count)),
+            signals=len(approved_rows),
+            would_trade=len(selected_symbols),
+            blocked=max(0, int(candidate_count) - len(approved_rows)),
+            duration_ms=int(elapsed_ms_fn()),
+            selected_total=len(selected_symbols),
+            selected_symbols=list(_dedupe_keep_order(selected_symbols)),
+            eligible_total=len(approved_rows),
+            summary=progress_summary,
+            effective_dry_run=bool(effective_dry_run),
+            p468_candidate_truth_published=True,
+            p476_candidate_eval_progress_published=True,
+        )
+
+        p476_candidate_progress_publish["published"] = True
+        p476_candidate_progress_publish["publish_count"] = int(p476_candidate_progress_publish.get("publish_count") or 0) + 1
+        p476_candidate_progress_publish["last_reason"] = reason
+        p476_candidate_progress_publish["last_symbols_eval_total"] = int(evaluated_count)
+        p476_candidate_progress_publish["last_candidate_count"] = int(candidate_count)
+
+        return {
+            "published": True,
+            "reason": reason,
+            "evaluated_count": int(evaluated_count),
+            "candidate_count": int(candidate_count),
+            "publish_count": int(p476_candidate_progress_publish.get("publish_count") or 0),
+        }
 
     candidate_eval_start_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
     candidate_eval_start_remaining = max(
@@ -28079,11 +28245,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             p472_fast_skip_symbols.append(sym)
             p472_fast_skip_rows.append(dict(skip_truth))
             _p472_open_position_skip_candidate(sym, skip_truth)
+            p476_fast_skip_publish = _p476_publish_candidate_eval_progress(
+                "candidate_eval_fast_skip_candidate_published",
+                force=not bool(p476_candidate_progress_publish.get("published")),
+            )
             _p402_stage_checkpoint(
                 "candidate_eval_symbol_fast_skipped",
                 symbol=sym,
                 fast_skip_count=len(p472_fast_skip_symbols),
                 reasons=list(skip_truth.get("reasons") or []),
+                p476_progress_publish=p476_fast_skip_publish,
                 elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
             )
             continue
@@ -28119,12 +28290,17 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     "threshold_sec": round(max(8.0, symbol_budget_floor_sec), 3),
                     "reason": "candidate_eval_symbol_exceeded_soft_timeout",
                 })
+            p476_symbol_publish = _p476_publish_candidate_eval_progress(
+                "candidate_eval_symbol_complete",
+                force=not bool(p476_candidate_progress_publish.get("published")),
+            )
             _p402_stage_checkpoint(
                 "candidate_eval_symbol_complete",
                 symbol=sym,
                 evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                 candidate_count=len(candidates),
                 symbol_elapsed_sec=round(symbol_elapsed, 3),
+                p476_progress_publish=p476_symbol_publish,
                 elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
             )
         except Exception as e:
@@ -28137,12 +28313,17 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "rejection_reasons": ["candidate_eval_exception"],
                 "candidate_eval_exception": str(e),
             })
+            p476_exception_publish = _p476_publish_candidate_eval_progress(
+                "candidate_eval_symbol_exception",
+                force=not bool(p476_candidate_progress_publish.get("published")),
+            )
             _p402_stage_checkpoint(
                 "candidate_eval_symbol_exception",
                 symbol=sym,
                 evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                 exception_type=type(e).__name__,
                 error=str(e),
+                p476_progress_publish=p476_exception_publish,
                 elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
             )
 
@@ -28186,6 +28367,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if not candidates:
             p402_eval_truth["empty_partial_scan"] = True
             p402_eval_truth["empty_partial_scan_reason"] = "candidate_eval_runtime_budget_closed_before_usable_candidate_truth"
+    p476_eval_complete_publish = _p476_publish_candidate_eval_progress(
+        "candidate_eval_complete_terminal_progress",
+        force=True,
+    )
+    p402_eval_truth["p476_candidate_progress_publish"] = dict(p476_candidate_progress_publish)
+    p402_eval_truth["p476_eval_complete_publish"] = dict(p476_eval_complete_publish)
+
     _p402_stage_checkpoint(
         "candidate_eval_complete",
         evaluated_count=p402_eval_truth.get("evaluated_count"),
@@ -28195,6 +28383,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         partial_scan_publishable=bool(p402_eval_truth.get("partial_scan_publishable")),
         candidate_count=len(candidates),
         rejection_count=sum(int(v or 0) for v in rejection_counts.values()),
+        p476_eval_complete_publish=p476_eval_complete_publish,
         elapsed_sec=p402_eval_truth.get("elapsed_sec"),
     )
 
@@ -28443,6 +28632,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "symbol_timeout_symbols": list(p402_eval_truth.get("symbol_timeout_symbols") or []),
                 "symbol_timeout_count": int(p402_eval_truth.get("symbol_timeout_count") or 0),
                 "partial_scan_publishable": bool(p402_eval_truth.get("partial_scan_publishable")),
+            },
+            "p476_candidate_eval_terminal_publish": {
+                "published": bool(p476_candidate_progress_publish.get("published")),
+                "publish_count": int(p476_candidate_progress_publish.get("publish_count") or 0),
+                "last_reason": p476_candidate_progress_publish.get("last_reason"),
+                "last_symbols_eval_total": int(p476_candidate_progress_publish.get("last_symbols_eval_total") or 0),
+                "last_candidate_count": int(p476_candidate_progress_publish.get("last_candidate_count") or 0),
             },
             "p474_regime_to_candidate_fast_publish": {
                 "foreground_fallback": bool(scan_options.get("p474_foreground_fallback")),
