@@ -28319,7 +28319,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "results": list(candidates[:10]),
         }
 
-        def _p478_symbol_eval_timeout_row(sym: str, elapsed_sec: float, timeout_sec: float, stage: str) -> dict:
+    def _p478_symbol_eval_timeout_row(sym: str, elapsed_sec: float, timeout_sec: float, stage: str) -> dict:
         return {
             "symbol": str(sym or "").strip().upper(),
             "eligible": False,
