@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-467-terminal-background-scan-lock-over-budget-truth-salvage"
+PATCH_VERSION = "patch-468-swing-scan-heavy-summary-deferral-fresh-candidate-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26681,7 +26681,8 @@ def _p456_start_swing_scan_background(
 
             duration_ms = int((scanner_payload or {}).get("duration_ms") or _bg_elapsed_ms() or 0)
             runtime_budget_ms = int(max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180)) * 1000)
-            if duration_ms > runtime_budget_ms:
+            p468_fast_closed = bool((scanner_payload or {}).get("p468_fast_close_after_submit"))
+            if duration_ms > runtime_budget_ms and not p468_fast_closed:
                 _bg_mark(
                     status="failed",
                     active=False,
@@ -27541,6 +27542,143 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     }
     for c in candidates:
         c["selected"] = str(c.get("symbol") or "").strip().upper() in selected_symbol_set
+
+    def _p468_selected_symbols() -> list[str]:
+        return _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(selected or [])
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+
+    def _p468_approved_symbols() -> list[str]:
+        return _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(approved or [])
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+
+    def _p468_compact_scan_summary(extra: dict | None = None) -> dict:
+        selected_symbols = _p468_selected_symbols()
+        approved_symbols = _p468_approved_symbols()
+        partial_scan = bool(
+            p402_fetch_truth.get("stopped_for_budget")
+            or p402_eval_truth.get("stopped_for_budget")
+            or p402_fetch_truth.get("error_count")
+        )
+        out = {
+            "strategy_name": SWING_STRATEGY_NAME,
+            "scan_reason": scan_reason,
+            "scan_truth_phase": "candidate_truth_before_heavy_reports",
+            "candidate_truth_published_before_reports": True,
+            "heavy_reports_deferred_from_hot_path": bool(p401_hot_path.get("defer_labs")),
+            "index_symbol": SWING_INDEX_SYMBOL,
+            "index_alignment_ok": index_ok,
+            "regime": dict(regime),
+            "regime_mode": regime_mode,
+            "symbols": list(scan_symbols),
+            "symbols_total": len(scan_symbols),
+            "symbols_requested_total": len(syms_for_fetch),
+            "symbols_fetched_total": int(p402_fetch_truth.get("fetched_count") or 0),
+            "symbols_eval_total": int(p402_eval_truth.get("evaluated_count") or 0),
+            "symbols_skipped_for_budget": list(
+                _dedupe_keep_order(
+                    list(p402_fetch_truth.get("skipped_symbols") or [])
+                    + list(p402_eval_truth.get("skipped_symbols") or [])
+                )
+            )[:50],
+            "runtime_slim": dict(runtime_slim),
+            "hot_path_slim": dict(p401_hot_path),
+            "scan_stage_checkpoint": _p402_stage_snapshot(),
+            "incremental_scan": {
+                "fetch": dict(p402_fetch_truth),
+                "evaluation": dict(p402_eval_truth),
+                "partial_scan": partial_scan,
+            },
+            "runtime_slim_applied": bool(runtime_slim.get("applied")),
+            "runtime_symbols_original_count": int(runtime_slim.get("original_count") or len(original_syms)),
+            "runtime_symbols_used_count": len(scan_symbols),
+            "runtime_symbols_excluded_count": int(runtime_slim.get("excluded_count") or 0),
+            "runtime_watch_symbols": list(runtime_slim.get("watch_symbols") or []),
+            "runtime_excluded_symbols": list(runtime_slim.get("excluded_symbols") or [])[:25],
+            "candidates_total": len(candidates),
+            "eligible_total": len(approved),
+            "selected_total": len(selected_symbols),
+            "selected_symbols": list(selected_symbols),
+            "production_contract_selected_symbols": list(selected_symbols),
+            "approved_symbols": list(approved_symbols),
+            "swing_production_reset": {
+                "enabled": bool(SWING_PRODUCTION_RESET_ENABLED),
+                "contract": "single_entry_contract",
+                "approved_count": len(approved),
+                "approved_symbols": list(approved_symbols),
+                "selected_symbols": list(selected_symbols),
+                "selection_source_enforced": True,
+                "selection_finalizer": "p344_approved_candidate_final_selection_sync",
+                "eligible_contract_finalizer_sync": dict(production_selection_finalizer.get("p414_eligible_contract_finalizer_sync") or {}),
+                "p461_promotion_recovery": dict(p461_promotion_recovery),
+            },
+            "top_candidates": [dict(c) for c in candidates[:5]],
+            "top_rejection_reasons": [
+                {"reason": k, "count": int(v)}
+                for k, v in rejection_counts.most_common(10)
+            ],
+            "production_contract_miss_reasons": {
+                "ok": True,
+                "deferred": True,
+                "reason": "p468_hot_scan_candidate_truth_only",
+                "endpoint": "/diagnostics/production_contract_miss_reasons",
+                "candidate_count": len(candidates),
+                "selected_symbols": list(selected_symbols),
+            },
+            "target_path_opportunity_expansion_lab": {
+                "ok": True,
+                "deferred": True,
+                "reason": "p468_hot_scan_candidate_truth_only",
+                "endpoint": "/diagnostics/target_path_opportunity_expansion_lab",
+                "candidate_count": len(candidates),
+            },
+            "intraday_shadow": {
+                "enabled": False,
+                "status": "deferred_by_p468_swing_hot_path",
+                "reason": "scanner_candidate_truth_published_before_heavy_reports",
+            },
+            "portfolio_exposure": round(open_total, 2),
+            "strategy_portfolio_exposure": round(open_strategy, 2),
+            "portfolio_exposure_cap": round(portfolio_cap, 2),
+            "symbol_exposure_cap": round(symbol_cap, 2),
+            "remaining_new_entries_today": int(remaining_today),
+            "max_new_entries_effective": int(max_new_entries),
+            "new_entries_globally_blocked": bool(new_entries_globally_blocked),
+            "global_block_reasons": list(dict.fromkeys(global_block_reasons)),
+        }
+        if extra:
+            out.update(dict(extra))
+        return out
+
+    def _p468_publish_candidate_truth(extra: dict | None = None) -> dict:
+        fast_summary = _p468_compact_scan_summary(extra=extra)
+        set_last_scan_fn(
+            skipped=False,
+            reason="scan_completed",
+            scanned=int((p402_eval_truth or {}).get("evaluated_count") or len(candidates)),
+            signals=len(approved),
+            would_trade=len(selected),
+            blocked=max(0, len(candidates) - len(approved)),
+            duration_ms=int(elapsed_ms_fn()),
+            selected_total=int(fast_summary.get("selected_total") or 0),
+            selected_symbols=list(fast_summary.get("selected_symbols") or []),
+            eligible_total=len(approved),
+            summary=fast_summary,
+            effective_dry_run=bool(effective_dry_run),
+            p468_candidate_truth_published=True,
+        )
+        return fast_summary
+
+    summary = _p468_publish_candidate_truth({
+        "p468_truth_publish_stage": "post_selection_pre_submit",
+        "p468_truth_publish_reason": "fresh_candidate_truth_before_submit_and_reports",
+    })
+
     if (not bool(SWING_PRODUCTION_RESET_ENABLED)) and bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED) and selected:
         recovery_rows = [c for c in selected if bool(c.get("target_path_recovery_mode"))]
         if len(recovery_rows) > int(SWING_TARGET_PATH_RECOVERY_MAX_ENTRIES_PER_SCAN or 0):
@@ -27694,6 +27832,138 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             apply=bool(SCANNER_ALLOW_LIVE and not SCANNER_DRY_RUN and not effective_dry_run),
             max_items=SELECTED_ENTRY_FINALIZER_MAX_PER_RUN,
         )
+
+    p468_after_submit_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+    p468_after_submit_remaining = max(
+        0.0,
+        float(SCAN_RUNTIME_BUDGET_SEC or 1) - p468_after_submit_elapsed,
+    )
+    p468_fast_close_after_submit = bool(p401_hot_path.get("enabled")) and (
+        p468_after_submit_remaining <= max(5.0, float(SWING_SCAN_BUDGET_RESERVE_SEC or 0))
+        or p468_after_submit_elapsed >= float(SCAN_RUNTIME_BUDGET_SEC or 180)
+    )
+
+    if p468_fast_close_after_submit:
+        LAST_SWING_CANDIDATES.clear()
+        LAST_SWING_CANDIDATES.extend(candidates[: max(1, min(len(candidates), SWING_MAX_CANDIDATES))])
+
+        selected_symbols_for_summary = _p468_selected_symbols()
+        actual_submit_symbols = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(would_submit or [])
+            if bool((row or {}).get("actual_submit_side_effect"))
+            and str((row or {}).get("symbol") or "").strip()
+        ])
+
+        summary.update({
+            "scan_truth_phase": "post_submit_fast_close_before_heavy_reports",
+            "p468_fast_close_after_submit": True,
+            "p468_fast_close_reason": "runtime_budget_reserve_reached_after_submit",
+            "p468_after_submit_elapsed_sec": round(p468_after_submit_elapsed, 3),
+            "p468_after_submit_remaining_sec": round(p468_after_submit_remaining, 3),
+            "selected_total": len(selected_symbols_for_summary),
+            "selected_symbols": list(selected_symbols_for_summary),
+            "production_contract_selected_symbols": list(selected_symbols_for_summary),
+            "selected_submission_rows": list(would_submit or []),
+            "actual_submit_side_effect_symbols": list(actual_submit_symbols),
+            "p399_pre_scan_retry_submit": {
+                "candidate_symbols": _dedupe_keep_order([
+                    str((c or {}).get("symbol") or "").strip().upper()
+                    for c in list(p399_pre_scan_retry_candidates or [])
+                    if str((c or {}).get("symbol") or "").strip()
+                ]),
+                "attempted_symbols": list(p399_pre_scan_retry_submit.get("attempted_symbols") or []),
+                "submitted_symbols": list(p399_pre_scan_retry_submit.get("submitted_symbols") or []),
+                "rate_limited_symbols": list(p399_pre_scan_retry_submit.get("rate_limited_symbols") or []),
+            },
+            "p399_partial_submit_finalization": dict(p399_partial_submit_finalization),
+            "selected_submission_truth": _p297_selected_submission_truth(selected_symbols_for_summary),
+            "spread_retry_auto_apply": {
+                "enabled": bool(SPREAD_BLOCKED_RETRY_AUTO_APPLY_ON_SCAN_ENABLED),
+                "applied": False,
+                "reason": "deferred_by_p468_fast_close",
+            },
+        })
+
+        duration_ms = int(elapsed_ms_fn())
+        _p402_stage_checkpoint(
+            "swing_scan_fast_complete_before_heavy_summary",
+            duration_ms=duration_ms,
+            candidates_total=len(candidates),
+            approved_count=len(approved),
+            selected_count=len(selected),
+            selected_symbols=list(selected_symbols_for_summary),
+            remaining_sec=round(p468_after_submit_remaining, 3),
+        )
+
+        set_last_scan_fn(
+            skipped=False,
+            reason="scan_completed",
+            scanned=int((p402_eval_truth or {}).get("evaluated_count") or len(candidates)),
+            signals=len(approved),
+            would_trade=len(selected),
+            blocked=max(0, len(candidates) - len(approved)),
+            duration_ms=duration_ms,
+            selected_total=len(selected_symbols_for_summary),
+            selected_symbols=list(selected_symbols_for_summary),
+            eligible_total=len(approved),
+            summary=dict(summary),
+            effective_dry_run=bool(effective_dry_run),
+            p468_fast_close_after_submit=True,
+        )
+
+        try:
+            SCAN_HISTORY.append({
+                "ts_utc": datetime.now(timezone.utc).isoformat(),
+                "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                "symbols": syms,
+                "scanned": int((p402_eval_truth or {}).get("evaluated_count") or len(syms)),
+                "signals": len(approved),
+                "would_trade": len(selected),
+                "blocked": max(0, len(candidates) - len(approved)),
+                "duration_ms": duration_ms,
+                "summary": dict(summary),
+                "partial_scan": bool((summary.get("incremental_scan") or {}).get("partial_scan")),
+                "results": LAST_SWING_CANDIDATES.copy(),
+                "candidate_slots": candidate_slots_available(),
+                "ignored_ranked_out": [c for c in candidates if not c.get("eligible")][:20],
+                "would_submit": would_submit,
+            })
+            if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
+                del SCAN_HISTORY[: len(SCAN_HISTORY) - SCAN_HISTORY_SIZE]
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "scanner": {
+                "enabled": SCANNER_ENABLED,
+                "dry_run": SCANNER_DRY_RUN,
+                "allow_live": SCANNER_ALLOW_LIVE,
+                "effective_dry_run": effective_dry_run,
+                "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                "symbols_scanned": int((p402_eval_truth or {}).get("evaluated_count") or len(syms)),
+                "signals": len(approved),
+                "would_trade": len(selected),
+                "blocked": max(0, len(candidates) - len(approved)),
+                "duration_ms": duration_ms,
+                "summary": dict(summary),
+                "incremental_scan": dict(summary.get("incremental_scan") or {}),
+                "p468_fast_close_after_submit": True,
+            },
+            "reconcile": reconcile_actions,
+            "would_submit": would_submit,
+            "p399_pre_scan_retry_submit": summary.get("p399_pre_scan_retry_submit"),
+            "p399_partial_submit_finalization": summary.get("p399_partial_submit_finalization"),
+            "direct_submit_cleanup_status": _p320_swing_dead_path_phase1_status(),
+            "production_contract_selection_finalizer": {
+                "selected_symbols": list(production_selection_finalizer.get("selected_symbols") or []),
+                "approved_symbols": list(production_selection_finalizer.get("approved_symbols") or []),
+                "max_new_entries": int(production_selection_finalizer.get("max_new_entries") or 0),
+            },
+            "selected_submission_truth": summary.get("selected_submission_truth"),
+            "results": LAST_SWING_CANDIDATES[:SWING_MAX_CANDIDATES],
+        }
 
     LAST_SWING_CANDIDATES.clear()
     LAST_SWING_CANDIDATES.extend(candidates[: max(1, min(len(candidates), SWING_MAX_CANDIDATES))])
@@ -28218,11 +28488,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         selected_count=len(selected),
         selected_symbols=[c.get("symbol") for c in selected],
     )
-    set_last_scan_fn(skipped=False, reason='scan_completed', scanned=len(syms), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
     try:
         summary["spread_retry_auto_apply"] = _p369_auto_retry_after_scan_summary(summary)
     except Exception as exc:
         summary["spread_retry_auto_apply"] = {"enabled": bool(SPREAD_BLOCKED_RETRY_AUTO_APPLY_ON_SCAN_ENABLED), "applied": False, "reason": "auto_apply_error", "error": str(exc)}
+    set_last_scan_fn(skipped=False, reason='scan_completed', scanned=int(p402_eval_truth.get("evaluated_count") or len(syms)), signals=len(approved), would_trade=len(selected), blocked=max(0, len(candidates)-len(approved)), duration_ms=duration_ms, summary=summary)
     try:
         _record_paper_lifecycle(
             stage='scan',
