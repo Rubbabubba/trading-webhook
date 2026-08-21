@@ -2827,7 +2827,7 @@ SWING_SCAN_BUDGET_RESERVE_SEC = max(
 )
 SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED = env_bool_any(
     "SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED",
-    default="true",
+    default="false",
 )
 SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC = max(
     3,
@@ -2916,7 +2916,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-478-candidate-eval-isolation-terminal-partial-publish-scanner-stall-elimination"
+PATCH_VERSION = "patch-479-no-thread-candidate-eval-fast-path-broker-free-selection-finalization"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -7392,10 +7392,10 @@ def get_buying_power_snapshot() -> dict:
         return {"ok": False, "buying_power": 0.0, "equity": None, "cash": None, "error": str(e)}
 
 
-def clip_qty_for_affordability(price: float, requested_qty: float) -> dict:
+def _clip_qty_for_affordability_with_snapshot(price: float, requested_qty: float, broker_snapshot: dict | None = None) -> dict:
     price = float(price or 0)
     requested_qty = float(requested_qty or 0)
-    bp = get_buying_power_snapshot()
+    bp = dict(broker_snapshot or get_buying_power_snapshot() or {})
     if price <= 0 or requested_qty <= 0:
         return {"requested_qty": requested_qty, "affordable_qty": 0.0, "submitted_qty": 0.0, "affordability_clipped": False, "buying_power_snapshot": bp, "reason": "invalid_price_or_qty"}
     effective_bp = max(0.0, float(bp.get("buying_power") or 0.0) * max(0.0, min(1.0, ORDER_BP_HAIRCUT_PCT)))
@@ -7418,6 +7418,9 @@ def clip_qty_for_affordability(price: float, requested_qty: float) -> dict:
         "reason": reason,
     }
 
+
+def clip_qty_for_affordability(price: float, requested_qty: float) -> dict:
+    return _clip_qty_for_affordability_with_snapshot(price, requested_qty)
 
 def get_latest_price(symbol: str) -> Optional[float]:
     req = StockLatestTradeRequest(symbol_or_symbols=[symbol])
@@ -22757,7 +22760,8 @@ def _p300_executable_sizing_truth(candidate: dict | None, cap_truth: dict | None
     cap = dict(cap_truth or c.get("sizing_truth") or {})
     affordability = dict(c.get("affordability") or {})
     broker_snapshot = dict(
-        affordability.get("buying_power_snapshot")
+        c.get("scan_broker_snapshot")
+        or affordability.get("buying_power_snapshot")
         or get_buying_power_snapshot()
         or {}
     )
@@ -24309,7 +24313,7 @@ def _p264_defensive_daily_breakout_rollback_snapshot(regime_mode: str | None = N
         "reason": "defensive_daily_breakout_rollback" if blocked else "none",
     }
 
-def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None, regime_mode: str = 'trend') -> dict:
+def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_aligned: bool | None = None, regime_mode: str = 'trend', broker_snapshot: dict | None = None) -> dict:
     candidate = {
         'symbol': symbol,
         'strategy': BREAKOUT_STRATEGY_NAME,
@@ -24351,7 +24355,7 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
     effective_risk_dollars = _p459_effective_swing_risk_dollars()
     target_price = close + (risk_per_share * effective_target_r_mult)
     requested_qty = min(MAX_QTY, max(MIN_QTY, round(effective_risk_dollars / max(risk_per_share, 1e-9), 2)))
-    affordable = clip_qty_for_affordability(close, requested_qty)
+    affordable = _clip_qty_for_affordability_with_snapshot(close, requested_qty, broker_snapshot=broker_snapshot)
     est_qty = float(affordable.get('submitted_qty') or 0.0)
     score = 0.0
     if close >= SWING_MIN_PRICE:
@@ -24435,6 +24439,8 @@ def evaluate_daily_breakout_candidate(symbol: str, bars: list[dict], index_align
         'requested_qty': round(requested_qty, 2),
         'estimated_qty': round(est_qty, 2),
         'affordability': dict(affordable),
+        'scan_broker_snapshot': dict(broker_snapshot or affordable.get("buying_power_snapshot") or {}),
+        'p479_broker_free_eval': True,
         'rank_score': round(score, 4),
         'min_rank_score': round(min_rank_score, 4),
         'signal': 'daily_breakout',
@@ -24518,7 +24524,7 @@ def _distance_to_ma_pct(close: float | None, ma: float | None) -> float | None:
         return None
 
 
-def evaluate_daily_mean_reversion_candidate(symbol: str, bars: list[dict], regime: dict | None = None, regime_mode: str = 'defensive') -> dict:
+def evaluate_daily_mean_reversion_candidate(symbol: str, bars: list[dict], regime: dict | None = None, regime_mode: str = 'defensive', broker_snapshot: dict | None = None) -> dict:
     candidate = {'symbol': symbol, 'strategy': MEAN_REVERSION_STRATEGY_NAME, 'scan_ts_utc': datetime.now(timezone.utc).isoformat(), 'eligible': False, 'rejection_reasons': []}
     if not SWING_MEAN_REVERSION_ENABLED:
         candidate['rejection_reasons'].append('mean_reversion_disabled'); return candidate
@@ -24533,7 +24539,7 @@ def evaluate_daily_mean_reversion_candidate(symbol: str, bars: list[dict], regim
     avg_dollar_vol_20 = sum((closes[-20+i] * vols[-20+i]) for i in range(20)) / 20.0
     ret_5 = _return_pct(closes, 5); ret_20 = _return_pct(closes, 20); close_to_high = close / max(high, 1e-9); dist_to_slow = _distance_to_ma_pct(close, slow_ma); range_pct = (high - low) / max(close, 1e-9); mean_anchor = slow_ma or fast_ma or close
     stop_price = round(close * (1.0 - float(SWING_MEAN_REVERSION_STOP_PCT)), 4); target_price = round(close * (1.0 + float(SWING_MEAN_REVERSION_TARGET_PCT)), 4); risk_per_share = max(close - stop_price, close * 0.0025)
-    risk_budget = max(0.01, float(RISK_DOLLARS) * max(0.01, float(SWING_MEAN_REVERSION_RISK_MULTIPLIER))); requested_qty = min(MAX_QTY, max(MIN_QTY, round(risk_budget / max(risk_per_share, 1e-9), 2))); affordable = clip_qty_for_affordability(close, requested_qty); est_qty = float(affordable.get('submitted_qty') or 0.0)
+    risk_budget = max(0.01, float(RISK_DOLLARS) * max(0.01, float(SWING_MEAN_REVERSION_RISK_MULTIPLIER))); requested_qty = min(MAX_QTY, max(MIN_QTY, round(risk_budget / max(risk_per_share, 1e-9), 2))); affordable = _clip_qty_for_affordability_with_snapshot(close, requested_qty, broker_snapshot=broker_snapshot); est_qty = float(affordable.get('submitted_qty') or 0.0)
     score = 0.0
     if close >= SWING_MEAN_REVERSION_MIN_PRICE: score += 10.0
     else: candidate['rejection_reasons'].append('price_below_min')
@@ -24551,7 +24557,7 @@ def evaluate_daily_mean_reversion_candidate(symbol: str, bars: list[dict], regim
     if range_pct >= float(SWING_MEAN_REVERSION_MIN_RANGE_PCT): score += max(0.0, min(10.0, range_pct * 100.0))
     else: candidate['rejection_reasons'].append('insufficient_range')
     if slow_ma and close >= slow_ma: score += 8.0
-    candidate.update({'close': round(close,4), 'prev_close': round(prev_close,4), 'high': round(high,4), 'low': round(low,4), 'fast_ma': round(fast_ma,4) if fast_ma else None, 'slow_ma': round(slow_ma,4) if slow_ma else None, 'avg_dollar_volume_20d': round(avg_dollar_vol_20,2), 'return_5d_pct': round((ret_5 or 0.0) * 100.0,3) if ret_5 is not None else None, 'return_20d_pct': round((ret_20 or 0.0) * 100.0,3) if ret_20 is not None else None, 'close_to_high_pct': round(close_to_high * 100.0,3), 'distance_to_slow_ma_pct': round((dist_to_slow or 0.0) * 100.0,3) if dist_to_slow is not None else None, 'mean_anchor': round(mean_anchor,4) if mean_anchor else None, 'breakout_level': round((slow_ma or high),4) if (slow_ma or high) else None, 'breakout_distance_pct': round((((close / max(mean_anchor, 1e-9)) - 1.0) if mean_anchor else 0.0) * 100.0,3), 'range_pct': round(range_pct * 100.0,3), 'stop_price': round(stop_price,4), 'target_price': round(target_price,4), 'risk_per_share': round(risk_per_share,4), 'requested_qty': round(requested_qty,2), 'estimated_qty': round(est_qty,2), 'affordability': dict(affordable), 'rank_score': round(score,4), 'signal': MEAN_REVERSION_STRATEGY_NAME, 'side': 'buy', 'regime_mode': regime_mode, 'max_hold_days': int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), 'strategy_priority': 50, 'mode_thresholds': {'close_to_high_min_pct': round(float(SWING_MEAN_REVERSION_MIN_CLOSE_TO_HIGH_PCT) * 100.0,3), 'return_5d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_5D_RETURN_PCT) * 100.0,3), 'return_5d_max_pct': round(float(SWING_MEAN_REVERSION_MAX_5D_RETURN_PCT) * 100.0,3), 'return_20d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_20D_RETURN_PCT) * 100.0,3), 'max_dist_to_slow_ma_pct': round(float(SWING_MEAN_REVERSION_MAX_DIST_TO_SLOW_MA_PCT) * 100.0,3), 'target_pct': round(float(SWING_MEAN_REVERSION_TARGET_PCT) * 100.0,3), 'stop_pct': round(float(SWING_MEAN_REVERSION_STOP_PCT) * 100.0,3)}})
+    candidate.update({'close': round(close,4), 'prev_close': round(prev_close,4), 'high': round(high,4), 'low': round(low,4), 'fast_ma': round(fast_ma,4) if fast_ma else None, 'slow_ma': round(slow_ma,4) if slow_ma else None, 'avg_dollar_volume_20d': round(avg_dollar_vol_20,2), 'return_5d_pct': round((ret_5 or 0.0) * 100.0,3) if ret_5 is not None else None, 'return_20d_pct': round((ret_20 or 0.0) * 100.0,3) if ret_20 is not None else None, 'close_to_high_pct': round(close_to_high * 100.0,3), 'distance_to_slow_ma_pct': round((dist_to_slow or 0.0) * 100.0,3) if dist_to_slow is not None else None, 'mean_anchor': round(mean_anchor,4) if mean_anchor else None, 'breakout_level': round((slow_ma or high),4) if (slow_ma or high) else None, 'breakout_distance_pct': round((((close / max(mean_anchor, 1e-9)) - 1.0) if mean_anchor else 0.0) * 100.0,3), 'range_pct': round(range_pct * 100.0,3), 'stop_price': round(stop_price,4), 'target_price': round(target_price,4), 'risk_per_share': round(risk_per_share,4), 'requested_qty': round(requested_qty,2), 'estimated_qty': round(est_qty,2), 'affordability': dict(affordable), 'scan_broker_snapshot': dict(broker_snapshot or affordable.get("buying_power_snapshot") or {}), 'p479_broker_free_eval': True, 'rank_score': round(score,4), 'signal': MEAN_REVERSION_STRATEGY_NAME, 'side': 'buy', 'regime_mode': regime_mode, 'max_hold_days': int(SWING_MEAN_REVERSION_MAX_HOLD_DAYS), 'strategy_priority': 50, 'mode_thresholds': {'close_to_high_min_pct': round(float(SWING_MEAN_REVERSION_MIN_CLOSE_TO_HIGH_PCT) * 100.0,3), 'return_5d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_5D_RETURN_PCT) * 100.0,3), 'return_5d_max_pct': round(float(SWING_MEAN_REVERSION_MAX_5D_RETURN_PCT) * 100.0,3), 'return_20d_min_pct': round(float(SWING_MEAN_REVERSION_MIN_20D_RETURN_PCT) * 100.0,3), 'max_dist_to_slow_ma_pct': round(float(SWING_MEAN_REVERSION_MAX_DIST_TO_SLOW_MA_PCT) * 100.0,3), 'target_pct': round(float(SWING_MEAN_REVERSION_TARGET_PCT) * 100.0,3), 'stop_pct': round(float(SWING_MEAN_REVERSION_STOP_PCT) * 100.0,3)}})
     candidate['eligible'] = len(candidate['rejection_reasons']) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
     if not candidate['eligible'] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
         sizing_truth = _p300_executable_sizing_truth(candidate)
@@ -27893,6 +27899,38 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "submitted_symbols": [],
     }
 
+    p479_scan_broker_snapshot = dict(get_buying_power_snapshot() or {})
+    p479_pending_entry_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if str(sym or "").strip() and (bool((plan or {}).get("active")) or _plan_is_pending_entry(plan))
+    }
+    p479_active_plan_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if str(sym or "").strip() and bool((plan or {}).get("active"))
+    }
+    p479_open_position_symbols = {
+        str(sym or "").strip().upper()
+        for sym, notional in (open_by_symbol or {}).items()
+        if str(sym or "").strip() and abs(float(notional or 0.0)) > 0.01
+    }
+
+    def _p479_open_group_position_count_cached(symbol: str) -> int:
+        gid = _symbol_group_id(symbol)
+        if gid is None:
+            return 0
+        count = 0
+        seen = set()
+        for s in sorted(p479_open_position_symbols | p479_active_plan_symbols):
+            sym_key = str(s or "").strip().upper()
+            if not sym_key or sym_key in seen:
+                continue
+            if _symbol_group_id(sym_key) == gid:
+                count += 1
+                seen.add(sym_key)
+        return count
+
     candidates = []
     shadow_candidates = []
     shadow_alignment_candidates = []
@@ -27917,11 +27955,10 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
 
     def _p472_should_fast_skip_new_entry_eval(sym: str) -> dict:
         symbol = str(sym or "").strip().upper()
-        active_plan = dict(TRADE_PLAN.get(symbol) or {}) if isinstance(TRADE_PLAN.get(symbol), dict) else {}
-        has_active_plan = bool(active_plan.get("active"))
-        has_pending_entry = bool(_has_pending_entry_plan(symbol))
+        has_active_plan = symbol in p479_active_plan_symbols
+        has_pending_entry = symbol in p479_pending_entry_symbols
         broker_position_notional = float(open_by_symbol.get(symbol, 0.0) or 0.0)
-        broker_position_open = bool(abs(broker_position_notional) > 0.01)
+        broker_position_open = symbol in p479_open_position_symbols
 
         should_skip = bool(has_active_plan or has_pending_entry or broker_position_open)
         reasons = []
@@ -27988,13 +28025,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     def _finalize_candidate(candidate: dict, sym: str, record: bool = True):
         c = dict(candidate or {})
         strategy_name = str(c.get('strategy') or '').strip().lower()
-        if _has_pending_entry_plan(sym):
+        if str(sym or "").strip().upper() in p479_pending_entry_symbols:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('plan_or_pending_entry_exists')
-        qty_signed, _ = get_position(sym)
-        if qty_signed != 0:
+        if str(sym or "").strip().upper() in p479_open_position_symbols:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('position_already_open')
+        c["scan_broker_snapshot"] = dict(c.get("scan_broker_snapshot") or p479_scan_broker_snapshot or {})
         projected_notional = _safe_float(c.get('estimated_qty')) * _safe_float(c.get('close'))
         kill_active, kill_reasons = _strategy_kill_switch_active(strategy_name)
         if c.get('eligible') and kill_active:
@@ -28023,7 +28060,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             if not (strategy_name == MEAN_REVERSION_STRATEGY_NAME and 'weak_tape' in candidate_global_block_reasons and SWING_MEAN_REVERSION_ENABLED):
                 c['eligible'] = False
                 c.setdefault('rejection_reasons', []).extend(candidate_global_block_reasons)
-        group_count = _open_group_position_count(sym)
+        group_count = _p479_open_group_position_count_cached(sym)
         if c.get('eligible') and SWING_MAX_GROUP_POSITIONS > 0 and group_count >= SWING_MAX_GROUP_POSITIONS:
             c['eligible'] = False
             c.setdefault('rejection_reasons', []).append('correlation_group_limit')
@@ -28341,7 +28378,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     def _p478_eval_symbol_rows(sym: str) -> list[dict]:
         rows = [
             _finalize_candidate(
-                evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode),
+                evaluate_daily_breakout_candidate(sym, daily_map.get(sym, []), index_ok, regime_mode=regime_mode, broker_snapshot=p479_scan_broker_snapshot),
                 sym,
                 record=False,
             )
@@ -28349,7 +28386,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if SWING_MEAN_REVERSION_ENABLED and regime.get("favorable") is False:
             rows.append(
                 _finalize_candidate(
-                    evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode),
+                    evaluate_daily_mean_reversion_candidate(sym, daily_map.get(sym, []), regime=regime, regime_mode=regime_mode, broker_snapshot=p479_scan_broker_snapshot),
                     sym,
                     record=False,
                 )
@@ -28966,13 +29003,14 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "last_candidate_count": int(p476_candidate_progress_publish.get("last_candidate_count") or 0),
             },
             "p477_terminal_partial_close": dict(p477_terminal_partial_close),
-            "p478_candidate_eval_isolation": {
-                "enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
-                "timeout_sec": int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC),
-                "max_timeouts_per_scan": int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_MAX_PER_SCAN),
-                "timeout_symbols": list(p402_eval_truth.get("symbol_timeout_symbols") or []),
-                "timeout_count": int(p402_eval_truth.get("symbol_timeout_count") or 0),
-                "isolated_timeout_count": int(p402_eval_truth.get("p478_timeout_count") or 0),
+            "p479_broker_free_selection_finalization": {
+                "enabled": True,
+                "thread_isolation_default_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "broker_snapshot_reused": bool(p479_scan_broker_snapshot),
+                "pending_entry_symbol_count": len(p479_pending_entry_symbols),
+                "active_plan_symbol_count": len(p479_active_plan_symbols),
+                "open_position_symbol_count": len(p479_open_position_symbols),
+                "goal": "candidate_eval_hot_path_uses_snapshots_not_per_symbol_broker_calls",
             },
             "p474_regime_to_candidate_fast_publish": {
                 "foreground_fallback": bool(scan_options.get("p474_foreground_fallback")),
