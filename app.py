@@ -2873,13 +2873,13 @@ WORKER_EXIT_SHADOW_QUARANTINE_ENABLED = env_bool_any(
     "WORKER_EXIT_SHADOW_QUARANTINE_ENABLED",
     default=True,
 )
-SCAN_HISTORY: list[dict] = []  # append-only, trimmed to SCAN_HISTORY_SIZE
+SCAN_HISTORY: list[dict] = []
 SWING_SCAN_BACKGROUND_COMPLETION: dict = {}
 SWING_SCAN_BACKGROUND_LOCK = threading.RLock()
 SWING_SCAN_BACKGROUND_THREAD = None
 SWING_SCAN_THREAD_LOCAL = threading.local()
-
-# Guards in-memory shared state when scan evaluation runs concurrently
+P469_RELEASE_GATE_SNAPSHOT_CACHE: dict = {}
+P469_RELEASE_GATE_SNAPSHOT_TTL_SEC = 10
 STATE_LOCK = threading.RLock()
 
 STARTUP_STATE: dict[str, object] = {
@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-468-swing-scan-heavy-summary-deferral-fresh-candidate-truth"
+PATCH_VERSION = "patch-469-fast-worker-dry-run-truth-release-gate-snapshot-cache"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -19893,8 +19893,8 @@ def release_gate_status() -> dict:
         status["live_orders_permitted"] = False
     return status
 
-
 def is_live_trading_permitted(source: str = "") -> bool:
+    source = str(source or "").strip()
     if DRY_RUN or (not LIVE_TRADING_ENABLED):
         return False
     if source == "worker_scan" and (not NEW_ENTRIES_ENABLED):
@@ -19903,8 +19903,10 @@ def is_live_trading_permitted(source: str = "") -> bool:
         return False
     if source == "worker_scan" and (not SCANNER_ALLOW_LIVE):
         return False
-    if RELEASE_GATE_ENFORCED and (not release_gate_status().get("live_orders_permitted")):
-        return False
+    if RELEASE_GATE_ENFORCED:
+        gate = _p469_release_gate_snapshot_cached() if source == "worker_scan" else release_gate_status()
+        if not gate.get("live_orders_permitted"):
+            return False
     return True
 
 
@@ -26356,11 +26358,139 @@ def _p462h_close_timed_out_background_scan(reason: str = "background_scan_runtim
         pass
     return {"closed": True, "reason": reason, "timeout_truth": timeout_truth, "state": snapshot}
 
+def _p469_release_gate_snapshot_cached(force: bool = False) -> dict:
+    now_ts = _time.monotonic()
+    cached = dict(P469_RELEASE_GATE_SNAPSHOT_CACHE or {})
+    cached_age = now_ts - float(cached.get("cached_monotonic") or 0.0)
+
+    if (
+        not force
+        and cached
+        and cached_age >= 0
+        and cached_age <= float(P469_RELEASE_GATE_SNAPSHOT_TTL_SEC)
+    ):
+        status = dict(cached.get("status") or {})
+        status["p469_cache_hit"] = True
+        status["p469_cache_age_sec"] = round(cached_age, 3)
+        status["p469_cache_ttl_sec"] = int(P469_RELEASE_GATE_SNAPSHOT_TTL_SEC)
+        return status
+
+    if not bool(RELEASE_GATE_ENFORCED):
+        status = {
+            "live_orders_permitted": True,
+            "go_live_eligible": True,
+            "unmet_conditions": [],
+            "system_release_stage": SYSTEM_RELEASE_STAGE,
+            "configured_release_stage": SYSTEM_RELEASE_STAGE,
+            "effective_release_stage": SYSTEM_RELEASE_STAGE,
+            "p469_cache_hit": False,
+            "p469_release_gate_enforced": False,
+        }
+    else:
+        status = dict(release_gate_status() or {})
+        status["p469_cache_hit"] = False
+        status["p469_release_gate_enforced"] = True
+
+    P469_RELEASE_GATE_SNAPSHOT_CACHE.clear()
+    P469_RELEASE_GATE_SNAPSHOT_CACHE.update({
+        "cached_monotonic": now_ts,
+        "cached_utc": datetime.now(timezone.utc).isoformat(),
+        "status": dict(status),
+    })
+    status["p469_cache_age_sec"] = 0.0
+    status["p469_cache_ttl_sec"] = int(P469_RELEASE_GATE_SNAPSHOT_TTL_SEC)
+    return status
+
+
+def _p469_fast_worker_entry_dry_run_truth(
+    source: str = "worker_scan",
+    include_release_gate: bool = True,
+    bootstrap_recent_scan_missing: bool = False,
+) -> dict:
+    blockers = []
+
+    if bool(DRY_RUN):
+        blockers.append("dry_run_true")
+    if not bool(LIVE_TRADING_ENABLED):
+        blockers.append("live_trading_disabled")
+    if not bool(NEW_ENTRIES_ENABLED):
+        blockers.append("new_entries_disabled")
+    if bool(realized_closed_trade_loss_halt_active()):
+        blockers.append("realized_loss_halt_active")
+    if not bool(SCANNER_ALLOW_LIVE):
+        blockers.append("scanner_allow_live_false")
+    if bool(SCANNER_DRY_RUN):
+        blockers.append("scanner_dry_run_true")
+
+    release_gate = {}
+    release_gate_bootstrap_ignored = False
+    if include_release_gate and bool(RELEASE_GATE_ENFORCED):
+        try:
+            release_gate = _p469_release_gate_snapshot_cached()
+            unmet_conditions = {
+                str(x).strip().lower()
+                for x in list(release_gate.get("unmet_conditions") or [])
+                if str(x).strip()
+            }
+            release_gate_bootstrap_ignored = bool(
+                bootstrap_recent_scan_missing
+                and not bool(release_gate.get("live_orders_permitted"))
+                and unmet_conditions
+                and unmet_conditions.issubset({"recent_market_scan_missing"})
+            )
+            if not bool(release_gate.get("live_orders_permitted")) and not release_gate_bootstrap_ignored:
+                blockers.append("release_gate_live_orders_not_permitted")
+        except Exception as e:
+            release_gate = {
+                "error": str(e),
+                "exception_type": type(e).__name__,
+                "p469_cache_error": True,
+            }
+            blockers.append("release_gate_exception")
+
+    return {
+        "source": source,
+        "effective_dry_run": bool(blockers),
+        "effective_dry_run_reason": "none" if not blockers else ",".join(_dedupe_keep_order(blockers)),
+        "blockers": _dedupe_keep_order(blockers),
+        "p469_fast_worker_truth": True,
+        "flags": {
+            "dry_run": bool(DRY_RUN),
+            "live_trading_enabled": bool(LIVE_TRADING_ENABLED),
+            "new_entries_enabled": bool(NEW_ENTRIES_ENABLED),
+            "scanner_allow_live": bool(SCANNER_ALLOW_LIVE),
+            "scanner_dry_run": bool(SCANNER_DRY_RUN),
+            "release_gate_enforced": bool(RELEASE_GATE_ENFORCED),
+        },
+        "release_gate": {
+            "live_orders_permitted": release_gate.get("live_orders_permitted"),
+            "go_live_eligible": release_gate.get("go_live_eligible"),
+            "unmet_conditions": list(release_gate.get("unmet_conditions") or []),
+            "system_release_stage": release_gate.get("system_release_stage"),
+            "configured_release_stage": release_gate.get("configured_release_stage"),
+            "effective_release_stage": release_gate.get("effective_release_stage"),
+            "bootstrap_recent_scan_missing_ignored": bool(release_gate_bootstrap_ignored),
+            "p469_cache_hit": bool(release_gate.get("p469_cache_hit")),
+            "p469_cache_age_sec": release_gate.get("p469_cache_age_sec"),
+            "p469_cache_ttl_sec": release_gate.get("p469_cache_ttl_sec"),
+            "error": release_gate.get("error"),
+            "exception_type": release_gate.get("exception_type"),
+        },
+    }
+
 def _p456_entry_dry_run_truth(
     source: str = "worker_scan",
     include_release_gate: bool = True,
     bootstrap_recent_scan_missing: bool = False,
 ) -> dict:
+    source = str(source or "worker_scan").strip()
+    if source == "worker_scan":
+        return _p469_fast_worker_entry_dry_run_truth(
+            source=source,
+            include_release_gate=include_release_gate,
+            bootstrap_recent_scan_missing=bootstrap_recent_scan_missing,
+        )
+
     blockers = []
     release_gate = {}
 
@@ -39260,10 +39390,21 @@ def _p298_scanner_light() -> dict:
         source="scanner_light_background_truth",
     )
     background_truth = dict(sanitized_background_wrapper.get("scan_background_completion_truth") or background_truth)
+    p469_release_gate_cache_truth = {
+        "cached": bool(P469_RELEASE_GATE_SNAPSHOT_CACHE),
+        "cached_utc": (P469_RELEASE_GATE_SNAPSHOT_CACHE or {}).get("cached_utc"),
+        "ttl_sec": int(P469_RELEASE_GATE_SNAPSHOT_TTL_SEC),
+        "live_orders_permitted": ((P469_RELEASE_GATE_SNAPSHOT_CACHE or {}).get("status") or {}).get("live_orders_permitted"),
+        "go_live_eligible": ((P469_RELEASE_GATE_SNAPSHOT_CACHE or {}).get("status") or {}).get("go_live_eligible"),
+        "unmet_conditions": list(((P469_RELEASE_GATE_SNAPSHOT_CACHE or {}).get("status") or {}).get("unmet_conditions") or []),
+    }
+
     latest_scan["scanner_exception_truth"] = summary.get("scanner_exception_truth")
     latest_scan["using_last_successful_production_scan"] = bool(summary.get("using_last_successful_production_scan"))
     latest_scan["scan_background_completion_truth"] = background_truth
+    latest_scan["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
     summary["scan_background_completion_truth"] = background_truth
+    summary["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
 
     telemetry_summary = _p325_recover_scanner_warning_summary(
         telemetry_summary,
