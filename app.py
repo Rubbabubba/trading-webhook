@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-476-candidate-evaluation-terminal-publish-background-scan-stall-elimination"
+PATCH_VERSION = "patch-477-scanner-candidate-eval-batch-budget-terminal-partial-scan-close"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28065,6 +28065,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "last_symbols_eval_total": 0,
         "last_candidate_count": 0,
     }
+    p477_terminal_partial_close = {
+        "applied": False,
+        "reason": "not_needed",
+        "stage": None,
+        "evaluated_count": 0,
+        "candidate_count": 0,
+        "remaining_sec": None,
+        "elapsed_sec": None,
+        "batch_size": 5,
+    }
 
     def _p476_publish_candidate_eval_progress(reason: str = "candidate_eval_progress", force: bool = False) -> dict:
         evaluated_count = len(p402_eval_truth.get("evaluated_symbols") or [])
@@ -28191,12 +28201,120 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "candidate_count": int(candidate_count),
             "publish_count": int(p476_candidate_progress_publish.get("publish_count") or 0),
         }
+        
+        def _p477_terminal_partial_scan_response(reason: str, stage: str, remaining_sec: float | None = None) -> dict:
+        evaluated_count = len(p402_eval_truth.get("evaluated_symbols") or [])
+        candidate_count = len(candidates)
+        elapsed_sec = _p398_runtime_budget_elapsed_sec(scan_started)
+        if remaining_sec is None:
+            remaining_sec = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - elapsed_sec)
+
+        p402_eval_truth["stopped_for_budget"] = True
+        p402_eval_truth["budget_stop_stage"] = stage
+        p402_eval_truth["terminal_reason"] = reason
+        p402_eval_truth["partial_scan_publishable"] = bool(candidate_count > 0 or evaluated_count > 0)
+        p402_eval_truth["skipped_symbols"] = list(_dedupe_keep_order(
+            list(p402_eval_truth.get("skipped_symbols") or [])
+            + [
+                s for s in syms
+                if s not in set(p402_eval_truth.get("evaluated_symbols") or [])
+                and s not in set(p472_fast_skip_symbols)
+            ]
+        ))
+
+        p477_terminal_partial_close.update({
+            "applied": True,
+            "reason": reason,
+            "stage": stage,
+            "evaluated_count": int(evaluated_count),
+            "candidate_count": int(candidate_count),
+            "remaining_sec": round(float(remaining_sec or 0.0), 3),
+            "elapsed_sec": round(float(elapsed_sec or 0.0), 3),
+            "batch_size": int(p477_terminal_partial_close.get("batch_size") or 5),
+        })
+
+        publish_truth = _p476_publish_candidate_eval_progress(
+            reason,
+            force=True,
+        )
+
+        latest_summary = dict((LAST_SCAN or {}).get("summary") or {})
+        latest_summary["p477_terminal_partial_close"] = dict(p477_terminal_partial_close)
+        latest_summary["p477_terminal_partial_publish"] = dict(publish_truth)
+        latest_summary["scan_truth_phase"] = "candidate_eval_terminal_partial_close"
+        latest_summary["candidate_truth_published_before_reports"] = True
+        latest_summary["candidate_bearing_scan"] = bool(candidate_count > 0 or evaluated_count > 0)
+        latest_summary["trade_judgable"] = bool(candidate_count > 0 or evaluated_count > 0)
+        latest_summary["regime_only_non_actionable"] = False
+
+        set_last_scan_fn(
+            skipped=False,
+            reason="partial_scan_completed",
+            scanned=max(int(evaluated_count), int(candidate_count)),
+            signals=0,
+            would_trade=0,
+            blocked=max(0, int(candidate_count)),
+            duration_ms=int(elapsed_ms_fn()),
+            selected_total=0,
+            selected_symbols=[],
+            eligible_total=0,
+            summary=latest_summary,
+            effective_dry_run=bool(effective_dry_run),
+            p468_candidate_truth_published=True,
+            p476_candidate_eval_progress_published=True,
+            p477_terminal_partial_close=True,
+        )
+
+        _p402_stage_checkpoint(
+            "candidate_eval_terminal_partial_close",
+            reason=reason,
+            stage=stage,
+            evaluated_count=int(evaluated_count),
+            candidate_count=int(candidate_count),
+            remaining_sec=round(float(remaining_sec or 0.0), 3),
+            elapsed_sec=round(float(elapsed_sec or 0.0), 3),
+            publish_truth=publish_truth,
+        )
+
+        return {
+            "ok": True,
+            "scanner": {
+                "enabled": SCANNER_ENABLED,
+                "dry_run": SCANNER_DRY_RUN,
+                "allow_live": SCANNER_ALLOW_LIVE,
+                "effective_dry_run": effective_dry_run,
+                "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                "symbols_scanned": max(int(evaluated_count), int(candidate_count)),
+                "signals": 0,
+                "would_trade": 0,
+                "blocked": max(0, int(candidate_count)),
+                "duration_ms": int(elapsed_ms_fn()),
+                "summary": latest_summary,
+                "incremental_scan": dict(latest_summary.get("incremental_scan") or {}),
+                "p476_candidate_eval_progress_published": True,
+                "p477_terminal_partial_close": True,
+            },
+            "reconcile": reconcile_actions,
+            "would_submit": [],
+            "results": list(candidates[:10]),
+        }
 
     candidate_eval_start_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
     candidate_eval_start_remaining = max(
         0.0,
         float(SCAN_RUNTIME_BUDGET_SEC or 1) - candidate_eval_start_elapsed,
     )
+    if (
+        bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
+        and bool(p476_candidate_progress_publish.get("published"))
+        and candidate_eval_start_remaining <= max(float(SWING_SCAN_BUDGET_RESERVE_SEC or 0), 30.0)
+    ):
+        return _p477_terminal_partial_scan_response(
+            "candidate_eval_start_budget_closed_after_progress_publish",
+            "candidate_eval_pre_first_symbol_after_progress",
+            candidate_eval_start_remaining,
+        )
+
     if (
         bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
         and candidate_eval_start_remaining <= float(SWING_SCAN_BUDGET_RESERVE_SEC or 0)
@@ -28257,6 +28375,21 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 p476_progress_publish=p476_fast_skip_publish,
                 elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
             )
+            p477_after_skip_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+            p477_after_skip_remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - p477_after_skip_elapsed)
+            if (
+                bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
+                and bool(p476_candidate_progress_publish.get("published"))
+                and (
+                    p477_after_skip_remaining <= max(float(SWING_SCAN_BUDGET_RESERVE_SEC or 0), 30.0)
+                    or int(p476_candidate_progress_publish.get("last_candidate_count") or 0) >= int(p477_terminal_partial_close.get("batch_size") or 5)
+                )
+            ):
+                return _p477_terminal_partial_scan_response(
+                    "candidate_eval_batch_budget_closed_after_fast_skip",
+                    "candidate_eval_after_fast_skip",
+                    p477_after_skip_remaining,
+                )
             continue
 
         p402_eval_truth["evaluated_symbols"].append(sym)
@@ -28303,6 +28436,21 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 p476_progress_publish=p476_symbol_publish,
                 elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
             )
+            p477_after_symbol_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+            p477_after_symbol_remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - p477_after_symbol_elapsed)
+            if (
+                bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
+                and bool(p476_candidate_progress_publish.get("published"))
+                and (
+                    p477_after_symbol_remaining <= max(float(SWING_SCAN_BUDGET_RESERVE_SEC or 0), 30.0)
+                    or int(p476_candidate_progress_publish.get("last_candidate_count") or 0) >= int(p477_terminal_partial_close.get("batch_size") or 5)
+                )
+            ):
+                return _p477_terminal_partial_scan_response(
+                    "candidate_eval_batch_budget_closed_after_symbol",
+                    "candidate_eval_after_symbol",
+                    p477_after_symbol_remaining,
+                )
         except Exception as e:
             rejection_counts["candidate_eval_exception"] += 1
             candidates.append({
@@ -28326,6 +28474,18 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 p476_progress_publish=p476_exception_publish,
                 elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
             )
+            p477_after_exception_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
+            p477_after_exception_remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - p477_after_exception_elapsed)
+            if (
+                bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
+                and bool(p476_candidate_progress_publish.get("published"))
+                and p477_after_exception_remaining <= max(float(SWING_SCAN_BUDGET_RESERVE_SEC or 0), 30.0)
+            ):
+                return _p477_terminal_partial_scan_response(
+                    "candidate_eval_batch_budget_closed_after_exception",
+                    "candidate_eval_after_exception",
+                    p477_after_exception_remaining,
+                )
 
         post_elapsed = _p398_runtime_budget_elapsed_sec(scan_started)
         post_remaining = max(0.0, float(SCAN_RUNTIME_BUDGET_SEC or 1) - post_elapsed)
@@ -28349,6 +28509,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 budget_sec=int(SCAN_RUNTIME_BUDGET_SEC or 0),
                 reason="candidate_eval_post_symbol_budget_floor",
             )
+            if bool(p476_candidate_progress_publish.get("published")):
+                return _p477_terminal_partial_scan_response(
+                    "candidate_eval_post_symbol_budget_floor_terminal_close",
+                    "candidate_eval_post_symbol",
+                    post_remaining,
+                )
             break
 
     p402_eval_truth["evaluated_count"] = len(p402_eval_truth["evaluated_symbols"])
@@ -28640,6 +28806,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "last_symbols_eval_total": int(p476_candidate_progress_publish.get("last_symbols_eval_total") or 0),
                 "last_candidate_count": int(p476_candidate_progress_publish.get("last_candidate_count") or 0),
             },
+            "p477_terminal_partial_close": dict(p477_terminal_partial_close),
             "p474_regime_to_candidate_fast_publish": {
                 "foreground_fallback": bool(scan_options.get("p474_foreground_fallback")),
                 "fast_publish_pre_eval_applied": bool(p474_fast_publish_summary),
