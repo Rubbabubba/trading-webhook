@@ -2904,7 +2904,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-464-hotfix-persisted-over-budget-scan-sanitizer-effective-scan-consumer-sync"
+PATCH_VERSION = "patch-465-background-thread-start-proof-pre-scan-exception-capture"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26062,7 +26062,13 @@ def _p456_mark_background_scan(**updates) -> dict:
 
         if expected_scan_attempt_id and current_attempt_id and current_attempt_id != str(expected_scan_attempt_id):
             ignored_update = True
-        elif expected_scan_attempt_id and current_terminal and current_exception == "BackgroundScanRuntimeTimeout":
+        elif expected_scan_attempt_id and current_terminal and current_exception in {
+            "BackgroundScanRuntimeTimeout",
+            "BackgroundScanRuntimeBudgetExceeded",
+            "BackgroundThreadStartProofMissing",
+            "BackgroundThreadStartException",
+            "BackgroundPreScanException",
+        }:
             ignored_update = True
 
         if not ignored_update:
@@ -26146,6 +26152,89 @@ def _p462_background_thread_alive() -> bool:
         return bool(thread is not None and thread.is_alive())
     except Exception:
         return False
+
+def _p465_thread_start_proof_timeout_sec() -> int:
+    try:
+        budget = int(SCAN_RUNTIME_BUDGET_SEC or 180)
+    except Exception:
+        budget = 180
+    return max(15, min(45, int(budget // 4)))
+
+
+def _p465_background_thread_start_proof_truth(state: dict | None = None) -> dict:
+    row = dict(state or _p456_background_scan_truth() or {})
+    status = str(row.get("status") or "").strip().lower()
+    stage = str(row.get("stage") or "").strip().lower()
+    active = status in {"accepted", "running"} and not bool(row.get("terminal"))
+    started_age_sec = _p462_iso_age_sec(row.get("started_utc"))
+    timeout_sec = _p465_thread_start_proof_timeout_sec()
+    waiting_for_entry = stage in {"accepted", "thread_starting", "thread_started"}
+    missing_entry_proof = bool(
+        active
+        and waiting_for_entry
+        and started_age_sec is not None
+        and started_age_sec > timeout_sec
+    )
+    return {
+        "active": active,
+        "stage": stage or "unknown",
+        "waiting_for_thread_entry": bool(active and waiting_for_entry),
+        "missing_thread_entry_proof": missing_entry_proof,
+        "started_age_sec": round(started_age_sec, 2) if started_age_sec is not None else None,
+        "timeout_sec": int(timeout_sec),
+        "scan_attempt_id": row.get("scan_attempt_id"),
+    }
+
+
+def _p465_close_stale_thread_start_without_entry(reason: str = "background_thread_start_proof_missing") -> dict:
+    with SWING_SCAN_BACKGROUND_LOCK:
+        current = dict(SWING_SCAN_BACKGROUND_COMPLETION or {})
+        proof_truth = _p465_background_thread_start_proof_truth(current)
+        if not bool(proof_truth.get("missing_thread_entry_proof")):
+            return {"closed": False, "reason": "thread_start_proof_not_stale", "proof_truth": proof_truth}
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        SWING_SCAN_BACKGROUND_COMPLETION.clear()
+        SWING_SCAN_BACKGROUND_COMPLETION.update({
+            **current,
+            "status": "failed",
+            "active": False,
+            "terminal": True,
+            "completed_utc": now_iso,
+            "updated_utc": now_iso,
+            "reason": reason,
+            "error": "background scan thread did not prove entry before timeout",
+            "exception_type": "BackgroundThreadStartProofMissing",
+            "traceback_tail": None,
+            "stage": current.get("stage") or "thread_start_unproven",
+            "stage_details": {
+                **dict(current.get("stage_details") or {}),
+                "thread_start_proof_truth": proof_truth,
+            },
+            "thread_start_proof_truth": proof_truth,
+            "boot_id": SYSTEM_BOOT_ID,
+        })
+        snapshot = dict(SWING_SCAN_BACKGROUND_COMPLETION)
+
+    try:
+        persist_scan_runtime_state(reason=reason)
+    except Exception:
+        pass
+
+    try:
+        _record_scanner_telemetry(
+            "scan_error",
+            "thread_start_failure",
+            details={
+                "reason": reason,
+                "exception_type": "BackgroundThreadStartProofMissing",
+                "thread_start_proof_truth": proof_truth,
+            },
+        )
+    except Exception:
+        pass
+
+    return {"closed": True, "reason": reason, "proof_truth": proof_truth, "state": snapshot}
 
 def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: str, source_meta: dict) -> JSONResponse:
     age_sec = _p462_iso_age_sec(existing.get("started_utc"))
@@ -26334,6 +26423,7 @@ def _p456_start_swing_scan_background(
     body_snapshot = dict(body or {})
     source_meta_snapshot = dict(source_meta or {})
 
+    thread_start_close = _p465_close_stale_thread_start_without_entry("background_thread_start_proof_missing_before_retry")
     timeout_close = _p462h_close_timed_out_background_scan("background_scan_runtime_timeout_before_retry")
     existing_bg = _p456_background_scan_truth()
     existing_status = str(existing_bg.get("status") or "").strip().lower()
@@ -26405,6 +26495,7 @@ def _p456_start_swing_scan_background(
         effective_dry_run_reason="background_pending" if effective_dry_run is None else "precomputed",
         dry_run_truth=None,
         p461_retry_unlock=p461_retry_unlock,
+        p465_thread_start_close=thread_start_close,
         p462_timeout_close=timeout_close,
     )
 
@@ -26433,7 +26524,65 @@ def _p456_start_swing_scan_background(
             return _p456_mark_background_scan(**updates)
 
         try:
-            dry_run_truth = _p456_entry_dry_run_truth("worker_scan", include_release_gate=True)
+            _bg_mark(
+                status="running",
+                active=True,
+                terminal=False,
+                stage="thread_entered",
+                stage_details={"scan_attempt_id": scan_attempt_id},
+            )
+            try:
+                _record_scanner_telemetry(
+                    "scan_background_thread_entered",
+                    "running",
+                    details={
+                        "scan_attempt_id": scan_attempt_id,
+                        "scan_reason": requested_reason or "scheduled",
+                        **source_meta_snapshot,
+                    },
+                )
+            except Exception:
+                pass
+
+            _bg_mark(status="running", active=True, terminal=False, stage="dry_run_truth_start", stage_details={})
+            try:
+                dry_run_truth = _p456_entry_dry_run_truth("worker_scan", include_release_gate=True)
+            except Exception as e:
+                err = str(e) or repr(e)
+                exc_type = type(e).__name__
+                duration_ms = _bg_elapsed_ms()
+                trace_tail = traceback.format_exc().splitlines()[-12:]
+                _bg_mark(
+                    status="failed",
+                    active=False,
+                    terminal=True,
+                    completed_utc=datetime.now(timezone.utc).isoformat(),
+                    duration_ms=duration_ms,
+                    error=err,
+                    exception_type="BackgroundPreScanException",
+                    pre_scan_exception_type=exc_type,
+                    traceback_tail=trace_tail,
+                    reason="pre_scan_dry_run_truth_exception",
+                    stage="dry_run_truth_exception",
+                    stage_details={"exception_type": exc_type},
+                )
+                try:
+                    _record_scanner_telemetry(
+                        "scan_error",
+                        "pre_scan_exception",
+                        details={
+                            "error": err,
+                            "exception_type": exc_type,
+                            "background_exception_type": "BackgroundPreScanException",
+                            "duration_ms": duration_ms,
+                            "scan_reason": requested_reason or "scheduled",
+                            **source_meta_snapshot,
+                        },
+                    )
+                except Exception:
+                    pass
+                return
+
             bg_effective_dry_run = bool(dry_run_truth.get("effective_dry_run"))
 
             _bg_mark(
@@ -26612,6 +26761,8 @@ def _p456_start_swing_scan_background(
             trace_tail = traceback.format_exc().splitlines()[-12:]
             _bg_mark(
                 status="failed",
+                active=False,
+                terminal=True,
                 completed_utc=datetime.now(timezone.utc).isoformat(),
                 duration_ms=duration_ms,
                 error=err,
@@ -26674,12 +26825,48 @@ def _p456_start_swing_scan_background(
         daemon=True,
     )
     globals()["SWING_SCAN_BACKGROUND_THREAD"] = thread
-    thread.start()
     _p456_mark_background_scan(
         status="running",
-        stage="thread_started",
-        stage_details={"scan_attempt_id": scan_attempt_id},
+        active=True,
+        terminal=False,
+        stage="thread_starting",
+        stage_details={"scan_attempt_id": scan_attempt_id, "thread_name": thread.name},
+        expected_scan_attempt_id=scan_attempt_id,
     )
+    try:
+        thread.start()
+    except Exception as e:
+        err = str(e) or repr(e)
+        trace_tail = traceback.format_exc().splitlines()[-12:]
+        _p456_mark_background_scan(
+            status="failed",
+            active=False,
+            terminal=True,
+            completed_utc=datetime.now(timezone.utc).isoformat(),
+            duration_ms=0,
+            error=err,
+            exception_type="BackgroundThreadStartException",
+            thread_start_exception_type=type(e).__name__,
+            traceback_tail=trace_tail,
+            reason="background_thread_start_exception",
+            stage="thread_start_exception",
+            stage_details={"scan_attempt_id": scan_attempt_id, "thread_name": thread.name},
+            expected_scan_attempt_id=scan_attempt_id,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "accepted": False,
+                "fast_response": True,
+                "background_completion": False,
+                "reason": "background_thread_start_exception",
+                "error": err,
+                "exception_type": "BackgroundThreadStartException",
+                "scan_attempt_id": scan_attempt_id,
+                "background_truth": _p456_background_scan_truth(),
+            },
+        )
 
     return JSONResponse(
         status_code=202,

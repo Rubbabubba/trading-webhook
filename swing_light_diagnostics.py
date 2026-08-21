@@ -273,7 +273,14 @@ def scanner_light_snapshot(
     background_age_sec = background_started_age_sec
     background_over_budget = bool(background_scan_active and background_started_age_sec is not None and background_started_age_sec > background_budget_sec)
     background_timed_out = bool(background_scan_active and background_started_age_sec is not None and background_started_age_sec > background_timeout_sec)
-    background_heartbeat_stale = bool(background_scan_active and background_heartbeat_age_sec is not None and background_heartbeat_age_sec > 90)
+    background_stage = str(scan_background_completion_truth.get("stage") or "").strip().lower()
+    background_thread_start_proof_timeout_sec = max(15, min(45, int(background_budget_sec // 4)))
+    background_thread_entry_missing = bool(
+        background_scan_active
+        and background_stage in {"accepted", "thread_starting", "thread_started"}
+        and background_started_age_sec is not None
+        and background_started_age_sec > background_thread_start_proof_timeout_sec
+    )
     background_restart_lost = bool(
         str(scan_background_completion_truth.get("exception_type") or "").strip() == "BackgroundScanLostAfterRestart"
         or str(scan_background_completion_truth.get("reason") or "").strip().lower() == "background_scan_lost_after_restart"
@@ -298,7 +305,9 @@ def scanner_light_snapshot(
             recovered_warning_codes.append("background_scan_lost_after_restart_aged")
 
     scanner_status = (
-        "background_scan_runtime_budget_exceeded"
+        "background_scan_thread_start_unproven"
+        if background_thread_entry_missing
+        else "background_scan_runtime_budget_exceeded"
         if background_completed_over_budget
         else "background_scan_timeout"
         if background_timed_out
@@ -319,6 +328,7 @@ def scanner_light_snapshot(
         scanner_status in {"healthy", "scan_running_within_grace", "background_scan_running"}
         and not background_over_budget
         and not background_timed_out
+        and not background_thread_entry_missing
         and (background_scan_active or not post_open_scan_missing)
         and (background_scan_active or not active_warning_codes)
     )
@@ -363,6 +373,8 @@ def scanner_light_snapshot(
             "started_age_sec": round(background_started_age_sec, 2) if background_started_age_sec is not None else None,
             "heartbeat_age_sec": round(background_heartbeat_age_sec, 2) if background_heartbeat_age_sec is not None else None,
             "heartbeat_stale": bool(background_heartbeat_stale),
+            "thread_entry_missing": bool(background_thread_entry_missing),
+            "thread_start_proof_timeout_sec": int(background_thread_start_proof_timeout_sec),
             "budget_sec": int(background_budget_sec),
             "timeout_sec": int(background_timeout_sec),
             "over_budget": bool(background_over_budget),
@@ -406,6 +418,7 @@ def scanner_light_snapshot(
             "background_scan_timed_out": bool(background_timed_out),
             "background_completed_over_budget_sanitized": bool(background_completed_over_budget),
             "background_scan_heartbeat_stale": bool(background_heartbeat_stale),
+            "background_thread_entry_missing": bool(background_thread_entry_missing),
             "background_scan_lost_after_restart_aged": bool(scanner_failure_root_cause_historical),
         },
         "latest_scan": {
