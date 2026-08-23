@@ -114,6 +114,7 @@ from swing_candidate_eval import (
     merge_eval_output as swing_candidate_eval_merge_output,
     merge_eval_exception as swing_candidate_eval_merge_exception,
     result_merge_summary as swing_candidate_eval_result_merge_summary,
+    shutdown_executor as swing_candidate_eval_shutdown_executor,
 )
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -2943,7 +2944,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-489-candidate-eval-loop-result-merge-helper-extraction"
+PATCH_VERSION = "patch-490-candidate-eval-executor-shutdown-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57749,6 +57750,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         _stage_start()
         scan_runtime_budget_state = swing_candidate_eval_initial_budget_state()
         scan_eval_merge_state = {"results": [], "signals": [], "blocked": 0}
+        scan_eval_shutdown_truth = {}
         future_to_symbol = {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
         try:
@@ -57801,10 +57803,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                             error=str(exc),
                         )
         finally:
-            try:
-                ex.shutdown(wait=False, cancel_futures=True)
-            except TypeError:
-                ex.shutdown(wait=False)
+            scan_eval_shutdown_truth = swing_candidate_eval_shutdown_executor(ex)
         _stage_end("eval_loop")            
 
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
@@ -58009,6 +58008,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "p489_candidate_eval_result_merge_helper": scan_eval_merge_summary.get(
                 "p489_candidate_eval_result_merge_helper"
             ),
+            "p490_candidate_eval_executor_shutdown_helper": dict(scan_eval_shutdown_truth),
             "fast_response_enabled": bool(fast_response),
         }
 

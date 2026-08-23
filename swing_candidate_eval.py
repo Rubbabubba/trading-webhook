@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-489-candidate-eval-loop-result-merge-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-490-candidate-eval-executor-shutdown-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -159,6 +159,29 @@ def result_merge_summary(state: dict | None) -> dict:
             "submits_orders": False,
         },
     }
+
+
+def shutdown_executor(executor: Any) -> dict:
+    truth = {
+        "ok": True,
+        "used_cancel_futures": False,
+        "fallback_used": False,
+        "error": None,
+        "module": "swing_candidate_eval",
+        "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+        "broker_calls": False,
+        "submits_orders": False,
+    }
+    try:
+        executor.shutdown(wait=False, cancel_futures=True)
+        truth["used_cancel_futures"] = True
+    except TypeError:
+        truth["fallback_used"] = True
+        executor.shutdown(wait=False)
+    except Exception as exc:
+        truth["ok"] = False
+        truth["error"] = str(exc)
+    return truth
 
 
 def build_progress_summary(
@@ -368,8 +391,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_exception_row_shape",
             "candidate_eval_loop_budget_state_shape",
             "candidate_eval_loop_result_merge_shape",
+            "candidate_eval_executor_shutdown_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_executor_shutdown_helpers",
+        "next_extraction_target": "candidate_eval_loop_pending_future_cancel_helpers",
     }
 
 
