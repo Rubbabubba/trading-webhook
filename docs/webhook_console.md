@@ -23,6 +23,10 @@ The launcher uses the project-local `.venv`, so `uvicorn` does not need to be in
 
 Every call records its timestamp, label, method, final URL, status, elapsed time, request/response headers, request/response body, content type, byte count, truncation state, and transport error. Captures are stored in `webhook_console.sqlite3` and can be searched or exported from the UI.
 
+Use **Clear history** to start a fresh capture set. With an empty search it deletes all history; with a search active it deletes only matching captures. The console always asks for confirmation.
+
+The **Query parameters** field accepts values such as `limit=25` or `limit=25&symbol=SPY`, without a leading `?`. The sequence runner accepts one full URL or endpoint path per line, runs them top-to-bottom, and stores every response in the same capture history.
+
 Header and body fields whose keys resemble tokens, secrets, passwords, signatures, authorization, or API keys are redacted before storage. Responses are capped at 2 MB by default. Override the database or cap with `WEBHOOK_CONSOLE_DB` and `WEBHOOK_CONSOLE_MAX_RESPONSE_BYTES`.
 
 ## Console API
@@ -32,6 +36,8 @@ Header and body fields whose keys resemble tokens, secrets, passwords, signature
 - `POST /api/batch` — send up to 100 requests sequentially
 - `GET /api/captures` — search capture summaries
 - `GET /api/captures/{id}` — retrieve a full capture
+- `DELETE /api/captures` — clear all captures, or matching captures with `?q=...`
+- `DELETE /api/captures/{id}` — delete one capture
 - `GET /api/export` — download all matching captures as JSON
 
 The batch API deliberately requires explicit request specifications so mutating trading endpoints are never called merely by discovering them.

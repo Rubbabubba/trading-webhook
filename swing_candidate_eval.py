@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-487-candidate-eval-result-row-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-488-candidate-eval-loop-budget-state-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -67,6 +67,49 @@ def initial_terminal_partial_close(*, batch_size: int = 5) -> dict:
         "batch_size": int(batch_size or 5),
         "module": "swing_candidate_eval",
         "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+    }
+
+
+def initial_budget_state() -> dict:
+    return {
+        "enforced": False,
+        "stopped_symbols": [],
+        "module": "swing_candidate_eval",
+        "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+    }
+
+
+def mark_budget_stopped_symbol(state: dict | None, symbol: str) -> dict:
+    out = dict(state or initial_budget_state())
+    symbol_clean = str(symbol or "").strip().upper()
+    if symbol_clean:
+        out["enforced"] = True
+        stopped = list(out.get("stopped_symbols") or [])
+        stopped.append(symbol_clean)
+        out["stopped_symbols"] = _dedupe_keep_order(stopped)
+    return out
+
+
+def mark_budget_stopped_symbols(state: dict | None, symbols: list[str]) -> dict:
+    out = dict(state or initial_budget_state())
+    for symbol in list(symbols or []):
+        out = mark_budget_stopped_symbol(out, symbol)
+    return out
+
+
+def budget_state_summary(state: dict | None, *, max_symbols: int = 25) -> dict:
+    row = dict(state or initial_budget_state())
+    stopped_symbols = _dedupe_keep_order(list(row.get("stopped_symbols") or []))
+    return {
+        "runtime_budget_enforced": bool(row.get("enforced")),
+        "runtime_budget_stopped_count": len(stopped_symbols),
+        "runtime_budget_stopped_symbols": stopped_symbols[: max(0, int(max_symbols or 25))],
+        "p488_candidate_eval_budget_state_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
     }
 
 
@@ -275,8 +318,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_progress_summary_shape",
             "candidate_eval_terminal_partial_summary_shape",
             "candidate_eval_exception_row_shape",
+            "candidate_eval_loop_budget_state_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_budget_state_helpers",
+        "next_extraction_target": "candidate_eval_loop_result_merge_helpers",
     }
 
 

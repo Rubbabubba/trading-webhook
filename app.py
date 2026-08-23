@@ -107,6 +107,10 @@ from swing_candidate_eval import (
     build_terminal_partial_summary as swing_candidate_eval_build_terminal_partial_summary,
     candidate_eval_module_status as swing_candidate_eval_module_status,
     attach_candidate_eval_module_status as swing_candidate_eval_attach_status,
+    initial_budget_state as swing_candidate_eval_initial_budget_state,
+    mark_budget_stopped_symbol as swing_candidate_eval_mark_budget_stopped_symbol,
+    mark_budget_stopped_symbols as swing_candidate_eval_mark_budget_stopped_symbols,
+    budget_state_summary as swing_candidate_eval_budget_state_summary,
 )
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -2936,7 +2940,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-487-candidate-eval-result-row-helper-extraction"
+PATCH_VERSION = "patch-488-candidate-eval-loop-budget-state-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57740,15 +57744,16 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
         _stage_start()
-        scan_runtime_budget_enforced = False
-        scan_runtime_budget_stopped_symbols = []
+        scan_runtime_budget_state = swing_candidate_eval_initial_budget_state()
         future_to_symbol = {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
         try:
             for sym in syms:
                 if _p398_scan_runtime_over_budget(scan_started):
-                    scan_runtime_budget_enforced = True
-                    scan_runtime_budget_stopped_symbols.append(sym)
+                    scan_runtime_budget_state = swing_candidate_eval_mark_budget_stopped_symbol(
+                        scan_runtime_budget_state,
+                        sym,
+                    )
                     continue
                 fut = ex.submit(_eval_one, sym)
                 future_to_symbol[fut] = sym
@@ -57760,12 +57765,16 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     float(SCAN_RUNTIME_BUDGET_SEC or 1) - _p398_runtime_budget_elapsed_sec(scan_started),
                 )
                 if remaining_sec <= 0:
-                    scan_runtime_budget_enforced = True
+                    pending_symbols_for_budget = []
                     for fut in list(pending):
                         sym = future_to_symbol.get(fut)
                         if sym:
-                            scan_runtime_budget_stopped_symbols.append(sym)
+                            pending_symbols_for_budget.append(sym)
                         fut.cancel()
+                    scan_runtime_budget_state = swing_candidate_eval_mark_budget_stopped_symbols(
+                        scan_runtime_budget_state,
+                        pending_symbols_for_budget,
+                    )
                     break
 
                 done, pending = wait(pending, timeout=min(remaining_sec, 2.0), return_when=FIRST_COMPLETED)
@@ -57799,6 +57808,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         _stage_end("eval_loop")            
 
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
+        scan_runtime_budget_summary = swing_candidate_eval_budget_state_summary(
+            scan_runtime_budget_state
+        )
 
         # ---- Scan-level summary (top no-signal reasons, action counts) ----
         action_counts = Counter()
@@ -57987,9 +57999,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             ],
             "timing_ms": dict(timing_ms),
             "runtime_budget": runtime_budget,
-            "runtime_budget_enforced": bool(scan_runtime_budget_enforced),
-            "runtime_budget_stopped_count": len(_dedupe_keep_order(scan_runtime_budget_stopped_symbols)),
-            "runtime_budget_stopped_symbols": _dedupe_keep_order(scan_runtime_budget_stopped_symbols)[:25],
+            **scan_runtime_budget_summary,
             "fast_response_enabled": bool(fast_response),
         }
 
