@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-504-candidate-eval-loop-state-update-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-505-candidate-eval-compact-runner-stage-6"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -723,6 +723,87 @@ def wait_timeout_summary(state: dict | None) -> dict:
     }
 
 
+def build_eval_loop_summary(
+    *,
+    runtime_budget_state: dict | None,
+    merge_state: dict | None,
+    shutdown_truth: dict | None,
+    pending_cancel_truth: dict | None,
+    future_submit_truth: dict | None,
+    pending_wait_truth: dict | None,
+    future_result_truth: dict | None,
+    exception_log_truth: dict | None,
+    result_branch_truth: dict | None,
+    completed_futures_truth: dict | None,
+    budget_wait_contract_truth: dict | None,
+    wait_process_step_truth: dict | None,
+    loop_iteration_truth: dict | None,
+    loop_iteration_state_truth: dict | None,
+    wait_timeout_state: dict | None,
+    remaining_budget_truth: dict | None,
+    loop_state: dict | None,
+) -> dict:
+    budget_summary = budget_state_summary(runtime_budget_state)
+    merge_summary = result_merge_summary(merge_state)
+    wait_summary = wait_timeout_summary(wait_timeout_state)
+    summary = {
+        **budget_summary,
+        "p489_candidate_eval_result_merge_helper": merge_summary.get(
+            "p489_candidate_eval_result_merge_helper"
+        ),
+        "p490_candidate_eval_executor_shutdown_helper": dict(shutdown_truth or {}),
+        "p491_candidate_eval_pending_future_cancel_helper": dict(pending_cancel_truth or {}),
+        **dict(future_submit_truth or {}),
+        **dict(pending_wait_truth or {}),
+        **dict(future_result_truth or {}),
+        **dict(exception_log_truth or {}),
+        **dict(result_branch_truth or {}),
+        **dict(completed_futures_truth or {}),
+        **dict(budget_wait_contract_truth or {}),
+        **dict(wait_process_step_truth or {}),
+        **dict(loop_iteration_truth or {}),
+        **dict(loop_iteration_state_truth or {}),
+        "p499_candidate_eval_loop_state_helper": dict(
+            dict(loop_state or {}).get("p499_candidate_eval_loop_state_helper") or {}
+        ),
+        **wait_summary,
+        **dict(remaining_budget_truth or {}),
+        "p505_candidate_eval_loop_summary_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+            "summary_fields_owned": [
+                "budget",
+                "merge",
+                "shutdown",
+                "pending_cancel",
+                "future_submit",
+                "pending_wait",
+                "future_result",
+                "exception_log",
+                "result_branch",
+                "completed_futures",
+                "budget_wait_contract",
+                "wait_process_step",
+                "loop_iteration",
+                "loop_state_update",
+                "wait_timeout",
+                "remaining_budget",
+            ],
+        },
+    }
+    return {
+        "results": list(merge_summary.get("results") or []),
+        "signals": list(merge_summary.get("signals") or []),
+        "blocked": int(merge_summary.get("blocked") or 0),
+        "summary": summary,
+        "runtime_budget_summary": budget_summary,
+        "merge_summary": merge_summary,
+        "wait_timeout_summary": wait_summary,
+    }
+
+
 def build_progress_summary(
     *,
     strategy_name: str,
@@ -945,8 +1026,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_wait_process_step_shape",
             "candidate_eval_loop_iteration_shape",
             "candidate_eval_loop_state_update_shape",
+            "candidate_eval_loop_summary_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_compact_runner_stage_6",
+        "next_extraction_target": "candidate_eval_runner_module_boundary_prep",
     }
 
 
