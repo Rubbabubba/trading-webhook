@@ -116,6 +116,7 @@ from swing_candidate_eval import (
     submit_eval_future as swing_candidate_eval_submit_future,
     future_submit_summary as swing_candidate_eval_future_submit_summary,
     pending_loop_iteration as swing_candidate_eval_pending_loop_iteration,
+    loop_iteration_state_update as swing_candidate_eval_loop_iteration_state_update,
     wait_timeout_summary as swing_candidate_eval_wait_timeout_summary,
 )
 from swing_selection_contract import (
@@ -2946,7 +2947,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-503-candidate-eval-loop-iteration-helper-extraction"
+PATCH_VERSION = "patch-504-candidate-eval-loop-state-update-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57765,6 +57766,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_budget_wait_contract_truth = scan_eval_loop_state.get("budget_wait_contract_truth") or {}
         scan_eval_wait_process_step_truth = scan_eval_loop_state.get("wait_process_step_truth") or {}
         scan_eval_loop_iteration_truth = scan_eval_loop_state.get("loop_iteration_truth") or {}
+        scan_eval_loop_iteration_state_truth = scan_eval_loop_state.get("loop_iteration_state_truth") or {}
         scan_eval_remaining_budget_truth = scan_eval_loop_state.get("remaining_budget_truth") or {}
         future_to_symbol = scan_eval_loop_state.get("future_to_symbol") or {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
@@ -57790,35 +57792,42 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     merge_state=scan_eval_merge_state,
                     wait_timeout_state_row=scan_eval_wait_timeout_state,
                 )
-                pending = loop_iteration.get("pending") or set()
-                scan_eval_merge_state = loop_iteration.get("merge_state") or scan_eval_merge_state
-                scan_eval_wait_timeout_state = loop_iteration.get("wait_timeout_state") or scan_eval_wait_timeout_state
-                scan_eval_pending_cancel_truth = loop_iteration.get("pending_cancel_truth") or scan_eval_pending_cancel_truth
-                scan_eval_remaining_budget_truth = loop_iteration.get("remaining_budget_truth") or {}
-                scan_eval_budget_wait_contract_truth = loop_iteration.get("budget_wait_contract_truth") or {}
-                scan_eval_pending_wait_truth = loop_iteration.get("pending_wait_truth") or {}
-                scan_eval_future_result_truth = loop_iteration.get("future_result_truth") or {}
-                scan_eval_exception_log_truth = loop_iteration.get("exception_log_truth") or {}
-                scan_eval_result_branch_truth = loop_iteration.get("result_branch_truth") or {}
-                scan_eval_completed_futures_truth = loop_iteration.get("completed_futures_truth") or {}
-                scan_eval_wait_process_step_truth = loop_iteration.get("wait_process_step_truth") or {}
-                scan_eval_loop_iteration_truth = {
-                    "p503_candidate_eval_loop_iteration_helper": dict(
-                        loop_iteration.get("p503_candidate_eval_loop_iteration_helper") or {}
+                iteration_state_update = swing_candidate_eval_loop_iteration_state_update(
+                    loop_iteration,
+                    current_merge_state=scan_eval_merge_state,
+                    current_wait_timeout_state=scan_eval_wait_timeout_state,
+                    current_pending_cancel_truth=scan_eval_pending_cancel_truth,
+                )
+                pending = iteration_state_update.get("pending") or set()
+                scan_eval_merge_state = iteration_state_update.get("merge_state") or scan_eval_merge_state
+                scan_eval_wait_timeout_state = iteration_state_update.get("wait_timeout_state") or scan_eval_wait_timeout_state
+                scan_eval_pending_cancel_truth = iteration_state_update.get("pending_cancel_truth") or scan_eval_pending_cancel_truth
+                scan_eval_remaining_budget_truth = iteration_state_update.get("remaining_budget_truth") or {}
+                scan_eval_budget_wait_contract_truth = iteration_state_update.get("budget_wait_contract_truth") or {}
+                scan_eval_pending_wait_truth = iteration_state_update.get("pending_wait_truth") or {}
+                scan_eval_future_result_truth = iteration_state_update.get("future_result_truth") or {}
+                scan_eval_exception_log_truth = iteration_state_update.get("exception_log_truth") or {}
+                scan_eval_result_branch_truth = iteration_state_update.get("result_branch_truth") or {}
+                scan_eval_completed_futures_truth = iteration_state_update.get("completed_futures_truth") or {}
+                scan_eval_wait_process_step_truth = iteration_state_update.get("wait_process_step_truth") or {}
+                scan_eval_loop_iteration_truth = iteration_state_update.get("loop_iteration_truth") or {}
+                scan_eval_loop_iteration_state_truth = {
+                    "p504_candidate_eval_loop_state_update_helper": dict(
+                        iteration_state_update.get("p504_candidate_eval_loop_state_update_helper") or {}
                     )
                 }
 
-                if loop_iteration.get("break_loop"):
+                if iteration_state_update.get("break_loop"):
                     scan_runtime_budget_state = swing_candidate_eval_mark_budget_stopped_symbols(
                         scan_runtime_budget_state,
-                        list(scan_eval_pending_cancel_truth.get("pending_symbols") or []),
+                        list(iteration_state_update.get("budget_stopped_symbols") or []),
                     )
                     break
 
-                if loop_iteration.get("continue_loop"):
+                if iteration_state_update.get("continue_loop"):
                     continue
 
-                for exception_log in list(loop_iteration.get("exception_logs") or []):
+                for exception_log in list(iteration_state_update.get("exception_logs") or []):
                     exception_log = dict(exception_log or {})
                     if exception_log:
                         scan_eval_exception_log_truth = {
@@ -58059,6 +58068,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             **scan_eval_budget_wait_contract_truth,
             **scan_eval_wait_process_step_truth,
             **scan_eval_loop_iteration_truth,
+            **scan_eval_loop_iteration_state_truth,
             "p499_candidate_eval_loop_state_helper": dict(
                 scan_eval_loop_state.get("p499_candidate_eval_loop_state_helper") or {}
             ),
