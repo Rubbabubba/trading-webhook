@@ -111,8 +111,6 @@ from swing_candidate_eval import (
     mark_budget_stopped_symbol as swing_candidate_eval_mark_budget_stopped_symbol,
     mark_budget_stopped_symbols as swing_candidate_eval_mark_budget_stopped_symbols,
     budget_state_summary as swing_candidate_eval_budget_state_summary,
-    merge_eval_output as swing_candidate_eval_merge_output,
-    merge_eval_exception as swing_candidate_eval_merge_exception,
     result_merge_summary as swing_candidate_eval_result_merge_summary,
     shutdown_executor as swing_candidate_eval_shutdown_executor,
     cancel_pending_futures as swing_candidate_eval_cancel_pending_futures,
@@ -122,7 +120,7 @@ from swing_candidate_eval import (
     capped_wait_timeout_sec as swing_candidate_eval_capped_wait_timeout_sec,
     wait_for_completed_future as swing_candidate_eval_wait_for_completed_future,
     resolve_completed_future as swing_candidate_eval_resolve_completed_future,
-    future_exception_log_record as swing_candidate_eval_future_exception_log_record,
+    apply_future_result_to_merge_state as swing_candidate_eval_apply_future_result_to_merge_state,
     remaining_budget_sec as swing_candidate_eval_remaining_budget_sec,
     remaining_budget_summary as swing_candidate_eval_remaining_budget_summary,
     record_wait_result as swing_candidate_eval_record_wait_result,
@@ -2956,7 +2954,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-497-candidate-eval-exception-log-contract-cleanup"
+PATCH_VERSION = "patch-498-candidate-eval-result-branch-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57769,6 +57767,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_pending_wait_truth = {}
         scan_eval_future_result_truth = {}
         scan_eval_exception_log_truth = {}
+        scan_eval_result_branch_truth = {}
         scan_eval_remaining_budget_truth = {}
         future_to_symbol = {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
@@ -57830,13 +57829,18 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                             future_result.get("p496_candidate_eval_future_result_helper") or {}
                         )
                     }
-                    if future_result.get("ok"):
-                        scan_eval_merge_state = swing_candidate_eval_merge_output(
-                            scan_eval_merge_state,
-                            future_result.get("output"),
+                    branch_result = swing_candidate_eval_apply_future_result_to_merge_state(
+                        scan_eval_merge_state,
+                        future_result,
+                    )
+                    scan_eval_merge_state = branch_result.get("merge_state") or scan_eval_merge_state
+                    scan_eval_result_branch_truth = {
+                        "p498_candidate_eval_result_branch_helper": dict(
+                            branch_result.get("p498_candidate_eval_result_branch_helper") or {}
                         )
-                    else:
-                        exception_log = swing_candidate_eval_future_exception_log_record(future_result)
+                    }
+                    exception_log = dict(branch_result.get("exception_log") or {})
+                    if exception_log:
                         scan_eval_exception_log_truth = {
                             "p497_candidate_eval_exception_log_contract": dict(
                                 exception_log.get("p497_candidate_eval_exception_log_contract") or {}
@@ -57855,11 +57859,6 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                                 exception_log.get("symbol"),
                                 exception_log.get("error"),
                             )
-                        scan_eval_merge_state = swing_candidate_eval_merge_exception(
-                            scan_eval_merge_state,
-                            symbol=exception_log.get("symbol"),
-                            error=str(exception_log.get("error") or ""),
-                        )
         finally:
             scan_eval_shutdown_truth = swing_candidate_eval_shutdown_executor(ex)
         _stage_end("eval_loop")            
@@ -58075,6 +58074,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             **scan_eval_pending_wait_truth,
             **scan_eval_future_result_truth,
             **scan_eval_exception_log_truth,
+            **scan_eval_result_branch_truth,
             **scan_eval_wait_timeout_summary,
             **scan_eval_remaining_budget_truth,
             "fast_response_enabled": bool(fast_response),

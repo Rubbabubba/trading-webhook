@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-497-candidate-eval-exception-log-contract-cleanup"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-498-candidate-eval-result-branch-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -332,6 +332,33 @@ def future_exception_log_record(future_result: dict | None) -> dict:
     }
 
 
+def apply_future_result_to_merge_state(merge_state: dict | None, future_result: dict | None) -> dict:
+    row = dict(future_result or {})
+    if row.get("ok"):
+        next_merge_state = merge_eval_output(merge_state, row.get("output"))
+        exception_log = {}
+    else:
+        exception_log = future_exception_log_record(row)
+        next_merge_state = merge_eval_exception(
+            merge_state,
+            symbol=exception_log.get("symbol"),
+            error=str(exception_log.get("error") or ""),
+        )
+    return {
+        "merge_state": next_merge_state,
+        "exception_log": exception_log,
+        "p498_candidate_eval_result_branch_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "future_ok": bool(row.get("ok")),
+            "symbol": str(row.get("symbol") or "").strip().upper(),
+            "exception_log_required": bool(exception_log),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def remaining_budget_sec(*, budget_sec: float, elapsed_sec: float) -> float:
     return max(0.0, float(budget_sec or 0.0) - float(elapsed_sec or 0.0))
 
@@ -587,8 +614,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_pending_wait_shape",
             "candidate_eval_future_result_shape",
             "candidate_eval_exception_log_contract_shape",
+            "candidate_eval_result_branch_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_result_branch_cleanup",
+        "next_extraction_target": "candidate_eval_loop_compact_runner_prep",
     }
 
 
