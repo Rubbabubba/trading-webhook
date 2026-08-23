@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-500-candidate-eval-completed-futures-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-501-candidate-eval-budget-wait-contract-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -93,6 +93,7 @@ def initial_loop_state() -> dict:
         "exception_log_truth": {},
         "result_branch_truth": {},
         "completed_futures_truth": {},
+        "budget_wait_contract_truth": {},
         "remaining_budget_truth": {},
         "future_to_symbol": {},
         "p499_candidate_eval_loop_state_helper": {
@@ -454,6 +455,45 @@ def remaining_budget_summary(*, budget_sec: float, elapsed_sec: float, remaining
     }
 
 
+def budget_wait_contract(
+    *,
+    budget_sec: float,
+    elapsed_sec: float,
+    pending: Any,
+    future_to_symbol: dict | None,
+    max_wait_sec: float = 2.0,
+) -> dict:
+    remaining_sec = remaining_budget_sec(
+        budget_sec=budget_sec,
+        elapsed_sec=elapsed_sec,
+    )
+    pending_cancel_truth = {}
+    if remaining_sec <= 0:
+        pending_cancel_truth = cancel_pending_futures(pending, future_to_symbol)
+    return {
+        "remaining_sec": remaining_sec,
+        "wait_timeout_sec": capped_wait_timeout_sec(remaining_sec, max_wait_sec=max_wait_sec),
+        "cancel_for_budget": remaining_sec <= 0,
+        "pending_cancel_truth": pending_cancel_truth,
+        "remaining_budget_truth": remaining_budget_summary(
+            budget_sec=budget_sec,
+            elapsed_sec=elapsed_sec,
+            remaining_sec=remaining_sec,
+        ),
+        "p501_candidate_eval_budget_wait_contract": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "budget_sec": round(float(budget_sec or 0.0), 4),
+            "elapsed_sec": round(float(elapsed_sec or 0.0), 4),
+            "remaining_sec": round(float(remaining_sec or 0.0), 4),
+            "cancel_for_budget": remaining_sec <= 0,
+            "pending_count": len(list(pending or [])),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def record_wait_result(state: dict | None, *, wait_timeout_sec: float, completed_count: int) -> dict:
     out = dict(state or wait_timeout_state())
     out["last_wait_timeout_sec"] = round(float(wait_timeout_sec or 0.0), 4)
@@ -694,8 +734,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_result_branch_shape",
             "candidate_eval_loop_state_shape",
             "candidate_eval_completed_futures_shape",
+            "candidate_eval_budget_wait_contract_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_budget_wait_compact_runner",
+        "next_extraction_target": "candidate_eval_loop_compact_runner_stage_3",
     }
 
 

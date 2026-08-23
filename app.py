@@ -113,14 +113,11 @@ from swing_candidate_eval import (
     budget_state_summary as swing_candidate_eval_budget_state_summary,
     result_merge_summary as swing_candidate_eval_result_merge_summary,
     shutdown_executor as swing_candidate_eval_shutdown_executor,
-    cancel_pending_futures as swing_candidate_eval_cancel_pending_futures,
     submit_eval_future as swing_candidate_eval_submit_future,
     future_submit_summary as swing_candidate_eval_future_submit_summary,
-    capped_wait_timeout_sec as swing_candidate_eval_capped_wait_timeout_sec,
+    budget_wait_contract as swing_candidate_eval_budget_wait_contract,
     wait_for_completed_future as swing_candidate_eval_wait_for_completed_future,
     process_completed_futures as swing_candidate_eval_process_completed_futures,
-    remaining_budget_sec as swing_candidate_eval_remaining_budget_sec,
-    remaining_budget_summary as swing_candidate_eval_remaining_budget_summary,
     record_wait_result as swing_candidate_eval_record_wait_result,
     wait_timeout_summary as swing_candidate_eval_wait_timeout_summary,
 )
@@ -2952,7 +2949,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-500-candidate-eval-completed-futures-helper-extraction"
+PATCH_VERSION = "patch-501-candidate-eval-budget-wait-contract-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57768,6 +57765,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_exception_log_truth = scan_eval_loop_state.get("exception_log_truth") or {}
         scan_eval_result_branch_truth = scan_eval_loop_state.get("result_branch_truth") or {}
         scan_eval_completed_futures_truth = scan_eval_loop_state.get("completed_futures_truth") or {}
+        scan_eval_budget_wait_contract_truth = scan_eval_loop_state.get("budget_wait_contract_truth") or {}
         scan_eval_remaining_budget_truth = scan_eval_loop_state.get("remaining_budget_truth") or {}
         future_to_symbol = scan_eval_loop_state.get("future_to_symbol") or {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
@@ -57783,22 +57781,25 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             scan_eval_future_submit_truth = swing_candidate_eval_future_submit_summary(future_to_symbol)
 
             pending = set(future_to_symbol.keys())
+            runtime_budget_sec = float(SCAN_RUNTIME_BUDGET_SEC or 1)
             while pending:
-                runtime_budget_sec = float(SCAN_RUNTIME_BUDGET_SEC or 1)
-                runtime_elapsed_sec = _p398_runtime_budget_elapsed_sec(scan_started)
-                remaining_sec = swing_candidate_eval_remaining_budget_sec(
+                budget_wait_contract = swing_candidate_eval_budget_wait_contract(
                     budget_sec=runtime_budget_sec,
-                    elapsed_sec=runtime_elapsed_sec,
+                    elapsed_sec=_p398_runtime_budget_elapsed_sec(scan_started),
+                    pending=pending,
+                    future_to_symbol=future_to_symbol,
                 )
-                scan_eval_remaining_budget_truth = swing_candidate_eval_remaining_budget_summary(
-                    budget_sec=runtime_budget_sec,
-                    elapsed_sec=runtime_elapsed_sec,
-                    remaining_sec=remaining_sec,
+                scan_eval_remaining_budget_truth = dict(
+                    budget_wait_contract.get("remaining_budget_truth") or {}
                 )
-                if remaining_sec <= 0:
-                    scan_eval_pending_cancel_truth = swing_candidate_eval_cancel_pending_futures(
-                        pending,
-                        future_to_symbol,
+                scan_eval_budget_wait_contract_truth = {
+                    "p501_candidate_eval_budget_wait_contract": dict(
+                        budget_wait_contract.get("p501_candidate_eval_budget_wait_contract") or {}
+                    )
+                }
+                if budget_wait_contract.get("cancel_for_budget"):
+                    scan_eval_pending_cancel_truth = dict(
+                        budget_wait_contract.get("pending_cancel_truth") or {}
                     )
                     scan_runtime_budget_state = swing_candidate_eval_mark_budget_stopped_symbols(
                         scan_runtime_budget_state,
@@ -57806,7 +57807,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     )
                     break
 
-                wait_timeout_sec = swing_candidate_eval_capped_wait_timeout_sec(remaining_sec)
+                wait_timeout_sec = float(budget_wait_contract.get("wait_timeout_sec") or 0.0)
                 done, pending, scan_eval_pending_wait_truth = swing_candidate_eval_wait_for_completed_future(
                     pending,
                     timeout_sec=wait_timeout_sec,
@@ -58071,6 +58072,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             **scan_eval_exception_log_truth,
             **scan_eval_result_branch_truth,
             **scan_eval_completed_futures_truth,
+            **scan_eval_budget_wait_contract_truth,
             "p499_candidate_eval_loop_state_helper": dict(
                 scan_eval_loop_state.get("p499_candidate_eval_loop_state_helper") or {}
             ),
