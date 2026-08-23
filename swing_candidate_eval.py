@@ -7,11 +7,11 @@ timeouts, and module adoption truth.
 
 from __future__ import annotations
 
-from concurrent.futures import FIRST_COMPLETED, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-506-candidate-eval-runner-boundary-prep"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-507-candidate-eval-runner-scaffolding-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -748,6 +748,48 @@ def runner_boundary_truth(
     }
 
 
+def open_runner_scaffold(
+    *,
+    max_workers: int,
+    runtime_budget_sec: float,
+) -> dict:
+    worker_count = max(1, int(max_workers or 1))
+    budget_sec = float(runtime_budget_sec or 1.0)
+    return {
+        "executor": ThreadPoolExecutor(max_workers=worker_count),
+        "runtime_budget_sec": budget_sec,
+        "p507_candidate_eval_runner_scaffold": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "executor_created": True,
+            "max_workers": worker_count,
+            "runtime_budget_sec": round(budget_sec, 4),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
+def runner_wait_scaffold(
+    *,
+    future_to_symbol: dict | None,
+    runtime_budget_sec: float,
+) -> dict:
+    futures = dict(future_to_symbol or {})
+    return {
+        "pending": set(futures.keys()),
+        "runtime_budget_sec": float(runtime_budget_sec or 1.0),
+        "p507_candidate_eval_runner_wait_scaffold": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "future_count": len(futures),
+            "pending_count": len(futures),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def build_eval_loop_summary(
     *,
     runtime_budget_state: dict | None,
@@ -768,6 +810,8 @@ def build_eval_loop_summary(
     remaining_budget_truth: dict | None,
     loop_state: dict | None,
     runner_boundary: dict | None = None,
+    runner_scaffold: dict | None = None,
+    runner_wait_scaffold: dict | None = None,
 ) -> dict:
     budget_summary = budget_state_summary(runtime_budget_state)
     merge_summary = result_merge_summary(merge_state)
@@ -795,6 +839,8 @@ def build_eval_loop_summary(
         **wait_summary,
         **dict(remaining_budget_truth or {}),
         **dict(runner_boundary or {}),
+        **dict(runner_scaffold or {}),
+        **dict(runner_wait_scaffold or {}),
         "p505_candidate_eval_loop_summary_helper": {
             "module": "swing_candidate_eval",
             "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
@@ -1055,8 +1101,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_loop_state_update_shape",
             "candidate_eval_loop_summary_shape",
             "candidate_eval_runner_boundary_shape",
+            "candidate_eval_runner_scaffold_shape",
         ],
-        "next_extraction_target": "candidate_eval_runner_scaffolding_extraction",
+        "next_extraction_target": "candidate_eval_runner_submission_loop_extraction",
     }
 
 

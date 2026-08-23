@@ -117,6 +117,8 @@ from swing_candidate_eval import (
     loop_iteration_state_update as swing_candidate_eval_loop_iteration_state_update,
     build_eval_loop_summary as swing_candidate_eval_build_loop_summary,
     runner_boundary_truth as swing_candidate_eval_runner_boundary_truth,
+    open_runner_scaffold as swing_candidate_eval_open_runner_scaffold,
+    runner_wait_scaffold as swing_candidate_eval_runner_wait_scaffold,
 )
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -2946,7 +2948,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-506-candidate-eval-runner-boundary-prep"
+PATCH_VERSION = "patch-507-candidate-eval-runner-scaffolding-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57768,7 +57770,18 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_loop_iteration_state_truth = scan_eval_loop_state.get("loop_iteration_state_truth") or {}
         scan_eval_remaining_budget_truth = scan_eval_loop_state.get("remaining_budget_truth") or {}
         future_to_symbol = scan_eval_loop_state.get("future_to_symbol") or {}
-        ex = ThreadPoolExecutor(max_workers=max_workers)
+        runtime_budget_sec = float(SCAN_RUNTIME_BUDGET_SEC or 1)
+        scan_eval_runner_scaffold = swing_candidate_eval_open_runner_scaffold(
+            max_workers=max_workers,
+            runtime_budget_sec=runtime_budget_sec,
+        )
+        ex = scan_eval_runner_scaffold.get("executor")
+        scan_eval_runner_scaffold_truth = {
+            "p507_candidate_eval_runner_scaffold": dict(
+                scan_eval_runner_scaffold.get("p507_candidate_eval_runner_scaffold") or {}
+            )
+        }
+        scan_eval_runner_wait_scaffold_truth = {}
         try:
             for sym in syms:
                 if _p398_scan_runtime_over_budget(scan_started):
@@ -57780,8 +57793,17 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 swing_candidate_eval_submit_future(ex, future_to_symbol, _eval_one, sym)
             scan_eval_future_submit_truth = swing_candidate_eval_future_submit_summary(future_to_symbol)
 
-            pending = set(future_to_symbol.keys())
-            runtime_budget_sec = float(SCAN_RUNTIME_BUDGET_SEC or 1)
+            wait_scaffold = swing_candidate_eval_runner_wait_scaffold(
+                future_to_symbol=future_to_symbol,
+                runtime_budget_sec=runtime_budget_sec,
+            )
+            pending = wait_scaffold.get("pending") or set()
+            runtime_budget_sec = float(wait_scaffold.get("runtime_budget_sec") or runtime_budget_sec)
+            scan_eval_runner_wait_scaffold_truth = {
+                "p507_candidate_eval_runner_wait_scaffold": dict(
+                    wait_scaffold.get("p507_candidate_eval_runner_wait_scaffold") or {}
+                )
+            }
             while pending:
                 loop_iteration = swing_candidate_eval_pending_loop_iteration(
                     budget_sec=runtime_budget_sec,
@@ -57877,6 +57899,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             remaining_budget_truth=scan_eval_remaining_budget_truth,
             loop_state=scan_eval_loop_state,
             runner_boundary=scan_eval_runner_boundary_truth,
+            runner_scaffold=scan_eval_runner_scaffold_truth,
+            runner_wait_scaffold=scan_eval_runner_wait_scaffold_truth,
         )
         results.extend(scan_eval_loop_summary.get("results", []))
         signals.extend(scan_eval_loop_summary.get("signals", []))
