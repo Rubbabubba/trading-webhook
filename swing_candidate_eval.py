@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-502-candidate-eval-wait-process-step-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-503-candidate-eval-loop-iteration-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -95,6 +95,7 @@ def initial_loop_state() -> dict:
         "completed_futures_truth": {},
         "budget_wait_contract_truth": {},
         "wait_process_step_truth": {},
+        "loop_iteration_truth": {},
         "remaining_budget_truth": {},
         "future_to_symbol": {},
         "p499_candidate_eval_loop_state_helper": {
@@ -575,6 +576,95 @@ def wait_and_process_pending_step(
     }
 
 
+def pending_loop_iteration(
+    *,
+    budget_sec: float,
+    elapsed_sec: float,
+    pending: Any,
+    future_to_symbol: dict | None,
+    merge_state: dict | None,
+    wait_timeout_state_row: dict | None,
+) -> dict:
+    contract = budget_wait_contract(
+        budget_sec=budget_sec,
+        elapsed_sec=elapsed_sec,
+        pending=pending,
+        future_to_symbol=future_to_symbol,
+    )
+    remaining_budget_truth = dict(contract.get("remaining_budget_truth") or {})
+    budget_wait_contract_truth = {
+        "p501_candidate_eval_budget_wait_contract": dict(
+            contract.get("p501_candidate_eval_budget_wait_contract") or {}
+        )
+    }
+    if contract.get("cancel_for_budget"):
+        return {
+            "pending": pending,
+            "merge_state": merge_state,
+            "wait_timeout_state": wait_timeout_state_row,
+            "pending_cancel_truth": dict(contract.get("pending_cancel_truth") or {}),
+            "remaining_budget_truth": remaining_budget_truth,
+            "budget_wait_contract_truth": budget_wait_contract_truth,
+            "pending_wait_truth": {},
+            "future_result_truth": {},
+            "exception_log_truth": {},
+            "result_branch_truth": {},
+            "completed_futures_truth": {},
+            "wait_process_step_truth": {},
+            "exception_logs": [],
+            "continue_loop": False,
+            "break_loop": True,
+            "budget_canceled": True,
+            "p503_candidate_eval_loop_iteration_helper": {
+                "module": "swing_candidate_eval",
+                "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+                "action": "budget_cancel",
+                "pending_count": len(list(pending or [])),
+                "broker_calls": False,
+                "submits_orders": False,
+            },
+        }
+
+    step = wait_and_process_pending_step(
+        pending=pending,
+        future_to_symbol=future_to_symbol,
+        merge_state=merge_state,
+        wait_timeout_state_row=wait_timeout_state_row,
+        wait_timeout_sec=float(contract.get("wait_timeout_sec") or 0.0),
+    )
+    return {
+        "pending": step.get("pending") or set(),
+        "merge_state": step.get("merge_state") or merge_state,
+        "wait_timeout_state": step.get("wait_timeout_state") or wait_timeout_state_row,
+        "pending_cancel_truth": {},
+        "remaining_budget_truth": remaining_budget_truth,
+        "budget_wait_contract_truth": budget_wait_contract_truth,
+        "pending_wait_truth": step.get("pending_wait_truth") or {},
+        "future_result_truth": step.get("future_result_truth") or {},
+        "exception_log_truth": step.get("exception_log_truth") or {},
+        "result_branch_truth": step.get("result_branch_truth") or {},
+        "completed_futures_truth": step.get("completed_futures_truth") or {},
+        "wait_process_step_truth": {
+            "p502_candidate_eval_wait_process_step_helper": dict(
+                step.get("p502_candidate_eval_wait_process_step_helper") or {}
+            )
+        },
+        "exception_logs": list(step.get("exception_logs") or []),
+        "continue_loop": not bool(step.get("done")),
+        "break_loop": False,
+        "budget_canceled": False,
+        "p503_candidate_eval_loop_iteration_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "action": "wait_process",
+            "done_count": len(list(step.get("done") or [])),
+            "pending_count": len(list(step.get("pending") or [])),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def wait_timeout_summary(state: dict | None) -> dict:
     row = dict(state or wait_timeout_state())
     return {
@@ -809,8 +899,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_completed_futures_shape",
             "candidate_eval_budget_wait_contract_shape",
             "candidate_eval_wait_process_step_shape",
+            "candidate_eval_loop_iteration_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_compact_runner_stage_4",
+        "next_extraction_target": "candidate_eval_loop_compact_runner_stage_5",
     }
 
 
