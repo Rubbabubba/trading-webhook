@@ -96,6 +96,15 @@ from swing_scan_state import (
     tombstone_historical_background_failure as swing_scan_state_tombstone_background_failure,
     scan_state_module_status as swing_scan_state_module_status,
 )
+from swing_candidate_eval import (
+    SWING_CANDIDATE_EVAL_MODULE_VERSION,
+    initial_eval_truth as swing_candidate_eval_initial_truth,
+    initial_progress_publish as swing_candidate_eval_initial_progress_publish,
+    initial_terminal_partial_close as swing_candidate_eval_initial_terminal_partial_close,
+    symbol_eval_timeout_row as swing_candidate_eval_timeout_row,
+    candidate_eval_module_status as swing_candidate_eval_module_status,
+    attach_candidate_eval_module_status as swing_candidate_eval_attach_status,
+)
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
     SwingProductionContractConfig,
@@ -2924,7 +2933,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-483-swing-scan-state-module-extraction-prep"
+PATCH_VERSION = "patch-484-candidate-evaluation-module-extraction-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28375,31 +28384,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     _p402_stage_checkpoint("candidate_eval_start", symbols_count=len(syms))
     candidate_eval_budget_tripped = False
     candidate_eval_stage_budget_closed = False
-    p402_eval_truth = {
-        "enabled": bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
-        "evaluated_symbols": [],
-        "skipped_symbols": [],
-        "stopped_for_budget": False,
-        "budget_sec": int(SCAN_RUNTIME_BUDGET_SEC or 0),
-        "reserve_sec": int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
-    }
-    p476_candidate_progress_publish = {
-        "published": False,
-        "publish_count": 0,
-        "last_reason": None,
-        "last_symbols_eval_total": 0,
-        "last_candidate_count": 0,
-    }
-    p477_terminal_partial_close = {
-        "applied": False,
-        "reason": "not_needed",
-        "stage": None,
-        "evaluated_count": 0,
-        "candidate_count": 0,
-        "remaining_sec": None,
-        "elapsed_sec": None,
-        "batch_size": 5,
-    }
+    p402_eval_truth = swing_candidate_eval_initial_truth(
+        incremental_enabled=bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED),
+        budget_sec=int(SCAN_RUNTIME_BUDGET_SEC or 0),
+        reserve_sec=int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
+    )
+    p476_candidate_progress_publish = swing_candidate_eval_initial_progress_publish()
+    p477_terminal_partial_close = swing_candidate_eval_initial_terminal_partial_close(batch_size=5)
 
     def _p476_publish_candidate_eval_progress(reason: str = "candidate_eval_progress", force: bool = False) -> dict:
         evaluated_count = len(p402_eval_truth.get("evaluated_symbols") or [])
@@ -28625,23 +28616,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         }
 
     def _p478_symbol_eval_timeout_row(sym: str, elapsed_sec: float, timeout_sec: float, stage: str) -> dict:
-        return {
-            "symbol": str(sym or "").strip().upper(),
-            "eligible": False,
-            "selected": False,
-            "strategy": BREAKOUT_STRATEGY_NAME,
-            "signal": "daily_breakout",
-            "scan_ts_utc": datetime.now(timezone.utc).isoformat(),
-            "rejection_reasons": ["candidate_eval_timeout"],
-            "candidate_eval_timeout": True,
-            "p478_symbol_eval_isolation": {
-                "enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
-                "timeout_sec": round(float(timeout_sec or 0.0), 3),
-                "elapsed_sec": round(float(elapsed_sec or 0.0), 3),
-                "stage": stage,
-                "reason": "symbol_eval_exceeded_timeout",
-            },
-        }
+        return swing_candidate_eval_timeout_row(
+            symbol=sym,
+            strategy=BREAKOUT_STRATEGY_NAME,
+            signal="daily_breakout",
+            scan_ts_utc=datetime.now(timezone.utc).isoformat(),
+            isolation_enabled=bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+            timeout_sec=float(timeout_sec or 0.0),
+            elapsed_sec=float(elapsed_sec or 0.0),
+            stage=stage,
+        )
 
     def _p478_eval_symbol_rows(sym: str) -> list[dict]:
         rows = [
@@ -29296,6 +29280,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "candidate_eval_partial_publishable": bool(p402_eval_truth.get("partial_scan_publishable")),
                 "goal": "prove_patch_479_fast_path_ran_without_per_symbol_broker_dependency",
             },
+            "p484_candidate_eval_module": swing_candidate_eval_module_status(
+                patch_version=PATCH_VERSION
+            ),
             "p474_regime_to_candidate_fast_publish": {
                 "foreground_fallback": bool(scan_options.get("p474_foreground_fallback")),
                 "fast_publish_pre_eval_applied": bool(p474_fast_publish_summary),
@@ -29782,6 +29769,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 or p402_fetch_truth.get("error_count")
             ),
         },
+        'p484_candidate_eval_module': swing_candidate_eval_module_status(
+            patch_version=PATCH_VERSION
+        ),
         'runtime_slim_applied': bool(runtime_slim.get("applied")),
         'p470_regime_persistence': dict(p470_regime_persistence),
         'runtime_symbols_original_count': int(runtime_slim.get("original_count") or len(original_syms)),
@@ -41051,6 +41041,7 @@ def _p298_scanner_light() -> dict:
     )
     latest_scan["swing_scan_state_module_version"] = SWING_SCAN_STATE_MODULE_VERSION
     latest_scan["swing_scan_state_module_status"] = swing_scan_state_module_status(patch_version=PATCH_VERSION)
+    latest_scan = swing_candidate_eval_attach_status(latest_scan, patch_version=PATCH_VERSION)
     summary["scan_background_completion_truth"] = background_truth
     summary["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
     summary["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
@@ -41059,6 +41050,7 @@ def _p298_scanner_light() -> dict:
     summary["p475_scan_truth_contract"] = dict(p475_latest_truth)
     summary["p481_canonical_scan_truth"] = dict(latest_scan.get("_p481_canonical_scan_truth") or {})
     summary["swing_scan_state_module_version"] = SWING_SCAN_STATE_MODULE_VERSION
+    summary = swing_candidate_eval_attach_status(summary, patch_version=PATCH_VERSION)
 
     telemetry_summary = _p325_recover_scanner_warning_summary(
         telemetry_summary,
