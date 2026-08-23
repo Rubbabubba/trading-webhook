@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-490-candidate-eval-executor-shutdown-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-491-candidate-eval-pending-future-cancel-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -182,6 +182,38 @@ def shutdown_executor(executor: Any) -> dict:
         truth["ok"] = False
         truth["error"] = str(exc)
     return truth
+
+
+def cancel_pending_futures(pending: Any, future_to_symbol: dict | None) -> dict:
+    symbols = []
+    errors = []
+    canceled_count = 0
+    future_map = dict(future_to_symbol or {})
+    for fut in list(pending or []):
+        symbol = str(future_map.get(fut) or "").strip().upper()
+        if symbol:
+            symbols.append(symbol)
+        try:
+            fut.cancel()
+            canceled_count += 1
+        except Exception as exc:
+            errors.append({
+                "symbol": symbol,
+                "error": str(exc),
+            })
+    return {
+        "pending_symbols": _dedupe_keep_order(symbols),
+        "pending_count": len(list(pending or [])),
+        "canceled_count": int(canceled_count),
+        "error_count": len(errors),
+        "errors": errors[:10],
+        "p491_candidate_eval_pending_future_cancel_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
 
 
 def build_progress_summary(
@@ -392,8 +424,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_loop_budget_state_shape",
             "candidate_eval_loop_result_merge_shape",
             "candidate_eval_executor_shutdown_shape",
+            "candidate_eval_pending_future_cancel_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_pending_future_cancel_helpers",
+        "next_extraction_target": "candidate_eval_loop_wait_timeout_helpers",
     }
 
 

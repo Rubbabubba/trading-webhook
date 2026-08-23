@@ -115,6 +115,7 @@ from swing_candidate_eval import (
     merge_eval_exception as swing_candidate_eval_merge_exception,
     result_merge_summary as swing_candidate_eval_result_merge_summary,
     shutdown_executor as swing_candidate_eval_shutdown_executor,
+    cancel_pending_futures as swing_candidate_eval_cancel_pending_futures,
 )
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -2944,7 +2945,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-490-candidate-eval-executor-shutdown-helper-extraction"
+PATCH_VERSION = "patch-491-candidate-eval-pending-future-cancel-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57751,6 +57752,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_runtime_budget_state = swing_candidate_eval_initial_budget_state()
         scan_eval_merge_state = {"results": [], "signals": [], "blocked": 0}
         scan_eval_shutdown_truth = {}
+        scan_eval_pending_cancel_truth = {}
         future_to_symbol = {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
         try:
@@ -57771,15 +57773,13 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     float(SCAN_RUNTIME_BUDGET_SEC or 1) - _p398_runtime_budget_elapsed_sec(scan_started),
                 )
                 if remaining_sec <= 0:
-                    pending_symbols_for_budget = []
-                    for fut in list(pending):
-                        sym = future_to_symbol.get(fut)
-                        if sym:
-                            pending_symbols_for_budget.append(sym)
-                        fut.cancel()
+                    scan_eval_pending_cancel_truth = swing_candidate_eval_cancel_pending_futures(
+                        pending,
+                        future_to_symbol,
+                    )
                     scan_runtime_budget_state = swing_candidate_eval_mark_budget_stopped_symbols(
                         scan_runtime_budget_state,
-                        pending_symbols_for_budget,
+                        list(scan_eval_pending_cancel_truth.get("pending_symbols") or []),
                     )
                     break
 
@@ -58009,6 +58009,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 "p489_candidate_eval_result_merge_helper"
             ),
             "p490_candidate_eval_executor_shutdown_helper": dict(scan_eval_shutdown_truth),
+            "p491_candidate_eval_pending_future_cancel_helper": dict(scan_eval_pending_cancel_truth),
             "fast_response_enabled": bool(fast_response),
         }
 
