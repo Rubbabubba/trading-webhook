@@ -15,7 +15,7 @@ import math
 import time as _time
 from datetime import datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 import threading
 from collections import Counter
 from itertools import combinations
@@ -120,6 +120,7 @@ from swing_candidate_eval import (
     future_submit_summary as swing_candidate_eval_future_submit_summary,
     wait_timeout_state as swing_candidate_eval_wait_timeout_state,
     capped_wait_timeout_sec as swing_candidate_eval_capped_wait_timeout_sec,
+    wait_for_completed_future as swing_candidate_eval_wait_for_completed_future,
     remaining_budget_sec as swing_candidate_eval_remaining_budget_sec,
     remaining_budget_summary as swing_candidate_eval_remaining_budget_summary,
     record_wait_result as swing_candidate_eval_record_wait_result,
@@ -2953,7 +2954,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-494-candidate-eval-future-submit-helper-extraction"
+PATCH_VERSION = "patch-495-candidate-eval-pending-wait-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57763,6 +57764,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_pending_cancel_truth = {}
         scan_eval_future_submit_truth = {}
         scan_eval_wait_timeout_state = swing_candidate_eval_wait_timeout_state()
+        scan_eval_pending_wait_truth = {}
         scan_eval_remaining_budget_truth = {}
         future_to_symbol = {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
@@ -57802,7 +57804,10 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     break
 
                 wait_timeout_sec = swing_candidate_eval_capped_wait_timeout_sec(remaining_sec)
-                done, pending = wait(pending, timeout=wait_timeout_sec, return_when=FIRST_COMPLETED)
+                done, pending, scan_eval_pending_wait_truth = swing_candidate_eval_wait_for_completed_future(
+                    pending,
+                    timeout_sec=wait_timeout_sec,
+                )
                 scan_eval_wait_timeout_state = swing_candidate_eval_record_wait_result(
                     scan_eval_wait_timeout_state,
                     wait_timeout_sec=wait_timeout_sec,
@@ -58038,6 +58043,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "p490_candidate_eval_executor_shutdown_helper": dict(scan_eval_shutdown_truth),
             "p491_candidate_eval_pending_future_cancel_helper": dict(scan_eval_pending_cancel_truth),
             **scan_eval_future_submit_truth,
+            **scan_eval_pending_wait_truth,
             **scan_eval_wait_timeout_summary,
             **scan_eval_remaining_budget_truth,
             "fast_response_enabled": bool(fast_response),

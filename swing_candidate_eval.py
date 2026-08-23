@@ -7,10 +7,11 @@ timeouts, and module adoption truth.
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-494-candidate-eval-future-submit-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-495-candidate-eval-pending-wait-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -252,6 +253,25 @@ def wait_timeout_state() -> dict:
 
 def capped_wait_timeout_sec(remaining_sec: float, *, max_wait_sec: float = 2.0) -> float:
     return min(max(0.0, float(remaining_sec or 0.0)), max(0.0, float(max_wait_sec or 0.0)))
+
+
+def wait_for_completed_future(pending: Any, *, timeout_sec: float) -> tuple[Any, Any, dict]:
+    done, still_pending = wait(
+        pending,
+        timeout=float(timeout_sec or 0.0),
+        return_when=FIRST_COMPLETED,
+    )
+    return done, still_pending, {
+        "p495_candidate_eval_pending_wait_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "done_count": len(done),
+            "pending_count": len(still_pending),
+            "timeout_sec": round(float(timeout_sec or 0.0), 4),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
 
 
 def remaining_budget_sec(*, budget_sec: float, elapsed_sec: float) -> float:
@@ -506,8 +526,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_wait_timeout_shape",
             "candidate_eval_remaining_budget_shape",
             "candidate_eval_future_submit_shape",
+            "candidate_eval_pending_wait_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_pending_wait_helpers",
+        "next_extraction_target": "candidate_eval_loop_future_result_helpers",
     }
 
 
