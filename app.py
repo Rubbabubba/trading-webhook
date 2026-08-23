@@ -2933,7 +2933,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-484-candidate-evaluation-module-extraction-prep"
+PATCH_VERSION = "patch-484-hotfix-candidate-eval-module-status-surface-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -16632,6 +16632,13 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "read_only": True,
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
         "p481_canonical_scan_truth": p481_canonical_scan_truth,
+        "p484_candidate_eval_module": swing_candidate_eval_module_status(
+            patch_version=PATCH_VERSION
+        ),
+        "swing_candidate_eval_module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+        "swing_candidate_eval_module_status": swing_candidate_eval_module_status(
+            patch_version=PATCH_VERSION
+        ),
         "path_status": path_status,
         "recommended_action": recommended_action,
         "latest_scan": {
@@ -16656,6 +16663,10 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
                 "submit_trace_is_fast_but_scanner_runtime_needs_separate_hot_path_cleanup"
                 if runtime_over_budget
                 else "scanner_runtime_within_budget"
+            ),
+            "swing_candidate_eval_module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "swing_candidate_eval_module_status": swing_candidate_eval_module_status(
+                patch_version=PATCH_VERSION
             ),
             "selected_total": len(selected_symbols),
             "selected_symbols": selected_symbols,
@@ -35975,6 +35986,10 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
         "raw_latest_scan": dict((effective_scan or {}).get("_p480_raw_latest_scan") or {}),
     }
     payload["p481_canonical_scan_truth"] = dict((effective_scan or {}).get("_p481_canonical_scan_truth") or {})
+    payload["p484_candidate_eval_module"] = swing_candidate_eval_module_status(
+        patch_version=PATCH_VERSION
+    )
+    payload = swing_candidate_eval_attach_status(payload, patch_version=PATCH_VERSION)
 
     if not bool(p475_effective_truth.get("trade_judgable")):
         payload["status"] = "scan_not_trade_judgable"

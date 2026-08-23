@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-460-effective-profile-runtime-truth-restart-lost-scanner-failure-aging"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-484-hotfix-candidate-eval-module-status-surface-sync"
 
 
 def selected_submission_truth_light_snapshot(
@@ -351,6 +351,22 @@ def scanner_light_snapshot(
         if "background_scan_lost_after_restart" not in historical_warning_codes:
             historical_warning_codes.append("background_scan_lost_after_restart")
 
+    swing_candidate_eval_module_version = (
+        scan_summary.get("swing_candidate_eval_module_version")
+        or latest_scan.get("swing_candidate_eval_module_version")
+    )
+    swing_candidate_eval_module_status = dict(
+        scan_summary.get("swing_candidate_eval_module_status")
+        or latest_scan.get("swing_candidate_eval_module_status")
+        or {}
+    )
+    p484_candidate_eval_module = dict(
+        scan_summary.get("p484_candidate_eval_module")
+        or latest_scan.get("p484_candidate_eval_module")
+        or swing_candidate_eval_module_status
+        or {}
+    )
+
     return {
         "ok": True,
         "patch_version": patch_version,
@@ -367,6 +383,9 @@ def scanner_light_snapshot(
         "scanner_status": scanner_status,
         "scanner_failure_root_cause": scanner_failure_root_cause,
         "scanner_failure_root_cause_historical": scanner_failure_root_cause_historical,
+        "swing_candidate_eval_module_version": swing_candidate_eval_module_version,
+        "swing_candidate_eval_module_status": swing_candidate_eval_module_status,
+        "p484_candidate_eval_module": p484_candidate_eval_module,
         "scan_background_completion_truth": scan_background_completion_truth,
         "background_scan_runtime_truth": {
             "active": bool(background_scan_active),
@@ -436,6 +455,9 @@ def scanner_light_snapshot(
             "stale_preopen_scan": bool(scan_summary.get("stale_preopen_scan") or latest_scan.get("stale_preopen_scan")),
             "post_open_scan_missing": bool(post_open_scan_missing),
             "scan_background_completion_truth": scan_background_completion_truth,
+            "swing_candidate_eval_module_version": swing_candidate_eval_module_version,
+            "swing_candidate_eval_module_status": swing_candidate_eval_module_status,
+            "p484_candidate_eval_module": p484_candidate_eval_module,
         },
     }
 
