@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-496-candidate-eval-future-result-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-497-candidate-eval-exception-log-contract-cleanup"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -314,6 +314,24 @@ def resolve_completed_future(future: Any, future_to_symbol: dict | None) -> dict
         }
 
 
+def future_exception_log_record(future_result: dict | None) -> dict:
+    row = dict(future_result or {})
+    exc = row.get("exception")
+    return {
+        "symbol": str(row.get("symbol") or "").strip().upper(),
+        "error": str(row.get("error") or ""),
+        "exc_info": (type(exc), exc, exc.__traceback__) if exc is not None else None,
+        "p497_candidate_eval_exception_log_contract": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "symbol": str(row.get("symbol") or "").strip().upper(),
+            "has_exception_object": exc is not None,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def remaining_budget_sec(*, budget_sec: float, elapsed_sec: float) -> float:
     return max(0.0, float(budget_sec or 0.0) - float(elapsed_sec or 0.0))
 
@@ -568,8 +586,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_future_submit_shape",
             "candidate_eval_pending_wait_shape",
             "candidate_eval_future_result_shape",
+            "candidate_eval_exception_log_contract_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_exception_logging_cleanup",
+        "next_extraction_target": "candidate_eval_loop_result_branch_cleanup",
     }
 
 
