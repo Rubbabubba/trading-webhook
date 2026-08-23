@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-498-candidate-eval-result-branch-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-499-candidate-eval-loop-state-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -77,6 +77,29 @@ def initial_budget_state() -> dict:
         "stopped_symbols": [],
         "module": "swing_candidate_eval",
         "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+    }
+
+
+def initial_loop_state() -> dict:
+    return {
+        "runtime_budget_state": initial_budget_state(),
+        "merge_state": {"results": [], "signals": [], "blocked": 0},
+        "shutdown_truth": {},
+        "pending_cancel_truth": {},
+        "future_submit_truth": {},
+        "wait_timeout_state": wait_timeout_state(),
+        "pending_wait_truth": {},
+        "future_result_truth": {},
+        "exception_log_truth": {},
+        "result_branch_truth": {},
+        "remaining_budget_truth": {},
+        "future_to_symbol": {},
+        "p499_candidate_eval_loop_state_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
     }
 
 
@@ -615,8 +638,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_future_result_shape",
             "candidate_eval_exception_log_contract_shape",
             "candidate_eval_result_branch_shape",
+            "candidate_eval_loop_state_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_compact_runner_prep",
+        "next_extraction_target": "candidate_eval_loop_compact_runner_stage_2",
     }
 
 

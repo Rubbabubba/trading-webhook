@@ -107,7 +107,7 @@ from swing_candidate_eval import (
     build_terminal_partial_summary as swing_candidate_eval_build_terminal_partial_summary,
     candidate_eval_module_status as swing_candidate_eval_module_status,
     attach_candidate_eval_module_status as swing_candidate_eval_attach_status,
-    initial_budget_state as swing_candidate_eval_initial_budget_state,
+    initial_loop_state as swing_candidate_eval_initial_loop_state,
     mark_budget_stopped_symbol as swing_candidate_eval_mark_budget_stopped_symbol,
     mark_budget_stopped_symbols as swing_candidate_eval_mark_budget_stopped_symbols,
     budget_state_summary as swing_candidate_eval_budget_state_summary,
@@ -116,7 +116,6 @@ from swing_candidate_eval import (
     cancel_pending_futures as swing_candidate_eval_cancel_pending_futures,
     submit_eval_future as swing_candidate_eval_submit_future,
     future_submit_summary as swing_candidate_eval_future_submit_summary,
-    wait_timeout_state as swing_candidate_eval_wait_timeout_state,
     capped_wait_timeout_sec as swing_candidate_eval_capped_wait_timeout_sec,
     wait_for_completed_future as swing_candidate_eval_wait_for_completed_future,
     resolve_completed_future as swing_candidate_eval_resolve_completed_future,
@@ -2954,7 +2953,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-498-candidate-eval-result-branch-helper-extraction"
+PATCH_VERSION = "patch-499-candidate-eval-loop-state-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57758,18 +57757,19 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 return {"results": local_results, "signals": local_signals, "blocked": local_blocked}
 
         _stage_start()
-        scan_runtime_budget_state = swing_candidate_eval_initial_budget_state()
-        scan_eval_merge_state = {"results": [], "signals": [], "blocked": 0}
-        scan_eval_shutdown_truth = {}
-        scan_eval_pending_cancel_truth = {}
-        scan_eval_future_submit_truth = {}
-        scan_eval_wait_timeout_state = swing_candidate_eval_wait_timeout_state()
-        scan_eval_pending_wait_truth = {}
-        scan_eval_future_result_truth = {}
-        scan_eval_exception_log_truth = {}
-        scan_eval_result_branch_truth = {}
-        scan_eval_remaining_budget_truth = {}
-        future_to_symbol = {}
+        scan_eval_loop_state = swing_candidate_eval_initial_loop_state()
+        scan_runtime_budget_state = scan_eval_loop_state.get("runtime_budget_state") or {}
+        scan_eval_merge_state = scan_eval_loop_state.get("merge_state") or {"results": [], "signals": [], "blocked": 0}
+        scan_eval_shutdown_truth = scan_eval_loop_state.get("shutdown_truth") or {}
+        scan_eval_pending_cancel_truth = scan_eval_loop_state.get("pending_cancel_truth") or {}
+        scan_eval_future_submit_truth = scan_eval_loop_state.get("future_submit_truth") or {}
+        scan_eval_wait_timeout_state = scan_eval_loop_state.get("wait_timeout_state") or {}
+        scan_eval_pending_wait_truth = scan_eval_loop_state.get("pending_wait_truth") or {}
+        scan_eval_future_result_truth = scan_eval_loop_state.get("future_result_truth") or {}
+        scan_eval_exception_log_truth = scan_eval_loop_state.get("exception_log_truth") or {}
+        scan_eval_result_branch_truth = scan_eval_loop_state.get("result_branch_truth") or {}
+        scan_eval_remaining_budget_truth = scan_eval_loop_state.get("remaining_budget_truth") or {}
+        future_to_symbol = scan_eval_loop_state.get("future_to_symbol") or {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
         try:
             for sym in syms:
@@ -58075,6 +58075,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             **scan_eval_future_result_truth,
             **scan_eval_exception_log_truth,
             **scan_eval_result_branch_truth,
+            "p499_candidate_eval_loop_state_helper": dict(
+                scan_eval_loop_state.get("p499_candidate_eval_loop_state_helper") or {}
+            ),
             **scan_eval_wait_timeout_summary,
             **scan_eval_remaining_budget_truth,
             "fast_response_enabled": bool(fast_response),
