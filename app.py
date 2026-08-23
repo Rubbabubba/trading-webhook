@@ -116,6 +116,10 @@ from swing_candidate_eval import (
     result_merge_summary as swing_candidate_eval_result_merge_summary,
     shutdown_executor as swing_candidate_eval_shutdown_executor,
     cancel_pending_futures as swing_candidate_eval_cancel_pending_futures,
+    wait_timeout_state as swing_candidate_eval_wait_timeout_state,
+    capped_wait_timeout_sec as swing_candidate_eval_capped_wait_timeout_sec,
+    record_wait_result as swing_candidate_eval_record_wait_result,
+    wait_timeout_summary as swing_candidate_eval_wait_timeout_summary,
 )
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -2945,7 +2949,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-491-candidate-eval-pending-future-cancel-helper-extraction"
+PATCH_VERSION = "patch-492-candidate-eval-wait-timeout-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57753,6 +57757,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_merge_state = {"results": [], "signals": [], "blocked": 0}
         scan_eval_shutdown_truth = {}
         scan_eval_pending_cancel_truth = {}
+        scan_eval_wait_timeout_state = swing_candidate_eval_wait_timeout_state()
         future_to_symbol = {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
         try:
@@ -57783,7 +57788,13 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     )
                     break
 
-                done, pending = wait(pending, timeout=min(remaining_sec, 2.0), return_when=FIRST_COMPLETED)
+                wait_timeout_sec = swing_candidate_eval_capped_wait_timeout_sec(remaining_sec)
+                done, pending = wait(pending, timeout=wait_timeout_sec, return_when=FIRST_COMPLETED)
+                scan_eval_wait_timeout_state = swing_candidate_eval_record_wait_result(
+                    scan_eval_wait_timeout_state,
+                    wait_timeout_sec=wait_timeout_sec,
+                    completed_count=len(done),
+                )
                 if not done:
                     continue
 
@@ -57812,6 +57823,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         )
         scan_eval_merge_summary = swing_candidate_eval_result_merge_summary(
             scan_eval_merge_state
+        )
+        scan_eval_wait_timeout_summary = swing_candidate_eval_wait_timeout_summary(
+            scan_eval_wait_timeout_state
         )
         results.extend(scan_eval_merge_summary.get("results", []))
         signals.extend(scan_eval_merge_summary.get("signals", []))
@@ -58010,6 +58024,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             ),
             "p490_candidate_eval_executor_shutdown_helper": dict(scan_eval_shutdown_truth),
             "p491_candidate_eval_pending_future_cancel_helper": dict(scan_eval_pending_cancel_truth),
+            **scan_eval_wait_timeout_summary,
             "fast_response_enabled": bool(fast_response),
         }
 

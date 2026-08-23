@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-491-candidate-eval-pending-future-cancel-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-492-candidate-eval-wait-timeout-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -210,6 +210,41 @@ def cancel_pending_futures(pending: Any, future_to_symbol: dict | None) -> dict:
         "p491_candidate_eval_pending_future_cancel_helper": {
             "module": "swing_candidate_eval",
             "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
+def wait_timeout_state() -> dict:
+    return {
+        "empty_wait_count": 0,
+        "last_wait_timeout_sec": None,
+        "module": "swing_candidate_eval",
+        "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+    }
+
+
+def capped_wait_timeout_sec(remaining_sec: float, *, max_wait_sec: float = 2.0) -> float:
+    return min(max(0.0, float(remaining_sec or 0.0)), max(0.0, float(max_wait_sec or 0.0)))
+
+
+def record_wait_result(state: dict | None, *, wait_timeout_sec: float, completed_count: int) -> dict:
+    out = dict(state or wait_timeout_state())
+    out["last_wait_timeout_sec"] = round(float(wait_timeout_sec or 0.0), 4)
+    if int(completed_count or 0) <= 0:
+        out["empty_wait_count"] = int(out.get("empty_wait_count") or 0) + 1
+    return out
+
+
+def wait_timeout_summary(state: dict | None) -> dict:
+    row = dict(state or wait_timeout_state())
+    return {
+        "p492_candidate_eval_wait_timeout_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "empty_wait_count": int(row.get("empty_wait_count") or 0),
+            "last_wait_timeout_sec": row.get("last_wait_timeout_sec"),
             "broker_calls": False,
             "submits_orders": False,
         },
@@ -425,8 +460,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_loop_result_merge_shape",
             "candidate_eval_executor_shutdown_shape",
             "candidate_eval_pending_future_cancel_shape",
+            "candidate_eval_wait_timeout_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_wait_timeout_helpers",
+        "next_extraction_target": "candidate_eval_loop_remaining_budget_helpers",
     }
 
 
