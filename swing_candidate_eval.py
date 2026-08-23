@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-505-candidate-eval-compact-runner-stage-6"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-506-candidate-eval-runner-boundary-prep"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -723,6 +723,31 @@ def wait_timeout_summary(state: dict | None) -> dict:
     }
 
 
+def runner_boundary_truth(
+    *,
+    symbol_count: int,
+    future_count: int,
+    max_workers: int,
+    runtime_budget_sec: float,
+) -> dict:
+    return {
+        "p506_candidate_eval_runner_boundary": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "runner_owned_by_app": True,
+            "state_shape_owned_by_module": True,
+            "eval_function_owned_by_app": True,
+            "broker_calls": False,
+            "submits_orders": False,
+            "symbol_count": int(symbol_count or 0),
+            "future_count": int(future_count or 0),
+            "max_workers": int(max_workers or 0),
+            "runtime_budget_sec": round(float(runtime_budget_sec or 0.0), 4),
+            "next_safe_move": "move_runner_scaffolding_after_market_scan_proof",
+        }
+    }
+
+
 def build_eval_loop_summary(
     *,
     runtime_budget_state: dict | None,
@@ -742,6 +767,7 @@ def build_eval_loop_summary(
     wait_timeout_state: dict | None,
     remaining_budget_truth: dict | None,
     loop_state: dict | None,
+    runner_boundary: dict | None = None,
 ) -> dict:
     budget_summary = budget_state_summary(runtime_budget_state)
     merge_summary = result_merge_summary(merge_state)
@@ -768,6 +794,7 @@ def build_eval_loop_summary(
         ),
         **wait_summary,
         **dict(remaining_budget_truth or {}),
+        **dict(runner_boundary or {}),
         "p505_candidate_eval_loop_summary_helper": {
             "module": "swing_candidate_eval",
             "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
@@ -1027,8 +1054,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_loop_iteration_shape",
             "candidate_eval_loop_state_update_shape",
             "candidate_eval_loop_summary_shape",
+            "candidate_eval_runner_boundary_shape",
         ],
-        "next_extraction_target": "candidate_eval_runner_module_boundary_prep",
+        "next_extraction_target": "candidate_eval_runner_scaffolding_extraction",
     }
 
 

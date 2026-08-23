@@ -116,6 +116,7 @@ from swing_candidate_eval import (
     pending_loop_iteration as swing_candidate_eval_pending_loop_iteration,
     loop_iteration_state_update as swing_candidate_eval_loop_iteration_state_update,
     build_eval_loop_summary as swing_candidate_eval_build_loop_summary,
+    runner_boundary_truth as swing_candidate_eval_runner_boundary_truth,
 )
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -2945,7 +2946,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-505-candidate-eval-compact-runner-stage-6"
+PATCH_VERSION = "patch-506-candidate-eval-runner-boundary-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57851,6 +57852,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         _stage_end("eval_loop")            
 
         duration_ms = int((_time.perf_counter() - scan_started) * 1000)
+        scan_eval_runner_boundary_truth = swing_candidate_eval_runner_boundary_truth(
+            symbol_count=len(syms),
+            future_count=len(future_to_symbol),
+            max_workers=max_workers,
+            runtime_budget_sec=float(SCAN_RUNTIME_BUDGET_SEC or 1),
+        )
         scan_eval_loop_summary = swing_candidate_eval_build_loop_summary(
             runtime_budget_state=scan_runtime_budget_state,
             merge_state=scan_eval_merge_state,
@@ -57869,6 +57876,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             wait_timeout_state=scan_eval_wait_timeout_state,
             remaining_budget_truth=scan_eval_remaining_budget_truth,
             loop_state=scan_eval_loop_state,
+            runner_boundary=scan_eval_runner_boundary_truth,
         )
         results.extend(scan_eval_loop_summary.get("results", []))
         signals.extend(scan_eval_loop_summary.get("signals", []))
