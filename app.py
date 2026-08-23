@@ -111,6 +111,9 @@ from swing_candidate_eval import (
     mark_budget_stopped_symbol as swing_candidate_eval_mark_budget_stopped_symbol,
     mark_budget_stopped_symbols as swing_candidate_eval_mark_budget_stopped_symbols,
     budget_state_summary as swing_candidate_eval_budget_state_summary,
+    merge_eval_output as swing_candidate_eval_merge_output,
+    merge_eval_exception as swing_candidate_eval_merge_exception,
+    result_merge_summary as swing_candidate_eval_result_merge_summary,
 )
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -2940,7 +2943,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-488-candidate-eval-loop-budget-state-helper-extraction"
+PATCH_VERSION = "patch-489-candidate-eval-loop-result-merge-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57745,6 +57748,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
 
         _stage_start()
         scan_runtime_budget_state = swing_candidate_eval_initial_budget_state()
+        scan_eval_merge_state = {"results": [], "signals": [], "blocked": 0}
         future_to_symbol = {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
         try:
@@ -57785,21 +57789,17 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     sym = future_to_symbol.get(fut)
                     try:
                         out = fut.result()
-                        results.extend(out.get("results", []))
-                        signals.extend(out.get("signals", []))
-                        blocked += int(out.get("blocked", 0))
+                        scan_eval_merge_state = swing_candidate_eval_merge_output(
+                            scan_eval_merge_state,
+                            out,
+                        )
                     except Exception as exc:
                         logger.exception("SCAN_FUTURE_ERROR symbol=%s err=%s", sym, str(exc))
-                        blocked += 1
-                        results.append({
-                            "symbol": sym,
-                            "action": "blocked",
-                            "reason": "scan_future_exception",
-                            "err": str(exc),
-                            "price": None,
-                            "stop": None,
-                            "take": None,
-                        })
+                        scan_eval_merge_state = swing_candidate_eval_merge_exception(
+                            scan_eval_merge_state,
+                            symbol=sym,
+                            error=str(exc),
+                        )
         finally:
             try:
                 ex.shutdown(wait=False, cancel_futures=True)
@@ -57811,6 +57811,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_runtime_budget_summary = swing_candidate_eval_budget_state_summary(
             scan_runtime_budget_state
         )
+        scan_eval_merge_summary = swing_candidate_eval_result_merge_summary(
+            scan_eval_merge_state
+        )
+        results.extend(scan_eval_merge_summary.get("results", []))
+        signals.extend(scan_eval_merge_summary.get("signals", []))
+        blocked += int(scan_eval_merge_summary.get("blocked") or 0)
 
         # ---- Scan-level summary (top no-signal reasons, action counts) ----
         action_counts = Counter()
@@ -58000,6 +58006,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "timing_ms": dict(timing_ms),
             "runtime_budget": runtime_budget,
             **scan_runtime_budget_summary,
+            "p489_candidate_eval_result_merge_helper": scan_eval_merge_summary.get(
+                "p489_candidate_eval_result_merge_helper"
+            ),
             "fast_response_enabled": bool(fast_response),
         }
 

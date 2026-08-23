@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-488-candidate-eval-loop-budget-state-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-489-candidate-eval-loop-result-merge-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -105,6 +105,54 @@ def budget_state_summary(state: dict | None, *, max_symbols: int = 25) -> dict:
         "runtime_budget_stopped_count": len(stopped_symbols),
         "runtime_budget_stopped_symbols": stopped_symbols[: max(0, int(max_symbols or 25))],
         "p488_candidate_eval_budget_state_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
+def merge_eval_output(target: dict | None, output: dict | None) -> dict:
+    out = dict(target or {"results": [], "signals": [], "blocked": 0})
+    result = dict(output or {})
+    out["results"] = list(out.get("results") or []) + list(result.get("results") or [])
+    out["signals"] = list(out.get("signals") or []) + list(result.get("signals") or [])
+    out["blocked"] = int(out.get("blocked") or 0) + int(result.get("blocked") or 0)
+    return out
+
+
+def merge_eval_exception(target: dict | None, *, symbol: str, error: str) -> dict:
+    out = dict(target or {"results": [], "signals": [], "blocked": 0})
+    results = list(out.get("results") or [])
+    results.append({
+        "symbol": str(symbol or "").strip().upper(),
+        "action": "blocked",
+        "reason": "scan_future_exception",
+        "err": str(error or ""),
+        "price": None,
+        "stop": None,
+        "take": None,
+        "p489_candidate_eval_result_merge_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    })
+    out["results"] = results
+    out["signals"] = list(out.get("signals") or [])
+    out["blocked"] = int(out.get("blocked") or 0) + 1
+    return out
+
+
+def result_merge_summary(state: dict | None) -> dict:
+    row = dict(state or {"results": [], "signals": [], "blocked": 0})
+    return {
+        "results": list(row.get("results") or []),
+        "signals": list(row.get("signals") or []),
+        "blocked": int(row.get("blocked") or 0),
+        "p489_candidate_eval_result_merge_helper": {
             "module": "swing_candidate_eval",
             "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
             "broker_calls": False,
@@ -319,8 +367,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_terminal_partial_summary_shape",
             "candidate_eval_exception_row_shape",
             "candidate_eval_loop_budget_state_shape",
+            "candidate_eval_loop_result_merge_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_result_merge_helpers",
+        "next_extraction_target": "candidate_eval_loop_executor_shutdown_helpers",
     }
 
 
