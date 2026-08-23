@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-501-candidate-eval-budget-wait-contract-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-502-candidate-eval-wait-process-step-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -94,6 +94,7 @@ def initial_loop_state() -> dict:
         "result_branch_truth": {},
         "completed_futures_truth": {},
         "budget_wait_contract_truth": {},
+        "wait_process_step_truth": {},
         "remaining_budget_truth": {},
         "future_to_symbol": {},
         "p499_candidate_eval_loop_state_helper": {
@@ -502,6 +503,78 @@ def record_wait_result(state: dict | None, *, wait_timeout_sec: float, completed
     return out
 
 
+def wait_and_process_pending_step(
+    *,
+    pending: Any,
+    future_to_symbol: dict | None,
+    merge_state: dict | None,
+    wait_timeout_state_row: dict | None,
+    wait_timeout_sec: float,
+) -> dict:
+    done, still_pending, pending_wait_truth = wait_for_completed_future(
+        pending,
+        timeout_sec=wait_timeout_sec,
+    )
+    next_wait_timeout_state = record_wait_result(
+        wait_timeout_state_row,
+        wait_timeout_sec=wait_timeout_sec,
+        completed_count=len(done),
+    )
+    if not done:
+        return {
+            "done": done,
+            "pending": still_pending,
+            "merge_state": merge_state,
+            "wait_timeout_state": next_wait_timeout_state,
+            "pending_wait_truth": pending_wait_truth,
+            "future_result_truth": {},
+            "exception_log_truth": {},
+            "result_branch_truth": {},
+            "completed_futures_truth": {},
+            "exception_logs": [],
+            "p502_candidate_eval_wait_process_step_helper": {
+                "module": "swing_candidate_eval",
+                "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+                "done_count": 0,
+                "pending_count": len(still_pending),
+                "processed_completed_futures": False,
+                "broker_calls": False,
+                "submits_orders": False,
+            },
+        }
+
+    completed_result = process_completed_futures(
+        done,
+        future_to_symbol,
+        merge_state,
+    )
+    return {
+        "done": done,
+        "pending": still_pending,
+        "merge_state": completed_result.get("merge_state") or merge_state,
+        "wait_timeout_state": next_wait_timeout_state,
+        "pending_wait_truth": pending_wait_truth,
+        "future_result_truth": completed_result.get("future_result_truth") or {},
+        "exception_log_truth": completed_result.get("exception_log_truth") or {},
+        "result_branch_truth": completed_result.get("result_branch_truth") or {},
+        "completed_futures_truth": {
+            "p500_candidate_eval_completed_futures_helper": dict(
+                completed_result.get("p500_candidate_eval_completed_futures_helper") or {}
+            )
+        },
+        "exception_logs": list(completed_result.get("exception_logs") or []),
+        "p502_candidate_eval_wait_process_step_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "done_count": len(done),
+            "pending_count": len(still_pending),
+            "processed_completed_futures": True,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def wait_timeout_summary(state: dict | None) -> dict:
     row = dict(state or wait_timeout_state())
     return {
@@ -735,8 +808,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_loop_state_shape",
             "candidate_eval_completed_futures_shape",
             "candidate_eval_budget_wait_contract_shape",
+            "candidate_eval_wait_process_step_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_compact_runner_stage_3",
+        "next_extraction_target": "candidate_eval_loop_compact_runner_stage_4",
     }
 
 
