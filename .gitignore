@@ -1,4 +1,5 @@
 __pycache__/
+.venv/
 webhook_console.sqlite3
 *.py[cod]
 .pytest_cache/

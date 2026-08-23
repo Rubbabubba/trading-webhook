@@ -5,7 +5,7 @@ The console is a separate local FastAPI app for discovering, calling, and saving
 ## Start it
 
 ```powershell
-uvicorn webhook_console:app --reload --port 8090
+.\run_webhook_console.ps1
 ```
 
 Open `http://127.0.0.1:8090`. The console defaults to the production Render URL and discovers routes from both `SYSTEM_ENDPOINTS.md` and FastAPI decorators in `app.py`.
@@ -14,8 +14,10 @@ To point it elsewhere:
 
 ```powershell
 $env:WEBHOOK_CONSOLE_BASE_URL = "http://127.0.0.1:8000"
-uvicorn webhook_console:app --reload --port 8090
+.\run_webhook_console.ps1
 ```
+
+The launcher uses the project-local `.venv`, so `uvicorn` does not need to be installed globally or added to PATH. Use `-Port 8091` to select another port or `-NoReload` to disable development reloads.
 
 ## What it captures
 
