@@ -102,6 +102,7 @@ from swing_candidate_eval import (
     initial_progress_publish as swing_candidate_eval_initial_progress_publish,
     initial_terminal_partial_close as swing_candidate_eval_initial_terminal_partial_close,
     symbol_eval_timeout_row as swing_candidate_eval_timeout_row,
+    build_progress_summary as swing_candidate_eval_build_progress_summary,
     candidate_eval_module_status as swing_candidate_eval_module_status,
     attach_candidate_eval_module_status as swing_candidate_eval_attach_status,
 )
@@ -2933,7 +2934,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-484-hotfix-candidate-eval-module-status-surface-sync"
+PATCH_VERSION = "patch-485-candidate-eval-progress-summary-builder-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28437,66 +28438,28 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             if str((row or {}).get("symbol") or "").strip()
         ])
 
-        progress_summary = {
-            "strategy_name": SWING_STRATEGY_NAME,
-            "scan_reason": scan_reason,
-            "scan_truth_phase": "candidate_eval_progress",
-            "candidate_truth_published_before_reports": True,
-            "p476_candidate_eval_progress_publish": True,
-            "p476_publish_reason": reason,
-            "heavy_reports_deferred_from_hot_path": True,
-            "index_symbol": SWING_INDEX_SYMBOL,
-            "index_alignment_ok": index_ok,
-            "regime": dict(regime),
-            "regime_mode": regime_mode,
-            "symbols": list(scan_symbols),
-            "symbols_total": len(scan_symbols),
-            "symbols_requested_total": len(syms_for_fetch),
-            "symbols_fetched_total": int(p402_fetch_truth.get("fetched_count") or 0),
-            "symbols_eval_total": int(evaluated_count),
-            "symbols_skipped_for_budget": list(
-                _dedupe_keep_order(
-                    list(p402_fetch_truth.get("skipped_symbols") or [])
-                    + list(p402_eval_truth.get("skipped_symbols") or [])
-                )
-            )[:50],
-            "runtime_slim": dict(runtime_slim),
-            "hot_path_slim": dict(p401_hot_path),
-            "scan_stage_checkpoint": _p402_stage_snapshot(),
-            "incremental_scan": {
-                "fetch": dict(p402_fetch_truth),
-                "evaluation": dict(p402_eval_truth),
-                "partial_scan": True,
-                "partial_scan_publishable": bool(candidate_count > 0),
-                "partial_publish_reason": "candidate_eval_progress_before_selection",
-            },
-            "candidates_total": int(candidate_count),
-            "eligible_total": len(approved_rows),
-            "selected_total": len(selected_symbols),
-            "selected_symbols": list(_dedupe_keep_order(selected_symbols)),
-            "production_contract_selected_symbols": list(_dedupe_keep_order(selected_symbols)),
-            "approved_symbols": list(approved_symbols),
-            "candidate_bearing_scan": bool(candidate_count > 0 or evaluated_count > 0),
-            "trade_judgable": bool(candidate_count > 0 or evaluated_count > 0),
-            "regime_only_non_actionable": False,
-            "top_candidates": [dict(c) for c in list(candidates or [])[:5]],
-            "top_rejection_reasons": rejection_rows,
-            "production_contract_miss_reasons": {
-                "ok": True,
-                "deferred": True,
-                "reason": "p476_candidate_eval_progress_before_selection",
-                "endpoint": "/diagnostics/production_contract_miss_reasons",
-                "candidate_count": int(candidate_count),
-                "selected_symbols": list(_dedupe_keep_order(selected_symbols)),
-            },
-            "target_path_opportunity_expansion_lab": {
-                "ok": True,
-                "deferred": True,
-                "reason": "p476_candidate_eval_progress_before_selection",
-                "endpoint": "/diagnostics/target_path_opportunity_expansion_lab",
-                "candidate_count": int(candidate_count),
-            },
-        }
+        progress_summary = swing_candidate_eval_build_progress_summary(
+            strategy_name=SWING_STRATEGY_NAME,
+            scan_reason=scan_reason,
+            publish_reason=reason,
+            index_symbol=SWING_INDEX_SYMBOL,
+            index_alignment_ok=bool(index_ok),
+            regime=dict(regime),
+            regime_mode=regime_mode,
+            scan_symbols=list(scan_symbols),
+            requested_symbols=list(syms_for_fetch),
+            fetch_truth=dict(p402_fetch_truth),
+            eval_truth=dict(p402_eval_truth),
+            runtime_slim=dict(runtime_slim),
+            hot_path_slim=dict(p401_hot_path),
+            stage_snapshot=_p402_stage_snapshot(),
+            candidates=list(candidates or []),
+            selected_symbols=list(selected_symbols),
+            approved_rows=list(approved_rows),
+            approved_symbols=list(approved_symbols),
+            rejection_rows=list(rejection_rows),
+            patch_version=PATCH_VERSION,
+        )
 
         set_last_scan_fn(
             skipped=False,
