@@ -102,6 +102,7 @@ from swing_candidate_eval import (
     initial_progress_publish as swing_candidate_eval_initial_progress_publish,
     initial_terminal_partial_close as swing_candidate_eval_initial_terminal_partial_close,
     symbol_eval_timeout_row as swing_candidate_eval_timeout_row,
+    symbol_eval_exception_row as swing_candidate_eval_exception_row,
     build_progress_summary as swing_candidate_eval_build_progress_summary,
     build_terminal_partial_summary as swing_candidate_eval_build_terminal_partial_summary,
     candidate_eval_module_status as swing_candidate_eval_module_status,
@@ -2935,7 +2936,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-486-candidate-eval-terminal-partial-summary-builder-extraction"
+PATCH_VERSION = "patch-487-candidate-eval-result-row-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28675,15 +28676,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "ok": False,
                 "status": "exception",
                 "symbol": symbol,
-                "rows": [{
-                    "symbol": symbol,
-                    "eligible": False,
-                    "selected": False,
-                    "strategy": BREAKOUT_STRATEGY_NAME,
-                    "rejection_reasons": ["candidate_eval_exception"],
-                    "candidate_eval_exception": str(e),
-                    "exception_type": type(e).__name__,
-                }],
+                "rows": [swing_candidate_eval_exception_row(
+                    symbol=symbol,
+                    strategy=BREAKOUT_STRATEGY_NAME,
+                    error=str(e),
+                    exception_type=type(e).__name__,
+                )],
                 "elapsed_sec": round(elapsed, 3),
                 "timeout_sec": round(timeout_sec, 3),
                 "isolated": True,
@@ -28876,14 +28874,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 )
         except Exception as e:
             rejection_counts["candidate_eval_exception"] += 1
-            candidates.append({
-                "symbol": sym,
-                "eligible": False,
-                "selected": False,
-                "strategy": BREAKOUT_STRATEGY_NAME,
-                "rejection_reasons": ["candidate_eval_exception"],
-                "candidate_eval_exception": str(e),
-            })
+            candidates.append(swing_candidate_eval_exception_row(
+                symbol=sym,
+                strategy=BREAKOUT_STRATEGY_NAME,
+                error=str(e),
+                exception_type=type(e).__name__,
+            ))
             p476_exception_publish = _p476_publish_candidate_eval_progress(
                 "candidate_eval_symbol_exception",
                 force=not bool(p476_candidate_progress_publish.get("published")),

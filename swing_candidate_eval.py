@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-486-candidate-eval-terminal-partial-summary-builder-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-487-candidate-eval-result-row-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -232,6 +232,31 @@ def symbol_eval_timeout_row(
     }
 
 
+def symbol_eval_exception_row(
+    *,
+    symbol: str,
+    strategy: str,
+    error: str,
+    exception_type: str | None = None,
+    selected: bool = False,
+) -> dict:
+    return {
+        "symbol": str(symbol or "").strip().upper(),
+        "eligible": False,
+        "selected": bool(selected),
+        "strategy": str(strategy or ""),
+        "rejection_reasons": ["candidate_eval_exception"],
+        "candidate_eval_exception": str(error or ""),
+        "exception_type": str(exception_type or ""),
+        "p487_candidate_eval_result_row_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def candidate_eval_module_status(*, patch_version: str) -> dict:
     return {
         "ok": True,
@@ -249,8 +274,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_timeout_row_shape",
             "candidate_eval_progress_summary_shape",
             "candidate_eval_terminal_partial_summary_shape",
+            "candidate_eval_exception_row_shape",
         ],
-        "next_extraction_target": "candidate_eval_result_row_shape_helpers",
+        "next_extraction_target": "candidate_eval_loop_budget_state_helpers",
     }
 
 
