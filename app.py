@@ -103,6 +103,7 @@ from swing_candidate_eval import (
     initial_terminal_partial_close as swing_candidate_eval_initial_terminal_partial_close,
     symbol_eval_timeout_row as swing_candidate_eval_timeout_row,
     build_progress_summary as swing_candidate_eval_build_progress_summary,
+    build_terminal_partial_summary as swing_candidate_eval_build_terminal_partial_summary,
     candidate_eval_module_status as swing_candidate_eval_module_status,
     attach_candidate_eval_module_status as swing_candidate_eval_attach_status,
 )
@@ -2934,7 +2935,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-485-candidate-eval-progress-summary-builder-extraction"
+PATCH_VERSION = "patch-486-candidate-eval-terminal-partial-summary-builder-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28528,14 +28529,14 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             force=True,
         )
 
-        latest_summary = dict((LAST_SCAN or {}).get("summary") or {})
-        latest_summary["p477_terminal_partial_close"] = dict(p477_terminal_partial_close)
-        latest_summary["p477_terminal_partial_publish"] = dict(publish_truth)
-        latest_summary["scan_truth_phase"] = "candidate_eval_terminal_partial_close"
-        latest_summary["candidate_truth_published_before_reports"] = True
-        latest_summary["candidate_bearing_scan"] = bool(candidate_count > 0 or evaluated_count > 0)
-        latest_summary["trade_judgable"] = bool(candidate_count > 0 or evaluated_count > 0)
-        latest_summary["regime_only_non_actionable"] = False
+        latest_summary = swing_candidate_eval_build_terminal_partial_summary(
+            latest_summary=dict((LAST_SCAN or {}).get("summary") or {}),
+            terminal_partial_close=dict(p477_terminal_partial_close),
+            publish_truth=dict(publish_truth),
+            candidate_count=int(candidate_count),
+            evaluated_count=int(evaluated_count),
+            patch_version=PATCH_VERSION,
+        )
 
         set_last_scan_fn(
             skipped=False,

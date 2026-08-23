@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-485-candidate-eval-progress-summary-builder-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-486-candidate-eval-terminal-partial-summary-builder-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -174,6 +174,32 @@ def build_progress_summary(
     return attach_candidate_eval_module_status(out, patch_version=patch_version)
 
 
+def build_terminal_partial_summary(
+    *,
+    latest_summary: dict,
+    terminal_partial_close: dict,
+    publish_truth: dict,
+    candidate_count: int,
+    evaluated_count: int,
+    patch_version: str,
+) -> dict:
+    out = dict(latest_summary or {})
+    out["p477_terminal_partial_close"] = dict(terminal_partial_close or {})
+    out["p477_terminal_partial_publish"] = dict(publish_truth or {})
+    out["scan_truth_phase"] = "candidate_eval_terminal_partial_close"
+    out["candidate_truth_published_before_reports"] = True
+    out["candidate_bearing_scan"] = bool(int(candidate_count or 0) > 0 or int(evaluated_count or 0) > 0)
+    out["trade_judgable"] = bool(int(candidate_count or 0) > 0 or int(evaluated_count or 0) > 0)
+    out["regime_only_non_actionable"] = False
+    out["p486_candidate_eval_terminal_partial_summary_builder"] = {
+        "module": "swing_candidate_eval",
+        "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+        "broker_calls": False,
+        "submits_orders": False,
+    }
+    return attach_candidate_eval_module_status(out, patch_version=patch_version)
+
+
 def symbol_eval_timeout_row(
     *,
     symbol: str,
@@ -222,8 +248,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_progress_publish_shape",
             "candidate_eval_timeout_row_shape",
             "candidate_eval_progress_summary_shape",
+            "candidate_eval_terminal_partial_summary_shape",
         ],
-        "next_extraction_target": "candidate_eval_terminal_partial_summary_builder",
+        "next_extraction_target": "candidate_eval_result_row_shape_helpers",
     }
 
 
