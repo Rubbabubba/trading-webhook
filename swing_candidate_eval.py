@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-495-candidate-eval-pending-wait-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-496-candidate-eval-future-result-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -274,6 +274,46 @@ def wait_for_completed_future(pending: Any, *, timeout_sec: float) -> tuple[Any,
     }
 
 
+def resolve_completed_future(future: Any, future_to_symbol: dict | None) -> dict:
+    symbol = str(dict(future_to_symbol or {}).get(future) or "").strip().upper()
+    try:
+        output = future.result()
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "output": output,
+            "error": None,
+            "exception": None,
+            "p496_candidate_eval_future_result_helper": {
+                "module": "swing_candidate_eval",
+                "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+                "symbol": symbol,
+                "ok": True,
+                "output_present": output is not None,
+                "broker_calls": False,
+                "submits_orders": False,
+            },
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "symbol": symbol,
+            "output": None,
+            "error": str(exc),
+            "exception": exc,
+            "p496_candidate_eval_future_result_helper": {
+                "module": "swing_candidate_eval",
+                "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+                "symbol": symbol,
+                "ok": False,
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "broker_calls": False,
+                "submits_orders": False,
+            },
+        }
+
+
 def remaining_budget_sec(*, budget_sec: float, elapsed_sec: float) -> float:
     return max(0.0, float(budget_sec or 0.0) - float(elapsed_sec or 0.0))
 
@@ -527,8 +567,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_remaining_budget_shape",
             "candidate_eval_future_submit_shape",
             "candidate_eval_pending_wait_shape",
+            "candidate_eval_future_result_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_future_result_helpers",
+        "next_extraction_target": "candidate_eval_loop_exception_logging_cleanup",
     }
 
 

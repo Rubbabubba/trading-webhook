@@ -121,6 +121,7 @@ from swing_candidate_eval import (
     wait_timeout_state as swing_candidate_eval_wait_timeout_state,
     capped_wait_timeout_sec as swing_candidate_eval_capped_wait_timeout_sec,
     wait_for_completed_future as swing_candidate_eval_wait_for_completed_future,
+    resolve_completed_future as swing_candidate_eval_resolve_completed_future,
     remaining_budget_sec as swing_candidate_eval_remaining_budget_sec,
     remaining_budget_summary as swing_candidate_eval_remaining_budget_summary,
     record_wait_result as swing_candidate_eval_record_wait_result,
@@ -2954,7 +2955,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-495-candidate-eval-pending-wait-helper-extraction"
+PATCH_VERSION = "patch-496-candidate-eval-future-result-helper-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57765,6 +57766,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_future_submit_truth = {}
         scan_eval_wait_timeout_state = swing_candidate_eval_wait_timeout_state()
         scan_eval_pending_wait_truth = {}
+        scan_eval_future_result_truth = {}
         scan_eval_remaining_budget_truth = {}
         future_to_symbol = {}
         ex = ThreadPoolExecutor(max_workers=max_workers)
@@ -57817,19 +57819,40 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     continue
 
                 for fut in done:
-                    sym = future_to_symbol.get(fut)
-                    try:
-                        out = fut.result()
+                    future_result = swing_candidate_eval_resolve_completed_future(
+                        fut,
+                        future_to_symbol,
+                    )
+                    scan_eval_future_result_truth = {
+                        "p496_candidate_eval_future_result_helper": dict(
+                            future_result.get("p496_candidate_eval_future_result_helper") or {}
+                        )
+                    }
+                    sym = future_result.get("symbol")
+                    if future_result.get("ok"):
                         scan_eval_merge_state = swing_candidate_eval_merge_output(
                             scan_eval_merge_state,
-                            out,
+                            future_result.get("output"),
                         )
-                    except Exception as exc:
-                        logger.exception("SCAN_FUTURE_ERROR symbol=%s err=%s", sym, str(exc))
+                    else:
+                        exc = future_result.get("exception")
+                        if exc is not None:
+                            logger.error(
+                                "SCAN_FUTURE_ERROR symbol=%s err=%s",
+                                sym,
+                                str(future_result.get("error") or ""),
+                                exc_info=(type(exc), exc, exc.__traceback__),
+                            )
+                        else:
+                            logger.error(
+                                "SCAN_FUTURE_ERROR symbol=%s err=%s",
+                                sym,
+                                str(future_result.get("error") or ""),
+                            )
                         scan_eval_merge_state = swing_candidate_eval_merge_exception(
                             scan_eval_merge_state,
                             symbol=sym,
-                            error=str(exc),
+                            error=str(future_result.get("error") or ""),
                         )
         finally:
             scan_eval_shutdown_truth = swing_candidate_eval_shutdown_executor(ex)
@@ -58044,6 +58067,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             "p491_candidate_eval_pending_future_cancel_helper": dict(scan_eval_pending_cancel_truth),
             **scan_eval_future_submit_truth,
             **scan_eval_pending_wait_truth,
+            **scan_eval_future_result_truth,
             **scan_eval_wait_timeout_summary,
             **scan_eval_remaining_budget_truth,
             "fast_response_enabled": bool(fast_response),
