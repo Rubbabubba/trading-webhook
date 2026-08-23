@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-493-candidate-eval-remaining-budget-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-494-candidate-eval-future-submit-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -210,6 +210,31 @@ def cancel_pending_futures(pending: Any, future_to_symbol: dict | None) -> dict:
         "p491_candidate_eval_pending_future_cancel_helper": {
             "module": "swing_candidate_eval",
             "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
+def submit_eval_future(executor: Any, future_to_symbol: dict | None, eval_fn: Any, symbol: str) -> Any:
+    symbol_clean = str(symbol or "").strip().upper()
+    fut = executor.submit(eval_fn, symbol)
+    if future_to_symbol is not None:
+        future_to_symbol[fut] = symbol_clean or symbol
+    return fut
+
+
+def future_submit_summary(future_to_symbol: dict | None) -> dict:
+    return {
+        "p494_candidate_eval_future_submit_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "tracked_future_count": len(dict(future_to_symbol or {})),
+            "tracked_symbols": _dedupe_keep_order([
+                str(symbol or "").strip().upper()
+                for symbol in dict(future_to_symbol or {}).values()
+                if str(symbol or "").strip()
+            ])[:50],
             "broker_calls": False,
             "submits_orders": False,
         },
@@ -480,8 +505,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_pending_future_cancel_shape",
             "candidate_eval_wait_timeout_shape",
             "candidate_eval_remaining_budget_shape",
+            "candidate_eval_future_submit_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_future_submit_helpers",
+        "next_extraction_target": "candidate_eval_loop_pending_wait_helpers",
     }
 
 
