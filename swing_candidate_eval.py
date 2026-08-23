@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, wait
 from typing import Any
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-499-candidate-eval-loop-state-helper-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-500-candidate-eval-completed-futures-helper-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -92,6 +92,7 @@ def initial_loop_state() -> dict:
         "future_result_truth": {},
         "exception_log_truth": {},
         "result_branch_truth": {},
+        "completed_futures_truth": {},
         "remaining_budget_truth": {},
         "future_to_symbol": {},
         "p499_candidate_eval_loop_state_helper": {
@@ -382,6 +383,59 @@ def apply_future_result_to_merge_state(merge_state: dict | None, future_result: 
     }
 
 
+def process_completed_futures(
+    completed_futures: Any,
+    future_to_symbol: dict | None,
+    merge_state: dict | None,
+) -> dict:
+    next_merge_state = dict(merge_state or {"results": [], "signals": [], "blocked": 0})
+    future_result_truth = {}
+    exception_log_truth = {}
+    result_branch_truth = {}
+    exception_logs = []
+    processed_count = 0
+
+    for fut in list(completed_futures or []):
+        processed_count += 1
+        future_result = resolve_completed_future(fut, future_to_symbol)
+        future_result_truth = {
+            "p496_candidate_eval_future_result_helper": dict(
+                future_result.get("p496_candidate_eval_future_result_helper") or {}
+            )
+        }
+        branch_result = apply_future_result_to_merge_state(next_merge_state, future_result)
+        next_merge_state = branch_result.get("merge_state") or next_merge_state
+        result_branch_truth = {
+            "p498_candidate_eval_result_branch_helper": dict(
+                branch_result.get("p498_candidate_eval_result_branch_helper") or {}
+            )
+        }
+        exception_log = dict(branch_result.get("exception_log") or {})
+        if exception_log:
+            exception_logs.append(exception_log)
+            exception_log_truth = {
+                "p497_candidate_eval_exception_log_contract": dict(
+                    exception_log.get("p497_candidate_eval_exception_log_contract") or {}
+                )
+            }
+
+    return {
+        "merge_state": next_merge_state,
+        "exception_logs": exception_logs,
+        "future_result_truth": future_result_truth,
+        "exception_log_truth": exception_log_truth,
+        "result_branch_truth": result_branch_truth,
+        "p500_candidate_eval_completed_futures_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "processed_count": int(processed_count),
+            "exception_count": len(exception_logs),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def remaining_budget_sec(*, budget_sec: float, elapsed_sec: float) -> float:
     return max(0.0, float(budget_sec or 0.0) - float(elapsed_sec or 0.0))
 
@@ -639,8 +693,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_exception_log_contract_shape",
             "candidate_eval_result_branch_shape",
             "candidate_eval_loop_state_shape",
+            "candidate_eval_completed_futures_shape",
         ],
-        "next_extraction_target": "candidate_eval_loop_compact_runner_stage_2",
+        "next_extraction_target": "candidate_eval_loop_budget_wait_compact_runner",
     }
 
 
