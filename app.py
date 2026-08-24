@@ -2950,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-520-selected-submit-row-preservation-rate-limit-rehydration"
+PATCH_VERSION = "patch-521-terminal-candidate-eval-selection-publish"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29607,12 +29607,30 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if not candidates:
             p402_eval_truth["empty_partial_scan"] = True
             p402_eval_truth["empty_partial_scan_reason"] = "candidate_eval_runtime_budget_closed_before_usable_candidate_truth"
-    p476_eval_complete_publish = _p476_publish_candidate_eval_progress(
-        "candidate_eval_complete_terminal_progress",
-        force=True,
-    )
+    if p517_pure_candidate_eval_terminal_contract_applied:
+        p476_eval_complete_publish = {
+            "published": False,
+            "reason": "p521_pure_terminal_path_defers_publish_until_selection_complete",
+            "evaluated_count": int(p402_eval_truth.get("evaluated_count") or 0),
+            "candidate_count": len(candidates),
+            "legacy_pre_selection_partial_publish_bypassed": True,
+        }
+        p476_candidate_progress_publish["last_reason"] = p476_eval_complete_publish["reason"]
+        p476_candidate_progress_publish["last_symbols_eval_total"] = int(p402_eval_truth.get("evaluated_count") or 0)
+        p476_candidate_progress_publish["last_candidate_count"] = len(candidates)
+    else:
+        p476_eval_complete_publish = _p476_publish_candidate_eval_progress(
+            "candidate_eval_complete_terminal_progress",
+            force=True,
+        )
     p402_eval_truth["p476_candidate_progress_publish"] = dict(p476_candidate_progress_publish)
     p402_eval_truth["p476_eval_complete_publish"] = dict(p476_eval_complete_publish)
+    p402_eval_truth["p521_terminal_eval_selection_publish"] = {
+        "enabled": True,
+        "pure_terminal_path": bool(p517_pure_candidate_eval_terminal_contract_applied),
+        "pre_selection_partial_publish_bypassed": bool(p517_pure_candidate_eval_terminal_contract_applied),
+        "publish_stage": "post_selection_pre_submit",
+    }
 
     _p402_stage_checkpoint(
         "candidate_eval_complete",
@@ -29849,6 +29867,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         approved_count=len(production_approved),
         selected_count=len(selected),
         selected_symbols=[c.get("symbol") for c in selected],
+        p521_terminal_eval_selection_publish=True,
     )
     selected_symbol_set = {
         str(c.get("symbol") or "").strip().upper()
@@ -29857,6 +29876,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     }
     for c in candidates:
         c["selected"] = str(c.get("symbol") or "").strip().upper() in selected_symbol_set
+
+    LAST_SWING_CANDIDATES.clear()
+    LAST_SWING_CANDIDATES.extend([
+        dict(row or {})
+        for row in candidates[:250]
+        if isinstance(row, dict)
+    ])
 
     def _p468_selected_symbols() -> list[str]:
         return _dedupe_keep_order([
@@ -29885,6 +29911,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "scan_reason": scan_reason,
             "scan_truth_phase": "candidate_truth_before_heavy_reports",
             "candidate_truth_published_before_reports": True,
+            "p521_terminal_eval_selection_publish": {
+                "enabled": True,
+                "applied": True,
+                "reason": "terminal_candidate_eval_publishes_after_selection_before_submit",
+                "pre_selection_partial_publish_bypassed": bool(p517_pure_candidate_eval_terminal_contract_applied),
+                "candidate_count": len(candidates),
+                "approved_count": len(approved_symbols),
+                "selected_count": len(selected_symbols),
+            },
             "heavy_reports_deferred_from_hot_path": bool(p401_hot_path.get("defer_labs")),
             "index_symbol": SWING_INDEX_SYMBOL,
             "index_alignment_ok": index_ok,
