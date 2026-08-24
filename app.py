@@ -1911,6 +1911,22 @@ SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY = env_bool_any(
     "SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY",
     default="true",
 )
+SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED = env_bool_any(
+    "SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED",
+    default="true",
+)
+SWING_LATE_DAY_FIRST_2K_SLEEVE_MAX_RANK_GAP = getenv_float_any(
+    "SWING_LATE_DAY_FIRST_2K_SLEEVE_MAX_RANK_GAP",
+    default=3.0,
+)
+SWING_LATE_DAY_FIRST_2K_SLEEVE_MIN_MATCH_SCORE = getenv_float_any(
+    "SWING_LATE_DAY_FIRST_2K_SLEEVE_MIN_MATCH_SCORE",
+    default=80.0,
+)
+SWING_LATE_DAY_FIRST_2K_SLEEVE_RISK_MULTIPLIER = getenv_float_any(
+    "SWING_LATE_DAY_FIRST_2K_SLEEVE_RISK_MULTIPLIER",
+    default=0.5,
+)
 SWING_WINNER_DAY_ADD_SLOT_ENABLED = env_bool_any(
     "SWING_WINNER_DAY_ADD_SLOT_ENABLED",
     default="true",
@@ -2953,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-527-late-day-first-2k-near-miss-sleeve-calibration"
+PATCH_VERSION = "patch-528-reduced-risk-late-day-first-2k-sleeve-promotion"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23457,6 +23473,98 @@ def _p403_late_day_entry_window_active(now_dt: datetime | None = None) -> bool:
         return False
 
 
+def _p528_late_day_first_2k_sleeve(candidate: dict | None, blockers: list | None = None) -> dict:
+    c = dict(candidate or {})
+    blocker_set = {
+        str(reason)
+        for reason in list(blockers or [])
+        if str(reason)
+    }
+    residual_rejection_reasons = [
+        str(reason)
+        for reason in list(c.get("rejection_reasons") or [])
+        if str(reason)
+        and str(reason) not in {
+            "late_day_entry_quality_tightening",
+            "late_day_rank_below_min",
+        }
+    ]
+    profile = _p409_first_2k_symbol_profile()
+    profile_match = _p409_candidate_profile_match(c, profile)
+    symbol = str(c.get("symbol") or "").strip().upper()
+    rank_score = float(_safe_float(c.get("rank_score"), 0.0))
+    rank_gap = max(0.0, float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE) - rank_score)
+    breakout_distance = _p410_geometry_value_pct(c, "breakout_distance_pct")
+    close_to_high = _p410_geometry_value_pct(c, "close_to_high_pct")
+    risk_pct = _p410_geometry_value_pct(c, "risk_per_share_pct")
+    contract = dict(c.get("swing_production_contract") or {})
+    checks = dict(contract.get("checks") or {})
+    entry_type = str(c.get("entry_type") or "").strip()
+    match_score = float(_safe_float(profile_match.get("match_score"), 0.0))
+    risk_calibrated = bool(checks.get("risk_calibrated_starter_ok")) or entry_type in {
+        "swing_production_risk_calibrated_starter",
+        "swing_production_near_rank_revival",
+        "first_2k_geometry_sleeve",
+        "target_path_risk_adjusted_near_miss",
+    }
+    geometry_ok = bool(
+        breakout_distance >= -1.0
+        and close_to_high >= 98.5
+        and 0.0 < risk_pct <= 12.0
+    )
+    only_rank_blocked = bool(blocker_set) and blocker_set.issubset({"late_day_rank_below_min"})
+    applies = bool(
+        SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED
+        and only_rank_blocked
+        and risk_calibrated
+        and geometry_ok
+        and not residual_rejection_reasons
+        and rank_gap <= float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MAX_RANK_GAP)
+        and match_score >= float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MIN_MATCH_SCORE)
+    )
+
+    if applies:
+        reason = "late_day_first_2k_reduced_risk_sleeve_applied"
+    elif not bool(SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED):
+        reason = "late_day_first_2k_sleeve_disabled"
+    elif not only_rank_blocked:
+        reason = "late_day_blockers_not_rank_only"
+    elif residual_rejection_reasons:
+        reason = "non_late_day_rejection_reasons_present"
+    elif not risk_calibrated:
+        reason = "not_risk_calibrated_starter"
+    elif not geometry_ok:
+        reason = "geometry_not_first_2k_like"
+    elif rank_gap > float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MAX_RANK_GAP):
+        reason = "late_day_rank_gap_too_wide"
+    elif match_score < float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MIN_MATCH_SCORE):
+        reason = "first_2k_match_score_below_min"
+    else:
+        reason = "not_applied"
+
+    return {
+        "enabled": bool(SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED),
+        "applies": bool(applies),
+        "reason": reason,
+        "symbol": symbol,
+        "rank_score": round(rank_score, 4),
+        "late_day_min_rank_score": float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE),
+        "rank_gap": round(rank_gap, 4),
+        "max_rank_gap": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MAX_RANK_GAP),
+        "match_score": round(match_score, 4),
+        "min_match_score": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MIN_MATCH_SCORE),
+        "risk_multiplier": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_RISK_MULTIPLIER),
+        "risk_calibrated": bool(risk_calibrated),
+        "geometry_ok": bool(geometry_ok),
+        "breakout_distance_pct": breakout_distance,
+        "close_to_high_pct": close_to_high,
+        "risk_per_share_pct": risk_pct,
+        "profile_match": profile_match,
+        "blockers_before_sleeve": sorted(blocker_set),
+        "residual_rejection_reasons": list(residual_rejection_reasons),
+    }
+
+
 def _p403_late_day_entry_quality(candidate: dict | None) -> dict:
     c = dict(candidate or {})
     active = _p403_late_day_entry_window_active()
@@ -23480,6 +23588,18 @@ def _p403_late_day_entry_quality(candidate: dict | None) -> dict:
         ):
             blockers.append("late_day_not_risk_calibrated_starter")
 
+    sleeve = _p528_late_day_first_2k_sleeve(c, blockers=blockers) if active else {
+        "enabled": bool(SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED),
+        "applies": False,
+        "reason": "late_day_window_not_active",
+    }
+    if bool(sleeve.get("applies")):
+        blockers = [
+            reason
+            for reason in blockers
+            if str(reason) != "late_day_rank_below_min"
+        ]
+
     return {
         "enabled": bool(SWING_LATE_DAY_ENTRY_QUALITY_TIGHTEN_ENABLED),
         "active": bool(active),
@@ -23492,6 +23612,12 @@ def _p403_late_day_entry_quality(candidate: dict | None) -> dict:
         "entry_type": entry_type,
         "allowed": not blockers,
         "blockers": blockers,
+        "first_2k_reduced_risk_sleeve": sleeve,
+        "risk_multiplier": (
+            float(SWING_LATE_DAY_FIRST_2K_SLEEVE_RISK_MULTIPLIER)
+            if bool(sleeve.get("applies"))
+            else 1.0
+        ),
     }
 
 
@@ -23499,7 +23625,39 @@ def _p403_apply_late_day_entry_quality(candidate: dict | None) -> dict:
     c = dict(candidate or {})
     truth = _p403_late_day_entry_quality(c)
     c["late_day_entry_quality"] = truth
-    if bool(truth.get("active")) and not bool(truth.get("allowed")):
+    sleeve = dict(truth.get("first_2k_reduced_risk_sleeve") or {})
+    if bool(truth.get("active")) and bool(truth.get("allowed")) and bool(sleeve.get("applies")):
+        reasons = [
+            str(reason)
+            for reason in list(c.get("rejection_reasons") or [])
+            if str(reason)
+            and str(reason) not in {
+                "late_day_entry_quality_tightening",
+                "late_day_rank_below_min",
+            }
+        ]
+        c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+        c["eligible"] = not bool(c["rejection_reasons"])
+        c["late_day_first_2k_sleeve_entry"] = True
+        c["entry_type"] = "late_day_first_2k_reduced_risk_sleeve"
+        c["selection_source"] = c.get("selection_source") or "late_day_first_2k_reduced_risk_sleeve"
+        c = _p291_apply_risk_adjusted_entry_sizing(
+            c,
+            sleeve="late_day_first_2k_reduced_risk_sleeve",
+            risk_multiplier=float(SWING_LATE_DAY_FIRST_2K_SLEEVE_RISK_MULTIPLIER),
+        )
+        c = _p300_apply_executable_selection_contract(c)
+        contract = dict(c.get("swing_production_contract") or {})
+        contract["approved"] = bool(c.get("eligible", True)) and bool((c.get("executable_sizing_truth") or {}).get("executable", True))
+        contract["late_day_entry_quality"] = truth
+        contract["late_day_first_2k_sleeve"] = sleeve
+        checks = dict(contract.get("checks") or {})
+        checks["late_day_first_2k_sleeve_ok"] = bool(contract.get("approved"))
+        contract["checks"] = checks
+        c["swing_production_contract"] = contract
+        c["production_contract_approved"] = bool(contract.get("approved"))
+        c["eligible"] = bool(contract.get("approved"))
+    elif bool(truth.get("active")) and not bool(truth.get("allowed")):
         c["eligible"] = False
         reasons = list(c.get("rejection_reasons") or [])
         reasons.append("late_day_entry_quality_tightening")
@@ -23510,6 +23668,56 @@ def _p403_apply_late_day_entry_quality(candidate: dict | None) -> dict:
         contract["late_day_entry_quality"] = truth
         c["swing_production_contract"] = contract
     return c
+
+
+def _p528_enforce_late_day_first_2k_sleeve_cap(rows: list | None) -> list[dict]:
+    out = [
+        dict(row or {})
+        for row in list(rows or [])
+        if isinstance(row, dict)
+    ]
+    sleeve_rows = [
+        row for row in out
+        if bool(row.get("late_day_first_2k_sleeve_entry"))
+        and bool(row.get("eligible"))
+        and bool(row.get("production_contract_approved"))
+    ]
+    if len(sleeve_rows) <= 1:
+        return out
+
+    sleeve_rows.sort(
+        key=lambda row: (
+            _safe_float(((row.get("late_day_entry_quality") or {}).get("first_2k_reduced_risk_sleeve") or {}).get("match_score"), 0.0),
+            _safe_float(row.get("rank_score"), 0.0),
+            _safe_float(row.get("selection_quality_score"), 0.0),
+        ),
+        reverse=True,
+    )
+    allowed_symbol = str((sleeve_rows[0] or {}).get("symbol") or "").strip().upper()
+    for row in out:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if (
+            bool(row.get("late_day_first_2k_sleeve_entry"))
+            and sym
+            and sym != allowed_symbol
+        ):
+            row["eligible"] = False
+            row["production_contract_approved"] = False
+            row["selected"] = False
+            row["selection_source"] = "late_day_first_2k_sleeve_cap_blocked"
+            reasons = list(row.get("rejection_reasons") or [])
+            reasons.append("late_day_first_2k_sleeve_max_one_per_scan")
+            row["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+            contract = dict(row.get("swing_production_contract") or {})
+            contract["approved"] = False
+            contract["late_day_first_2k_sleeve_cap"] = {
+                "allowed_symbol": allowed_symbol,
+                "blocked_symbol": sym,
+                "max_entries_per_scan": 1,
+                "reason": "late_day_first_2k_sleeve_max_one_per_scan",
+            }
+            row["swing_production_contract"] = contract
+    return out
 
 
 def _p403_winner_day_add_slot_adjustment(
@@ -23583,13 +23791,15 @@ def _p323_enforce_production_contract_selection(
         sizing_truth_fn=_p300_executable_sizing_truth,
     )
     enforced = [_p385_apply_dollar_risk_add_slot_contract(row) for row in enforced]
-    return [_p403_apply_late_day_entry_quality(row) for row in enforced]
+    enforced = [_p403_apply_late_day_entry_quality(row) for row in enforced]
+    return _p528_enforce_late_day_first_2k_sleeve_cap(enforced)
 
 def _p323_contract_approved_rows(rows: list | None) -> list[dict]:
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     rows = _p377_filter_rows_for_breakout_follow_through(rows)
     rows = [_p385_apply_dollar_risk_add_slot_contract(row) for row in rows]
     rows = [_p403_apply_late_day_entry_quality(row) for row in rows]
+    rows = _p528_enforce_late_day_first_2k_sleeve_cap(rows)
     return swing_contract_approved_rows(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -23604,6 +23814,7 @@ def _p326_finalize_production_contract_selection(
     rows = [_p365_apply_stall_churn_reentry_cooldown(row) for row in list(rows or [])]
     rows = _p377_filter_rows_for_breakout_follow_through(rows)
     rows = [_p403_apply_late_day_entry_quality(row) for row in rows]
+    rows = _p528_enforce_late_day_first_2k_sleeve_cap(rows)
     finalized = swing_contract_finalize(
         rows,
         config=_p333_swing_selection_contract_config(),
@@ -55645,14 +55856,16 @@ def _p527_late_day_first_2k_near_miss_calibration(limit: int = 25) -> dict:
             and close_to_high >= 98.5
             and 0.0 < risk_pct <= 12.0
         )
+        match_score = float(_safe_float(profile_match.get("match_score"), 0.0))
         first_2k_like = bool(
-            float(profile_match.get("match_score") or 0.0) >= 35.0
+            match_score >= float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MIN_MATCH_SCORE)
             or symbol in set(profile.get("winner_symbols") or [])
         )
         reduced_risk_sleeve_candidate = bool(
-            first_2k_like
+            SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED
+            and first_2k_like
             and geometry_ok
-            and rank_gap <= 3.0
+            and rank_gap <= float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MAX_RANK_GAP)
             and (
                 not bool(SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY)
                 or risk_calibrated
@@ -55679,12 +55892,15 @@ def _p527_late_day_first_2k_near_miss_calibration(limit: int = 25) -> dict:
             "late_day_reasons": late_day_reasons,
             "rejection_reasons": reasons,
             "advisory_sleeve": {
-                "mode": "reduced_risk_observation_only",
-                "suggested_risk_multiplier": 0.5,
+                "mode": "live_reduced_risk_late_day_sleeve",
+                "enabled": bool(SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED),
+                "risk_multiplier": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_RISK_MULTIPLIER),
+                "max_rank_gap": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MAX_RANK_GAP),
+                "min_match_score": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MIN_MATCH_SCORE),
                 "reason": (
-                    "first_2k_like_late_day_near_miss"
+                    "eligible_for_reduced_risk_late_day_first_2k_sleeve"
                     if reduced_risk_sleeve_candidate
-                    else "do_not_promote_without_replay_confirmation"
+                    else "not_live_sleeve_eligible"
                 ),
             },
         }
@@ -55729,6 +55945,13 @@ def _p527_late_day_first_2k_near_miss_calibration(limit: int = 25) -> dict:
             "min_rank_score": float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE),
             "min_target_path_score": float(SWING_LATE_DAY_ENTRY_MIN_TARGET_PATH_SCORE),
             "allow_risk_calibrated_only": bool(SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY),
+        },
+        "live_sleeve_config": {
+            "enabled": bool(SWING_LATE_DAY_FIRST_2K_SLEEVE_ENABLED),
+            "max_rank_gap": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MAX_RANK_GAP),
+            "min_match_score": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_MIN_MATCH_SCORE),
+            "risk_multiplier": float(SWING_LATE_DAY_FIRST_2K_SLEEVE_RISK_MULTIPLIER),
+            "max_entries_per_scan": 1,
         },
         "first_2k_profile": profile,
         "late_day_near_miss_count": len(late_day_rows),
