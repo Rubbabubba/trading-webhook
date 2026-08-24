@@ -2953,7 +2953,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-526-completed-scan-failure-tombstone-current-suppression-sync"
+PATCH_VERSION = "patch-527-late-day-first-2k-near-miss-sleeve-calibration"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -55596,6 +55596,148 @@ def _p410_current_geometry_replay(limit: int = 25) -> dict:
         ),
     }
 
+def _p527_late_day_first_2k_near_miss_calibration(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    payload = _p406_fast_current_candidate_payload(limit=lim)
+    rows = [
+        dict(row or {})
+        for row in list(payload.get("top_new_entry_candidates") or payload.get("candidate_rows") or [])
+        if isinstance(row, dict)
+        and not bool(row.get("open_position"))
+    ]
+    profile = _p409_first_2k_symbol_profile()
+
+    current_selected = set(payload.get("selected_symbols") or [])
+    stale_selected = set(payload.get("stale_revalidated_blocked_symbols") or [])
+    late_day_rows = []
+    sleeve_candidates = []
+
+    for row in rows:
+        reasons = [str(reason) for reason in list(row.get("rejection_reasons") or [])]
+        late_day_reasons = [
+            reason for reason in reasons
+            if reason.startswith("late_day_") or reason == "late_day_entry_quality_tightening"
+        ]
+        if not late_day_reasons:
+            continue
+
+        symbol = str(row.get("symbol") or "").strip().upper()
+        profile_match = _p409_candidate_profile_match(row, profile)
+        rank_score = float(_safe_float(row.get("rank_score"), 0.0))
+        target_path_score = float(_safe_float(
+            row.get("target_path_score")
+            or ((row.get("target_path_profit") or {}).get("score") if isinstance(row.get("target_path_profit"), dict) else 0.0),
+            0.0,
+        ))
+        breakout_distance = _p410_geometry_value_pct(row, "breakout_distance_pct")
+        close_to_high = _p410_geometry_value_pct(row, "close_to_high_pct")
+        risk_pct = _p410_geometry_value_pct(row, "risk_per_share_pct")
+        risk_calibrated = str(row.get("entry_type") or "").strip() in {
+            "swing_production_risk_calibrated_starter",
+            "swing_production_near_rank_revival",
+            "first_2k_geometry_sleeve",
+            "target_path_risk_adjusted_near_miss",
+        }
+
+        rank_gap = max(0.0, float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE) - rank_score)
+        geometry_ok = bool(
+            breakout_distance >= -1.0
+            and close_to_high >= 98.5
+            and 0.0 < risk_pct <= 12.0
+        )
+        first_2k_like = bool(
+            float(profile_match.get("match_score") or 0.0) >= 35.0
+            or symbol in set(profile.get("winner_symbols") or [])
+        )
+        reduced_risk_sleeve_candidate = bool(
+            first_2k_like
+            and geometry_ok
+            and rank_gap <= 3.0
+            and (
+                not bool(SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY)
+                or risk_calibrated
+            )
+        )
+
+        item = {
+            "symbol": symbol,
+            "rank_score": rank_score,
+            "late_day_min_rank_score": float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE),
+            "rank_gap": round(rank_gap, 4),
+            "target_path_score": target_path_score,
+            "breakout_distance_pct": breakout_distance,
+            "close_to_high_pct": close_to_high,
+            "risk_per_share_pct": risk_pct,
+            "entry_type": row.get("entry_type"),
+            "risk_calibrated": bool(risk_calibrated),
+            "profile_match": profile_match,
+            "first_2k_like": bool(first_2k_like),
+            "geometry_ok": bool(geometry_ok),
+            "reduced_risk_sleeve_candidate": bool(reduced_risk_sleeve_candidate),
+            "live_selected": symbol in current_selected,
+            "stale_selected": symbol in stale_selected,
+            "late_day_reasons": late_day_reasons,
+            "rejection_reasons": reasons,
+            "advisory_sleeve": {
+                "mode": "reduced_risk_observation_only",
+                "suggested_risk_multiplier": 0.5,
+                "reason": (
+                    "first_2k_like_late_day_near_miss"
+                    if reduced_risk_sleeve_candidate
+                    else "do_not_promote_without_replay_confirmation"
+                ),
+            },
+        }
+        late_day_rows.append(item)
+        if reduced_risk_sleeve_candidate:
+            sleeve_candidates.append(item)
+
+    late_day_rows.sort(
+        key=lambda item: (
+            bool(item.get("reduced_risk_sleeve_candidate")),
+            float((item.get("profile_match") or {}).get("match_score") or 0.0),
+            float(item.get("rank_score") or 0.0),
+        ),
+        reverse=True,
+    )
+
+    recommended_action = (
+        "review_reduced_risk_sleeve_candidates_with_replay_before_live_promotion"
+        if sleeve_candidates
+        else "late_day_filter_currently_blocks_all_near_misses"
+        if late_day_rows
+        else "no_late_day_near_misses_currently"
+    )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "late_day_first_2k_near_miss_calibration",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "does_not_change_state": True,
+        "mantra": "cleanup_simplify_align_with_first_2k_sweet_spot",
+        "current_candidate_status": payload.get("status"),
+        "current_candidate_recommended_action": payload.get("recommended_action"),
+        "candidate_count": int(payload.get("candidate_count") or 0),
+        "eligible_count": int(payload.get("eligible_count") or 0),
+        "selected_symbols": list(payload.get("selected_symbols") or []),
+        "stale_revalidated_blocked_symbols": list(payload.get("stale_revalidated_blocked_symbols") or []),
+        "late_day_config": {
+            "enabled": bool(SWING_LATE_DAY_ENTRY_QUALITY_TIGHTEN_ENABLED),
+            "start_ny": str(SWING_LATE_DAY_ENTRY_QUALITY_START_NY),
+            "min_rank_score": float(SWING_LATE_DAY_ENTRY_MIN_RANK_SCORE),
+            "min_target_path_score": float(SWING_LATE_DAY_ENTRY_MIN_TARGET_PATH_SCORE),
+            "allow_risk_calibrated_only": bool(SWING_LATE_DAY_ENTRY_ALLOW_RISK_CALIBRATED_ONLY),
+        },
+        "first_2k_profile": profile,
+        "late_day_near_miss_count": len(late_day_rows),
+        "reduced_risk_sleeve_candidate_count": len(sleeve_candidates),
+        "reduced_risk_sleeve_symbols": [row.get("symbol") for row in sleeve_candidates],
+        "rows": late_day_rows[:lim],
+        "recommended_action": recommended_action,
+    }
+
 def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
     latest_scan, summary = _p298_latest_scan_summary_light()
@@ -55985,6 +56127,10 @@ def diagnostics_first_2k_rank_relaxation_replay(limit: int = 25):
 @app.get("/diagnostics/breakout_distance_relaxation_replay")
 def diagnostics_breakout_distance_relaxation_replay(limit: int = 25):
     return _p410_current_geometry_replay(limit=limit)
+
+@app.get("/diagnostics/late_day_first_2k_near_miss_calibration")
+def diagnostics_late_day_first_2k_near_miss_calibration(limit: int = 25):
+    return _p527_late_day_first_2k_near_miss_calibration(limit=limit)
 
 @app.get("/diagnostics/candidates_full")
 def diagnostics_candidates_full(limit: int = 25, heavy: bool = False):
@@ -56416,6 +56562,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/market_open_selection_audit_light",
             f"{base}/protective_limit_submit_evidence",
             f"{base}/runtime_coverage_preview",
+            f"{base}/late_day_first_2k_near_miss_calibration?limit=10",
         ],
         "submit_fill_proof_check": [
             f"{base}/protective_limit_submit_evidence",
@@ -56465,6 +56612,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/swing_pre_post_change_performance",
             f"{base}/target_path_opportunity_expansion_lab",
             f"{base}/missed_opportunity_replay_lab",
+            f"{base}/late_day_first_2k_near_miss_calibration?limit=25",
         ],
     }
     default_pull_order = [
