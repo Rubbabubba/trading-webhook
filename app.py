@@ -2827,6 +2827,7 @@ SCAN_HISTORY_STORE_FULL_RESULTS = env_bool_any("SCAN_HISTORY_STORE_FULL_RESULTS"
 SCAN_HISTORY_RESULT_LIMIT = max(0, int(getenv_any("SCAN_HISTORY_RESULT_LIMIT", default="25") or 25))
 SCAN_FAST_RESPONSE_ENABLED = env_bool_any("SCAN_FAST_RESPONSE_ENABLED", default="true")
 SCAN_FAST_RESPONSE_FOR_WORKER_ONLY = env_bool_any("SCAN_FAST_RESPONSE_FOR_WORKER_ONLY", default="true")
+SWING_SCAN_FOREGROUND_TERMINAL_ENABLED = True
 SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", default=str(int(os.getenv("SCAN_TIMEOUT_SEC", "240") or 240) - 30)) or 210))
 SWING_SCAN_HOT_PATH_SLIM_ENABLED = env_bool_any(
     "SWING_SCAN_HOT_PATH_SLIM_ENABLED",
@@ -2949,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-512-candidate-eval-hard-bypass-full-universe-terminal-publish"
+PATCH_VERSION = "patch-513-disable-swing-background-scan-path-foreground-terminal-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29401,6 +29402,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "candidate_eval_stopped_for_budget": bool(p402_eval_truth.get("stopped_for_budget")),
                 "candidate_eval_partial_publishable": bool(p402_eval_truth.get("partial_scan_publishable")),
                 "goal": "prove_patch_479_fast_path_ran_without_per_symbol_broker_dependency",
+            },
+            "p513_swing_foreground_terminal_contract": {
+                "enabled": bool(SWING_SCAN_FOREGROUND_TERMINAL_ENABLED),
+                "applied": bool(scan_options.get("p513_swing_foreground_terminal_contract")),
+                "background_scan_bypassed_for_swing": bool(scan_options.get("p513_background_scan_bypassed_for_swing")),
+                "scan_execution_contract": "foreground_terminal" if bool(scan_options.get("p513_swing_foreground_terminal_contract")) else "legacy_or_diagnostic",
+                "reason": str(scan_options.get("p513_foreground_terminal_reason") or ""),
             },
             "p484_candidate_eval_module": swing_candidate_eval_module_status(
                 patch_version=PATCH_VERSION
@@ -57512,6 +57520,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
 
         p474_should_fast_close_swing_scan = bool(
             str(STRATEGY_MODE or "").strip().lower() == "swing"
+            and not bool(SWING_SCAN_FOREGROUND_TERMINAL_ENABLED)
             and bool(fast_response)
             and bool(SCAN_FAST_RESPONSE_ENABLED)
             and str(source_kind or "").strip().lower() == "worker"
@@ -57527,6 +57536,41 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 requested_reason=requested_reason,
                 set_last_scan_fn=_set_last_scan,
             )
+
+        p513_foreground_background_cleanup = {
+            "applied": False,
+            "reason": "not_swing_foreground_terminal_path",
+        }
+        if str(STRATEGY_MODE or "").strip().lower() == "swing" and bool(SWING_SCAN_FOREGROUND_TERMINAL_ENABLED):
+            body["background"] = False
+            body["p513_swing_foreground_terminal_contract"] = True
+            body["p513_background_scan_bypassed_for_swing"] = True
+            body["p513_foreground_terminal_reason"] = "swing_background_thread_removed_from_live_scan_path"
+            existing_bg = _p456_background_scan_truth()
+            existing_status = str((existing_bg or {}).get("status") or "").strip().lower()
+            if existing_status in {"accepted", "running"}:
+                p513_foreground_background_cleanup = _p456_mark_background_scan(
+                    status="skipped",
+                    active=False,
+                    terminal=True,
+                    completed_utc=datetime.now(timezone.utc).isoformat(),
+                    reason="p513_swing_foreground_terminal_replaced_background",
+                    error=None,
+                    exception_type=None,
+                    traceback_tail=None,
+                    stage="foreground_terminal_contract",
+                    stage_details={
+                        "previous_scan_attempt_id": (existing_bg or {}).get("scan_attempt_id"),
+                        "previous_status": existing_status,
+                        "scan_attempt_id": scan_attempt_id,
+                    },
+                )
+            else:
+                p513_foreground_background_cleanup = {
+                    "applied": False,
+                    "reason": "no_active_background_scan_to_replace",
+                    "previous_status": existing_status or "none",
+                }
 
         effective_dry_run = effective_entry_dry_run("worker_scan")
 
@@ -57545,6 +57589,26 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             )
             try:
                 scanner_payload = swing_resp.get("scanner") if isinstance(swing_resp, dict) else {}
+                if isinstance(scanner_payload, dict):
+                    scanner_payload["p513_swing_foreground_terminal_contract"] = {
+                        "enabled": bool(SWING_SCAN_FOREGROUND_TERMINAL_ENABLED),
+                        "applied": True,
+                        "background_scan_bypassed_for_swing": True,
+                        "background_cleanup": dict(p513_foreground_background_cleanup or {}),
+                        "scan_execution_contract": "foreground_terminal",
+                    }
+                SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
+                    **dict(SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {}),
+                    "status": "completed",
+                    "updated_utc": datetime.now(timezone.utc).isoformat(),
+                    "completed_utc": datetime.now(timezone.utc).isoformat(),
+                    "response": {
+                        "ok": bool((swing_resp or {}).get("ok", True)) if isinstance(swing_resp, dict) else True,
+                        "scanner": dict(scanner_payload or {}),
+                    },
+                    "source_meta": dict(source_meta),
+                    "p513_foreground_terminal_contract": True,
+                }
                 _record_scanner_telemetry(
                     "scan_ok",
                     "success",
@@ -57556,6 +57620,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                         "duration_ms": int((scanner_payload or {}).get("duration_ms") or _elapsed_ms() or 0),
                         "scan_reason": requested_reason or "scheduled",
                         "p474_startup_foreground_fallback": bool(p474_startup_foreground_fallback.get("enabled")),
+                        "p513_swing_foreground_terminal_contract": True,
+                        "p513_background_scan_bypassed_for_swing": True,
                         **source_meta,
                     },
                 )
