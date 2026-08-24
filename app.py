@@ -2827,7 +2827,10 @@ SCAN_HISTORY_STORE_FULL_RESULTS = env_bool_any("SCAN_HISTORY_STORE_FULL_RESULTS"
 SCAN_HISTORY_RESULT_LIMIT = max(0, int(getenv_any("SCAN_HISTORY_RESULT_LIMIT", default="25") or 25))
 SCAN_FAST_RESPONSE_ENABLED = env_bool_any("SCAN_FAST_RESPONSE_ENABLED", default="true")
 SCAN_FAST_RESPONSE_FOR_WORKER_ONLY = env_bool_any("SCAN_FAST_RESPONSE_FOR_WORKER_ONLY", default="true")
-SWING_SCAN_FOREGROUND_TERMINAL_ENABLED = False
+SWING_SCAN_FOREGROUND_TERMINAL_ENABLED = env_bool_any(
+    "SWING_SCAN_FOREGROUND_TERMINAL_ENABLED",
+    default="true",
+)
 SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", default=str(int(os.getenv("SCAN_TIMEOUT_SEC", "240") or 240) - 30)) or 210))
 SWING_SCAN_HOT_PATH_SLIM_ENABLED = env_bool_any(
     "SWING_SCAN_HOT_PATH_SLIM_ENABLED",
@@ -2950,7 +2953,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-522-selected-candidate-submit-finalization"
+PATCH_VERSION = "patch-523-force-scheduled-scanner-production-submit-path"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -30017,6 +30020,17 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "background_scan_bypassed_for_swing": bool(scan_options.get("p513_background_scan_bypassed_for_swing")),
                 "scan_execution_contract": "foreground_terminal" if bool(scan_options.get("p513_swing_foreground_terminal_contract")) else "legacy_or_diagnostic",
                 "reason": str(scan_options.get("p513_foreground_terminal_reason") or ""),
+            },
+            "p523_scheduled_scanner_production_submit_path": {
+                "enabled": bool(SWING_SCAN_FOREGROUND_TERMINAL_ENABLED),
+                "applied": bool(scan_options.get("p523_scheduled_scanner_production_submit_path")),
+                "scanner_submit_path": (
+                    "production_direct_submit"
+                    if bool(scan_options.get("p523_scheduled_scanner_production_submit_path"))
+                    else "diagnostic_or_legacy"
+                ),
+                "legacy_background_submit_path_bypassed": bool(scan_options.get("p523_legacy_background_submit_path_bypassed")),
+                "goal": "scheduled_swing_scanner_uses_single_production_submit_contract",
             },
             "p484_candidate_eval_module": swing_candidate_eval_module_status(
                 patch_version=PATCH_VERSION
@@ -58333,6 +58347,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         p474_should_fast_close_swing_scan = bool(
             str(STRATEGY_MODE or "").strip().lower() == "swing"
             and not bool(SWING_SCAN_FOREGROUND_TERMINAL_ENABLED)
+            and not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)
             and bool(fast_response)
             and bool(SCAN_FAST_RESPONSE_ENABLED)
             and str(source_kind or "").strip().lower() == "worker"
@@ -58358,6 +58373,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             body["p513_swing_foreground_terminal_contract"] = True
             body["p513_background_scan_bypassed_for_swing"] = True
             body["p513_foreground_terminal_reason"] = "swing_background_thread_removed_from_live_scan_path"
+            body["p523_scheduled_scanner_production_submit_path"] = True
+            body["p523_legacy_background_submit_path_bypassed"] = True
             existing_bg = _p456_background_scan_truth()
             existing_status = str((existing_bg or {}).get("status") or "").strip().lower()
             if existing_status in {"accepted", "running"}:
@@ -58408,6 +58425,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                         "background_scan_bypassed_for_swing": True,
                         "background_cleanup": dict(p513_foreground_background_cleanup or {}),
                         "scan_execution_contract": "foreground_terminal",
+                    }
+                    scanner_payload["p523_scheduled_scanner_production_submit_path"] = {
+                        "enabled": True,
+                        "applied": True,
+                        "scanner_submit_path": "production_direct_submit",
+                        "legacy_background_submit_path_bypassed": True,
                     }
                 SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
                     **dict(SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {}),
