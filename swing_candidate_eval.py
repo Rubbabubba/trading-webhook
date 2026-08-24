@@ -8,10 +8,10 @@ timeouts, and module adoption truth.
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Any
+from typing import Any, Callable
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-507-candidate-eval-runner-scaffolding-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-508-candidate-eval-runner-submission-loop-extraction"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -790,6 +790,47 @@ def runner_wait_scaffold(
     }
 
 
+def submit_symbol_futures(
+    *,
+    executor: Any,
+    symbols: list[str],
+    future_to_symbol: dict | None,
+    eval_fn: Callable[[str], Any],
+    over_budget_fn: Callable[[], bool],
+    runtime_budget_state: dict | None,
+) -> dict:
+    futures = future_to_symbol if isinstance(future_to_symbol, dict) else {}
+    budget_state = dict(runtime_budget_state or initial_budget_state())
+    submitted_symbols: list[str] = []
+    budget_stopped_symbols: list[str] = []
+    for symbol in list(symbols or []):
+        symbol_clean = str(symbol or "").strip().upper()
+        if over_budget_fn():
+            budget_state = mark_budget_stopped_symbol(budget_state, symbol_clean)
+            if symbol_clean:
+                budget_stopped_symbols.append(symbol_clean)
+            continue
+        submit_eval_future(executor, futures, eval_fn, symbol_clean)
+        if symbol_clean:
+            submitted_symbols.append(symbol_clean)
+    return {
+        "future_to_symbol": futures,
+        "runtime_budget_state": budget_state,
+        "future_submit_truth": future_submit_summary(futures),
+        "p508_candidate_eval_submission_loop_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "symbol_count": len(list(symbols or [])),
+            "submitted_count": len(submitted_symbols),
+            "submitted_symbols": submitted_symbols,
+            "budget_stopped_count": len(budget_stopped_symbols),
+            "budget_stopped_symbols": _dedupe_keep_order(budget_stopped_symbols),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
 def build_eval_loop_summary(
     *,
     runtime_budget_state: dict | None,
@@ -812,6 +853,7 @@ def build_eval_loop_summary(
     runner_boundary: dict | None = None,
     runner_scaffold: dict | None = None,
     runner_wait_scaffold: dict | None = None,
+    runner_submission_loop: dict | None = None,
 ) -> dict:
     budget_summary = budget_state_summary(runtime_budget_state)
     merge_summary = result_merge_summary(merge_state)
@@ -841,6 +883,7 @@ def build_eval_loop_summary(
         **dict(runner_boundary or {}),
         **dict(runner_scaffold or {}),
         **dict(runner_wait_scaffold or {}),
+        **dict(runner_submission_loop or {}),
         "p505_candidate_eval_loop_summary_helper": {
             "module": "swing_candidate_eval",
             "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
@@ -1102,8 +1145,9 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_loop_summary_shape",
             "candidate_eval_runner_boundary_shape",
             "candidate_eval_runner_scaffold_shape",
+            "candidate_eval_runner_submission_loop_shape",
         ],
-        "next_extraction_target": "candidate_eval_runner_submission_loop_extraction",
+        "next_extraction_target": "candidate_eval_runner_wait_loop_boundary_extraction",
     }
 
 
