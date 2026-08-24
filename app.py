@@ -2950,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-519-full-candidate-cache-adoption-eligible-selection-finalizer-sync"
+PATCH_VERSION = "patch-520-selected-submit-row-preservation-rate-limit-rehydration"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -16532,9 +16532,23 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
 
     submit_rows_all = [
         dict(row or {})
-        for row in list(summary.get("selected_submission_rows") or latest_scan.get("would_submit") or [])
+        for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or latest_scan.get("would_submit") or [])
         if isinstance(row, dict)
     ]
+    if not submit_rows_all:
+        selected_truth_rows = []
+        selected_truth = summary.get("selected_submission_truth")
+        if isinstance(selected_truth, dict):
+            selected_truth_rows = list(selected_truth.get("rows") or [])
+        submit_rows_all = [
+            dict((row or {}).get("scan_submit_row") or row or {})
+            for row in selected_truth_rows
+            if isinstance(row, dict)
+            and (
+                isinstance((row or {}).get("scan_submit_row"), dict)
+                or str((row or {}).get("symbol") or "").strip()
+            )
+        ]
 
     current_candidate_truth = _p406_fast_current_candidate_payload(limit=lim)
     eligible_new_entry_rows = _p413_eligible_new_entry_rows_from_fast_payload(current_candidate_truth)
@@ -29779,6 +29793,56 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "max_new_entries": int(max_new_entries),
             }
 
+    approved_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in list(production_approved or [])
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    p520_raw_selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(selected or [])
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    p520_synced_selected: list[dict] = []
+    p520_dropped_selected: list[str] = []
+    for row in list(selected or []):
+        selected_row = dict(row or {})
+        sym = str(selected_row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        approved_row = approved_by_symbol.get(sym)
+        row_approved = bool(selected_row.get("production_contract_approved")) and bool(selected_row.get("eligible"))
+        if not approved_row and not row_approved:
+            p520_dropped_selected.append(sym)
+            continue
+        synced_row = dict(approved_row or selected_row)
+        synced_row.update({
+            "selected": True,
+            "selection_source": synced_row.get("selection_source") or selected_row.get("selection_source") or "swing_production_contract",
+            "p520_selected_candidate_truth_synced": True,
+        })
+        p520_synced_selected.append(synced_row)
+    if selected:
+        selected = p520_synced_selected
+        production_selection_finalizer["selected"] = list(selected)
+        production_selection_finalizer["selected_symbols"] = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(selected or [])
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+    p520_selection_truth_sync = {
+        "applied": bool(p520_raw_selected_symbols),
+        "raw_selected_symbols": list(p520_raw_selected_symbols),
+        "synced_selected_symbols": list(production_selection_finalizer.get("selected_symbols") or []),
+        "dropped_selected_symbols": _dedupe_keep_order(p520_dropped_selected),
+        "approved_symbol_count": len(approved_by_symbol),
+        "reason": (
+            "selected_symbols_synced_to_current_approved_candidate_rows"
+            if p520_raw_selected_symbols
+            else "no_selected_symbols_to_sync"
+        ),
+    }
+
     _p402_stage_checkpoint(
         "selection_complete",
         candidate_count=len(candidates),
@@ -29933,7 +29997,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "selection_finalizer": "p344_approved_candidate_final_selection_sync",
                 "eligible_contract_finalizer_sync": dict(production_selection_finalizer.get("p414_eligible_contract_finalizer_sync") or {}),
                 "p461_promotion_recovery": dict(p461_promotion_recovery),
+                "p520_selection_truth_sync": dict(p520_selection_truth_sync),
             },
+            "candidate_rows_for_truth": [dict(c) for c in candidates[:250]],
             "top_candidates": [dict(c) for c in candidates[:5]],
             "top_rejection_reasons": [
                 {"reason": k, "count": int(v)}
@@ -30208,6 +30274,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "selected_symbols": list(selected_symbols_for_summary),
             "production_contract_selected_symbols": list(selected_symbols_for_summary),
             "selected_submission_rows": list(would_submit or []),
+            "would_submit": list(would_submit or []),
             "actual_submit_side_effect_symbols": list(actual_submit_symbols),
             "p399_pre_scan_retry_submit": {
                 "candidate_symbols": _dedupe_keep_order([
@@ -30763,6 +30830,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     summary["production_contract_selected_symbols"] = list(production_submit_bridge.get("selected_symbols") or [])
     summary["selected_submit_bridge"] = production_submit_bridge
     summary["selected_submission_rows"] = list(would_submit or [])
+    summary["would_submit"] = list(would_submit or [])
     summary["actual_submit_side_effect_symbols"] = actual_submit_symbols
     summary["execution_quality_block_symbols"] = execution_quality_block_symbols
     summary["execution_quality_block_count"] = len(execution_quality_block_symbols)
@@ -41396,6 +41464,25 @@ def _p330_filled_plan_execution_backfill_symbols() -> list[str]:
 
     return _dedupe_keep_order(symbols)
 
+def _p520_lifecycle_rate_limit_event(lifecycle_matches: list | None) -> dict:
+    for row in reversed(list(lifecycle_matches or [])):
+        if not isinstance(row, dict):
+            continue
+        details = row.get("details") if isinstance(row.get("details"), dict) else {}
+        if (
+            bool(row.get("rate_limited"))
+            or bool(details.get("rate_limited"))
+            or bool(row.get("retryable"))
+            or bool(details.get("retryable"))
+            or _p352_is_alpaca_rate_limit_error(row.get("reason"))
+            or _p352_is_alpaca_rate_limit_error(row.get("status"))
+            or _p352_is_alpaca_rate_limit_error(row.get("error"))
+            or _p352_is_alpaca_rate_limit_error(details.get("reason"))
+            or _p352_is_alpaca_rate_limit_error(details.get("error"))
+        ):
+            return dict(row)
+    return {}
+
 def _p298_selected_submission_truth_light() -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan, summary, p330_after_hours_truth = _p330_preserved_selected_submission_summary(latest_scan, summary)
@@ -41410,6 +41497,12 @@ def _p298_selected_submission_truth_light() -> dict:
         str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
         for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or [])
         if str((row or {}).get("symbol") or "").strip()
+    }
+    current_candidate_truth = _p406_fast_current_candidate_payload(limit=100)
+    current_candidate_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in list(current_candidate_truth.get("candidate_rows") or [])
+        if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
     }
 
     open_symbols = set(_p404_active_position_symbols_light())
@@ -41453,6 +41546,31 @@ def _p298_selected_submission_truth_light() -> dict:
             and str(row.get("status") or "").lower() == "selected"
         ]
         submit_row = dict(submit_rows.get(sym) or {})
+        candidate_row = dict(current_candidate_by_symbol.get(sym) or {})
+        lifecycle_rate_limit_event = _p520_lifecycle_rate_limit_event(lifecycle_matches)
+        if not submit_row and lifecycle_rate_limit_event:
+            lifecycle_details = lifecycle_rate_limit_event.get("details") if isinstance(lifecycle_rate_limit_event.get("details"), dict) else {}
+            lifecycle_reason = (
+                lifecycle_rate_limit_event.get("reason")
+                or lifecycle_details.get("reason")
+                or lifecycle_rate_limit_event.get("error")
+                or lifecycle_details.get("error")
+                or "alpaca_submit_rate_limited"
+            )
+            submit_row = dict(candidate_row or {})
+            submit_row.update({
+                "symbol": sym,
+                "signal": submit_row.get("signal") or submit_row.get("strategy") or "daily_breakout",
+                "submit_state": "retryable_rate_limit",
+                "submit_reason": lifecycle_reason,
+                "reason": lifecycle_reason,
+                "submit_attempted": True,
+                "actual_submit_side_effect": False,
+                "rate_limited": True,
+                "retryable": True,
+                "p520_lifecycle_rate_limit_rehydrated": True,
+                "p520_lifecycle_rate_limit_event": dict(lifecycle_rate_limit_event),
+            })
         plan_snapshot = dict((TRADE_PLAN or {}).get(sym) or {})
         submit_meta = {
             "state": submit_row.get("submit_state"),
@@ -41553,6 +41671,8 @@ def _p298_selected_submission_truth_light() -> dict:
             "submit_gap": bool(submit_gap),
             "submit_gap_type": submit_gap_type,
             "rate_limited_retryable": bool(rate_limited_retryable),
+            "p520_lifecycle_rate_limit_rehydrated": bool(submit_row.get("p520_lifecycle_rate_limit_rehydrated")),
+            "p520_lifecycle_rate_limit_event": dict(lifecycle_rate_limit_event or {}),
             "rate_limit_retry_key": rate_limit_retry_key,
             "rate_limit_retry_queued": bool(rate_limit_retry_queued),
             "rate_limit_retry_queue_backfill": rate_limit_retry_queue_backfill,
@@ -41590,7 +41710,6 @@ def _p298_selected_submission_truth_light() -> dict:
         selected_symbols=selected_symbols,
         rows=rows,
     )
-    current_candidate_truth = _p406_fast_current_candidate_payload(limit=25)
     eligible_new_entry_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(current_candidate_truth)
 
     out["p330_after_hours_truth"] = p330_after_hours_truth
@@ -55094,12 +55213,27 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
     latest_scan, summary = _p298_latest_scan_summary_light()
 
+    summary_full_rows = [
+        dict(row or {})
+        for row in list(
+            summary.get("candidate_rows_for_truth")
+            or summary.get("candidates")
+            or summary.get("results")
+            or summary.get("items")
+            or []
+        )
+        if isinstance(row, dict)
+    ]
     rows_all = [
         dict(row or {})
         for row in list(LAST_SWING_CANDIDATES or [])
         if isinstance(row, dict)
     ]
     source = "last_swing_candidates_memory"
+
+    if summary_full_rows and (not rows_all or len(summary_full_rows) >= len(rows_all)):
+        rows_all = summary_full_rows
+        source = "latest_scan_summary_candidate_rows_for_truth"
 
     if not rows_all and CANDIDATE_HISTORY:
         hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
@@ -55109,15 +55243,6 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             if isinstance(row, dict)
         ]
         source = "candidate_history_latest"
-
-    if not rows_all:
-        rows_all = [
-            dict(row or {})
-            for row in list(summary.get("candidates") or summary.get("results") or summary.get("items") or [])
-            if isinstance(row, dict)
-        ]
-        if rows_all:
-            source = "latest_scan_summary_full_rows"
 
     if not rows_all:
         rows_all = [
