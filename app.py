@@ -2950,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-517-pure-candidate-eval-terminal-contract-old-hard-bypass-removal"
+PATCH_VERSION = "patch-518-scanner-hot-loop-purification-post-scan-enrichment-deferral"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28863,17 +28863,65 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             },
         })
 
-        defensive_rollback = _p264_defensive_daily_breakout_rollback_snapshot(
-            thresholds.get("mode") or regime_mode,
-            candidate=candidate,
+        distance_quality = max(
+            0.0,
+            1.0 - min(abs(breakout_distance) / max(effective_breakout_max_distance, 1e-9), 2.0),
         )
-        candidate["defensive_daily_breakout_rollback"] = defensive_rollback
-        if defensive_rollback.get("blocked"):
-            candidate["rejection_reasons"].append("defensive_daily_breakout_rollback")
-        elif defensive_rollback.get("broad_blocked") and defensive_rollback.get("tier_gate_passed"):
-            candidate["defensive_breakout_tier_approved"] = True
-
-        candidate = _p282_apply_breakout_restoration_controls(candidate)
+        lightweight_target_path_score = round(
+            max(
+                0.0,
+                min(
+                    100.0,
+                    (float(score) * 0.55)
+                    + (max(0.0, min(1.0, close_to_high)) * 18.0)
+                    + (distance_quality * 18.0)
+                    + (max(0.0, min(float(ret_20), 0.25)) * 36.0),
+                ),
+            ),
+            4,
+        )
+        candidate["target_path_profit"] = {
+            "enabled": bool(SWING_TARGET_PATH_PROFIT_ENGINE_ENABLED),
+            "applies": True,
+            "strategy": BREAKOUT_STRATEGY_NAME,
+            "score": lightweight_target_path_score,
+            "passed": bool(lightweight_target_path_score >= float(SWING_TARGET_PATH_MIN_SCORE)),
+            "tier": "scanner_lightweight",
+            "reason": "scanner_hot_loop_lightweight_target_path_proxy",
+            "p518_deferred_heavy_enrichment": True,
+        }
+        candidate["target_path_score"] = lightweight_target_path_score
+        candidate["target_profile_breakout_gate"] = {
+            "enabled": bool(SWING_TARGET_PROFILE_BREAKOUT_GATE_ENABLED),
+            "applies": True,
+            "passed": True,
+            "reason": "deferred_from_scanner_hot_loop_p518",
+            "p518_deferred_heavy_enrichment": True,
+        }
+        candidate["stall_loss_entry_feedback"] = {
+            "enabled": bool(SWING_STALL_LOSS_ENTRY_FEEDBACK_ENABLED),
+            "blocked": False,
+            "rank_penalty": 0.0,
+            "reason": "deferred_from_scanner_hot_loop_p518",
+            "p518_deferred_heavy_enrichment": True,
+        }
+        candidate["defensive_daily_breakout_rollback"] = {
+            "ok": True,
+            "mode": "defensive_daily_breakout_rollback",
+            "active": bool(not SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES),
+            "blocked": False,
+            "broad_blocked": bool(
+                STRATEGY_MODE == "swing"
+                and not SWING_REGIME_MODE_ALLOW_DEFENSIVE_ENTRIES
+                and str(thresholds.get("mode") or regime_mode).strip().lower() == "defensive"
+            ),
+            "tier_gate_enabled": bool(SWING_DEFENSIVE_BREAKOUT_TIER_GATE_ENABLED),
+            "tier_gate_passed": True,
+            "reason": "deferred_from_scanner_hot_loop_p518",
+            "p518_deferred_heavy_enrichment": True,
+        }
+        candidate["p518_scanner_hot_loop_purified"] = True
+        candidate["p518_heavy_strategy_enrichment_deferred"] = True
         score = float(_safe_float(candidate.get("rank_score")))
         if score < min_rank_score:
             candidate["rejection_reasons"].append("rank_score_below_min")
@@ -28956,12 +29004,23 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         return c
 
     def _p515_eval_symbol_rows_fast(sym: str) -> list[dict]:
-        return [
-            _p517_finalize_pure_candidate_for_scan(
-                _p515_eval_daily_breakout_candidate_fast(sym),
-                sym,
-            )
-        ]
+        symbol = str(sym or "").strip().upper()
+        symbol_started = _time.perf_counter()
+        base_candidate = _p515_eval_daily_breakout_candidate_fast(symbol)
+        _p402_stage_checkpoint(
+            "pure_candidate_eval_base_row_complete",
+            symbol=symbol,
+            symbol_elapsed_sec=round(float(_time.perf_counter() - symbol_started), 3),
+            p518_hot_loop_purified=True,
+        )
+        row = _p517_finalize_pure_candidate_for_scan(base_candidate, symbol)
+        _p402_stage_checkpoint(
+            "pure_candidate_eval_light_finalize_complete",
+            symbol=symbol,
+            symbol_elapsed_sec=round(float(_time.perf_counter() - symbol_started), 3),
+            p518_heavy_strategy_enrichment_deferred=True,
+        )
+        return [row]
 
     def _p478_run_symbol_eval_isolated(sym: str, remaining_sec: float) -> dict:
         symbol = str(sym or "").strip().upper()
