@@ -2950,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-514-no-hang-candidate-eval-timeout-contract"
+PATCH_VERSION = "patch-515-pure-daily-bar-candidate-evaluator-full-universe-scan"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28427,7 +28427,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     p402_eval_truth["p512_candidate_eval_hard_bypass_enabled"] = bool(SWING_SCAN_CANDIDATE_HARD_BYPASS_ENABLED)
     p402_eval_truth["p512_candidate_eval_hard_bypass_applied"] = bool(p512_candidate_eval_hard_bypass_applied)
     p402_eval_truth["p512_candidate_eval_contract"] = (
-        "isolated_symbol_timeout_wrapper"
+        "pure_daily_bar_no_thread_no_fetch"
         if p512_candidate_eval_hard_bypass_applied
         else "legacy_isolated_symbol_eval"
     )
@@ -28436,7 +28436,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "applies_to_p512_hard_bypass": bool(p512_candidate_eval_hard_bypass_applied),
         "symbol_timeout_sec": int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC or 0),
         "timeout_max_per_scan": int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_MAX_PER_SCAN or 0),
-        "contract": "isolated_symbol_timeout_wrapper",
+        "contract": "pure_daily_bar_no_thread_no_fetch",
+    }
+    p402_eval_truth["p515_pure_daily_bar_candidate_eval"] = {
+        "enabled": bool(p512_candidate_eval_hard_bypass_applied),
+        "contract": "pure_daily_bar_no_thread_no_fetch",
+        "symbols_requested": len(syms),
+        "mean_reversion_fast_path": "deferred",
     }
     p476_candidate_progress_publish = swing_candidate_eval_initial_progress_publish()
     p477_terminal_partial_close = swing_candidate_eval_initial_terminal_partial_close(batch_size=5)
@@ -28656,6 +28662,205 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             )
         return rows
 
+    def _p515_eval_daily_breakout_candidate_fast(sym: str) -> dict:
+        symbol = str(sym or "").strip().upper()
+        candidate = {
+            "symbol": symbol,
+            "strategy": BREAKOUT_STRATEGY_NAME,
+            "scan_ts_utc": datetime.now(timezone.utc).isoformat(),
+            "eligible": False,
+            "rejection_reasons": [],
+            "p515_pure_daily_bar_candidate_eval": True,
+            "candidate_eval_contract": "pure_daily_bar_no_thread_no_fetch",
+        }
+        bars = list(daily_map.get(symbol) or [])
+        closes = [_safe_float(b.get("close")) for b in bars]
+        highs = [_safe_float(b.get("high")) for b in bars]
+        lows = [_safe_float(b.get("low")) for b in bars]
+        vols = [_safe_float(b.get("volume")) for b in bars]
+        need = max(SWING_SLOW_MA_DAYS + 5, SWING_BREAKOUT_LOOKBACK_DAYS + 2, 25)
+        if len(closes) < need:
+            candidate["rejection_reasons"].append("insufficient_daily_bars")
+            candidate["daily_bar_count"] = len(closes)
+            return candidate
+
+        thresholds = _regime_mode_thresholds(regime_mode)
+        close = closes[-1]
+        prev_close = closes[-2]
+        high = highs[-1]
+        low = lows[-1]
+        fast_ma = _sma(closes, SWING_FAST_MA_DAYS)
+        slow_ma = _sma(closes, SWING_SLOW_MA_DAYS)
+        atr_14 = _atr(highs, lows, closes, length=14)
+        atr_pct = ((atr_14 or 0.0) / max(close, 1e-9)) if close else 0.0
+        avg_dollar_vol_20 = sum((closes[-20 + i] * vols[-20 + i]) for i in range(20)) / 20.0
+        ret_20 = (close / closes[-21] - 1.0) if len(closes) >= 21 and closes[-21] > 0 else 0.0
+        breakout_ref = max(highs[-(SWING_BREAKOUT_LOOKBACK_DAYS + 1):-1])
+        trailing_low = min(lows[-5:])
+        close_to_high = close / max(high, 1e-9)
+        breakout_distance = (close / max(breakout_ref, 1e-9)) - 1.0
+        range_pct = (high - low) / max(close, 1e-9)
+        stop_price = min(trailing_low, breakout_ref * (1.0 - SWING_BREAKOUT_BUFFER_PCT))
+        risk_per_share = max(close - stop_price, close * 0.0025)
+        effective_target_r_mult = _p459_effective_swing_target_r_mult()
+        effective_risk_dollars = _p459_effective_swing_risk_dollars()
+        target_price = close + (risk_per_share * effective_target_r_mult)
+        requested_qty = min(MAX_QTY, max(MIN_QTY, round(effective_risk_dollars / max(risk_per_share, 1e-9), 2)))
+        affordable = _clip_qty_for_affordability_with_snapshot(
+            close,
+            requested_qty,
+            broker_snapshot=p479_scan_broker_snapshot,
+        )
+        est_qty = float(affordable.get("submitted_qty") or 0.0)
+        score = 0.0
+
+        if close >= SWING_MIN_PRICE:
+            score += 10
+        else:
+            candidate["rejection_reasons"].append("price_below_min")
+        if avg_dollar_vol_20 >= SWING_MIN_AVG_DOLLAR_VOLUME:
+            score += min(20.0, avg_dollar_vol_20 / SWING_MIN_AVG_DOLLAR_VOLUME * 10.0)
+        else:
+            candidate["rejection_reasons"].append("avg_dollar_volume_below_min")
+        if avg_dollar_vol_20 < float(SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME):
+            candidate["rejection_reasons"].append("low_volume")
+
+        trend_ok = bool(fast_ma and slow_ma and close > fast_ma > slow_ma)
+        if trend_ok:
+            score += 25
+        elif thresholds.get("require_trend"):
+            candidate["rejection_reasons"].append("trend_filter_failed")
+        if ret_20 >= float(thresholds.get("return_20d_min_pct") or 0.0):
+            score += min(20.0, ret_20 * 200.0)
+        else:
+            candidate["rejection_reasons"].append("return_20d_below_min")
+        if close_to_high >= float(thresholds.get("close_to_high_min_pct") or 0.0):
+            score += 12
+        else:
+            candidate["rejection_reasons"].append("close_not_near_high")
+
+        effective_breakout_max_distance = float(thresholds.get("breakout_max_distance_pct") or 0.0)
+        strong_atr_relax_applied = False
+        defensive_tightening_enabled = (
+            bool(SWING_DEFENSIVE_ENTRY_TIGHTENING_ENABLED)
+            and str(thresholds.get("mode") or "").strip().lower() == "defensive"
+        )
+        if (
+            atr_pct >= float(SWING_BREAKOUT_STRONG_ATR_PCT)
+            and close_to_high >= float(thresholds.get("close_to_high_min_pct") or 0.0)
+            and ret_20 >= float(thresholds.get("return_20d_min_pct") or 0.0)
+            and not (defensive_tightening_enabled and bool(SWING_DEFENSIVE_DISABLE_STRONG_ATR_RELAX))
+        ):
+            effective_breakout_max_distance += float(SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT)
+            strong_atr_relax_applied = True
+        if breakout_distance >= -effective_breakout_max_distance:
+            score += 18
+        else:
+            candidate["rejection_reasons"].append("too_far_below_breakout")
+        score += max(0.0, min(10.0, range_pct * 100.0))
+        if atr_pct >= float(SWING_BREAKOUT_MIN_ATR_PCT):
+            score += min(5.0, atr_pct * 100.0)
+        if defensive_tightening_enabled:
+            max_ret_20 = float(SWING_DEFENSIVE_MAX_20D_RETURN_PCT)
+            max_risk_pct = float(SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT)
+            risk_per_share_pct = risk_per_share / max(close, 1e-9)
+            if max_ret_20 > 0 and ret_20 > max_ret_20:
+                candidate["rejection_reasons"].append("defensive_20d_return_too_extended")
+            if max_risk_pct > 0 and risk_per_share_pct > max_risk_pct:
+                candidate["rejection_reasons"].append("defensive_risk_per_share_too_wide")
+            if bool(SWING_DEFENSIVE_REQUIRE_BREAKOUT_NOT_EXTENDED) and breakout_distance > effective_breakout_max_distance:
+                candidate["rejection_reasons"].append("defensive_breakout_extension_too_high")
+        if bool(thresholds.get("require_index_alignment")) and index_ok is False:
+            candidate["rejection_reasons"].append("index_alignment_failed")
+
+        min_rank_score = _breakout_min_rank_score_for_mode(thresholds.get("mode"))
+        candidate.update({
+            "close": round(close, 4),
+            "prev_close": round(prev_close, 4),
+            "high": round(high, 4),
+            "low": round(low, 4),
+            "fast_ma": round(fast_ma, 4) if fast_ma else None,
+            "slow_ma": round(slow_ma, 4) if slow_ma else None,
+            "atr_14": round(atr_14, 4) if atr_14 is not None else None,
+            "atr_pct": round(atr_pct * 100.0, 3) if atr_pct is not None else None,
+            "avg_dollar_volume_20d": round(avg_dollar_vol_20, 2),
+            "return_20d_pct": round(ret_20 * 100.0, 3),
+            "close_to_high_pct": round(close_to_high * 100.0, 3),
+            "breakout_level": round(breakout_ref, 4),
+            "breakout_distance_pct": round(breakout_distance * 100.0, 3),
+            "effective_breakout_max_distance_pct": round(effective_breakout_max_distance * 100.0, 3),
+            "strong_atr_relax_applied": bool(strong_atr_relax_applied),
+            "defensive_tightening_enabled": bool(defensive_tightening_enabled),
+            "defensive_max_20d_return_pct": round(float(SWING_DEFENSIVE_MAX_20D_RETURN_PCT) * 100.0, 3),
+            "defensive_max_risk_per_share_pct": round(float(SWING_DEFENSIVE_MAX_RISK_PER_SHARE_PCT) * 100.0, 3),
+            "risk_per_share_pct": round((risk_per_share / max(close, 1e-9)) * 100.0, 3),
+            "range_pct": round(range_pct * 100.0, 3),
+            "stop_price": round(stop_price, 4),
+            "target_price": round(target_price, 4),
+            "risk_per_share": round(risk_per_share, 4),
+            "requested_qty": round(requested_qty, 2),
+            "estimated_qty": round(est_qty, 2),
+            "affordability": dict(affordable),
+            "scan_broker_snapshot": dict(p479_scan_broker_snapshot or affordable.get("buying_power_snapshot") or {}),
+            "p479_broker_free_eval": True,
+            "rank_score": round(score, 4),
+            "min_rank_score": round(min_rank_score, 4),
+            "signal": "daily_breakout",
+            "side": "buy",
+            "regime_mode": thresholds.get("mode"),
+            "mode_thresholds": {
+                "breakout_max_distance_pct": round(float(thresholds.get("breakout_max_distance_pct") or 0.0) * 100.0, 3),
+                "effective_breakout_max_distance_pct": round(float(effective_breakout_max_distance or 0.0) * 100.0, 3),
+                "close_to_high_min_pct": round(float(thresholds.get("close_to_high_min_pct") or 0.0) * 100.0, 3),
+                "return_20d_min_pct": round(float(thresholds.get("return_20d_min_pct") or 0.0) * 100.0, 3),
+                "min_atr_pct": round(float(SWING_BREAKOUT_MIN_ATR_PCT) * 100.0, 3),
+                "strong_atr_pct": round(float(SWING_BREAKOUT_STRONG_ATR_PCT) * 100.0, 3),
+                "distance_relax_pct": round(float(SWING_BREAKOUT_STRONG_ATR_DISTANCE_RELAX_PCT) * 100.0, 3),
+                "quality_min_avg_dollar_volume": round(float(SWING_BREAKOUT_QUALITY_MIN_AVG_DOLLAR_VOLUME), 2),
+                "min_rank_score": round(float(min_rank_score), 3),
+                "require_trend": bool(thresholds.get("require_trend")),
+                "require_index_alignment": bool(thresholds.get("require_index_alignment")),
+            },
+        })
+
+        defensive_rollback = _p264_defensive_daily_breakout_rollback_snapshot(
+            thresholds.get("mode") or regime_mode,
+            candidate=candidate,
+        )
+        candidate["defensive_daily_breakout_rollback"] = defensive_rollback
+        if defensive_rollback.get("blocked"):
+            candidate["rejection_reasons"].append("defensive_daily_breakout_rollback")
+        elif defensive_rollback.get("broad_blocked") and defensive_rollback.get("tier_gate_passed"):
+            candidate["defensive_breakout_tier_approved"] = True
+
+        candidate = _p282_apply_breakout_restoration_controls(candidate)
+        score = float(_safe_float(candidate.get("rank_score")))
+        if score < min_rank_score:
+            candidate["rejection_reasons"].append("rank_score_below_min")
+
+        candidate["rejection_reasons"] = _dedupe_candidate_reasons(candidate.get("rejection_reasons") or [])
+        candidate["eligible"] = len(candidate["rejection_reasons"]) == 0 and est_qty >= max(MIN_AFFORDABLE_QTY, MIN_QTY)
+        if not candidate["eligible"] and est_qty < max(MIN_AFFORDABLE_QTY, MIN_QTY):
+            sizing_truth = _p300_executable_sizing_truth(candidate)
+            candidate["executable_sizing_truth"] = sizing_truth
+            candidate["rejection_reasons"].append(
+                "broker_insufficient_buying_power"
+                if sizing_truth.get("broker_buying_power_label_valid")
+                else "internal_sizing_qty_zero"
+            )
+            candidate["rejection_reasons"] = _dedupe_candidate_reasons(candidate.get("rejection_reasons") or [])
+        return candidate
+
+    def _p515_eval_symbol_rows_fast(sym: str) -> list[dict]:
+        rows = [
+            _finalize_candidate(
+                _p515_eval_daily_breakout_candidate_fast(sym),
+                sym,
+                record=False,
+            )
+        ]
+        return rows
+
     def _p478_run_symbol_eval_isolated(sym: str, remaining_sec: float) -> dict:
         symbol = str(sym or "").strip().upper()
         timeout_sec = max(
@@ -28802,11 +29007,25 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 remaining_sec=round(remaining, 3),
             )
             try:
-                p514_eval_result = _p478_run_symbol_eval_isolated(symbol, remaining)
+                p515_symbol_eval_started = _time.perf_counter()
+                p514_eval_result = {
+                    "ok": True,
+                    "status": "completed",
+                    "symbol": symbol,
+                    "rows": _p515_eval_symbol_rows_fast(symbol),
+                    "elapsed_sec": round(max(0.0, _time.perf_counter() - p515_symbol_eval_started), 3),
+                    "timeout_sec": 0,
+                    "isolated": False,
+                    "p515_pure_daily_bar_candidate_eval": True,
+                    "candidate_eval_contract": "pure_daily_bar_no_thread_no_fetch",
+                }
                 p402_eval_truth["p514_no_hang_candidate_eval_contract"]["last_symbol"] = symbol
                 p402_eval_truth["p514_no_hang_candidate_eval_contract"]["last_status"] = str(p514_eval_result.get("status") or "")
                 p402_eval_truth["p514_no_hang_candidate_eval_contract"]["last_elapsed_sec"] = p514_eval_result.get("elapsed_sec")
                 p402_eval_truth["p514_no_hang_candidate_eval_contract"]["last_timeout_sec"] = p514_eval_result.get("timeout_sec")
+                p402_eval_truth["p515_pure_daily_bar_candidate_eval"]["last_symbol"] = symbol
+                p402_eval_truth["p515_pure_daily_bar_candidate_eval"]["last_status"] = str(p514_eval_result.get("status") or "")
+                p402_eval_truth["p515_pure_daily_bar_candidate_eval"]["last_elapsed_sec"] = p514_eval_result.get("elapsed_sec")
                 if p514_eval_result.get("status") == "timeout":
                     timeout_row = dict(p514_eval_result.get("timeout_row") or _p478_symbol_eval_timeout_row(
                         symbol,
@@ -28862,7 +29081,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     row = _record_finalized_candidate(finalized_row)
                     row["p512_candidate_eval_hard_bypass"] = True
                     row["p514_no_hang_candidate_eval_contract"] = True
-                    row["candidate_eval_contract"] = "isolated_symbol_timeout_wrapper"
+                    row["p515_pure_daily_bar_candidate_eval"] = True
+                    row["candidate_eval_contract"] = "pure_daily_bar_no_thread_no_fetch"
                 _p402_stage_checkpoint(
                     "candidate_eval_hard_bypass_symbol_complete",
                     symbol=symbol,
