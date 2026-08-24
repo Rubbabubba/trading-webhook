@@ -2953,7 +2953,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-525-scanner-latest-scan-selected-revalidation-status-sync"
+PATCH_VERSION = "patch-526-completed-scan-failure-tombstone-current-suppression-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26621,6 +26621,11 @@ def _p455_scanner_failure_root_cause(
     last_closed_status = str(summary.get("last_closed_status") or tel.get("last_closed_status") or "").strip().lower()
     error = str(scan.get("error") or tel.get("last_error") or tel.get("error") or "").strip()
     stage = str(scan.get("scan_exception_stage") or checkpoint.get("stage") or "").strip()
+    try:
+        scanned_count = int(float(scan.get("scanned") or 0))
+    except Exception:
+        scanned_count = 0
+    completed_candidate_scan = bool(scan_reason == "scan_completed" and scanned_count > 0)
 
     active = [
         str(code or "").strip().lower()
@@ -26685,6 +26690,35 @@ def _p455_scanner_failure_root_cause(
             "scanner_payload_max_symbols": payload_cap_int or None,
             "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
             "scan_background_completion_truth": background_truth,
+        }
+
+    if completed_candidate_scan:
+        return {
+            "active": False,
+            "root_cause": "none",
+            "recovery_action": "monitor_current_completed_scan",
+            "scan_reason": scan_reason,
+            "last_event": last_event,
+            "last_status": last_status,
+            "last_closed_event": last_closed_event,
+            "last_closed_status": last_closed_status,
+            "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
+            "error": "",
+            "stage": stage,
+            "stage_details": checkpoint_details,
+            "runtime_symbol_count": len(universe_symbols()),
+            "current_configured_runtime_slim_max_symbols": current_configured_cap,
+            "scanner_payload_max_symbols": payload_cap_int or None,
+            "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
+            "historical_failure_tombstoned": bool(
+                last_closed_event in {"scan_fail", "scan_error", "scan_dispatch_error", "scan_dispatch_http_error"}
+                or last_closed_status in {"failure", "exception", "timeout_failure", "http_error"}
+            ),
+            "historical_failure_root_cause": (
+                "scanner_dispatch_failure"
+                if last_closed_event or last_closed_status
+                else "none"
+            ),
         }
 
     if scan_reason == "scan_exception":
@@ -55642,11 +55676,40 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
 
     latest_reason = str(latest_scan.get("reason") or "").strip().lower()
     using_preserved_market_scan = str(latest_scan.get("_scan_source") or "").strip() == "last_actionable_market_scan"
+    p526_completed_scan_failure_tombstone = bool(
+        latest_reason == "scan_completed"
+        and int(_safe_float(latest_scan.get("scanned"), 0.0)) > 0
+        and bool((summary.get("scanner_failure_root_cause") or {}).get("historical_failure_tombstoned"))
+    )
+    p526_selection_revalidation = _p524_revalidate_current_selected_symbols(
+        list(selected_context.get("selected_symbols") or []),
+        {"candidate_rows": fast_rows_all},
+        preserve_symbols=[
+            str(sym or "").strip().upper()
+            for sym, plan in dict(TRADE_PLAN or {}).items()
+            if str(sym or "").strip()
+            and isinstance(plan, dict)
+            and (bool(plan.get("active")) or _plan_is_pending_entry(plan))
+        ],
+    )
+    p526_stale_selected_symbols = list(p526_selection_revalidation.get("stale_symbols") or [])
+    if p526_stale_selected_symbols:
+        active_selected_symbols = list(p526_selection_revalidation.get("active_symbols") or [])
+        selected_context = dict(selected_context)
+        selected_context["selected_symbols_before_p526_revalidation"] = list(selected_context.get("selected_symbols") or [])
+        selected_context["selected_symbols"] = active_selected_symbols
+        selected_context["selected_total"] = len(active_selected_symbols)
+        selected_context["stale_revalidated_blocked_symbols"] = p526_stale_selected_symbols
+        selected_context["selection_echo_removed"] = True
+
     stale_scan_blocks_action = bool(
         (
             summary.get("post_open_scan_missing")
             or latest_reason in {"outside_market_hours", "scan_exception"}
-            or bool((summary.get("scanner_failure_root_cause") or {}).get("active"))
+            or (
+                bool((summary.get("scanner_failure_root_cause") or {}).get("active"))
+                and not p526_completed_scan_failure_tombstone
+            )
         )
         and not using_preserved_market_scan
     )
@@ -55668,7 +55731,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         status = "suppressed_by_protection"
         recommended_action = "review_protective_reasons_before_relaxing"
     elif new_entry_rows_all:
-        status = "quality_wait"
+        status = "no_current_eligible_candidates"
         recommended_action = "wait_for_better_setup_or_review_near_misses"
     else:
         status = "no_candidate_flow"
@@ -55699,6 +55762,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             "duration_ms": latest_scan.get("duration_ms"),
             "scanner_failure_root_cause": summary.get("scanner_failure_root_cause"),
             "stale_scan_blocks_action": bool(stale_scan_blocks_action),
+            "p526_completed_scan_failure_tombstone": bool(p526_completed_scan_failure_tombstone),
         },
         "runtime_universe_coverage": coverage,
         "candidate_coverage_opportunity_audit": {
@@ -55723,6 +55787,9 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         ),
         "selected_total": int(selected_context.get("selected_total") or 0),
         "selected_symbols": list(selected_context.get("selected_symbols") or []),
+        "selected_symbols_before_p526_revalidation": list(selected_context.get("selected_symbols_before_p526_revalidation") or []),
+        "stale_revalidated_blocked_symbols": list(selected_context.get("stale_revalidated_blocked_symbols") or []),
+        "p526_selection_revalidation": dict(p526_selection_revalidation),
         "raw_selected_total": int(selected_context.get("raw_selected_total") or 0),
         "raw_selected_symbols": list(selected_context.get("raw_selected_symbols") or []),
         "open_position_selected_total": int(selected_context.get("open_position_selected_total") or 0),
