@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-530-after-hours-selected-submit-gap-classification"
+PATCH_VERSION = "patch-531-broker-native-risk-entry-sanitizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -9677,6 +9677,12 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
                 "raw_evidence": evidence.get("raw_evidence"),
             })
 
+        broker_positions_for_risk = []
+        try:
+            broker_positions_for_risk = list_open_positions_details_allowed()
+        except Exception:
+            broker_positions_for_risk = []
+
         plan_rows = []
         for sym, plan in sorted((TRADE_PLAN or {}).items()):
             if not isinstance(plan, dict) or not plan.get("active"):
@@ -9692,6 +9698,7 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
                 plan,
                 qty_signed=qty_signed,
                 order_status=plan.get("broker_order") if isinstance(plan.get("broker_order"), dict) else {},
+                broker_position=_p531_broker_position_for_symbol(sym, broker_positions_for_risk),
             )
             plan_rows.append({
                 "symbol": str(sym or evidence.get("symbol") or "").strip().upper(),
@@ -9699,6 +9706,11 @@ def _p416_post_fill_risk_recheck_evidence(limit: int = 20) -> dict:
                 "decision": evidence.get("decision"),
                 "reason": evidence.get("reason"),
                 "entry_price": evidence.get("entry_price"),
+                "entry_price_source": evidence.get("entry_price_source"),
+                "entry_price_sanitized": bool(evidence.get("entry_price_sanitized")),
+                "entry_price_sanitize_reasons": list(evidence.get("entry_price_sanitize_reasons") or []),
+                "raw_plan_entry_price": evidence.get("raw_plan_entry_price"),
+                "broker_avg_entry_price": evidence.get("broker_avg_entry_price"),
                 "stop_price": evidence.get("stop_price"),
                 "risk_per_share": evidence.get("risk_per_share"),
                 "filled_qty_used": evidence.get("filled_qty_used"),
@@ -10905,18 +10917,122 @@ def _p342_broker_backed_filled_or_recovered_plan(plan: dict | None, qty_signed: 
         )
     )
 
+def _p531_broker_position_for_symbol(symbol: str, positions: list[dict] | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return {}
+
+    for row in list(positions or []):
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip().upper() == sym:
+            return dict(row)
+
+    try:
+        pos = trading_client.get_open_position(sym)
+        qty = float(getattr(pos, "qty", 0.0) or 0.0)
+        if qty != 0:
+            row = {"symbol": sym, "qty": qty}
+            for src, dst in (
+                ("avg_entry_price", "avg_entry_price"),
+                ("current_price", "current_price"),
+                ("last_price", "last_price"),
+                ("market_value", "market_value"),
+                ("unrealized_pl", "unrealized_pl"),
+            ):
+                try:
+                    val = getattr(pos, src, None)
+                    if val is not None:
+                        row[dst] = float(val)
+                except Exception:
+                    pass
+            return row
+    except Exception:
+        pass
+
+    try:
+        for row in list_open_positions_details_allowed() or []:
+            if isinstance(row, dict) and str(row.get("symbol") or "").strip().upper() == sym:
+                return dict(row)
+    except Exception:
+        pass
+
+    try:
+        snap = read_positions_snapshot()
+        for row in list((snap or {}).get("positions") or []):
+            if isinstance(row, dict) and str(row.get("symbol") or "").strip().upper() == sym:
+                return dict(row)
+    except Exception:
+        pass
+
+    return {}
+
+
+def _p531_sanitize_active_plan_entry_for_risk(
+    symbol: str,
+    plan: dict | None,
+    *,
+    broker_position: dict | None = None,
+    qty_signed: float | None = None,
+) -> dict:
+    p = dict(plan or {})
+    broker = dict(broker_position or {})
+    sym = str(symbol or p.get("symbol") or broker.get("symbol") or "").strip().upper()
+
+    plan_entry = float(_safe_float(p.get("entry_price") or p.get("avg_fill_price") or p.get("filled_avg_price") or 0.0, 0.0))
+    broker_entry = float(_safe_float(broker.get("avg_entry_price") or broker.get("entry_price") or 0.0, 0.0))
+    stop_price = float(_safe_float(p.get("stop_price") or p.get("initial_stop_price") or 0.0, 0.0))
+    qty = float(_safe_float(qty_signed, 0.0))
+    if qty == 0:
+        qty = float(_safe_float(broker.get("qty") or p.get("qty") or p.get("filled_qty") or 0.0, 0.0))
+    side = str(p.get("side") or "").strip().lower()
+    is_short = bool(qty < 0 or side in {"sell", "short"})
+
+    reasons = []
+    if broker_entry > 0:
+        if plan_entry <= 0:
+            reasons.append("missing_plan_entry")
+        elif plan_entry <= 1.0 and broker_entry > 1.0:
+            reasons.append("placeholder_plan_entry")
+        elif not is_short and stop_price > 0 and plan_entry < stop_price < broker_entry:
+            reasons.append("long_plan_entry_below_stop")
+        elif is_short and stop_price > 0 and broker_entry < stop_price < plan_entry:
+            reasons.append("short_plan_entry_above_stop")
+
+    corrected = bool(reasons and broker_entry > 0)
+    entry_price = broker_entry if corrected else plan_entry
+
+    return {
+        "symbol": sym,
+        "corrected": corrected,
+        "reasons": reasons,
+        "entry_price": entry_price,
+        "raw_plan_entry_price": plan_entry,
+        "broker_avg_entry_price": broker_entry if broker_entry > 0 else None,
+        "entry_price_source": "broker_native_position" if corrected else "active_plan",
+        "broker_position_source": "live_or_snapshot" if broker else "none",
+    }
+
+
 def _p438_post_fill_risk_decision_for_active_plan(
     symbol: str,
     plan: dict | None,
     *,
     qty_signed: float | None = None,
     order_status: dict | None = None,
+    broker_position: dict | None = None,
 ) -> dict:
     plan = dict(plan or {})
     order_status = dict(order_status or {})
     symbol = str(symbol or plan.get("symbol") or "").strip().upper()
 
-    entry_price = float(_safe_float(plan.get("entry_price") or plan.get("avg_fill_price") or plan.get("filled_avg_price") or 0.0))
+    if broker_position is None:
+        broker_position = _p531_broker_position_for_symbol(symbol)
+    entry_sanitizer = _p531_sanitize_active_plan_entry_for_risk(
+        symbol,
+        plan,
+        broker_position=broker_position,
+        qty_signed=qty_signed,
+    )
+    entry_price = float(_safe_float(entry_sanitizer.get("entry_price") or 0.0, 0.0))
     stop_price = float(_safe_float(plan.get("stop_price") or 0.0))
     live_qty = abs(float(_safe_float(qty_signed, 0.0)))
     filled_qty = abs(float(_safe_float(plan.get("filled_qty") or plan.get("qty") or live_qty or 0.0)))
@@ -11004,6 +11120,11 @@ def _p438_post_fill_risk_decision_for_active_plan(
         "decision": decision,
         "reason": reason,
         "entry_price": entry_price,
+        "entry_price_source": entry_sanitizer.get("entry_price_source"),
+        "entry_price_sanitized": bool(entry_sanitizer.get("corrected")),
+        "entry_price_sanitize_reasons": list(entry_sanitizer.get("reasons") or []),
+        "raw_plan_entry_price": entry_sanitizer.get("raw_plan_entry_price"),
+        "broker_avg_entry_price": entry_sanitizer.get("broker_avg_entry_price"),
         "stop_price": stop_price,
         "risk_per_share": risk_per_share,
         "filled_qty_used": filled_qty,
@@ -11067,6 +11188,13 @@ def _p438_apply_active_plan_risk_refresh(
     })
 
     plan["actual_risk_dollars"] = evidence.get("actual_risk_dollars")
+    if bool(evidence.get("entry_price_sanitized")) and float(_safe_float(evidence.get("entry_price"), 0.0)) > 0:
+        plan["entry_price"] = float(evidence.get("entry_price"))
+        plan["avg_fill_price"] = float(evidence.get("entry_price"))
+        plan["filled_avg_price"] = float(evidence.get("entry_price"))
+        plan["risk_entry_price_source"] = evidence.get("entry_price_source")
+        plan["risk_entry_price_sanitized_at"] = evidence.get("ts_utc")
+        plan["risk_entry_price_sanitize_reasons"] = list(evidence.get("entry_price_sanitize_reasons") or [])
     plan["post_fill_risk_recheck_evidence"] = evidence
     risk_history = list(plan.get("post_fill_risk_recheck_evidence_history") or [])
     risk_history.append(evidence)
