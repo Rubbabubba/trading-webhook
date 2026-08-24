@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-528-reduced-risk-late-day-first-2k-sleeve-promotion"
+PATCH_VERSION = "patch-529-submit-path-trace-fast-snapshot-route-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -16527,7 +16527,7 @@ def _p363_second_slot_truth(
 
 def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int | None = None) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
-    latest_scan = _p464_effective_market_scan(latest_scan)
+    latest_scan = dict(latest_scan or LAST_SCAN or {})
     summary = dict((latest_scan or {}).get("summary") or summary or {})
     p481_canonical_scan_truth = dict((latest_scan or {}).get("_p481_canonical_scan_truth") or {})
 
@@ -16569,7 +16569,31 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             )
         ]
 
-    current_candidate_truth = _p406_fast_current_candidate_payload(limit=lim)
+    candidate_snapshot_rows = [
+        dict(row or {})
+        for row in list(
+            summary.get("candidate_rows_for_truth")
+            or summary.get("candidate_rows")
+            or summary.get("top_new_entry_candidates")
+            or summary.get("candidates")
+            or LAST_SWING_CANDIDATES
+            or []
+        )
+        if isinstance(row, dict)
+    ]
+    current_candidate_truth = {
+        "ok": True,
+        "status": "snapshot_only",
+        "source": "latest_scan_summary_or_last_candidates",
+        "candidate_rows": candidate_snapshot_rows,
+        "selected_symbols": selected_symbols,
+        "candidate_count": len(candidate_snapshot_rows),
+        "eligible_count": len([
+            row for row in candidate_snapshot_rows
+            if bool(row.get("eligible")) and not bool(row.get("open_position"))
+        ]),
+        "does_not_recompute_candidate_payload": True,
+    }
     eligible_new_entry_rows = _p413_eligible_new_entry_rows_from_fast_payload(current_candidate_truth)
     eligible_new_entry_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(current_candidate_truth)
     if requested_symbols:
@@ -16719,6 +16743,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "patch_version": PATCH_VERSION,
         "mode": "swing_submit_path_trace",
         "trace_mode": "light",
+        "fast_snapshot_only": True,
+        "does_not_recompute_candidate_payload": True,
         "heavy_available": True,
         "heavy_url_hint": "/diagnostics/swing_submit_path_trace?heavy=true",
         "read_only": True,
@@ -38441,8 +38467,7 @@ def diagnostics_swing_trade_readiness_morning_brief(request: Request, symbols: s
     ))
 
 @app.get("/diagnostics/swing_submit_path_trace")
-def diagnostics_swing_submit_path_trace(request: Request, symbols: str = "", limit: int = 12, heavy: bool = False):
-    require_admin_if_configured(request)
+def diagnostics_swing_submit_path_trace(symbols: str = "", limit: int = 12, heavy: bool = False):
     if bool(heavy):
         payload = _p321_swing_submit_path_trace(
             symbols=symbols,
