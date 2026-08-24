@@ -2827,7 +2827,7 @@ SCAN_HISTORY_STORE_FULL_RESULTS = env_bool_any("SCAN_HISTORY_STORE_FULL_RESULTS"
 SCAN_HISTORY_RESULT_LIMIT = max(0, int(getenv_any("SCAN_HISTORY_RESULT_LIMIT", default="25") or 25))
 SCAN_FAST_RESPONSE_ENABLED = env_bool_any("SCAN_FAST_RESPONSE_ENABLED", default="true")
 SCAN_FAST_RESPONSE_FOR_WORKER_ONLY = env_bool_any("SCAN_FAST_RESPONSE_FOR_WORKER_ONLY", default="true")
-SWING_SCAN_FOREGROUND_TERMINAL_ENABLED = True
+SWING_SCAN_FOREGROUND_TERMINAL_ENABLED = False
 SCAN_RUNTIME_BUDGET_SEC = max(1, int(getenv_any("SCAN_RUNTIME_BUDGET_SEC", default=str(int(os.getenv("SCAN_TIMEOUT_SEC", "240") or 240) - 30)) or 210))
 SWING_SCAN_HOT_PATH_SLIM_ENABLED = env_bool_any(
     "SWING_SCAN_HOT_PATH_SLIM_ENABLED",
@@ -2950,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-515-pure-daily-bar-candidate-evaluator-full-universe-scan"
+PATCH_VERSION = "patch-516-fast-scan-acceptance-durable-worker-completion-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -27349,7 +27349,10 @@ def _p456_start_swing_scan_background(
         traceback_tail=None,
         reason=requested_reason or "scheduled",
         stage="accepted",
-        stage_details={},
+        stage_details={
+            "p516_fast_scan_acceptance": True,
+            "scan_contract": "p516_fast_accept_durable_worker_completion",
+        },
         effective_dry_run=effective_dry_run if effective_dry_run is not None else None,
         effective_dry_run_reason="background_pending" if effective_dry_run is None else "precomputed",
         dry_run_truth=None,
@@ -27388,7 +27391,11 @@ def _p456_start_swing_scan_background(
                 active=True,
                 terminal=False,
                 stage="thread_entered",
-                stage_details={"scan_attempt_id": scan_attempt_id},
+                stage_details={
+                    "scan_attempt_id": scan_attempt_id,
+                    "p516_fast_scan_acceptance": True,
+                    "scan_contract": "p516_fast_accept_durable_worker_completion",
+                },
             )
             try:
                 _record_scanner_telemetry(
@@ -27403,7 +27410,17 @@ def _p456_start_swing_scan_background(
             except Exception:
                 pass
 
-            _bg_mark(status="running", active=True, terminal=False, stage="dry_run_truth_start", stage_details={"p476_fast_path": True})
+            _bg_mark(
+                status="running",
+                active=True,
+                terminal=False,
+                stage="dry_run_truth_start",
+                stage_details={
+                    "p476_fast_path": True,
+                    "p516_fast_scan_acceptance": True,
+                    "scan_contract": "p516_fast_accept_durable_worker_completion",
+                },
+            )
             try:
                 dry_run_truth = _p476_background_scan_fast_dry_run_truth()
             except Exception as e:
@@ -27450,6 +27467,8 @@ def _p456_start_swing_scan_background(
                 stage_details={
                     "effective_dry_run": bg_effective_dry_run,
                     "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
+                    "p516_fast_scan_acceptance": True,
+                    "scan_contract": "p516_fast_accept_durable_worker_completion",
                 },
                 effective_dry_run=bg_effective_dry_run,
                 effective_dry_run_reason=dry_run_truth.get("effective_dry_run_reason"),
@@ -27492,6 +27511,9 @@ def _p456_start_swing_scan_background(
                 "ok": bool((swing_resp or {}).get("ok", True)) if isinstance(swing_resp, dict) else True,
                 "background_completion": True,
                 "scan_attempt_id": scan_attempt_id,
+                "scan_contract": "p516_fast_accept_durable_worker_completion",
+                "p516_fast_scan_acceptance": True,
+                "p516_durable_worker_completion_contract": True,
                 "effective_dry_run": bg_effective_dry_run,
                 "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
                 "scanner": scanner_payload,
@@ -27545,6 +27567,8 @@ def _p456_start_swing_scan_background(
                         "symbols_scanned": int((scanner_payload or {}).get("symbols_scanned") or 0),
                         "signals": int((scanner_payload or {}).get("signals") or 0),
                         "blocked": int((scanner_payload or {}).get("blocked") or 0),
+                        "p516_fast_scan_acceptance": True,
+                        "scan_contract": "p516_fast_accept_durable_worker_completion",
                     },
                     effective_dry_run=bg_effective_dry_run,
                     effective_dry_run_reason=dry_run_truth.get("effective_dry_run_reason"),
@@ -27591,6 +27615,8 @@ def _p456_start_swing_scan_background(
                     "symbols_scanned": int((scanner_payload or {}).get("symbols_scanned") or 0),
                     "signals": int((scanner_payload or {}).get("signals") or 0),
                     "blocked": int((scanner_payload or {}).get("blocked") or 0),
+                    "p516_fast_scan_acceptance": True,
+                    "scan_contract": "p516_fast_accept_durable_worker_completion",
                 },
                 effective_dry_run=bg_effective_dry_run,
                 effective_dry_run_reason=dry_run_truth.get("effective_dry_run_reason"),
@@ -27619,7 +27645,10 @@ def _p456_start_swing_scan_background(
                     "duration_ms": duration_ms,
                     "scan_reason": requested_reason or "scheduled",
                     "background_completion": True,
+                    "scan_contract": "p516_fast_accept_durable_worker_completion",
                     "completion_reason": completion_reason,
+                    "p516_fast_scan_acceptance": True,
+                    "p516_durable_worker_completion_contract": True,
                     "p473_over_budget_candidate_truth_accepted": bool(duration_ms > runtime_budget_ms and p473_candidate_truth_published),
                     "effective_dry_run": bg_effective_dry_run,
                     "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
@@ -27784,12 +27813,14 @@ def _p456_start_swing_scan_background(
             "background_completion": True,
             "reason": "swing_scan_background_accepted",
             "status": "accepted",
-            "scan_contract": "accepted_not_completed",
+            "scan_contract": "p516_fast_accept_durable_worker_completion",
             "scan_attempt_id": scan_attempt_id,
             "idempotency_status": "background_in_flight",
+            "p516_fast_scan_acceptance": True,
+            "p516_durable_worker_completion_contract": True,
             "scanner": {
                 "status": "accepted",
-                "scan_contract": "accepted_not_completed",
+                "scan_contract": "p516_fast_accept_durable_worker_completion",
                 "strategy_mode": STRATEGY_MODE,
                 "effective_dry_run": effective_dry_run if effective_dry_run is not None else None,
                 "effective_dry_run_reason": "background_pending" if effective_dry_run is None else "precomputed",
