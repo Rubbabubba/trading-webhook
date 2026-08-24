@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any, Callable
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-508-candidate-eval-runner-submission-loop-extraction"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-509-candidate-eval-batch-budget-terminal-reset"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -798,31 +798,61 @@ def submit_symbol_futures(
     eval_fn: Callable[[str], Any],
     over_budget_fn: Callable[[], bool],
     runtime_budget_state: dict | None,
+    start_index: int = 0,
+    max_submit: int | None = None,
 ) -> dict:
+    symbol_list = list(symbols or [])
+    idx = max(0, int(start_index or 0))
+    submit_limit = len(symbol_list) - idx if max_submit is None else max(0, int(max_submit or 0))
+    end_idx = min(len(symbol_list), idx + submit_limit)
     futures = future_to_symbol if isinstance(future_to_symbol, dict) else {}
     budget_state = dict(runtime_budget_state or initial_budget_state())
+    submitted_futures: list[Any] = []
     submitted_symbols: list[str] = []
     budget_stopped_symbols: list[str] = []
-    for symbol in list(symbols or []):
+    for symbol in symbol_list[idx:end_idx]:
         symbol_clean = str(symbol or "").strip().upper()
         if over_budget_fn():
             budget_state = mark_budget_stopped_symbol(budget_state, symbol_clean)
             if symbol_clean:
                 budget_stopped_symbols.append(symbol_clean)
             continue
-        submit_eval_future(executor, futures, eval_fn, symbol_clean)
+        fut = submit_eval_future(executor, futures, eval_fn, symbol_clean)
+        submitted_futures.append(fut)
         if symbol_clean:
             submitted_symbols.append(symbol_clean)
+    next_index = end_idx
     return {
         "future_to_symbol": futures,
         "runtime_budget_state": budget_state,
+        "submitted_futures": submitted_futures,
+        "next_index": next_index,
+        "remaining_symbols": symbol_list[next_index:],
+        "batch_complete": next_index >= len(symbol_list),
         "future_submit_truth": future_submit_summary(futures),
         "p508_candidate_eval_submission_loop_helper": {
             "module": "swing_candidate_eval",
             "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
-            "symbol_count": len(list(symbols or [])),
+            "symbol_count": len(symbol_list),
             "submitted_count": len(submitted_symbols),
             "submitted_symbols": submitted_symbols,
+            "budget_stopped_count": len(budget_stopped_symbols),
+            "budget_stopped_symbols": _dedupe_keep_order(budget_stopped_symbols),
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+        "p509_candidate_eval_batch_submission_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "symbol_count": len(symbol_list),
+            "start_index": idx,
+            "end_index": end_idx,
+            "next_index": next_index,
+            "max_submit": submit_limit,
+            "submitted_count": len(submitted_symbols),
+            "submitted_symbols": submitted_symbols,
+            "remaining_count": max(0, len(symbol_list) - next_index),
+            "batch_complete": next_index >= len(symbol_list),
             "budget_stopped_count": len(budget_stopped_symbols),
             "budget_stopped_symbols": _dedupe_keep_order(budget_stopped_symbols),
             "broker_calls": False,
