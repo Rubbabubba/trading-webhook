@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any, Callable
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-510-per-symbol-eval-timeout-fast-skip"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-511-force-swing-candidate-eval-isolation-timeout-truth"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:

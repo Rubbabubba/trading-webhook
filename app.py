@@ -2860,6 +2860,7 @@ SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED = env_bool_any(
     "SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED",
     default="true",
 )
+SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED = True
 SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC = max(
     3,
     int(getenv_any("SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC", default="12") or 12),
@@ -2947,7 +2948,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-510-per-symbol-eval-timeout-fast-skip"
+PATCH_VERSION = "patch-511-force-swing-candidate-eval-isolation-timeout-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28414,6 +28415,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         budget_sec=int(SCAN_RUNTIME_BUDGET_SEC or 0),
         reserve_sec=int(SWING_SCAN_BUDGET_RESERVE_SEC or 0),
     )
+    p402_eval_truth["p511_symbol_eval_isolation_configured_enabled"] = bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED)
+    p402_eval_truth["p511_symbol_eval_isolation_effective_enabled"] = bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED)
+    p402_eval_truth["p511_symbol_eval_timeout_sec"] = int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC or 0)
     p476_candidate_progress_publish = swing_candidate_eval_initial_progress_publish()
     p477_terminal_partial_close = swing_candidate_eval_initial_terminal_partial_close(batch_size=5)
 
@@ -28608,7 +28612,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             strategy=BREAKOUT_STRATEGY_NAME,
             signal="daily_breakout",
             scan_ts_utc=datetime.now(timezone.utc).isoformat(),
-            isolation_enabled=bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+            isolation_enabled=bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED),
             timeout_sec=float(timeout_sec or 0.0),
             elapsed_sec=float(elapsed_sec or 0.0),
             stage=stage,
@@ -28643,7 +28647,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         )
         started = _time.perf_counter()
 
-        if not bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED):
+        if not bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED):
             rows = _p478_eval_symbol_rows(symbol)
             return {
                 "ok": True,
@@ -28653,6 +28657,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "elapsed_sec": round(max(0.0, _time.perf_counter() - started), 3),
                 "timeout_sec": round(timeout_sec, 3),
                 "isolated": False,
+                "configured_isolation_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "effective_isolation_enabled": bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED),
             }
 
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"swing-eval-{symbol}")
@@ -28667,6 +28673,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "elapsed_sec": round(max(0.0, _time.perf_counter() - started), 3),
                 "timeout_sec": round(timeout_sec, 3),
                 "isolated": True,
+                "configured_isolation_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "effective_isolation_enabled": bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED),
             }
         except FuturesTimeoutError:
             future.cancel()
@@ -28679,6 +28687,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "elapsed_sec": round(elapsed, 3),
                 "timeout_sec": round(timeout_sec, 3),
                 "isolated": True,
+                "configured_isolation_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "effective_isolation_enabled": bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED),
                 "timeout_row": _p478_symbol_eval_timeout_row(symbol, elapsed, timeout_sec, "candidate_eval_symbol_timeout"),
             }
         except Exception as e:
@@ -28696,6 +28706,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "elapsed_sec": round(elapsed, 3),
                 "timeout_sec": round(timeout_sec, 3),
                 "isolated": True,
+                "configured_isolation_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "effective_isolation_enabled": bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED),
             }
         finally:
             try:
@@ -28828,7 +28840,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     "p478_isolated_timeout": True,
                 })
                 p402_eval_truth["p478_timeout_count"] = int(p402_eval_truth.get("p478_timeout_count") or 0) + 1
-                p402_eval_truth["p478_symbol_eval_isolation_enabled"] = bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED)
+                p402_eval_truth["p478_symbol_eval_isolation_configured_enabled"] = bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED)
+                p402_eval_truth["p478_symbol_eval_isolation_effective_enabled"] = bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED)
             else:
                 for finalized_row in list(p478_eval_result.get("rows") or []):
                     _record_finalized_candidate(finalized_row)
@@ -29239,7 +29252,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "p477_terminal_partial_close": dict(p477_terminal_partial_close),
             "p479_broker_free_selection_finalization": {
                 "enabled": True,
-                "thread_isolation_default_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "thread_isolation_configured_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "thread_isolation_effective_enabled": bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED),
                 "broker_snapshot_reused": bool(p479_scan_broker_snapshot),
                 "pending_entry_symbol_count": len(p479_pending_entry_symbols),
                 "active_plan_symbol_count": len(p479_active_plan_symbols),
@@ -29250,7 +29264,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "enabled": True,
                 "patch": "patch-480-preserve-candidate-bearing-scan-p479-runtime-proof",
                 "broker_free_selection_finalization": True,
-                "thread_isolation_default_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "thread_isolation_configured_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
+                "thread_isolation_effective_enabled": bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED),
                 "broker_snapshot_reused": bool(p479_scan_broker_snapshot),
                 "symbols_eval_total": int(p402_eval_truth.get("evaluated_count") or 0),
                 "symbols_skipped_for_budget": list(p402_eval_truth.get("skipped_symbols") or [])[:25],
