@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-532-canceled-exit-order-plan-normalization"
+PATCH_VERSION = "patch-533-live-positions-fast-default-heavy-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -54341,8 +54341,27 @@ def diagnostics_broker_daily_goal_truth(request: Request):
 @app.get("/diagnostics/live_positions")
 def diagnostics_live_positions(request: Request):
     require_admin_if_configured(request)
+    heavy = str(request.query_params.get("heavy") or request.query_params.get("broker") or "").strip().lower() in {"1", "true", "yes", "y"}
+    if not heavy:
+        payload = _p298_live_positions_light()
+        payload["mode"] = "live_positions_fast_default"
+        payload["heavy_available"] = True
+        payload["heavy_endpoint"] = "/diagnostics/live_positions?heavy=1"
+        payload["legacy_light_endpoint"] = "/diagnostics/live_positions_light"
+        payload["recommended_action"] = "use_heavy_only_for_broker_screenshot_reconciliation"
+        return payload
     force = str(request.query_params.get("refresh") or request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes", "y"}
     return _live_operator_snapshot(force=force)
+
+@app.get("/diagnostics/live_positions_heavy")
+def diagnostics_live_positions_heavy(request: Request):
+    require_admin_if_configured(request)
+    force = str(request.query_params.get("refresh") or request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes", "y"}
+    payload = _live_operator_snapshot(force=force)
+    if isinstance(payload, dict):
+        payload["mode"] = "live_positions_heavy_broker_backed"
+        payload["fast_default_endpoint"] = "/diagnostics/live_positions"
+    return payload
 
 @app.get("/dashboard/live", response_class=HTMLResponse)
 def dashboard_live(request: Request):
@@ -54409,7 +54428,7 @@ def dashboard_live(request: Request):
     refresh_meta = '<meta http-equiv="refresh" content="15">' if auto_refresh else ''
     html_doc = f'''<!doctype html><html><head><meta charset="utf-8"><title>Live Operator Dashboard</title>{refresh_meta}<style>
     body{{font-family:Inter,system-ui,Arial,sans-serif;background:#0b0b16;color:#f6f4ff;margin:18px}} a{{color:#b9a7ff}} .muted{{color:#a9a1c4;font-size:12px}} .top{{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}} .grid{{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:12px;margin:14px 0}} .card{{background:#151522;border:1px solid #30245a;border-radius:10px;padding:14px}} .metric{{font-size:28px;font-weight:800}} .good{{color:#61f2a9}} .bad{{color:#ff5c8a}} .neutral{{color:#ffd36a}} .signed-value{{font-weight:800}} table{{width:100%;border-collapse:collapse;font-size:12px}} th,td{{border-bottom:1px solid #2a2540;padding:7px;text-align:left;vertical-align:top}} th{{color:#d7cbff}} .badge{{border:1px solid #49368a;border-radius:999px;padding:3px 7px;background:#24164c;font-size:11px}} .actions a{{display:inline-block;margin-left:8px;padding:7px 10px;border:1px solid #4c3d89;border-radius:8px;text-decoration:none}}</style></head><body>
-    <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Broker-backed live view. This page intentionally makes live broker/account calls and caches for {int(data.get('cache_ttl_sec') or 0)}s. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}.</p></div><div class="actions"><a href="/dashboard/live?refresh=1">Refresh now</a><a href="/diagnostics/live_positions?refresh=1">JSON</a><a href="/dashboard">Fast dashboard</a><a href="/dashboard/full">Full swing</a><a href="/dashboard/research">Research</a></div></div>
+    <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Broker-backed live view. This page intentionally makes live broker/account calls and caches for {int(data.get('cache_ttl_sec') or 0)}s. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}.</p></div><div class="actions"><a href="/dashboard/live?refresh=1">Refresh now</a><a href="/diagnostics/live_positions_heavy?refresh=1">Heavy JSON</a><a href="/diagnostics/live_positions">Fast JSON</a><a href="/dashboard">Fast dashboard</a><a href="/dashboard/full">Full swing</a><a href="/dashboard/research">Research</a></div></div>
     <div class="card"><div class="muted">Broker Daily Goal</div><div class="metric {'good' if _safe_float((pnl.get('daily_goal_progress') or {}).get('primary_daily_pnl'),0)>=0 else 'bad'}">{_dashboard_money((pnl.get('daily_goal_progress') or {}).get('primary_daily_pnl'))}</div><table>{_dashboard_rows([('goal_source', (pnl.get('daily_goal_progress') or {}).get('primary_source')),('low_target', _dashboard_money((pnl.get('daily_goal_progress') or {}).get('target_low'))),('progress_to_low', _dashboard_pct((pnl.get('daily_goal_progress') or {}).get('progress_to_low_pct'))),('remaining_to_low', _dashboard_money((pnl.get('daily_goal_progress') or {}).get('remaining_to_low'))),('strategy_attribution', _dashboard_money(pnl.get('strategy_attribution_pnl') or pnl.get('today_net_pnl')))])}</table></div>
     <div class="card"><h2>Active Positions Audit</h2><table><thead><tr><th>Symbol</th><th>Trust</th><th>Side</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>U P&amp;L %</th><th>Stop</th><th>Target</th><th>Signal</th><th>Warnings</th></tr></thead><tbody>{pos_rows}</tbody></table><p class="muted">Trust is based on live broker positions, in-memory/persisted active plans, and open orders. Any missing plan, stale plan, short position, or quantity mismatch is highlighted before you rely on the row.</p></div>
     <div class="card" style="margin-top:14px"><h2>Open Orders</h2><table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Filled</th><th>Status</th><th>Submitted</th></tr></thead><tbody>{order_rows}</tbody></table></div>

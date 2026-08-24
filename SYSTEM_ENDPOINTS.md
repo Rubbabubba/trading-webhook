@@ -95,6 +95,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/journal
 https://trading-webhook-q4d5.onrender.com/diagnostics/last_scan
 https://trading-webhook-q4d5.onrender.com/diagnostics/last_successful_production_scan
 https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions
+https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions_heavy
 https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions_light
 https://trading-webhook-q4d5.onrender.com/diagnostics/live_readiness_gate
 https://trading-webhook-q4d5.onrender.com/diagnostics/live_unrealized_pnl_truth
