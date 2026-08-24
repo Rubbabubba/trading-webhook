@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-525-scanner-latest-scan-selected-revalidation-status-sync"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-530-after-hours-selected-submit-gap-classification"
 
 
 def selected_submission_truth_light_snapshot(
@@ -24,6 +24,11 @@ def selected_submission_truth_light_snapshot(
         row.get("symbol")
         for row in rows
         if row.get("symbol") and bool(row.get("submit_gap"))
+    ]
+    after_hours_selected_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and bool(row.get("after_hours_selected_not_submitted"))
     ]
     execution_quality_block_symbols = [
         row.get("symbol")
@@ -42,6 +47,7 @@ def selected_submission_truth_light_snapshot(
         and not row.get("actual_submit_side_effect", row.get("side_effect_detected_light"))
         and row.get("symbol") not in set(execution_quality_block_symbols)
         and row.get("symbol") not in set(retryable_spread_block_symbols)
+        and row.get("symbol") not in set(after_hours_selected_symbols)
     ]
     candidate_selected_only = [
         row.get("symbol")
@@ -111,6 +117,9 @@ def selected_submission_truth_light_snapshot(
         "retryable_spread_block_count": len(retryable_spread_block_symbols),
         "submit_gap_symbols": submit_gap_symbols,
         "submit_gap_count": len(submit_gap_symbols),
+        "after_hours_selected_symbols": after_hours_selected_symbols,
+        "after_hours_selected_count": len(after_hours_selected_symbols),
+        "after_hours_selected_not_submitted": bool(after_hours_selected_symbols),
         "limit_order_symbols": limit_order_symbols,
         "limit_order_count": len(limit_order_symbols),
         "filled_plan_backfill_symbols": filled_plan_backfill_symbols,
@@ -129,6 +138,8 @@ def selected_submission_truth_light_snapshot(
         "recommended_action": (
             "rate_limited_selected_submit_waiting_for_retry"
             if rate_limited_retry_symbols
+            else "after_hours_selected_not_submitted_monitor_next_open"
+            if after_hours_selected_symbols
             else "selected_candidate_submit_gap_detected"
             if submit_gap_symbols
             else "selected_candidate_blocked_by_execution_quality"

@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-529-submit-path-trace-fast-snapshot-route-contract"
+PATCH_VERSION = "patch-530-after-hours-selected-submit-gap-classification"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -16665,6 +16665,14 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for sym in list(summary.get("retryable_spread_block_symbols") or [])
         if str(sym or "").strip()
     ])
+    after_hours_selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_rows_all
+        if str((row or {}).get("symbol") or "").strip()
+        and str((row or {}).get("submit_reason") or (row or {}).get("reason") or "").strip().lower()
+        in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+        and not bool((row or {}).get("actual_submit_side_effect"))
+    ])
     p524_terminal_evidence_symbols = _dedupe_keep_order(
         list(submit_row_symbols)
         + list(active_symbols)
@@ -16674,6 +16682,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         + list(queued_rate_limit_symbols)
         + list(execution_quality_block_symbols)
         + list(retryable_spread_block_symbols)
+        + list(after_hours_selected_symbols)
     )
     p524_selection_revalidation = _p524_revalidate_current_selected_symbols(
         production_selected_symbols,
@@ -16693,6 +16702,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for sym in list(summary.get("selected_submit_gap_symbols") or [])
         if str(sym or "").strip()
         and str(sym or "").strip().upper() not in p524_stale_selected_symbols
+        and str(sym or "").strip().upper() not in set(after_hours_selected_symbols)
     ])
     missing_submit_symbols = [
         sym for sym in production_selected_symbols
@@ -16701,6 +16711,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         and sym not in set(pending_symbols)
         and sym not in set(rate_limited_symbols)
         and sym not in set(queued_rate_limit_symbols)
+        and sym not in set(after_hours_selected_symbols)
     ]
     selected_not_attempted_symbols = [
         sym for sym in production_selected_symbols
@@ -16716,6 +16727,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     if missing_submit_symbols or submit_gap_symbols:
         path_status = "selected_submit_gap_detected"
         recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
+    elif after_hours_selected_symbols:
+        path_status = "after_hours_selected_not_submitted"
+        recommended_action = "monitor_next_open_fresh_scan"
     elif current_rate_limit_retry_pending:
         path_status = "rate_limited_retry_pending"
         recommended_action = "wait_for_retry_queue_consumption"
@@ -16824,6 +16838,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             ),
             "execution_quality_block_symbols": execution_quality_block_symbols,
             "retryable_spread_block_symbols": retryable_spread_block_symbols,
+            "after_hours_selected_symbols": after_hours_selected_symbols,
+            "after_hours_selected_count": len(after_hours_selected_symbols),
             "submit_gap_symbols": submit_gap_symbols,
             "missing_submit_symbols": missing_submit_symbols,
             "p524_selection_revalidation": p524_selection_revalidation,
@@ -42057,6 +42073,23 @@ def _p298_selected_submission_truth_light() -> dict:
             "attempted": bool(submit_row.get("submit_attempted")),
             "order_id": submit_row.get("order_id") or submit_row.get("submit_order_id"),
         }
+        submit_reason_norm = str(
+            submit_meta.get("reason")
+            or submit_row.get("reason")
+            or ""
+        ).strip().lower()
+        submit_state_norm = str(submit_meta.get("state") or submit_row.get("state") or "").strip().lower()
+        after_hours_selected_not_submitted = bool(
+            submit_reason_norm in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+            or (
+                bool(submit_row.get("ignored"))
+                and submit_reason_norm in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+            )
+            or (
+                submit_state_norm in {"ignored", "skipped"}
+                and submit_reason_norm in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+            )
+        )
         side_effect = _p312_scan_submit_side_effect(sym, submit_meta=submit_meta, resp=submit_row)
         execution_quality_blocked = _p366_submit_execution_quality_blocked(
             submit_meta.get("state"),
@@ -42095,10 +42128,13 @@ def _p298_selected_submission_truth_light() -> dict:
             and not execution_quality_blocked
             and not bool(retryable_spread_block.get("retryable"))
             and not rate_limited_retryable
+            and not after_hours_selected_not_submitted
         )
         submit_gap_type = (
             "none"
             if bool(side_effect.get("actual_submit_side_effect"))
+            else "after_hours_selected_not_submitted"
+            if after_hours_selected_not_submitted
             else "rate_limited_retryable"
             if rate_limited_retryable
             else "spread_retryable"
@@ -42114,6 +42150,8 @@ def _p298_selected_submission_truth_light() -> dict:
         retry_evidence_status = (
             "resolved_by_active_plan_or_submit_side_effect"
             if bool(side_effect.get("actual_submit_side_effect"))
+            else "after_hours_selected_not_submitted"
+            if after_hours_selected_not_submitted
             else "waiting_for_rate_limit_retry"
             if rate_limited_retryable
             else "waiting_for_spread_retry"
@@ -42147,6 +42185,7 @@ def _p298_selected_submission_truth_light() -> dict:
             "side_effect_detected_light": bool(side_effect.get("actual_submit_side_effect")),
             "actual_submit_side_effect": bool(side_effect.get("actual_submit_side_effect")),
             "candidate_selected_only": bool(candidate_selected_only_events and not side_effect.get("actual_submit_side_effect")),
+            "after_hours_selected_not_submitted": bool(after_hours_selected_not_submitted),
             "submit_gap": bool(submit_gap),
             "submit_gap_type": submit_gap_type,
             "rate_limited_retryable": bool(rate_limited_retryable),
@@ -42228,8 +42267,23 @@ def _p298_selected_submission_truth_light() -> dict:
             else "no_eligible_new_entry"
         ),
     }
+    after_hours_selected_symbols = list(out.get("after_hours_selected_symbols") or [])
+    out["next_open_carry_forward_truth"] = {
+        "enabled": True,
+        "symbols": after_hours_selected_symbols,
+        "count": len(after_hours_selected_symbols),
+        "does_not_submit_after_hours": True,
+        "requires_fresh_next_open_scan": bool(after_hours_selected_symbols),
+        "reason": (
+            "after_hours_selected_candidate_requires_next_open_recheck"
+            if after_hours_selected_symbols
+            else "no_after_hours_selected_candidate"
+        ),
+    }
     if submitted_then_active_symbols:
         out["recommended_action"] = "selected_symbols_have_actual_submit_side_effect"
+    elif after_hours_selected_symbols:
+        out["recommended_action"] = "after_hours_selected_not_submitted_monitor_next_open"
     elif p524_stale_selected_symbols and not selected_symbols:
         out["recommended_action"] = "stale_selected_candidate_revalidated_blocked"
     elif eligible_new_entry_symbols and not selected_symbols:
