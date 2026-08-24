@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-484-hotfix-candidate-eval-module-status-surface-sync"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-525-scanner-latest-scan-selected-revalidation-status-sync"
 
 
 def selected_submission_truth_light_snapshot(
@@ -305,6 +305,20 @@ def scanner_light_snapshot(
         if "background_scan_lost_after_restart_aged" not in recovered_warning_codes:
             recovered_warning_codes.append("background_scan_lost_after_restart_aged")
 
+    terminal_scan_request_without_active_worker = bool(
+        latest_scan_completed
+        and in_flight_grace_active
+        and not background_scan_active
+        and not background_over_budget
+        and not background_timed_out
+        and not background_thread_entry_missing
+    )
+    if terminal_scan_request_without_active_worker:
+        in_flight_grace_active = False
+        effective_in_flight = False
+        if "scan_request_reconciled_by_terminal_scan" not in recovered_warning_codes:
+            recovered_warning_codes.append("scan_request_reconciled_by_terminal_scan")
+
     scanner_status = (
         "background_scan_thread_start_unproven"
         if background_thread_entry_missing
@@ -432,6 +446,7 @@ def scanner_light_snapshot(
             "dispatch_failure_recovered_by_closed_scan": bool(dispatch_failure_recovered_by_closed_scan),
             "dispatch_failure_recovered_by_scan_success": "dispatch_failure_recovered_by_scan_success" in recovered_warning_codes,
             "partial_run_open_reconciled_by_completed_scan": bool(in_flight_reconciled_by_completed_scan),
+            "scan_request_reconciled_by_terminal_scan": bool(terminal_scan_request_without_active_worker),
             "post_open_scan_missing": bool(post_open_scan_missing),
             "background_scan_active": bool(background_scan_active),
             "background_scan_over_budget": bool(background_over_budget),
@@ -451,6 +466,9 @@ def scanner_light_snapshot(
             "duration_ms": latest_scan.get("duration_ms"),
             "selected_total": int(scan_summary.get("selected_total") or 0),
             "selected_symbols": list(scan_summary.get("selected_symbols") or []),
+            "selected_symbols_before_p525_revalidation": list(scan_summary.get("selected_symbols_before_p525_revalidation") or latest_scan.get("selected_symbols_before_p525_revalidation") or []),
+            "stale_revalidated_blocked_symbols": list(scan_summary.get("stale_revalidated_blocked_symbols") or latest_scan.get("stale_revalidated_blocked_symbols") or []),
+            "p525_scanner_selection_revalidation": dict(scan_summary.get("p525_scanner_selection_revalidation") or latest_scan.get("p525_scanner_selection_revalidation") or {}),
             "eligible_total": int(scan_summary.get("eligible_total") or scan_summary.get("eligible_count") or 0),
             "stale_preopen_scan": bool(scan_summary.get("stale_preopen_scan") or latest_scan.get("stale_preopen_scan")),
             "post_open_scan_missing": bool(post_open_scan_missing),

@@ -2953,7 +2953,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-524-current-eligible-selection-revalidation-stale-submit-gap-suppression"
+PATCH_VERSION = "patch-525-scanner-latest-scan-selected-revalidation-status-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -42017,6 +42017,55 @@ def _p298_scanner_light() -> dict:
     summary["p481_canonical_scan_truth"] = dict(latest_scan.get("_p481_canonical_scan_truth") or {})
     summary["swing_scan_state_module_version"] = SWING_SCAN_STATE_MODULE_VERSION
     summary = swing_candidate_eval_attach_status(summary, patch_version=PATCH_VERSION)
+
+    p525_current_candidate_truth = _p406_fast_current_candidate_payload(limit=100)
+    p525_selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    p525_submit_rows = [
+        dict(row or {})
+        for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or latest_scan.get("would_submit") or [])
+        if isinstance(row, dict)
+    ]
+    p525_terminal_evidence_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in p525_submit_rows
+        if str((row or {}).get("symbol") or "").strip()
+    ] + [
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip()
+        and isinstance(plan, dict)
+        and (bool(plan.get("active")) or _plan_is_pending_entry(plan))
+    ])
+    p525_selection_revalidation = _p524_revalidate_current_selected_symbols(
+        p525_selected_symbols,
+        p525_current_candidate_truth,
+        preserve_symbols=p525_terminal_evidence_symbols,
+    )
+    p525_active_selected_symbols = list(p525_selection_revalidation.get("active_symbols") or [])
+    p525_stale_selected_symbols = list(p525_selection_revalidation.get("stale_symbols") or [])
+    if p525_stale_selected_symbols:
+        for target in (summary, latest_scan):
+            target["p525_scanner_selection_revalidation"] = dict(p525_selection_revalidation)
+            target["stale_revalidated_blocked_symbols"] = list(p525_stale_selected_symbols)
+            target["selected_symbols_before_p525_revalidation"] = list(p525_selected_symbols)
+            target["selected_symbols"] = list(p525_active_selected_symbols)
+            target["production_contract_selected_symbols"] = list(p525_active_selected_symbols)
+            target["selected_total"] = len(p525_active_selected_symbols)
+            target["would_trade"] = len(p525_active_selected_symbols)
+            target["selected_submit_gap_symbols"] = [
+                sym for sym in list(target.get("selected_submit_gap_symbols") or [])
+                if str(sym or "").strip().upper() not in set(p525_stale_selected_symbols)
+            ]
+            target["selected_submit_gap_count"] = len(target.get("selected_submit_gap_symbols") or [])
+            target["selected_submit_gap_active"] = bool(target.get("selected_submit_gap_symbols"))
+        summary["p525_scanner_latest_scan_selection_scrubbed"] = True
+    else:
+        summary["p525_scanner_latest_scan_selection_scrubbed"] = False
+        summary["p525_scanner_selection_revalidation"] = dict(p525_selection_revalidation)
 
     telemetry_summary = _p325_recover_scanner_warning_summary(
         telemetry_summary,
