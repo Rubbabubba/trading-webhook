@@ -51,6 +51,26 @@ class BatchSpec(BaseModel):
     requests: list[RequestSpec] = Field(min_length=1, max_length=100)
 
 
+class SavedSequenceSpec(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    endpoints: list[str] = Field(min_length=1, max_length=100)
+
+
+MARKET_OPEN_CHECK = [
+    "/diagnostics/scanner_light",
+    "/diagnostics/swing_core_status",
+    "/diagnostics/swing_runtime_config",
+    "/diagnostics/current_scan_suppression_truth?limit=25",
+    "/diagnostics/swing_submit_path_trace?limit=10",
+    "/diagnostics/selected_submission_truth_light",
+    "/diagnostics/live_positions_light",
+    "/diagnostics/reconcile_light",
+    "/diagnostics/active_exit_protection_truth",
+    "/diagnostics/worker_exit_status",
+    "/diagnostics/broker_daily_goal_truth",
+]
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -92,6 +112,23 @@ def init_db() -> None:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_captures_created ON captures(created_at DESC)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS saved_sequences (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                endpoints TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        now = utc_now()
+        connection.execute(
+            """INSERT OR IGNORE INTO saved_sequences
+               (id, name, endpoints, created_at, updated_at) VALUES (?, ?, ?, ?, ?)""",
+            (str(uuid.uuid4()), "Market Open Check", json_text(MARKET_OPEN_CHECK), now, now),
         )
 
 
@@ -270,6 +307,56 @@ def batch(spec: BatchSpec) -> dict[str, Any]:
     return {"count": len(results), "results": results}
 
 
+@app.get("/api/sequences")
+def saved_sequences() -> dict[str, Any]:
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT * FROM saved_sequences ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["endpoints"] = json.loads(item["endpoints"])
+        items.append(item)
+    return {"sequences": items}
+
+
+@app.post("/api/sequences")
+def save_sequence(spec: SavedSequenceSpec) -> dict[str, Any]:
+    name = spec.name.strip()
+    endpoints = [endpoint.strip() for endpoint in spec.endpoints if endpoint.strip()]
+    if not name:
+        raise HTTPException(status_code=422, detail="Sequence name cannot be blank")
+    if not endpoints:
+        raise HTTPException(status_code=422, detail="Sequence must contain an endpoint")
+    now = utc_now()
+    with db() as connection:
+        existing = connection.execute(
+            "SELECT id, created_at FROM saved_sequences WHERE name = ? COLLATE NOCASE", (name,)
+        ).fetchone()
+        sequence_id = existing["id"] if existing else str(uuid.uuid4())
+        created_at = existing["created_at"] if existing else now
+        connection.execute(
+            """INSERT INTO saved_sequences (id, name, endpoints, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET name = excluded.name,
+                   endpoints = excluded.endpoints,
+                   updated_at = excluded.updated_at""",
+            (sequence_id, name, json_text(endpoints), created_at, now),
+        )
+    return {"id": sequence_id, "name": name, "endpoints": endpoints, "updated_at": now}
+
+
+@app.delete("/api/sequences/{sequence_id}")
+def delete_sequence(sequence_id: str) -> dict[str, Any]:
+    with db() as connection:
+        cursor = connection.execute("DELETE FROM saved_sequences WHERE id = ?", (sequence_id,))
+        deleted = cursor.rowcount
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved sequence not found")
+    return {"deleted": 1, "id": sequence_id}
+
+
 @app.get("/api/captures")
 def captures(limit: int = Query(50, ge=1, le=500), q: str = "") -> dict[str, Any]:
     sql = "SELECT * FROM captures"
@@ -348,10 +435,11 @@ UI_HTML = r'''<!doctype html>
 <label>Find endpoint</label><input id="endpointSearch" placeholder="Filter documented routes…"><div id="endpoints" class="endpoint-list"></div>
 <label>Label (optional)</label><input id="label" placeholder="Morning health snapshot"><label>Headers (JSON)</label><textarea id="headers">{}</textarea><label>Body (JSON or text)</label><textarea id="body" placeholder='{"symbol":"SPY"}'></textarea>
 <div class="actions"><button id="send">Send & capture</button><button id="copyCurl" class="secondary">Copy cURL</button></div><div id="status" class="status"></div><pre id="response">Ready.</pre>
+<label>Saved sequence</label><select id="savedSequence"><option value="">Choose a saved sequence…</option></select><div class="actions"><button id="saveSequence" class="secondary">Save current</button><button id="deleteSequence" class="danger">Delete saved</button></div>
 <label>Run a sequence</label><textarea id="sequence" class="sequence" placeholder="/diagnostics/scanner_light&#10;/diagnostics/current_scan_suppression_truth?limit=25&#10;/diagnostics/swing_submit_path_trace?limit=10"></textarea><div class="hint">One full URL or endpoint path per line. Runs top-to-bottom and captures every response.</div><div class="actions"><button id="runSequence">Run sequence</button></div>
 </section><section><div class="toolbar"><input id="historySearch" placeholder="Search URL, label, or response…"><button id="refresh" class="secondary">Refresh</button><a id="export" class="button secondary" href="/api/export">Export JSON</a><button id="clearHistory" class="danger">Clear history</button></div><div id="history"></div></section></main>
 <script>
-const $=id=>document.getElementById(id), base=__DEFAULT_BASE_URL__; let routes=[];$('url').value=base+'/health';
+const $=id=>document.getElementById(id), base=__DEFAULT_BASE_URL__; let routes=[],sequences=[];$('url').value=base+'/health';
 const pretty=v=>JSON.stringify(v,null,2);function parseMaybe(s){if(!s.trim())return null;try{return JSON.parse(s)}catch{return s}}
 async function loadRoutes(){const d=await fetch('/api/endpoints').then(r=>r.json());routes=d.endpoints;$('endpointCount').textContent=d.count+' routes';renderRoutes()}
 function renderRoutes(){const q=$('endpointSearch').value.toLowerCase();$('endpoints').innerHTML=routes.filter(x=>x.path.toLowerCase().includes(q)).slice(0,100).map(x=>`<div class="endpoint" data-path="${x.path}" data-method="${x.method}"><span class="method">${x.method}</span> ${x.path}</div>`).join('')}
@@ -362,7 +450,12 @@ $('url').onchange=normalizeUrlField;
 function spec(){let headers=parseMaybe($('headers').value);if(typeof headers!=='object'||Array.isArray(headers))throw Error('Headers must be a JSON object');return{method:$('method').value,url:$('url').value,query:queryObject(),headers,body:parseMaybe($('body').value),label:$('label').value}}
 $('send').onclick=async()=>{try{$('send').disabled=true;$('status').textContent='Sending…';const r=await fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(spec())});const d=await r.json();$('status').innerHTML=`<span class="${d.status_code>=200&&d.status_code<400?'ok':'bad'}">${d.status_code??'ERROR'}</span><span>${d.elapsed_ms??0} ms</span><span>${d.byte_count??0} bytes</span>`;$('response').textContent=pretty(d.response_body??d);loadHistory()}catch(e){$('status').innerHTML=`<span class="bad">${e.message}</span>`}finally{$('send').disabled=false}}
 $('copyCurl').onclick=async()=>{try{const s=spec(),u=new URL(s.url);for(const[k,v]of Object.entries(s.query))u.searchParams.set(k,v);let c=`curl -X ${s.method} '${u}'`;for(const[k,v]of Object.entries(s.headers))c+=` -H '${k}: ${v}'`;if(s.body!==null)c+=` --data '${typeof s.body==='string'?s.body:JSON.stringify(s.body)}'`;await navigator.clipboard.writeText(c);$('status').textContent='cURL copied'}catch(e){$('status').textContent=e.message}}
-$('runSequence').onclick=async()=>{const lines=$('sequence').value.split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&!x.startsWith('#'));if(!lines.length)return $('status').textContent='Add at least one URL or path';if(lines.length>100)return $('status').textContent='Sequences are limited to 100 requests';if(!confirm(`Run and capture ${lines.length} requests in order?`))return;try{$('runSequence').disabled=true;$('status').textContent=`Running 0 / ${lines.length}…`;const requests=lines.map((line,i)=>({method:'GET',url:line.startsWith('http')?line:base+(line.startsWith('/')?'':'/')+line,label:`Sequence ${i+1}/${lines.length}`}));const r=await fetch('/api/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requests})});const d=await r.json();$('response').textContent=pretty(d.results.map(x=>({status:x.status_code,url:x.url,elapsed_ms:x.elapsed_ms,error:x.error})));$('status').innerHTML=`<span class="ok">Captured ${d.count}</span>`;loadHistory()}catch(e){$('status').innerHTML=`<span class="bad">${e.message}</span>`}finally{$('runSequence').disabled=false}}
+function sequenceLines(){return $('sequence').value.split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&!x.startsWith('#'))}
+async function loadSequences(selectName=''){const d=await fetch('/api/sequences').then(r=>r.json());sequences=d.sequences;$('savedSequence').innerHTML='<option value="">Choose a saved sequence…</option>'+sequences.map(x=>`<option value="${x.id}">${esc(x.name)} (${x.endpoints.length})</option>`).join('');if(selectName){const found=sequences.find(x=>x.name.toLowerCase()===selectName.toLowerCase());if(found){$('savedSequence').value=found.id;$('sequence').value=found.endpoints.join('\n')}}}
+$('savedSequence').onchange=()=>{const found=sequences.find(x=>x.id===$('savedSequence').value);if(found){$('sequence').value=found.endpoints.join('\n');$('status').textContent=`Loaded ${found.name}: ${found.endpoints.length} endpoints`}}
+$('saveSequence').onclick=async()=>{const lines=sequenceLines();if(!lines.length)return $('status').textContent='Add at least one URL or path first';const selected=sequences.find(x=>x.id===$('savedSequence').value);const name=prompt('Sequence name:',selected?.name||'');if(!name?.trim())return;const exists=sequences.find(x=>x.name.toLowerCase()===name.trim().toLowerCase());if(exists&&!confirm(`Replace saved sequence “${exists.name}”?`))return;const r=await fetch('/api/sequences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim(),endpoints:lines})});const d=await r.json();if(!r.ok)return $('status').textContent=d.detail||'Could not save sequence';await loadSequences(d.name);$('status').innerHTML=`<span class="ok">Saved ${esc(d.name)}</span><span>${d.endpoints.length} endpoints</span>`}
+$('deleteSequence').onclick=async()=>{const found=sequences.find(x=>x.id===$('savedSequence').value);if(!found)return $('status').textContent='Choose a saved sequence first';if(!confirm(`Permanently delete saved sequence “${found.name}”?`))return;await fetch('/api/sequences/'+found.id,{method:'DELETE'});$('sequence').value='';await loadSequences();$('status').textContent=`Deleted ${found.name}`}
+$('runSequence').onclick=async()=>{const lines=sequenceLines();if(!lines.length)return $('status').textContent='Add at least one URL or path';if(lines.length>100)return $('status').textContent='Sequences are limited to 100 requests';if(!confirm(`Run and capture ${lines.length} requests in order?`))return;try{$('runSequence').disabled=true;$('status').textContent=`Running 0 / ${lines.length}…`;const selected=sequences.find(x=>x.id===$('savedSequence').value),sequenceName=selected?.name||'Sequence';const requests=lines.map((line,i)=>({method:'GET',url:line.startsWith('http')?line:base+(line.startsWith('/')?'':'/')+line,label:`${sequenceName} ${i+1}/${lines.length}`}));const r=await fetch('/api/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requests})});const d=await r.json();$('response').textContent=pretty(d.results.map(x=>({status:x.status_code,url:x.url,elapsed_ms:x.elapsed_ms,error:x.error})));$('status').innerHTML=`<span class="ok">Captured ${d.count}</span>`;loadHistory()}catch(e){$('status').innerHTML=`<span class="bad">${e.message}</span>`}finally{$('runSequence').disabled=false}}
 async function loadHistory(){const q=encodeURIComponent($('historySearch').value);$('export').href='/api/export'+(q?'?q='+q:'');const d=await fetch('/api/captures?limit=100&q='+q).then(r=>r.json());$('history').innerHTML=d.captures.map(x=>`<div class="capture" data-id="${x.id}"><div class="capture-top"><span><span class="method">${x.method}</span> ${esc(x.url)}</span><span class="${x.status_code>=200&&x.status_code<400?'ok':'bad'}">${x.status_code??'ERR'}</span></div><div class="meta">${new Date(x.created_at).toLocaleString()} · ${x.elapsed_ms} ms · ${x.byte_count} bytes ${x.label?'· '+esc(x.label):''}</div></div>`).join('')||'<p class="meta">No captures yet.</p>'}
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}$('history').onclick=async e=>{const x=e.target.closest('.capture');if(!x)return;const d=await fetch('/api/captures/'+x.dataset.id).then(r=>r.json());$('response').textContent=pretty(d);$('status').innerHTML=`<span>${d.created_at}</span><span>${d.elapsed_ms} ms</span>`};$('clearHistory').onclick=async()=>{const q=$('historySearch').value.trim();const scope=q?`captures matching “${q}”`:'ALL capture history';if(!confirm(`Permanently delete ${scope}?`))return;const d=await fetch('/api/captures'+(q?'?q='+encodeURIComponent(q):''),{method:'DELETE'}).then(r=>r.json());$('status').textContent=`Deleted ${d.deleted} capture${d.deleted===1?'':'s'}`;loadHistory()};$('refresh').onclick=loadHistory;$('historySearch').oninput=()=>{clearTimeout(window.st);window.st=setTimeout(loadHistory,250)};loadRoutes();loadHistory();
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}$('history').onclick=async e=>{const x=e.target.closest('.capture');if(!x)return;const d=await fetch('/api/captures/'+x.dataset.id).then(r=>r.json());$('response').textContent=pretty(d);$('status').innerHTML=`<span>${d.created_at}</span><span>${d.elapsed_ms} ms</span>`};$('clearHistory').onclick=async()=>{const q=$('historySearch').value.trim();const scope=q?`captures matching “${q}”`:'ALL capture history';if(!confirm(`Permanently delete ${scope}?`))return;const d=await fetch('/api/captures'+(q?'?q='+encodeURIComponent(q):''),{method:'DELETE'}).then(r=>r.json());$('status').textContent=`Deleted ${d.deleted} capture${d.deleted===1?'':'s'}`;loadHistory()};$('refresh').onclick=loadHistory;$('historySearch').oninput=()=>{clearTimeout(window.st);window.st=setTimeout(loadHistory,250)};loadRoutes();loadSequences('Market Open Check');loadHistory();
 </script></body></html>'''

@@ -27,6 +27,8 @@ Use **Clear history** to start a fresh capture set. With an empty search it dele
 
 The **Query parameters** field accepts values such as `limit=25` or `limit=25&symbol=SPY`, without a leading `?`. The sequence runner accepts one full URL or endpoint path per line, runs them top-to-bottom, and stores every response in the same capture history.
 
+Sequences can be saved by name and are persisted in SQLite. Choosing a saved sequence immediately loads its endpoints into the runner; it does not execute until **Run sequence** is clicked. **Save current** creates a preset or updates one with the same name, and **Delete saved** removes the selected preset. A starter **Market Open Check** sequence is created automatically.
+
 Header and body fields whose keys resemble tokens, secrets, passwords, signatures, authorization, or API keys are redacted before storage. Responses are capped at 2 MB by default. Override the database or cap with `WEBHOOK_CONSOLE_DB` and `WEBHOOK_CONSOLE_MAX_RESPONSE_BYTES`.
 
 ## Console API
@@ -34,6 +36,9 @@ Header and body fields whose keys resemble tokens, secrets, passwords, signature
 - `GET /api/endpoints` — discovered endpoint catalog
 - `POST /api/call` — send one request and capture it
 - `POST /api/batch` — send up to 100 requests sequentially
+- `GET /api/sequences` — list saved sequences
+- `POST /api/sequences` — create or update a named sequence
+- `DELETE /api/sequences/{id}` — delete a saved sequence
 - `GET /api/captures` — search capture summaries
 - `GET /api/captures/{id}` — retrieve a full capture
 - `DELETE /api/captures` — clear all captures, or matching captures with `?q=...`
