@@ -117,6 +117,7 @@ from swing_candidate_eval import (
     open_runner_scaffold as swing_candidate_eval_open_runner_scaffold,
     runner_wait_scaffold as swing_candidate_eval_runner_wait_scaffold,
     submit_symbol_futures as swing_candidate_eval_submit_symbol_futures,
+    prune_timed_out_pending_futures as swing_candidate_eval_prune_timed_out_pending_futures,
 )
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
@@ -2857,7 +2858,7 @@ SWING_SCAN_BUDGET_RESERVE_SEC = max(
 )
 SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED = env_bool_any(
     "SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED",
-    default="false",
+    default="true",
 )
 SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC = max(
     3,
@@ -2946,7 +2947,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-509-candidate-eval-batch-budget-terminal-reset"
+PATCH_VERSION = "patch-510-per-symbol-eval-timeout-fast-skip"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -57768,6 +57769,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_loop_iteration_state_truth = scan_eval_loop_state.get("loop_iteration_state_truth") or {}
         scan_eval_remaining_budget_truth = scan_eval_loop_state.get("remaining_budget_truth") or {}
         future_to_symbol = scan_eval_loop_state.get("future_to_symbol") or {}
+        future_started_at = {}
         runtime_budget_sec = float(SCAN_RUNTIME_BUDGET_SEC or 1)
         scan_eval_runner_scaffold = swing_candidate_eval_open_runner_scaffold(
             max_workers=max_workers,
@@ -57784,7 +57786,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         scan_eval_symbol_submit_index = 0
         try:
             def _submit_next_eval_batch(open_slots: int) -> set:
-                nonlocal future_to_symbol, scan_runtime_budget_state
+                nonlocal future_to_symbol, future_started_at, scan_runtime_budget_state
                 nonlocal scan_eval_future_submit_truth, scan_eval_runner_submission_loop_truth
                 nonlocal scan_eval_symbol_submit_index
                 slots = max(0, int(open_slots or 0))
@@ -57799,8 +57801,11 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     runtime_budget_state=scan_runtime_budget_state,
                     start_index=scan_eval_symbol_submit_index,
                     max_submit=slots,
+                    future_started_at=future_started_at,
+                    now_perf_fn=_time.perf_counter,
                 )
                 future_to_symbol = submit_loop.get("future_to_symbol") or future_to_symbol
+                future_started_at = submit_loop.get("future_started_at") or future_started_at
                 scan_runtime_budget_state = submit_loop.get("runtime_budget_state") or scan_runtime_budget_state
                 scan_eval_future_submit_truth = submit_loop.get("future_submit_truth") or {}
                 scan_eval_symbol_submit_index = int(
@@ -57815,6 +57820,18 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     ),
                 }
                 return set(submit_loop.get("submitted_futures") or [])
+
+            def _future_timeout_row(sym: str, elapsed_sec: float, timeout_sec: float, stage: str) -> dict:
+                return swing_candidate_eval_timeout_row(
+                    symbol=sym,
+                    strategy=BREAKOUT_STRATEGY_NAME,
+                    signal="daily_breakout",
+                    scan_ts_utc=datetime.now(timezone.utc).isoformat(),
+                    isolation_enabled=True,
+                    timeout_sec=float(timeout_sec or 0.0),
+                    elapsed_sec=float(elapsed_sec or 0.0),
+                    stage=stage,
+                )
 
             pending = _submit_next_eval_batch(max_workers)
 
@@ -57835,6 +57852,30 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     pending = _submit_next_eval_batch(max_workers)
                     if not pending:
                         break
+                timeout_prune = swing_candidate_eval_prune_timed_out_pending_futures(
+                    pending=pending,
+                    future_to_symbol=future_to_symbol,
+                    future_started_at=future_started_at,
+                    merge_state=scan_eval_merge_state,
+                    timeout_sec=float(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC or 12),
+                    now_perf=_time.perf_counter(),
+                    timeout_row_fn=_future_timeout_row,
+                )
+                pending = timeout_prune.get("pending") or set()
+                if isinstance(timeout_prune.get("future_to_symbol"), dict):
+                    future_to_symbol = timeout_prune.get("future_to_symbol")
+                if isinstance(timeout_prune.get("future_started_at"), dict):
+                    future_started_at = timeout_prune.get("future_started_at")
+                scan_eval_merge_state = timeout_prune.get("merge_state") or scan_eval_merge_state
+                if timeout_prune.get("timed_out_symbols"):
+                    scan_eval_runner_submission_loop_truth["p510_candidate_eval_future_timeout_helper"] = dict(
+                        timeout_prune.get("p510_candidate_eval_future_timeout_helper") or {}
+                    )
+                    open_eval_slots = max(0, int(max_workers or 1) - len(pending))
+                    pending = set(pending) | _submit_next_eval_batch(open_eval_slots)
+                    if not pending and scan_eval_symbol_submit_index >= len(syms):
+                        break
+                    continue
                 loop_iteration = swing_candidate_eval_pending_loop_iteration(
                     budget_sec=runtime_budget_sec,
                     elapsed_sec=_p398_runtime_budget_elapsed_sec(scan_started),

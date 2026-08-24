@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any, Callable
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-509-candidate-eval-batch-budget-terminal-reset"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-510-per-symbol-eval-timeout-fast-skip"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -245,11 +245,20 @@ def cancel_pending_futures(pending: Any, future_to_symbol: dict | None) -> dict:
     }
 
 
-def submit_eval_future(executor: Any, future_to_symbol: dict | None, eval_fn: Any, symbol: str) -> Any:
+def submit_eval_future(
+    executor: Any,
+    future_to_symbol: dict | None,
+    eval_fn: Any,
+    symbol: str,
+    future_started_at: dict | None = None,
+    now_perf: float | None = None,
+) -> Any:
     symbol_clean = str(symbol or "").strip().upper()
     fut = executor.submit(eval_fn, symbol)
     if future_to_symbol is not None:
         future_to_symbol[fut] = symbol_clean or symbol
+    if future_started_at is not None:
+        future_started_at[fut] = float(now_perf if now_perf is not None else 0.0)
     return fut
 
 
@@ -264,6 +273,73 @@ def future_submit_summary(future_to_symbol: dict | None) -> dict:
                 for symbol in dict(future_to_symbol or {}).values()
                 if str(symbol or "").strip()
             ])[:50],
+            "broker_calls": False,
+            "submits_orders": False,
+        },
+    }
+
+
+def prune_timed_out_pending_futures(
+    *,
+    pending: Any,
+    future_to_symbol: dict | None,
+    future_started_at: dict | None,
+    merge_state: dict | None,
+    timeout_sec: float,
+    now_perf: float,
+    timeout_row_fn: Callable[[str, float, float, str], dict],
+) -> dict:
+    pending_set = set(pending or set())
+    future_map = future_to_symbol if isinstance(future_to_symbol, dict) else {}
+    started_map = future_started_at if isinstance(future_started_at, dict) else {}
+    next_merge_state = dict(merge_state or {"results": [], "signals": [], "blocked": 0})
+    timeout_symbols: list[str] = []
+    timeout_rows: list[dict] = []
+    timed_out_futures = []
+    threshold = max(1.0, float(timeout_sec or 0.0))
+    now_value = float(now_perf or 0.0)
+
+    for fut in list(pending_set):
+        started = started_map.get(fut)
+        if started is None:
+            continue
+        elapsed = max(0.0, now_value - float(started or 0.0))
+        if elapsed < threshold:
+            continue
+        symbol = str(future_map.get(fut) or "").strip().upper()
+        if not symbol:
+            continue
+        try:
+            fut.cancel()
+        except Exception:
+            pass
+        row = dict(timeout_row_fn(symbol, elapsed, threshold, "candidate_eval_future_timeout") or {})
+        timeout_symbols.append(symbol)
+        timeout_rows.append(row)
+        timed_out_futures.append(fut)
+        pending_set.discard(fut)
+        future_map.pop(fut, None)
+        started_map.pop(fut, None)
+        next_merge_state = merge_eval_output(
+            next_merge_state,
+            {"results": [row], "signals": [], "blocked": 1},
+        )
+
+    return {
+        "pending": pending_set,
+        "future_to_symbol": future_map,
+        "future_started_at": started_map,
+        "merge_state": next_merge_state,
+        "timed_out_futures": timed_out_futures,
+        "timed_out_symbols": _dedupe_keep_order(timeout_symbols),
+        "timeout_rows": timeout_rows,
+        "p510_candidate_eval_future_timeout_helper": {
+            "module": "swing_candidate_eval",
+            "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+            "enabled": True,
+            "timeout_sec": round(threshold, 3),
+            "timed_out_count": len(timeout_symbols),
+            "timed_out_symbols": _dedupe_keep_order(timeout_symbols),
             "broker_calls": False,
             "submits_orders": False,
         },
@@ -800,12 +876,15 @@ def submit_symbol_futures(
     runtime_budget_state: dict | None,
     start_index: int = 0,
     max_submit: int | None = None,
+    future_started_at: dict | None = None,
+    now_perf_fn: Callable[[], float] | None = None,
 ) -> dict:
     symbol_list = list(symbols or [])
     idx = max(0, int(start_index or 0))
     submit_limit = len(symbol_list) - idx if max_submit is None else max(0, int(max_submit or 0))
     end_idx = min(len(symbol_list), idx + submit_limit)
     futures = future_to_symbol if isinstance(future_to_symbol, dict) else {}
+    started_at = future_started_at if isinstance(future_started_at, dict) else {}
     budget_state = dict(runtime_budget_state or initial_budget_state())
     submitted_futures: list[Any] = []
     submitted_symbols: list[str] = []
@@ -817,13 +896,22 @@ def submit_symbol_futures(
             if symbol_clean:
                 budget_stopped_symbols.append(symbol_clean)
             continue
-        fut = submit_eval_future(executor, futures, eval_fn, symbol_clean)
+        now_perf = float(now_perf_fn()) if now_perf_fn is not None else 0.0
+        fut = submit_eval_future(
+            executor,
+            futures,
+            eval_fn,
+            symbol_clean,
+            future_started_at=started_at,
+            now_perf=now_perf,
+        )
         submitted_futures.append(fut)
         if symbol_clean:
             submitted_symbols.append(symbol_clean)
     next_index = end_idx
     return {
         "future_to_symbol": futures,
+        "future_started_at": started_at,
         "runtime_budget_state": budget_state,
         "submitted_futures": submitted_futures,
         "next_index": next_index,
