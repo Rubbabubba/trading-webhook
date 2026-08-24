@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-531-broker-native-risk-entry-sanitizer"
+PATCH_VERSION = "patch-532-canceled-exit-order-plan-normalization"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -10318,6 +10318,163 @@ def _adopt_open_broker_order_as_plan(symbol: str, broker_order: dict, source: st
     return plan
 
 
+def _p532_normalize_canceled_exit_order_plan(
+    symbol: str,
+    plan: dict | None,
+    broker_position: dict | None,
+    open_orders_for_symbol: list[dict] | None = None,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    out = {
+        "symbol": sym,
+        "changed": False,
+        "reason": "not_applicable",
+    }
+    if not sym or not isinstance(plan, dict) or not bool(plan.get("active")):
+        return out
+
+    broker = dict(broker_position or {})
+    qty_signed = float(_safe_float(broker.get("qty"), 0.0))
+    if qty_signed == 0:
+        return out
+
+    open_orders = [dict(o) for o in list(open_orders_for_symbol or []) if isinstance(o, dict)]
+    if open_orders:
+        out["reason"] = "broker_open_order_still_present"
+        return out
+
+    active_order_statuses = {
+        "submitted",
+        "new",
+        "accepted",
+        "pending_new",
+        "partially_filled",
+        "accepted_for_bidding",
+        "held",
+        "pending_replace",
+    }
+    plan_status = str(plan.get("order_status") or plan.get("status") or "").strip().lower()
+    if plan_status not in active_order_statuses:
+        out["reason"] = "plan_not_pending_order_status"
+        return out
+
+    plan_side = str(plan.get("side") or "").strip().lower()
+    position_side = "buy" if qty_signed > 0 else "sell"
+    close_side = "sell" if qty_signed > 0 else "buy"
+    filled_qty = abs(float(_safe_float(plan.get("filled_qty"), 0.0)))
+
+    stale_exit = bool(plan_side == close_side and filled_qty <= 0)
+    if not stale_exit:
+        out["reason"] = "pending_plan_not_stale_exit_order"
+        return out
+
+    old_order_id = str(plan.get("order_id") or "").strip()
+    old_status = plan_status
+    old_side = plan_side
+    avg_entry = float(_safe_float(broker.get("avg_entry_price") or broker.get("entry_price") or plan.get("entry_price"), 0.0))
+    qty = abs(qty_signed)
+
+    plan["side"] = position_side
+    plan["qty"] = qty
+    plan["filled_qty"] = qty
+    plan["requested_qty"] = qty
+    plan["submitted_qty"] = qty
+    if avg_entry > 0:
+        plan["entry_price"] = avg_entry
+        plan["avg_fill_price"] = avg_entry
+        plan["filled_avg_price"] = avg_entry
+    plan["order_status"] = "filled"
+    plan["status"] = "filled"
+    plan["broker_backed"] = True
+    plan["active"] = True
+    plan["p532_canceled_exit_order_normalized_at"] = datetime.now(timezone.utc).isoformat()
+    plan["p532_canceled_exit_order_normalized_patch"] = PATCH_VERSION
+    plan["p532_canceled_exit_order_normalized_reason"] = "broker_open_order_absent_position_still_open"
+    if old_order_id:
+        plan["last_canceled_exit_order_id"] = old_order_id
+        if str(plan.get("order_id") or "").strip() == old_order_id:
+            plan.pop("order_id", None)
+    try:
+        _transition_execution_lifecycle(
+            plan,
+            sym,
+            "filled",
+            reason="canceled_exit_order_plan_normalized",
+            details={
+                "old_order_id": old_order_id,
+                "old_order_status": old_status,
+                "old_side": old_side,
+                "position_side": position_side,
+                "broker_qty": qty_signed,
+            },
+            allow_illegal=True,
+        )
+    except Exception:
+        pass
+
+    out.update({
+        "changed": True,
+        "reason": "broker_open_order_absent_position_still_open",
+        "old_order_id": old_order_id,
+        "old_order_status": old_status,
+        "old_side": old_side,
+        "new_side": position_side,
+        "qty": qty,
+        "entry_price": avg_entry if avg_entry > 0 else None,
+    })
+    return out
+
+
+def _p532_normalize_canceled_exit_order_plans(
+    broker_positions: list[dict] | None = None,
+    open_orders: list[dict] | None = None,
+    *,
+    source: str = "reconcile",
+) -> dict:
+    broker_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in list(broker_positions or [])
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    orders_by_symbol: dict[str, list[dict]] = {}
+    for order in list(open_orders or []):
+        sym = str((order or {}).get("symbol") or "").strip().upper()
+        if sym:
+            orders_by_symbol.setdefault(sym, []).append(dict(order or {}))
+
+    rows = []
+    for sym, plan in sorted(dict(TRADE_PLAN or {}).items()):
+        sym = str(sym or "").strip().upper()
+        if not sym or sym not in broker_by_symbol:
+            continue
+        row = _p532_normalize_canceled_exit_order_plan(
+            sym,
+            plan,
+            broker_by_symbol.get(sym),
+            orders_by_symbol.get(sym, []),
+        )
+        if bool(row.get("changed")):
+            rows.append(row)
+            record_decision(
+                "RECONCILE",
+                "worker_exit",
+                sym,
+                action="canceled_exit_order_plan_normalized",
+                reason=str(row.get("reason") or "broker_open_order_absent_position_still_open"),
+                meta={"p532_canceled_exit_order_plan_normalization": row, "source": source},
+            )
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "source": source,
+        "normalized_count": len(rows),
+        "normalized_symbols": [r.get("symbol") for r in rows],
+        "rows": rows,
+        "recommended_action": "persist_reconcile_snapshot" if rows else "none",
+    }
+
+
 def build_reconcile_snapshot() -> dict:
     self_heal = {}
     if bool(RECONCILE_SELF_HEAL_TERMINAL_ENTRY_PLANS):
@@ -10326,11 +10483,24 @@ def build_reconcile_snapshot() -> dict:
         except Exception as exc:
             self_heal = {"ok": False, "error": str(exc), "applied_count": 0, "applied": []}
 
+    broker_positions = list_open_positions_details_allowed()
+    open_orders = list_open_orders_safe()
+    p532_normalization = _p532_normalize_canceled_exit_order_plans(
+        broker_positions,
+        open_orders,
+        source="build_reconcile_snapshot",
+    )
+    if int(p532_normalization.get("normalized_count") or 0) > 0:
+        try:
+            persist_positions_snapshot(
+                reason="p532_canceled_exit_order_plan_normalized",
+                extra={"p532_canceled_exit_order_plan_normalization": p532_normalization},
+            )
+        except Exception:
+            pass
     active_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active")}
     authoritative_plans = {sym: plan for sym, plan in TRADE_PLAN.items() if plan.get("active") or _plan_is_pending_entry(plan)}
-    broker_positions = list_open_positions_details_allowed()
     broker_syms = sorted({str(p.get("symbol") or "").upper() for p in broker_positions if str(p.get("symbol") or "").upper()})
-    open_orders = list_open_orders_safe()
     plan_symbols = sorted(authoritative_plans.keys())
     missing_from_plans = sorted([sym for sym in broker_syms if sym not in authoritative_plans])
     stale_active_plans = sorted([sym for sym in active_plans if sym not in broker_syms and sym not in {str(o.get('symbol') or '').upper() for o in open_orders if str(o.get('symbol') or '').upper()}])
@@ -10354,6 +10524,7 @@ def build_reconcile_snapshot() -> dict:
         "partial_fill_plan_symbols": partial_fill_plan_symbols,
         "open_orders": open_orders[:25],
         "self_heal": self_heal,
+        "p532_canceled_exit_order_plan_normalization": p532_normalization,
     }
     snap.update(_build_reconcile_assessment(snap))
     return snap
@@ -11605,7 +11776,8 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
             "action": "self_heal_terminal_entry_plan_failed",
             "reason": str(exc),
         })
-    for order in list_open_orders_safe():
+    open_orders_for_reconcile = list_open_orders_safe()
+    for order in open_orders_for_reconcile:
         sym = str(order.get("symbol") or "").upper()
         if not sym:
             continue
@@ -11616,7 +11788,22 @@ def reconcile_trade_plans_from_alpaca() -> list[dict]:
         if recovered_plan:
             actions.append({"symbol": sym, "action": "recovered_open_order_plan", "order_id": str(order.get("id") or ""), "status": str(order.get("status") or "")})
             record_decision("RECONCILE", "worker_exit", sym, side=str(order.get("side") or "buy"), signal="RECOVERED_OPEN_ORDER", action="recovered_open_order_plan", reason="missing_internal_plan_for_open_order", order_id=str(order.get("id") or ""))
-    for p in list_open_positions_details_allowed():
+    broker_positions_for_reconcile = list_open_positions_details_allowed()
+    p532_normalization = _p532_normalize_canceled_exit_order_plans(
+        broker_positions_for_reconcile,
+        open_orders_for_reconcile,
+        source="reconcile_trade_plans_from_alpaca",
+    )
+    for row in list(p532_normalization.get("rows") or []):
+        actions.append({
+            "symbol": row.get("symbol"),
+            "action": "canceled_exit_order_plan_normalized",
+            "reason": row.get("reason"),
+            "old_order_id": row.get("old_order_id"),
+            "old_order_status": row.get("old_order_status"),
+        })
+
+    for p in broker_positions_for_reconcile:
         sym = p["symbol"]
         qty_signed = float(p["qty"])
         avg_entry = p.get("avg_entry_price")

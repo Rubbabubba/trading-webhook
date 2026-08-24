@@ -30,7 +30,8 @@ DEFAULT_BASE_URL = os.getenv(
     "WEBHOOK_CONSOLE_BASE_URL", "https://trading-webhook-q4d5.onrender.com"
 ).rstrip("/")
 MAX_RESPONSE_BYTES = int(os.getenv("WEBHOOK_CONSOLE_MAX_RESPONSE_BYTES", "2000000"))
-TIMEOUT_LIMIT_SECONDS = 120.0
+DEFAULT_TIMEOUT_SECONDS = float(os.getenv("WEBHOOK_CONSOLE_DEFAULT_TIMEOUT_SECONDS", "90"))
+TIMEOUT_LIMIT_SECONDS = float(os.getenv("WEBHOOK_CONSOLE_MAX_TIMEOUT_SECONDS", "600"))
 SECRET_KEYS = re.compile(r"token|secret|password|authorization|api[-_]?key|signature", re.I)
 URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+")
 
@@ -43,7 +44,9 @@ class RequestSpec(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     query: dict[str, Any] = Field(default_factory=dict)
     body: Any | None = None
-    timeout_seconds: float = Field(default=30.0, ge=1.0, le=TIMEOUT_LIMIT_SECONDS)
+    timeout_seconds: float = Field(
+        default=DEFAULT_TIMEOUT_SECONDS, ge=1.0, le=TIMEOUT_LIMIT_SECONDS
+    )
     label: str = ""
 
 
@@ -54,6 +57,9 @@ class BatchSpec(BaseModel):
 class SavedSequenceSpec(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     endpoints: list[str] = Field(min_length=1, max_length=100)
+    timeout_seconds: float = Field(
+        default=DEFAULT_TIMEOUT_SECONDS, ge=1.0, le=TIMEOUT_LIMIT_SECONDS
+    )
 
 
 MARKET_OPEN_CHECK = [
@@ -119,16 +125,28 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 endpoints TEXT NOT NULL,
+                timeout_seconds REAL NOT NULL DEFAULT 90,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        sequence_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(saved_sequences)")
+        }
+        if "timeout_seconds" not in sequence_columns:
+            connection.execute(
+                "ALTER TABLE saved_sequences ADD COLUMN timeout_seconds REAL NOT NULL DEFAULT 90"
+            )
         now = utc_now()
         connection.execute(
             """INSERT OR IGNORE INTO saved_sequences
-               (id, name, endpoints, created_at, updated_at) VALUES (?, ?, ?, ?, ?)""",
-            (str(uuid.uuid4()), "Market Open Check", json_text(MARKET_OPEN_CHECK), now, now),
+               (id, name, endpoints, timeout_seconds, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                str(uuid.uuid4()), "Market Open Check", json_text(MARKET_OPEN_CHECK),
+                DEFAULT_TIMEOUT_SECONDS, now, now,
+            ),
         )
 
 
@@ -279,7 +297,11 @@ def startup() -> None:
 
 @app.get("/", response_class=HTMLResponse)
 def home() -> str:
-    return UI_HTML.replace("__DEFAULT_BASE_URL__", json.dumps(DEFAULT_BASE_URL))
+    return (
+        UI_HTML.replace("__DEFAULT_BASE_URL__", json.dumps(DEFAULT_BASE_URL))
+        .replace("__DEFAULT_TIMEOUT__", str(DEFAULT_TIMEOUT_SECONDS))
+        .replace("__MAX_TIMEOUT__", str(TIMEOUT_LIMIT_SECONDS))
+    )
 
 
 @app.get("/api/endpoints")
@@ -337,14 +359,22 @@ def save_sequence(spec: SavedSequenceSpec) -> dict[str, Any]:
         sequence_id = existing["id"] if existing else str(uuid.uuid4())
         created_at = existing["created_at"] if existing else now
         connection.execute(
-            """INSERT INTO saved_sequences (id, name, endpoints, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO saved_sequences
+               (id, name, endpoints, timeout_seconds, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(name) DO UPDATE SET name = excluded.name,
                    endpoints = excluded.endpoints,
+                   timeout_seconds = excluded.timeout_seconds,
                    updated_at = excluded.updated_at""",
-            (sequence_id, name, json_text(endpoints), created_at, now),
+            (
+                sequence_id, name, json_text(endpoints), spec.timeout_seconds,
+                created_at, now,
+            ),
         )
-    return {"id": sequence_id, "name": name, "endpoints": endpoints, "updated_at": now}
+    return {
+        "id": sequence_id, "name": name, "endpoints": endpoints,
+        "timeout_seconds": spec.timeout_seconds, "updated_at": now,
+    }
 
 
 @app.delete("/api/sequences/{sequence_id}")
@@ -431,6 +461,7 @@ UI_HTML = r'''<!doctype html>
 :root{--bg:#0a0e13;--panel:#111820;--line:#283543;--text:#e7eef6;--muted:#8fa1b3;--blue:#4ba3ff;--green:#30d18c;--red:#ff6174;--amber:#ffbf5b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}header{padding:22px 28px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}h1{font-size:20px;margin:0}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);margin-right:10px;box-shadow:0 0 12px var(--green)}main{display:grid;grid-template-columns:minmax(430px,1fr) minmax(400px,1.15fr);height:calc(100vh - 70px)}section{padding:22px 28px;overflow:auto}.composer{border-right:1px solid var(--line)}label{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:15px 0 7px}input,select,textarea{width:100%;color:var(--text);background:#0d131a;border:1px solid var(--line);border-radius:6px;padding:10px;font:inherit;outline:none}input:focus,textarea:focus,select:focus{border-color:var(--blue)}textarea{resize:vertical;min-height:90px}.row{display:grid;grid-template-columns:105px 1fr;gap:9px}.actions{display:flex;gap:9px;margin-top:16px;flex-wrap:wrap}button,.button{border:0;border-radius:6px;background:var(--blue);color:#04101d;padding:10px 15px;font:700 13px inherit;cursor:pointer;text-decoration:none}.secondary{background:#202d3a;color:var(--text)}.danger{background:#3b1d25;color:#ff9caa}.status{display:flex;gap:16px;color:var(--muted);margin:18px 0 10px}.ok{color:var(--green)}.bad{color:var(--red)}pre{white-space:pre-wrap;word-break:break-word;background:#0d131a;border:1px solid var(--line);border-radius:6px;padding:14px;min-height:170px}.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}.toolbar input{flex:1;min-width:200px}.capture{border:1px solid var(--line);border-radius:7px;padding:12px;margin-bottom:9px;cursor:pointer}.capture:hover{border-color:#466078}.capture-top{display:flex;justify-content:space-between;gap:12px}.method{color:var(--blue);font-weight:700}.meta,.hint{color:var(--muted);font-size:12px;margin-top:5px}.pill{border-radius:20px;padding:2px 8px;background:#17232e}.endpoint-list{max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:6px}.endpoint{padding:7px 10px;border-bottom:1px solid #1d2934;cursor:pointer}.endpoint:hover{background:#17212b}.sequence{min-height:105px}@media(max-width:900px){main{display:block;height:auto}.composer{border-right:0;border-bottom:1px solid var(--line)}}
 </style></head><body><header><h1><span class="dot"></span>Trading Webhook Console</h1><span id="endpointCount" class="pill">loading routes…</span></header><main><section class="composer">
 <div class="row"><div><label>Method</label><select id="method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div><div><label>Request URL</label><input id="url"></div></div>
+<label>Timeout (seconds)</label><input id="timeout" type="number" min="1" max="__MAX_TIMEOUT__" value="__DEFAULT_TIMEOUT__"><div class="hint">Used for individual requests and every request in a sequence. Maximum: __MAX_TIMEOUT__ seconds.</div>
 <label>Query parameters</label><input id="query" placeholder="limit=25"><div class="hint">Enter parameters as name=value pairs, separated with &amp;. No question mark needed.</div>
 <label>Find endpoint</label><input id="endpointSearch" placeholder="Filter documented routes…"><div id="endpoints" class="endpoint-list"></div>
 <label>Label (optional)</label><input id="label" placeholder="Morning health snapshot"><label>Headers (JSON)</label><textarea id="headers">{}</textarea><label>Body (JSON or text)</label><textarea id="body" placeholder='{"symbol":"SPY"}'></textarea>
@@ -447,15 +478,16 @@ $('endpointSearch').oninput=renderRoutes;$('endpoints').onclick=e=>{const x=e.ta
 function queryObject(){const result={};for(const[k,v]of new URLSearchParams($('query').value.replace(/^\?/,'')))result[k]=v;return result}
 function normalizeUrlField(){try{const u=new URL($('url').value);if(u.search){$('query').value=u.search.slice(1);u.search='';$('url').value=u.toString()}}catch{}}
 $('url').onchange=normalizeUrlField;
-function spec(){let headers=parseMaybe($('headers').value);if(typeof headers!=='object'||Array.isArray(headers))throw Error('Headers must be a JSON object');return{method:$('method').value,url:$('url').value,query:queryObject(),headers,body:parseMaybe($('body').value),label:$('label').value}}
+function timeoutSeconds(){const value=Number($('timeout').value);if(!Number.isFinite(value)||value<1||value>Number('__MAX_TIMEOUT__'))throw Error(`Timeout must be between 1 and __MAX_TIMEOUT__ seconds`);return value}
+function spec(){let headers=parseMaybe($('headers').value);if(typeof headers!=='object'||Array.isArray(headers))throw Error('Headers must be a JSON object');return{method:$('method').value,url:$('url').value,query:queryObject(),headers,body:parseMaybe($('body').value),label:$('label').value,timeout_seconds:timeoutSeconds()}}
 $('send').onclick=async()=>{try{$('send').disabled=true;$('status').textContent='Sending…';const r=await fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(spec())});const d=await r.json();$('status').innerHTML=`<span class="${d.status_code>=200&&d.status_code<400?'ok':'bad'}">${d.status_code??'ERROR'}</span><span>${d.elapsed_ms??0} ms</span><span>${d.byte_count??0} bytes</span>`;$('response').textContent=pretty(d.response_body??d);loadHistory()}catch(e){$('status').innerHTML=`<span class="bad">${e.message}</span>`}finally{$('send').disabled=false}}
 $('copyCurl').onclick=async()=>{try{const s=spec(),u=new URL(s.url);for(const[k,v]of Object.entries(s.query))u.searchParams.set(k,v);let c=`curl -X ${s.method} '${u}'`;for(const[k,v]of Object.entries(s.headers))c+=` -H '${k}: ${v}'`;if(s.body!==null)c+=` --data '${typeof s.body==='string'?s.body:JSON.stringify(s.body)}'`;await navigator.clipboard.writeText(c);$('status').textContent='cURL copied'}catch(e){$('status').textContent=e.message}}
 function sequenceLines(){return $('sequence').value.split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&!x.startsWith('#'))}
-async function loadSequences(selectName=''){const d=await fetch('/api/sequences').then(r=>r.json());sequences=d.sequences;$('savedSequence').innerHTML='<option value="">Choose a saved sequence…</option>'+sequences.map(x=>`<option value="${x.id}">${esc(x.name)} (${x.endpoints.length})</option>`).join('');if(selectName){const found=sequences.find(x=>x.name.toLowerCase()===selectName.toLowerCase());if(found){$('savedSequence').value=found.id;$('sequence').value=found.endpoints.join('\n')}}}
-$('savedSequence').onchange=()=>{const found=sequences.find(x=>x.id===$('savedSequence').value);if(found){$('sequence').value=found.endpoints.join('\n');$('status').textContent=`Loaded ${found.name}: ${found.endpoints.length} endpoints`}}
-$('saveSequence').onclick=async()=>{const lines=sequenceLines();if(!lines.length)return $('status').textContent='Add at least one URL or path first';const selected=sequences.find(x=>x.id===$('savedSequence').value);const name=prompt('Sequence name:',selected?.name||'');if(!name?.trim())return;const exists=sequences.find(x=>x.name.toLowerCase()===name.trim().toLowerCase());if(exists&&!confirm(`Replace saved sequence “${exists.name}”?`))return;const r=await fetch('/api/sequences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim(),endpoints:lines})});const d=await r.json();if(!r.ok)return $('status').textContent=d.detail||'Could not save sequence';await loadSequences(d.name);$('status').innerHTML=`<span class="ok">Saved ${esc(d.name)}</span><span>${d.endpoints.length} endpoints</span>`}
+async function loadSequences(selectName=''){const d=await fetch('/api/sequences').then(r=>r.json());sequences=d.sequences;$('savedSequence').innerHTML='<option value="">Choose a saved sequence…</option>'+sequences.map(x=>`<option value="${x.id}">${esc(x.name)} (${x.endpoints.length})</option>`).join('');if(selectName){const found=sequences.find(x=>x.name.toLowerCase()===selectName.toLowerCase());if(found){$('savedSequence').value=found.id;$('sequence').value=found.endpoints.join('\n');$('timeout').value=found.timeout_seconds}}}
+$('savedSequence').onchange=()=>{const found=sequences.find(x=>x.id===$('savedSequence').value);if(found){$('sequence').value=found.endpoints.join('\n');$('timeout').value=found.timeout_seconds;$('status').textContent=`Loaded ${found.name}: ${found.endpoints.length} endpoints · ${found.timeout_seconds}s timeout`}}
+$('saveSequence').onclick=async()=>{const lines=sequenceLines();if(!lines.length)return $('status').textContent='Add at least one URL or path first';let timeout;try{timeout=timeoutSeconds()}catch(e){return $('status').textContent=e.message}const selected=sequences.find(x=>x.id===$('savedSequence').value);const name=prompt('Sequence name:',selected?.name||'');if(!name?.trim())return;const exists=sequences.find(x=>x.name.toLowerCase()===name.trim().toLowerCase());if(exists&&!confirm(`Replace saved sequence “${exists.name}”?`))return;const r=await fetch('/api/sequences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim(),endpoints:lines,timeout_seconds:timeout})});const d=await r.json();if(!r.ok)return $('status').textContent=d.detail||'Could not save sequence';await loadSequences(d.name);$('status').innerHTML=`<span class="ok">Saved ${esc(d.name)}</span><span>${d.endpoints.length} endpoints · ${d.timeout_seconds}s timeout</span>`}
 $('deleteSequence').onclick=async()=>{const found=sequences.find(x=>x.id===$('savedSequence').value);if(!found)return $('status').textContent='Choose a saved sequence first';if(!confirm(`Permanently delete saved sequence “${found.name}”?`))return;await fetch('/api/sequences/'+found.id,{method:'DELETE'});$('sequence').value='';await loadSequences();$('status').textContent=`Deleted ${found.name}`}
-$('runSequence').onclick=async()=>{const lines=sequenceLines();if(!lines.length)return $('status').textContent='Add at least one URL or path';if(lines.length>100)return $('status').textContent='Sequences are limited to 100 requests';if(!confirm(`Run and capture ${lines.length} requests in order?`))return;try{$('runSequence').disabled=true;$('status').textContent=`Running 0 / ${lines.length}…`;const selected=sequences.find(x=>x.id===$('savedSequence').value),sequenceName=selected?.name||'Sequence';const requests=lines.map((line,i)=>({method:'GET',url:line.startsWith('http')?line:base+(line.startsWith('/')?'':'/')+line,label:`${sequenceName} ${i+1}/${lines.length}`}));const r=await fetch('/api/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requests})});const d=await r.json();$('response').textContent=pretty(d.results.map(x=>({status:x.status_code,url:x.url,elapsed_ms:x.elapsed_ms,error:x.error})));$('status').innerHTML=`<span class="ok">Captured ${d.count}</span>`;loadHistory()}catch(e){$('status').innerHTML=`<span class="bad">${e.message}</span>`}finally{$('runSequence').disabled=false}}
+$('runSequence').onclick=async()=>{const lines=sequenceLines();if(!lines.length)return $('status').textContent='Add at least one URL or path';if(lines.length>100)return $('status').textContent='Sequences are limited to 100 requests';let timeout;try{timeout=timeoutSeconds()}catch(e){return $('status').textContent=e.message}if(!confirm(`Run and capture ${lines.length} requests in order with a ${timeout}s timeout each?`))return;try{$('runSequence').disabled=true;$('status').textContent=`Running 0 / ${lines.length}…`;const selected=sequences.find(x=>x.id===$('savedSequence').value),sequenceName=selected?.name||'Sequence';const requests=lines.map((line,i)=>({method:'GET',url:line.startsWith('http')?line:base+(line.startsWith('/')?'':'/')+line,label:`${sequenceName} ${i+1}/${lines.length}`,timeout_seconds:timeout}));const r=await fetch('/api/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requests})});const d=await r.json();$('response').textContent=pretty(d.results.map(x=>({status:x.status_code,url:x.url,elapsed_ms:x.elapsed_ms,error:x.error})));$('status').innerHTML=`<span class="ok">Captured ${d.count}</span>`;loadHistory()}catch(e){$('status').innerHTML=`<span class="bad">${e.message}</span>`}finally{$('runSequence').disabled=false}}
 async function loadHistory(){const q=encodeURIComponent($('historySearch').value);$('export').href='/api/export'+(q?'?q='+q:'');const d=await fetch('/api/captures?limit=100&q='+q).then(r=>r.json());$('history').innerHTML=d.captures.map(x=>`<div class="capture" data-id="${x.id}"><div class="capture-top"><span><span class="method">${x.method}</span> ${esc(x.url)}</span><span class="${x.status_code>=200&&x.status_code<400?'ok':'bad'}">${x.status_code??'ERR'}</span></div><div class="meta">${new Date(x.created_at).toLocaleString()} · ${x.elapsed_ms} ms · ${x.byte_count} bytes ${x.label?'· '+esc(x.label):''}</div></div>`).join('')||'<p class="meta">No captures yet.</p>'}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}$('history').onclick=async e=>{const x=e.target.closest('.capture');if(!x)return;const d=await fetch('/api/captures/'+x.dataset.id).then(r=>r.json());$('response').textContent=pretty(d);$('status').innerHTML=`<span>${d.created_at}</span><span>${d.elapsed_ms} ms</span>`};$('clearHistory').onclick=async()=>{const q=$('historySearch').value.trim();const scope=q?`captures matching “${q}”`:'ALL capture history';if(!confirm(`Permanently delete ${scope}?`))return;const d=await fetch('/api/captures'+(q?'?q='+encodeURIComponent(q):''),{method:'DELETE'}).then(r=>r.json());$('status').textContent=`Deleted ${d.deleted} capture${d.deleted===1?'':'s'}`;loadHistory()};$('refresh').onclick=loadHistory;$('historySearch').oninput=()=>{clearTimeout(window.st);window.st=setTimeout(loadHistory,250)};loadRoutes();loadSequences('Market Open Check');loadHistory();
 </script></body></html>'''
