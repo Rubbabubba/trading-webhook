@@ -2950,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-516-fast-scan-acceptance-durable-worker-completion-contract"
+PATCH_VERSION = "patch-517-pure-candidate-eval-terminal-contract-old-hard-bypass-removal"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28451,27 +28451,36 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     p402_eval_truth["p511_symbol_eval_isolation_configured_enabled"] = bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED)
     p402_eval_truth["p511_symbol_eval_isolation_effective_enabled"] = bool(SWING_SCAN_SYMBOL_EVAL_EFFECTIVE_ISOLATION_ENABLED)
     p402_eval_truth["p511_symbol_eval_timeout_sec"] = int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC or 0)
-    p512_candidate_eval_hard_bypass_applied = bool(
+    p517_pure_candidate_eval_terminal_contract_applied = bool(
         SWING_SCAN_CANDIDATE_HARD_BYPASS_ENABLED
         and bool(p401_hot_path.get("enabled"))
     )
     p402_eval_truth["p512_candidate_eval_hard_bypass_enabled"] = bool(SWING_SCAN_CANDIDATE_HARD_BYPASS_ENABLED)
-    p402_eval_truth["p512_candidate_eval_hard_bypass_applied"] = bool(p512_candidate_eval_hard_bypass_applied)
+    p402_eval_truth["p512_candidate_eval_hard_bypass_applied"] = False
+    p402_eval_truth["p512_candidate_eval_hard_bypass_retired_by_p517"] = True
+    p402_eval_truth["p517_pure_candidate_eval_terminal_contract_applied"] = bool(p517_pure_candidate_eval_terminal_contract_applied)
     p402_eval_truth["p512_candidate_eval_contract"] = (
         "pure_daily_bar_no_thread_no_fetch"
-        if p512_candidate_eval_hard_bypass_applied
+        if p517_pure_candidate_eval_terminal_contract_applied
+        else "legacy_isolated_symbol_eval"
+    )
+    p402_eval_truth["p517_candidate_eval_contract"] = (
+        "pure_daily_bar_terminal_rows_no_legacy_finalizer"
+        if p517_pure_candidate_eval_terminal_contract_applied
         else "legacy_isolated_symbol_eval"
     )
     p402_eval_truth["p514_no_hang_candidate_eval_contract"] = {
         "enabled": True,
-        "applies_to_p512_hard_bypass": bool(p512_candidate_eval_hard_bypass_applied),
+        "applies_to_p512_hard_bypass": False,
+        "p517_old_hard_bypass_retired": True,
+        "p517_applies_to_pure_terminal_contract": bool(p517_pure_candidate_eval_terminal_contract_applied),
         "symbol_timeout_sec": int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC or 0),
         "timeout_max_per_scan": int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_MAX_PER_SCAN or 0),
-        "contract": "pure_daily_bar_no_thread_no_fetch",
+        "contract": "pure_daily_bar_terminal_rows_no_legacy_finalizer",
     }
     p402_eval_truth["p515_pure_daily_bar_candidate_eval"] = {
-        "enabled": bool(p512_candidate_eval_hard_bypass_applied),
-        "contract": "pure_daily_bar_no_thread_no_fetch",
+        "enabled": bool(p517_pure_candidate_eval_terminal_contract_applied),
+        "contract": "pure_daily_bar_terminal_rows_no_legacy_finalizer",
         "symbols_requested": len(syms),
         "mean_reversion_fast_path": "deferred",
     }
@@ -28882,15 +28891,77 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             candidate["rejection_reasons"] = _dedupe_candidate_reasons(candidate.get("rejection_reasons") or [])
         return candidate
 
+    def _p517_finalize_pure_candidate_for_scan(candidate: dict, sym: str) -> dict:
+        c = dict(candidate or {})
+        symbol = str(sym or c.get("symbol") or "").strip().upper()
+        strategy_name = str(c.get("strategy") or "").strip().lower()
+        c["symbol"] = symbol
+        c["scan_broker_snapshot"] = dict(c.get("scan_broker_snapshot") or p479_scan_broker_snapshot or {})
+        c["candidate_eval_contract"] = "pure_daily_bar_terminal_rows_no_legacy_finalizer"
+        c["p517_pure_candidate_eval_terminal_contract"] = True
+        c["p517_legacy_finalizer_skipped"] = True
+
+        reasons = list(c.get("rejection_reasons") or [])
+        if symbol in p479_pending_entry_symbols:
+            c["eligible"] = False
+            reasons.append("plan_or_pending_entry_exists")
+        if symbol in p479_open_position_symbols:
+            c["eligible"] = False
+            reasons.append("position_already_open")
+
+        candidate_global_block_reasons = list(global_block_reasons)
+        if c.get("eligible") and new_entries_globally_blocked:
+            if not (
+                strategy_name == MEAN_REVERSION_STRATEGY_NAME
+                and "weak_tape" in candidate_global_block_reasons
+                and SWING_MEAN_REVERSION_ENABLED
+            ):
+                c["eligible"] = False
+                reasons.extend(candidate_global_block_reasons)
+
+        group_count = _p479_open_group_position_count_cached(symbol)
+        if c.get("eligible") and SWING_MAX_GROUP_POSITIONS > 0 and group_count >= SWING_MAX_GROUP_POSITIONS:
+            c["eligible"] = False
+            reasons.append("correlation_group_limit")
+
+        c["correlation_group_id"] = _symbol_group_id(symbol)
+        c["correlation_group_open_count"] = int(group_count)
+        c["selection_quality_score"] = _candidate_selection_quality_score(c)
+
+        local_symbol_cap = float(symbol_cap)
+        if strategy_name == MEAN_REVERSION_STRATEGY_NAME and local_symbol_cap > 0:
+            local_symbol_cap = local_symbol_cap * max(0.0, float(SWING_MEAN_REVERSION_SYMBOL_EXPOSURE_MULTIPLIER))
+        cap_truth = _cap_adjust_candidate_qty(
+            _safe_float(c.get("close")),
+            _safe_float(c.get("estimated_qty")),
+            float(open_by_symbol.get(symbol, 0.0) or 0.0),
+            local_symbol_cap,
+            exposure,
+            portfolio_cap,
+        )
+        c["sizing_truth"] = dict(cap_truth)
+        c["raw_estimated_qty"] = cap_truth.get("raw_estimated_qty")
+        c["estimated_qty"] = round(float(cap_truth.get("effective_estimated_qty") or 0.0), 2)
+        c = _p300_apply_executable_selection_contract(c, cap_truth=cap_truth)
+        projected_notional = float(cap_truth.get("effective_projected_notional") or 0.0)
+
+        if c.get("eligible") and local_symbol_cap > 0 and projected_notional + open_by_symbol.get(symbol, 0.0) > local_symbol_cap:
+            c["eligible"] = False
+            reasons.append("symbol_exposure_limit")
+
+        _canonical_portfolio_cap_gate(c, projected_notional, exposure, portfolio_cap, restore_eligibility=True)
+        reasons.extend(list(c.get("rejection_reasons") or []))
+        c["rejection_reasons"] = _dedupe_candidate_reasons(reasons)
+        c["eligible"] = bool(c.get("eligible")) and not c["rejection_reasons"]
+        return c
+
     def _p515_eval_symbol_rows_fast(sym: str) -> list[dict]:
-        rows = [
-            _finalize_candidate(
+        return [
+            _p517_finalize_pure_candidate_for_scan(
                 _p515_eval_daily_breakout_candidate_fast(sym),
                 sym,
-                record=False,
             )
         ]
-        return rows
 
     def _p478_run_symbol_eval_isolated(sym: str, remaining_sec: float) -> dict:
         symbol = str(sym or "").strip().upper()
@@ -28971,15 +29042,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             except Exception:
                 pass
 
-    if p512_candidate_eval_hard_bypass_applied:
+    if p517_pure_candidate_eval_terminal_contract_applied:
         p512_started = _time.perf_counter()
-        p402_eval_truth["p512_hard_bypass_started_utc"] = datetime.now(timezone.utc).isoformat()
-        p402_eval_truth["p512_hard_bypass_reason"] = "avoid_thread_stall_and_publish_full_candidate_truth"
-        p402_eval_truth["p512_hard_bypass_symbols_requested"] = len(syms)
+        p402_eval_truth["p517_pure_candidate_eval_started_utc"] = datetime.now(timezone.utc).isoformat()
+        p402_eval_truth["p517_pure_candidate_eval_reason"] = "terminal_full_candidate_rows_without_legacy_per_symbol_finalizer"
+        p402_eval_truth["p517_pure_candidate_eval_symbols_requested"] = len(syms)
         _p402_stage_checkpoint(
-            "candidate_eval_hard_bypass_start",
+            "pure_candidate_eval_terminal_start",
             symbols_count=len(syms),
-            reason=p402_eval_truth["p512_hard_bypass_reason"],
+            reason=p402_eval_truth["p517_pure_candidate_eval_reason"],
         )
         for sym in syms:
             symbol = str(sym or "").strip().upper()
@@ -28995,7 +29066,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 and remaining <= max(5.0, float(SWING_SCAN_BUDGET_RESERVE_SEC or 0))
             ):
                 p402_eval_truth["stopped_for_budget"] = True
-                p402_eval_truth["budget_stop_stage"] = "candidate_eval_hard_bypass_budget_floor"
+                p402_eval_truth["budget_stop_stage"] = "pure_candidate_eval_budget_floor"
                 p402_eval_truth["skipped_symbols"].extend([
                     s for s in syms
                     if s not in p402_eval_truth["evaluated_symbols"]
@@ -29003,7 +29074,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 ])
                 candidate_eval_budget_tripped = True
                 _p402_stage_checkpoint(
-                    "candidate_eval_hard_bypass_budget_close",
+                    "pure_candidate_eval_budget_close",
                     evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                     skipped_count=len(p402_eval_truth["skipped_symbols"]),
                     elapsed_sec=round(elapsed, 3),
@@ -29019,7 +29090,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 p402_eval_truth["evaluated_symbols"].append(symbol)
                 _p472_open_position_skip_candidate(symbol, skip_truth)
                 _p402_stage_checkpoint(
-                    "candidate_eval_hard_bypass_fast_skip",
+                    "pure_candidate_eval_fast_skip",
                     symbol=symbol,
                     evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                     fast_skip_count=len(p472_fast_skip_symbols),
@@ -29030,7 +29101,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             p402_eval_truth["evaluated_symbols"].append(symbol)
             symbol_eval_started = _time.perf_counter()
             _p402_stage_checkpoint(
-                "candidate_eval_hard_bypass_symbol_start",
+                "pure_candidate_eval_symbol_start",
                 symbol=symbol,
                 evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                 symbols_count=len(syms),
@@ -29048,7 +29119,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     "timeout_sec": 0,
                     "isolated": False,
                     "p515_pure_daily_bar_candidate_eval": True,
-                    "candidate_eval_contract": "pure_daily_bar_no_thread_no_fetch",
+                    "p517_pure_candidate_eval_terminal_contract": True,
+                    "candidate_eval_contract": "pure_daily_bar_terminal_rows_no_legacy_finalizer",
                 }
                 p402_eval_truth["p514_no_hang_candidate_eval_contract"]["last_symbol"] = symbol
                 p402_eval_truth["p514_no_hang_candidate_eval_contract"]["last_status"] = str(p514_eval_result.get("status") or "")
@@ -29062,24 +29134,26 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                         symbol,
                         float(p514_eval_result.get("elapsed_sec") or 0.0),
                         float(p514_eval_result.get("timeout_sec") or SWING_SCAN_SYMBOL_EVAL_TIMEOUT_SEC),
-                        "candidate_eval_hard_bypass_symbol_timeout",
+                        "pure_candidate_eval_symbol_timeout",
                     ))
-                    timeout_row["p512_candidate_eval_hard_bypass"] = True
+                    timeout_row["p512_candidate_eval_hard_bypass"] = False
+                    timeout_row["p517_pure_candidate_eval_terminal_contract"] = True
                     timeout_row["p514_no_hang_candidate_eval_contract"] = True
-                    timeout_row["candidate_eval_contract"] = "isolated_symbol_timeout_wrapper"
+                    timeout_row["candidate_eval_contract"] = "pure_candidate_eval_timeout_wrapper"
                     _record_finalized_candidate(timeout_row)
                     p472_symbol_timeout_symbols.append(symbol)
                     p472_symbol_timeout_rows.append({
                         "symbol": symbol,
                         "elapsed_sec": p514_eval_result.get("elapsed_sec"),
                         "threshold_sec": p514_eval_result.get("timeout_sec"),
-                        "reason": "candidate_eval_hard_bypass_symbol_timeout",
+                        "reason": "pure_candidate_eval_symbol_timeout",
                         "p514_no_hang_candidate_eval_contract": True,
+                        "p517_pure_candidate_eval_terminal_contract": True,
                     })
                     p402_eval_truth["p478_timeout_count"] = int(p402_eval_truth.get("p478_timeout_count") or 0) + 1
                     rejection_counts["candidate_eval_timeout"] += 1
                     _p402_stage_checkpoint(
-                        "candidate_eval_hard_bypass_symbol_timeout",
+                        "pure_candidate_eval_symbol_timeout",
                         symbol=symbol,
                         evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                         timeout_count=int(p402_eval_truth.get("p478_timeout_count") or 0),
@@ -29089,8 +29163,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     )
                     if int(p402_eval_truth.get("p478_timeout_count") or 0) >= int(SWING_SCAN_SYMBOL_EVAL_TIMEOUT_MAX_PER_SCAN):
                         p402_eval_truth["stopped_for_budget"] = True
-                        p402_eval_truth["budget_stop_stage"] = "candidate_eval_hard_bypass_timeout_limit"
-                        p402_eval_truth["terminal_reason"] = "candidate_eval_hard_bypass_timeout_limit"
+                        p402_eval_truth["budget_stop_stage"] = "pure_candidate_eval_timeout_limit"
+                        p402_eval_truth["terminal_reason"] = "pure_candidate_eval_timeout_limit"
                         p402_eval_truth["skipped_symbols"].extend([
                             s for s in syms
                             if s not in p402_eval_truth["evaluated_symbols"]
@@ -29098,7 +29172,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                         ])
                         candidate_eval_budget_tripped = True
                         _p402_stage_checkpoint(
-                            "candidate_eval_hard_bypass_timeout_limit_terminal_close",
+                            "pure_candidate_eval_timeout_limit_terminal_close",
                             symbol=symbol,
                             evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                             skipped_count=len(p402_eval_truth["skipped_symbols"]),
@@ -29110,12 +29184,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
 
                 for finalized_row in list(p514_eval_result.get("rows") or []):
                     row = _record_finalized_candidate(finalized_row)
-                    row["p512_candidate_eval_hard_bypass"] = True
+                    row["p512_candidate_eval_hard_bypass"] = False
                     row["p514_no_hang_candidate_eval_contract"] = True
                     row["p515_pure_daily_bar_candidate_eval"] = True
-                    row["candidate_eval_contract"] = "pure_daily_bar_no_thread_no_fetch"
+                    row["p517_pure_candidate_eval_terminal_contract"] = True
+                    row["candidate_eval_contract"] = "pure_daily_bar_terminal_rows_no_legacy_finalizer"
                 _p402_stage_checkpoint(
-                    "candidate_eval_hard_bypass_symbol_complete",
+                    "pure_candidate_eval_symbol_complete",
                     symbol=symbol,
                     evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                     candidate_count=len(candidates),
@@ -29124,8 +29199,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 )
                 if _p398_runtime_budget_elapsed_sec(scan_started) >= float(SCAN_RUNTIME_BUDGET_SEC or 1):
                     p402_eval_truth["stopped_for_budget"] = True
-                    p402_eval_truth["budget_stop_stage"] = "candidate_eval_hard_bypass_runtime_budget_after_symbol"
-                    p402_eval_truth["terminal_reason"] = "candidate_eval_hard_bypass_runtime_budget_after_symbol"
+                    p402_eval_truth["budget_stop_stage"] = "pure_candidate_eval_runtime_budget_after_symbol"
+                    p402_eval_truth["terminal_reason"] = "pure_candidate_eval_runtime_budget_after_symbol"
                     p402_eval_truth["skipped_symbols"].extend([
                         s for s in syms
                         if s not in p402_eval_truth["evaluated_symbols"]
@@ -29133,7 +29208,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     ])
                     candidate_eval_budget_tripped = True
                     _p402_stage_checkpoint(
-                        "candidate_eval_hard_bypass_runtime_budget_after_symbol",
+                        "pure_candidate_eval_runtime_budget_after_symbol",
                         symbol=symbol,
                         evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                         skipped_count=len(p402_eval_truth["skipped_symbols"]),
@@ -29148,11 +29223,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     error=str(e),
                     exception_type=type(e).__name__,
                 )
-                row["p512_candidate_eval_hard_bypass"] = True
+                row["p512_candidate_eval_hard_bypass"] = False
                 row["p514_no_hang_candidate_eval_contract"] = True
+                row["p517_pure_candidate_eval_terminal_contract"] = True
+                row["candidate_eval_contract"] = "pure_daily_bar_terminal_rows_no_legacy_finalizer"
                 _record_finalized_candidate(row)
                 _p402_stage_checkpoint(
-                    "candidate_eval_hard_bypass_symbol_exception",
+                    "pure_candidate_eval_symbol_exception",
                     symbol=symbol,
                     evaluated_count=len(p402_eval_truth["evaluated_symbols"]),
                     exception_type=type(e).__name__,
@@ -29160,11 +29237,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                     elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
                 )
 
-        p402_eval_truth["p512_hard_bypass_elapsed_sec"] = round(max(0.0, _time.perf_counter() - p512_started), 3)
-        p402_eval_truth["p512_hard_bypass_completed_utc"] = datetime.now(timezone.utc).isoformat()
-        p402_eval_truth["p512_hard_bypass_candidate_count"] = len(candidates)
+        p402_eval_truth["p517_pure_candidate_eval_elapsed_sec"] = round(max(0.0, _time.perf_counter() - p512_started), 3)
+        p402_eval_truth["p517_pure_candidate_eval_completed_utc"] = datetime.now(timezone.utc).isoformat()
+        p402_eval_truth["p517_pure_candidate_eval_candidate_count"] = len(candidates)
         _p402_stage_checkpoint(
-            "candidate_eval_hard_bypass_complete",
+            "pure_candidate_eval_terminal_complete",
             evaluated_count=len(p402_eval_truth.get("evaluated_symbols") or []),
             candidate_count=len(candidates),
             elapsed_sec=round(_p398_runtime_budget_elapsed_sec(scan_started), 3),
@@ -29177,7 +29254,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         float(SCAN_RUNTIME_BUDGET_SEC or 1) - candidate_eval_start_elapsed,
     )
     if (
-        not p512_candidate_eval_hard_bypass_applied
+        not p517_pure_candidate_eval_terminal_contract_applied
         and
         bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
         and bool(p476_candidate_progress_publish.get("published"))
@@ -29190,7 +29267,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         )
 
     if (
-        not p512_candidate_eval_hard_bypass_applied
+        not p517_pure_candidate_eval_terminal_contract_applied
         and
         bool(SWING_SCAN_INCREMENTAL_EVAL_ENABLED)
         and candidate_eval_start_remaining <= float(SWING_SCAN_BUDGET_RESERVE_SEC or 0)
