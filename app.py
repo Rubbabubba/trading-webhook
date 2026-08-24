@@ -2950,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-521-terminal-candidate-eval-selection-publish"
+PATCH_VERSION = "patch-522-selected-candidate-submit-finalization"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26432,10 +26432,28 @@ def _p399_submit_swing_candidate_rows(
                 live_allowed=bool(live_allowed),
             )
 
-        if live_allowed:
-            resp = submit_scan_trade(sym, "buy", c.get("signal") or "daily_breakout", meta=meta, source=source_name)
-        else:
-            resp = execute_entry_signal(sym, "buy", c.get("signal") or "daily_breakout", source_name, meta=meta)
+        try:
+            if live_allowed:
+                resp = submit_scan_trade(sym, "buy", c.get("signal") or "daily_breakout", meta=meta, source=source_name)
+            else:
+                resp = execute_entry_signal(sym, "buy", c.get("signal") or "daily_breakout", source_name, meta=meta)
+        except Exception as exc:
+            resp = {
+                "ok": False,
+                "rejected": True,
+                "reason": "submit_exception",
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "symbol": sym,
+                "signal": c.get("signal") or "daily_breakout",
+                "submitted": False,
+                "submit_attempted": True,
+                "p522_submit_exception_captured": True,
+            }
+            try:
+                logger.exception("SWING_SELECTED_SUBMIT_EXCEPTION symbol=%s", sym)
+            except Exception:
+                pass
 
         submit_meta = _classify_scan_submit_response(resp)
 
@@ -30250,6 +30268,109 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "rate_limited_symbols": _dedupe_keep_order(list(p399_pre_scan_retry_submit.get("rate_limited_symbols") or []) + list(p399_selected_submit.get("rate_limited_symbols") or [])),
         "submitted_symbols": _dedupe_keep_order(list(p399_pre_scan_retry_submit.get("submitted_symbols") or []) + list(p399_selected_submit.get("submitted_symbols") or [])),
     }
+    p522_selected_symbols_for_summary = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(selected or [])
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    p522_actual_submit_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and bool((row or {}).get("actual_submit_side_effect"))
+    ])
+    p522_attempted_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and bool((row or {}).get("submit_attempted"))
+    ])
+    p522_submit_row_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    p522_execution_quality_block_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and _p366_submit_execution_quality_blocked(
+            (row or {}).get("submit_state"),
+            (row or {}).get("submit_reason"),
+        )
+    ])
+    p522_retryable_spread_block_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and bool(_p366_retryable_spread_block(
+            str((row or {}).get("symbol") or "").strip().upper(),
+            (row or {}).get("signal") or (row or {}).get("strategy") or "daily_breakout",
+            (row or {}).get("submit_state"),
+            (row or {}).get("submit_reason"),
+        ).get("retryable"))
+    ])
+    p522_rate_limited_retry_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and _p398_submit_row_rate_limited(row)
+    ])
+    p522_submit_gap_symbols = _dedupe_keep_order([
+        sym for sym in p522_selected_symbols_for_summary
+        if sym not in set(p522_submit_row_symbols)
+        or (
+            sym not in set(p522_actual_submit_symbols)
+            and sym not in set(p522_execution_quality_block_symbols)
+            and sym not in set(p522_retryable_spread_block_symbols)
+            and sym not in set(p522_rate_limited_retry_symbols)
+        )
+    ])
+    summary.update({
+        "scan_truth_phase": "post_submit_terminal_truth",
+        "p522_submit_terminal_publish": {
+            "applied": True,
+            "reason": "selected_candidate_submit_rows_published_before_heavy_reports",
+            "selected_count": len(p522_selected_symbols_for_summary),
+            "submit_row_count": len(p522_submit_row_symbols),
+            "attempted_symbols": list(p522_attempted_symbols),
+            "actual_submit_side_effect_symbols": list(p522_actual_submit_symbols),
+            "submit_gap_symbols": list(p522_submit_gap_symbols),
+        },
+        "selected_total": len(p522_selected_symbols_for_summary),
+        "selected_symbols": list(p522_selected_symbols_for_summary),
+        "production_contract_selected_symbols": list(p522_selected_symbols_for_summary),
+        "selected_submission_rows": list(would_submit or []),
+        "would_submit": list(would_submit or []),
+        "actual_submit_side_effect_symbols": list(p522_actual_submit_symbols),
+        "execution_quality_block_symbols": list(p522_execution_quality_block_symbols),
+        "execution_quality_block_count": len(p522_execution_quality_block_symbols),
+        "retryable_spread_block_symbols": list(p522_retryable_spread_block_symbols),
+        "retryable_spread_block_count": len(p522_retryable_spread_block_symbols),
+        "rate_limited_submit_retry_symbols": list(p522_rate_limited_retry_symbols),
+        "rate_limited_submit_retry_count": len(p522_rate_limited_retry_symbols),
+        "selected_submit_gap_symbols": list(p522_submit_gap_symbols),
+        "selected_submit_gap_count": len(p522_submit_gap_symbols),
+        "selected_submit_gap_active": bool(p522_submit_gap_symbols),
+        "p399_partial_submit_finalization": dict(p399_partial_submit_finalization),
+    })
+    if p522_submit_gap_symbols:
+        summary["selected_submit_gap_reason"] = "selected_candidate_without_terminal_submit_evidence"
+    set_last_scan_fn(
+        skipped=False,
+        reason="partial_scan_completed" if bool((p402_eval_truth or {}).get("stopped_for_budget")) and bool((p402_eval_truth or {}).get("partial_scan_publishable")) else "scan_completed",
+        scanned=int((p402_eval_truth or {}).get("evaluated_count") or len(candidates)),
+        signals=len(approved),
+        would_trade=len(selected),
+        blocked=max(0, len(candidates) - len(approved)),
+        duration_ms=int(elapsed_ms_fn()),
+        selected_total=len(p522_selected_symbols_for_summary),
+        selected_symbols=list(p522_selected_symbols_for_summary),
+        eligible_total=len(approved),
+        summary=dict(summary),
+        effective_dry_run=bool(effective_dry_run),
+        p522_submit_terminal_publish=True,
+    )
     selected_submission_finalizer = {
         "enabled": False,
         "reason": "swing_production_core_direct_submit",
