@@ -1101,7 +1101,9 @@ The live page has a small cache controlled by `LIVE_DASHBOARD_CACHE_SEC` (defaul
 
 Use `/diagnostics/live_positions` for the fast default position check. After Patch 533 this route is broker-free by default and returns the same lightweight state as `/diagnostics/live_positions_light`, with pointers to the heavier broker-backed path when needed.
 
-Use `/diagnostics/live_positions_heavy?refresh=1` or `/diagnostics/live_positions?heavy=1&refresh=1` only when reconciling directly against an Alpaca screenshot. The heavy version includes:
+Use `/diagnostics/live_positions_heavy` or `/diagnostics/live_positions?heavy=1` when you need the heavy row shape without forcing live broker calls. After Patch 534 these routes return a cached broker-backed payload when available, or a position-snapshot-backed equivalent when the live cache is empty.
+
+Use `/diagnostics/live_positions_heavy?live_refresh=1` only when reconciling directly against an Alpaca screenshot and you deliberately want fresh broker/account calls. The live-refresh version includes:
 
 - `positions`: one row per broker position, active internal plan, or open order.
 - `summary`: counts for broker positions, plans, open orders, bad rows, warning rows, shorts, and position-truth status.

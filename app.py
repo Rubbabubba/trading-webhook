@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-533-live-positions-fast-default-heavy-opt-in"
+PATCH_VERSION = "patch-534-live-positions-heavy-cache-default"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -45241,6 +45241,183 @@ def _dashboard_active_positions_view(reconcile: dict | None) -> list[dict]:
 LIVE_DASHBOARD_CACHE = {"ts": 0.0, "payload": None}
 
 
+def _p534_live_operator_snapshot_from_position_snapshot(reason: str = "cached_snapshot_no_broker_refresh") -> dict:
+    generated_utc = datetime.now(timezone.utc).isoformat()
+    generated_ny = now_ny().isoformat()
+    snapshot = dict(read_positions_snapshot() or {})
+    snapshot_positions = list(snapshot.get("positions") or snapshot.get("items") or [])
+    broker_symbols = sorted({
+        str((p or {}).get("symbol") or "").upper()
+        for p in snapshot_positions
+        if str((p or {}).get("symbol") or "").strip()
+    })
+    active_plans = {
+        str(sym or plan.get("symbol") or "").upper(): dict(plan)
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if isinstance(plan, dict)
+        and str(sym or plan.get("symbol") or "").strip()
+        and (plan.get("active") or _plan_is_pending_entry(plan))
+    }
+    positions_by_symbol = {
+        str((p or {}).get("symbol") or "").upper(): dict(p or {})
+        for p in snapshot_positions
+        if str((p or {}).get("symbol") or "").strip()
+    }
+    all_symbols = sorted(set(positions_by_symbol) | set(active_plans))
+    rows = []
+    for sym in all_symbols:
+        pos = dict(positions_by_symbol.get(sym) or {})
+        plan = dict(active_plans.get(sym) or {})
+        qty = pos.get("qty") if pos else (plan.get("qty") or plan.get("filled_qty") or 0)
+        plan_qty = plan.get("qty") or plan.get("filled_qty") or plan.get("submitted_qty")
+        warnings = []
+        if pos and not plan:
+            warnings.append("missing_internal_plan")
+        if plan and not pos:
+            warnings.append("stale_plan_no_snapshot_position")
+        if _safe_float(qty, 0.0) < 0:
+            warnings.append("short_position")
+        if pos and plan and plan_qty is not None and abs(abs(_safe_float(qty, 0.0)) - abs(_safe_float(plan_qty, 0.0))) > 0.001:
+            warnings.append("qty_mismatch")
+        trust = "bad" if any(w in warnings for w in ["missing_internal_plan", "stale_plan_no_snapshot_position", "short_position", "qty_mismatch"]) else ("warn" if warnings else "ok")
+        rows.append({
+            "symbol": sym,
+            "trust": trust,
+            "warnings": warnings,
+            "broker": {
+                "present": bool(pos),
+                "qty": qty,
+                "side": _live_position_side(qty),
+                "avg_entry_price": pos.get("avg_entry_price"),
+                "last_price": pos.get("current_price") or pos.get("last_price"),
+                "market_value": pos.get("market_value"),
+                "unrealized_pl": pos.get("unrealized_pl"),
+                "unrealized_plpc": pos.get("unrealized_plpc"),
+            },
+            "plan": {
+                "present": bool(plan),
+                "signal": plan.get("signal"),
+                "strategy_name": plan.get("strategy_name"),
+                "status": plan.get("order_status") or plan.get("execution_state") or plan.get("lifecycle_state"),
+                "stop_price": plan.get("stop_price"),
+                "take_price": plan.get("take_price"),
+                "days_held": plan.get("days_held"),
+                "opened_at": plan.get("opened_at"),
+                "source": plan.get("source"),
+                "recovered": bool(plan.get("recovered")),
+                "attribution_source": plan.get("attribution_source"),
+            },
+            "defensive_open_guard": {"skipped": True, "reason": "patch_534_cached_snapshot_fast_path"},
+            "entry_quality_memory_guard": {"skipped": True, "reason": "patch_534_cached_snapshot_fast_path"},
+            "entry_quality_exit_advisory": {"skipped": True, "reason": "patch_534_cached_snapshot_fast_path"},
+            "entry_memory_backfill_probe": {"skipped": True, "reason": "patch_534_cached_snapshot_fast_path"},
+            "open_orders": [],
+        })
+    reconcile = {
+        "broker_positions_count": len(snapshot_positions),
+        "broker_symbols": broker_symbols,
+        "active_plan_count": len(active_plans),
+        "active_plan_symbols": sorted(active_plans.keys()),
+        "open_order_count": None,
+        "open_order_symbols": [],
+        "missing_from_plans": sorted([s for s in broker_symbols if s not in active_plans]),
+        "stale_active_plans": sorted([s for s in active_plans if s not in broker_symbols]),
+        "pending_entry_plan_symbols": sorted([s for s, plan in active_plans.items() if _plan_is_pending_entry(plan)]),
+        "orphan_open_order_symbols": [],
+        "plans_missing_open_order": [],
+        "partial_fill_plan_symbols": sorted([s for s, plan in active_plans.items() if str(plan.get("order_status") or "").lower() == "partially_filled"]),
+        "open_orders": [],
+        "source": reason,
+    }
+    reconcile.update(_build_reconcile_assessment(reconcile))
+    today_pnl = {
+        "ok": True,
+        "accounting_source": reason,
+        "today_realized_pnl": None,
+        "today_unrealized_pnl": round(sum(_safe_float((r.get("broker") or {}).get("unrealized_pl"), 0.0) for r in rows), 4),
+        "today_net_pnl": None,
+        "live_positions_pnl_source": reason,
+    }
+    halt_active = bool(daily_halt_active())
+    loss_halt = {
+        "daily_halt_active": halt_active,
+        "daily_halt_reason": (DAILY_HALT_STATE or {}).get("reason") or "none",
+        "account_daily_pnl": None,
+        "today_realized_pnl": None,
+        "today_unrealized_pnl": today_pnl.get("today_unrealized_pnl"),
+        "configured_daily_stop_dollars": _configured_daily_stop_dollars_safe(),
+        "new_entries_blocked": bool(halt_active or (not NEW_ENTRIES_ENABLED)),
+        "exits_still_permitted": True,
+        "bulk_flatten_allowed": False,
+        "can_bulk_flatten_now": False,
+        "flatten_decision_reasons": [],
+        "recommended_actions": ["monitor"],
+        "recommended_action": "monitor",
+        "open_order_count": 0,
+        "source": reason,
+    }
+    summary = {
+        "broker_positions_count": len(snapshot_positions),
+        "active_plan_count": len(active_plans),
+        "open_order_count": None,
+        "warning_count": sum(1 for r in rows if r.get("warnings")),
+        "bad_count": sum(1 for r in rows if r.get("trust") == "bad"),
+        "short_count": sum(1 for r in rows if _safe_float((r.get("broker") or {}).get("qty"), 0.0) < 0),
+        "position_truth_status": "cached_snapshot_only",
+        "position_truth_mismatch_count": None,
+    }
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "live_positions_heavy_cached_snapshot",
+        "generated_utc": generated_utc,
+        "generated_ny": generated_ny,
+        "cached": True,
+        "cache_source": reason,
+        "cache_ttl_sec": int(LIVE_DASHBOARD_CACHE_SEC),
+        "market_open": bool(in_market_hours()),
+        "summary": summary,
+        "positions": rows,
+        "open_orders": [],
+        "position_truth": {"status": "cached_snapshot_only", "mismatch_count": None},
+        "reconcile": reconcile,
+        "today_pnl": today_pnl,
+        "loss_halt": loss_halt,
+        "performance": {"skipped": True, "reason": "patch_534_cached_snapshot_fast_path"},
+        "snapshot_meta": {
+            "path": POSITION_SNAPSHOT_PATH,
+            "ts_utc": snapshot.get("ts_utc"),
+            "source": snapshot.get("source"),
+            "reason": snapshot.get("reason"),
+        },
+        "live_refresh_endpoint": "/diagnostics/live_positions_heavy?live_refresh=1",
+        "fast_default_endpoint": "/diagnostics/live_positions",
+        "recommended_action": "use_live_refresh_only_when_broker_screenshot_reconciliation_is_required",
+    }
+
+
+def _p534_cached_live_operator_snapshot(live_refresh: bool = False) -> dict:
+    if live_refresh:
+        payload = _live_operator_snapshot(force=True)
+        if isinstance(payload, dict):
+            payload["mode"] = "live_positions_heavy_live_refresh"
+            payload["cache_source"] = "fresh_broker_refresh"
+            payload["fast_default_endpoint"] = "/diagnostics/live_positions"
+        return payload
+    cached = LIVE_DASHBOARD_CACHE.get("payload")
+    if isinstance(cached, dict) and cached:
+        out = dict(cached)
+        out["cached"] = True
+        out["mode"] = "live_positions_heavy_cached_payload"
+        out["cache_source"] = "live_dashboard_cache"
+        out["cache_age_sec"] = round(_time.time() - float(LIVE_DASHBOARD_CACHE.get("ts") or 0.0), 2)
+        out["fast_default_endpoint"] = "/diagnostics/live_positions"
+        out["live_refresh_endpoint"] = "/diagnostics/live_positions_heavy?live_refresh=1"
+        out["recommended_action"] = "use_live_refresh_only_when_broker_screenshot_reconciliation_is_required"
+        return out
+    return _p534_live_operator_snapshot_from_position_snapshot()
+
+
 def _live_position_side(qty: object) -> str:
     q = _safe_float(qty, 0.0)
     if q > 0:
@@ -54350,25 +54527,24 @@ def diagnostics_live_positions(request: Request):
         payload["legacy_light_endpoint"] = "/diagnostics/live_positions_light"
         payload["recommended_action"] = "use_heavy_only_for_broker_screenshot_reconciliation"
         return payload
-    force = str(request.query_params.get("refresh") or request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes", "y"}
-    return _live_operator_snapshot(force=force)
+    live_refresh = str(request.query_params.get("live_refresh") or request.query_params.get("force_live") or "").strip().lower() in {"1", "true", "yes", "y"}
+    return _p534_cached_live_operator_snapshot(live_refresh=live_refresh)
 
 @app.get("/diagnostics/live_positions_heavy")
 def diagnostics_live_positions_heavy(request: Request):
     require_admin_if_configured(request)
-    force = str(request.query_params.get("refresh") or request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes", "y"}
-    payload = _live_operator_snapshot(force=force)
+    live_refresh = str(request.query_params.get("live_refresh") or request.query_params.get("force_live") or "").strip().lower() in {"1", "true", "yes", "y"}
+    payload = _p534_cached_live_operator_snapshot(live_refresh=live_refresh)
     if isinstance(payload, dict):
-        payload["mode"] = "live_positions_heavy_broker_backed"
         payload["fast_default_endpoint"] = "/diagnostics/live_positions"
     return payload
 
 @app.get("/dashboard/live", response_class=HTMLResponse)
 def dashboard_live(request: Request):
     require_admin_if_configured(request)
-    force = str(request.query_params.get("refresh") or request.query_params.get("force") or "").strip().lower() in {"1", "true", "yes", "y"}
+    live_refresh = str(request.query_params.get("live_refresh") or request.query_params.get("force_live") or "").strip().lower() in {"1", "true", "yes", "y"}
     auto_refresh = str(request.query_params.get("auto") or "1").strip().lower() not in {"0", "false", "off", "no"}
-    data = _live_operator_snapshot(force=force)
+    data = _p534_cached_live_operator_snapshot(live_refresh=live_refresh)
     summary = dict(data.get("summary") or {})
     pnl = dict(data.get("today_pnl") or {})
     perf = dict(data.get("performance") or {})
@@ -54428,7 +54604,7 @@ def dashboard_live(request: Request):
     refresh_meta = '<meta http-equiv="refresh" content="15">' if auto_refresh else ''
     html_doc = f'''<!doctype html><html><head><meta charset="utf-8"><title>Live Operator Dashboard</title>{refresh_meta}<style>
     body{{font-family:Inter,system-ui,Arial,sans-serif;background:#0b0b16;color:#f6f4ff;margin:18px}} a{{color:#b9a7ff}} .muted{{color:#a9a1c4;font-size:12px}} .top{{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}} .grid{{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:12px;margin:14px 0}} .card{{background:#151522;border:1px solid #30245a;border-radius:10px;padding:14px}} .metric{{font-size:28px;font-weight:800}} .good{{color:#61f2a9}} .bad{{color:#ff5c8a}} .neutral{{color:#ffd36a}} .signed-value{{font-weight:800}} table{{width:100%;border-collapse:collapse;font-size:12px}} th,td{{border-bottom:1px solid #2a2540;padding:7px;text-align:left;vertical-align:top}} th{{color:#d7cbff}} .badge{{border:1px solid #49368a;border-radius:999px;padding:3px 7px;background:#24164c;font-size:11px}} .actions a{{display:inline-block;margin-left:8px;padding:7px 10px;border:1px solid #4c3d89;border-radius:8px;text-decoration:none}}</style></head><body>
-    <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Broker-backed live view. This page intentionally makes live broker/account calls and caches for {int(data.get('cache_ttl_sec') or 0)}s. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}.</p></div><div class="actions"><a href="/dashboard/live?refresh=1">Refresh now</a><a href="/diagnostics/live_positions_heavy?refresh=1">Heavy JSON</a><a href="/diagnostics/live_positions">Fast JSON</a><a href="/dashboard">Fast dashboard</a><a href="/dashboard/full">Full swing</a><a href="/dashboard/research">Research</a></div></div>
+    <div class="top"><div><div class="muted">OPERATOR CONSOLE</div><h1>Live Operator Dashboard</h1><p class="muted">Cached live view. Fresh broker/account refresh is opt-in to keep the operator surface responsive. Generated {html.escape(str(data.get('generated_utc')))}. Cached: {html.escape(str(data.get('cached')))}. Source: {html.escape(str(data.get('cache_source') or data.get('mode') or ''))}.</p></div><div class="actions"><a href="/dashboard/live">Refresh cached view</a><a href="/dashboard/live?live_refresh=1">Live broker refresh</a><a href="/diagnostics/live_positions_heavy">Cached heavy JSON</a><a href="/diagnostics/live_positions">Fast JSON</a><a href="/dashboard">Fast dashboard</a><a href="/dashboard/full">Full swing</a><a href="/dashboard/research">Research</a></div></div>
     <div class="card"><div class="muted">Broker Daily Goal</div><div class="metric {'good' if _safe_float((pnl.get('daily_goal_progress') or {}).get('primary_daily_pnl'),0)>=0 else 'bad'}">{_dashboard_money((pnl.get('daily_goal_progress') or {}).get('primary_daily_pnl'))}</div><table>{_dashboard_rows([('goal_source', (pnl.get('daily_goal_progress') or {}).get('primary_source')),('low_target', _dashboard_money((pnl.get('daily_goal_progress') or {}).get('target_low'))),('progress_to_low', _dashboard_pct((pnl.get('daily_goal_progress') or {}).get('progress_to_low_pct'))),('remaining_to_low', _dashboard_money((pnl.get('daily_goal_progress') or {}).get('remaining_to_low'))),('strategy_attribution', _dashboard_money(pnl.get('strategy_attribution_pnl') or pnl.get('today_net_pnl')))])}</table></div>
     <div class="card"><h2>Active Positions Audit</h2><table><thead><tr><th>Symbol</th><th>Trust</th><th>Side</th><th>Qty</th><th>Entry</th><th>Last</th><th>U P&amp;L $</th><th>U P&amp;L %</th><th>Stop</th><th>Target</th><th>Signal</th><th>Warnings</th></tr></thead><tbody>{pos_rows}</tbody></table><p class="muted">Trust is based on live broker positions, in-memory/persisted active plans, and open orders. Any missing plan, stale plan, short position, or quantity mismatch is highlighted before you rely on the row.</p></div>
     <div class="card" style="margin-top:14px"><h2>Open Orders</h2><table><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Filled</th><th>Status</th><th>Submitted</th></tr></thead><tbody>{order_rows}</tbody></table></div>
