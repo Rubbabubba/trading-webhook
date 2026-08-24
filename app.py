@@ -2950,7 +2950,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-518-scanner-hot-loop-purification-post-scan-enrichment-deferral"
+PATCH_VERSION = "patch-519-full-candidate-cache-adoption-eligible-selection-finalizer-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3350,7 +3350,11 @@ def restore_scan_runtime_state() -> dict:
             restored["candidate_history_restored"] = len(CANDIDATE_HISTORY)
         if isinstance(last_swing_candidates, list) and last_swing_candidates:
             LAST_SWING_CANDIDATES.clear()
-            LAST_SWING_CANDIDATES.extend(last_swing_candidates[: max(1, SWING_MAX_CANDIDATES)])
+            LAST_SWING_CANDIDATES.extend([
+                dict(row or {})
+                for row in last_swing_candidates[:250]
+                if isinstance(row, dict)
+            ])
             restored["last_swing_candidates_restored"] = len(LAST_SWING_CANDIDATES)
         restored["loaded"] = restored["last_scan_restored"] or restored["last_successful_production_scan_restored"] or bool(restored["spread_blocked_retry_queue_restored"]) or bool(restored["same_day_exit_submit_locks_restored"]) or bool(restored["scan_history_restored"]) or bool(restored["candidate_history_restored"])
     except Exception as e:
@@ -3741,7 +3745,12 @@ def _p481_fast_payload_scan_fallback(limit: int = 25) -> dict:
 
     rows = [
         dict(row or {})
-        for row in list(payload.get("top_candidates") or payload.get("top_new_entry_candidates") or [])
+        for row in list(
+            payload.get("candidate_rows")
+            or payload.get("top_candidates")
+            or payload.get("top_new_entry_candidates")
+            or []
+        )
         if isinstance(row, dict)
     ]
     if not rows:
@@ -3776,6 +3785,8 @@ def _p481_fast_payload_scan_fallback(limit: int = 25) -> dict:
             "scan_truth_phase": "fast_payload_candidate_fallback",
             "candidate_cache_adopted": True,
             "candidate_cache_source": str(payload.get("source") or "fast_current_candidate_payload"),
+            "p519_full_candidate_cache_adopted": bool(payload.get("p519_full_candidate_cache_adopted")),
+            "p519_full_candidate_cache_source": payload.get("p519_full_candidate_cache_source"),
             "raw_latest_reason": raw_latest_reason or None,
             "effective_reason_normalized": True,
             "fast_payload_status": payload.get("status"),
@@ -3787,6 +3798,7 @@ def _p481_fast_payload_scan_fallback(limit: int = 25) -> dict:
             "selected_symbols": selected_symbols,
             "reason_counts": dict(payload.get("reason_counts") or {}),
             "reason_family_counts": dict(payload.get("reason_family_counts") or {}),
+            "candidates": rows,
             "top_candidates": rows[:25],
         },
     }
@@ -16582,6 +16594,10 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
         if str((row or {}).get("symbol") or "").strip()
     ])
+    current_rate_limit_retry_pending = bool(
+        (rate_limited_symbols or queued_rate_limit_symbols)
+        and (production_selected_symbols or submit_row_symbols)
+    )
     execution_quality_block_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
         for sym in list(summary.get("execution_quality_block_symbols") or [])
@@ -16620,7 +16636,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     if missing_submit_symbols or submit_gap_symbols:
         path_status = "selected_submit_gap_detected"
         recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
-    elif rate_limited_symbols or queued_rate_limit_symbols:
+    elif current_rate_limit_retry_pending:
         path_status = "rate_limited_retry_pending"
         recommended_action = "wait_for_retry_queue_consumption"
     elif actual_submit_side_effect_symbols and set(selected_symbols).issubset(set(actual_submit_side_effect_symbols)):
@@ -16716,6 +16732,11 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "rate_limited_submit_symbols": rate_limited_symbols,
             "rate_limit_retry_queue_count": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
             "rate_limit_retry_queue_symbols": queued_rate_limit_symbols,
+            "current_rate_limit_retry_pending": bool(current_rate_limit_retry_pending),
+            "stale_rate_limit_retry_suppressed": bool(
+                (rate_limited_symbols or queued_rate_limit_symbols)
+                and not current_rate_limit_retry_pending
+            ),
             "execution_quality_block_symbols": execution_quality_block_symbols,
             "retryable_spread_block_symbols": retryable_spread_block_symbols,
             "submit_gap_symbols": submit_gap_symbols,
@@ -30163,7 +30184,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
 
     if p468_fast_close_after_submit:
         LAST_SWING_CANDIDATES.clear()
-        LAST_SWING_CANDIDATES.extend(candidates[: max(1, min(len(candidates), SWING_MAX_CANDIDATES))])
+        LAST_SWING_CANDIDATES.extend([
+            dict(row or {})
+            for row in candidates[:250]
+            if isinstance(row, dict)
+        ])
 
         selected_symbols_for_summary = _p468_selected_symbols()
         actual_submit_symbols = _dedupe_keep_order([
@@ -30280,11 +30305,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "max_new_entries": int(production_selection_finalizer.get("max_new_entries") or 0),
             },
             "selected_submission_truth": summary.get("selected_submission_truth"),
-            "results": LAST_SWING_CANDIDATES[:SWING_MAX_CANDIDATES],
+            "results": LAST_SWING_CANDIDATES[: max(1, SWING_MAX_CANDIDATES)],
         }
 
     LAST_SWING_CANDIDATES.clear()
-    LAST_SWING_CANDIDATES.extend(candidates[: max(1, min(len(candidates), SWING_MAX_CANDIDATES))])
+    LAST_SWING_CANDIDATES.extend([
+        dict(row or {})
+        for row in candidates[:250]
+        if isinstance(row, dict)
+    ])
     CANDIDATE_HISTORY.append({
         'ts_utc': datetime.now(timezone.utc).isoformat(),
         'strategy_name': SWING_STRATEGY_NAME,
@@ -30944,7 +30973,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             'selected_symbols': [c.get('symbol') for c in selected if bool((c.get('executable_near_miss_entry') or {}).get('applies'))],
         },
         'selected_submission_truth': _p297_selected_submission_truth([c.get('symbol') for c in selected]),
-        'results': LAST_SWING_CANDIDATES[:SWING_MAX_CANDIDATES],
+        'results': LAST_SWING_CANDIDATES[: max(1, SWING_MAX_CANDIDATES)],
     }
 
 def fetch_1m_bars(symbol: str, lookback_days: int = 1, limit: int | None = None, feed_override=None) -> list[dict]:
@@ -54733,7 +54762,12 @@ def _p413_eligible_new_entry_rows_from_fast_payload(payload: dict | None) -> lis
     data = dict(payload or {})
     rows = [
         dict(row or {})
-        for row in list(data.get("top_new_entry_candidates") or [])
+        for row in list(
+            data.get("eligible_new_entry_rows_all")
+            or data.get("candidate_rows")
+            or data.get("top_new_entry_candidates")
+            or []
+        )
         if isinstance(row, dict)
         and bool(row.get("eligible"))
         and not bool(row.get("open_position"))
@@ -55060,33 +55094,54 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
     latest_scan, summary = _p298_latest_scan_summary_light()
 
-    rows = [
+    rows_all = [
         dict(row or {})
         for row in list(LAST_SWING_CANDIDATES or [])
         if isinstance(row, dict)
     ]
     source = "last_swing_candidates_memory"
 
-    if not rows and CANDIDATE_HISTORY:
+    if not rows_all and CANDIDATE_HISTORY:
         hist = dict((CANDIDATE_HISTORY or [])[-1] or {})
-        rows = [
+        rows_all = [
             dict(row or {})
             for row in list(hist.get("candidates") or hist.get("items") or [])
             if isinstance(row, dict)
         ]
         source = "candidate_history_latest"
 
-    rows = rows[:lim]
-    rows = _p412_rebuild_current_candidate_contract_rows(rows)
-    open_symbols = set(_p404_active_position_symbols_light())
-    fast_rows = [_p406_candidate_row_fast(row, open_symbols=open_symbols) for row in rows]
+    if not rows_all:
+        rows_all = [
+            dict(row or {})
+            for row in list(summary.get("candidates") or summary.get("results") or summary.get("items") or [])
+            if isinstance(row, dict)
+        ]
+        if rows_all:
+            source = "latest_scan_summary_full_rows"
 
-    new_entry_rows = [row for row in fast_rows if not bool(row.get("open_position"))]
-    open_position_rows = [row for row in fast_rows if bool(row.get("open_position"))]
-    eligible_rows = [row for row in new_entry_rows if bool(row.get("eligible"))]
+    if not rows_all:
+        rows_all = [
+            dict(row or {})
+            for row in list(summary.get("top_candidates") or summary.get("top_new_entry_candidates") or [])
+            if isinstance(row, dict)
+        ]
+        if rows_all:
+            source = "latest_scan_summary_display_rows"
+
+    rows_all = _p412_rebuild_current_candidate_contract_rows(rows_all)
+    open_symbols = set(_p404_active_position_symbols_light())
+    fast_rows_all = [_p406_candidate_row_fast(row, open_symbols=open_symbols) for row in rows_all]
+    fast_rows = fast_rows_all[:lim]
+
+    new_entry_rows_all = [row for row in fast_rows_all if not bool(row.get("open_position"))]
+    open_position_rows_all = [row for row in fast_rows_all if bool(row.get("open_position"))]
+    new_entry_rows = new_entry_rows_all[:lim]
+    open_position_rows = open_position_rows_all[:lim]
+    eligible_rows_all = [row for row in new_entry_rows_all if bool(row.get("eligible"))]
+    eligible_rows = eligible_rows_all[:lim]
     selected_context = _p405_selected_symbol_context(summary.get("selected_symbols") or [])
 
-    reason_summary = _p277h_candidate_reason_counts(new_entry_rows)
+    reason_summary = _p277h_candidate_reason_counts(new_entry_rows_all)
     protective_reasons = {
         reason: count
         for reason, count in dict(reason_summary.get("reason_counts") or {}).items()
@@ -55125,7 +55180,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     elif selected_context.get("selected_symbols"):
         status = "selecting"
         recommended_action = "monitor_submissions"
-    elif eligible_rows:
+    elif eligible_rows_all:
         status = "eligible_new_entry_not_selected"
         recommended_action = "sync_selected_symbols_from_current_eligible_contract_rows"
     elif selected_context.get("open_position_selected_symbols"):
@@ -55134,7 +55189,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     elif protective_reasons:
         status = "suppressed_by_protection"
         recommended_action = "review_protective_reasons_before_relaxing"
-    elif new_entry_rows:
+    elif new_entry_rows_all:
         status = "quality_wait"
         recommended_action = "wait_for_better_setup_or_review_near_misses"
     else:
@@ -55147,6 +55202,9 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "mode": "fast_current_candidate_truth",
         "payload_mode": "compact",
         "source": source,
+        "p519_full_candidate_cache_adopted": bool(fast_rows_all),
+        "p519_full_candidate_cache_source": source,
+        "p519_display_limit": lim,
         "contract_rebuild_applied": True,
         "contract_rebuild_source": "p412_current_scan_contract_rebuild",
         "heavy_available": True,
@@ -55172,15 +55230,16 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             "symbols_due_next_rotation": list(coverage_audit.get("symbols_due_next_rotation") or [])[:lim],
             "recommended_action": coverage_audit.get("recommended_action"),
         },
-        "candidate_count": len(fast_rows),
-        "new_entry_candidate_count": len(new_entry_rows),
-        "open_position_candidate_count": len(open_position_rows),
+        "candidate_count": len(fast_rows_all),
+        "display_candidate_count": len(fast_rows),
+        "new_entry_candidate_count": len(new_entry_rows_all),
+        "open_position_candidate_count": len(open_position_rows_all),
         "open_position_candidate_symbols": [row.get("symbol") for row in open_position_rows],
-        "eligible_count": len(eligible_rows),
-        "eligible_symbols": [row.get("symbol") for row in eligible_rows],
-        "eligible_not_selected_count": len(eligible_rows) if not selected_context.get("selected_symbols") else 0,
+        "eligible_count": len(eligible_rows_all),
+        "eligible_symbols": [row.get("symbol") for row in eligible_rows_all],
+        "eligible_not_selected_count": len(eligible_rows_all) if not selected_context.get("selected_symbols") else 0,
         "eligible_not_selected_symbols": (
-            [row.get("symbol") for row in eligible_rows]
+            [row.get("symbol") for row in eligible_rows_all]
             if not selected_context.get("selected_symbols")
             else []
         ),
@@ -55194,6 +55253,8 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "reason_counts": reason_summary.get("reason_counts"),
         "reason_family_counts": reason_summary.get("reason_family_counts"),
         "protective_reason_counts": protective_reasons,
+        "candidate_rows": fast_rows_all,
+        "eligible_new_entry_rows_all": eligible_rows_all,
         "top_candidates": fast_rows[:15],
         "top_new_entry_candidates": new_entry_rows[:15],
     }
