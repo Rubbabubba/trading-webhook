@@ -2953,7 +2953,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-523-force-scheduled-scanner-production-submit-path"
+PATCH_VERSION = "patch-524-current-eligible-selection-revalidation-stale-submit-gap-suppression"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -16625,11 +16625,34 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for sym in list(summary.get("retryable_spread_block_symbols") or [])
         if str(sym or "").strip()
     ])
+    p524_terminal_evidence_symbols = _dedupe_keep_order(
+        list(submit_row_symbols)
+        + list(active_symbols)
+        + list(pending_symbols)
+        + list(actual_submit_side_effect_symbols)
+        + list(rate_limited_symbols)
+        + list(queued_rate_limit_symbols)
+        + list(execution_quality_block_symbols)
+        + list(retryable_spread_block_symbols)
+    )
+    p524_selection_revalidation = _p524_revalidate_current_selected_symbols(
+        production_selected_symbols,
+        current_candidate_truth,
+        preserve_symbols=p524_terminal_evidence_symbols,
+    )
+    p524_stale_selected_symbols = set(p524_selection_revalidation.get("stale_symbols") or [])
+    if p524_stale_selected_symbols:
+        selected_symbols = [sym for sym in selected_symbols if sym not in p524_stale_selected_symbols]
+        production_selected_symbols = [
+            sym for sym in production_selected_symbols
+            if sym not in p524_stale_selected_symbols
+        ]
 
     submit_gap_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
         for sym in list(summary.get("selected_submit_gap_symbols") or [])
         if str(sym or "").strip()
+        and str(sym or "").strip().upper() not in p524_stale_selected_symbols
     ])
     missing_submit_symbols = [
         sym for sym in production_selected_symbols
@@ -16668,6 +16691,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif actual_submit_side_effect_symbols:
         path_status = "selected_symbols_have_actual_submit_side_effect"
         recommended_action = "monitor_active_positions"
+    elif p524_stale_selected_symbols:
+        path_status = "stale_selected_candidate_revalidated_blocked"
+        recommended_action = "monitor_next_fresh_eligible_scan"
     else:
         path_status = "no_selected_candidate"
         recommended_action = "monitor_next_scan"
@@ -16758,6 +16784,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "retryable_spread_block_symbols": retryable_spread_block_symbols,
             "submit_gap_symbols": submit_gap_symbols,
             "missing_submit_symbols": missing_submit_symbols,
+            "p524_selection_revalidation": p524_selection_revalidation,
+            "stale_revalidated_blocked_symbols": list(p524_stale_selected_symbols),
         },
         "active_capture_truth": {
             "active_symbols": active_symbols,
@@ -41694,6 +41722,17 @@ def _p298_selected_submission_truth_light() -> dict:
         sym for sym in selected_symbols
         if sym not in open_position_echo_set
     ]
+    p524_selection_revalidation = _p524_revalidate_current_selected_symbols(
+        selected_symbols,
+        current_candidate_truth,
+        preserve_symbols=_dedupe_keep_order(list(submit_rows.keys()) + list(open_symbols)),
+    )
+    p524_stale_selected_symbols = set(p524_selection_revalidation.get("stale_symbols") or [])
+    if p524_stale_selected_symbols:
+        selected_symbols = [
+            sym for sym in selected_symbols
+            if sym not in p524_stale_selected_symbols
+        ]
 
     rows = []
     for sym in selected_symbols:
@@ -41901,6 +41940,9 @@ def _p298_selected_submission_truth_light() -> dict:
             else "none"
         ),
     }
+    out["p524_selection_revalidation"] = p524_selection_revalidation
+    out["stale_revalidated_blocked_symbols"] = list(p524_stale_selected_symbols)
+    out["stale_revalidated_blocked_count"] = len(p524_stale_selected_symbols)
     out["eligible_new_entry_truth"] = {
         "count": len(eligible_new_entry_symbols),
         "symbols": eligible_new_entry_symbols,
@@ -41918,6 +41960,8 @@ def _p298_selected_submission_truth_light() -> dict:
     }
     if submitted_then_active_symbols:
         out["recommended_action"] = "selected_symbols_have_actual_submit_side_effect"
+    elif p524_stale_selected_symbols and not selected_symbols:
+        out["recommended_action"] = "stale_selected_candidate_revalidated_blocked"
     elif eligible_new_entry_symbols and not selected_symbols:
         out["recommended_action"] = "scheduled_scanner_should_promote_current_eligible_contract_rows"
     return out
@@ -55076,6 +55120,96 @@ def _p413_eligible_new_entry_symbols_from_fast_payload(payload: dict | None) -> 
         for row in _p413_eligible_new_entry_rows_from_fast_payload(payload)
         if str(row.get("symbol") or "").strip()
     ])
+
+def _p524_current_candidate_rows_by_symbol(payload: dict | None) -> dict[str, dict]:
+    data = dict(payload or {})
+    rows = []
+    for key in (
+        "candidate_rows",
+        "eligible_new_entry_rows_all",
+        "top_new_entry_candidates",
+        "top_candidates",
+    ):
+        for row in list(data.get(key) or []):
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            item = dict(row)
+            item.setdefault("_p524_source", key)
+            rows.append(item)
+
+    by_symbol: dict[str, dict] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol and symbol not in by_symbol:
+            by_symbol[symbol] = row
+    return by_symbol
+
+def _p524_revalidate_current_selected_symbols(
+    selected_symbols: list[str] | tuple[str, ...] | None,
+    current_candidate_truth: dict | None,
+    *,
+    preserve_symbols: list[str] | tuple[str, ...] | None = None,
+) -> dict:
+    symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected_symbols or [])
+        if str(sym or "").strip()
+    ])
+    preserve_set = {
+        str(sym or "").strip().upper()
+        for sym in list(preserve_symbols or [])
+        if str(sym or "").strip()
+    }
+    current_rows = _p524_current_candidate_rows_by_symbol(current_candidate_truth)
+
+    active_symbols: list[str] = []
+    stale_symbols: list[str] = []
+    unknown_symbols: list[str] = []
+    stale_rows: list[dict] = []
+
+    for sym in symbols:
+        row = dict(current_rows.get(sym) or {})
+        if sym in preserve_set:
+            active_symbols.append(sym)
+            continue
+        if not row:
+            unknown_symbols.append(sym)
+            active_symbols.append(sym)
+            continue
+
+        current_eligible = bool(row.get("eligible") or row.get("raw_eligible"))
+        current_selected = bool(row.get("selected") or row.get("raw_selected"))
+        if current_eligible and current_selected:
+            active_symbols.append(sym)
+            continue
+
+        stale_symbols.append(sym)
+        stale_rows.append({
+            "symbol": sym,
+            "eligible": bool(row.get("eligible")),
+            "raw_eligible": bool(row.get("raw_eligible")),
+            "selected": bool(row.get("selected")),
+            "raw_selected": bool(row.get("raw_selected")),
+            "rank_score": row.get("rank_score"),
+            "rejection_reasons": list(row.get("rejection_reasons") or row.get("reasons") or []),
+            "source": row.get("_p524_source"),
+            "classification": "selection_stale_revalidated_blocked",
+        })
+
+    return {
+        "applied": bool(symbols),
+        "source": "current_candidate_truth",
+        "input_symbols": symbols,
+        "active_symbols": active_symbols,
+        "stale_symbols": stale_symbols,
+        "unknown_symbols_preserved": unknown_symbols,
+        "stale_rows": stale_rows,
+        "stale_count": len(stale_symbols),
+        "preserved_symbols": _dedupe_keep_order(list(preserve_set)),
+    }
 
 def _p409_current_near_miss_rows(limit: int = 25) -> list[dict]:
     payload = _p406_fast_current_candidate_payload(limit=limit)
