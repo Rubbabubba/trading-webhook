@@ -2973,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-545-scanner-hot-path-broker-prep-timeout-candidate-eval-start-guarantee"
+PATCH_VERSION = "patch-546-scanner-pre-eval-heavy-guard-deferral-candidate-eval-first-publish"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23883,6 +23883,122 @@ def _p545_portfolio_exposure_breakdown_from_snapshot(snapshot: dict | None = Non
         "p545_snapshot_exposure": True,
     }
 
+
+def _p546_pre_eval_guard_snapshot(
+    broker_snapshot: dict | None = None,
+    hot_path: bool = False,
+) -> dict:
+    broker_snapshot = dict(broker_snapshot or {})
+    daily_halt_session = str((DAILY_HALT_STATE or {}).get("session") or "")
+    daily_halt_is_current = daily_halt_session == _current_session_key()
+    daily_halt_memory_active = bool(daily_halt_is_current and (DAILY_HALT_STATE or {}).get("active"))
+    broker_daily_pnl = None
+    if broker_snapshot.get("equity") not in (None, "") and broker_snapshot.get("last_equity") not in (None, ""):
+        broker_daily_pnl = _safe_float(broker_snapshot.get("equity"), 0.0) - _safe_float(broker_snapshot.get("last_equity"), 0.0)
+
+    light_goal = {
+        "enabled": bool(SWING_BROKER_DAILY_GOAL_TRUTH_ENABLED),
+        "primary_source": (
+            "broker_snapshot_equity_delta"
+            if broker_daily_pnl is not None
+            else "deferred_until_after_candidate_eval"
+        ),
+        "primary_daily_pnl": round(float(broker_daily_pnl), 4) if broker_daily_pnl is not None else None,
+        "broker_account_daily_pnl": round(float(broker_daily_pnl), 4) if broker_daily_pnl is not None else None,
+        "strategy_realized_plus_unrealized": None,
+        "today_realized_pnl": None,
+        "today_unrealized_pnl": None,
+        "target_low": round(float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW or 100.0), 2),
+        "target_high": round(float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH or 200.0), 2),
+        "progress_to_low_pct": (
+            round((float(broker_daily_pnl) / float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW or 100.0)) * 100.0, 2)
+            if broker_daily_pnl is not None and float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW or 0.0) > 0
+            else None
+        ),
+        "progress_to_high_pct": (
+            round((float(broker_daily_pnl) / float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH or 200.0)) * 100.0, 2)
+            if broker_daily_pnl is not None and float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH or 0.0) > 0
+            else None
+        ),
+        "remaining_to_low": (
+            round(max(0.0, float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW or 100.0) - float(broker_daily_pnl)), 4)
+            if broker_daily_pnl is not None
+            else None
+        ),
+        "remaining_to_high": (
+            round(max(0.0, float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH or 200.0) - float(broker_daily_pnl)), 4)
+            if broker_daily_pnl is not None
+            else None
+        ),
+        "low_target_hit": bool(broker_daily_pnl is not None and float(broker_daily_pnl) >= float(SWING_PROFIT_MODEL_DAILY_TARGET_LOW or 100.0)),
+        "high_target_hit": bool(broker_daily_pnl is not None and float(broker_daily_pnl) >= float(SWING_PROFIT_MODEL_DAILY_TARGET_HIGH or 200.0)),
+        "p546_lightweight": True,
+    }
+    loss_day_throttle = {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_loss_day_entry_throttle",
+        "enabled": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED),
+        "advisory_only": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_ADVISORY_ONLY),
+        "active": False,
+        "block_new_entries": False,
+        "max_new_entries_after_trigger": int(SWING_LOSS_DAY_ENTRY_THROTTLE_MAX_NEW_ENTRIES_AFTER_TRIGGER or 0),
+        "include_unrealized": bool(SWING_LOSS_DAY_ENTRY_THROTTLE_INCLUDE_UNREALIZED),
+        "loss_basis": "deferred_until_after_candidate_eval",
+        "loss_basis_value": None,
+        "today_realized_pnl": None,
+        "today_unrealized_pnl": None,
+        "threshold_dollars": float(abs(SWING_LOSS_DAY_ENTRY_THROTTLE_REALIZED_LOSS_DOLLARS or 0.0)),
+        "recommended_action": "deferred_until_after_candidate_eval",
+        "p546_deferred_from_scanner_hot_path": bool(hot_path),
+    }
+    post_change_drawdown = {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_post_change_drawdown_circuit",
+        "enabled": bool(SWING_POST_CHANGE_DRAWDOWN_GUARD_ENABLED),
+        "advisory_only": bool(SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY),
+        "triggered": False,
+        "block_new_entries": False,
+        "deferred": bool(hot_path),
+        "reason": "deferred_until_after_candidate_eval" if hot_path else "not_deferred",
+        "guarded_strategies": sorted(set(SWING_POST_CHANGE_DRAWDOWN_GUARD_STRATEGIES)),
+        "p546_deferred_from_scanner_hot_path": bool(hot_path),
+    }
+    loss_day_recovery_policy = {
+        "ok": True,
+        "enabled": bool(SWING_LOSS_DAY_RECOVERY_SLOT_ENABLED),
+        "active": False,
+        "read": "pre_eval_deferred",
+        "reason": "loss_day_throttle_deferred_until_after_candidate_eval",
+        "p546_deferred_from_scanner_hot_path": bool(hot_path),
+    }
+    daily_stop_blocked = False
+    if broker_daily_pnl is not None:
+        stop_dollars = _configured_daily_stop_dollars_safe()
+        daily_stop_blocked = bool(stop_dollars > 0 and float(broker_daily_pnl) <= -abs(stop_dollars))
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "pre_eval_guard_snapshot",
+        "hot_path": bool(hot_path),
+        "heavy_guard_reports_deferred": bool(hot_path),
+        "daily_halt_memory_active": bool(daily_halt_memory_active),
+        "daily_stop_blocked_from_broker_snapshot": bool(daily_stop_blocked),
+        "daily_block_active": bool(daily_halt_memory_active or daily_stop_blocked),
+        "daily_block_reason": (
+            (DAILY_HALT_STATE or {}).get("reason")
+            if daily_halt_memory_active
+            else ("daily_stop_hit_from_broker_snapshot" if daily_stop_blocked else "none")
+        ),
+        "loss_day_throttle": loss_day_throttle,
+        "post_change_drawdown": post_change_drawdown,
+        "daily_goal_progress": light_goal,
+        "loss_day_recovery_policy": loss_day_recovery_policy,
+    }
+
+
 def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
     b = _current_portfolio_exposure_breakdown()
     return float(b.get('total') or 0.0), dict(b.get('by_symbol') or {})
@@ -29475,12 +29591,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         portfolio_cap_blocked = False
     new_entries_globally_blocked = False
     global_block_reasons = []
-    loss_day_throttle = _p252_swing_loss_day_entry_throttle_snapshot()
-    post_change_drawdown = _p261_post_change_drawdown_snapshot()
-    daily_goal_progress = _p295_broker_daily_goal_progress()
-    if daily_halt_active() or daily_stop_hit():
+    p546_pre_eval_guard = _p546_pre_eval_guard_snapshot(
+        broker_snapshot=p479_scan_broker_snapshot,
+        hot_path=p545_hot_path_broker_prep,
+    )
+    loss_day_throttle = dict(p546_pre_eval_guard.get("loss_day_throttle") or {})
+    post_change_drawdown = dict(p546_pre_eval_guard.get("post_change_drawdown") or {})
+    daily_goal_progress = dict(p546_pre_eval_guard.get("daily_goal_progress") or {})
+    if p546_pre_eval_guard.get("daily_block_active"):
         new_entries_globally_blocked = True
-        global_block_reasons.append('daily_halt_active')
+        global_block_reasons.append(str(p546_pre_eval_guard.get("daily_block_reason") or "daily_halt_active"))
     if regime.get('favorable') is False and not bool(regime_thresholds.get('allow_entries_when_regime_unfavorable')):
         new_entries_globally_blocked = True
         global_block_reasons.append('weak_tape')
@@ -29490,7 +29610,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             global_block_reasons.append('portfolio_already_over_cap_total')
         if block_strategy_cap:
             global_block_reasons.append('portfolio_already_over_cap_strategy')
-    loss_day_recovery_policy = _p383_loss_day_recovery_slot_policy_snapshot(loss_day_throttle)
+    loss_day_recovery_policy = dict(p546_pre_eval_guard.get("loss_day_recovery_policy") or {})
     loss_day_throttle_candidate_level = bool(
         loss_day_throttle.get("block_new_entries")
         and loss_day_recovery_policy.get("active")
@@ -29498,6 +29618,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     if loss_day_throttle.get("block_new_entries") and not loss_day_throttle_candidate_level:
         new_entries_globally_blocked = True
         global_block_reasons.append("swing_loss_day_entry_throttle")
+    _p402_stage_checkpoint(
+        "pre_candidate_eval_context_complete",
+        heavy_guard_reports_deferred=bool(p546_pre_eval_guard.get("heavy_guard_reports_deferred")),
+        global_block_reasons=list(dict.fromkeys(global_block_reasons)),
+        open_position_symbol_count=len(open_by_symbol),
+    )
 
     p399_retry_slots = 0
     p399_pre_scan_retry_candidates = []
@@ -31323,6 +31449,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "broker_snapshot_timeout": bool((p479_scan_broker_snapshot or {}).get("live_account_timeout")),
                 "exposure_source": exposure.get("classification_source"),
                 "goal": "candidate_eval_reaches_terminal_publish_even_when_live_broker_prep_is_slow",
+            },
+            "p546_pre_eval_guard_deferral": {
+                "enabled": True,
+                "heavy_guard_reports_deferred": bool(p546_pre_eval_guard.get("heavy_guard_reports_deferred")),
+                "daily_block_active": bool(p546_pre_eval_guard.get("daily_block_active")),
+                "daily_block_reason": p546_pre_eval_guard.get("daily_block_reason"),
+                "loss_day_throttle_source": loss_day_throttle.get("loss_basis"),
+                "post_change_drawdown_deferred": bool(post_change_drawdown.get("deferred")),
+                "daily_goal_source": daily_goal_progress.get("primary_source"),
+                "goal": "candidate_eval_first_then_heavy_reports",
             },
             "p480_runtime_proof": {
                 "enabled": True,
