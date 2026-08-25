@@ -216,6 +216,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/universe_recommendation
 https://trading-webhook-q4d5.onrender.com/diagnostics/universe_shadow
 https://trading-webhook-q4d5.onrender.com/diagnostics/universe_validation
 https://trading-webhook-q4d5.onrender.com/diagnostics/worker_exit_status
+https://trading-webhook-q4d5.onrender.com/diagnostics/worker_exit_status_heavy
 https://trading-webhook-q4d5.onrender.com/health
 https://trading-webhook-q4d5.onrender.com/kill
 https://trading-webhook-q4d5.onrender.com/scanner/status

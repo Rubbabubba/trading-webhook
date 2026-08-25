@@ -1034,6 +1034,8 @@ Operational flow:
 2. If `position_truth_status` is not `aligned`, open `/diagnostics/position_truth` to compare live broker positions, active internal plans, open orders, and the persisted dashboard snapshot.
 3. Treat dashboard active positions as advisory whenever the snapshot is stale or position truth reports mismatches; reconcile against Alpaca before taking manual action.
 
+After Patch 535, `/diagnostics/worker_exit_status` is the fast default worker-exit health check. Use `/diagnostics/worker_exit_status?detail=heavy` or `/diagnostics/worker_exit_status_heavy` only when you need embedded retry readiness, post-fill risk evidence, active exit truth, and recent decision details in one response.
+
 New optional environment variables:
 
 - `WORKER_EXIT_STARTED_STALE_SEC` — seconds a `started` worker-exit heartbeat may remain incomplete before it is flagged.  Defaults to the larger of 180 seconds or twice `READINESS_EXIT_MAX_AGE_SEC`.

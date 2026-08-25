@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-534-live-positions-heavy-cache-default"
+PATCH_VERSION = "patch-535-worker-exit-status-fast-default-heavy-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -58690,6 +58690,159 @@ def _universe_redesign_snapshot(limit: int = 10, target_size: int | None = None)
         'rationale': rationale,
     }
 
+def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
+    now_utc = datetime.now(timezone.utc)
+    hb = dict(LAST_EXIT_HEARTBEAT or {})
+    age_sec = None
+    if hb.get("ts_utc"):
+        try:
+            ts = datetime.fromisoformat(str(hb.get("ts_utc")))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_sec = max(0.0, (now_utc - ts.astimezone(timezone.utc)).total_seconds())
+        except Exception:
+            age_sec = None
+
+    recent = []
+    for row in list(DECISIONS or [])[-200:]:
+        if str(row.get("source") or "") != "worker_exit":
+            continue
+        recent.append({
+            "ts_utc": row.get("ts_utc"),
+            "event": row.get("event"),
+            "symbol": row.get("symbol"),
+            "action": row.get("action"),
+            "reason": row.get("reason"),
+        })
+    recent = recent[-max(1, min(int(limit or 10), 25)):]
+
+    worker_error_fresh_window_sec = 900
+    error_like = []
+    historical_error_like = []
+    for r in recent:
+        is_error_like = (
+            "failed" in str(r.get("action") or "")
+            or "error" in str(r.get("action") or "")
+            or "failed" in str(r.get("reason") or "")
+            or "error" in str(r.get("reason") or "")
+        )
+        if not is_error_like:
+            continue
+        row = dict(r)
+        age = None
+        try:
+            ts = datetime.fromisoformat(str(r.get("ts_utc") or ""))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = max(0.0, (now_utc - ts.astimezone(timezone.utc)).total_seconds())
+            row["age_sec"] = round(age, 2)
+        except Exception:
+            age = None
+        if age is not None and age > worker_error_fresh_window_sec:
+            row["historical"] = True
+            historical_error_like.append(row)
+        else:
+            row["historical"] = False
+            error_like.append(row)
+
+    fresh_window_sec = 300
+    fresh_sync_guard_rows = []
+    for r in recent:
+        if not (
+            str(r.get("reason") or "") == "sync_trade_plan_with_broker_returned_non_dict"
+            or str(r.get("action") or "") == "sync_return_guarded"
+        ):
+            continue
+        try:
+            ts = datetime.fromisoformat(str(r.get("ts_utc") or ""))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = max(0.0, (now_utc - ts.astimezone(timezone.utc)).total_seconds())
+            if age <= fresh_window_sec:
+                fresh_sync_guard_rows.append({**r, "age_sec": round(age, 2)})
+        except Exception:
+            continue
+
+    active_plans = []
+    for sym, plan in sorted((TRADE_PLAN or {}).items()):
+        if isinstance(plan, dict) and plan.get("active"):
+            active_plans.append({
+                "symbol": sym,
+                "order_status": plan.get("order_status"),
+                "side": plan.get("side"),
+                "filled_qty": plan.get("filled_qty"),
+            })
+
+    status = str(hb.get("status") or "").lower()
+    stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
+    started_stale = bool(status == "started" and age_sec is not None and age_sec > stale_threshold)
+    terminal_status_seen = bool(status and status != "started")
+    heartbeat_error_fresh = bool(
+        status in {"error", "failed"}
+        and (age_sec is None or age_sec <= worker_error_fresh_window_sec)
+    )
+    sync_contract_ok = len(fresh_sync_guard_rows) == 0
+    healthy = bool(not heartbeat_error_fresh and not started_stale and sync_contract_ok and not error_like)
+
+    if started_stale:
+        recommended_action = "inspect_worker_exit_status_heavy"
+    elif not sync_contract_ok:
+        recommended_action = "inspect_fresh_sync_return_guard"
+    elif heartbeat_error_fresh or error_like:
+        recommended_action = "inspect_recent_worker_exit_errors"
+    else:
+        recommended_action = "none"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "worker_exit_status_fast_default",
+        "heavy_available": True,
+        "heavy_endpoint": "/diagnostics/worker_exit_status?detail=heavy",
+        "heavy_route": "/diagnostics/worker_exit_status_heavy",
+        "heartbeat": hb,
+        "heartbeat_age_sec": age_sec,
+        "heartbeat_status": status,
+        "started_stale": started_stale,
+        "started_stale_sec": stale_threshold,
+        "terminal_status_seen": terminal_status_seen,
+        "heartbeat_error_fresh": heartbeat_error_fresh,
+        "sync_contract_ok": sync_contract_ok,
+        "fresh_sync_guard_count": len(fresh_sync_guard_rows),
+        "fresh_sync_guard_window_sec": fresh_window_sec,
+        "active_plan_count": len(active_plans),
+        "active_plans": active_plans[:10],
+        "recent_worker_exit_decisions": recent,
+        "error_like_recent_count": len(error_like),
+        "historical_error_like_recent_count": len(historical_error_like),
+        "worker_error_fresh_window_sec": worker_error_fresh_window_sec,
+        "risk_evidence_ok": None,
+        "risk_evidence_summary": {
+            "skipped": True,
+            "reason": "fast_default_use_post_fill_risk_recheck_evidence_endpoint",
+            "endpoint": "/diagnostics/post_fill_risk_recheck_evidence?limit=20",
+        },
+        "exit_retry_summary": {
+            "skipped": True,
+            "reason": "fast_default_use_exit_submit_retry_readiness_endpoint",
+            "endpoint": "/diagnostics/exit_submit_retry_readiness",
+        },
+        "active_exit_summary": {
+            "skipped": True,
+            "reason": "fast_default_use_active_exit_protection_truth_endpoint",
+            "endpoint": "/diagnostics/active_exit_protection_truth",
+        },
+        "trades_today_forcing_isolation": {
+            "trades_today_enable": bool(TRADES_TODAY_ENABLE),
+            "worker_exit_forcing_enabled": bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+            "isolated": bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+            "status": "isolated_from_worker_exit" if bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED) else "inactive_or_explicitly_enabled",
+        },
+        "healthy": healthy,
+        "recommended_action": recommended_action,
+    }
+
+
 def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     now_utc = datetime.now(timezone.utc)
     hb = dict(LAST_EXIT_HEARTBEAT or {})
@@ -58872,9 +59025,29 @@ def diagnostics_exit_submit_retry_readiness(limit: int = 20):
     return JSONResponse(content=_p390_exit_submit_retry_readiness(limit=limit))
 
 @app.get("/diagnostics/worker_exit_status")
-def diagnostics_worker_exit_status(limit: int = 20):
+def diagnostics_worker_exit_status(request: Request, limit: int = 20, detail: str = "light"):
+    require_admin_if_configured(request)
+    heavy_requested = str(detail or request.query_params.get("mode") or "").strip().lower() in {"heavy", "full", "detail", "debug"}
+    payload = _worker_exit_status_snapshot(limit=limit) if heavy_requested else _p535_worker_exit_status_light_snapshot(limit=limit)
+    if isinstance(payload, dict):
+        payload["default_detail"] = "light"
+        payload["requested_detail"] = "heavy" if heavy_requested else "light"
+        payload["trades_today_forcing_isolation"] = {
+            "trades_today_enable": bool(TRADES_TODAY_ENABLE),
+            "worker_exit_forcing_enabled": bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+            "isolated": bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+            "status": "isolated_from_worker_exit" if bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED) else "inactive_or_explicitly_enabled",
+        }
+    return JSONResponse(content=payload)
+
+@app.get("/diagnostics/worker_exit_status_heavy")
+def diagnostics_worker_exit_status_heavy(request: Request, limit: int = 20):
+    require_admin_if_configured(request)
     payload = _worker_exit_status_snapshot(limit=limit)
     if isinstance(payload, dict):
+        payload["mode"] = "worker_exit_status_heavy"
+        payload["default_endpoint"] = "/diagnostics/worker_exit_status"
+        payload["requested_detail"] = "heavy"
         payload["trades_today_forcing_isolation"] = {
             "trades_today_enable": bool(TRADES_TODAY_ENABLE),
             "worker_exit_forcing_enabled": bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
