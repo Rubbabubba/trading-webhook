@@ -2973,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-547-selection-complete-terminal-publish-submit-snapshot-sync"
+PATCH_VERSION = "patch-548-light-endpoint-no-recompute-contract-stale-active-plan-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28234,6 +28234,80 @@ def _p547_selection_submit_snapshot(
         "submit_truth_synced": bool(submit_source_rows),
     }
 
+def _p548_snapshot_candidate_truth_no_recompute(
+    latest_scan: dict | None = None,
+    summary: dict | None = None,
+    *,
+    limit: int = 100,
+) -> dict:
+    latest_scan = dict(latest_scan or LAST_SCAN or {})
+    summary = dict(summary or (latest_scan.get("summary") if isinstance(latest_scan.get("summary"), dict) else {}) or {})
+    lim = max(1, min(int(limit or 100), 250))
+    p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+
+    rows: list[dict] = []
+    for source_name, source_rows in (
+        ("p547_selected_rows", p547_selection_snapshot.get("selected_rows")),
+        ("selected_candidate_rows_for_truth", summary.get("selected_candidate_rows_for_truth")),
+        ("candidate_rows_for_truth", summary.get("candidate_rows_for_truth")),
+        ("last_swing_candidates_memory", LAST_SWING_CANDIDATES),
+        ("top_new_entry_candidates", summary.get("top_new_entry_candidates")),
+        ("top_candidates", summary.get("top_candidates")),
+    ):
+        for row in list(source_rows or []):
+            if not isinstance(row, dict):
+                continue
+            sym = str((row or {}).get("symbol") or "").strip().upper()
+            if not sym:
+                continue
+            item = dict(row or {})
+            item.setdefault("symbol", sym)
+            item.setdefault("_p548_snapshot_source", source_name)
+            rows.append(item)
+
+    by_symbol: dict[str, dict] = {}
+    for row in rows:
+        sym = str((row or {}).get("symbol") or "").strip().upper()
+        if sym and sym not in by_symbol:
+            by_symbol[sym] = row
+
+    rows_all = list(by_symbol.values())
+    open_symbols = set(_p404_active_position_symbols_light())
+    fast_rows_all = [_p406_candidate_row_fast(row, open_symbols=open_symbols) for row in rows_all]
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p547_selection_snapshot.get("selected_symbols") or summary.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    eligible_rows_all = [
+        row for row in fast_rows_all
+        if bool(row.get("eligible")) and not bool(row.get("open_position"))
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "snapshot_candidate_truth_no_recompute",
+        "source": "p548_snapshot_only",
+        "does_not_recompute_candidate_payload": True,
+        "does_not_fetch_bars": True,
+        "does_not_call_broker": True,
+        "candidate_count": len(fast_rows_all),
+        "eligible_count": len(eligible_rows_all),
+        "selected_total": len(selected_symbols),
+        "selected_symbols": list(selected_symbols),
+        "candidate_rows": fast_rows_all[:lim],
+        "eligible_new_entry_rows_all": eligible_rows_all[:lim],
+        "top_candidates": fast_rows_all[:min(lim, 15)],
+        "p547_selection_submit_snapshot": {
+            "source_stage": p547_selection_snapshot.get("source_stage"),
+            "selected_count": len(selected_symbols),
+            "selected_symbols": list(selected_symbols),
+            "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or 0),
+            "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced")),
+        },
+    }
+
 def _p461_background_scan_lost_after_restart_recovered(state: dict | None = None) -> bool:
     row = dict(state or SWING_SCAN_BACKGROUND_COMPLETION or {})
     status = str(row.get("status") or "").strip().lower()
@@ -43318,7 +43392,11 @@ def _p298_selected_submission_truth_light() -> dict:
         )
         if str((row or {}).get("symbol") or "").strip()
     }
-    current_candidate_truth = _p406_fast_current_candidate_payload(limit=100)
+    current_candidate_truth = _p548_snapshot_candidate_truth_no_recompute(
+        latest_scan,
+        summary,
+        limit=100,
+    )
     current_candidate_by_symbol = {
         str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
         for row in list(current_candidate_truth.get("candidate_rows") or [])
@@ -43752,7 +43830,11 @@ def _p298_scanner_light() -> dict:
     summary["swing_scan_state_module_version"] = SWING_SCAN_STATE_MODULE_VERSION
     summary = swing_candidate_eval_attach_status(summary, patch_version=PATCH_VERSION)
 
-    p525_current_candidate_truth = _p406_fast_current_candidate_payload(limit=100)
+    p525_current_candidate_truth = _p548_snapshot_candidate_truth_no_recompute(
+        latest_scan,
+        summary,
+        limit=100,
+    )
     p525_selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
         for sym in list(summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
@@ -43849,11 +43931,28 @@ def _p298_live_positions_light() -> dict:
     snapshot_positions = []
     if isinstance(latest_snapshot, dict):
         snapshot_positions = list(latest_snapshot.get("positions") or latest_snapshot.get("items") or [])
+    snapshot_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in snapshot_positions
+        if str((row or {}).get("symbol") or "").strip()
+    }
 
     active_plans = [
         {"symbol": sym, "status": plan.get("status"), "source": plan.get("source")}
         for sym, plan in (TRADE_PLAN or {}).items()
         if isinstance(plan, dict) and bool(plan.get("active"))
+    ]
+    stale_active_plans = [
+        row for row in active_plans
+        if str((row or {}).get("symbol") or "").strip().upper() not in snapshot_symbols
+    ]
+    missing_internal_plans = [
+        sym for sym in sorted(snapshot_symbols)
+        if sym not in {
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in active_plans
+            if str((row or {}).get("symbol") or "").strip()
+        }
     ]
 
     return {
@@ -43864,11 +43963,36 @@ def _p298_live_positions_light() -> dict:
         "summary": {
             "snapshot_position_count": len(snapshot_positions),
             "active_plan_count": len(active_plans),
+            "stale_active_plan_count": len(stale_active_plans),
+            "missing_internal_plan_count": len(missing_internal_plans),
             "open_order_count": None,
-            "position_truth_status": "light_snapshot_only",
+            "position_truth_status": (
+                "stale_active_plan_snapshot_mismatch"
+                if stale_active_plans
+                else "missing_internal_plan_snapshot_mismatch"
+                if missing_internal_plans
+                else "light_snapshot_aligned"
+            ),
         },
         "positions": snapshot_positions[:25],
         "active_plans": active_plans[:25],
+        "stale_active_plans": stale_active_plans[:25],
+        "missing_internal_plan_symbols": missing_internal_plans[:25],
+        "stale_plan_truth": {
+            "active": bool(stale_active_plans or missing_internal_plans),
+            "source": "positions_snapshot_vs_memory_no_broker_refresh",
+            "stale_active_plan_symbols": [
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in stale_active_plans
+                if str((row or {}).get("symbol") or "").strip()
+            ],
+            "missing_internal_plan_symbols": list(missing_internal_plans[:25]),
+            "recommended_action": (
+                "run_reconcile_light_or_position_truth_before_new_entries"
+                if stale_active_plans or missing_internal_plans
+                else "position_snapshot_and_active_plans_aligned"
+            ),
+        },
         "snapshot_meta": {
             "path": POSITION_SNAPSHOT_PATH,
             "ts_utc": latest_snapshot.get("ts_utc") if isinstance(latest_snapshot, dict) else None,
@@ -57801,7 +57925,11 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         if rows_all:
             source = "latest_scan_summary_display_rows"
 
-    rows_all = _p412_rebuild_current_candidate_contract_rows(rows_all)
+    rows_all = [
+        dict(row or {})
+        for row in rows_all
+        if isinstance(row, dict)
+    ]
     open_symbols = set(_p404_active_position_symbols_light())
     fast_rows_all = [_p406_candidate_row_fast(row, open_symbols=open_symbols) for row in rows_all]
     fast_rows = fast_rows_all[:lim]
@@ -57826,18 +57954,16 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     }
 
     coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
-    try:
-        coverage_audit = _p407_candidate_coverage_opportunity_audit(limit=lim)
-    except Exception as exc:
-        coverage_audit = {
-            "ok": False,
-            "error": str(exc),
-            "runtime_slim": {},
-            "rotation_symbols": [],
-            "excluded_symbols": list(coverage.get("excluded_by_runtime_slim_symbols") or coverage.get("missing_runtime_symbols") or [])[:lim],
-            "symbols_due_next_rotation": [],
-            "recommended_action": "coverage_audit_unavailable_use_runtime_universe_coverage",
-        }
+    coverage_audit = {
+        "ok": True,
+        "source": "p548_light_endpoint_no_recompute",
+        "runtime_slim": dict(summary.get("runtime_slim") or {}),
+        "rotation_symbols": list(summary.get("runtime_watch_symbols") or [])[:lim],
+        "excluded_symbols": list(coverage.get("excluded_by_runtime_slim_symbols") or coverage.get("missing_runtime_symbols") or [])[:lim],
+        "symbols_due_next_rotation": [],
+        "recommended_action": "use_candidate_coverage_opportunity_audit_for_heavy_detail",
+        "heavy_detail_endpoint": "/diagnostics/candidate_coverage_opportunity_audit",
+    }
 
     latest_reason = str(latest_scan.get("reason") or "").strip().lower()
     using_preserved_market_scan = str(latest_scan.get("_scan_source") or "").strip() == "last_actionable_market_scan"
@@ -57855,7 +57981,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             if str(sym or "").strip()
             and isinstance(plan, dict)
             and (bool(plan.get("active")) or _plan_is_pending_entry(plan))
-        ],
+        ] + list(p547_selected_symbols),
     )
     p526_stale_selected_symbols = list(p526_selection_revalidation.get("stale_symbols") or [])
     p536_fallback_selection = {
@@ -57989,8 +58115,9 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "raw_eligible_count_before_p542_rejection": int(raw_eligible_count_before_p542_rejection),
         "raw_selected_symbols_before_p542_rejection": list(raw_selected_symbols_before_p542_rejection),
         "p519_display_limit": lim,
-        "contract_rebuild_applied": True,
-        "contract_rebuild_source": "p412_current_scan_contract_rebuild",
+        "contract_rebuild_applied": False,
+        "contract_rebuild_source": "p548_snapshot_only_no_recompute",
+        "light_endpoint_no_recompute_contract": True,
         "heavy_available": True,
         "heavy_url_hint": "/diagnostics/candidates_full?heavy=true&limit=10",
         "status": status,
