@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-537-pre-submit-eligible-fallback-selection-submit-gap-elimination"
+PATCH_VERSION = "patch-538-preserve-candidate-bearing-trade-scan-partial-runtime-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3942,11 +3942,73 @@ def _p481_last_candidate_bearing_scan() -> dict:
     for row in candidates:
         row = _p464_sanitize_persisted_over_budget_scan(dict(row or {}), source="p481_last_candidate_bearing_scan")
         row = _p475_normalize_scan_truth_contract(row, source="p481_last_candidate_bearing_scan")
+        if bool(_p538_tiny_no_candidate_partial_truth(row).get("tiny_partial_no_candidate")):
+            continue
         truth = _p475_scan_candidate_bearing_truth(row)
         if bool(truth.get("candidate_bearing")):
             return row
 
     return {}
+
+def _p538_tiny_no_candidate_partial_truth(raw_scan: dict | None, last_candidate_scan: dict | None = None) -> dict:
+    raw = dict(raw_scan or {})
+    summary = dict(raw.get("summary") or {})
+    incremental = summary.get("incremental_scan") if isinstance(summary.get("incremental_scan"), dict) else {}
+    truth = _p475_scan_candidate_bearing_truth(raw)
+    reason = str(raw.get("reason") or summary.get("scan_reason") or "").strip()
+    scanned = int(raw.get("scanned") or truth.get("symbols_eval_total") or 0)
+    partial_scan = bool(
+        reason == "partial_scan_completed"
+        or incremental.get("partial_scan")
+    )
+    no_candidate_payload = bool(
+        int(truth.get("candidates_total") or 0) <= 0
+        and int(truth.get("eligible_total") or 0) <= 0
+        and int(truth.get("selected_total") or 0) <= 0
+        and not bool(truth.get("has_candidate_rows"))
+        and int(raw.get("signals") or 0) <= 0
+        and int(raw.get("would_trade") or 0) <= 0
+    )
+    tiny_scan_threshold = 5
+    tiny_partial_no_candidate = bool(partial_scan and no_candidate_payload and 0 < scanned <= tiny_scan_threshold)
+
+    raw_dt = _safe_parse_iso_utc(raw.get("ts_utc")) if raw.get("ts_utc") else None
+    candidate = dict(last_candidate_scan or {})
+    candidate_dt = _safe_parse_iso_utc(candidate.get("ts_utc")) if candidate.get("ts_utc") else None
+    now_local = now_ny()
+    raw_ny_date = raw_dt.astimezone(NY_TZ).date() if raw_dt else None
+    candidate_ny_date = candidate_dt.astimezone(NY_TZ).date() if candidate_dt else None
+    candidate_same_trading_day = bool(
+        candidate_dt
+        and candidate_ny_date == now_local.date()
+        and (raw_ny_date is None or candidate_ny_date == raw_ny_date)
+    )
+
+    should_preserve = bool(
+        tiny_partial_no_candidate
+        and candidate
+        and candidate_same_trading_day
+        and bool(_p475_scan_candidate_bearing_truth(candidate).get("candidate_bearing"))
+    )
+
+    return {
+        "enabled": True,
+        "raw_reason": reason or None,
+        "raw_scanned": scanned,
+        "tiny_scan_threshold": tiny_scan_threshold,
+        "partial_scan": bool(partial_scan),
+        "no_candidate_payload": bool(no_candidate_payload),
+        "tiny_partial_no_candidate": bool(tiny_partial_no_candidate),
+        "candidate_scan_available": bool(candidate),
+        "candidate_same_trading_day": bool(candidate_same_trading_day),
+        "candidate_ts_utc": candidate.get("ts_utc"),
+        "preserve_candidate_bearing_scan": bool(should_preserve),
+        "recommended_action": (
+            "use_preserved_candidate_bearing_scan_until_next_complete_candidate_scan"
+            if should_preserve
+            else "use_raw_latest_scan"
+        ),
+    }
 
 def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
     raw = _p464_sanitize_persisted_over_budget_scan(
@@ -3958,8 +4020,11 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
     raw_reason = str(raw.get("reason") or raw_summary.get("scan_reason") or "").strip()
     raw_truth = _p475_scan_candidate_bearing_truth(raw)
 
-    last_candidate = _p481_last_candidate_bearing_scan()
+    last_candidate_raw = _p481_last_candidate_bearing_scan()
+    p538_raw_candidate_truth = _p538_tiny_no_candidate_partial_truth(last_candidate_raw)
+    last_candidate = {} if bool(p538_raw_candidate_truth.get("tiny_partial_no_candidate")) else dict(last_candidate_raw or {})
     candidate_truth = _p475_scan_candidate_bearing_truth(last_candidate) if last_candidate else {}
+    p538_partial_truth = _p538_tiny_no_candidate_partial_truth(raw, last_candidate)
 
     raw_is_skip = bool(
         raw.get("skipped")
@@ -3974,6 +4039,7 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
         and (
             raw_is_skip
             or not bool(raw_truth.get("trade_judgable"))
+            or bool(p538_partial_truth.get("preserve_candidate_bearing_scan"))
         )
     )
 
@@ -3987,6 +4053,10 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
     effective["_p481_after_hours_does_not_replace_candidate_truth"] = bool(
         use_candidate and raw_reason == "outside_market_hours"
     )
+    effective["_p538_tiny_partial_preserved_candidate_truth"] = bool(
+        use_candidate and p538_partial_truth.get("preserve_candidate_bearing_scan")
+    )
+    effective["_p538_partial_scan_preservation_truth"] = dict(p538_partial_truth)
     effective["_p481_raw_latest_scan"] = _p481_scan_brief(raw)
     effective["_p481_last_candidate_bearing_scan"] = _p481_scan_brief(last_candidate)
     effective["_p481_effective_trade_scan"] = _p481_scan_brief(effective)
@@ -4001,6 +4071,10 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
         candidate_cache_source=(effective.get("summary") or {}).get("candidate_cache_source"),
         used_candidate_bearing_fallback=bool(use_candidate),
         raw_latest_reason=raw_reason,
+    )
+    contract["p538_partial_scan_preservation_truth"] = dict(p538_partial_truth)
+    contract["tiny_partial_no_candidate_does_not_replace_candidate_truth"] = bool(
+        use_candidate and p538_partial_truth.get("preserve_candidate_bearing_scan")
     )
 
     return {
@@ -42760,6 +42834,12 @@ def _p298_scanner_light() -> dict:
     latest_scan["after_hours_does_not_replace_candidate_truth"] = bool(
         (latest_scan.get("_p481_canonical_scan_truth") or {}).get("after_hours_does_not_replace_candidate_truth")
     )
+    latest_scan["p538_partial_scan_preservation_truth"] = dict(
+        (latest_scan.get("_p481_canonical_scan_truth") or {}).get("p538_partial_scan_preservation_truth") or {}
+    )
+    latest_scan["tiny_partial_no_candidate_does_not_replace_candidate_truth"] = bool(
+        (latest_scan.get("_p481_canonical_scan_truth") or {}).get("tiny_partial_no_candidate_does_not_replace_candidate_truth")
+    )
     latest_scan["swing_scan_state_module_version"] = SWING_SCAN_STATE_MODULE_VERSION
     latest_scan["swing_scan_state_module_status"] = swing_scan_state_module_status(patch_version=PATCH_VERSION)
     latest_scan = swing_candidate_eval_attach_status(latest_scan, patch_version=PATCH_VERSION)
@@ -42770,6 +42850,12 @@ def _p298_scanner_light() -> dict:
     summary["regime_only_non_actionable"] = bool(p475_latest_truth.get("regime_only_non_actionable"))
     summary["p475_scan_truth_contract"] = dict(p475_latest_truth)
     summary["p481_canonical_scan_truth"] = dict(latest_scan.get("_p481_canonical_scan_truth") or {})
+    summary["p538_partial_scan_preservation_truth"] = dict(
+        summary["p481_canonical_scan_truth"].get("p538_partial_scan_preservation_truth") or {}
+    )
+    summary["tiny_partial_no_candidate_does_not_replace_candidate_truth"] = bool(
+        summary["p481_canonical_scan_truth"].get("tiny_partial_no_candidate_does_not_replace_candidate_truth")
+    )
     summary["swing_scan_state_module_version"] = SWING_SCAN_STATE_MODULE_VERSION
     summary = swing_candidate_eval_attach_status(summary, patch_version=PATCH_VERSION)
 
