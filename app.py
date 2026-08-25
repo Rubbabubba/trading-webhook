@@ -2973,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-543-scanner-producer-contract-reset-batch-candidate-publish"
+PATCH_VERSION = "patch-544-async-scan-dispatch-contract-fast-terminal-snapshot-publisher"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -27955,7 +27955,8 @@ def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: st
             "background_completion": True,
             "reason": "background_scan_already_running",
             "status": "accepted",
-            "scan_contract": "existing_background_scan_in_flight",
+            "scan_contract": "accepted_not_completed",
+            "p544_async_scan_dispatch_contract": True,
             "scan_attempt_id": scan_attempt_id,
             "existing_scan_attempt_id": existing.get("scan_attempt_id"),
             "idempotency_status": "background_single_flight_reused",
@@ -27964,7 +27965,7 @@ def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: st
             "recommended_recheck_sec": max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180)),
             "scanner": {
                 "status": "background_scan_running",
-                "scan_contract": "existing_background_scan_in_flight",
+                "scan_contract": "accepted_not_completed",
                 "strategy_mode": STRATEGY_MODE,
                 "requested_reason": source_meta.get("requested_reason") or "scheduled",
             },
@@ -28893,14 +28894,15 @@ def _p456_start_swing_scan_background(
             "background_completion": True,
             "reason": "swing_scan_background_accepted",
             "status": "accepted",
-            "scan_contract": "p516_fast_accept_durable_worker_completion",
+            "scan_contract": "accepted_not_completed",
             "scan_attempt_id": scan_attempt_id,
             "idempotency_status": "background_in_flight",
             "p516_fast_scan_acceptance": True,
             "p516_durable_worker_completion_contract": True,
+            "p544_async_scan_dispatch_contract": True,
             "scanner": {
                 "status": "accepted",
-                "scan_contract": "p516_fast_accept_durable_worker_completion",
+                "scan_contract": "accepted_not_completed",
                 "strategy_mode": STRATEGY_MODE,
                 "effective_dry_run": effective_dry_run if effective_dry_run is not None else None,
                 "effective_dry_run_reason": "background_pending" if effective_dry_run is None else "precomputed",
@@ -60250,11 +60252,17 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         return {
             "ok": True,
             "skipped": True,
+            "accepted": True,
+            "fast_response": True,
+            "background_completion": True,
             "reason": "duplicate_scan_attempt_in_flight",
+            "status": "accepted",
+            "scan_contract": "accepted_not_completed",
             "scan_attempt_id": scan_attempt_id,
             "idempotency_status": "in_flight",
             "side_effect_truth": side_effect_truth,
-            "p474_note": "existing_in_flight_scan_reused_no_new_background_started",
+            "p544_async_scan_dispatch_contract": True,
+            "p544_note": "existing_in_flight_scan_reused_no_new_background_started",
         }
 
     SCANNER_DISPATCH_ATTEMPTS[scan_attempt_id] = {
@@ -60275,10 +60283,18 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
     # 202 handoff. The background scan computes the authoritative dry-run truth.
     effective_dry_run = None
     requested_reason = str(body.get("reason") or "").strip() or None
+    worker_fast_swing_dispatch = bool(
+        str(STRATEGY_MODE or "").strip().lower() == "swing"
+        and str(source_kind or "").strip().lower() == "worker"
+        and bool(SCAN_FAST_RESPONSE_ENABLED)
+        and str(body.get("fast_response") or "true").strip().lower()
+        not in {"0", "false", "no", "n", "off"}
+    )
     p474_startup_foreground_fallback = _p474_startup_scan_foreground_fallback_truth(source_kind, body)
     if bool(p474_startup_foreground_fallback.get("enabled")):
         body["p474_foreground_fallback"] = True
-        body["background"] = False
+        if not worker_fast_swing_dispatch:
+            body["background"] = False
     fast_response = _p273_should_fast_response(source_kind, body)
 
     def _set_last_scan(**kwargs):
@@ -60442,8 +60458,6 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
 
         p474_should_fast_close_swing_scan = bool(
             str(STRATEGY_MODE or "").strip().lower() == "swing"
-            and not bool(SWING_SCAN_FOREGROUND_TERMINAL_ENABLED)
-            and not bool(SWING_PRODUCTION_CORE_CLEANUP_ENABLED)
             and bool(fast_response)
             and bool(SCAN_FAST_RESPONSE_ENABLED)
             and str(source_kind or "").strip().lower() == "worker"
@@ -60451,6 +60465,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         )
 
         if p474_should_fast_close_swing_scan:
+            body["p544_async_scan_dispatch_contract"] = True
+            body["p513_swing_foreground_terminal_contract"] = False
+            body["p513_background_scan_bypassed_for_swing"] = False
             return _p456_start_swing_scan_background(
                 body=body,
                 source_meta=source_meta,

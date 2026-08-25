@@ -272,6 +272,8 @@ def main() -> None:
                             status == 202
                             or str(response_payload.get("scan_contract") or "").strip().lower() == "accepted_not_completed"
                             or str(response_payload.get("reason") or "").strip().lower() == "swing_scan_background_accepted"
+                            or str(response_payload.get("status") or "").strip().lower() == "accepted"
+                            or bool(response_payload.get("accepted") and response_payload.get("background_completion"))
                         )
                     except Exception:
                         accepted_not_completed = status == 202
