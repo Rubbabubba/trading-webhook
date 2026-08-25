@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-536-eligible-candidate-fallback-selection-revalidation-finalizer"
+PATCH_VERSION = "patch-537-pre-submit-eligible-fallback-selection-submit-gap-elimination"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -30535,6 +30535,73 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         ),
     }
 
+    p537_pre_submit_fallback_selection = {
+        "applied": False,
+        "reason": "selected_rows_present_before_submit",
+        "selected_symbols": _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(selected or [])
+            if str((row or {}).get("symbol") or "").strip()
+        ]),
+        "blocked_symbols": [],
+        "eligible_candidates_considered": 0,
+    }
+    if not selected and max_new_entries > 0:
+        p537_active_or_pending_symbols = _dedupe_keep_order([
+            str(sym or "").strip().upper()
+            for sym, plan in dict(TRADE_PLAN or {}).items()
+            if str(sym or "").strip()
+            and isinstance(plan, dict)
+            and (bool(plan.get("active")) or _plan_is_pending_entry(plan))
+        ])
+        p537_blocked_symbols = _dedupe_keep_order(
+            list(p537_active_or_pending_symbols)
+            + list(p520_dropped_selected)
+        )
+        p537_current_candidate_truth = {
+            "eligible_new_entry_rows_all": [
+                dict(row or {})
+                for row in list(production_approved or candidates or [])
+                if isinstance(row, dict)
+                and bool((row or {}).get("eligible"))
+                and bool(
+                    (row or {}).get("production_contract_approved")
+                    or ((row or {}).get("swing_production_contract") or {}).get("approved")
+                )
+            ],
+            "candidate_rows": [
+                dict(row or {})
+                for row in list(candidates or [])
+                if isinstance(row, dict)
+            ],
+        }
+        p537_pre_submit_fallback_selection = _p536_fallback_selected_symbols_from_eligible_rows(
+            p537_current_candidate_truth,
+            max_symbols=max_new_entries,
+            blocked_symbols=p537_blocked_symbols,
+            reason="pre_submit_selection_rebuilt_from_current_eligible_contract_rows",
+        )
+        if p537_pre_submit_fallback_selection.get("applied"):
+            p537_selected_by_symbol = {
+                str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+                for row in list(p537_pre_submit_fallback_selection.get("selected_rows") or [])
+                if str((row or {}).get("symbol") or "").strip()
+            }
+            selected = list(p537_selected_by_symbol.values())
+            production_selection_finalizer["selected"] = list(selected)
+            production_selection_finalizer["selected_symbols"] = list(
+                p537_pre_submit_fallback_selection.get("selected_symbols") or []
+            )
+            p520_selection_truth_sync["p537_pre_submit_fallback_applied"] = True
+            p520_selection_truth_sync["synced_selected_symbols"] = list(
+                p537_pre_submit_fallback_selection.get("selected_symbols") or []
+            )
+        else:
+            p537_pre_submit_fallback_selection["reason"] = (
+                p537_pre_submit_fallback_selection.get("reason")
+                or "no_current_eligible_contract_rows_before_submit"
+            )
+
     _p402_stage_checkpoint(
         "selection_complete",
         candidate_count=len(candidates),
@@ -30718,6 +30785,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "eligible_contract_finalizer_sync": dict(production_selection_finalizer.get("p414_eligible_contract_finalizer_sync") or {}),
                 "p461_promotion_recovery": dict(p461_promotion_recovery),
                 "p520_selection_truth_sync": dict(p520_selection_truth_sync),
+                "p537_pre_submit_fallback_selection": dict(p537_pre_submit_fallback_selection),
             },
             "candidate_rows_for_truth": [dict(c) for c in candidates[:250]],
             "top_candidates": [dict(c) for c in candidates[:5]],
@@ -31019,6 +31087,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "selected_submit_gap_symbols": list(p522_submit_gap_symbols),
         "selected_submit_gap_count": len(p522_submit_gap_symbols),
         "selected_submit_gap_active": bool(p522_submit_gap_symbols),
+        "p537_pre_submit_fallback_selection": dict(p537_pre_submit_fallback_selection),
         "p399_partial_submit_finalization": dict(p399_partial_submit_finalization),
     })
     if p522_submit_gap_symbols:
