@@ -2973,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-544-async-scan-dispatch-contract-fast-terminal-snapshot-publisher"
+PATCH_VERSION = "patch-545-scanner-hot-path-broker-prep-timeout-candidate-eval-start-guarantee"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23700,6 +23700,189 @@ def _current_portfolio_exposure_breakdown() -> dict:
         "counts_recovered_as_strategy": bool(SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY),
     }
 
+def _p545_latest_cached_buying_power_snapshot() -> dict:
+    def _normalized(raw: dict | None, source: str) -> dict:
+        snap = dict(raw or {})
+        bp = _safe_float(snap.get("buying_power"), 0.0)
+        equity = _safe_float(snap.get("equity"), 0.0)
+        cash = _safe_float(snap.get("cash"), 0.0)
+        if bp <= 0 and equity <= 0 and cash <= 0:
+            return {}
+        snap.update(
+            {
+                "ok": bool(snap.get("ok", True)),
+                "buying_power": bp,
+                "equity": equity if equity > 0 else snap.get("equity"),
+                "cash": cash if cash != 0 else snap.get("cash"),
+                "source": source,
+                "cached": True,
+            }
+        )
+        return snap
+
+    try:
+        for row in reversed(list(LAST_SWING_CANDIDATES or [])):
+            if not isinstance(row, dict):
+                continue
+            snap = _normalized(row.get("scan_broker_snapshot"), "last_swing_candidates")
+            if snap:
+                return snap
+            affordability = row.get("affordability") if isinstance(row.get("affordability"), dict) else {}
+            snap = _normalized(
+                affordability.get("buying_power_snapshot"),
+                "last_swing_candidates_affordability",
+            )
+            if snap:
+                return snap
+    except Exception:
+        pass
+
+    try:
+        snapshot = read_positions_snapshot()
+        extra = snapshot.get("extra") if isinstance(snapshot, dict) else {}
+        if isinstance(extra, dict):
+            for key in ("broker_snapshot", "buying_power_snapshot", "account_snapshot"):
+                snap = _normalized(extra.get(key), f"positions_snapshot.{key}")
+                if snap:
+                    return snap
+    except Exception:
+        pass
+
+    return {
+        "ok": False,
+        "buying_power": 0.0,
+        "equity": None,
+        "cash": None,
+        "source": "no_cached_broker_snapshot",
+        "cached": True,
+    }
+
+
+def _p545_get_buying_power_snapshot_bounded(timeout_sec: float = 3.0) -> dict:
+    timeout = max(0.5, float(timeout_sec or 3.0))
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan-broker-account")
+    future = executor.submit(get_buying_power_snapshot)
+    try:
+        snap = dict(future.result(timeout=timeout) or {})
+        snap.setdefault("source", "live_broker_account")
+        snap["p545_bounded_account_snapshot"] = True
+        snap["timeout_sec"] = timeout
+        return snap
+    except FuturesTimeoutError:
+        future.cancel()
+        snap = _p545_latest_cached_buying_power_snapshot()
+        snap["p545_bounded_account_snapshot"] = True
+        snap["live_account_timeout"] = True
+        snap["timeout_sec"] = timeout
+        snap["source"] = snap.get("source") or "cached_after_account_timeout"
+        return snap
+    except Exception as exc:
+        snap = _p545_latest_cached_buying_power_snapshot()
+        snap["p545_bounded_account_snapshot"] = True
+        snap["live_account_error"] = str(exc)
+        snap["timeout_sec"] = timeout
+        snap["source"] = snap.get("source") or "cached_after_account_error"
+        return snap
+    finally:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
+
+
+def _p545_portfolio_exposure_breakdown_from_snapshot(snapshot: dict | None = None) -> dict:
+    try:
+        snap = dict(snapshot or read_positions_snapshot() or {})
+    except Exception:
+        snap = {}
+    positions = [
+        dict(p or {})
+        for p in list(snap.get("positions") or [])
+        if isinstance(p, dict) and str((p or {}).get("symbol") or "").strip()
+    ]
+    source = "positions_snapshot"
+    if not positions:
+        source = "trade_plan_memory"
+        positions = []
+        for sym, plan in (TRADE_PLAN or {}).items():
+            plan = dict(plan or {})
+            symbol = str(sym or plan.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            if not bool(plan.get("active")) and not _plan_is_pending_entry(plan):
+                continue
+            qty = abs(_safe_float(plan.get("qty") or plan.get("filled_qty") or plan.get("position_qty"), 0.0))
+            px = _safe_float(
+                plan.get("last_price") or plan.get("current_price") or plan.get("entry_price"),
+                0.0,
+            )
+            positions.append(
+                {
+                    "symbol": symbol,
+                    "qty": qty,
+                    "market_value": max(0.0, qty * px),
+                    "avg_entry_price": px,
+                }
+            )
+
+    total = 0.0
+    strategy_managed = 0.0
+    recovered = 0.0
+    unmanaged = 0.0
+    by_symbol: dict[str, float] = {}
+    by_symbol_class: dict[str, str] = {}
+    recovered_symbols: list[str] = []
+    strategy_symbols: list[str] = []
+    unmanaged_symbols: list[str] = []
+    corrected_recovered_as_strategy_symbols: list[str] = []
+    broker_by_symbol = {
+        str((p or {}).get("symbol") or "").strip().upper(): dict(p or {})
+        for p in positions
+        if str((p or {}).get("symbol") or "").strip()
+    }
+
+    for p in positions:
+        sym = str(p.get("symbol") or "").strip().upper()
+        notion = _p254_position_notional(p)
+        total += notion
+        if sym:
+            by_symbol[sym] = notion
+        plan = (TRADE_PLAN or {}).get(sym) or {}
+        recovered_counts_as_strategy = _p254_recovered_broker_backed_counts_as_strategy(sym, plan, broker_by_symbol)
+        if recovered_counts_as_strategy:
+            strategy_managed += notion
+            by_symbol_class[sym] = "strategy_managed"
+            strategy_symbols.append(sym)
+            corrected_recovered_as_strategy_symbols.append(sym)
+        elif _plan_is_recovered(plan):
+            recovered += notion
+            by_symbol_class[sym] = "recovered"
+            recovered_symbols.append(sym)
+        elif bool((plan or {}).get("active")) or _plan_is_pending_entry(plan):
+            strategy_managed += notion
+            by_symbol_class[sym] = "strategy_managed"
+            strategy_symbols.append(sym)
+        else:
+            unmanaged += notion
+            by_symbol_class[sym] = "unmanaged"
+            unmanaged_symbols.append(sym)
+
+    return {
+        "total": total,
+        "strategy_managed": strategy_managed,
+        "recovered": recovered,
+        "unmanaged": unmanaged,
+        "by_symbol": by_symbol,
+        "by_symbol_class": by_symbol_class,
+        "recovered_symbols": recovered_symbols,
+        "strategy_symbols": strategy_symbols,
+        "unmanaged_symbols": unmanaged_symbols,
+        "corrected_recovered_as_strategy_symbols": corrected_recovered_as_strategy_symbols,
+        "classification_source": f"{source}_cached",
+        "counts_recovered_as_strategy": bool(SWING_BROKER_BACKED_RECOVERED_COUNTS_AS_STRATEGY),
+        "p545_snapshot_exposure": True,
+    }
+
 def _current_portfolio_exposure() -> tuple[float, dict[str, float]]:
     b = _current_portfolio_exposure_breakdown()
     return float(b.get('total') or 0.0), dict(b.get('by_symbol') or {})
@@ -29250,13 +29433,33 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "results": [],
         }
 
-    exposure = _current_portfolio_exposure_breakdown()
+    p545_hot_path_broker_prep = bool(p401_hot_path.get("enabled"))
+    _p402_stage_checkpoint("broker_prep_start", hot_path=p545_hot_path_broker_prep)
+    if p545_hot_path_broker_prep:
+        p479_scan_broker_snapshot = _p545_get_buying_power_snapshot_bounded(timeout_sec=3.0)
+        exposure = _p545_portfolio_exposure_breakdown_from_snapshot()
+    else:
+        exposure = _current_portfolio_exposure_breakdown()
+        p479_scan_broker_snapshot = dict(get_buying_power_snapshot() or {})
     open_total = float(exposure.get('total') or 0.0)
     open_strategy = float(exposure.get('strategy_managed') or 0.0)
     open_recovered = float(exposure.get('recovered') or 0.0)
     open_unmanaged = float(exposure.get('unmanaged') or 0.0)
     open_by_symbol = dict(exposure.get('by_symbol') or {})
-    equity = max(0.0, _current_equity_estimate())
+    equity = max(0.0, _safe_float(p479_scan_broker_snapshot.get("equity"), 0.0))
+    if equity <= 0 and not p545_hot_path_broker_prep:
+        equity = max(0.0, _current_equity_estimate())
+    if equity <= 0 and open_total > 0 and SWING_MAX_PORTFOLIO_EXPOSURE_PCT > 0:
+        equity = max(0.0, open_total / max(float(SWING_MAX_PORTFOLIO_EXPOSURE_PCT), 1e-9))
+    _p402_stage_checkpoint(
+        "broker_prep_complete",
+        hot_path=p545_hot_path_broker_prep,
+        broker_snapshot_ok=bool((p479_scan_broker_snapshot or {}).get("ok")),
+        broker_snapshot_source=(p479_scan_broker_snapshot or {}).get("source"),
+        exposure_source=exposure.get("classification_source"),
+        open_total=round(open_total, 4),
+        equity=round(equity, 4),
+    )
     portfolio_cap = equity * SWING_MAX_PORTFOLIO_EXPOSURE_PCT if equity > 0 else 0.0
     symbol_cap = equity * SWING_MAX_SYMBOL_EXPOSURE_PCT if equity > 0 else 0.0
     block_total_cap = bool(portfolio_cap > 0 and open_total >= portfolio_cap)
@@ -29317,7 +29520,6 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "submitted_symbols": [],
     }
 
-    p479_scan_broker_snapshot = dict(get_buying_power_snapshot() or {})
     p479_pending_entry_symbols = {
         str(sym or "").strip().upper()
         for sym, plan in (TRADE_PLAN or {}).items()
@@ -31112,6 +31314,15 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "active_plan_symbol_count": len(p479_active_plan_symbols),
                 "open_position_symbol_count": len(p479_open_position_symbols),
                 "goal": "candidate_eval_hot_path_uses_snapshots_not_per_symbol_broker_calls",
+            },
+            "p545_scanner_hot_path_broker_prep": {
+                "enabled": bool(p545_hot_path_broker_prep),
+                "broker_snapshot_ok": bool((p479_scan_broker_snapshot or {}).get("ok")),
+                "broker_snapshot_source": (p479_scan_broker_snapshot or {}).get("source"),
+                "broker_snapshot_cached": bool((p479_scan_broker_snapshot or {}).get("cached")),
+                "broker_snapshot_timeout": bool((p479_scan_broker_snapshot or {}).get("live_account_timeout")),
+                "exposure_source": exposure.get("classification_source"),
+                "goal": "candidate_eval_reaches_terminal_publish_even_when_live_broker_prep_is_slow",
             },
             "p480_runtime_proof": {
                 "enabled": True,
