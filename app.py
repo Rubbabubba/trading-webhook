@@ -2973,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-549-selection-complete-terminal-close-durable-submit-truth-cleanup"
+PATCH_VERSION = "patch-550-snapshot-only-light-diagnostics-scanner-build-drift-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28349,6 +28349,297 @@ def _p549_selection_complete_terminal_close(
         updates["expected_scan_attempt_id"] = scan_attempt_id
     return _p456_mark_background_scan(**updates)
 
+def _p550_selected_submission_truth_snapshot_light(
+    latest_scan: dict | None = None,
+    summary: dict | None = None,
+    *,
+    limit: int = 50,
+) -> dict:
+    latest_scan = dict(latest_scan or LAST_SCAN or {})
+    summary = dict(summary or (latest_scan.get("summary") if isinstance(latest_scan.get("summary"), dict) else {}) or {})
+    lim = max(1, min(int(limit or 50), 100))
+    p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(
+            p547_selection_snapshot.get("selected_symbols")
+            or summary.get("selected_symbols")
+            or latest_scan.get("selected_symbols")
+            or []
+        )
+        if str(sym or "").strip()
+    ])
+    submit_rows_all = [
+        dict(row or {})
+        for row in list(
+            p547_selection_snapshot.get("submit_rows")
+            or summary.get("selected_submission_rows")
+            or summary.get("would_submit")
+            or latest_scan.get("would_submit")
+            or []
+        )
+        if isinstance(row, dict)
+    ]
+    submit_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in submit_rows_all
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    candidate_truth = _p548_snapshot_candidate_truth_no_recompute(latest_scan, summary, limit=lim)
+    eligible_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(candidate_truth)
+    rows: list[dict] = []
+    for sym in selected_symbols[:lim]:
+        submit_row = dict(submit_by_symbol.get(sym) or {})
+        plan = dict((TRADE_PLAN or {}).get(sym) or {})
+        submit_state = str(submit_row.get("submit_state") or submit_row.get("state") or "").strip()
+        submit_reason = str(submit_row.get("submit_reason") or submit_row.get("reason") or "").strip()
+        submit_attempted = bool(
+            submit_row.get("submit_attempted")
+            or submit_state
+            or submit_reason
+            or submit_row.get("order_id")
+            or submit_row.get("submit_order_id")
+        )
+        active_plan = bool(plan.get("active"))
+        pending_entry_plan = bool(_plan_is_pending_entry(plan))
+        actual_submit_side_effect = bool(
+            submit_row.get("actual_submit_side_effect")
+            or submit_row.get("order_id")
+            or submit_row.get("submit_order_id")
+            or active_plan
+            or pending_entry_plan
+        )
+        reason_norm = submit_reason.lower()
+        state_norm = submit_state.lower()
+        after_hours_selected_not_submitted = bool(
+            reason_norm in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+            or (
+                state_norm in {"ignored", "skipped"}
+                and reason_norm in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+            )
+        )
+        rate_limited_retryable = bool(_p398_submit_row_rate_limited(submit_row))
+        execution_quality_blocked = bool(
+            _p366_submit_execution_quality_blocked(submit_state, submit_reason)
+        )
+        retryable_spread_block = _p366_retryable_spread_block(
+            sym,
+            submit_row.get("signal") or submit_row.get("strategy") or "daily_breakout",
+            submit_state,
+            submit_reason,
+        )
+        submit_gap = bool(
+            not actual_submit_side_effect
+            and not after_hours_selected_not_submitted
+            and not rate_limited_retryable
+            and not execution_quality_blocked
+            and not bool(retryable_spread_block.get("retryable"))
+        )
+        rows.append({
+            "symbol": sym,
+            "snapshot_only": True,
+            "submit_attempted": bool(submit_attempted),
+            "actual_submit_side_effect": bool(actual_submit_side_effect),
+            "side_effect_detected_light": bool(actual_submit_side_effect),
+            "active_plan": bool(active_plan),
+            "pending_entry_plan": bool(pending_entry_plan),
+            "submit_gap": bool(submit_gap),
+            "submit_gap_type": (
+                "none"
+                if actual_submit_side_effect
+                else "after_hours_selected_not_submitted"
+                if after_hours_selected_not_submitted
+                else "rate_limited_retryable"
+                if rate_limited_retryable
+                else "spread_retryable"
+                if bool(retryable_spread_block.get("retryable"))
+                else "execution_quality_blocked"
+                if execution_quality_blocked
+                else "unattempted"
+                if not submit_attempted
+                else "terminal_failed"
+            ),
+            "retry_evidence_status": (
+                "resolved_by_active_plan_or_submit_side_effect"
+                if actual_submit_side_effect
+                else "after_hours_selected_not_submitted"
+                if after_hours_selected_not_submitted
+                else "waiting_for_rate_limit_retry"
+                if rate_limited_retryable
+                else "waiting_for_spread_retry"
+                if bool(retryable_spread_block.get("retryable"))
+                else "blocked_by_execution_quality"
+                if execution_quality_blocked
+                else "submit_gap_unattempted"
+                if not submit_attempted
+                else "submit_gap_terminal_failed"
+            ),
+            "rate_limited_retryable": bool(rate_limited_retryable),
+            "execution_quality_blocked": bool(execution_quality_blocked),
+            "retryable_spread_block": dict(retryable_spread_block),
+            "after_hours_selected_not_submitted": bool(after_hours_selected_not_submitted),
+            "submit_state": submit_state,
+            "submit_reason": submit_reason,
+            "submit_order_id": submit_row.get("submit_order_id") or submit_row.get("order_id"),
+            "plan_order_id": plan.get("order_id"),
+            "plan_order_status": plan.get("order_status"),
+            "scan_submit_row": submit_row or None,
+        })
+
+    out = swing_diag_selected_submission_truth_light_snapshot(
+        patch_version=PATCH_VERSION,
+        latest_scan=latest_scan,
+        selected_symbols=selected_symbols,
+        rows=rows,
+    )
+    out.update({
+        "patch_version": PATCH_VERSION,
+        "p550_snapshot_only_light_endpoint": True,
+        "does_not_read_lifecycle": True,
+        "does_not_revalidate_selection": True,
+        "does_not_call_broker": True,
+        "does_not_recompute_candidate_payload": True,
+        "p547_selection_submit_snapshot": {
+            "source_stage": p547_selection_snapshot.get("source_stage"),
+            "selected_count": len(selected_symbols),
+            "selected_symbols": list(selected_symbols),
+            "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or len(submit_rows_all)),
+            "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced") or submit_rows_all),
+        },
+        "eligible_new_entry_truth": {
+            "count": len(eligible_symbols),
+            "symbols": eligible_symbols,
+            "not_selected_symbols": [sym for sym in eligible_symbols if sym not in set(selected_symbols)],
+            "status": (
+                "eligible_new_entry_not_selected"
+                if eligible_symbols and not selected_symbols
+                else "selected_symbols_present"
+                if selected_symbols
+                else "no_eligible_new_entry"
+            ),
+        },
+    })
+    return out
+
+def _p550_current_scan_suppression_snapshot_payload(
+    latest_scan: dict | None = None,
+    summary: dict | None = None,
+    *,
+    limit: int = 50,
+) -> dict:
+    latest_scan = dict(latest_scan or LAST_SCAN or {})
+    summary = dict(summary or (latest_scan.get("summary") if isinstance(latest_scan.get("summary"), dict) else {}) or {})
+    lim = max(1, min(int(limit or 50), 100))
+    candidate_truth = _p548_snapshot_candidate_truth_no_recompute(latest_scan, summary, limit=lim)
+    rows_all = [
+        dict(row or {})
+        for row in list(candidate_truth.get("candidate_rows") or [])
+        if isinstance(row, dict)
+    ]
+    eligible_rows_all = [
+        row for row in rows_all
+        if bool(row.get("eligible")) and not bool(row.get("open_position"))
+    ]
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(candidate_truth.get("selected_symbols") or summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    reason_summary = _p277h_candidate_reason_counts([
+        row for row in rows_all
+        if not bool(row.get("open_position"))
+    ])
+    protective_reasons = {
+        reason: count
+        for reason, count in dict(reason_summary.get("reason_counts") or {}).items()
+        if _p277_reason_family(reason) == "protective"
+    }
+    latest_reason = str(latest_scan.get("reason") or "").strip().lower()
+    if selected_symbols:
+        status = "selecting"
+        recommended_action = "monitor_submissions"
+    elif eligible_rows_all:
+        status = "eligible_new_entry_not_selected"
+        recommended_action = "sync_selected_symbols_from_current_eligible_contract_rows"
+    elif protective_reasons:
+        status = "suppressed_by_protection"
+        recommended_action = "review_protective_reasons_before_relaxing"
+    elif rows_all:
+        status = "no_current_eligible_candidates"
+        recommended_action = "wait_for_better_setup_or_review_near_misses"
+    elif latest_reason in {"outside_market_hours", "scan_exception"}:
+        status = "scan_not_trade_judgable"
+        recommended_action = "wait_for_candidate_bearing_scan_completion"
+    else:
+        status = "no_candidate_flow"
+        recommended_action = "inspect_scanner_runtime"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "fast_current_candidate_truth",
+        "payload_mode": "compact",
+        "source": "p550_snapshot_only_light_endpoint",
+        "p550_snapshot_only_light_endpoint": True,
+        "does_not_recompute_candidate_payload": True,
+        "does_not_fetch_bars": True,
+        "does_not_call_broker": True,
+        "heavy_available": True,
+        "heavy_url_hint": "/diagnostics/candidates_full?heavy=true&limit=10",
+        "status": status,
+        "recommended_action": recommended_action,
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+            "would_trade": latest_scan.get("would_trade"),
+            "blocked": latest_scan.get("blocked"),
+            "duration_ms": latest_scan.get("duration_ms"),
+            "source": latest_scan.get("_scan_source"),
+            "runtime_budget_sanitized": bool(latest_scan.get("runtime_budget_sanitized")),
+        },
+        "runtime_universe_coverage": _p404_runtime_universe_coverage(
+            latest_scan=latest_scan,
+            summary=summary,
+        ),
+        "candidate_count": len(rows_all),
+        "display_candidate_count": len(rows_all[:lim]),
+        "new_entry_candidate_count": len([
+            row for row in rows_all
+            if not bool(row.get("open_position"))
+        ]),
+        "open_position_candidate_count": len([
+            row for row in rows_all
+            if bool(row.get("open_position"))
+        ]),
+        "open_position_candidate_symbols": [
+            row.get("symbol")
+            for row in rows_all
+            if bool(row.get("open_position"))
+        ],
+        "eligible_count": len(eligible_rows_all),
+        "eligible_symbols": [row.get("symbol") for row in eligible_rows_all],
+        "eligible_not_selected_count": len(eligible_rows_all) if not selected_symbols else 0,
+        "eligible_not_selected_symbols": (
+            [row.get("symbol") for row in eligible_rows_all]
+            if not selected_symbols
+            else []
+        ),
+        "selected_total": len(selected_symbols),
+        "selected_symbols": selected_symbols,
+        "reason_counts": reason_summary.get("reason_counts"),
+        "reason_family_counts": reason_summary.get("reason_family_counts"),
+        "protective_reason_counts": protective_reasons,
+        "candidate_rows": rows_all,
+        "eligible_new_entry_rows_all": eligible_rows_all,
+        "top_candidates": rows_all[:min(lim, 15)],
+        "top_new_entry_candidates": [
+            row for row in rows_all
+            if not bool(row.get("open_position"))
+        ][:min(lim, 15)],
+    }
+
 def _p461_background_scan_lost_after_restart_recovered(state: dict | None = None) -> bool:
     row = dict(state or SWING_SCAN_BACKGROUND_COMPLETION or {})
     status = str(row.get("status") or "").strip().lower()
@@ -38561,8 +38852,16 @@ def _p277h_defensive_tier_near_miss_row(row: dict | None) -> dict:
     }
 
 def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
-    payload = _p406_fast_current_candidate_payload(limit=max(1, min(int(limit or 50), 100)))
     effective_scan = _p464_effective_market_scan(LAST_SCAN)
+    effective_summary = (
+        (effective_scan.get("summary") if isinstance(effective_scan, dict) and isinstance(effective_scan.get("summary"), dict) else {})
+        or {}
+    )
+    payload = _p550_current_scan_suppression_snapshot_payload(
+        effective_scan,
+        effective_summary,
+        limit=max(1, min(int(limit or 50), 100)),
+    )
     latest = dict(payload.get("latest_scan") or {})
     if effective_scan and str(effective_scan.get("_scan_source") or "") == "last_actionable_market_scan":
         payload["status"] = "cached_market_scan_truth" if payload.get("status") == "stale_scan_not_actionable" else payload.get("status")
@@ -43449,6 +43748,15 @@ def _p298_selected_submission_truth_light() -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan, summary, p330_after_hours_truth = _p330_preserved_selected_submission_summary(latest_scan, summary)
     _p387_prune_rate_limit_selected_submit_retry_queue()
+    snapshot_out = _p550_selected_submission_truth_snapshot_light(
+        latest_scan,
+        summary,
+        limit=50,
+    )
+    snapshot_out["p330_after_hours_truth"] = p330_after_hours_truth
+    snapshot_out["p387_rate_limit_retry_queue_count"] = len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
+    snapshot_out["p550_heavy_truth_replaced_by_snapshot"] = True
+    return snapshot_out
     p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
     p547_selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()

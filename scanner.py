@@ -7,6 +7,8 @@ import random
 import uuid
 from datetime import datetime, timezone, timedelta
 
+SCANNER_WORKER_VERSION = "patch-550-snapshot-only-light-diagnostics-scanner-build-drift-truth"
+
 def getenv_int(name: str, default: int) -> int:
     v = os.getenv(name)
     if v is None or v == "":
@@ -218,7 +220,7 @@ def main() -> None:
     boot_id = str(uuid.uuid4())
     transient_backoff_sec = max(30, min(interval, getenv_int("SCAN_TRANSIENT_MAIN_BACKOFF_SEC", 60)))
     transient_main_web = {"suppress_until": 0.0, "status": None, "last_utc": None}
-    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "main_unavailable_total": 0, "main_unavailable_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_main_unavailable_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec, "main_ready_grace_sec": main_ready_grace_sec, "main_ready_poll_sec": main_ready_poll_sec, "transient_main_backoff_sec": transient_backoff_sec, "runtime_slim": scan_payload.get("runtime_slim"), "max_symbols": scan_payload.get("max_symbols")}
+    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "scanner_worker_version": SCANNER_WORKER_VERSION, "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "main_unavailable_total": 0, "main_unavailable_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_main_unavailable_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec, "main_ready_grace_sec": main_ready_grace_sec, "main_ready_poll_sec": main_ready_poll_sec, "transient_main_backoff_sec": transient_backoff_sec, "runtime_slim": scan_payload.get("runtime_slim"), "max_symbols": scan_payload.get("max_symbols")}
     def heartbeat(event: str, status: str = "ok", details: dict | None = None) -> None:
         if time.monotonic() < float(transient_main_web.get("suppress_until") or 0.0):
             return
@@ -233,7 +235,7 @@ def main() -> None:
                 transient_main_web["last_utc"] = ts_utc()
                 return
             log(f"heartbeat_post_failed event={event} kind={type(e).__name__} detail={brief_body(repr(e), 180)}")
-    log(f"boot url={url} base_url={base_url} interval_sec={interval} timeout_sec={timeout} run_on_start={run_on_start} jitter_sec={jitter_sec} startup_retries={startup_retries} startup_retry_delay_sec={startup_retry_delay_sec} sleep_heartbeat_sec={sleep_heartbeat_sec} main_ready_grace_sec={main_ready_grace_sec} main_ready_poll_sec={main_ready_poll_sec} has_worker_secret={bool(worker_secret)} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
+    log(f"boot scanner_worker_version={SCANNER_WORKER_VERSION} url={url} base_url={base_url} interval_sec={interval} timeout_sec={timeout} run_on_start={run_on_start} jitter_sec={jitter_sec} startup_retries={startup_retries} startup_retry_delay_sec={startup_retry_delay_sec} sleep_heartbeat_sec={sleep_heartbeat_sec} main_ready_grace_sec={main_ready_grace_sec} main_ready_poll_sec={main_ready_poll_sec} has_worker_secret={bool(worker_secret)} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
 
     readiness = wait_for_main_web_ready(
         health_url=health_url,
