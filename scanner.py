@@ -48,6 +48,10 @@ def transient_main_web_status(err: Exception) -> int | None:
     return None
 
 
+def brief_body(text: str, limit: int = 240) -> str:
+    return (text or "")[: max(0, int(limit or 0))].replace("\n", " ").replace("\r", " ")
+
+
 def wait_for_main_web_ready(health_url: str, timeout: int, grace_sec: int, poll_sec: int) -> dict:
     grace_sec = max(0, int(grace_sec or 0))
     poll_sec = max(1, int(poll_sec or 1))
@@ -65,7 +69,7 @@ def wait_for_main_web_ready(health_url: str, timeout: int, grace_sec: int, poll_
                 "ready": True,
                 "attempts": attempt,
                 "status": status,
-                "body_prefix": body[:500].replace("\n", " "),
+                "body_prefix": brief_body(body, 500),
                 "waited_sec": max(0, int(grace_sec - max(0, deadline - time.monotonic()))),
             }
         except Exception as e:
@@ -212,13 +216,23 @@ def main() -> None:
     scan_payload.setdefault("max_symbols", default_max_symbols)
     scan_payload.setdefault("runtime_slim", os.getenv("SCAN_RUNTIME_SLIM", "true"))
     boot_id = str(uuid.uuid4())
-    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec, "main_ready_grace_sec": main_ready_grace_sec, "main_ready_poll_sec": main_ready_poll_sec, "runtime_slim": scan_payload.get("runtime_slim"), "max_symbols": scan_payload.get("max_symbols")}
+    transient_backoff_sec = max(30, min(interval, getenv_int("SCAN_TRANSIENT_MAIN_BACKOFF_SEC", 60)))
+    transient_main_web = {"suppress_until": 0.0, "status": None, "last_utc": None}
+    state = {"boot_id": boot_id, "boot_ts_utc": ts_utc(), "attempts_total": 0, "success_total": 0, "failure_total": 0, "attempts_today": 0, "success_today": 0, "failure_today": 0, "main_unavailable_total": 0, "main_unavailable_today": 0, "consecutive_failures": 0, "last_attempt_utc": None, "last_success_utc": None, "last_failure_utc": None, "last_main_unavailable_utc": None, "last_error": "", "pid": os.getpid(), "interval_sec": interval, "timeout_sec": timeout, "run_on_start": run_on_start, "jitter_sec": jitter_sec, "sleep_heartbeat_sec": sleep_heartbeat_sec, "main_ready_grace_sec": main_ready_grace_sec, "main_ready_poll_sec": main_ready_poll_sec, "transient_main_backoff_sec": transient_backoff_sec, "runtime_slim": scan_payload.get("runtime_slim"), "max_symbols": scan_payload.get("max_symbols")}
     def heartbeat(event: str, status: str = "ok", details: dict | None = None) -> None:
+        if time.monotonic() < float(transient_main_web.get("suppress_until") or 0.0):
+            return
         payload = {"worker_secret": worker_secret, "event": event, "status": status, "details": {**state, **(details or {})}}
         try:
             post_json(heartbeat_url, payload, timeout=min(timeout, 15))
         except Exception as e:
-            log(f"heartbeat_error event={event} err={e!r}")
+            transient_status = transient_main_web_status(e)
+            if transient_status:
+                transient_main_web["suppress_until"] = time.monotonic() + transient_backoff_sec
+                transient_main_web["status"] = transient_status
+                transient_main_web["last_utc"] = ts_utc()
+                return
+            log(f"heartbeat_post_failed event={event} kind={type(e).__name__} detail={brief_body(repr(e), 180)}")
     log(f"boot url={url} base_url={base_url} interval_sec={interval} timeout_sec={timeout} run_on_start={run_on_start} jitter_sec={jitter_sec} startup_retries={startup_retries} startup_retry_delay_sec={startup_retry_delay_sec} sleep_heartbeat_sec={sleep_heartbeat_sec} main_ready_grace_sec={main_ready_grace_sec} main_ready_poll_sec={main_ready_poll_sec} has_worker_secret={bool(worker_secret)} strategy_mode={os.getenv('STRATEGY_MODE', 'intraday')}")
 
     readiness = wait_for_main_web_ready(
@@ -236,9 +250,13 @@ def main() -> None:
         heartbeat("boot", "ok", {"health_url": health_url, "main_web_readiness": readiness})
         heartbeat("preflight_ok", "success", {"status": readiness.get("status"), "body_prefix": readiness.get("body_prefix"), "main_web_readiness": readiness})
     else:
-        log(f"main_web_readiness_failed attempts={readiness.get('attempts')} waited_sec={readiness.get('waited_sec')} detail={readiness.get('detail')}")
+        transient_main_web["suppress_until"] = time.monotonic() + transient_backoff_sec
+        transient_main_web["status"] = readiness.get("status")
+        transient_main_web["last_utc"] = ts_utc()
+        state["last_main_unavailable_utc"] = transient_main_web["last_utc"]
+        log(f"main_web_readiness_deferred attempts={readiness.get('attempts')} waited_sec={readiness.get('waited_sec')} detail={readiness.get('detail')}")
         heartbeat("boot", "main_web_not_ready", {"health_url": health_url, "main_web_readiness": readiness})
-        heartbeat("preflight_error", "error", {"error": readiness.get("detail"), "main_web_readiness": readiness})
+        heartbeat("preflight_deferred", "main_web_unavailable", {"detail": readiness.get("detail"), "main_web_readiness": readiness})
     first = True
     loop_n = 0
     while True:
@@ -260,7 +278,7 @@ def main() -> None:
                     payload["timeout_sec"] = timeout
                     payload["fast_response"] = True
                     status, body = post_json(url, payload, timeout=timeout)
-                    body_prefix = body[:1000].replace("\n", " ")
+                    body_prefix = brief_body(body, 1000)
                     catchup_sleep_sec = market_open_catchup_sleep_sec(body, interval)
                     fast_recheck_sleep_sec = fast_no_trade_recheck_sleep_sec(body, interval)
                     if fast_recheck_sleep_sec is not None:
@@ -296,13 +314,28 @@ def main() -> None:
                         err_body = e.read().decode("utf-8", errors="replace")
                     except Exception:
                         err_body = ""
-                    body_prefix = err_body[:1000].replace("\n", " ")
+                    body_prefix = brief_body(err_body, 240)
+                    transient_status = transient_main_web_status(e)
+                    if transient_status:
+                        state["main_unavailable_total"] += 1
+                        state["main_unavailable_today"] += 1
+                        state["last_main_unavailable_utc"] = ts_utc()
+                        state["last_error"] = ""
+                        transient_main_web["suppress_until"] = time.monotonic() + transient_backoff_sec
+                        transient_main_web["status"] = transient_status
+                        transient_main_web["last_utc"] = state["last_main_unavailable_utc"]
+                        state["market_open_catchup_sleep_sec"] = transient_backoff_sec
+                        log(f"scan_dispatch_deferred loop={loop_n} attempt={attempt}/{retries} reason={reason} status={e.code} retry_in_sec={transient_backoff_sec}")
+                        if attempt >= retries:
+                            break
+                        time.sleep(min(startup_retry_delay_sec, transient_backoff_sec))
+                        continue
                     state["failure_total"] += 1
                     state["failure_today"] += 1
                     state["consecutive_failures"] += 1
                     state["last_failure_utc"] = ts_utc()
                     state["last_error"] = f"HTTP {e.code} {e.reason}"
-                    log(f"scan_http_error loop={loop_n} attempt={attempt}/{retries} reason={reason} status={e.code} err={e.reason} body={body_prefix}")
+                    log(f"scan_http_failure loop={loop_n} attempt={attempt}/{retries} reason={reason} status={e.code} detail={e.reason} body={body_prefix}")
                     heartbeat("scan_dispatch_http_error", "http_error", {"loop": loop_n, "attempt": attempt, "retries": retries, "reason": reason, "status": e.code, "error": f"{e.reason}", "body_prefix": body_prefix, "scan_attempt_id": scan_attempt_id})
                 except Exception as e:
                     state["failure_total"] += 1
