@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-540-unified-selected-candidate-consumer-submit-trace-source-sync"
+PATCH_VERSION = "patch-541-non-actionable-candidate-cache-rejection-runtime-budget-scan-abort-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3548,6 +3548,63 @@ def _p475_normalize_scan_truth_contract(scan: dict | None, source: str = "") -> 
     row["summary"] = summary
     return row
 
+def _p541_non_actionable_candidate_scan_truth(scan: dict | None) -> dict:
+    row = dict(scan or {})
+    summary = dict(row.get("summary") or {})
+    truth = _p475_scan_candidate_bearing_truth(row)
+    reason = str(row.get("reason") or summary.get("scan_reason") or "").strip()
+    scanned = int(row.get("scanned") or truth.get("symbols_eval_total") or 0)
+    signals = int(row.get("signals") or summary.get("signals") or 0)
+    would_trade = int(row.get("would_trade") or summary.get("would_trade") or 0)
+    eligible_total = int(truth.get("eligible_total") or 0)
+    selected_total = int(truth.get("selected_total") or 0)
+    candidates_total = int(truth.get("candidates_total") or 0)
+    over_budget = bool(_p464_scan_over_runtime_budget(row))
+    tiny_scan = bool(0 < scanned <= 5)
+    no_actionable_payload = bool(
+        eligible_total <= 0
+        and selected_total <= 0
+        and signals <= 0
+        and would_trade <= 0
+    )
+    non_actionable_cache = bool(
+        no_actionable_payload
+        and candidates_total > 0
+        and (
+            tiny_scan
+            or over_budget
+            or reason in {"scan_runtime_budget_exceeded", "background_scan_runtime_budget_exceeded"}
+        )
+    )
+    non_actionable_partial = bool(
+        no_actionable_payload
+        and tiny_scan
+        and reason in {"partial_scan_completed", "scan_runtime_budget_exceeded", "background_scan_runtime_budget_exceeded"}
+    )
+    reject_as_effective_candidate_truth = bool(non_actionable_cache or non_actionable_partial)
+    return {
+        "enabled": True,
+        "reason": reason or None,
+        "scanned": scanned,
+        "tiny_scan": bool(tiny_scan),
+        "over_budget": bool(over_budget),
+        "signals": signals,
+        "would_trade": would_trade,
+        "candidates_total": candidates_total,
+        "eligible_total": eligible_total,
+        "selected_total": selected_total,
+        "no_actionable_payload": bool(no_actionable_payload),
+        "non_actionable_cache": bool(non_actionable_cache),
+        "non_actionable_partial": bool(non_actionable_partial),
+        "reject_as_effective_candidate_truth": bool(reject_as_effective_candidate_truth),
+        "actionable_for_trading": not bool(reject_as_effective_candidate_truth),
+        "recommended_action": (
+            "do_not_replace_last_trade_scan_with_non_actionable_partial"
+            if reject_as_effective_candidate_truth
+            else "candidate_scan_can_be_considered"
+        ),
+    }
+
 
 def _p473_scan_has_atomic_candidate_truth(scan: dict | None) -> bool:
     scan = dict(scan or {})
@@ -3561,6 +3618,8 @@ def _p473_scan_has_atomic_candidate_truth(scan: dict | None) -> bool:
     )
 
     truth = _p475_scan_candidate_bearing_truth(scan)
+    if bool(_p541_non_actionable_candidate_scan_truth(scan).get("reject_as_effective_candidate_truth")):
+        return False
     return bool(published and truth.get("candidate_bearing"))
 
 
@@ -3821,6 +3880,10 @@ def _p481_fast_payload_scan_fallback(limit: int = 25) -> dict:
             "top_candidates": rows[:25],
         },
     }
+    p541_truth = _p541_non_actionable_candidate_scan_truth(scan)
+    if bool(p541_truth.get("reject_as_effective_candidate_truth")):
+        scan["p541_non_actionable_candidate_scan_truth"] = dict(p541_truth)
+        return {}
     return _p475_normalize_scan_truth_contract(scan, source="fast_payload_candidate_fallback")
 
 def _p481_candidate_cache_scan_fallback() -> dict:
@@ -3874,6 +3937,10 @@ def _p481_candidate_cache_scan_fallback() -> dict:
             "top_candidates": rows[:25],
         },
     }
+    p541_truth = _p541_non_actionable_candidate_scan_truth(scan)
+    if bool(p541_truth.get("reject_as_effective_candidate_truth")):
+        scan["p541_non_actionable_candidate_scan_truth"] = dict(p541_truth)
+        return {}
     return _p475_normalize_scan_truth_contract(scan, source="candidate_cache_fallback")
 
 def _p481_candidate_history_scan_fallback() -> dict:
@@ -3910,6 +3977,10 @@ def _p481_candidate_history_scan_fallback() -> dict:
             "top_candidates": rows[:25],
         },
     }
+    p541_truth = _p541_non_actionable_candidate_scan_truth(scan)
+    if bool(p541_truth.get("reject_as_effective_candidate_truth")):
+        scan["p541_non_actionable_candidate_scan_truth"] = dict(p541_truth)
+        return {}
     return _p475_normalize_scan_truth_contract(scan, source="candidate_history_fallback")
 
 
@@ -3942,6 +4013,8 @@ def _p481_last_candidate_bearing_scan() -> dict:
     for row in candidates:
         row = _p464_sanitize_persisted_over_budget_scan(dict(row or {}), source="p481_last_candidate_bearing_scan")
         row = _p475_normalize_scan_truth_contract(row, source="p481_last_candidate_bearing_scan")
+        if bool(_p541_non_actionable_candidate_scan_truth(row).get("reject_as_effective_candidate_truth")):
+            continue
         if bool(_p538_tiny_no_candidate_partial_truth(row).get("tiny_partial_non_actionable")):
             continue
         truth = _p475_scan_candidate_bearing_truth(row)
@@ -4028,9 +4101,16 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
 
     last_candidate_raw = _p481_last_candidate_bearing_scan()
     p538_raw_candidate_truth = _p538_tiny_no_candidate_partial_truth(last_candidate_raw)
-    last_candidate = {} if bool(p538_raw_candidate_truth.get("tiny_partial_non_actionable")) else dict(last_candidate_raw or {})
+    p541_raw_candidate_truth = _p541_non_actionable_candidate_scan_truth(last_candidate_raw)
+    last_candidate = (
+        {}
+        if bool(p538_raw_candidate_truth.get("tiny_partial_non_actionable"))
+        or bool(p541_raw_candidate_truth.get("reject_as_effective_candidate_truth"))
+        else dict(last_candidate_raw or {})
+    )
     candidate_truth = _p475_scan_candidate_bearing_truth(last_candidate) if last_candidate else {}
     p538_partial_truth = _p538_tiny_no_candidate_partial_truth(raw, last_candidate)
+    p541_partial_truth = _p541_non_actionable_candidate_scan_truth(raw)
 
     raw_is_skip = bool(
         raw.get("skipped")
@@ -4046,6 +4126,7 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
             raw_is_skip
             or not bool(raw_truth.get("trade_judgable"))
             or bool(p538_partial_truth.get("preserve_candidate_bearing_scan"))
+            or bool(p541_partial_truth.get("reject_as_effective_candidate_truth"))
         )
     )
 
@@ -4063,6 +4144,7 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
         use_candidate and p538_partial_truth.get("preserve_candidate_bearing_scan")
     )
     effective["_p538_partial_scan_preservation_truth"] = dict(p538_partial_truth)
+    effective["_p541_non_actionable_candidate_scan_truth"] = dict(p541_partial_truth)
     effective["_p481_raw_latest_scan"] = _p481_scan_brief(raw)
     effective["_p481_last_candidate_bearing_scan"] = _p481_scan_brief(last_candidate)
     effective["_p481_effective_trade_scan"] = _p481_scan_brief(effective)
@@ -4079,6 +4161,10 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
         raw_latest_reason=raw_reason,
     )
     contract["p538_partial_scan_preservation_truth"] = dict(p538_partial_truth)
+    contract["p541_non_actionable_candidate_scan_truth"] = dict(p541_partial_truth)
+    contract["non_actionable_candidate_cache_rejected"] = bool(
+        p541_partial_truth.get("reject_as_effective_candidate_truth")
+    )
     contract["tiny_partial_no_candidate_does_not_replace_candidate_truth"] = bool(
         use_candidate and p538_partial_truth.get("preserve_candidate_bearing_scan")
     )
@@ -42961,6 +43047,12 @@ def _p298_scanner_light() -> dict:
     latest_scan["p538_partial_scan_preservation_truth"] = dict(
         (latest_scan.get("_p481_canonical_scan_truth") or {}).get("p538_partial_scan_preservation_truth") or {}
     )
+    latest_scan["p541_non_actionable_candidate_scan_truth"] = dict(
+        (latest_scan.get("_p481_canonical_scan_truth") or {}).get("p541_non_actionable_candidate_scan_truth") or {}
+    )
+    latest_scan["non_actionable_candidate_cache_rejected"] = bool(
+        (latest_scan.get("_p481_canonical_scan_truth") or {}).get("non_actionable_candidate_cache_rejected")
+    )
     latest_scan["tiny_partial_no_candidate_does_not_replace_candidate_truth"] = bool(
         (latest_scan.get("_p481_canonical_scan_truth") or {}).get("tiny_partial_no_candidate_does_not_replace_candidate_truth")
     )
@@ -42976,6 +43068,12 @@ def _p298_scanner_light() -> dict:
     summary["p481_canonical_scan_truth"] = dict(latest_scan.get("_p481_canonical_scan_truth") or {})
     summary["p538_partial_scan_preservation_truth"] = dict(
         summary["p481_canonical_scan_truth"].get("p538_partial_scan_preservation_truth") or {}
+    )
+    summary["p541_non_actionable_candidate_scan_truth"] = dict(
+        summary["p481_canonical_scan_truth"].get("p541_non_actionable_candidate_scan_truth") or {}
+    )
+    summary["non_actionable_candidate_cache_rejected"] = bool(
+        summary["p481_canonical_scan_truth"].get("non_actionable_candidate_cache_rejected")
     )
     summary["tiny_partial_no_candidate_does_not_replace_candidate_truth"] = bool(
         summary["p481_canonical_scan_truth"].get("tiny_partial_no_candidate_does_not_replace_candidate_truth")
