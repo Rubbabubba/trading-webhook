@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-535-worker-exit-status-fast-default-heavy-opt-in"
+PATCH_VERSION = "patch-536-eligible-candidate-fallback-selection-revalidation-finalizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17005,12 +17005,34 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         preserve_symbols=p524_terminal_evidence_symbols,
     )
     p524_stale_selected_symbols = set(p524_selection_revalidation.get("stale_symbols") or [])
+    p536_fallback_selection = {
+        "applied": False,
+        "reason": "selected_symbols_remained_valid_or_no_fallback_needed",
+        "selected_symbols": [],
+        "selected_rows": [],
+    }
     if p524_stale_selected_symbols:
         selected_symbols = [sym for sym in selected_symbols if sym not in p524_stale_selected_symbols]
         production_selected_symbols = [
             sym for sym in production_selected_symbols
             if sym not in p524_stale_selected_symbols
         ]
+    if eligible_new_entry_rows and not production_selected_symbols:
+        p536_fallback_selection = _p536_fallback_selected_symbols_from_eligible_rows(
+            current_candidate_truth,
+            max_symbols=max(1, min(
+                int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
+                int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
+            )),
+            blocked_symbols=_dedupe_keep_order(
+                list(p524_terminal_evidence_symbols)
+                + list(p524_stale_selected_symbols)
+            ),
+            reason="selected_rebuilt_after_revalidation_scrubbed_stale_symbols",
+        )
+        if p536_fallback_selection.get("applied"):
+            production_selected_symbols = list(p536_fallback_selection.get("selected_symbols") or [])
+            selected_symbols = list(production_selected_symbols)
 
     submit_gap_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
@@ -17159,6 +17181,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "missing_submit_symbols": missing_submit_symbols,
             "p524_selection_revalidation": p524_selection_revalidation,
             "stale_revalidated_blocked_symbols": list(p524_stale_selected_symbols),
+            "p536_fallback_selection": dict(p536_fallback_selection),
         },
         "active_capture_truth": {
             "active_symbols": active_symbols,
@@ -42329,11 +42352,32 @@ def _p298_selected_submission_truth_light() -> dict:
         preserve_symbols=_dedupe_keep_order(list(submit_rows.keys()) + list(open_symbols)),
     )
     p524_stale_selected_symbols = set(p524_selection_revalidation.get("stale_symbols") or [])
+    p536_fallback_selection = {
+        "applied": False,
+        "reason": "selected_symbols_remained_valid_or_no_fallback_needed",
+        "selected_symbols": [],
+        "selected_rows": [],
+    }
     if p524_stale_selected_symbols:
         selected_symbols = [
             sym for sym in selected_symbols
             if sym not in p524_stale_selected_symbols
         ]
+    if not selected_symbols:
+        p536_fallback_selection = _p536_fallback_selected_symbols_from_eligible_rows(
+            current_candidate_truth,
+            max_symbols=max(1, min(
+                int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
+                int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
+            )),
+            blocked_symbols=_dedupe_keep_order(
+                list(open_symbols)
+                + list(p524_stale_selected_symbols)
+            ),
+            reason="selected_submission_truth_rebuilt_from_current_eligible_rows",
+        )
+        if p536_fallback_selection.get("applied"):
+            selected_symbols = list(p536_fallback_selection.get("selected_symbols") or [])
 
     rows = []
     for sym in selected_symbols:
@@ -42567,6 +42611,7 @@ def _p298_selected_submission_truth_light() -> dict:
     out["p524_selection_revalidation"] = p524_selection_revalidation
     out["stale_revalidated_blocked_symbols"] = list(p524_stale_selected_symbols)
     out["stale_revalidated_blocked_count"] = len(p524_stale_selected_symbols)
+    out["p536_fallback_selection"] = dict(p536_fallback_selection)
     out["eligible_new_entry_truth"] = {
         "count": len(eligible_new_entry_symbols),
         "symbols": eligible_new_entry_symbols,
@@ -42599,6 +42644,8 @@ def _p298_selected_submission_truth_light() -> dict:
         out["recommended_action"] = "selected_symbols_have_actual_submit_side_effect"
     elif after_hours_selected_symbols:
         out["recommended_action"] = "after_hours_selected_not_submitted_monitor_next_open"
+    elif p536_fallback_selection.get("applied"):
+        out["recommended_action"] = "selected_candidate_needs_submit_truth"
     elif p524_stale_selected_symbols and not selected_symbols:
         out["recommended_action"] = "stale_selected_candidate_revalidated_blocked"
     elif eligible_new_entry_symbols and not selected_symbols:
@@ -42686,7 +42733,27 @@ def _p298_scanner_light() -> dict:
     )
     p525_active_selected_symbols = list(p525_selection_revalidation.get("active_symbols") or [])
     p525_stale_selected_symbols = list(p525_selection_revalidation.get("stale_symbols") or [])
+    p536_scanner_fallback_selection = {
+        "applied": False,
+        "reason": "selected_symbols_remained_valid_or_no_fallback_needed",
+        "selected_symbols": [],
+        "selected_rows": [],
+    }
     if p525_stale_selected_symbols:
+        p536_scanner_fallback_selection = _p536_fallback_selected_symbols_from_eligible_rows(
+            p525_current_candidate_truth,
+            max_symbols=max(1, min(
+                int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
+                int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
+            )),
+            blocked_symbols=_dedupe_keep_order(
+                list(p525_terminal_evidence_symbols)
+                + list(p525_stale_selected_symbols)
+            ),
+            reason="scanner_light_rebuilt_selection_after_revalidation_scrubbed_stale_symbols",
+        )
+        if p536_scanner_fallback_selection.get("applied"):
+            p525_active_selected_symbols = list(p536_scanner_fallback_selection.get("selected_symbols") or [])
         for target in (summary, latest_scan):
             target["p525_scanner_selection_revalidation"] = dict(p525_selection_revalidation)
             target["stale_revalidated_blocked_symbols"] = list(p525_stale_selected_symbols)
@@ -42695,6 +42762,7 @@ def _p298_scanner_light() -> dict:
             target["production_contract_selected_symbols"] = list(p525_active_selected_symbols)
             target["selected_total"] = len(p525_active_selected_symbols)
             target["would_trade"] = len(p525_active_selected_symbols)
+            target["p536_fallback_selection"] = dict(p536_scanner_fallback_selection)
             target["selected_submit_gap_symbols"] = [
                 sym for sym in list(target.get("selected_submit_gap_symbols") or [])
                 if str(sym or "").strip().upper() not in set(p525_stale_selected_symbols)
@@ -56094,6 +56162,70 @@ def _p524_revalidate_current_selected_symbols(
         "preserved_symbols": _dedupe_keep_order(list(preserve_set)),
     }
 
+def _p536_fallback_selected_symbols_from_eligible_rows(
+    current_candidate_truth: dict | None,
+    *,
+    max_symbols: int = 1,
+    blocked_symbols: list[str] | tuple[str, ...] | set[str] | None = None,
+    reason: str = "",
+) -> dict:
+    blocked_set = {
+        str(sym or "").strip().upper()
+        for sym in list(blocked_symbols or [])
+        if str(sym or "").strip()
+    }
+    rows = []
+    for row in _p413_eligible_new_entry_rows_from_fast_payload(current_candidate_truth):
+        item = dict(row or {})
+        sym = str(item.get("symbol") or "").strip().upper()
+        if not sym or sym in blocked_set:
+            continue
+        rejection_reasons = [
+            str(r or "").strip()
+            for r in list(item.get("rejection_reasons") or item.get("reasons") or [])
+            if str(r or "").strip()
+        ]
+        selection_blockers = [
+            str(r or "").strip()
+            for r in list(item.get("selection_blockers") or item.get("blocking_reasons") or [])
+            if str(r or "").strip()
+        ]
+        if rejection_reasons or selection_blockers:
+            continue
+        item["selected"] = True
+        item["selected_source"] = item.get("selected_source") or "p536_eligible_fallback_selection"
+        item["selection_finalizer"] = "p536_revalidation_non_empty_finalizer"
+        rows.append(item)
+
+    rows.sort(
+        key=lambda row: (
+            float(_safe_float(row.get("rank_score"), 0.0)),
+            float(_safe_float(row.get("selection_quality_score"), 0.0)),
+            float(_safe_float((row.get("target_path_profit") or {}).get("score") or row.get("target_path_score"), 0.0)),
+        ),
+        reverse=True,
+    )
+    limit = max(0, int(max_symbols or 0))
+    selected_rows = rows[:limit]
+    selected_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in selected_rows
+        if str(row.get("symbol") or "").strip()
+    ])
+    return {
+        "applied": bool(selected_symbols),
+        "reason": reason or (
+            "selected_rebuilt_from_current_eligible_rows"
+            if selected_symbols
+            else "no_rejection_free_eligible_rows_available"
+        ),
+        "max_symbols": limit,
+        "blocked_symbols": _dedupe_keep_order(list(blocked_set)),
+        "selected_symbols": selected_symbols,
+        "selected_rows": selected_rows,
+        "eligible_candidates_considered": len(rows),
+    }
+
 def _p409_current_near_miss_rows(limit: int = 25) -> list[dict]:
     payload = _p406_fast_current_candidate_payload(limit=limit)
     rows = [
@@ -56647,6 +56779,12 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         ],
     )
     p526_stale_selected_symbols = list(p526_selection_revalidation.get("stale_symbols") or [])
+    p536_fallback_selection = {
+        "applied": False,
+        "reason": "selected_symbols_remained_valid_or_no_fallback_needed",
+        "selected_symbols": [],
+        "selected_rows": [],
+    }
     if p526_stale_selected_symbols:
         active_selected_symbols = list(p526_selection_revalidation.get("active_symbols") or [])
         selected_context = dict(selected_context)
@@ -56655,6 +56793,30 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         selected_context["selected_total"] = len(active_selected_symbols)
         selected_context["stale_revalidated_blocked_symbols"] = p526_stale_selected_symbols
         selected_context["selection_echo_removed"] = True
+    if eligible_rows_all and not selected_context.get("selected_symbols"):
+        p536_fallback_selection = _p536_fallback_selected_symbols_from_eligible_rows(
+            {"eligible_new_entry_rows_all": eligible_rows_all, "candidate_rows": fast_rows_all},
+            max_symbols=max(1, min(
+                int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
+                int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
+            )),
+            blocked_symbols=_dedupe_keep_order([
+                *[
+                    str(sym or "").strip().upper()
+                    for sym, plan in dict(TRADE_PLAN or {}).items()
+                    if str(sym or "").strip()
+                    and isinstance(plan, dict)
+                    and (bool(plan.get("active")) or _plan_is_pending_entry(plan))
+                ],
+                *p526_stale_selected_symbols,
+            ]),
+            reason="current_candidate_truth_rebuilt_from_eligible_contract_rows",
+        )
+        if p536_fallback_selection.get("applied"):
+            selected_context = dict(selected_context)
+            selected_context["selected_symbols"] = list(p536_fallback_selection.get("selected_symbols") or [])
+            selected_context["selected_total"] = len(selected_context.get("selected_symbols") or [])
+            selected_context["p536_fallback_selection_applied"] = True
 
     stale_scan_blocks_action = bool(
         (
@@ -56744,6 +56906,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "selected_symbols_before_p526_revalidation": list(selected_context.get("selected_symbols_before_p526_revalidation") or []),
         "stale_revalidated_blocked_symbols": list(selected_context.get("stale_revalidated_blocked_symbols") or []),
         "p526_selection_revalidation": dict(p526_selection_revalidation),
+        "p536_fallback_selection": dict(p536_fallback_selection),
         "raw_selected_total": int(selected_context.get("raw_selected_total") or 0),
         "raw_selected_symbols": list(selected_context.get("raw_selected_symbols") or []),
         "open_position_selected_total": int(selected_context.get("open_position_selected_total") or 0),
