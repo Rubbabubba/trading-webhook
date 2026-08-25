@@ -2973,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-546-scanner-pre-eval-heavy-guard-deferral-candidate-eval-first-publish"
+PATCH_VERSION = "patch-547-selection-complete-terminal-publish-submit-snapshot-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17024,6 +17024,12 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     latest_scan = dict(latest_scan or LAST_SCAN or {})
     summary = dict((latest_scan or {}).get("summary") or summary or {})
     p481_canonical_scan_truth = dict((latest_scan or {}).get("_p481_canonical_scan_truth") or {})
+    p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+    p547_selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p547_selection_snapshot.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
     p540_selected_consumer_truth = {}
     try:
         p540_selected_consumer_truth = dict(_p298_selected_submission_truth_light() or {})
@@ -17045,12 +17051,12 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
 
     selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
-        for sym in list(summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
+        for sym in list(p547_selected_symbols or summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
         if str(sym or "").strip()
     ])
     production_selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
-        for sym in list(summary.get("production_contract_selected_symbols") or latest_scan.get("production_contract_selected_symbols") or selected_symbols)
+        for sym in list(p547_selected_symbols or summary.get("production_contract_selected_symbols") or latest_scan.get("production_contract_selected_symbols") or selected_symbols)
         if str(sym or "").strip()
     ])
     p540_consumer_selected_symbols = _dedupe_keep_order([
@@ -17063,13 +17069,23 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             sym for sym in p540_consumer_selected_symbols
             if sym in requested_symbols
         ]
-    if p540_consumer_selected_symbols and p540_consumer_selected_symbols != production_selected_symbols:
+    if (
+        p540_consumer_selected_symbols
+        and p540_consumer_selected_symbols != production_selected_symbols
+        and not p547_selected_symbols
+    ):
         selected_symbols = list(p540_consumer_selected_symbols)
         production_selected_symbols = list(p540_consumer_selected_symbols)
 
     submit_rows_all = [
         dict(row or {})
-        for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or latest_scan.get("would_submit") or [])
+        for row in list(
+            p547_selection_snapshot.get("submit_rows")
+            or summary.get("selected_submission_rows")
+            or summary.get("would_submit")
+            or latest_scan.get("would_submit")
+            or []
+        )
         if isinstance(row, dict)
     ]
     if not submit_rows_all:
@@ -17120,7 +17136,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     candidate_snapshot_rows = [
         dict(row or {})
         for row in list(
-            summary.get("candidate_rows_for_truth")
+            p547_selection_snapshot.get("selected_rows")
+            or summary.get("selected_candidate_rows_for_truth")
+            or summary.get("candidate_rows_for_truth")
             or summary.get("candidate_rows")
             or summary.get("top_new_entry_candidates")
             or summary.get("candidates")
@@ -17129,6 +17147,26 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         )
         if isinstance(row, dict)
     ]
+    if p547_selection_snapshot.get("selected_rows"):
+        existing_candidate_symbols = {
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in candidate_snapshot_rows
+            if str((row or {}).get("symbol") or "").strip()
+        }
+        for row in list(
+            summary.get("candidate_rows_for_truth")
+            or summary.get("candidate_rows")
+            or summary.get("top_new_entry_candidates")
+            or summary.get("candidates")
+            or LAST_SWING_CANDIDATES
+            or []
+        ):
+            if not isinstance(row, dict):
+                continue
+            sym = str((row or {}).get("symbol") or "").strip().upper()
+            if sym and sym not in existing_candidate_symbols:
+                candidate_snapshot_rows.append(dict(row or {}))
+                existing_candidate_symbols.add(sym)
     if p540_consumer_fallback_rows:
         existing_candidate_symbols = {
             str((row or {}).get("symbol") or "").strip().upper()
@@ -17345,6 +17383,13 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "read_only": True,
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
         "p481_canonical_scan_truth": p481_canonical_scan_truth,
+        "p547_selection_submit_snapshot": {
+            "source_stage": p547_selection_snapshot.get("source_stage"),
+            "selected_count": len(p547_selected_symbols),
+            "selected_symbols": list(p547_selected_symbols),
+            "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or 0),
+            "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced")),
+        },
         "p484_candidate_eval_module": swing_candidate_eval_module_status(
             patch_version=PATCH_VERSION
         ),
@@ -17395,6 +17440,11 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "selected_opportunity_truth": {
             "raw_selected_count": len(production_selected_symbols),
             "raw_selected_symbols": production_selected_symbols,
+            "selection_source": (
+                "p547_selection_submit_snapshot"
+                if p547_selected_symbols
+                else "legacy_summary_or_consumer"
+            ),
             "p540_selected_consumer_sync": {
                 "enabled": True,
                 "consumer_ok": bool(p540_selected_consumer_truth.get("ok")),
@@ -27824,6 +27874,12 @@ def _p402_stage_checkpoint(stage: str, **details) -> dict:
                     SWING_SCAN_BACKGROUND_COMPLETION["stage_utc"] = row["ts_utc"]
                     SWING_SCAN_BACKGROUND_COMPLETION["updated_utc"] = row["ts_utc"]
                     SWING_SCAN_BACKGROUND_COMPLETION["boot_id"] = SYSTEM_BOOT_ID
+                    if row["stage"] == "selection_complete":
+                        SWING_SCAN_BACKGROUND_COMPLETION["candidate_truth_terminal"] = True
+                        SWING_SCAN_BACKGROUND_COMPLETION["candidate_truth_terminal_utc"] = row["ts_utc"]
+                        SWING_SCAN_BACKGROUND_COMPLETION["candidate_truth_selected_symbols"] = list(
+                            details_dict.get("selected_symbols") or []
+                        )
         except Exception:
             pass
         return dict(row)
@@ -28048,6 +28104,9 @@ def _p456_background_scan_truth() -> dict:
         "reason": state.get("reason"),
         "stage": state.get("stage"),
         "stage_details": state.get("stage_details"),
+        "candidate_truth_terminal": bool(state.get("candidate_truth_terminal")),
+        "candidate_truth_terminal_utc": state.get("candidate_truth_terminal_utc"),
+        "candidate_truth_selected_symbols": list(state.get("candidate_truth_selected_symbols") or []),
         "effective_dry_run": state.get("effective_dry_run"),
         "effective_dry_run_reason": state.get("effective_dry_run_reason"),
         "dry_run_truth": state.get("dry_run_truth"),
@@ -28094,6 +28153,86 @@ def _p456_mark_background_scan(**updates) -> dict:
         except Exception:
             pass
     return snapshot
+
+def _p547_selection_submit_snapshot(
+    *,
+    selected_rows: list | None = None,
+    candidate_rows: list | None = None,
+    approved_rows: list | None = None,
+    submit_rows: list | None = None,
+    source_stage: str = "selection_complete",
+) -> dict:
+    selected_source_rows = [
+        dict(row or {})
+        for row in list(selected_rows or [])
+        if isinstance(row, dict)
+    ]
+    if not selected_source_rows:
+        selected_source_rows = [
+            dict(row or {})
+            for row in list(candidate_rows or [])
+            if isinstance(row, dict) and bool((row or {}).get("selected"))
+        ]
+
+    selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in selected_source_rows
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    approved_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(approved_rows or [])
+        if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
+    ])
+    submit_source_rows = [
+        dict(row or {})
+        for row in list(submit_rows or [])
+        if isinstance(row, dict)
+    ]
+    submit_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_source_rows
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    attempted_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_source_rows
+        if str((row or {}).get("symbol") or "").strip()
+        and bool((row or {}).get("submit_attempted"))
+    ])
+    side_effect_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_source_rows
+        if str((row or {}).get("symbol") or "").strip()
+        and bool((row or {}).get("actual_submit_side_effect"))
+    ])
+    submit_gap_symbols = _dedupe_keep_order([
+        sym for sym in selected_symbols
+        if sym not in set(submit_symbols)
+        or (sym not in set(side_effect_symbols) and sym not in set(attempted_symbols))
+    ])
+
+    return {
+        "enabled": True,
+        "patch_version": PATCH_VERSION,
+        "source": "p547_selection_submit_snapshot",
+        "source_stage": str(source_stage or "selection_complete"),
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "selected_count": len(selected_symbols),
+        "selected_symbols": list(selected_symbols),
+        "selected_rows": selected_source_rows[:25],
+        "approved_count": len(approved_symbols),
+        "approved_symbols": list(approved_symbols),
+        "submit_row_count": len(submit_symbols),
+        "submit_symbols": list(submit_symbols),
+        "attempted_symbols": list(attempted_symbols),
+        "actual_submit_side_effect_symbols": list(side_effect_symbols),
+        "submit_gap_symbols": list(submit_gap_symbols),
+        "submit_gap_count": len(submit_gap_symbols),
+        "submit_rows": submit_source_rows[:25],
+        "terminal_candidate_truth": True,
+        "submit_truth_synced": bool(submit_source_rows),
+    }
 
 def _p461_background_scan_lost_after_restart_recovered(state: dict | None = None) -> bool:
     row = dict(state or SWING_SCAN_BACKGROUND_COMPLETION or {})
@@ -31351,6 +31490,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     def _p468_compact_scan_summary(extra: dict | None = None) -> dict:
         selected_symbols = _p468_selected_symbols()
         approved_symbols = _p468_approved_symbols()
+        p547_selection_snapshot = _p547_selection_submit_snapshot(
+            selected_rows=selected,
+            candidate_rows=candidates,
+            approved_rows=approved,
+            source_stage="selection_complete",
+        )
         partial_scan = bool(
             p402_fetch_truth.get("stopped_for_budget")
             or p402_eval_truth.get("stopped_for_budget")
@@ -31516,6 +31661,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "selected_total": len(selected_symbols),
             "selected_symbols": list(selected_symbols),
             "production_contract_selected_symbols": list(selected_symbols),
+            "p547_selection_submit_snapshot": dict(p547_selection_snapshot),
+            "selected_candidate_rows_for_truth": list(p547_selection_snapshot.get("selected_rows") or []),
             "approved_symbols": list(approved_symbols),
             "swing_production_reset": {
                 "enabled": bool(SWING_PRODUCTION_RESET_ENABLED),
@@ -31804,6 +31951,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             and sym not in set(p522_rate_limited_retry_symbols)
         )
     ])
+    p547_post_submit_snapshot = _p547_selection_submit_snapshot(
+        selected_rows=selected,
+        candidate_rows=candidates,
+        approved_rows=approved,
+        submit_rows=would_submit,
+        source_stage="submit_complete",
+    )
     summary.update({
         "scan_truth_phase": "post_submit_terminal_truth",
         "p522_submit_terminal_publish": {
@@ -31818,6 +31972,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "selected_total": len(p522_selected_symbols_for_summary),
         "selected_symbols": list(p522_selected_symbols_for_summary),
         "production_contract_selected_symbols": list(p522_selected_symbols_for_summary),
+        "p547_selection_submit_snapshot": dict(p547_post_submit_snapshot),
+        "selected_candidate_rows_for_truth": list(p547_post_submit_snapshot.get("selected_rows") or []),
         "selected_submission_rows": list(would_submit or []),
         "would_submit": list(would_submit or []),
         "actual_submit_side_effect_symbols": list(p522_actual_submit_symbols),
@@ -32463,6 +32619,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     summary["selected_total"] = len(selected_symbols_for_summary)
     summary["selected_symbols"] = selected_symbols_for_summary
     summary["production_contract_selected_symbols"] = list(production_submit_bridge.get("selected_symbols") or [])
+    summary["p547_selection_submit_snapshot"] = _p547_selection_submit_snapshot(
+        selected_rows=selected,
+        candidate_rows=candidates,
+        approved_rows=approved,
+        submit_rows=would_submit,
+        source_stage="final_scan_summary",
+    )
+    summary["selected_candidate_rows_for_truth"] = list(
+        (summary.get("p547_selection_submit_snapshot") or {}).get("selected_rows") or []
+    )
     summary["selected_submit_bridge"] = production_submit_bridge
     summary["selected_submission_rows"] = list(would_submit or [])
     summary["would_submit"] = list(would_submit or [])
@@ -43127,16 +43293,29 @@ def _p520_lifecycle_rate_limit_event(lifecycle_matches: list | None) -> dict:
 def _p298_selected_submission_truth_light() -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan, summary, p330_after_hours_truth = _p330_preserved_selected_submission_summary(latest_scan, summary)
+    p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+    p547_selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p547_selection_snapshot.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
 
     lifecycle_items = _p298_recent_lifecycle_items(limit=100)
     selected_symbols = _p298_selected_symbols_light(summary, lifecycle_items)
+    if p547_selected_symbols:
+        selected_symbols = list(p547_selected_symbols)
 
     p330_filled_plan_backfill_symbols = _p330_filled_plan_execution_backfill_symbols()
     selected_symbols = _dedupe_keep_order(list(selected_symbols or []) + p330_filled_plan_backfill_symbols)
 
     submit_rows = {
         str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
-        for row in list(summary.get("selected_submission_rows") or summary.get("would_submit") or [])
+        for row in list(
+            p547_selection_snapshot.get("submit_rows")
+            or summary.get("selected_submission_rows")
+            or summary.get("would_submit")
+            or []
+        )
         if str((row or {}).get("symbol") or "").strip()
     }
     current_candidate_truth = _p406_fast_current_candidate_payload(limit=100)
@@ -43145,6 +43324,12 @@ def _p298_selected_submission_truth_light() -> dict:
         for row in list(current_candidate_truth.get("candidate_rows") or [])
         if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
     }
+    for row in list(p547_selection_snapshot.get("selected_rows") or []):
+        if not isinstance(row, dict):
+            continue
+        sym = str((row or {}).get("symbol") or "").strip().upper()
+        if sym:
+            current_candidate_by_symbol[sym] = dict(row or {})
 
     open_symbols = set(_p404_active_position_symbols_light())
     raw_selected_symbols_before_echo_suppression = list(selected_symbols)
@@ -43168,7 +43353,9 @@ def _p298_selected_submission_truth_light() -> dict:
     p524_selection_revalidation = _p524_revalidate_current_selected_symbols(
         selected_symbols,
         current_candidate_truth,
-        preserve_symbols=_dedupe_keep_order(list(submit_rows.keys()) + list(open_symbols)),
+        preserve_symbols=_dedupe_keep_order(
+            list(submit_rows.keys()) + list(open_symbols) + list(p547_selected_symbols)
+        ),
     )
     p524_stale_selected_symbols = set(p524_selection_revalidation.get("stale_symbols") or [])
     p536_fallback_selection = {
@@ -43408,6 +43595,18 @@ def _p298_selected_submission_truth_light() -> dict:
     )
     eligible_new_entry_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(current_candidate_truth)
 
+    out["p547_selection_submit_snapshot"] = {
+        "source_stage": p547_selection_snapshot.get("source_stage"),
+        "selected_count": len(p547_selected_symbols),
+        "selected_symbols": list(p547_selected_symbols),
+        "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or 0),
+        "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced")),
+    }
+    out["selection_source"] = (
+        "p547_selection_submit_snapshot"
+        if p547_selected_symbols
+        else "legacy_summary_or_lifecycle"
+    )
     out["p330_after_hours_truth"] = p330_after_hours_truth
     out["p330_filled_plan_backfill_symbols"] = p330_filled_plan_backfill_symbols
     out["p330_filled_plan_backfill_count"] = len(p330_filled_plan_backfill_symbols)
@@ -57534,11 +57733,19 @@ def _p527_late_day_first_2k_near_miss_calibration(limit: int = 25) -> dict:
 def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
     latest_scan, summary = _p298_latest_scan_summary_light()
+    p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+    p547_selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p547_selection_snapshot.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
 
     summary_full_rows = [
         dict(row or {})
         for row in list(
-            summary.get("candidate_rows_for_truth")
+            summary.get("selected_candidate_rows_for_truth")
+            or p547_selection_snapshot.get("selected_rows")
+            or summary.get("candidate_rows_for_truth")
             or summary.get("candidates")
             or summary.get("results")
             or summary.get("items")
@@ -57546,6 +57753,25 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         )
         if isinstance(row, dict)
     ]
+    if summary.get("selected_candidate_rows_for_truth") or p547_selection_snapshot.get("selected_rows"):
+        selected_row_symbols = {
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in summary_full_rows
+            if str((row or {}).get("symbol") or "").strip()
+        }
+        for row in list(
+            summary.get("candidate_rows_for_truth")
+            or summary.get("candidates")
+            or summary.get("results")
+            or summary.get("items")
+            or []
+        ):
+            if not isinstance(row, dict):
+                continue
+            sym = str((row or {}).get("symbol") or "").strip().upper()
+            if sym and sym not in selected_row_symbols:
+                summary_full_rows.append(dict(row or {}))
+                selected_row_symbols.add(sym)
     rows_all = [
         dict(row or {})
         for row in list(LAST_SWING_CANDIDATES or [])
@@ -57586,7 +57812,11 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
     open_position_rows = open_position_rows_all[:lim]
     eligible_rows_all = [row for row in new_entry_rows_all if bool(row.get("eligible"))]
     eligible_rows = eligible_rows_all[:lim]
-    selected_context = _p405_selected_symbol_context(summary.get("selected_symbols") or [])
+    selected_context = _p405_selected_symbol_context(
+        p547_selected_symbols or summary.get("selected_symbols") or []
+    )
+    if p547_selected_symbols:
+        selected_context["selection_source"] = "p547_selection_submit_snapshot"
 
     reason_summary = _p277h_candidate_reason_counts(new_entry_rows_all)
     protective_reasons = {
