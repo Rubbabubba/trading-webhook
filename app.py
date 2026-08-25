@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-541-non-actionable-candidate-cache-rejection-runtime-budget-scan-abort-cleanup"
+PATCH_VERSION = "patch-542-current-scan-cache-rejection-scanner-status-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -37848,12 +37848,19 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
         "raw_latest_scan": dict((effective_scan or {}).get("_p480_raw_latest_scan") or {}),
     }
     payload["p481_canonical_scan_truth"] = dict((effective_scan or {}).get("_p481_canonical_scan_truth") or {})
+    payload["p542_non_actionable_candidate_cache_truth"] = dict(payload.get("p542_non_actionable_candidate_cache_truth") or {})
+    payload["non_actionable_candidate_cache_rejected"] = bool(payload.get("non_actionable_candidate_cache_rejected"))
+    payload["effective_candidate_count"] = 0 if payload["non_actionable_candidate_cache_rejected"] else int(payload.get("candidate_count") or 0)
+    payload["effective_eligible_count"] = 0 if payload["non_actionable_candidate_cache_rejected"] else int(payload.get("eligible_count") or 0)
     payload["p484_candidate_eval_module"] = swing_candidate_eval_module_status(
         patch_version=PATCH_VERSION
     )
     payload = swing_candidate_eval_attach_status(payload, patch_version=PATCH_VERSION)
 
-    if not bool(p475_effective_truth.get("trade_judgable")):
+    if bool(payload["non_actionable_candidate_cache_rejected"]):
+        payload["status"] = "scan_not_trade_judgable"
+        payload["recommended_action"] = "recover_fresh_scan_before_evaluating_candidates"
+    elif not bool(p475_effective_truth.get("trade_judgable")):
         payload["status"] = "scan_not_trade_judgable"
         payload["recommended_action"] = "wait_for_candidate_bearing_scan_completion"
     elif bool((effective_scan or {}).get("_p480_after_hours_skip_preserved")):
@@ -43050,8 +43057,11 @@ def _p298_scanner_light() -> dict:
     latest_scan["p541_non_actionable_candidate_scan_truth"] = dict(
         (latest_scan.get("_p481_canonical_scan_truth") or {}).get("p541_non_actionable_candidate_scan_truth") or {}
     )
+    if not latest_scan["p541_non_actionable_candidate_scan_truth"]:
+        latest_scan["p541_non_actionable_candidate_scan_truth"] = _p541_non_actionable_candidate_scan_truth(latest_scan)
     latest_scan["non_actionable_candidate_cache_rejected"] = bool(
         (latest_scan.get("_p481_canonical_scan_truth") or {}).get("non_actionable_candidate_cache_rejected")
+        or latest_scan["p541_non_actionable_candidate_scan_truth"].get("reject_as_effective_candidate_truth")
     )
     latest_scan["tiny_partial_no_candidate_does_not_replace_candidate_truth"] = bool(
         (latest_scan.get("_p481_canonical_scan_truth") or {}).get("tiny_partial_no_candidate_does_not_replace_candidate_truth")
@@ -43072,8 +43082,11 @@ def _p298_scanner_light() -> dict:
     summary["p541_non_actionable_candidate_scan_truth"] = dict(
         summary["p481_canonical_scan_truth"].get("p541_non_actionable_candidate_scan_truth") or {}
     )
+    if not summary["p541_non_actionable_candidate_scan_truth"]:
+        summary["p541_non_actionable_candidate_scan_truth"] = dict(latest_scan.get("p541_non_actionable_candidate_scan_truth") or {})
     summary["non_actionable_candidate_cache_rejected"] = bool(
         summary["p481_canonical_scan_truth"].get("non_actionable_candidate_cache_rejected")
+        or summary["p541_non_actionable_candidate_scan_truth"].get("reject_as_effective_candidate_truth")
     )
     summary["tiny_partial_no_candidate_does_not_replace_candidate_truth"] = bool(
         summary["p481_canonical_scan_truth"].get("tiny_partial_no_candidate_does_not_replace_candidate_truth")
@@ -57195,6 +57208,48 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             selected_context["selected_total"] = len(selected_context.get("selected_symbols") or [])
             selected_context["p536_fallback_selection_applied"] = True
 
+    p542_candidate_cache_scan = {
+        "ts_utc": latest_scan.get("ts_utc"),
+        "reason": latest_scan.get("reason"),
+        "scanned": latest_scan.get("scanned"),
+        "signals": latest_scan.get("signals"),
+        "would_trade": latest_scan.get("would_trade"),
+        "duration_ms": latest_scan.get("duration_ms"),
+        "summary": {
+            "candidates_total": len(fast_rows_all),
+            "eligible_total": len(eligible_rows_all),
+            "selected_total": int(selected_context.get("selected_total") or 0),
+            "selected_symbols": list(selected_context.get("selected_symbols") or []),
+            "symbols_eval_total": int((coverage or {}).get("scanned_symbol_count") or latest_scan.get("scanned") or 0),
+            "candidate_cache_source": source,
+            "scan_truth_phase": "fast_current_candidate_truth",
+        },
+    }
+    p542_non_actionable_candidate_cache_truth = _p541_non_actionable_candidate_scan_truth(p542_candidate_cache_scan)
+    non_actionable_candidate_cache_rejected = bool(
+        p542_non_actionable_candidate_cache_truth.get("reject_as_effective_candidate_truth")
+    )
+    raw_candidate_count_before_p542_rejection = len(fast_rows_all)
+    raw_eligible_count_before_p542_rejection = len(eligible_rows_all)
+    raw_selected_symbols_before_p542_rejection = list(selected_context.get("selected_symbols") or [])
+    if non_actionable_candidate_cache_rejected:
+        selected_context = dict(selected_context)
+        selected_context["selected_symbols"] = []
+        selected_context["selected_total"] = 0
+        eligible_rows_all = []
+        eligible_rows = []
+        fast_rows_all_effective = []
+        fast_rows_effective = []
+        new_entry_rows_all_effective = []
+        new_entry_rows_effective = []
+        open_position_rows_effective = []
+    else:
+        fast_rows_all_effective = fast_rows_all
+        fast_rows_effective = fast_rows
+        new_entry_rows_all_effective = new_entry_rows_all
+        new_entry_rows_effective = new_entry_rows
+        open_position_rows_effective = open_position_rows
+
     stale_scan_blocks_action = bool(
         (
             summary.get("post_open_scan_missing")
@@ -57203,6 +57258,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
                 bool((summary.get("scanner_failure_root_cause") or {}).get("active"))
                 and not p526_completed_scan_failure_tombstone
             )
+            or non_actionable_candidate_cache_rejected
         )
         and not using_preserved_market_scan
     )
@@ -57236,8 +57292,13 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "mode": "fast_current_candidate_truth",
         "payload_mode": "compact",
         "source": source,
-        "p519_full_candidate_cache_adopted": bool(fast_rows_all),
+        "p519_full_candidate_cache_adopted": bool(fast_rows_all_effective),
         "p519_full_candidate_cache_source": source,
+        "p542_non_actionable_candidate_cache_truth": dict(p542_non_actionable_candidate_cache_truth),
+        "non_actionable_candidate_cache_rejected": bool(non_actionable_candidate_cache_rejected),
+        "raw_candidate_count_before_p542_rejection": int(raw_candidate_count_before_p542_rejection),
+        "raw_eligible_count_before_p542_rejection": int(raw_eligible_count_before_p542_rejection),
+        "raw_selected_symbols_before_p542_rejection": list(raw_selected_symbols_before_p542_rejection),
         "p519_display_limit": lim,
         "contract_rebuild_applied": True,
         "contract_rebuild_source": "p412_current_scan_contract_rebuild",
@@ -57256,6 +57317,8 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             "scanner_failure_root_cause": summary.get("scanner_failure_root_cause"),
             "stale_scan_blocks_action": bool(stale_scan_blocks_action),
             "p526_completed_scan_failure_tombstone": bool(p526_completed_scan_failure_tombstone),
+            "p542_non_actionable_candidate_cache_truth": dict(p542_non_actionable_candidate_cache_truth),
+            "non_actionable_candidate_cache_rejected": bool(non_actionable_candidate_cache_rejected),
         },
         "runtime_universe_coverage": coverage,
         "candidate_coverage_opportunity_audit": {
@@ -57265,11 +57328,11 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
             "symbols_due_next_rotation": list(coverage_audit.get("symbols_due_next_rotation") or [])[:lim],
             "recommended_action": coverage_audit.get("recommended_action"),
         },
-        "candidate_count": len(fast_rows_all),
-        "display_candidate_count": len(fast_rows),
-        "new_entry_candidate_count": len(new_entry_rows_all),
-        "open_position_candidate_count": len(open_position_rows_all),
-        "open_position_candidate_symbols": [row.get("symbol") for row in open_position_rows],
+        "candidate_count": len(fast_rows_all_effective),
+        "display_candidate_count": len(fast_rows_effective),
+        "new_entry_candidate_count": len(new_entry_rows_all_effective),
+        "open_position_candidate_count": len(open_position_rows_effective),
+        "open_position_candidate_symbols": [row.get("symbol") for row in open_position_rows_effective],
         "eligible_count": len(eligible_rows_all),
         "eligible_symbols": [row.get("symbol") for row in eligible_rows_all],
         "eligible_not_selected_count": len(eligible_rows_all) if not selected_context.get("selected_symbols") else 0,
@@ -57292,10 +57355,10 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "reason_counts": reason_summary.get("reason_counts"),
         "reason_family_counts": reason_summary.get("reason_family_counts"),
         "protective_reason_counts": protective_reasons,
-        "candidate_rows": fast_rows_all,
+        "candidate_rows": fast_rows_all_effective,
         "eligible_new_entry_rows_all": eligible_rows_all,
-        "top_candidates": fast_rows[:15],
-        "top_new_entry_candidates": new_entry_rows[:15],
+        "top_candidates": fast_rows_effective[:15],
+        "top_new_entry_candidates": new_entry_rows_effective[:15],
     }
 
 def _diagnostics_candidates_payload(limit: int = 25, full: bool = False) -> dict:

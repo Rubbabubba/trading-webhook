@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-530-after-hours-selected-submit-gap-classification"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-542-current-scan-cache-rejection-scanner-status-truth"
 
 
 def selected_submission_truth_light_snapshot(
@@ -330,6 +330,7 @@ def scanner_light_snapshot(
         if "scan_request_reconciled_by_terminal_scan" not in recovered_warning_codes:
             recovered_warning_codes.append("scan_request_reconciled_by_terminal_scan")
 
+    grace_has_active_scan = bool(in_flight_grace_active and (effective_in_flight or in_flight or background_scan_active))
     scanner_status = (
         "background_scan_thread_start_unproven"
         if background_thread_entry_missing
@@ -342,6 +343,8 @@ def scanner_light_snapshot(
         else "background_scan_running"
         if background_scan_active
         else "scan_running_within_grace"
+        if grace_has_active_scan and not in_flight_over_budget
+        else "scan_request_pending_terminal_scan"
         if in_flight_grace_active and not in_flight_over_budget
         else "scan_running_over_budget"
         if in_flight_over_budget
@@ -449,6 +452,7 @@ def scanner_light_snapshot(
             "scanner_currently_ok": scanner_currently_ok,
             "scanner_status": scanner_status,
             "in_flight_grace_active": bool(in_flight_grace_active),
+            "grace_has_active_scan": bool(grace_has_active_scan),
             "dispatch_failure_aged_as_pending_scan": bool("dispatch_failure_pending_scan_close_within_grace_window" in recovered_warning_codes),
             "partial_run_aged_as_pending_scan": bool("partial_run_open_within_grace_window" in recovered_warning_codes),
             "stale_errors_suppressed": bool(scanner_currently_ok and current_error),
