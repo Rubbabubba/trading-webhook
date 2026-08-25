@@ -7,7 +7,7 @@ import random
 import uuid
 from datetime import datetime, timezone, timedelta
 
-SCANNER_WORKER_VERSION = "patch-550-snapshot-only-light-diagnostics-scanner-build-drift-truth"
+SCANNER_WORKER_VERSION = "patch-551-deploy-warmup-log-cleanup-fast-trace-payload-slim"
 
 def getenv_int(name: str, default: int) -> int:
     v = os.getenv(name)
@@ -92,7 +92,7 @@ def wait_for_main_web_ready(health_url: str, timeout: int, grace_sec: int, poll_
                 }
 
             if transient_status:
-                log(f"main_web_not_ready attempt={attempt} status={transient_status} retry_in_sec={min(poll_sec, int(max(1, remaining)))}")
+                log(f"main_web_warming_up attempt={attempt} status={transient_status} retry_in_sec={min(poll_sec, int(max(1, remaining)))}")
             else:
                 log(f"main_web_readiness_wait attempt={attempt} kind={last_kind} retry_in_sec={min(poll_sec, int(max(1, remaining)))}")
 
@@ -256,9 +256,9 @@ def main() -> None:
         transient_main_web["status"] = readiness.get("status")
         transient_main_web["last_utc"] = ts_utc()
         state["last_main_unavailable_utc"] = transient_main_web["last_utc"]
-        log(f"main_web_readiness_deferred attempts={readiness.get('attempts')} waited_sec={readiness.get('waited_sec')} detail={readiness.get('detail')}")
-        heartbeat("boot", "main_web_not_ready", {"health_url": health_url, "main_web_readiness": readiness})
-        heartbeat("preflight_deferred", "main_web_unavailable", {"detail": readiness.get("detail"), "main_web_readiness": readiness})
+        log(f"main_web_warmup_deferred attempts={readiness.get('attempts')} waited_sec={readiness.get('waited_sec')} detail={readiness.get('detail')}")
+        heartbeat("boot", "main_web_warming_up", {"health_url": health_url, "main_web_readiness": readiness})
+        heartbeat("preflight_deferred", "main_web_warming_up", {"detail": readiness.get("detail"), "main_web_readiness": readiness})
     first = True
     loop_n = 0
     while True:

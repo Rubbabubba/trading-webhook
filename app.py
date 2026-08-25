@@ -2973,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-550-snapshot-only-light-diagnostics-scanner-build-drift-truth"
+PATCH_VERSION = "patch-551-deploy-warmup-log-cleanup-fast-trace-payload-slim"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17032,7 +17032,11 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     ])
     p540_selected_consumer_truth = {}
     try:
-        p540_selected_consumer_truth = dict(_p298_selected_submission_truth_light() or {})
+        p540_selected_consumer_truth = dict(_p550_selected_submission_truth_snapshot_light(
+            latest_scan,
+            summary,
+            limit=max(1, min(int(limit or 12), 50)),
+        ) or {})
     except Exception as exc:
         p540_selected_consumer_truth = {
             "ok": False,
@@ -17382,7 +17386,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "heavy_url_hint": "/diagnostics/swing_submit_path_trace?heavy=true",
         "read_only": True,
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
-        "p481_canonical_scan_truth": p481_canonical_scan_truth,
+        "p481_canonical_scan_truth": _p551_canonical_scan_truth_compact(p481_canonical_scan_truth),
         "p547_selection_submit_snapshot": {
             "source_stage": p547_selection_snapshot.get("source_stage"),
             "selected_count": len(p547_selected_symbols),
@@ -17390,13 +17394,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or 0),
             "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced")),
         },
-        "p484_candidate_eval_module": swing_candidate_eval_module_status(
-            patch_version=PATCH_VERSION
-        ),
+        "p484_candidate_eval_module": _p551_candidate_eval_module_status_compact(),
         "swing_candidate_eval_module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
-        "swing_candidate_eval_module_status": swing_candidate_eval_module_status(
-            patch_version=PATCH_VERSION
-        ),
+        "swing_candidate_eval_module_status": _p551_candidate_eval_module_status_compact(),
         "path_status": path_status,
         "recommended_action": recommended_action,
         "latest_scan": {
@@ -17423,9 +17423,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
                 else "scanner_runtime_within_budget"
             ),
             "swing_candidate_eval_module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
-            "swing_candidate_eval_module_status": swing_candidate_eval_module_status(
-                patch_version=PATCH_VERSION
-            ),
+            "swing_candidate_eval_module_status": _p551_candidate_eval_module_status_compact(),
             "selected_total": len(selected_symbols),
             "selected_symbols": selected_symbols,
             "eligible_total": int(summary.get("eligible_total") or latest_scan.get("eligible_total") or 0),
@@ -28638,6 +28636,56 @@ def _p550_current_scan_suppression_snapshot_payload(
             row for row in rows_all
             if not bool(row.get("open_position"))
         ][:min(lim, 15)],
+    }
+
+def _p551_candidate_eval_module_status_compact() -> dict:
+    return {
+        "ok": True,
+        "module": "swing_candidate_eval",
+        "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+        "patch_version": PATCH_VERSION,
+        "detail": "compact",
+        "full_status_available_in": "/diagnostics/swing_core_status",
+    }
+
+def _p551_canonical_scan_truth_compact(truth: dict | None) -> dict:
+    truth = dict(truth or {})
+    effective = dict(truth.get("effective_trade_scan") or {})
+    last_candidate = dict(truth.get("last_candidate_bearing_scan") or {})
+    raw_latest = dict(truth.get("raw_latest_scan") or {})
+    return {
+        "effective_scan_source": truth.get("effective_scan_source"),
+        "used_candidate_bearing_fallback": bool(truth.get("used_candidate_bearing_fallback")),
+        "after_hours_does_not_replace_candidate_truth": bool(truth.get("after_hours_does_not_replace_candidate_truth")),
+        "non_actionable_candidate_cache_rejected": bool(truth.get("non_actionable_candidate_cache_rejected")),
+        "effective_trade_scan": {
+            "ts_utc": effective.get("ts_utc"),
+            "reason": effective.get("reason"),
+            "source": effective.get("source"),
+            "scanned": effective.get("scanned"),
+            "duration_ms": effective.get("duration_ms"),
+            "candidates_total": effective.get("candidates_total"),
+            "eligible_total": effective.get("eligible_total"),
+            "selected_total": effective.get("selected_total"),
+            "trade_judgable": bool(effective.get("trade_judgable")),
+        },
+        "last_candidate_bearing_scan": {
+            "ts_utc": last_candidate.get("ts_utc"),
+            "reason": last_candidate.get("reason"),
+            "source": last_candidate.get("source"),
+            "scanned": last_candidate.get("scanned"),
+            "duration_ms": last_candidate.get("duration_ms"),
+            "candidates_total": last_candidate.get("candidates_total"),
+            "eligible_total": last_candidate.get("eligible_total"),
+            "selected_total": last_candidate.get("selected_total"),
+        },
+        "raw_latest_scan": {
+            "ts_utc": raw_latest.get("ts_utc"),
+            "reason": raw_latest.get("reason"),
+            "source": raw_latest.get("source"),
+            "scanned": raw_latest.get("scanned"),
+            "duration_ms": raw_latest.get("duration_ms"),
+        },
     }
 
 def _p461_background_scan_lost_after_restart_recovered(state: dict | None = None) -> bool:
