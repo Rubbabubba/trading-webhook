@@ -2973,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-548-light-endpoint-no-recompute-contract-stale-active-plan-truth"
+PATCH_VERSION = "patch-549-selection-complete-terminal-close-durable-submit-truth-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28308,6 +28308,47 @@ def _p548_snapshot_candidate_truth_no_recompute(
         },
     }
 
+def _p549_selection_complete_terminal_close(
+    *,
+    scan_attempt_id: str | None = None,
+    selected_symbols: list | None = None,
+    candidate_count: int = 0,
+    approved_count: int = 0,
+    source: str = "selection_complete",
+) -> dict:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    selected = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected_symbols or [])
+        if str(sym or "").strip()
+    ])
+    updates = {
+        "status": "completed",
+        "active": False,
+        "terminal": True,
+        "completed_utc": now_iso,
+        "reason": "selection_complete_terminal_publish",
+        "error": None,
+        "exception_type": None,
+        "traceback_tail": None,
+        "stage": "selection_complete",
+        "stage_details": {
+            "candidate_count": int(candidate_count or 0),
+            "approved_count": int(approved_count or 0),
+            "selected_count": len(selected),
+            "selected_symbols": list(selected),
+            "source": str(source or "selection_complete"),
+            "p549_terminal_close_before_submit": True,
+        },
+        "candidate_truth_terminal": True,
+        "candidate_truth_terminal_utc": now_iso,
+        "candidate_truth_selected_symbols": list(selected),
+        "p549_selection_complete_terminal_close": True,
+    }
+    if scan_attempt_id:
+        updates["expected_scan_attempt_id"] = scan_attempt_id
+    return _p456_mark_background_scan(**updates)
+
 def _p461_background_scan_lost_after_restart_recovered(state: dict | None = None) -> bool:
     row = dict(state or SWING_SCAN_BACKGROUND_COMPLETION or {})
     status = str(row.get("status") or "").strip().lower()
@@ -31532,6 +31573,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         selected_symbols=[c.get("symbol") for c in selected],
         p521_terminal_eval_selection_publish=True,
     )
+    p549_terminal_close = _p549_selection_complete_terminal_close(
+        scan_attempt_id=getattr(SWING_SCAN_THREAD_LOCAL, "scan_attempt_id", None),
+        candidate_count=len(candidates),
+        approved_count=len(production_approved),
+        selected_symbols=[c.get("symbol") for c in selected],
+        source="run_swing_daily_scan_selection_complete",
+    )
     selected_symbol_set = {
         str(c.get("symbol") or "").strip().upper()
         for c in selected
@@ -31589,6 +31637,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "approved_count": len(approved_symbols),
                 "selected_count": len(selected_symbols),
             },
+            "p549_selection_complete_terminal_close": dict(p549_terminal_close),
             "heavy_reports_deferred_from_hot_path": bool(p401_hot_path.get("defer_labs")),
             "index_symbol": SWING_INDEX_SYMBOL,
             "index_alignment_ok": index_ok,
@@ -43364,9 +43413,42 @@ def _p520_lifecycle_rate_limit_event(lifecycle_matches: list | None) -> dict:
             return dict(row)
     return {}
 
+def _p549_current_scan_or_today_event(row: dict | None, latest_scan: dict | None = None) -> bool:
+    item = dict(row or {})
+    latest = dict(latest_scan or {})
+    scan_ts = str(latest.get("ts_utc") or latest.get("ts_ny") or "").strip()
+    event_ts = str(item.get("ts_utc") or item.get("ts_ny") or "").strip()
+    if scan_ts and event_ts:
+        try:
+            scan_dt = datetime.fromisoformat(scan_ts.replace("Z", "+00:00"))
+            event_dt = datetime.fromisoformat(event_ts.replace("Z", "+00:00"))
+            if scan_dt.tzinfo is None:
+                scan_dt = scan_dt.replace(tzinfo=timezone.utc)
+            if event_dt.tzinfo is None:
+                event_dt = event_dt.replace(tzinfo=timezone.utc)
+            age_sec = abs((event_dt.astimezone(timezone.utc) - scan_dt.astimezone(timezone.utc)).total_seconds())
+            return bool(age_sec <= max(300, int(SCANNER_INTERVAL_SEC or 300) * 2))
+        except Exception:
+            pass
+
+    today = now_ny().date()
+    for key in ("ts_ny", "ts_utc"):
+        raw = str(item.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(NY_TZ).date() == today
+        except Exception:
+            continue
+    return False
+
 def _p298_selected_submission_truth_light() -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan, summary, p330_after_hours_truth = _p330_preserved_selected_submission_summary(latest_scan, summary)
+    _p387_prune_rate_limit_selected_submit_retry_queue()
     p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
     p547_selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
@@ -43485,7 +43567,13 @@ def _p298_selected_submission_truth_light() -> dict:
         ]
         submit_row = dict(submit_rows.get(sym) or {})
         candidate_row = dict(current_candidate_by_symbol.get(sym) or {})
-        lifecycle_rate_limit_event = _p520_lifecycle_rate_limit_event(lifecycle_matches)
+        raw_lifecycle_rate_limit_event = _p520_lifecycle_rate_limit_event(lifecycle_matches)
+        lifecycle_rate_limit_event = (
+            raw_lifecycle_rate_limit_event
+            if _p549_current_scan_or_today_event(raw_lifecycle_rate_limit_event, latest_scan)
+            else {}
+        )
+        stale_lifecycle_rate_limit_event = bool(raw_lifecycle_rate_limit_event and not lifecycle_rate_limit_event)
         if not submit_row and lifecycle_rate_limit_event:
             lifecycle_details = lifecycle_rate_limit_event.get("details") if isinstance(lifecycle_rate_limit_event.get("details"), dict) else {}
             lifecycle_reason = (
@@ -43634,6 +43722,7 @@ def _p298_selected_submission_truth_light() -> dict:
             "rate_limited_retryable": bool(rate_limited_retryable),
             "p520_lifecycle_rate_limit_rehydrated": bool(submit_row.get("p520_lifecycle_rate_limit_rehydrated")),
             "p520_lifecycle_rate_limit_event": dict(lifecycle_rate_limit_event or {}),
+            "p549_stale_lifecycle_rate_limit_suppressed": bool(stale_lifecycle_rate_limit_event),
             "rate_limit_retry_key": rate_limit_retry_key,
             "rate_limit_retry_queued": bool(rate_limit_retry_queued),
             "rate_limit_retry_queue_backfill": rate_limit_retry_queue_backfill,
