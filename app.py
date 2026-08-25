@@ -2969,7 +2969,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-538-preserve-candidate-bearing-trade-scan-partial-runtime-guard"
+PATCH_VERSION = "patch-539-tiny-non-actionable-partial-scan-suppression-regime-failure-detail"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3942,7 +3942,7 @@ def _p481_last_candidate_bearing_scan() -> dict:
     for row in candidates:
         row = _p464_sanitize_persisted_over_budget_scan(dict(row or {}), source="p481_last_candidate_bearing_scan")
         row = _p475_normalize_scan_truth_contract(row, source="p481_last_candidate_bearing_scan")
-        if bool(_p538_tiny_no_candidate_partial_truth(row).get("tiny_partial_no_candidate")):
+        if bool(_p538_tiny_no_candidate_partial_truth(row).get("tiny_partial_non_actionable")):
             continue
         truth = _p475_scan_candidate_bearing_truth(row)
         if bool(truth.get("candidate_bearing")):
@@ -3961,16 +3961,20 @@ def _p538_tiny_no_candidate_partial_truth(raw_scan: dict | None, last_candidate_
         reason == "partial_scan_completed"
         or incremental.get("partial_scan")
     )
-    no_candidate_payload = bool(
-        int(truth.get("candidates_total") or 0) <= 0
-        and int(truth.get("eligible_total") or 0) <= 0
+    no_actionable_payload = bool(
+        int(truth.get("eligible_total") or 0) <= 0
         and int(truth.get("selected_total") or 0) <= 0
-        and not bool(truth.get("has_candidate_rows"))
         and int(raw.get("signals") or 0) <= 0
         and int(raw.get("would_trade") or 0) <= 0
     )
+    no_candidate_payload = bool(
+        no_actionable_payload
+        and int(truth.get("candidates_total") or 0) <= 0
+        and not bool(truth.get("has_candidate_rows"))
+    )
     tiny_scan_threshold = 5
     tiny_partial_no_candidate = bool(partial_scan and no_candidate_payload and 0 < scanned <= tiny_scan_threshold)
+    tiny_partial_non_actionable = bool(partial_scan and no_actionable_payload and 0 < scanned <= tiny_scan_threshold)
 
     raw_dt = _safe_parse_iso_utc(raw.get("ts_utc")) if raw.get("ts_utc") else None
     candidate = dict(last_candidate_scan or {})
@@ -3985,7 +3989,7 @@ def _p538_tiny_no_candidate_partial_truth(raw_scan: dict | None, last_candidate_
     )
 
     should_preserve = bool(
-        tiny_partial_no_candidate
+        tiny_partial_non_actionable
         and candidate
         and candidate_same_trading_day
         and bool(_p475_scan_candidate_bearing_truth(candidate).get("candidate_bearing"))
@@ -3998,7 +4002,9 @@ def _p538_tiny_no_candidate_partial_truth(raw_scan: dict | None, last_candidate_
         "tiny_scan_threshold": tiny_scan_threshold,
         "partial_scan": bool(partial_scan),
         "no_candidate_payload": bool(no_candidate_payload),
+        "no_actionable_payload": bool(no_actionable_payload),
         "tiny_partial_no_candidate": bool(tiny_partial_no_candidate),
+        "tiny_partial_non_actionable": bool(tiny_partial_non_actionable),
         "candidate_scan_available": bool(candidate),
         "candidate_same_trading_day": bool(candidate_same_trading_day),
         "candidate_ts_utc": candidate.get("ts_utc"),
@@ -4022,7 +4028,7 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
 
     last_candidate_raw = _p481_last_candidate_bearing_scan()
     p538_raw_candidate_truth = _p538_tiny_no_candidate_partial_truth(last_candidate_raw)
-    last_candidate = {} if bool(p538_raw_candidate_truth.get("tiny_partial_no_candidate")) else dict(last_candidate_raw or {})
+    last_candidate = {} if bool(p538_raw_candidate_truth.get("tiny_partial_non_actionable")) else dict(last_candidate_raw or {})
     candidate_truth = _p475_scan_candidate_bearing_truth(last_candidate) if last_candidate else {}
     p538_partial_truth = _p538_tiny_no_candidate_partial_truth(raw, last_candidate)
 
@@ -5381,6 +5387,7 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
     last_closed_event = None
     last_closed_status = None
     last_closed_utc = None
+    last_closed_details = {}
     last_request_source_kind = str(tel.get("last_request_source_kind") or "").strip().lower() or None
     explicit_close_events = {"scan_ok": "success", "scan_fail": "failure", "scan_error": "failure", "scan_skip": "skipped"}
 
@@ -5408,6 +5415,7 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
                     "status": explicit_close_events[ev],
                     "ts_utc": (row or {}).get("ts_utc"),
                     "today": _is_today(row or {}),
+                    "details": dict((row or {}).get("details") or {}),
                 }
                 break
         if closed is None:
@@ -5418,6 +5426,7 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
                         "status": "skipped",
                         "ts_utc": (row or {}).get("ts_utc"),
                         "today": _is_today(row or {}),
+                        "details": dict((row or {}).get("details") or {}),
                     }
                     break
         if closed is None:
@@ -5449,6 +5458,7 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         last_closed_event = closed["event"]
         last_closed_status = closed["status"]
         last_closed_utc = closed["ts_utc"]
+        last_closed_details = dict(closed.get("details") or {})
 
     attempts_total = len(request_indexes)
     attempts_today = sum(1 for idx in request_indexes if _is_today(rows[idx] or {}))
@@ -5500,6 +5510,11 @@ def _scanner_telemetry_summary(history: list | None = None, today_prefix: str | 
         "last_closed_event": last_closed_event,
         "last_closed_status": last_closed_status,
         "last_closed_utc": last_closed_utc,
+        "last_closed_details": last_closed_details,
+        "last_closed_error": last_closed_details.get("error"),
+        "last_closed_exception_type": last_closed_details.get("exception_type"),
+        "last_closed_traceback_tail": last_closed_details.get("traceback_tail"),
+        "last_closed_stage": last_closed_details.get("stage") or (last_closed_details.get("scan_stage_checkpoint") or {}).get("stage"),
         "last_request_source_kind": last_request_source_kind,
         "manual_request_total": manual_request_total,
         "manual_request_today": manual_request_today,
@@ -27277,6 +27292,7 @@ def _p455_scanner_failure_root_cause(
     summary = dict(telemetry_summary or {})
     checkpoint = dict(scan.get("scan_stage_checkpoint") or _p402_stage_snapshot() or {})
     checkpoint_details = dict(checkpoint.get("details") or {})
+    last_closed_details = summary.get("last_closed_details") if isinstance(summary.get("last_closed_details"), dict) else {}
     runtime_slim = dict(((scan.get("summary") or {}) if isinstance(scan.get("summary"), dict) else {}).get("runtime_slim") or scan.get("runtime_slim") or {})
 
     scan_reason = str(scan.get("reason") or "").strip().lower()
@@ -27284,8 +27300,28 @@ def _p455_scanner_failure_root_cause(
     last_status = str(tel.get("status") or tel.get("last_status") or summary.get("last_event_status") or "").strip().lower()
     last_closed_event = str(summary.get("last_closed_event") or tel.get("last_closed_event") or "").strip().lower()
     last_closed_status = str(summary.get("last_closed_status") or tel.get("last_closed_status") or "").strip().lower()
-    error = str(scan.get("error") or tel.get("last_error") or tel.get("error") or "").strip()
-    stage = str(scan.get("scan_exception_stage") or checkpoint.get("stage") or "").strip()
+    error = str(
+        scan.get("error")
+        or summary.get("last_closed_error")
+        or last_closed_details.get("error")
+        or tel.get("last_error")
+        or tel.get("error")
+        or ""
+    ).strip()
+    exception_type = str(
+        scan.get("exception_type")
+        or summary.get("last_closed_exception_type")
+        or last_closed_details.get("exception_type")
+        or tel.get("exception_type")
+        or ""
+    ).strip()
+    traceback_tail = (
+        scan.get("traceback_tail")
+        or summary.get("last_closed_traceback_tail")
+        or last_closed_details.get("traceback_tail")
+        or tel.get("traceback_tail")
+    )
+    stage = str(scan.get("scan_exception_stage") or summary.get("last_closed_stage") or checkpoint.get("stage") or "").strip()
     try:
         scanned_count = int(float(scan.get("scanned") or 0))
     except Exception:
@@ -27325,6 +27361,8 @@ def _p455_scanner_failure_root_cause(
             "last_closed_status": last_closed_status,
             "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
             "error": error,
+            "exception_type": exception_type or None,
+            "traceback_tail": traceback_tail,
             "stage": (background_truth or {}).get("stage") or stage,
             "stage_details": (background_truth or {}).get("stage_details") or checkpoint_details,
             "runtime_symbol_count": len(universe_symbols()),
@@ -27346,8 +27384,8 @@ def _p455_scanner_failure_root_cause(
             "last_closed_status": last_closed_status,
             "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
             "error": (background_truth or {}).get("error") or error,
-            "exception_type": (background_truth or {}).get("exception_type"),
-            "traceback_tail": (background_truth or {}).get("traceback_tail"),
+            "exception_type": (background_truth or {}).get("exception_type") or exception_type or None,
+            "traceback_tail": (background_truth or {}).get("traceback_tail") or traceback_tail,
             "stage": (background_truth or {}).get("stage") or stage,
             "stage_details": (background_truth or {}).get("stage_details") or checkpoint_details,
             "runtime_symbol_count": len(universe_symbols()),
@@ -27369,6 +27407,8 @@ def _p455_scanner_failure_root_cause(
             "last_closed_status": last_closed_status,
             "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
             "error": "",
+            "exception_type": None,
+            "traceback_tail": None,
             "stage": stage,
             "stage_details": checkpoint_details,
             "runtime_symbol_count": len(universe_symbols()),
@@ -27420,6 +27460,8 @@ def _p455_scanner_failure_root_cause(
         "last_closed_status": last_closed_status,
         "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
         "error": error,
+        "exception_type": exception_type or None,
+        "traceback_tail": traceback_tail,
         "stage": stage,
         "stage_details": checkpoint_details,
         "runtime_symbol_count": len(universe_symbols()),
