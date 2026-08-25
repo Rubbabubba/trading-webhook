@@ -2868,6 +2868,10 @@ SWING_SCAN_DAILY_FETCH_CHUNK_SIZE = max(
     1,
     int(getenv_any("SWING_SCAN_DAILY_FETCH_CHUNK_SIZE", default="8") or 8),
 )
+SWING_SCAN_DAILY_FETCH_CHUNK_TIMEOUT_SEC = max(
+    1.0,
+    getenv_float_any("SWING_SCAN_DAILY_FETCH_CHUNK_TIMEOUT_SEC", default=20.0),
+)
 SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP = max(
     1,
     int(getenv_any("SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP", default="8") or 8),
@@ -2969,7 +2973,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-542-current-scan-cache-rejection-scanner-status-truth"
+PATCH_VERSION = "patch-543-scanner-producer-contract-reset-batch-candidate-publish"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23309,6 +23313,62 @@ def fetch_daily_bars_multi(symbols: list[str], lookback_days: int = 90) -> dict[
         out[symbol] = rows
     return out
 
+def _p543_fetch_daily_bars_chunk_with_timeout(
+    symbols: list[str],
+    lookback_days: int = 90,
+    timeout_sec: float | None = None,
+) -> dict:
+    chunk = _dedupe_keep_order([str(s or "").strip().upper() for s in symbols or [] if str(s or "").strip()])
+    timeout = max(1.0, float(timeout_sec if timeout_sec is not None else SWING_SCAN_DAILY_FETCH_CHUNK_TIMEOUT_SEC))
+    started = _time.perf_counter()
+    if not chunk:
+        return {
+            "ok": True,
+            "chunk_map": {},
+            "symbols": [],
+            "elapsed_sec": 0.0,
+            "timeout_sec": timeout,
+        }
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="swing-daily-fetch")
+    future = executor.submit(fetch_daily_bars_multi, chunk, lookback_days)
+    try:
+        chunk_map = future.result(timeout=timeout)
+        return {
+            "ok": True,
+            "chunk_map": chunk_map or {},
+            "symbols": list(chunk),
+            "elapsed_sec": round(max(0.0, _time.perf_counter() - started), 3),
+            "timeout_sec": timeout,
+        }
+    except FuturesTimeoutError:
+        future.cancel()
+        return {
+            "ok": False,
+            "timeout": True,
+            "chunk_map": {},
+            "symbols": list(chunk),
+            "elapsed_sec": round(max(0.0, _time.perf_counter() - started), 3),
+            "timeout_sec": timeout,
+            "error": f"daily_fetch_chunk_timeout_after_{timeout:.1f}s",
+            "exception_type": "DailyFetchChunkTimeout",
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "chunk_map": {},
+            "symbols": list(chunk),
+            "elapsed_sec": round(max(0.0, _time.perf_counter() - started), 3),
+            "timeout_sec": timeout,
+            "error": str(e),
+            "exception_type": type(e).__name__,
+        }
+    finally:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
+
 def _p402_fetch_daily_bars_multi_budgeted(
     symbols: list[str],
     lookback_days: int = 90,
@@ -23319,6 +23379,7 @@ def _p402_fetch_daily_bars_multi_budgeted(
     budget_sec = max(1.0, float(SCAN_RUNTIME_BUDGET_SEC or 1))
     reserve_sec = max(0.0, float(SWING_SCAN_BUDGET_RESERVE_SEC or 0))
     min_symbols = max(1, int(SWING_SCAN_MIN_SYMBOLS_BEFORE_BUDGET_STOP or 1))
+    chunk_timeout_sec = max(1.0, float(SWING_SCAN_DAILY_FETCH_CHUNK_TIMEOUT_SEC or 1.0))
 
     out: dict[str, list[dict]] = {}
     errors: list[dict] = []
@@ -23369,21 +23430,46 @@ def _p402_fetch_daily_bars_multi_budgeted(
             fetched_count=len(fetched),
             elapsed_sec=round(elapsed, 3),
             remaining_sec=round(max(0.0, remaining), 3),
+            chunk_timeout_sec=round(chunk_timeout_sec, 3),
         )
 
-        try:
-            chunk_map = fetch_daily_bars_multi(chunk, lookback_days=lookback_days)
-            for sym in chunk:
-                out[sym] = list((chunk_map or {}).get(sym) or [])
-                fetched.append(sym)
-        except Exception as e:
+        chunk_result = _p543_fetch_daily_bars_chunk_with_timeout(
+            chunk,
+            lookback_days=lookback_days,
+            timeout_sec=chunk_timeout_sec,
+        )
+        if not bool(chunk_result.get("ok")):
             errors.append({
-                "stage": "daily_fetch_chunk",
+                "stage": "daily_fetch_chunk_timeout" if bool(chunk_result.get("timeout")) else "daily_fetch_chunk",
                 "symbols": list(chunk),
-                "error": str(e),
+                "error": str(chunk_result.get("error") or "daily_fetch_chunk_failed"),
+                "exception_type": chunk_result.get("exception_type"),
+                "timeout": bool(chunk_result.get("timeout")),
+                "elapsed_sec": chunk_result.get("elapsed_sec"),
+                "timeout_sec": chunk_result.get("timeout_sec"),
             })
             for sym in chunk:
                 out.setdefault(sym, [])
+            if bool(chunk_result.get("timeout")):
+                skipped.extend(chunk)
+                skipped.extend(requested[idx + chunk_size:])
+                stopped_for_budget = True
+                _p402_stage_checkpoint(
+                    "daily_fetch_chunk_timeout",
+                    chunk_index=chunks_attempted,
+                    symbols=list(chunk),
+                    fetched_count=len(fetched),
+                    skipped_count=len(skipped),
+                    elapsed_sec=chunk_result.get("elapsed_sec"),
+                    timeout_sec=chunk_result.get("timeout_sec"),
+                    remaining_sec=round(max(0.0, budget_sec - _p398_runtime_budget_elapsed_sec(scan_started)), 3),
+                )
+                break
+        else:
+            chunk_map = chunk_result.get("chunk_map") or {}
+            for sym in chunk:
+                out[sym] = list((chunk_map or {}).get(sym) or [])
+                fetched.append(sym)
 
         elapsed_after = _p398_runtime_budget_elapsed_sec(scan_started)
         if elapsed_after >= budget_sec:
@@ -23411,6 +23497,7 @@ def _p402_fetch_daily_bars_multi_budgeted(
         "skipped_symbols": list(_dedupe_keep_order(skipped)),
         "last_chunk_symbols": list(last_chunk_symbols),
         "chunk_size": chunk_size,
+        "chunk_timeout_sec": round(chunk_timeout_sec, 3),
         "chunks_attempted": chunks_attempted,
         "stopped_for_budget": bool(stopped_for_budget),
         "over_budget_after_fetch": bool(over_budget_after_fetch),
@@ -29477,6 +29564,14 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "symbols_requested": len(syms),
         "mean_reversion_fast_path": "deferred",
     }
+    p402_eval_truth["p543_scanner_producer_contract"] = {
+        "enabled": True,
+        "contract": "timeout_guarded_fetch_existing_batch_candidate_publish",
+        "target_symbol_count": 50,
+        "fetch_chunk_timeout_sec": float(SWING_SCAN_DAILY_FETCH_CHUNK_TIMEOUT_SEC or 0.0),
+        "uses_existing_candidate_batch_publish": True,
+        "batch_size": 5,
+    }
     p476_candidate_progress_publish = swing_candidate_eval_initial_progress_publish()
     p477_terminal_partial_close = swing_candidate_eval_initial_terminal_partial_close(batch_size=5)
 
@@ -30991,6 +31086,21 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "last_candidate_count": int(p476_candidate_progress_publish.get("last_candidate_count") or 0),
             },
             "p477_terminal_partial_close": dict(p477_terminal_partial_close),
+            "p543_scanner_producer_contract": {
+                "enabled": True,
+                "contract": "timeout_guarded_fetch_batch_candidate_publish",
+                "symbol_target": 50,
+                "symbols_requested": len(syms_for_fetch),
+                "symbols_fetched": int(p402_fetch_truth.get("fetched_count") or 0),
+                "symbols_evaluated": int(p402_eval_truth.get("evaluated_count") or 0),
+                "fetch_chunk_size": int(p402_fetch_truth.get("chunk_size") or 0),
+                "fetch_chunk_timeout_sec": p402_fetch_truth.get("chunk_timeout_sec"),
+                "fetch_error_count": int(p402_fetch_truth.get("error_count") or 0),
+                "candidate_progress_publish_count": int(p476_candidate_progress_publish.get("publish_count") or 0),
+                "candidate_count": len(candidates),
+                "selected_count": len(selected_symbols),
+                "cleanup_goal": "single scanner producer truth before heavy reports",
+            },
             "p479_broker_free_selection_finalization": {
                 "enabled": True,
                 "thread_isolation_configured_enabled": bool(SWING_SCAN_SYMBOL_EVAL_ISOLATION_ENABLED),
