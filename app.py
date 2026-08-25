@@ -804,6 +804,14 @@ MARKET_CLOSE = time(16, 0)
 MARKET_CLOCK_CACHE_TTL_SEC = int(getenv_any("MARKET_CLOCK_CACHE_TTL_SEC", default="20"))
 MARKET_CLOCK_FAIL_OPEN = env_bool("MARKET_CLOCK_FAIL_OPEN", "false")
 MARKET_CLOSED_DATES_NY = {s.strip() for s in str(getenv_any("MARKET_CLOSED_DATES_NY", default="2026-07-03") or "").split(",") if s.strip()}
+SWING_ENTRY_SCAN_MIN_SECONDS_BEFORE_CLOSE = getenv_int_any(
+    "SWING_ENTRY_SCAN_MIN_SECONDS_BEFORE_CLOSE",
+    default=1200,
+)
+SWING_LATE_SCAN_NON_ACTIONABLE_ENABLED = env_bool_any(
+    "SWING_LATE_SCAN_NON_ACTIONABLE_ENABLED",
+    default=True,
+)
 PENDING_ORDER_ENTRY_FREEZE_ENABLE = env_bool("PENDING_ORDER_ENTRY_FREEZE_ENABLE", "true")
 RECONCILE_DEACTIVATE_CANCELED_ENTRY_PLANS = env_bool_any(
     "RECONCILE_DEACTIVATE_CANCELED_ENTRY_PLANS",
@@ -2973,7 +2981,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-551-deploy-warmup-log-cleanup-fast-trace-payload-slim"
+PATCH_VERSION = "patch-552-market-close-entry-scan-cutoff-runtime-failure-aging"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -4120,7 +4128,7 @@ def _p481_canonical_scan_truth(raw_scan: dict | None = None) -> dict:
         raw.get("skipped")
         or raw_summary.get("skipped")
         or raw_summary.get("skip_reason")
-        or raw_reason in {"outside_market_hours", "outside_scanner_session", "scanner_disabled"}
+        or raw_reason in {"outside_market_hours", "outside_scanner_session", "scanner_disabled", "too_close_to_market_close", "after_market_close", "late_entry_scan_non_actionable"}
     )
 
     use_candidate = bool(
@@ -7819,6 +7827,57 @@ def _is_regular_market_day(dt_local=None) -> bool:
 
 def in_market_hours() -> bool:
     return bool(_market_clock_snapshot().get("is_open"))
+
+def _p552_market_close_entry_scan_truth(now_dt=None) -> dict:
+    try:
+        now_local = (now_dt or now_ny()).astimezone(NY_TZ)
+    except Exception:
+        now_local = now_ny()
+    open_local = datetime.combine(now_local.date(), MARKET_OPEN, tzinfo=NY_TZ)
+    close_local = datetime.combine(now_local.date(), MARKET_CLOSE, tzinfo=NY_TZ)
+    seconds_to_close = (close_local - now_local).total_seconds()
+    min_sec = max(0, int(SWING_ENTRY_SCAN_MIN_SECONDS_BEFORE_CLOSE or 0))
+    market_day = bool(_is_regular_market_day(now_local))
+    in_regular_window = bool(market_day and open_local <= now_local <= close_local)
+    after_close = bool(market_day and now_local > close_local)
+    before_open = bool(market_day and now_local < open_local)
+    too_close_to_close = bool(
+        SWING_LATE_SCAN_NON_ACTIONABLE_ENABLED
+        and in_regular_window
+        and min_sec > 0
+        and seconds_to_close < min_sec
+    )
+    actionable = bool(in_regular_window and not too_close_to_close)
+    if not SWING_LATE_SCAN_NON_ACTIONABLE_ENABLED:
+        reason = "late_scan_cutoff_disabled"
+        actionable = bool(in_regular_window)
+    elif too_close_to_close:
+        reason = "too_close_to_market_close"
+    elif after_close:
+        reason = "after_market_close"
+    elif before_open:
+        reason = "before_market_open"
+    elif not market_day:
+        reason = "non_market_day"
+    elif actionable:
+        reason = "entry_scan_actionable"
+    else:
+        reason = "outside_entry_scan_window"
+    return {
+        "enabled": bool(SWING_LATE_SCAN_NON_ACTIONABLE_ENABLED),
+        "entry_scan_actionable": bool(actionable),
+        "reason": reason,
+        "now_ny": now_local.isoformat(),
+        "market_open_ny": open_local.isoformat(),
+        "market_close_ny": close_local.isoformat(),
+        "seconds_to_close": round(float(seconds_to_close), 3),
+        "min_seconds_before_close": int(min_sec),
+        "market_day": bool(market_day),
+        "in_regular_window": bool(in_regular_window),
+        "too_close_to_close": bool(too_close_to_close),
+        "after_close": bool(after_close),
+        "before_open": bool(before_open),
+    }
 
 def _p388_entry_level_preview(side: str, price: float, meta: dict | None = None) -> dict:
     meta = dict(meta or {})
@@ -27980,29 +28039,6 @@ def _p455_scanner_failure_root_cause(
             "scan_background_completion_truth": background_truth,
         }
 
-    if background_status == "failed":
-        return {
-            "active": True,
-            "root_cause": "background_scan_failed",
-            "recovery_action": "review_background_scan_failure_details",
-            "scan_reason": scan_reason,
-            "last_event": last_event,
-            "last_status": last_status,
-            "last_closed_event": last_closed_event,
-            "last_closed_status": last_closed_status,
-            "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
-            "error": (background_truth or {}).get("error") or error,
-            "exception_type": (background_truth or {}).get("exception_type") or exception_type or None,
-            "traceback_tail": (background_truth or {}).get("traceback_tail") or traceback_tail,
-            "stage": (background_truth or {}).get("stage") or stage,
-            "stage_details": (background_truth or {}).get("stage_details") or checkpoint_details,
-            "runtime_symbol_count": len(universe_symbols()),
-            "current_configured_runtime_slim_max_symbols": current_configured_cap,
-            "scanner_payload_max_symbols": payload_cap_int or None,
-            "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
-            "scan_background_completion_truth": background_truth,
-        }
-
     if completed_candidate_scan:
         return {
             "active": False,
@@ -28024,14 +28060,43 @@ def _p455_scanner_failure_root_cause(
             "scanner_payload_max_symbols": payload_cap_int or None,
             "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
             "historical_failure_tombstoned": bool(
-                last_closed_event in {"scan_fail", "scan_error", "scan_dispatch_error", "scan_dispatch_http_error"}
+                background_status == "failed"
+                or last_closed_event in {"scan_fail", "scan_error", "scan_dispatch_error", "scan_dispatch_http_error"}
                 or last_closed_status in {"failure", "exception", "timeout_failure", "http_error"}
             ),
             "historical_failure_root_cause": (
-                "scanner_dispatch_failure"
-                if last_closed_event or last_closed_status
-                else "none"
+                "background_scan_failed"
+                if background_status == "failed"
+                else (
+                    "scanner_dispatch_failure"
+                    if last_closed_event or last_closed_status
+                    else "none"
+                )
             ),
+            "scan_background_completion_truth": background_truth,
+        }
+
+    if background_status == "failed":
+        return {
+            "active": True,
+            "root_cause": "background_scan_failed",
+            "recovery_action": "review_background_scan_failure_details",
+            "scan_reason": scan_reason,
+            "last_event": last_event,
+            "last_status": last_status,
+            "last_closed_event": last_closed_event,
+            "last_closed_status": last_closed_status,
+            "last_closed_utc": summary.get("last_closed_utc") or tel.get("last_closed_utc"),
+            "error": (background_truth or {}).get("error") or error,
+            "exception_type": (background_truth or {}).get("exception_type") or exception_type or None,
+            "traceback_tail": (background_truth or {}).get("traceback_tail") or traceback_tail,
+            "stage": (background_truth or {}).get("stage") or stage,
+            "stage_details": (background_truth or {}).get("stage_details") or checkpoint_details,
+            "runtime_symbol_count": len(universe_symbols()),
+            "current_configured_runtime_slim_max_symbols": current_configured_cap,
+            "scanner_payload_max_symbols": payload_cap_int or None,
+            "payload_cap_stale": bool(payload_cap_int and payload_cap_int < current_configured_cap),
+            "scan_background_completion_truth": background_truth,
         }
 
     if scan_reason == "scan_exception":
@@ -32304,6 +32369,20 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         selected_symbols=[c.get("symbol") for c in selected],
     )
 
+    p552_submit_clock_truth = _p552_market_close_entry_scan_truth()
+    p552_late_submit_non_actionable = bool(
+        scan_options.get("_p552_worker_source")
+        and str(STRATEGY_MODE or "").strip().lower() == "swing"
+        and bool(SCANNER_REQUIRE_MARKET_HOURS)
+        and bool(ONLY_MARKET_HOURS)
+        and not bool(p552_submit_clock_truth.get("entry_scan_actionable"))
+    )
+    if p552_late_submit_non_actionable:
+        summary["p552_market_close_entry_scan_truth"] = dict(p552_submit_clock_truth)
+        summary["late_entry_scan_non_actionable"] = True
+        summary["late_entry_scan_selected_symbols"] = list(p461_pre_submit_selected_symbols)
+        summary["late_entry_scan_reason"] = str(p552_submit_clock_truth.get("reason") or "late_entry_scan_non_actionable")
+
     p399_retry_slots = max(
         0,
         min(
@@ -32314,7 +32393,19 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     p399_pre_scan_retry_candidates = _p387_pending_rate_limited_selected_submit_retry_candidates(
         max_items=p399_retry_slots,
     )
-    if p399_pre_scan_retry_candidates:
+    if p552_late_submit_non_actionable:
+        p399_pre_scan_retry_submit = {
+            "would_submit": [],
+            "selected_submission_payloads": [],
+            "submitted_symbols": [],
+            "attempted_symbols": [],
+            "rate_limited_symbols": [],
+            "slot_count": 0,
+            "deferred_by_p552": True,
+            "reason": "late_entry_scan_non_actionable",
+            "p552_market_close_entry_scan_truth": dict(p552_submit_clock_truth),
+        }
+    elif p399_pre_scan_retry_candidates:
         p399_pre_scan_retry_submit = _p399_submit_swing_candidate_rows(
             p399_pre_scan_retry_candidates,
             effective_dry_run=bool(effective_dry_run or effective_entry_dry_run("worker_scan")),
@@ -32325,17 +32416,49 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         p399_pre_scan_retry_submit["deferred_by_p470"] = True
         p399_pre_scan_retry_submit["reason"] = "retry_submit_ran_after_candidate_truth"
 
-    p399_selected_submit = _p399_submit_swing_candidate_rows(
-        selected,
-        effective_dry_run=effective_dry_run,
-        scan_reason=scan_reason,
-        override_live_permitted=override_live_permitted,
-        override_symbol=override_symbol,
-        override_source=override_source,
-        override_live_reasons=override_live_reasons,
-        loss_day_throttle=loss_day_throttle,
-        candidate_slots=max_new_entries,
-    )
+    if p552_late_submit_non_actionable:
+        p552_reason = str(p552_submit_clock_truth.get("reason") or "late_entry_scan_non_actionable")
+        p399_selected_submit = {
+            "would_submit": [
+                {
+                    "symbol": str((row or {}).get("symbol") or "").strip().upper(),
+                    "signal": (row or {}).get("signal") or "daily_breakout",
+                    "rank_score": (row or {}).get("rank_score"),
+                    "entry_type": (row or {}).get("entry_type") or "swing_production_contract",
+                    "ignored": True,
+                    "reason": p552_reason,
+                    "submit_state": "ignored",
+                    "submit_reason": p552_reason,
+                    "submit_attempted": False,
+                    "actual_submit_side_effect": False,
+                    "submit_gap": False,
+                    "p552_late_entry_scan_non_actionable": True,
+                    "p552_market_close_entry_scan_truth": dict(p552_submit_clock_truth),
+                }
+                for row in list(selected or [])
+                if str((row or {}).get("symbol") or "").strip()
+            ],
+            "selected_submission_payloads": [],
+            "submitted_symbols": [],
+            "attempted_symbols": [],
+            "rate_limited_symbols": [],
+            "slot_count": 0,
+            "deferred_by_p552": True,
+            "reason": p552_reason,
+            "p552_market_close_entry_scan_truth": dict(p552_submit_clock_truth),
+        }
+    else:
+        p399_selected_submit = _p399_submit_swing_candidate_rows(
+            selected,
+            effective_dry_run=effective_dry_run,
+            scan_reason=scan_reason,
+            override_live_permitted=override_live_permitted,
+            override_symbol=override_symbol,
+            override_source=override_source,
+            override_live_reasons=override_live_reasons,
+            loss_day_throttle=loss_day_throttle,
+            candidate_slots=max_new_entries,
+        )
     would_submit = list(p399_pre_scan_retry_submit.get("would_submit") or []) + list(p399_selected_submit.get("would_submit") or [])
     selected_submission_payloads = list(p399_pre_scan_retry_submit.get("selected_submission_payloads") or []) + list(p399_selected_submit.get("selected_submission_payloads") or [])
 
@@ -32403,6 +32526,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if str((row or {}).get("symbol") or "").strip()
         and _p398_submit_row_rate_limited(row)
     ])
+    p552_late_non_actionable_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and bool((row or {}).get("p552_late_entry_scan_non_actionable"))
+    ])
     p522_submit_gap_symbols = _dedupe_keep_order([
         sym for sym in p522_selected_symbols_for_summary
         if sym not in set(p522_submit_row_symbols)
@@ -32411,6 +32540,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             and sym not in set(p522_execution_quality_block_symbols)
             and sym not in set(p522_retryable_spread_block_symbols)
             and sym not in set(p522_rate_limited_retry_symbols)
+            and sym not in set(p552_late_non_actionable_symbols)
         )
     ])
     p547_post_submit_snapshot = _p547_selection_submit_snapshot(
@@ -32445,6 +32575,9 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "retryable_spread_block_count": len(p522_retryable_spread_block_symbols),
         "rate_limited_submit_retry_symbols": list(p522_rate_limited_retry_symbols),
         "rate_limited_submit_retry_count": len(p522_rate_limited_retry_symbols),
+        "p552_late_non_actionable_symbols": list(p552_late_non_actionable_symbols),
+        "p552_late_non_actionable_count": len(p552_late_non_actionable_symbols),
+        "p552_market_close_entry_scan_truth": dict(p552_submit_clock_truth),
         "selected_submit_gap_symbols": list(p522_submit_gap_symbols),
         "selected_submit_gap_count": len(p522_submit_gap_symbols),
         "selected_submit_gap_active": bool(p522_submit_gap_symbols),
@@ -60085,6 +60218,13 @@ def diagnostics_swing_runtime_config():
             "loss_day_entry_throttle_enabled": _cfg_bool("SWING_LOSS_DAY_ENTRY_THROTTLE_ENABLED"),
         },
         entry_gates={
+            "market_close_entry_scan_cutoff": {
+                "enabled": _cfg_bool("SWING_LATE_SCAN_NON_ACTIONABLE_ENABLED", True),
+                "can_block_entries": False,
+                "prevents_stale_late_scan_submit": True,
+                "min_seconds_before_close": _cfg_int("SWING_ENTRY_SCAN_MIN_SECONDS_BEFORE_CLOSE", 1200),
+                "current_truth": _p552_market_close_entry_scan_truth(),
+            },
             "regime_filter": {
                 "enabled": _cfg_bool("SWING_REGIME_FILTER_ENABLED"),
                 "can_block_entries": _cfg_bool("SWING_REQUIRE_INDEX_ALIGNMENT"),
@@ -61376,6 +61516,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         source_kind = "external"
     worker_source = source_kind == "worker"
     source_meta = {"requested_reason": str(body.get("reason") or ""), "user_agent": user_agent, "source_ip": getattr(req.client, "host", ""), "source_kind": source_kind, "worker_source": worker_source}
+    body["_p552_source_kind"] = source_kind
+    body["_p552_worker_source"] = bool(worker_source)
     scan_attempt_id = _p272_scanner_dispatch_attempt_key(body, source_meta)
     source_meta["scan_attempt_id"] = scan_attempt_id
     prior_attempt = dict(SCANNER_DISPATCH_ATTEMPTS.get(scan_attempt_id) or {})
@@ -61462,7 +61604,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             LAST_SCAN['reason'] = requested_reason
 
         skip_reason = str(LAST_SCAN.get("reason") or "").strip()
-        if bool(LAST_SCAN.get("skipped")) or skip_reason in {"outside_market_hours", "outside_scanner_session", "scanner_disabled"}:
+        if bool(LAST_SCAN.get("skipped")) or skip_reason in {"outside_market_hours", "outside_scanner_session", "scanner_disabled", "too_close_to_market_close", "after_market_close", "late_entry_scan_non_actionable"}:
             LAST_SCAN["does_not_replace_candidate_truth"] = True
             LAST_SCAN["non_replacement_scan"] = True
             LAST_SCAN["candidate_truth_replacement_allowed"] = False
@@ -61561,6 +61703,63 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_market_hours", **LAST_SCAN}
+
+        p552_start_truth = _p552_market_close_entry_scan_truth()
+        if (
+            worker_source
+            and str(STRATEGY_MODE or "").strip().lower() == "swing"
+            and bool(SCANNER_REQUIRE_MARKET_HOURS)
+            and bool(ONLY_MARKET_HOURS)
+            and not bool(p552_start_truth.get("entry_scan_actionable"))
+        ):
+            skip_reason = str(p552_start_truth.get("reason") or "late_entry_scan_non_actionable")
+            _set_last_scan(
+                skipped=True,
+                reason=skip_reason,
+                scanned=0,
+                signals=0,
+                would_trade=0,
+                blocked=0,
+                duration_ms=_elapsed_ms(),
+                p552_market_close_entry_scan_truth=dict(p552_start_truth),
+            )
+            record_decision("SCAN", "worker_scan", action="skipped", reason=skip_reason, meta={"p552_market_close_entry_scan_truth": p552_start_truth})
+            try:
+                scan_summary = {
+                    "skipped": True,
+                    "skip_reason": skip_reason,
+                    "actions": {"skipped": 1},
+                    "no_signal_total": 0,
+                    "top_no_signal_reasons": [(skip_reason, 1)],
+                    "strategy_breakdown": {},
+                    "p552_market_close_entry_scan_truth": dict(p552_start_truth),
+                    "late_entry_scan_non_actionable": True,
+                    "candidate_truth_replacement_allowed": False,
+                }
+                SCAN_HISTORY.append({
+                    "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "patch_version": PATCH_VERSION,
+                    "boot_id": SYSTEM_BOOT_ID,
+                    "universe_provider": SCANNER_UNIVERSE_PROVIDER,
+                    "symbols": [],
+                    "scanned": 0,
+                    "signals": 0,
+                    "would_trade": 0,
+                    "blocked": 0,
+                    "duration_ms": _elapsed_ms(),
+                    "summary": scan_summary,
+                    "timing_ms": dict(timing_ms),
+                    "results": [],
+                })
+                if len(SCAN_HISTORY) > SCAN_HISTORY_SIZE:
+                    del SCAN_HISTORY[: max(0, len(SCAN_HISTORY) - SCAN_HISTORY_SIZE)]
+            except Exception:
+                pass
+            try:
+                _record_scanner_telemetry("scan_skip", "skipped", details={"reason": skip_reason, "duration_ms": _elapsed_ms(), "scan_reason": requested_reason or "scheduled", "p552_market_close_entry_scan_truth": p552_start_truth, **source_meta})
+            except Exception:
+                pass
+            return {"ok": True, "skipped": True, "reason": skip_reason, "p552_market_close_entry_scan_truth": p552_start_truth, **LAST_SCAN}
 
                 # Optional intraday scanner session gating (NY time).
         if SCANNER_SESSIONS_NY and not in_scanner_session():
