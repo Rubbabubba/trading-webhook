@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-586-scan-truth-normalizer-module-extraction"
+PATCH_VERSION = "patch-587-current-scan-submit-recommendation-parity-from-submit-hours-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -41384,20 +41384,20 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "raw_latest_reason": raw_latest_reason or None,
         "replacement_applied": bool(p579_truth.get("replacement_applied")),
         "market_hours_submit_possible": bool(p584_market_hours_submit_truth.get("market_hours_submit_possible")),
+        "p587_submit_hours_truth_driven": True,
     }
     if (
         selected_symbols
         and status == "selecting"
         and recommended_action == "monitor_submissions"
         and bool(p579_truth.get("replacement_applied"))
-        and raw_latest_reason in {"outside_market_hours", "outside_scanner_session", "market_closed"}
         and not bool(p584_market_hours_submit_truth.get("market_hours_submit_possible"))
     ):
         status = "after_hours_selected_not_submitted"
         recommended_action = "wait_for_next_market_scan"
         p584_after_hours_recommendation_parity.update({
             "applied": True,
-            "reason": "preserved_candidate_scan_selected_symbols_are_not_submit_actionable_after_hours",
+            "reason": "preserved_candidate_scan_selected_symbols_are_not_submit_actionable_by_submit_hours_truth",
             "status": status,
             "recommended_action": recommended_action,
         })
