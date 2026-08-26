@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-578-after-hours-selected-gap-suppression-post-deploy-submit-proof"
+PATCH_VERSION = "patch-579-scanner-canonical-state-consumer-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28964,6 +28964,151 @@ def _p572_scrub_selected_open_position_symbols(
         ),
     }
 
+def _p579_scan_selected_symbols_for_light(scan: dict | None, summary: dict | None = None) -> list[str]:
+    scan = dict(scan or {})
+    summary = dict(summary or scan.get("summary") or {})
+    return _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("selected_symbols") or scan.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+
+def _p579_scan_has_candidate_rows_for_light(summary: dict | None) -> bool:
+    summary = dict(summary or {})
+    for key in (
+        "p547_selection_submit_snapshot",
+        "selected_candidate_rows_for_truth",
+        "candidate_rows_for_truth",
+        "top_new_entry_candidates",
+        "top_candidates",
+        "candidates",
+        "items",
+    ):
+        value = summary.get(key)
+        if isinstance(value, dict):
+            value = value.get("selected_rows") or value.get("candidate_rows") or value.get("rows")
+        if isinstance(value, (list, tuple)) and value:
+            return True
+    return False
+
+def _p579_light_scan_consumer_truth(scan: dict | None, source: str = "") -> dict:
+    row = dict(scan or {})
+    summary = dict(row.get("summary") or {})
+    truth = _p475_scan_candidate_bearing_truth(row)
+    reason = str(row.get("reason") or summary.get("scan_reason") or "").strip()
+    selected_symbols = _p579_scan_selected_symbols_for_light(row, summary)
+    has_rows = _p579_scan_has_candidate_rows_for_light(summary)
+    skip_reason = str(summary.get("skip_reason") or "").strip()
+    skipped = bool(row.get("skipped") or summary.get("skipped") or skip_reason)
+    stale_runtime_reason = bool(
+        skipped
+        or reason in {
+            "outside_market_hours",
+            "outside_scanner_session",
+            "scanner_disabled",
+            "too_close_to_market_close",
+            "after_market_close",
+            "late_entry_scan_non_actionable",
+            "scan_runtime_budget_exceeded",
+        }
+        or bool(row.get("runtime_budget_sanitized"))
+    )
+    return {
+        "source": source or row.get("_scan_source") or row.get("source") or "unknown",
+        "ts_utc": row.get("ts_utc"),
+        "reason": reason or None,
+        "selected_symbols": selected_symbols,
+        "selected_total": len(selected_symbols),
+        "candidate_bearing": bool(truth.get("candidate_bearing") or has_rows or selected_symbols),
+        "trade_judgable": bool(truth.get("trade_judgable") or has_rows or selected_symbols),
+        "has_candidate_rows": bool(has_rows),
+        "stale_runtime_reason": bool(stale_runtime_reason),
+        "runtime_budget_sanitized": bool(row.get("runtime_budget_sanitized")),
+    }
+
+def _p579_canonical_light_scan_consumer(
+    latest_scan: dict | None = None,
+    summary: dict | None = None,
+) -> dict:
+    raw = dict(latest_scan or LAST_SCAN or {})
+    if summary and isinstance(summary, dict):
+        raw.setdefault("summary", dict(summary or {}))
+    raw = _p464_sanitize_persisted_over_budget_scan(raw, source="p579_raw_latest_scan")
+    raw = _p475_normalize_scan_truth_contract(raw, source="p579_raw_latest_scan")
+    raw_truth = _p579_light_scan_consumer_truth(raw, "last_scan")
+
+    candidates: list[tuple[str, dict]] = []
+    for name, row in (
+        ("last_actionable_market_scan", LAST_ACTIONABLE_MARKET_SCAN),
+        ("last_successful_production_scan", LAST_SUCCESSFUL_PRODUCTION_SCAN),
+        ("last_scan", raw),
+    ):
+        if isinstance(row, dict) and row:
+            item = dict(row)
+            item["_scan_source"] = item.get("_scan_source") or name
+            candidates.append((name, item))
+    for row in reversed(list(SCAN_HISTORY or [])):
+        if isinstance(row, dict) and row:
+            item = dict(row)
+            item["_scan_source"] = item.get("_scan_source") or "scan_history"
+            candidates.append(("scan_history", item))
+            if len(candidates) >= 15:
+                break
+
+    chosen_source = "last_scan"
+    chosen = raw
+    chosen_truth = raw_truth
+    for name, candidate in candidates:
+        try:
+            candidate = _p464_sanitize_persisted_over_budget_scan(dict(candidate or {}), source=f"p579_{name}")
+            candidate = _p475_normalize_scan_truth_contract(candidate, source=f"p579_{name}")
+            truth = _p579_light_scan_consumer_truth(candidate, name)
+        except Exception:
+            continue
+        if bool(truth.get("candidate_bearing")) and bool(truth.get("trade_judgable")):
+            chosen_source = name
+            chosen = candidate
+            chosen_truth = truth
+            break
+
+    replacement_applied = bool(
+        chosen_source != "last_scan"
+        and (
+            bool(raw_truth.get("stale_runtime_reason"))
+            or not bool(raw_truth.get("candidate_bearing"))
+            or raw_truth.get("selected_symbols") != chosen_truth.get("selected_symbols")
+        )
+    )
+    chosen_summary = dict(chosen.get("summary") or {})
+    chosen["_scan_source"] = chosen.get("_scan_source") or chosen_source
+    chosen["_p579_canonical_light_consumer_truth"] = {
+        "enabled": True,
+        "chosen_source": chosen_source,
+        "raw_latest_source": "last_scan",
+        "replacement_applied": bool(replacement_applied),
+        "raw_latest": {
+            key: raw_truth.get(key)
+            for key in ("ts_utc", "reason", "selected_symbols", "candidate_bearing", "trade_judgable", "stale_runtime_reason")
+        },
+        "chosen": {
+            key: chosen_truth.get(key)
+            for key in ("ts_utc", "reason", "selected_symbols", "candidate_bearing", "trade_judgable", "stale_runtime_reason")
+        },
+        "reason": (
+            "candidate_bearing_scan_adopted_for_light_consumers"
+            if replacement_applied
+            else "raw_latest_scan_is_current_consumer_source"
+        ),
+    }
+    chosen_summary["p579_canonical_light_consumer_truth"] = dict(chosen["_p579_canonical_light_consumer_truth"])
+    chosen_summary["effective_market_scan_source"] = chosen_source
+    chosen["summary"] = chosen_summary
+    return {
+        "scan": chosen,
+        "summary": chosen_summary,
+        "truth": dict(chosen["_p579_canonical_light_consumer_truth"]),
+    }
+
 def _p573_zero_load_candidate_snapshot_for_light(limit: int = 100) -> dict:
     lim = max(1, min(int(limit or 100), 250))
 
@@ -28996,10 +29141,15 @@ def _p573_zero_load_candidate_snapshot_for_light(limit: int = 100) -> dict:
         return rows
 
     scans: list[tuple[str, dict]] = []
+    p579_canonical = _p579_canonical_light_scan_consumer()
+    p579_scan = dict(p579_canonical.get("scan") or {})
+    p579_source = str((p579_canonical.get("truth") or {}).get("chosen_source") or "p579_canonical_light_consumer")
+    if p579_scan:
+        scans.append((p579_source, p579_scan))
     for name, row in (
-        ("last_scan", LAST_SCAN),
         ("last_actionable_market_scan", LAST_ACTIONABLE_MARKET_SCAN),
         ("last_successful_production_scan", LAST_SUCCESSFUL_PRODUCTION_SCAN),
+        ("last_scan", LAST_SCAN),
     ):
         if isinstance(row, dict) and row:
             scans.append((name, dict(row)))
@@ -29078,7 +29228,7 @@ def _p573_zero_load_candidate_snapshot_for_light(limit: int = 100) -> dict:
         and not bool((row or {}).get("open_position"))
         and str((row or {}).get("symbol") or "").strip()
     ])
-    if fast_rows:
+    if fast_rows and row_selected_symbols:
         selected_symbols = row_selected_symbols
     elif not selected_symbols:
         selected_symbols = row_selected_symbols
@@ -29096,6 +29246,9 @@ def _p573_zero_load_candidate_snapshot_for_light(limit: int = 100) -> dict:
             else "cached_summary_selected_symbols"
         ),
         "p574_summary_selected_symbols": list(scan_summary.get("selected_symbols") or []),
+        "p579_canonical_light_consumer_truth": dict(
+            (scan_summary.get("p579_canonical_light_consumer_truth") or {})
+        ),
         "candidate_count": int(scan_summary.get("candidates_total") or len(fast_rows) or 0),
         "eligible_count": int(scan_summary.get("eligible_total") or len(eligible_rows) or 0),
         "candidate_rows": fast_rows,
@@ -41054,6 +41207,9 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
     summary = dict(scan.get("summary") or {})
     open_symbols = set(_p404_active_position_symbols_light())
     p573_snapshot = _p573_zero_load_candidate_snapshot_for_light(limit=max(lim, 100))
+    p573_effective_scan_meta = dict(p573_snapshot.get("effective_scan_meta") or {})
+    if p573_effective_scan_meta.get("source"):
+        scan_source = str(p573_effective_scan_meta.get("source") or scan_source)
 
     rows_all: list[dict] = []
     seen_symbols: set[str] = set()
@@ -41293,15 +41449,15 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "p575_current_selection_promotion": dict(p575_current_selection_promotion),
         "p576_canonical_selection_handoff": dict(p576_handoff.get("p576_canonical_selection_handoff") or {}),
         "latest_scan": {
-            "ts_utc": scan.get("ts_utc") or (p573_snapshot.get("effective_scan_meta") or {}).get("ts_utc"),
-            "reason": scan.get("reason") or summary.get("scan_reason") or (p573_snapshot.get("effective_scan_meta") or {}).get("reason"),
-            "scanned": scan.get("scanned") if scan.get("scanned") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("scanned"),
-            "signals": scan.get("signals") if scan.get("signals") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("signals"),
-            "would_trade": scan.get("would_trade") if scan.get("would_trade") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("would_trade"),
-            "blocked": scan.get("blocked") if scan.get("blocked") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("blocked"),
-            "duration_ms": scan.get("duration_ms") if scan.get("duration_ms") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("duration_ms"),
-            "source": (p573_snapshot.get("effective_scan_meta") or {}).get("source") or scan_source,
-            "runtime_budget_sanitized": bool(scan.get("runtime_budget_sanitized") or (p573_snapshot.get("effective_scan_meta") or {}).get("runtime_budget_sanitized")),
+            "ts_utc": p573_effective_scan_meta.get("ts_utc") or scan.get("ts_utc"),
+            "reason": p573_effective_scan_meta.get("reason") or scan.get("reason") or summary.get("scan_reason"),
+            "scanned": p573_effective_scan_meta.get("scanned") if p573_effective_scan_meta.get("scanned") is not None else scan.get("scanned"),
+            "signals": p573_effective_scan_meta.get("signals") if p573_effective_scan_meta.get("signals") is not None else scan.get("signals"),
+            "would_trade": p573_effective_scan_meta.get("would_trade") if p573_effective_scan_meta.get("would_trade") is not None else scan.get("would_trade"),
+            "blocked": p573_effective_scan_meta.get("blocked") if p573_effective_scan_meta.get("blocked") is not None else scan.get("blocked"),
+            "duration_ms": p573_effective_scan_meta.get("duration_ms") if p573_effective_scan_meta.get("duration_ms") is not None else scan.get("duration_ms"),
+            "source": p573_effective_scan_meta.get("source") or scan_source,
+            "runtime_budget_sanitized": bool(p573_effective_scan_meta.get("runtime_budget_sanitized") or scan.get("runtime_budget_sanitized")),
         },
         "runtime_universe_coverage": {
             "omitted_from_fast_payload": True,
@@ -41341,6 +41497,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
             "raw_last_scan_has_summary": bool(latest_summary),
             "last_actionable_scan_has_summary": bool(actionable_summary),
             "preferred_scan_source": scan_source,
+            "p579_canonical_light_consumer_truth": dict(p573_snapshot.get("p579_canonical_light_consumer_truth") or {}),
             "candidate_row_source": row_source,
             "row_walk_limit": lim,
             "fallback_used": row_source != "summary_cached_rows",
@@ -46863,6 +47020,11 @@ def _p298_scanner_light() -> dict:
 
     latest_scan = _p464_sanitize_persisted_over_budget_scan(dict(latest_scan or {}), source="scanner_light_latest_scan")
     latest_scan = _p475_normalize_scan_truth_contract(latest_scan, source="scanner_light")
+    p579_canonical = _p579_canonical_light_scan_consumer(latest_scan, summary)
+    p579_truth = dict(p579_canonical.get("truth") or {})
+    if bool(p579_truth.get("replacement_applied")):
+        latest_scan = dict(p579_canonical.get("scan") or latest_scan)
+        summary = dict(p579_canonical.get("summary") or latest_scan.get("summary") or summary or {})
     p475_latest_truth = dict(latest_scan.get("p475_scan_truth_contract") or {})
     background_truth = dict(_p456_background_scan_truth() or {})
     p555_stale_submit_pending_truth = _p555_stale_submit_pending_truth(background_truth)
@@ -46891,6 +47053,7 @@ def _p298_scanner_light() -> dict:
     latest_scan["p571_stage_timing_truth"] = dict(p571_stage_timing)
     latest_scan["p555_stale_submit_pending_truth"] = dict(p555_stale_submit_pending_truth)
     latest_scan["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
+    latest_scan["p579_canonical_light_consumer_truth"] = dict(p579_truth)
     latest_scan["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
     latest_scan["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
     latest_scan["regime_only_non_actionable"] = bool(p475_latest_truth.get("regime_only_non_actionable"))
@@ -46920,6 +47083,7 @@ def _p298_scanner_light() -> dict:
     summary["p571_stage_timing_truth"] = dict(p571_stage_timing)
     summary["p555_stale_submit_pending_truth"] = dict(p555_stale_submit_pending_truth)
     summary["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
+    summary["p579_canonical_light_consumer_truth"] = dict(p579_truth)
     summary["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
     summary["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
     summary["regime_only_non_actionable"] = bool(p475_latest_truth.get("regime_only_non_actionable"))
