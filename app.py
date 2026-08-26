@@ -2993,7 +2993,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-567-zero-load-current-scan-snapshot-runtime-restore-bypass"
+PATCH_VERSION = "patch-568-current-scan-fast-truth-source-sync-completed-scanner-grace-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -39883,6 +39883,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         scan = actionable
         scan_source = "last_actionable_market_scan"
     summary = dict(scan.get("summary") or {})
+    open_symbols = set(_p404_active_position_symbols_light())
 
     rows_all: list[dict] = []
     seen_symbols: set[str] = set()
@@ -39906,6 +39907,21 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
                 break
         if len(rows_all) >= lim:
             break
+    row_source = "summary_cached_rows"
+    if not rows_all and LAST_SWING_CANDIDATES:
+        for row in list(LAST_SWING_CANDIDATES or []):
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "").strip().upper()
+            if not sym or sym in seen_symbols:
+                continue
+            item = _p406_candidate_row_fast(dict(row), open_symbols=open_symbols)
+            rows_all.append(item)
+            seen_symbols.add(sym)
+            if len(rows_all) >= lim:
+                break
+        if rows_all:
+            row_source = "last_swing_candidates_memory"
 
     eligible_rows_all = [
         row for row in rows_all
@@ -39997,6 +40013,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "read_only": True,
         "p567_runtime_restore_bypassed": True,
         "p567_limited_cached_row_walk": True,
+        "p568_truth_source_synced_with_submit_trace": True,
         "p566_true_fast_current_scan_snapshot": True,
         "p565_fast_current_scan_suppression_snapshot": True,
         "does_not_recompute_candidate_payload": True,
@@ -40073,8 +40090,9 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
             "raw_last_scan_has_summary": bool(latest_summary),
             "last_actionable_scan_has_summary": bool(actionable_summary),
             "preferred_scan_source": scan_source,
-            "candidate_row_source": "summary_cached_rows",
+            "candidate_row_source": row_source,
             "row_walk_limit": lim,
+            "fallback_used": row_source != "summary_cached_rows",
         },
     }
 

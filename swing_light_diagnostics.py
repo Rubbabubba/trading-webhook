@@ -321,6 +321,10 @@ def scanner_light_snapshot(
         background_status = "failed"
 
     background_scan_active = background_status in {"accepted", "running"}
+    background_scan_terminal = bool(
+        background_status in {"completed", "failed", "timeout", "canceled"}
+        or bool(scan_background_completion_truth.get("terminal"))
+    )
     background_started_age_sec = _scanner_light_iso_age_sec(scan_background_completion_truth.get("started_utc"))
     background_heartbeat_age_sec = _scanner_light_iso_age_sec(scan_background_completion_truth.get("updated_utc"))
     background_age_sec = background_started_age_sec
@@ -371,6 +375,18 @@ def scanner_light_snapshot(
         effective_in_flight = False
         if "scan_request_reconciled_by_terminal_scan" not in recovered_warning_codes:
             recovered_warning_codes.append("scan_request_reconciled_by_terminal_scan")
+
+    if background_scan_terminal and not background_scan_active:
+        in_flight_grace_active = False
+        effective_in_flight = False
+        in_flight_over_grace = False
+        in_flight_over_budget = False
+        active_warning_codes = [
+            code for code in active_warning_codes
+            if code not in {"partial_run_open", "dispatch_failure"}
+        ]
+        if "completed_background_scan_cleared_grace" not in recovered_warning_codes:
+            recovered_warning_codes.append("completed_background_scan_cleared_grace")
 
     grace_has_active_scan = bool(in_flight_grace_active and (effective_in_flight or in_flight or background_scan_active))
     scanner_status = (
