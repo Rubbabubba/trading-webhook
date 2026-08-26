@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-582-submit-trace-after-hours-recommendation-sync"
+PATCH_VERSION = "patch-583-submit-trace-selected-submission-parity-stale-timeout-downgrade"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17572,6 +17572,36 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "previous_path_status": previous_path_status,
             "previous_recommended_action": previous_recommended_action,
         })
+    p583_canonical_selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list((p580_canonical_truth.get("chosen") or {}).get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    p583_stale_timeout_after_hours_downgrade = {
+        "applied": False,
+        "reason": "stale_timeout_not_driving_after_hours_trace",
+        "canonical_selected_symbols": list(p583_canonical_selected_symbols),
+        "stale_selected_submit_timeout_symbols": list(p569_stale_selected_submit_timeout_symbols),
+        "market_hours_submit_possible": bool(p540_selected_consumer_truth.get("market_hours_submit_possible")),
+        "consumer_recommended_action": p540_selected_consumer_truth.get("recommended_action"),
+    }
+    if (
+        p583_canonical_selected_symbols
+        and p569_stale_selected_submit_timeout_symbols
+        and not bool(p540_selected_consumer_truth.get("market_hours_submit_possible"))
+        and not bool(p554_submit_pending)
+        and not selected_submit_timeout_symbols
+    ):
+        previous_path_status = path_status
+        previous_recommended_action = recommended_action
+        path_status = "after_hours_selected_not_submitted"
+        recommended_action = "wait_for_next_market_scan"
+        p583_stale_timeout_after_hours_downgrade.update({
+            "applied": True,
+            "reason": "stale_timeout_tombstone_is_historical_when_market_hours_submit_is_not_possible",
+            "previous_path_status": previous_path_status,
+            "previous_recommended_action": previous_recommended_action,
+        })
 
     p564_submit_phase_truth = dict(p554_submit_phase_truth)
     if resolved_submit_timeout_symbols:
@@ -17600,6 +17630,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
         "p580_submit_trace_canonical_scan_consumer_sync": dict(p580_canonical_truth),
         "p582_after_hours_recommendation_sync": dict(p582_after_hours_recommendation_sync),
+        "p583_stale_timeout_after_hours_downgrade": dict(p583_stale_timeout_after_hours_downgrade),
         "p481_canonical_scan_truth": _p551_canonical_scan_truth_compact(p481_canonical_scan_truth),
         "p547_selection_submit_snapshot": {
             "source_stage": p547_selection_snapshot.get("source_stage"),
