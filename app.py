@@ -2805,6 +2805,7 @@ TRADE_PLAN: dict[str, dict] = {}          # symbol -> plan dict
 P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE: list[dict] = []
 P352_RATE_LIMIT_SUBMIT_RECOVERY: list[dict] = []
 P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE: dict[str, dict] = {}
+P570_STALE_SUBMIT_RETRY_PRUNE_LAST: dict = {}
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
@@ -2993,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-569-scanner-runtime-hotspot-truth-stale-submit-timeout-cleanup-fast-broker-pnl-snapshot"
+PATCH_VERSION = "patch-570-stale-submit-retry-queue-prune-cached-broker-daily-pnl-truth-missing-plan-reconcile-nudge"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -22484,8 +22485,68 @@ def _p569_account_daily_pnl_snapshot_bounded(timeout_sec: float = 2.0) -> dict:
         except TypeError:
             executor.shutdown(wait=False)
 
+def _p570_cached_account_daily_pnl_snapshot() -> dict:
+    try:
+        live_payload = dict((LIVE_DASHBOARD_CACHE or {}).get("payload") or {})
+        today_pnl = dict(live_payload.get("today_pnl") or {})
+        account_daily = today_pnl.get("account_daily_pnl")
+        if account_daily not in (None, ""):
+            out = dict(today_pnl.get("account_pnl") or {})
+            out.update({
+                "ok": True,
+                "source": "live_dashboard_cache_today_pnl",
+                "cached": True,
+                "account_daily_pnl": round(_safe_float(account_daily, 0.0), 4),
+                "account_daily_pnl_pct": today_pnl.get("account_daily_pnl_pct") or out.get("account_daily_pnl_pct"),
+                "equity": today_pnl.get("account_equity") or out.get("equity"),
+                "last_equity": today_pnl.get("account_last_equity") or out.get("last_equity"),
+                "ts_utc": live_payload.get("generated_utc") or out.get("ts_utc"),
+                "ts_ny": live_payload.get("generated_ny") or out.get("ts_ny"),
+                "p570_cached_account_daily_pnl": True,
+            })
+            return out
+    except Exception:
+        pass
+
+    try:
+        snap = dict(read_positions_snapshot() or {})
+        extra = snap.get("extra") if isinstance(snap.get("extra"), dict) else {}
+        for key in ("today_pnl_truth", "today_pnl", "loss_control_incident", "account_pnl", "broker_snapshot", "account_snapshot"):
+            row = extra.get(key) if isinstance(extra, dict) else None
+            if not isinstance(row, dict):
+                continue
+            account_daily = row.get("account_daily_pnl")
+            if account_daily is None and row.get("equity") not in (None, "") and row.get("last_equity") not in (None, ""):
+                account_daily = _safe_float(row.get("equity"), 0.0) - _safe_float(row.get("last_equity"), 0.0)
+            if account_daily not in (None, ""):
+                out = dict(row)
+                out.update({
+                    "ok": True,
+                    "source": f"positions_snapshot.extra.{key}",
+                    "cached": True,
+                    "account_daily_pnl": round(_safe_float(account_daily, 0.0), 4),
+                    "account_daily_pnl_pct": row.get("account_daily_pnl_pct"),
+                    "equity": row.get("equity") or row.get("account_equity"),
+                    "last_equity": row.get("last_equity") or row.get("account_last_equity"),
+                    "ts_utc": snap.get("ts_utc") or row.get("ts_utc"),
+                    "ts_ny": snap.get("ts_ny") or row.get("ts_ny"),
+                    "p570_cached_account_daily_pnl": True,
+                })
+                return out
+    except Exception:
+        pass
+
+    return {
+        "ok": False,
+        "source": "no_cached_account_daily_pnl",
+        "cached": True,
+        "account_daily_pnl": None,
+        "p570_cached_account_daily_pnl": False,
+    }
+
 def _p569_fast_broker_daily_goal_truth() -> dict:
-    account_pnl = _p569_account_daily_pnl_snapshot_bounded(timeout_sec=2.0)
+    cached_account_pnl = _p570_cached_account_daily_pnl_snapshot()
+    account_pnl = cached_account_pnl if cached_account_pnl.get("account_daily_pnl") not in (None, "") else _p569_account_daily_pnl_snapshot_bounded(timeout_sec=2.0)
     progress = _p295_broker_daily_goal_progress({
         "account_daily_pnl": account_pnl.get("account_daily_pnl"),
         "today_net_pnl": 0.0,
@@ -22501,6 +22562,12 @@ def _p569_fast_broker_daily_goal_truth() -> dict:
         "heavy_endpoint": "/diagnostics/broker_daily_goal_truth?heavy=true",
         "does_not_fetch_orders": True,
         "does_not_sync_strategy_performance": True,
+        "p570_cached_account_daily_pnl_truth": {
+            "cache_used": bool(cached_account_pnl.get("account_daily_pnl") not in (None, "")),
+            "cache_source": cached_account_pnl.get("source"),
+            "fallback_source": account_pnl.get("source"),
+            "account_daily_pnl_available": bool(account_pnl.get("account_daily_pnl") not in (None, "")),
+        },
         "daily_goal_progress": progress,
         "today_pnl_truth": {
             "ok": bool(account_pnl.get("ok")),
@@ -43485,16 +43552,61 @@ def _p387_rate_limit_retry_key(symbol: str, signal: str | None = None) -> str:
     return f"{sym}|{sig}"
 
 
-def _p387_prune_rate_limit_selected_submit_retry_queue() -> None:
+def _p387_prune_rate_limit_selected_submit_retry_queue() -> dict:
     ttl = max(1, int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC or 900))
     now_ts = datetime.now(timezone.utc).timestamp()
+    removed: list[dict] = []
+    active_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip() and isinstance(plan, dict) and bool(plan.get("active"))
+    }
+    pending_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip() and isinstance(plan, dict) and _plan_is_pending_entry(plan)
+    }
     for key, row in list(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.items()):
         try:
             queued_ts = float(row.get("queued_utc_ts") or 0.0)
         except Exception:
             queued_ts = 0.0
-        if queued_ts <= 0 or (now_ts - queued_ts) > ttl:
+        row_symbol = str((row or {}).get("symbol") or "").strip().upper()
+        is_stale_selected_timeout = bool(
+            str((row or {}).get("retry_kind") or "").strip().lower() == "selected_submit_timeout"
+            and _p569_selected_submit_timeout_is_stale(
+                row.get("submit_row") if isinstance(row.get("submit_row"), dict) else row,
+                latest_scan=LAST_SCAN,
+                active_symbols=active_symbols,
+                pending_symbols=pending_symbols,
+            )
+        )
+        prune_reason = ""
+        if queued_ts <= 0:
+            prune_reason = "missing_queued_timestamp"
+        elif (now_ts - queued_ts) > ttl:
+            prune_reason = "retry_ttl_expired"
+        elif is_stale_selected_timeout:
+            prune_reason = "stale_selected_submit_timeout_without_active_or_pending_plan"
+        if prune_reason:
             P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.pop(key, None)
+            removed.append({
+                "key": key,
+                "symbol": row_symbol,
+                "retry_kind": row.get("retry_kind"),
+                "reason": prune_reason,
+            })
+    P570_STALE_SUBMIT_RETRY_PRUNE_LAST.clear()
+    P570_STALE_SUBMIT_RETRY_PRUNE_LAST.update({
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "removed_count": len(removed),
+        "removed": removed[-20:],
+        "remaining_count": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
+        "ttl_sec": ttl,
+    })
+    if removed:
+        persist_scan_runtime_state(reason="p570_stale_submit_retry_queue_pruned")
+    return dict(P570_STALE_SUBMIT_RETRY_PRUNE_LAST)
 
 
 def _p387_queue_rate_limited_selected_submit(candidate: dict | None, submit_row: dict | None) -> dict:
@@ -45294,7 +45406,7 @@ def _p549_current_scan_or_today_event(row: dict | None, latest_scan: dict | None
 def _p298_selected_submission_truth_light() -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan, summary, p330_after_hours_truth = _p330_preserved_selected_submission_summary(latest_scan, summary)
-    _p387_prune_rate_limit_selected_submit_retry_queue()
+    p570_retry_prune = _p387_prune_rate_limit_selected_submit_retry_queue()
     snapshot_out = _p550_selected_submission_truth_snapshot_light(
         latest_scan,
         summary,
@@ -45313,6 +45425,7 @@ def _p298_selected_submission_truth_light() -> dict:
         if str((row or {}).get("symbol") or "").strip()
         and str((row or {}).get("retry_kind") or "").strip().lower() == "selected_submit_timeout"
     ])
+    snapshot_out["p570_stale_submit_retry_prune"] = dict(p570_retry_prune or {})
     snapshot_out["p550_heavy_truth_replaced_by_snapshot"] = True
     return snapshot_out
     p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
@@ -45915,6 +46028,22 @@ def _p298_live_positions_light() -> dict:
             if str((row or {}).get("symbol") or "").strip()
         }
     ]
+    p570_missing_plan_reconcile_nudge = {
+        "active": bool(missing_internal_plans),
+        "symbols": list(missing_internal_plans[:25]),
+        "count": len(missing_internal_plans),
+        "reason": (
+            "broker_snapshot_has_position_without_active_internal_plan"
+            if missing_internal_plans
+            else "no_missing_internal_plan"
+        ),
+        "recommended_action": (
+            "run_reconcile_light_then_position_truth_before_new_entries"
+            if missing_internal_plans
+            else "no_reconcile_needed"
+        ),
+        "does_not_call_broker": True,
+    }
 
     return {
         "ok": True,
@@ -45939,6 +46068,7 @@ def _p298_live_positions_light() -> dict:
         "active_plans": active_plans[:25],
         "stale_active_plans": stale_active_plans[:25],
         "missing_internal_plan_symbols": missing_internal_plans[:25],
+        "p570_missing_plan_reconcile_nudge": p570_missing_plan_reconcile_nudge,
         "stale_plan_truth": {
             "active": bool(stale_active_plans or missing_internal_plans),
             "source": "positions_snapshot_vs_memory_no_broker_refresh",

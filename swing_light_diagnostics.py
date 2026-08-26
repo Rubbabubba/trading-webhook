@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-569-scanner-runtime-hotspot-truth-stale-submit-timeout-cleanup"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-570-stale-submit-retry-queue-prune-cached-broker-daily-pnl-truth"
 
 
 def selected_submission_truth_light_snapshot(
@@ -114,12 +114,19 @@ def selected_submission_truth_light_snapshot(
             or str(row.get("retry_evidence_status") or "") == "resolved_by_active_plan_or_submit_side_effect"
         )
     ]
+    stale_selected_submit_timeout_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and bool(row.get("stale_selected_submit_timeout_suppressed"))
+    ]
     submit_pending_symbol_set = set(submit_pending_symbols)
     selected_submit_timeout_symbol_set = set(selected_submit_timeout_symbols)
+    stale_selected_submit_timeout_symbol_set = set(stale_selected_submit_timeout_symbols)
     missing_side_effect_symbols = [
         sym for sym in missing_side_effect_symbols
         if sym not in submit_pending_symbol_set
         and sym not in selected_submit_timeout_symbol_set
+        and sym not in stale_selected_submit_timeout_symbol_set
     ]
 
     return {
@@ -170,12 +177,16 @@ def selected_submission_truth_light_snapshot(
         "selected_submit_timeout_count": len(selected_submit_timeout_symbols),
         "resolved_submit_timeout_symbols": resolved_submit_timeout_symbols,
         "resolved_submit_timeout_count": len(resolved_submit_timeout_symbols),
+        "stale_selected_submit_timeout_symbols": stale_selected_submit_timeout_symbols,
+        "stale_selected_submit_timeout_count": len(stale_selected_submit_timeout_symbols),
         "rows": list(rows),
         "recommended_action": (
             "selected_candidate_submit_pending"
             if submit_pending_symbols
             else "selected_submit_timeout_requires_reconcile"
             if selected_submit_timeout_symbols
+            else "stale_selected_submit_timeout_suppressed"
+            if stale_selected_submit_timeout_symbols
             else "selected_timeout_resolved_by_active_plan"
             if resolved_submit_timeout_symbols
             else "rate_limited_selected_submit_waiting_for_retry"
