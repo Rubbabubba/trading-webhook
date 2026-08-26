@@ -2985,7 +2985,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-555-stale-submit-pending-candidate-recovery-submit-truth-recommendation-fix"
+PATCH_VERSION = "patch-556-profile-aware-risk-containment-sync-runtime-coverage-truth-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -19249,10 +19249,69 @@ def _p443_is_breakout_candidate(row: dict | None) -> bool:
     return "breakout" in blob
 
 
+def _p556_effective_profile_dollar_risk_cap(base_max_dollar_risk: float | None = None) -> dict:
+    configured_risk = max(0.0, float(RISK_DOLLARS or 0.0))
+    selection_multiple = max(0.0, float(SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE or 0.0))
+    selection_cap = configured_risk * selection_multiple if configured_risk > 0 and selection_multiple > 0 else 0.0
+    containment_cap = max(0.0, float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0))
+    explicit_base = max(0.0, float(base_max_dollar_risk or 0.0))
+
+    profile = {}
+    try:
+        profile = dict(_p459_active_swing_regime_profile() or {})
+    except Exception:
+        profile = {}
+    contract = dict(profile.get("contract") or {})
+    profile_risk = max(0.0, float(_safe_float(contract.get("risk_dollars"), 0.0)))
+    profile_active = bool(profile.get("enabled")) and str(profile.get("active_profile") or "").strip().lower() in {
+        "momentum_thrive",
+        "chop_preserve",
+    }
+
+    candidates = [explicit_base, selection_cap, containment_cap]
+    if profile_active and profile_risk > 0:
+        candidates.append(profile_risk)
+    effective_cap = max(candidates)
+    source = "profile_risk_dollars" if profile_active and profile_risk >= effective_cap and profile_risk > 0 else "configured_risk_cap"
+    if source != "profile_risk_dollars":
+        if effective_cap == containment_cap and containment_cap > 0:
+            source = "breakout_containment_env"
+        elif effective_cap == selection_cap and selection_cap > 0:
+            source = "selection_risk_multiple"
+        elif effective_cap == explicit_base and explicit_base > 0:
+            source = "caller_base"
+        else:
+            source = "disabled_or_zero"
+
+    return {
+        "enabled": True,
+        "effective_max_dollar_risk": round(effective_cap, 4),
+        "source": source,
+        "configured_risk_per_trade_dollars": round(configured_risk, 4),
+        "selection_max_multiple": round(selection_multiple, 4),
+        "selection_cap_dollars": round(selection_cap, 4),
+        "breakout_containment_cap_dollars": round(containment_cap, 4),
+        "caller_base_cap_dollars": round(explicit_base, 4),
+        "profile_active": bool(profile_active),
+        "active_profile": str(profile.get("active_profile") or "unknown"),
+        "profile_risk_dollars": round(profile_risk, 4),
+        "caps_aligned": bool(
+            not profile_active
+            or profile_risk <= 0
+            or (
+                effective_cap >= profile_risk
+                and selection_cap <= effective_cap
+                and containment_cap <= effective_cap
+            )
+        ),
+    }
+
+
 def _p443_breakout_dollar_risk_containment(candidate: dict | None) -> dict:
     c = dict(candidate or {})
     truth = _p384_candidate_dollar_risk_truth(c)
-    max_risk = max(0.0, float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0))
+    p556_cap = _p556_effective_profile_dollar_risk_cap(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS)
+    max_risk = max(0.0, float(p556_cap.get("effective_max_dollar_risk") or 0.0))
     dollar_risk = float(_safe_float(truth.get("dollar_risk"), 0.0))
     applies = bool(
         SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED
@@ -19267,6 +19326,7 @@ def _p443_breakout_dollar_risk_containment(candidate: dict | None) -> dict:
         "max_dollar_risk": round(max_risk, 4),
         "dollar_risk": round(dollar_risk, 4),
         "dollar_risk_selection_truth": truth,
+        "p556_profile_aware_risk_cap": dict(p556_cap),
     }
 
 
@@ -43732,6 +43792,43 @@ def _p404_runtime_universe_coverage(latest_scan: dict | None = None, summary: di
 
     runtime_set = set(runtime_symbols)
     scanned_set = set(scanned_symbols)
+    candidate_symbol_sources = []
+    for source in (
+        summary.get("candidate_rows_for_truth"),
+        summary.get("candidate_rows"),
+        summary.get("top_candidates"),
+        latest_scan.get("candidate_rows_for_truth"),
+        latest_scan.get("candidate_rows"),
+        latest_scan.get("top_candidates"),
+        (latest_scan.get("summary") or {}).get("candidate_rows_for_truth") if isinstance(latest_scan.get("summary"), dict) else [],
+        (latest_scan.get("summary") or {}).get("candidate_rows") if isinstance(latest_scan.get("summary"), dict) else [],
+        LAST_SWING_CANDIDATES,
+    ):
+        rows = [row for row in list(source or []) if isinstance(row, dict)]
+        symbols = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in rows
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+        if symbols:
+            candidate_symbol_sources.append(symbols)
+
+    candidate_symbols = []
+    for symbols in candidate_symbol_sources:
+        merged = _dedupe_keep_order(list(candidate_symbols) + list(symbols))
+        candidate_symbols = merged
+
+    candidate_set = set(candidate_symbols)
+    candidate_covers_more_runtime = bool(
+        runtime_symbols
+        and candidate_symbols
+        and len(candidate_set & runtime_set) > len(scanned_set & runtime_set)
+    )
+    coverage_source = "scan_symbol_metadata"
+    if candidate_covers_more_runtime:
+        scanned_symbols = _dedupe_keep_order(list(scanned_symbols) + list(candidate_symbols))
+        scanned_set = set(scanned_symbols)
+        coverage_source = "candidate_row_symbols"
 
     current_configured_cap = max(1, int(SWING_RUNTIME_SLIM_MAX_SYMBOLS or 25))
     last_scan_configured_cap = int(
@@ -43771,6 +43868,9 @@ def _p404_runtime_universe_coverage(latest_scan: dict | None = None, summary: di
         "scanned_symbol_count": len(scanned_symbols),
         "coverage_pct": round((len(scanned_set & runtime_set) / max(1, len(runtime_set))) * 100.0, 2),
         "matches_runtime": bool(runtime_symbols and scanned_symbols == runtime_symbols),
+        "coverage_source": coverage_source,
+        "candidate_row_symbol_count": len(candidate_symbols),
+        "candidate_rows_corrected_scan_symbols": bool(candidate_covers_more_runtime),
         "runtime_slim_enabled_current_env": bool(SWING_RUNTIME_SLIM_ENABLED),
         "current_configured_runtime_slim_max_symbols": current_configured_cap,
         "current_env_wants_full_coverage": current_env_wants_full_coverage,
@@ -47951,7 +48051,9 @@ def _p384_candidate_dollar_risk_truth(candidate: dict | None) -> dict:
     enabled = bool(SWING_DOLLAR_RISK_SELECTION_TRUTH_ENABLED)
     configured_risk = max(0.0, float(RISK_DOLLARS or 0.0))
     max_multiple = max(0.0, float(SWING_DOLLAR_RISK_SELECTION_MAX_MULTIPLE or 0.0))
-    max_dollar_risk = configured_risk * max_multiple if configured_risk > 0 and max_multiple > 0 else 0.0
+    base_max_dollar_risk = configured_risk * max_multiple if configured_risk > 0 and max_multiple > 0 else 0.0
+    p556_cap = _p556_effective_profile_dollar_risk_cap(base_max_dollar_risk)
+    max_dollar_risk = max(0.0, float(p556_cap.get("effective_max_dollar_risk") or 0.0))
 
     qty = abs(float(_safe_float(c.get("estimated_qty") or c.get("requested_qty") or 0.0)))
     entry = float(_safe_float(c.get("close") or c.get("price") or c.get("trade_price") or 0.0))
@@ -47993,6 +48095,8 @@ def _p384_candidate_dollar_risk_truth(candidate: dict | None) -> dict:
         "configured_risk_per_trade_dollars": round(configured_risk, 4),
         "max_risk_multiple": round(max_multiple, 4),
         "max_dollar_risk": round(max_dollar_risk, 4),
+        "base_max_dollar_risk": round(base_max_dollar_risk, 4),
+        "p556_profile_aware_risk_cap": dict(p556_cap),
         "qty": round(qty, 4),
         "entry_price": round(entry, 4),
         "stop_price": round(stop, 4) if stop > 0 else None,
@@ -60493,6 +60597,7 @@ def diagnostics_swing_runtime_config():
                 "effective_profile_target_r_mult": float((first_2k_profile.get("contract") or {}).get("target_r_mult") or 0.0),
                 "aligned": bool(first_2k_profile.get("active_profile") in {"momentum_thrive", "chop_preserve"}),
             },
+            "p556_profile_aware_risk_cap": _p556_effective_profile_dollar_risk_cap(),
             "max_group_positions": _cfg_int("SWING_MAX_GROUP_POSITIONS", 0),
             "max_portfolio_exposure_pct": _cfg_float("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", 0.0),
             "max_symbol_exposure_pct": _cfg_float("SWING_MAX_SYMBOL_EXPOSURE_PCT", 0.0),
