@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-575-pending-entry-status-sync-eligible-promotion-repair"
+PATCH_VERSION = "patch-576-canonical-eligible-selection-handoff-pending-order-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29109,6 +29109,129 @@ def _p573_zero_load_candidate_snapshot_for_light(limit: int = 100) -> dict:
         "does_not_call_broker": True,
     }
 
+def _p576_canonical_eligible_selection_handoff_for_light(limit: int = 100) -> dict:
+    lim = max(1, min(int(limit or 100), 250))
+    snapshot = _p573_zero_load_candidate_snapshot_for_light(limit=lim)
+    rows = [
+        dict(row or {})
+        for row in list(snapshot.get("candidate_rows") or [])
+        if isinstance(row, dict)
+    ]
+    eligible_rows = [
+        dict(row or {})
+        for row in list(snapshot.get("eligible_new_entry_rows_all") or [])
+        if isinstance(row, dict)
+        and bool(row.get("eligible"))
+        and not bool(row.get("open_position"))
+    ]
+    row_selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if bool((row or {}).get("selected"))
+        and not bool((row or {}).get("open_position"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(snapshot.get("selected_symbols") or row_selected_symbols or [])
+        if str(sym or "").strip()
+    ])
+    open_symbols = set(_p404_active_position_symbols_light())
+    scrub = _p572_scrub_selected_open_position_symbols(
+        selected_symbols,
+        rows,
+        open_symbols=open_symbols,
+    )
+    selected_symbols = list(scrub.get("active_selected_symbols") or [])
+    promotion = {
+        "applied": False,
+        "source": "canonical_selected_symbols",
+        "reason": "selected_symbols_already_available",
+        "selected_symbols": list(selected_symbols),
+        "eligible_symbols": [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in eligible_rows
+            if str((row or {}).get("symbol") or "").strip()
+        ],
+        "selected_rows": [
+            dict(row or {})
+            for row in rows
+            if str((row or {}).get("symbol") or "").strip().upper() in set(selected_symbols)
+        ],
+    }
+    if not selected_symbols and eligible_rows:
+        max_symbols = max(1, min(
+            int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
+            int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
+        ))
+        fallback = _p536_fallback_selected_symbols_from_eligible_rows(
+            {
+                "eligible_new_entry_rows_all": eligible_rows,
+                "candidate_rows": rows,
+            },
+            max_symbols=max_symbols,
+            blocked_symbols=[],
+            reason="p576_canonical_handoff_promoted_from_eligible_rows",
+        )
+        selected_rows = list(fallback.get("selected_rows") or [])
+        selected_symbols = list(fallback.get("selected_symbols") or [])
+        if not selected_symbols:
+            selected_rows = sorted(
+                eligible_rows,
+                key=lambda row: (
+                    float(_safe_float(row.get("rank_score"), 0.0)),
+                    float(_safe_float(row.get("selection_quality_score"), 0.0)),
+                    float(_safe_float((row.get("target_path_profit") or {}).get("score") or row.get("target_path_score"), 0.0)),
+                ),
+                reverse=True,
+            )[:max_symbols]
+            selected_symbols = _dedupe_keep_order([
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in selected_rows
+                if str((row or {}).get("symbol") or "").strip()
+            ])
+        selected_set = set(selected_symbols)
+        for row in rows:
+            sym = str((row or {}).get("symbol") or "").strip().upper()
+            if sym in selected_set:
+                row["selected"] = True
+                row["selected_source"] = row.get("selected_source") or "p576_canonical_eligible_selection_handoff"
+                row["selection_finalizer"] = "p576_canonical_eligible_selection_handoff"
+        promotion.update({
+            "applied": bool(selected_symbols),
+            "source": "current_eligible_rows",
+            "reason": (
+                "selected_symbols_promoted_from_current_eligible_rows"
+                if selected_symbols
+                else "eligible_rows_present_but_no_symbol_available"
+            ),
+            "selected_symbols": list(selected_symbols),
+            "selected_rows": selected_rows,
+        })
+    snapshot.update({
+        "patch_version": PATCH_VERSION,
+        "source": "p576_canonical_eligible_selection_handoff",
+        "candidate_rows": rows,
+        "eligible_new_entry_rows_all": eligible_rows,
+        "selected_symbols": list(selected_symbols),
+        "selected_total": len(selected_symbols),
+        "row_selected_symbols": list(row_selected_symbols),
+        "eligible_symbols": list(promotion.get("eligible_symbols") or []),
+        "p576_canonical_selection_handoff": {
+            "enabled": True,
+            "applied": bool(promotion.get("applied")),
+            "source": promotion.get("source"),
+            "reason": promotion.get("reason"),
+            "selected_symbols": list(selected_symbols),
+            "row_selected_symbols": list(row_selected_symbols),
+            "eligible_symbols": list(promotion.get("eligible_symbols") or []),
+            "selected_rows": list(promotion.get("selected_rows") or []),
+            "open_position_scrub": dict(scrub),
+            "scan_source": snapshot.get("scan_source"),
+        },
+    })
+    return snapshot
+
 def _p571_stage_timing_from_scan_sources(latest_scan: dict | None = None, summary: dict | None = None) -> dict:
     scan = dict(latest_scan or {})
     scan_summary = dict(summary or {})
@@ -29433,8 +29556,8 @@ def _p550_selected_submission_truth_snapshot_light(
         }
         and not bool(p554_submit_phase_truth.get("submit_terminal"))
     )
-    candidate_truth = _p548_snapshot_candidate_truth_no_recompute(latest_scan, summary, limit=lim)
-    eligible_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(candidate_truth)
+    candidate_truth = _p576_canonical_eligible_selection_handoff_for_light(limit=max(lim, 100))
+    eligible_symbols = list(candidate_truth.get("eligible_symbols") or _p413_eligible_new_entry_symbols_from_fast_payload(candidate_truth))
     row_selected_symbols = _dedupe_keep_order([
         str((row or {}).get("symbol") or "").strip().upper()
         for row in list(candidate_truth.get("candidate_rows") or [])
@@ -29453,14 +29576,21 @@ def _p550_selected_submission_truth_snapshot_light(
         "selected_symbols": list(selected_symbols),
         "reason": "cached_selected_symbols_preserved",
     }
+    p576_handoff = dict(candidate_truth.get("p576_canonical_selection_handoff") or {})
     if candidate_truth.get("candidate_rows") is not None:
-        if row_selected_symbols:
-            selected_symbols = list(row_selected_symbols)
+        canonical_selected_symbols = _dedupe_keep_order([
+            str(sym or "").strip().upper()
+            for sym in list(candidate_truth.get("selected_symbols") or row_selected_symbols or [])
+            if str(sym or "").strip()
+        ])
+        if canonical_selected_symbols:
+            selected_symbols = list(canonical_selected_symbols)
             p575_selection_repair.update({
                 "applied": True,
-                "source": "current_candidate_selected_rows",
+                "source": "p576_canonical_eligible_selection_handoff",
                 "selected_symbols": list(selected_symbols),
-                "reason": "selected_symbols_synced_from_current_candidate_rows",
+                "p576_handoff": p576_handoff,
+                "reason": "selected_symbols_synced_from_canonical_current_handoff",
             })
         elif eligible_symbols:
             fallback = _p536_fallback_selected_symbols_from_eligible_rows(
@@ -29718,6 +29848,7 @@ def _p550_selected_submission_truth_snapshot_light(
         "patch_version": PATCH_VERSION,
         "p550_snapshot_only_light_endpoint": True,
         "p575_selection_repair": dict(p575_selection_repair),
+        "p576_canonical_selection_handoff": p576_handoff,
         "p575_snapshot_position_symbols": sorted(snapshot_position_symbols),
         "does_not_read_lifecycle": True,
         "does_not_revalidate_selection": False,
@@ -40748,6 +40879,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
                 else "eligible_rows_present_but_no_symbol_available"
             ),
         })
+    p576_handoff = _p576_canonical_eligible_selection_handoff_for_light(limit=max(lim, 100))
 
     reason_counts = {}
     for item in list(summary.get("top_rejection_reasons") or []):
@@ -40882,6 +41014,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         },
         "p572_selected_open_position_scrub": dict(p572_selected_open_position_scrub),
         "p575_current_selection_promotion": dict(p575_current_selection_promotion),
+        "p576_canonical_selection_handoff": dict(p576_handoff.get("p576_canonical_selection_handoff") or {}),
         "latest_scan": {
             "ts_utc": scan.get("ts_utc") or (p573_snapshot.get("effective_scan_meta") or {}).get("ts_utc"),
             "reason": scan.get("reason") or summary.get("scan_reason") or (p573_snapshot.get("effective_scan_meta") or {}).get("reason"),
@@ -46739,6 +46872,16 @@ def _p438_stale_closed_plan_cleanup_from_snapshot(apply: bool = False) -> dict:
 
     active_pending_statuses = {"new", "accepted", "pending_new", "accepted_for_bidding", "held", "pending_replace", "partially_filled"}
     terminal_or_closed_statuses = {"filled", "canceled", "cancelled", "rejected", "expired", "done_for_day"}
+    open_orders = []
+    try:
+        open_orders = list_open_orders_safe(limit=100)
+    except Exception:
+        open_orders = []
+    open_order_by_symbol = {
+        str((order or {}).get("symbol") or "").strip().upper(): dict(order or {})
+        for order in list(open_orders or [])
+        if str((order or {}).get("symbol") or "").strip()
+    }
 
     rows = []
     deactivated = []
@@ -46752,19 +46895,46 @@ def _p438_stale_closed_plan_cleanup_from_snapshot(apply: bool = False) -> dict:
             continue
 
         order_status_lc = str(plan.get("order_status") or "").strip().lower()
-        has_pending_order = order_status_lc in active_pending_statuses
+        pending_entry = bool(_plan_is_pending_entry(plan))
+        broker_open_order = dict(open_order_by_symbol.get(symbol) or {})
+        broker_open_order_present = bool(broker_open_order)
+        broker_order_status = ""
+        broker_order_status_error = ""
+        order_id = str(plan.get("order_id") or plan.get("entry_order_id") or "").strip()
+        if pending_entry and order_id and not broker_open_order_present:
+            try:
+                broker_order = dict(get_order_status(order_id) or {})
+                broker_order_status = str(broker_order.get("status") or "").strip().lower()
+                broker_order_status_error = str(broker_order.get("status_error") or "").strip()
+            except Exception as exc:
+                broker_order_status_error = str(exc)
+        effective_status = broker_order_status or order_status_lc
+        has_pending_order = bool(effective_status in active_pending_statuses and broker_open_order_present)
+        missing_broker_pending_order = bool(
+            pending_entry
+            and not broker_open_order_present
+            and symbol not in snapshot_symbols
+            and (
+                effective_status in active_pending_statuses
+                or effective_status in terminal_or_closed_statuses
+                or broker_order_status_error
+            )
+        )
         looks_closed = bool(
-            order_status_lc in terminal_or_closed_statuses
+            effective_status in terminal_or_closed_statuses
             or plan.get("last_exit_submit_ts_utc")
             or plan.get("closed_at")
             or plan.get("exit_ts_utc")
             or str(plan.get("execution_state") or "").strip().lower() in {"closed", "exited", "entry_canceled"}
             or str(plan.get("lifecycle_state") or "").strip().lower() in {"closed", "exited", "entry_canceled"}
+            or missing_broker_pending_order
         )
 
         action = (
             "preserve_pending_order_status"
             if has_pending_order
+            else "deactivate_stale_pending_entry_missing_broker_order"
+            if missing_broker_pending_order
             else "deactivate_stale_closed_plan"
             if looks_closed
             else "preserve_unverified_no_snapshot_plan"
@@ -46773,16 +46943,28 @@ def _p438_stale_closed_plan_cleanup_from_snapshot(apply: bool = False) -> dict:
         row = {
             "symbol": symbol,
             "order_status": order_status_lc,
+            "effective_order_status": effective_status,
+            "order_id": order_id,
+            "pending_entry": pending_entry,
             "has_pending_order": has_pending_order,
+            "broker_open_order_present": broker_open_order_present,
+            "broker_order_status": broker_order_status,
+            "broker_order_status_error": broker_order_status_error,
             "looks_closed": looks_closed,
             "action": action,
             "applied": False,
         }
 
-        if apply and action == "deactivate_stale_closed_plan":
+        if apply and action in {"deactivate_stale_closed_plan", "deactivate_stale_pending_entry_missing_broker_order"}:
             plan["active"] = False
+            if action == "deactivate_stale_pending_entry_missing_broker_order":
+                plan["execution_state"] = "entry_canceled"
+                plan["lifecycle_state"] = "entry_canceled"
+                plan["execution_state_reason"] = "pending_entry_order_missing_from_broker_open_orders"
+                plan["order_status"] = effective_status or "unknown_missing_broker_open_order"
             plan["p438_stale_closed_plan_cleanup_at"] = datetime.now(timezone.utc).isoformat()
             plan["p438_stale_closed_plan_cleanup_patch"] = PATCH_VERSION
+            plan["p576_pending_entry_broker_status_cleanup"] = action == "deactivate_stale_pending_entry_missing_broker_order"
             row["applied"] = True
             deactivated.append(symbol)
             record_decision(
@@ -46790,8 +46972,12 @@ def _p438_stale_closed_plan_cleanup_from_snapshot(apply: bool = False) -> dict:
                 "reconcile_light",
                 symbol,
                 action="deactivated",
-                reason="p438_stale_closed_plan_without_snapshot_position",
-                meta={"plan": {"order_status": order_status_lc}},
+                reason=(
+                    "p576_pending_entry_order_missing_from_broker_open_orders"
+                    if action == "deactivate_stale_pending_entry_missing_broker_order"
+                    else "p438_stale_closed_plan_without_snapshot_position"
+                ),
+                meta={"plan": {"order_status": order_status_lc, "effective_order_status": effective_status, "order_id": order_id}},
             )
 
         rows.append(row)
@@ -46806,13 +46992,24 @@ def _p438_stale_closed_plan_cleanup_from_snapshot(apply: bool = False) -> dict:
         "enabled": True,
         "apply": bool(apply),
         "snapshot_symbols": sorted(snapshot_symbols),
+        "open_order_symbols": sorted(open_order_by_symbol),
         "candidate_count": len(rows),
         "deactivated_count": len(deactivated),
         "deactivated_symbols": deactivated,
         "rows": rows,
+        "p576_pending_entry_broker_status_cleanup": {
+            "enabled": True,
+            "broker_open_order_checked": True,
+            "cleanup_candidate_symbols": [
+                row.get("symbol") for row in rows
+                if row.get("action") == "deactivate_stale_pending_entry_missing_broker_order"
+            ],
+        },
         "recommended_action": (
             "cleanup_applied"
             if deactivated
+            else "run_apply_true_to_deactivate_stale_pending_entry_plans"
+            if any(r.get("action") == "deactivate_stale_pending_entry_missing_broker_order" for r in rows)
             else "run_apply_true_to_deactivate_stale_closed_plans"
             if any(r.get("action") == "deactivate_stale_closed_plan" for r in rows)
             else "no_stale_closed_plan_cleanup_needed"
@@ -46848,21 +47045,29 @@ def _p298_reconcile_light(apply_cleanup: bool = False) -> dict:
             for sym, plan in (TRADE_PLAN or {}).items()
             if isinstance(plan, dict) and bool(plan.get("active"))
         }
+    open_order_symbols = {
+        str(sym or "").strip().upper()
+        for sym in list(stale_cleanup.get("open_order_symbols") or [])
+        if str(sym or "").strip()
+    }
 
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "reconcile_light",
-        "source": "positions_snapshot_and_memory_no_broker_refresh",
+        "source": "positions_snapshot_memory_and_open_order_truth",
         "summary": {
             "snapshot_position_count": len(snapshot_symbols),
             "active_plan_count": len(active_plan_symbols),
+            "open_order_count": len(open_order_symbols),
             "symbols_without_active_plan": sorted(snapshot_symbols - active_plan_symbols),
             "active_plans_without_snapshot_position": sorted(active_plan_symbols - snapshot_symbols),
-            "aligned_light": snapshot_symbols == active_plan_symbols,
+            "active_plans_without_snapshot_or_open_order": sorted(active_plan_symbols - snapshot_symbols - open_order_symbols),
+            "aligned_light": snapshot_symbols | open_order_symbols == active_plan_symbols,
         },
         "snapshot_symbols": sorted(snapshot_symbols),
         "active_plan_symbols": sorted(active_plan_symbols),
+        "open_order_symbols": sorted(open_order_symbols),
         "p438_stale_closed_plan_cleanup": stale_cleanup,
         "startup_state": STARTUP_STATE,
     }
