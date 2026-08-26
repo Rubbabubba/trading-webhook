@@ -2985,7 +2985,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-556-profile-aware-risk-containment-sync-runtime-coverage-truth-cleanup"
+PATCH_VERSION = "patch-557-fast-payload-selected-submit-bridge-regime-terminal-correction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17153,6 +17153,12 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     ):
         selected_symbols = list(p540_consumer_selected_symbols)
         production_selected_symbols = list(p540_consumer_selected_symbols)
+    p557_submit_capable_truth = _p557_submit_capable_selection_truth(latest_scan, summary)
+    p557_advisory_selected_symbols = []
+    if production_selected_symbols and not bool(p557_submit_capable_truth.get("selection_submit_capable")):
+        p557_advisory_selected_symbols = list(production_selected_symbols)
+        selected_symbols = []
+        production_selected_symbols = []
 
     submit_rows_all = [
         dict(row or {})
@@ -17474,6 +17480,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         },
         "p554_submit_phase_truth": dict(p554_submit_phase_truth),
         "p554_submit_phase_pending": bool(p554_submit_pending),
+        "p557_submit_capable_selection_truth": dict(p557_submit_capable_truth),
+        "p557_advisory_selected_symbols": list(p557_advisory_selected_symbols),
+        "p557_cached_selection_suppressed_from_submit_gap": bool(p557_advisory_selected_symbols),
         "p484_candidate_eval_module": _p551_candidate_eval_module_status_compact(),
         "swing_candidate_eval_module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
         "swing_candidate_eval_module_status": _p551_candidate_eval_module_status_compact(),
@@ -28453,6 +28462,94 @@ def _p548_snapshot_candidate_truth_no_recompute(
         },
     }
 
+def _p557_submit_capable_selection_truth(
+    latest_scan: dict | None = None,
+    summary: dict | None = None,
+) -> dict:
+    latest_scan = dict(latest_scan or LAST_SCAN or {})
+    summary = dict(summary or (latest_scan.get("summary") if isinstance(latest_scan.get("summary"), dict) else {}) or {})
+    p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+    p554_submit_phase_truth = dict(summary.get("p554_submit_phase_truth") or {})
+    source = str(latest_scan.get("_scan_source") or summary.get("candidate_cache_source") or "").strip()
+    reason = str(latest_scan.get("reason") or summary.get("scan_reason") or "").strip()
+    phase = str(summary.get("scan_truth_phase") or "").strip()
+    source_stage = str(p547_selection_snapshot.get("source_stage") or "").strip()
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(
+            p547_selection_snapshot.get("selected_symbols")
+            or summary.get("selected_symbols")
+            or latest_scan.get("selected_symbols")
+            or []
+        )
+        if str(sym or "").strip()
+    ])
+    submit_rows = [
+        dict(row or {})
+        for row in list(
+            p547_selection_snapshot.get("submit_rows")
+            or summary.get("selected_submission_rows")
+            or summary.get("would_submit")
+            or latest_scan.get("would_submit")
+            or []
+        )
+        if isinstance(row, dict)
+    ]
+    submit_phase_reached = bool(
+        p554_submit_phase_truth.get("submit_phase_reached")
+        or p554_submit_phase_truth.get("submit_terminal")
+        or p554_submit_phase_truth.get("submit_row_count")
+        or str(p554_submit_phase_truth.get("status") or "").strip().lower()
+        in {"submit_started", "submit_phase_started", "submit_complete"}
+    )
+    selection_stage_reached = bool(
+        source_stage in {"selection_complete", "submit_complete", "final_scan_summary"}
+        or summary.get("candidate_truth_published_before_reports")
+        or summary.get("p522_submit_terminal_publish")
+        or summary.get("p461_terminal_close_before_submit")
+    )
+    cache_only_source = bool(
+        source in {
+            "fast_current_candidate_payload",
+            "fast_payload_candidate_fallback",
+            "candidate_cache_fallback",
+            "p548_snapshot_only",
+        }
+        or phase in {"fast_current_candidate_truth", "fast_payload_candidate_fallback"}
+        or bool(summary.get("candidate_cache_adopted"))
+    )
+    submit_capable = bool(
+        submit_rows
+        or submit_phase_reached
+        or (
+            selection_stage_reached
+            and not cache_only_source
+        )
+    )
+    selection_advisory_only = bool(selected_symbols and cache_only_source and not submit_capable)
+    return {
+        "enabled": True,
+        "selected_symbols": list(selected_symbols),
+        "source": source or None,
+        "reason": reason or None,
+        "scan_truth_phase": phase or None,
+        "source_stage": source_stage or None,
+        "cache_only_source": bool(cache_only_source),
+        "selection_stage_reached": bool(selection_stage_reached),
+        "submit_phase_reached": bool(submit_phase_reached),
+        "submit_row_count": len(submit_rows),
+        "selection_submit_capable": bool(submit_capable),
+        "selection_advisory_only": bool(selection_advisory_only),
+        "suppressed_selected_symbols": list(selected_symbols) if selection_advisory_only else [],
+        "recommended_action": (
+            "run_fresh_worker_scan_before_treating_cached_selection_as_submit_gap"
+            if selection_advisory_only
+            else "selection_truth_can_drive_submit_trace"
+            if selected_symbols
+            else "no_selected_symbols"
+        ),
+    }
+
 def _p549_selection_complete_terminal_close(
     *,
     scan_attempt_id: str | None = None,
@@ -28551,6 +28648,13 @@ def _p550_selected_submission_truth_snapshot_light(
     )
     candidate_truth = _p548_snapshot_candidate_truth_no_recompute(latest_scan, summary, limit=lim)
     eligible_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(candidate_truth)
+    p557_submit_capable_truth = _p557_submit_capable_selection_truth(latest_scan, summary)
+    p557_advisory_selected_symbols = []
+    if bool(p557_submit_capable_truth.get("selection_advisory_only")):
+        p557_advisory_selected_symbols = list(p557_submit_capable_truth.get("suppressed_selected_symbols") or [])
+        selected_symbols = []
+        p554_submit_pending = False
+        p554_pending_symbols = set()
     rows: list[dict] = []
     for sym in selected_symbols[:lim]:
         submit_row = dict(submit_by_symbol.get(sym) or {})
@@ -28684,6 +28788,9 @@ def _p550_selected_submission_truth_snapshot_light(
             "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced") or submit_rows_all),
         },
         "p554_submit_phase_truth": dict(p554_submit_phase_truth),
+        "p557_submit_capable_selection_truth": dict(p557_submit_capable_truth),
+        "p557_advisory_selected_symbols": list(p557_advisory_selected_symbols),
+        "p557_cached_selection_suppressed_from_submit_gap": bool(p557_advisory_selected_symbols),
         "submit_pending_symbols": [
             row.get("symbol") for row in rows if bool(row.get("submit_pending"))
         ],
@@ -59042,6 +59149,18 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         new_entry_rows_effective = new_entry_rows
         open_position_rows_effective = open_position_rows
 
+    p557_submit_capable_truth = _p557_submit_capable_selection_truth(latest_scan, summary)
+    p557_advisory_selected_symbols = []
+    if bool(selected_context.get("selected_symbols")) and not bool(
+        p557_submit_capable_truth.get("selection_submit_capable")
+    ):
+        p557_advisory_selected_symbols = list(selected_context.get("selected_symbols") or [])
+        selected_context = dict(selected_context)
+        selected_context["selected_symbols_before_p557_submit_capable_sync"] = list(p557_advisory_selected_symbols)
+        selected_context["selected_symbols"] = []
+        selected_context["selected_total"] = 0
+        selected_context["p557_cached_selection_suppressed_from_submit_gap"] = True
+
     stale_scan_blocks_action = bool(
         (
             summary.get("post_open_scan_missing")
@@ -59087,6 +59206,9 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "p519_full_candidate_cache_adopted": bool(fast_rows_all_effective),
         "p519_full_candidate_cache_source": source,
         "p542_non_actionable_candidate_cache_truth": dict(p542_non_actionable_candidate_cache_truth),
+        "p557_submit_capable_selection_truth": dict(p557_submit_capable_truth),
+        "p557_advisory_selected_symbols": list(p557_advisory_selected_symbols),
+        "p557_cached_selection_suppressed_from_submit_gap": bool(p557_advisory_selected_symbols),
         "non_actionable_candidate_cache_rejected": bool(non_actionable_candidate_cache_rejected),
         "raw_candidate_count_before_p542_rejection": int(raw_candidate_count_before_p542_rejection),
         "raw_eligible_count_before_p542_rejection": int(raw_eligible_count_before_p542_rejection),
@@ -59137,6 +59259,7 @@ def _p406_fast_current_candidate_payload(limit: int = 25) -> dict:
         "selected_total": int(selected_context.get("selected_total") or 0),
         "selected_symbols": list(selected_context.get("selected_symbols") or []),
         "selected_symbols_before_p526_revalidation": list(selected_context.get("selected_symbols_before_p526_revalidation") or []),
+        "selected_symbols_before_p557_submit_capable_sync": list(selected_context.get("selected_symbols_before_p557_submit_capable_sync") or []),
         "stale_revalidated_blocked_symbols": list(selected_context.get("stale_revalidated_blocked_symbols") or []),
         "p526_selection_revalidation": dict(p526_selection_revalidation),
         "p536_fallback_selection": dict(p536_fallback_selection),
