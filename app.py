@@ -2993,7 +2993,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-564-resolved-submit-timeout-truth-cleanup"
+PATCH_VERSION = "patch-565-fast-current-scan-suppression-snapshot-heavy-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -39828,6 +39828,119 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
         payload["recommended_action"] = "use_preserved_market_scan_until_next_market_scan"
     return payload
 
+def _p565_compact_current_scan_row(row: dict | None) -> dict:
+    row = dict(row or {})
+    out = {}
+    for key in (
+        "symbol",
+        "eligible",
+        "selected",
+        "open_position",
+        "would_trade",
+        "blocked",
+        "regime_mode",
+        "strategy",
+        "entry_type",
+        "rank_score",
+        "selection_quality_score",
+        "close_to_high_pct",
+        "breakout_distance_pct",
+        "risk_per_share_pct",
+        "price",
+        "last",
+        "stop",
+        "target",
+        "reason",
+        "top_reason",
+        "_p548_snapshot_source",
+    ):
+        if key in row:
+            out[key] = row.get(key)
+
+    reasons = [
+        str(reason)
+        for reason in list(row.get("rejection_reasons") or [])
+        if str(reason).strip()
+    ]
+    if reasons:
+        out["rejection_reasons"] = reasons[:5]
+        out["rejection_reason_count"] = len(reasons)
+    return out
+
+def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
+    lim = max(1, min(int(limit or 50), 50))
+    effective_scan = _p464_effective_market_scan(LAST_SCAN)
+    effective_summary = (
+        (effective_scan.get("summary") if isinstance(effective_scan, dict) and isinstance(effective_scan.get("summary"), dict) else {})
+        or {}
+    )
+    payload = _p550_current_scan_suppression_snapshot_payload(
+        effective_scan,
+        effective_summary,
+        limit=lim,
+    )
+    latest = dict(payload.get("latest_scan") or {})
+    latest.update({
+        "source": (effective_scan or {}).get("_scan_source") if isinstance(effective_scan, dict) else latest.get("source"),
+        "runtime_budget_sanitized": bool((effective_scan or {}).get("runtime_budget_sanitized")) if isinstance(effective_scan, dict) else False,
+    })
+
+    p475_effective_truth = _p475_scan_candidate_bearing_truth(effective_scan)
+    candidate_rows = [
+        _p565_compact_current_scan_row(row)
+        for row in list(payload.get("candidate_rows") or [])
+        if isinstance(row, dict)
+    ][:lim]
+    eligible_rows = [
+        _p565_compact_current_scan_row(row)
+        for row in list(payload.get("eligible_new_entry_rows_all") or [])
+        if isinstance(row, dict)
+    ][:lim]
+    top_candidates = [
+        _p565_compact_current_scan_row(row)
+        for row in list(payload.get("top_candidates") or [])
+        if isinstance(row, dict)
+    ][:min(lim, 10)]
+    top_new_entry_candidates = [
+        _p565_compact_current_scan_row(row)
+        for row in list(payload.get("top_new_entry_candidates") or [])
+        if isinstance(row, dict)
+    ][:min(lim, 10)]
+
+    payload.update({
+        "mode": "current_scan_suppression_truth",
+        "payload_mode": "fast_snapshot",
+        "source": "p565_fast_snapshot_only",
+        "read_only": True,
+        "p565_fast_current_scan_suppression_snapshot": True,
+        "does_not_recompute_candidate_payload": True,
+        "does_not_fetch_bars": True,
+        "does_not_call_broker": True,
+        "heavy_available": True,
+        "heavy_url_hint": "/diagnostics/current_scan_suppression_truth?heavy=true&limit=10",
+        "effective_market_scan_source": (effective_scan or {}).get("_scan_source") if isinstance(effective_scan, dict) else None,
+        "candidate_bearing_scan": bool(p475_effective_truth.get("candidate_bearing")),
+        "trade_judgable": bool(p475_effective_truth.get("trade_judgable")),
+        "regime_only_non_actionable": bool(p475_effective_truth.get("regime_only_non_actionable")),
+        "p475_scan_truth_contract": dict(p475_effective_truth),
+        "latest_scan": latest,
+        "candidate_rows": candidate_rows,
+        "eligible_new_entry_rows_all": eligible_rows,
+        "top_candidates": top_candidates,
+        "top_new_entry_candidates": top_new_entry_candidates,
+        "compact_row_fields": True,
+        "omitted_heavy_fields": [
+            "candidate_eval_module_full_status",
+            "full_candidate_row_payload",
+            "heavy_replay_or_report_recompute",
+        ],
+    })
+
+    if not bool(p475_effective_truth.get("trade_judgable")):
+        payload["status"] = "scan_not_trade_judgable"
+        payload["recommended_action"] = "wait_for_candidate_bearing_scan_completion"
+    return payload
+
 def _p277h_defensive_tier_near_miss_report(limit: int = 50) -> dict:
     payload = _diagnostics_candidates_payload(limit=max(1, min(int(limit or 50), 100)), full=True)
     items = [
@@ -62321,9 +62434,11 @@ def diagnostics_swing_daily_health_brief():
     return _p277_swing_daily_health_brief()
 
 @app.get("/diagnostics/current_scan_suppression_truth")
-def diagnostics_current_scan_suppression_truth(limit: int = 50):
+def diagnostics_current_scan_suppression_truth(limit: int = 50, heavy: bool = False):
     _ensure_runtime_state_loaded()
-    return _p277h_current_scan_suppression_truth(limit=limit)
+    if bool(heavy):
+        return _p277h_current_scan_suppression_truth(limit=limit)
+    return _p565_current_scan_suppression_truth_fast(limit=limit)
 
 @app.get("/diagnostics/defensive_tier_near_miss_report")
 def diagnostics_defensive_tier_near_miss_report(limit: int = 50):
