@@ -1179,6 +1179,10 @@ SWING_SUBMIT_PENDING_STALE_SEC = getenv_int_any(
     "SWING_SUBMIT_PENDING_STALE_SEC",
     default=300,
 )
+SWING_SELECTED_SUBMIT_TIMEOUT_SEC = getenv_int_any(
+    "SWING_SELECTED_SUBMIT_TIMEOUT_SEC",
+    default=20,
+)
 SWING_STALE_INTENT_KEEP_RECENT = getenv_int_any(
     "SWING_STALE_INTENT_KEEP_RECENT",
     default=25,
@@ -2985,7 +2989,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-558-submit-pending-terminal-enforcement-new-scan-deferral"
+PATCH_VERSION = "patch-559-per-symbol-submit-timeout-submit-phase-terminal-publish"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17353,6 +17357,20 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         in {"outside_market_hours", "outside_scanner_session", "market_closed"}
         and not bool((row or {}).get("actual_submit_side_effect"))
     ])
+    selected_submit_timeout_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_rows_all
+        if str((row or {}).get("symbol") or "").strip()
+        and (
+            bool((row or {}).get("p559_selected_submit_timeout"))
+            or str((row or {}).get("submit_reason") or (row or {}).get("reason") or "").strip().lower() == "selected_submit_timeout"
+            or str((row or {}).get("exception_type") or "").strip() == "SelectedSubmitTimeout"
+        )
+    ] + [
+        str(sym or "").strip().upper()
+        for sym in list(p540_selected_consumer_truth.get("selected_submit_timeout_symbols") or [])
+        if str(sym or "").strip()
+    ])
     p524_terminal_evidence_symbols = _dedupe_keep_order(
         list(submit_row_symbols)
         + list(active_symbols)
@@ -17363,6 +17381,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         + list(execution_quality_block_symbols)
         + list(retryable_spread_block_symbols)
         + list(after_hours_selected_symbols)
+        + list(selected_submit_timeout_symbols)
     )
     p524_selection_revalidation = _p524_revalidate_current_selected_symbols(
         production_selected_symbols,
@@ -17405,6 +17424,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         if str(sym or "").strip()
         and str(sym or "").strip().upper() not in p524_stale_selected_symbols
         and str(sym or "").strip().upper() not in set(after_hours_selected_symbols)
+        and str(sym or "").strip().upper() not in set(selected_submit_timeout_symbols)
         and not bool(p554_submit_pending)
     ])
     missing_submit_symbols = [
@@ -17415,6 +17435,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         and sym not in set(rate_limited_symbols)
         and sym not in set(queued_rate_limit_symbols)
         and sym not in set(after_hours_selected_symbols)
+        and sym not in set(selected_submit_timeout_symbols)
         and not bool(p554_submit_pending)
     ]
     selected_not_attempted_symbols = [
@@ -17431,6 +17452,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     if p554_submit_pending and production_selected_symbols:
         path_status = "submit_phase_pending"
         recommended_action = "wait_for_submit_phase_completion_or_check_scanner_light"
+    elif selected_submit_timeout_symbols:
+        path_status = "selected_submit_timeout_requires_reconcile"
+        recommended_action = "check_orders_and_reconcile_before_retrying_selected_symbols"
     elif missing_submit_symbols or submit_gap_symbols:
         path_status = "selected_submit_gap_detected"
         recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
@@ -17575,6 +17599,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "retryable_spread_block_symbols": retryable_spread_block_symbols,
             "after_hours_selected_symbols": after_hours_selected_symbols,
             "after_hours_selected_count": len(after_hours_selected_symbols),
+            "selected_submit_timeout_symbols": selected_submit_timeout_symbols,
+            "selected_submit_timeout_count": len(selected_submit_timeout_symbols),
             "submit_phase_pending": bool(p554_submit_pending),
             "submit_gap_symbols": submit_gap_symbols,
             "missing_submit_symbols": missing_submit_symbols,
@@ -27755,6 +27781,49 @@ def _build_actionable_watchlist(history_limit: int = PATCH50_HISTORY_DEFAULT, br
         'watchlist': rows[:lim],
     }
 
+def _p559_submit_selected_candidate_with_timeout(
+    submit_fn,
+    *,
+    symbol: str,
+    signal: str,
+    source_name: str,
+    live_allowed: bool,
+    timeout_sec: int | None = None,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    timeout = int(timeout_sec if timeout_sec is not None else SWING_SELECTED_SUBMIT_TIMEOUT_SEC or 0)
+    if timeout <= 0:
+        return dict(submit_fn() or {})
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"swing-submit-{sym or 'symbol'}")
+    timed_out = False
+    try:
+        future = executor.submit(submit_fn)
+        try:
+            return dict(future.result(timeout=timeout) or {})
+        except FuturesTimeoutError:
+            timed_out = True
+            future.cancel()
+            return {
+                "ok": False,
+                "rejected": True,
+                "reason": "selected_submit_timeout",
+                "error": f"selected submit did not return within {timeout}s",
+                "exception_type": "SelectedSubmitTimeout",
+                "symbol": sym,
+                "signal": signal,
+                "source": source_name,
+                "submitted": False,
+                "submit_attempted": True,
+                "retryable": False,
+                "requires_reconcile_before_retry": True,
+                "p559_selected_submit_timeout": True,
+                "p559_submit_timeout_sec": timeout,
+                "p559_live_allowed": bool(live_allowed),
+            }
+    finally:
+        executor.shutdown(wait=not timed_out, cancel_futures=True)
+
 def _p399_submit_swing_candidate_rows(
     rows: list | None,
     *,
@@ -27895,11 +27964,20 @@ def _p399_submit_swing_candidate_rows(
                 live_allowed=bool(live_allowed),
             )
 
+        signal_name = c.get("signal") or "daily_breakout"
         try:
-            if live_allowed:
-                resp = submit_scan_trade(sym, "buy", c.get("signal") or "daily_breakout", meta=meta, source=source_name)
-            else:
-                resp = execute_entry_signal(sym, "buy", c.get("signal") or "daily_breakout", source_name, meta=meta)
+            def _submit_call():
+                if live_allowed:
+                    return submit_scan_trade(sym, "buy", signal_name, meta=meta, source=source_name)
+                return execute_entry_signal(sym, "buy", signal_name, source_name, meta=meta)
+
+            resp = _p559_submit_selected_candidate_with_timeout(
+                _submit_call,
+                symbol=sym,
+                signal=signal_name,
+                source_name=source_name,
+                live_allowed=bool(live_allowed),
+            )
         except Exception as exc:
             resp = {
                 "ok": False,
@@ -27908,7 +27986,7 @@ def _p399_submit_swing_candidate_rows(
                 "error": str(exc),
                 "exception_type": type(exc).__name__,
                 "symbol": sym,
-                "signal": c.get("signal") or "daily_breakout",
+                "signal": signal_name,
                 "submitted": False,
                 "submit_attempted": True,
                 "p522_submit_exception_captured": True,
@@ -27955,7 +28033,7 @@ def _p399_submit_swing_candidate_rows(
         }
 
         if bool(row.get("actual_submit_side_effect")):
-            _p387_clear_rate_limit_selected_submit_retry(sym, c.get("signal") or "daily_breakout", reason="submit_side_effect_detected")
+            _p387_clear_rate_limit_selected_submit_retry(sym, signal_name, reason="submit_side_effect_detected")
         elif _p398_submit_row_rate_limited(row, submit_meta=submit_meta, resp=resp):
             row["submit_state"] = "retryable_rate_limit"
             row["p387_rate_limit_retry_queue"] = _p387_queue_rate_limited_selected_submit(c, row)
@@ -28696,6 +28774,11 @@ def _p550_selected_submission_truth_snapshot_light(
             submit_state,
             submit_reason,
         )
+        selected_submit_timeout = bool(
+            submit_row.get("p559_selected_submit_timeout")
+            or reason_norm == "selected_submit_timeout"
+            or str(submit_row.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
+        )
         submit_pending = bool(
             p554_submit_pending
             and sym in p554_pending_symbols
@@ -28708,6 +28791,7 @@ def _p550_selected_submission_truth_snapshot_light(
             and not after_hours_selected_not_submitted
             and not rate_limited_retryable
             and not execution_quality_blocked
+            and not selected_submit_timeout
             and not bool(retryable_spread_block.get("retryable"))
         )
         rows.append({
@@ -28732,6 +28816,8 @@ def _p550_selected_submission_truth_snapshot_light(
                 if bool(retryable_spread_block.get("retryable"))
                 else "execution_quality_blocked"
                 if execution_quality_blocked
+                else "selected_submit_timeout"
+                if selected_submit_timeout
                 else "unattempted"
                 if not submit_attempted
                 else "terminal_failed"
@@ -28749,6 +28835,8 @@ def _p550_selected_submission_truth_snapshot_light(
                 if bool(retryable_spread_block.get("retryable"))
                 else "blocked_by_execution_quality"
                 if execution_quality_blocked
+                else "selected_submit_timeout_requires_reconcile"
+                if selected_submit_timeout
                 else "submit_gap_unattempted"
                 if not submit_attempted
                 else "submit_gap_terminal_failed"
@@ -28756,6 +28844,7 @@ def _p550_selected_submission_truth_snapshot_light(
             "rate_limited_retryable": bool(rate_limited_retryable),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": dict(retryable_spread_block),
+            "selected_submit_timeout": bool(selected_submit_timeout),
             "submit_pending": bool(submit_pending),
             "p554_submit_phase_truth": dict(p554_submit_phase_truth) if submit_pending else {},
             "after_hours_selected_not_submitted": bool(after_hours_selected_not_submitted),
@@ -28791,6 +28880,12 @@ def _p550_selected_submission_truth_snapshot_light(
         "p557_submit_capable_selection_truth": dict(p557_submit_capable_truth),
         "p557_advisory_selected_symbols": list(p557_advisory_selected_symbols),
         "p557_cached_selection_suppressed_from_submit_gap": bool(p557_advisory_selected_symbols),
+        "selected_submit_timeout_symbols": [
+            row.get("symbol") for row in rows if bool(row.get("selected_submit_timeout"))
+        ],
+        "selected_submit_timeout_count": len([
+            row for row in rows if bool(row.get("selected_submit_timeout"))
+        ]),
         "submit_pending_symbols": [
             row.get("symbol") for row in rows if bool(row.get("submit_pending"))
         ],
@@ -32964,6 +33059,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if str((row or {}).get("symbol") or "").strip()
         and bool((row or {}).get("p552_late_entry_scan_non_actionable"))
     ])
+    p559_selected_submit_timeout_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and (
+            bool((row or {}).get("p559_selected_submit_timeout"))
+            or str((row or {}).get("submit_reason") or (row or {}).get("reason") or "").strip().lower() == "selected_submit_timeout"
+            or str((row or {}).get("exception_type") or "").strip() == "SelectedSubmitTimeout"
+        )
+    ])
     p522_submit_gap_symbols = _dedupe_keep_order([
         sym for sym in p522_selected_symbols_for_summary
         if sym not in set(p522_submit_row_symbols)
@@ -32973,6 +33078,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             and sym not in set(p522_retryable_spread_block_symbols)
             and sym not in set(p522_rate_limited_retry_symbols)
             and sym not in set(p552_late_non_actionable_symbols)
+            and sym not in set(p559_selected_submit_timeout_symbols)
         )
     ])
     p547_post_submit_snapshot = _p547_selection_submit_snapshot(
@@ -32992,6 +33098,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "attempted_symbols": list(p522_attempted_symbols),
             "actual_submit_side_effect_symbols": list(p522_actual_submit_symbols),
             "submit_gap_symbols": list(p522_submit_gap_symbols),
+            "selected_submit_timeout_symbols": list(p559_selected_submit_timeout_symbols),
         },
         "selected_total": len(p522_selected_symbols_for_summary),
         "selected_symbols": list(p522_selected_symbols_for_summary),
@@ -33009,6 +33116,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "rate_limited_submit_retry_count": len(p522_rate_limited_retry_symbols),
         "p552_late_non_actionable_symbols": list(p552_late_non_actionable_symbols),
         "p552_late_non_actionable_count": len(p552_late_non_actionable_symbols),
+        "p559_selected_submit_timeout_symbols": list(p559_selected_submit_timeout_symbols),
+        "p559_selected_submit_timeout_count": len(p559_selected_submit_timeout_symbols),
         "p552_market_close_entry_scan_truth": dict(p552_submit_clock_truth),
         "selected_submit_gap_symbols": list(p522_submit_gap_symbols),
         "selected_submit_gap_count": len(p522_submit_gap_symbols),
@@ -33031,9 +33140,13 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "actual_submit_side_effect_symbols": list(p522_actual_submit_symbols),
             "submit_gap_symbols": list(p522_submit_gap_symbols),
             "submit_gap_count": len(p522_submit_gap_symbols),
+            "selected_submit_timeout_symbols": list(p559_selected_submit_timeout_symbols),
+            "selected_submit_timeout_count": len(p559_selected_submit_timeout_symbols),
             "terminal_gap_reason": (
                 "selected_candidate_without_terminal_submit_evidence"
                 if p522_submit_gap_symbols
+                else "selected_submit_timeout_requires_reconcile"
+                if p559_selected_submit_timeout_symbols
                 else "none"
             ),
         },
@@ -33679,6 +33792,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         if str((row or {}).get("symbol") or "").strip()
         and _p398_submit_row_rate_limited(row)
     ])
+    selected_submit_timeout_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(would_submit or [])
+        if str((row or {}).get("symbol") or "").strip()
+        and (
+            bool((row or {}).get("p559_selected_submit_timeout"))
+            or str((row or {}).get("submit_reason") or (row or {}).get("reason") or "").strip().lower() == "selected_submit_timeout"
+            or str((row or {}).get("exception_type") or "").strip() == "SelectedSubmitTimeout"
+        )
+    ])
     submit_gap_symbols = _dedupe_keep_order([
         *[
             str((row or {}).get("symbol") or "").strip().upper()
@@ -33688,6 +33811,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             and str((row or {}).get("symbol") or "").strip().upper() not in set(execution_quality_block_symbols)
             and str((row or {}).get("symbol") or "").strip().upper() not in set(retryable_spread_block_symbols)
             and str((row or {}).get("symbol") or "").strip().upper() not in set(rate_limited_retry_symbols)
+            and str((row or {}).get("symbol") or "").strip().upper() not in set(selected_submit_timeout_symbols)
         ],
         *list(production_submit_bridge.get("missing_submit_symbols") or []),
     ])
@@ -33715,6 +33839,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     summary["retryable_spread_block_count"] = len(retryable_spread_block_symbols)
     summary["rate_limited_submit_retry_symbols"] = rate_limited_retry_symbols
     summary["rate_limited_submit_retry_count"] = len(rate_limited_retry_symbols)
+    summary["p559_selected_submit_timeout_symbols"] = selected_submit_timeout_symbols
+    summary["p559_selected_submit_timeout_count"] = len(selected_submit_timeout_symbols)
     summary["rate_limited_submit_retry_queue_count"] = len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
     summary["rate_limited_submit_retry_queue_symbols"] = [
         row.get("symbol") for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
@@ -42898,6 +43024,16 @@ def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = N
 def _classify_scan_submit_response(resp: dict | None) -> dict:
     resp = dict(resp or {})
     reason = str(resp.get("reason") or resp.get("action") or "").strip()
+    if bool(resp.get("p559_selected_submit_timeout")) or reason == "selected_submit_timeout":
+        return {
+            "state": "timeout",
+            "reason": "selected_submit_timeout",
+            "attempted": True,
+            "retryable": False,
+            "rate_limited": False,
+            "requires_reconcile_before_retry": True,
+            "order_id": "",
+        }
     if bool(resp.get("submitted")):
         return {"state": "submitted", "reason": reason, "attempted": True, "order_id": str(resp.get("order_id") or "").strip()}
     if bool(resp.get("dry_run")):

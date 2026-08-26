@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-558-submit-pending-terminal-enforcement-new-scan-deferral"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-559-per-symbol-submit-timeout-submit-phase-terminal-publish"
 
 
 def selected_submission_truth_light_snapshot(
@@ -96,9 +96,17 @@ def selected_submission_truth_light_snapshot(
         for row in rows
         if row.get("symbol") and bool(row.get("submit_pending"))
     ]
+    selected_submit_timeout_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and bool(row.get("selected_submit_timeout"))
+    ]
     submit_pending_symbol_set = set(submit_pending_symbols)
+    selected_submit_timeout_symbol_set = set(selected_submit_timeout_symbols)
     missing_side_effect_symbols = [
-        sym for sym in missing_side_effect_symbols if sym not in submit_pending_symbol_set
+        sym for sym in missing_side_effect_symbols
+        if sym not in submit_pending_symbol_set
+        and sym not in selected_submit_timeout_symbol_set
     ]
 
     return {
@@ -145,10 +153,14 @@ def selected_submission_truth_light_snapshot(
         "submit_gap_terminal_failed_count": len(submit_gap_terminal_failed_symbols),
         "submit_pending_symbols": submit_pending_symbols,
         "submit_pending_count": len(submit_pending_symbols),
+        "selected_submit_timeout_symbols": selected_submit_timeout_symbols,
+        "selected_submit_timeout_count": len(selected_submit_timeout_symbols),
         "rows": list(rows),
         "recommended_action": (
             "selected_candidate_submit_pending"
             if submit_pending_symbols
+            else "selected_submit_timeout_requires_reconcile"
+            if selected_submit_timeout_symbols
             else "rate_limited_selected_submit_waiting_for_retry"
             if rate_limited_retry_symbols
             else "after_hours_selected_not_submitted_monitor_next_open"
