@@ -2989,7 +2989,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-560-selected-candidate-direct-submit-handoff-enforcement"
+PATCH_VERSION = "patch-561-remove-pre-submit-pending-publish-force-submit-phase"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -32802,21 +32802,12 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         summary["production_contract_selected_symbols"] = list(p461_pre_submit_selected_symbols)
         summary["p461_promotion_recovery"] = dict(p461_promotion_recovery)
         summary["p461_terminal_close_before_submit"] = dict(p461_terminal_close)
-
-        set_last_scan_fn(
-            reason="partial_scan_completed" if bool((p402_eval_truth or {}).get("stopped_for_budget")) and bool((p402_eval_truth or {}).get("partial_scan_publishable")) else "scan_completed",
-            scanned=int((p402_eval_truth or {}).get("evaluated_count") or len(candidates)),
-            signals=len(approved),
-            would_trade=len(selected),
-            blocked=max(0, len(candidates) - len(approved)),
-            duration_ms=int(elapsed_ms_fn()),
-            selected_total=len(p461_pre_submit_selected_symbols),
-            selected_symbols=list(p461_pre_submit_selected_symbols),
-            eligible_total=len(approved),
-            summary=dict(summary),
-            effective_dry_run=bool(effective_dry_run),
-            p461_terminal_candidate_evaluation=True,
-        )
+        summary["p561_pre_submit_pending_publish_removed"] = {
+            "enabled": True,
+            "selected_symbols": list(p461_pre_submit_selected_symbols),
+            "removed_publish": "p461_terminal_candidate_evaluation_before_submit",
+            "reason": "selected_candidates_must_continue_to_submit_before_last_scan_terminal_publish",
+        }
 
         p560_release_gate_recheck_skipped = not bool(effective_dry_run)
         if p560_release_gate_recheck_skipped:
@@ -32844,23 +32835,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             "reason": "selected_candidates_continue_to_submit_phase_without_extra_release_gate_call",
         }
         summary["p461_terminal_close_before_submit"] = dict(p461_terminal_close)
-
-        set_last_scan_fn(
-            reason="partial_scan_completed" if bool((p402_eval_truth or {}).get("stopped_for_budget")) and bool((p402_eval_truth or {}).get("partial_scan_publishable")) else "scan_completed",
-            scanned=int((p402_eval_truth or {}).get("evaluated_count") or len(candidates)),
-            signals=len(approved),
-            would_trade=len(selected),
-            blocked=max(0, len(candidates) - len(approved)),
-            duration_ms=int(elapsed_ms_fn()),
-            selected_total=len(p461_pre_submit_selected_symbols),
-            selected_symbols=list(p461_pre_submit_selected_symbols),
-            eligible_total=len(approved),
-            summary=dict(summary),
-            effective_dry_run=bool(effective_dry_run),
-            p461_terminal_candidate_evaluation=True,
-            p461_release_gate_self_block_rechecked=True,
-            p560_direct_submit_handoff_enforcement=True,
-        )
+        summary["p561_pre_submit_pending_publish_removed"]["release_gate_recheck_publish_removed"] = True
+        summary["p561_pre_submit_pending_publish_removed"]["submit_phase_forced_next"] = True
 
     summary["p560_direct_submit_handoff_enforcement"] = {
         "enabled": True,
