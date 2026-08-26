@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-576-canonical-eligible-selection-handoff-pending-order-cleanup"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-577-canonical-selected-candidate-submit-consumption"
 
 
 def selected_submission_truth_light_snapshot(

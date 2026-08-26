@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-576-canonical-eligible-selection-handoff-pending-order-cleanup"
+PATCH_VERSION = "patch-577-canonical-selected-candidate-submit-consumption"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29232,6 +29232,125 @@ def _p576_canonical_eligible_selection_handoff_for_light(limit: int = 100) -> di
     })
     return snapshot
 
+def _p577_canonical_selected_candidate_submit_consumption(
+    *,
+    selected_rows: list | None,
+    approved_rows: list | None,
+    candidate_rows: list | None,
+    max_new_entries: int,
+    reason: str = "canonical_selected_candidate_submit_consumption",
+) -> dict:
+    max_total = max(0, int(max_new_entries or 0))
+    selected_input = [dict(row or {}) for row in list(selected_rows or []) if isinstance(row, dict)]
+    approved_input = [dict(row or {}) for row in list(approved_rows or []) if isinstance(row, dict)]
+    candidate_input = [dict(row or {}) for row in list(candidate_rows or []) if isinstance(row, dict)]
+
+    def _sym(row: dict | None) -> str:
+        return str((row or {}).get("symbol") or "").strip().upper()
+
+    def _approved(row: dict | None) -> bool:
+        row = dict(row or {})
+        contract = dict(row.get("swing_production_contract") or {})
+        return bool(row.get("eligible")) and bool(
+            row.get("production_contract_approved")
+            or contract.get("approved")
+        )
+
+    active_or_pending_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip()
+        and isinstance(plan, dict)
+        and (bool(plan.get("active")) or _plan_is_pending_entry(plan))
+    ])
+    blocked_symbols = set(active_or_pending_symbols)
+
+    candidate_by_symbol: dict[str, dict] = {}
+    for row in candidate_input + approved_input + selected_input:
+        sym = _sym(row)
+        if not sym or sym in candidate_by_symbol:
+            continue
+        candidate_by_symbol[sym] = dict(row or {})
+
+    selected_symbols_raw = _dedupe_keep_order([
+        _sym(row) for row in selected_input if _sym(row)
+    ])
+    selected_consumable: list[dict] = []
+    dropped_selected_symbols: list[str] = []
+    for sym in selected_symbols_raw:
+        row = dict(candidate_by_symbol.get(sym) or {})
+        if not row:
+            dropped_selected_symbols.append(sym)
+            continue
+        if sym in blocked_symbols or bool(row.get("open_position")) or bool(row.get("already_open")):
+            dropped_selected_symbols.append(sym)
+            continue
+        if not _approved(row):
+            dropped_selected_symbols.append(sym)
+            continue
+        row["selected"] = True
+        row["selection_source"] = row.get("selection_source") or row.get("selected_source") or "p577_canonical_submit_consumption"
+        row["selected_source"] = row.get("selected_source") or row.get("selection_source")
+        row["selection_finalizer"] = row.get("selection_finalizer") or "p577_canonical_submit_consumption"
+        selected_consumable.append(row)
+
+    selected_consumable = selected_consumable[:max_total] if max_total > 0 else []
+
+    eligible_by_symbol: dict[str, dict] = {}
+    for row in approved_input + candidate_input:
+        sym = _sym(row)
+        if (
+            sym
+            and sym not in eligible_by_symbol
+            and sym not in blocked_symbols
+            and not bool(row.get("open_position"))
+            and not bool(row.get("already_open"))
+            and _approved(row)
+        ):
+            candidate = dict(candidate_by_symbol.get(sym) or row or {})
+            candidate["symbol"] = sym
+            candidate["eligible"] = True
+            candidate["production_contract_approved"] = True
+            eligible_by_symbol[sym] = candidate
+
+    eligible_rows = list(eligible_by_symbol.values())
+    eligible_rows.sort(key=_p323_swing_production_sort_key, reverse=True)
+
+    applied = False
+    if not selected_consumable and eligible_rows and max_total > 0:
+        selected_consumable = eligible_rows[:max_total]
+        applied = True
+        reason = "selected_rows_rebuilt_from_current_eligible_production_rows_before_submit"
+
+    selected_symbols = _dedupe_keep_order([_sym(row) for row in selected_consumable if _sym(row)])
+    selected_set = set(selected_symbols)
+    rebuilt_candidates: list[dict] = []
+    for row in candidate_input:
+        item = dict(row or {})
+        sym = _sym(item)
+        if sym:
+            item["selected"] = bool(sym in selected_set)
+            if sym in selected_set:
+                item["selection_source"] = item.get("selection_source") or item.get("selected_source") or "p577_canonical_submit_consumption"
+                item["selected_source"] = item.get("selected_source") or item.get("selection_source")
+                item["selection_finalizer"] = item.get("selection_finalizer") or "p577_canonical_submit_consumption"
+        rebuilt_candidates.append(item)
+
+    return {
+        "enabled": True,
+        "applied": bool(applied or dropped_selected_symbols or selected_symbols_raw != selected_symbols),
+        "reason": reason,
+        "max_new_entries": int(max_total),
+        "input_selected_symbols": list(selected_symbols_raw),
+        "selected_symbols": list(selected_symbols),
+        "selected_rows": list(selected_consumable),
+        "eligible_symbols": _dedupe_keep_order([_sym(row) for row in eligible_rows if _sym(row)]),
+        "blocked_symbols": list(active_or_pending_symbols),
+        "dropped_selected_symbols": _dedupe_keep_order(dropped_selected_symbols),
+        "candidate_rows": rebuilt_candidates,
+        "submit_consumption_ready": bool(selected_consumable),
+    }
+
 def _p571_stage_timing_from_scan_sources(latest_scan: dict | None = None, summary: dict | None = None) -> dict:
     scan = dict(latest_scan or {})
     scan_summary = dict(summary or {})
@@ -33431,6 +33550,36 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 or "no_current_eligible_contract_rows_before_submit"
             )
 
+    p577_submit_consumption = _p577_canonical_selected_candidate_submit_consumption(
+        selected_rows=selected,
+        approved_rows=production_approved,
+        candidate_rows=candidates,
+        max_new_entries=max_new_entries,
+        reason="production_selection_finalizer_rows_consumed_before_submit",
+    )
+    selected = list(p577_submit_consumption.get("selected_rows") or [])
+    selected_symbol_set_for_rebuild = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in selected
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    rebuilt_candidates_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in list(p577_submit_consumption.get("candidate_rows") or [])
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    if rebuilt_candidates_by_symbol:
+        candidates = [
+            dict(rebuilt_candidates_by_symbol.get(str((row or {}).get("symbol") or "").strip().upper()) or row or {})
+            for row in list(candidates or [])
+        ]
+    production_selection_finalizer["selected"] = list(selected)
+    production_selection_finalizer["selected_symbols"] = list(p577_submit_consumption.get("selected_symbols") or [])
+    production_selection_finalizer["p577_canonical_selected_candidate_submit_consumption"] = dict(p577_submit_consumption)
+    p520_selection_truth_sync["p577_submit_consumption_applied"] = bool(p577_submit_consumption.get("applied"))
+    p520_selection_truth_sync["synced_selected_symbols"] = list(p577_submit_consumption.get("selected_symbols") or [])
+    p520_selection_truth_sync["submit_consumption_ready"] = bool(p577_submit_consumption.get("submit_consumption_ready"))
+
     _p402_stage_checkpoint(
         "selection_complete",
         candidate_count=len(candidates),
@@ -33446,11 +33595,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         selected_symbols=[c.get("symbol") for c in selected],
         source="run_swing_daily_scan_selection_complete",
     )
-    selected_symbol_set = {
-        str(c.get("symbol") or "").strip().upper()
-        for c in selected
-        if str(c.get("symbol") or "").strip()
-    }
+    selected_symbol_set = selected_symbol_set_for_rebuild
     for c in candidates:
         c["selected"] = str(c.get("symbol") or "").strip().upper() in selected_symbol_set
 
@@ -33643,6 +33788,16 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 ),
                 "legacy_background_submit_path_bypassed": bool(scan_options.get("p523_legacy_background_submit_path_bypassed")),
                 "goal": "scheduled_swing_scanner_uses_single_production_submit_contract",
+            },
+            "p577_canonical_selected_candidate_submit_consumption": {
+                "enabled": True,
+                "applied": bool(p577_submit_consumption.get("applied")),
+                "reason": p577_submit_consumption.get("reason"),
+                "selected_symbols": list(p577_submit_consumption.get("selected_symbols") or []),
+                "eligible_symbols": list(p577_submit_consumption.get("eligible_symbols") or [])[:25],
+                "blocked_symbols": list(p577_submit_consumption.get("blocked_symbols") or [])[:25],
+                "submit_consumption_ready": bool(p577_submit_consumption.get("submit_consumption_ready")),
+                "goal": "eligible production rows feed the direct submit helper before diagnostics report selection",
             },
             "p484_candidate_eval_module": swing_candidate_eval_module_status(
                 patch_version=PATCH_VERSION
