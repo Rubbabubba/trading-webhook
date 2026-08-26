@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-580-submit-trace-canonical-scan-consumer-sync"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-581-scanner-light-source-label-sync-canonical-truth-visibility"
 
 
 def selected_submission_truth_light_snapshot(
@@ -573,6 +573,18 @@ def scanner_light_snapshot(
         or {}
     )
     scanner_runtime_hotspot_truth = _scanner_runtime_hotspot_truth(latest_scan, scan_summary, budget_sec)
+    canonical_scan_source = (
+        latest_scan.get("_scan_source")
+        or latest_scan.get("source")
+        or scan_summary.get("effective_market_scan_source")
+        or None
+    )
+    canonical_consumer_truth = dict(
+        scan_summary.get("p579_canonical_light_consumer_truth")
+        or latest_scan.get("p579_canonical_light_consumer_truth")
+        or latest_scan.get("_p579_canonical_light_consumer_truth")
+        or {}
+    )
 
     return {
         "ok": True,
@@ -590,6 +602,8 @@ def scanner_light_snapshot(
         "scanner_status": scanner_status,
         "scanner_failure_root_cause": scanner_failure_root_cause,
         "scanner_failure_root_cause_historical": scanner_failure_root_cause_historical,
+        "canonical_scan_source": canonical_scan_source,
+        "p579_canonical_light_consumer_truth": canonical_consumer_truth,
         "swing_candidate_eval_module_version": swing_candidate_eval_module_version,
         "swing_candidate_eval_module_status": swing_candidate_eval_module_status,
         "p484_candidate_eval_module": p484_candidate_eval_module,
@@ -656,6 +670,7 @@ def scanner_light_snapshot(
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),
             "reason": latest_scan.get("reason"),
+            "source": canonical_scan_source,
             "scanned": latest_scan.get("scanned"),
             "signals": latest_scan.get("signals"),
             "would_trade": latest_scan.get("would_trade"),

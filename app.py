@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-580-submit-trace-canonical-scan-consumer-sync"
+PATCH_VERSION = "patch-581-scanner-light-source-label-sync-canonical-truth-visibility"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -47034,6 +47034,16 @@ def _p298_scanner_light() -> dict:
     if bool(p579_truth.get("replacement_applied")):
         latest_scan = dict(p579_canonical.get("scan") or latest_scan)
         summary = dict(p579_canonical.get("summary") or latest_scan.get("summary") or summary or {})
+    canonical_scan_source = str(
+        p579_truth.get("chosen_source")
+        or latest_scan.get("_scan_source")
+        or latest_scan.get("source")
+        or summary.get("effective_market_scan_source")
+        or "last_scan_runtime_snapshot"
+    )
+    latest_scan["_scan_source"] = latest_scan.get("_scan_source") or canonical_scan_source
+    latest_scan["source"] = latest_scan.get("source") or canonical_scan_source
+    summary["effective_market_scan_source"] = summary.get("effective_market_scan_source") or canonical_scan_source
     p475_latest_truth = dict(latest_scan.get("p475_scan_truth_contract") or {})
     background_truth = dict(_p456_background_scan_truth() or {})
     p555_stale_submit_pending_truth = _p555_stale_submit_pending_truth(background_truth)
