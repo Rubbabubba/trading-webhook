@@ -1175,6 +1175,10 @@ SWING_STALE_INTENT_MAX_PENDING_AGE_SEC = getenv_int_any(
     "SWING_STALE_INTENT_MAX_PENDING_AGE_SEC",
     default=1800,
 )
+SWING_SUBMIT_PENDING_STALE_SEC = getenv_int_any(
+    "SWING_SUBMIT_PENDING_STALE_SEC",
+    default=45,
+)
 SWING_STALE_INTENT_KEEP_RECENT = getenv_int_any(
     "SWING_STALE_INTENT_KEEP_RECENT",
     default=25,
@@ -2981,7 +2985,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-554-selection-complete-submit-phase-enforcement-submit-gap-terminal-reason"
+PATCH_VERSION = "patch-555-stale-submit-pending-candidate-recovery-submit-truth-recommendation-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28957,6 +28961,98 @@ def _p465_close_stale_thread_start_without_entry(reason: str = "background_threa
 
     return {"closed": True, "reason": reason, "proof_truth": proof_truth, "state": snapshot}
 
+def _p555_stale_submit_pending_truth(state: dict | None = None) -> dict:
+    row = dict(state or _p456_background_scan_truth() or {})
+    status = str(row.get("status") or "").strip().lower()
+    reason = str(row.get("reason") or "").strip().lower()
+    stage = str(row.get("stage") or "").strip().lower()
+    active = status in {"accepted", "running"} and not bool(row.get("terminal"))
+    stage_details = dict(row.get("stage_details") or {})
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(
+            stage_details.get("selected_symbols")
+            or row.get("candidate_truth_selected_symbols")
+            or []
+        )
+        if str(sym or "").strip()
+    ])
+    age_sec = _p462_iso_age_sec(
+        row.get("stage_utc") or row.get("updated_utc") or row.get("started_utc")
+    )
+    stale_after_sec = max(15, int(SWING_SUBMIT_PENDING_STALE_SEC or 45))
+    stale = bool(
+        active
+        and stage == "selection_complete"
+        and reason == "selection_complete_submit_pending"
+        and selected_symbols
+        and age_sec is not None
+        and float(age_sec) > float(stale_after_sec)
+    )
+    return {
+        "active": active,
+        "stale": stale,
+        "status": status or "idle",
+        "reason": reason or "none",
+        "stage": stage or "unknown",
+        "selected_symbols": selected_symbols,
+        "selected_count": len(selected_symbols),
+        "age_sec": round(float(age_sec), 2) if age_sec is not None else None,
+        "stale_after_sec": int(stale_after_sec),
+        "scan_attempt_id": row.get("scan_attempt_id"),
+    }
+
+
+def _p555_close_stale_submit_pending_for_retry(reason: str = "stale_submit_pending_recovered_for_fresh_scan") -> dict:
+    with SWING_SCAN_BACKGROUND_LOCK:
+        current = dict(SWING_SCAN_BACKGROUND_COMPLETION or {})
+        truth = _p555_stale_submit_pending_truth(current)
+        if not bool(truth.get("stale")):
+            return {"closed": False, "reason": "submit_pending_not_stale", "truth": truth}
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        SWING_SCAN_BACKGROUND_COMPLETION.clear()
+        SWING_SCAN_BACKGROUND_COMPLETION.update({
+            **current,
+            "status": "skipped",
+            "active": False,
+            "terminal": True,
+            "completed_utc": now_iso,
+            "updated_utc": now_iso,
+            "reason": reason,
+            "error": None,
+            "exception_type": None,
+            "traceback_tail": None,
+            "stage": "stale_submit_pending_recovered",
+            "stage_details": {
+                **dict(current.get("stage_details") or {}),
+                "p555_stale_submit_pending_truth": truth,
+                "fresh_scan_retry_unlocked": True,
+            },
+            "p555_stale_submit_pending_recovery": truth,
+            "boot_id": SYSTEM_BOOT_ID,
+        })
+        snapshot = dict(SWING_SCAN_BACKGROUND_COMPLETION)
+
+    try:
+        persist_scan_runtime_state(reason=reason)
+    except Exception:
+        pass
+
+    try:
+        _record_scanner_telemetry(
+            "scan_closed",
+            "stale_submit_pending_recovered",
+            details={
+                "reason": reason,
+                "p555_stale_submit_pending_truth": truth,
+            },
+        )
+    except Exception:
+        pass
+
+    return {"closed": True, "reason": reason, "truth": truth, "state": snapshot}
+
 def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: str, source_meta: dict) -> JSONResponse:
     age_sec = _p462_iso_age_sec(existing.get("started_utc"))
     heartbeat_age_sec = _p462_iso_age_sec(existing.get("updated_utc"))
@@ -29379,6 +29475,9 @@ def _p456_start_swing_scan_background(
 
     thread_start_close = _p465_close_stale_thread_start_without_entry("background_thread_start_proof_missing_before_retry")
     timeout_close = _p462h_close_timed_out_background_scan("background_scan_runtime_timeout_before_retry")
+    stale_submit_pending_close = _p555_close_stale_submit_pending_for_retry(
+        "stale_submit_pending_recovered_before_retry"
+    )
     existing_bg = _p456_background_scan_truth()
     existing_status = str(existing_bg.get("status") or "").strip().lower()
     existing_active = existing_status in {"accepted", "running"}
@@ -29447,6 +29546,7 @@ def _p456_start_swing_scan_background(
         stage_details={
             "p516_fast_scan_acceptance": True,
             "scan_contract": "p516_fast_accept_durable_worker_completion",
+            "p555_stale_submit_pending_close": dict(stale_submit_pending_close),
         },
         effective_dry_run=effective_dry_run if effective_dry_run is not None else None,
         effective_dry_run_reason="background_pending" if effective_dry_run is None else "precomputed",
@@ -29454,6 +29554,7 @@ def _p456_start_swing_scan_background(
         p461_retry_unlock=p461_retry_unlock,
         p465_thread_start_close=thread_start_close,
         p462_timeout_close=timeout_close,
+        p555_stale_submit_pending_close=stale_submit_pending_close,
     )
 
     try:
@@ -32346,10 +32447,20 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         )
         return fast_summary
 
-    summary = _p468_publish_candidate_truth({
-        "p468_truth_publish_stage": "post_selection_pre_submit",
-        "p468_truth_publish_reason": "fresh_candidate_truth_before_submit_and_reports",
-    })
+    p555_pre_submit_publish_deferred = bool(selected)
+    if p555_pre_submit_publish_deferred:
+        summary = _p468_compact_scan_summary({
+            "p468_truth_publish_stage": "post_selection_pre_submit",
+            "p468_truth_publish_reason": "fresh_candidate_truth_before_submit_and_reports",
+            "p555_pre_submit_candidate_truth_deferred": True,
+            "p555_pre_submit_candidate_truth_deferred_reason": "selected_candidates_submit_before_candidate_truth_publish",
+        })
+    else:
+        summary = _p468_publish_candidate_truth({
+            "p468_truth_publish_stage": "post_selection_pre_submit",
+            "p468_truth_publish_reason": "fresh_candidate_truth_before_submit_and_reports",
+            "p555_pre_submit_candidate_truth_deferred": False,
+        })
 
     if (not bool(SWING_PRODUCTION_RESET_ENABLED)) and bool(SWING_TARGET_PATH_RECOVERY_MODE_ENABLED) and selected:
         recovery_rows = [c for c in selected if bool(c.get("target_path_recovery_mode"))]
@@ -32713,6 +32824,8 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "p537_pre_submit_fallback_selection": dict(p537_pre_submit_fallback_selection),
         "p399_partial_submit_finalization": dict(p399_partial_submit_finalization),
         "p553_submit_finalization_truth": dict(p553_submit_finalization_truth),
+        "p555_pre_submit_candidate_truth_deferred": bool(p555_pre_submit_publish_deferred),
+        "p555_submit_before_candidate_truth_publish": bool(p555_pre_submit_publish_deferred),
         "p554_submit_phase_truth": {
             "enabled": True,
             "status": "submit_complete",
@@ -44490,7 +44603,10 @@ def _p298_selected_submission_truth_light() -> dict:
             else "no_after_hours_selected_candidate"
         ),
     }
-    if submitted_then_active_symbols:
+    submit_pending_symbols = list(out.get("submit_pending_symbols") or [])
+    if submit_pending_symbols:
+        out["recommended_action"] = "selected_candidate_submit_pending"
+    elif submitted_then_active_symbols:
         out["recommended_action"] = "selected_symbols_have_actual_submit_side_effect"
     elif after_hours_selected_symbols:
         out["recommended_action"] = "after_hours_selected_not_submitted_monitor_next_open"
@@ -44515,6 +44631,7 @@ def _p298_scanner_light() -> dict:
     latest_scan = _p475_normalize_scan_truth_contract(latest_scan, source="scanner_light")
     p475_latest_truth = dict(latest_scan.get("p475_scan_truth_contract") or {})
     background_truth = dict(_p456_background_scan_truth() or {})
+    p555_stale_submit_pending_truth = _p555_stale_submit_pending_truth(background_truth)
     sanitized_background_wrapper = _p464_sanitize_persisted_over_budget_scan(
         {"reason": background_truth.get("reason") or "scan_completed", "scan_background_completion_truth": background_truth},
         source="scanner_light_background_truth",
@@ -44533,6 +44650,7 @@ def _p298_scanner_light() -> dict:
     latest_scan["scanner_exception_truth"] = summary.get("scanner_exception_truth")
     latest_scan["using_last_successful_production_scan"] = bool(summary.get("using_last_successful_production_scan"))
     latest_scan["scan_background_completion_truth"] = background_truth
+    latest_scan["p555_stale_submit_pending_truth"] = dict(p555_stale_submit_pending_truth)
     latest_scan["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
     latest_scan["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
     latest_scan["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
@@ -44560,6 +44678,7 @@ def _p298_scanner_light() -> dict:
     latest_scan["swing_scan_state_module_status"] = swing_scan_state_module_status(patch_version=PATCH_VERSION)
     latest_scan = swing_candidate_eval_attach_status(latest_scan, patch_version=PATCH_VERSION)
     summary["scan_background_completion_truth"] = background_truth
+    summary["p555_stale_submit_pending_truth"] = dict(p555_stale_submit_pending_truth)
     summary["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
     summary["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
     summary["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))

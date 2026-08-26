@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-542-current-scan-cache-rejection-scanner-status-truth"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-555-stale-submit-pending-candidate-recovery-submit-truth-recommendation-fix"
 
 
 def selected_submission_truth_light_snapshot(
@@ -91,6 +91,15 @@ def selected_submission_truth_light_snapshot(
         for row in rows
         if row.get("symbol") and str(row.get("submit_gap_type") or "") == "terminal_failed"
     ]
+    submit_pending_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol") and bool(row.get("submit_pending"))
+    ]
+    submit_pending_symbol_set = set(submit_pending_symbols)
+    missing_side_effect_symbols = [
+        sym for sym in missing_side_effect_symbols if sym not in submit_pending_symbol_set
+    ]
 
     return {
         "ok": True,
@@ -134,9 +143,13 @@ def selected_submission_truth_light_snapshot(
         "submit_gap_unattempted_count": len(submit_gap_unattempted_symbols),
         "submit_gap_terminal_failed_symbols": submit_gap_terminal_failed_symbols,
         "submit_gap_terminal_failed_count": len(submit_gap_terminal_failed_symbols),
+        "submit_pending_symbols": submit_pending_symbols,
+        "submit_pending_count": len(submit_pending_symbols),
         "rows": list(rows),
         "recommended_action": (
-            "rate_limited_selected_submit_waiting_for_retry"
+            "selected_candidate_submit_pending"
+            if submit_pending_symbols
+            else "rate_limited_selected_submit_waiting_for_retry"
             if rate_limited_retry_symbols
             else "after_hours_selected_not_submitted_monitor_next_open"
             if after_hours_selected_symbols
