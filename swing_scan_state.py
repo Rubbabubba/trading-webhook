@@ -9,7 +9,97 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_SCAN_STATE_MODULE_VERSION = "patch-483-swing-scan-state-module-extraction-prep"
+SWING_SCAN_STATE_MODULE_VERSION = "patch-586-scan-truth-normalizer-module-extraction"
+
+
+def candidate_bearing_truth(scan: dict | None) -> dict:
+    scan = dict(scan or {})
+    summary = dict(scan.get("summary") or {})
+    incremental = dict(summary.get("incremental_scan") or {})
+    evaluation = dict(incremental.get("evaluation") or {})
+
+    symbols_eval_total = int(
+        summary.get("symbols_eval_total")
+        or evaluation.get("evaluated_count")
+        or scan.get("scanned")
+        or 0
+    )
+    candidates_total = int(summary.get("candidates_total") or 0)
+    eligible_total = int(summary.get("eligible_total") or scan.get("eligible_total") or 0)
+    selected_total = int(summary.get("selected_total") or scan.get("selected_total") or 0)
+
+    has_candidate_rows = bool(
+        summary.get("top_candidates")
+        or summary.get("top_rejection_reasons")
+        or summary.get("rejection_counts")
+    )
+
+    candidate_bearing = bool(
+        symbols_eval_total > 0
+        or candidates_total > 0
+        or eligible_total > 0
+        or selected_total > 0
+        or has_candidate_rows
+    )
+
+    phase = str(summary.get("scan_truth_phase") or "").strip()
+    regime_only = bool(
+        phase in {
+            "regime_to_candidate_fast_publish",
+            "regime_truth_only_before_candidate_eval",
+        }
+        or summary.get("p474_regime_fast_publish")
+        or summary.get("p470_regime_budget_close")
+        or (
+            int(scan.get("scanned") or 0) <= 0
+            and symbols_eval_total <= 0
+            and not has_candidate_rows
+        )
+    )
+
+    return {
+        "candidate_bearing": candidate_bearing,
+        "trade_judgable": bool(candidate_bearing and not regime_only),
+        "regime_only_non_actionable": bool(regime_only and not candidate_bearing),
+        "symbols_eval_total": symbols_eval_total,
+        "candidates_total": candidates_total,
+        "eligible_total": eligible_total,
+        "selected_total": selected_total,
+        "has_candidate_rows": has_candidate_rows,
+        "scan_truth_phase": phase or None,
+    }
+
+
+def normalize_scan_truth_contract(scan: dict | None, source: str = "") -> dict:
+    row = dict(scan or {})
+    if not row:
+        return row
+
+    summary = dict(row.get("summary") or {})
+    truth = candidate_bearing_truth(row)
+
+    row["candidate_bearing_scan"] = bool(truth.get("candidate_bearing"))
+    row["trade_judgable"] = bool(truth.get("trade_judgable"))
+    row["regime_only_non_actionable"] = bool(truth.get("regime_only_non_actionable"))
+    row["p475_scan_truth_contract"] = dict(truth)
+    row["p475_scan_truth_source"] = source or "scan_truth_contract"
+
+    summary["candidate_bearing_scan"] = bool(truth.get("candidate_bearing"))
+    summary["trade_judgable"] = bool(truth.get("trade_judgable"))
+    summary["regime_only_non_actionable"] = bool(truth.get("regime_only_non_actionable"))
+    summary["p475_scan_truth_contract"] = dict(truth)
+
+    reason = str(row.get("reason") or summary.get("scan_reason") or "").strip()
+    if bool(truth.get("regime_only_non_actionable")):
+        if reason in {"scan_completed", "partial_scan_completed", ""}:
+            row["reason_before_p475_contract"] = reason or None
+            row["reason"] = "regime_only_non_actionable"
+        if str(summary.get("scan_reason") or "") in {"scan_completed", "partial_scan_completed", ""}:
+            summary["scan_reason_before_p475_contract"] = summary.get("scan_reason") or None
+            summary["scan_reason"] = "regime_only_non_actionable"
+
+    row["summary"] = summary
+    return row
 
 
 def build_scan_brief(scan: dict | None, truth: dict | None = None) -> dict:
@@ -122,6 +212,8 @@ def scan_state_module_status(*, patch_version: str) -> dict:
         "extraction_phase": "prep",
         "responsibilities": [
             "scan_brief_shape",
+            "candidate_bearing_truth",
+            "scan_truth_contract_normalization",
             "canonical_scan_contract_shape",
             "historical_background_failure_tombstone_shape",
         ],
