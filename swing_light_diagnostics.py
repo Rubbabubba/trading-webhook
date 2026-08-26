@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-577-canonical-selected-candidate-submit-consumption"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-578-after-hours-selected-gap-suppression-post-deploy-submit-proof"
 
 
 def selected_submission_truth_light_snapshot(
@@ -44,7 +44,9 @@ def selected_submission_truth_light_snapshot(
     submit_gap_symbols = [
         row.get("symbol")
         for row in rows
-        if row.get("symbol") and bool(row.get("submit_gap"))
+        if row.get("symbol")
+        and bool(row.get("submit_gap"))
+        and bool(row.get("submit_gap_is_actionable", True))
     ]
     after_hours_selected_symbols = [
         row.get("symbol")
@@ -69,6 +71,7 @@ def selected_submission_truth_light_snapshot(
         and row.get("symbol") not in set(execution_quality_block_symbols)
         and row.get("symbol") not in set(retryable_spread_block_symbols)
         and row.get("symbol") not in set(after_hours_selected_symbols)
+        and bool(row.get("submit_gap_is_actionable", True))
     ]
     candidate_selected_only = [
         row.get("symbol")
@@ -149,6 +152,13 @@ def selected_submission_truth_light_snapshot(
     submit_pending_symbol_set = set(submit_pending_symbols)
     selected_submit_timeout_symbol_set = set(selected_submit_timeout_symbols)
     stale_selected_submit_timeout_symbol_set = set(stale_selected_submit_timeout_symbols)
+    non_actionable_gap_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol")
+        and bool(row.get("submit_gap"))
+        and not bool(row.get("submit_gap_is_actionable", True))
+    ]
     missing_side_effect_symbols = [
         sym for sym in missing_side_effect_symbols
         if sym not in submit_pending_symbol_set
@@ -181,6 +191,12 @@ def selected_submission_truth_light_snapshot(
         "retryable_spread_block_count": len(retryable_spread_block_symbols),
         "submit_gap_symbols": submit_gap_symbols,
         "submit_gap_count": len(submit_gap_symbols),
+        "submit_gap_is_actionable": bool(submit_gap_symbols),
+        "non_actionable_submit_gap_symbols": non_actionable_gap_symbols,
+        "non_actionable_submit_gap_count": len(non_actionable_gap_symbols),
+        "market_hours_submit_possible": bool(any(row.get("market_hours_submit_possible") for row in rows)),
+        "latest_post_deploy_submit_cycle_seen": bool(any(row.get("latest_post_deploy_submit_cycle_seen") for row in rows)),
+        "p577_submit_consumption_seen": bool(any(row.get("p577_submit_consumption_seen") for row in rows)),
         "after_hours_selected_symbols": after_hours_selected_symbols,
         "after_hours_selected_count": len(after_hours_selected_symbols),
         "after_hours_selected_not_submitted": bool(after_hours_selected_symbols),
@@ -232,10 +248,12 @@ def selected_submission_truth_light_snapshot(
             if resolved_submit_timeout_symbols
             else "rate_limited_selected_submit_waiting_for_retry"
             if rate_limited_retry_symbols
-            else "after_hours_selected_not_submitted_monitor_next_open"
+            else "wait_for_next_market_scan"
             if after_hours_selected_symbols
             else "selected_candidate_submit_gap_detected"
             if submit_gap_symbols
+            else "wait_for_next_market_scan"
+            if non_actionable_gap_symbols or after_hours_selected_symbols
             else "selected_candidate_blocked_by_execution_quality"
             if execution_quality_block_symbols
             else "retryable_spread_block_waiting_for_quote_improvement"

@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-577-canonical-selected-candidate-submit-consumption"
+PATCH_VERSION = "patch-578-after-hours-selected-gap-suppression-post-deploy-submit-proof"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29623,6 +29623,94 @@ def _p575_snapshot_position_symbols_light() -> set[str]:
         if str((row or {}).get("symbol") or "").strip()
     }
 
+def _p578_market_hours_submit_truth(latest_scan: dict | None = None, summary: dict | None = None) -> dict:
+    latest_scan = dict(latest_scan or {})
+    summary = dict(summary or {})
+    clock_truth = {}
+    try:
+        clock_truth = _p552_market_close_entry_scan_truth()
+    except Exception as exc:
+        clock_truth = {"ok": False, "error": str(exc), "entry_scan_actionable": False}
+    latest_reason = str(latest_scan.get("reason") or summary.get("scan_reason") or "").strip().lower()
+    market_open = bool(clock_truth.get("entry_scan_actionable"))
+    outside_market_latest = latest_reason in {
+        "outside_market_hours",
+        "outside_scanner_session",
+        "market_closed",
+    }
+    submit_possible = bool(market_open and not outside_market_latest)
+    return {
+        "enabled": True,
+        "market_hours_submit_possible": bool(submit_possible),
+        "entry_scan_actionable": bool(clock_truth.get("entry_scan_actionable")),
+        "latest_scan_reason": latest_reason,
+        "outside_market_latest_scan": bool(outside_market_latest),
+        "clock_reason": clock_truth.get("reason"),
+        "market_clock": dict(clock_truth),
+        "recommended_action": (
+            "evaluate_current_submit_truth"
+            if submit_possible
+            else "wait_for_next_market_scan"
+        ),
+    }
+
+def _p578_post_deploy_submit_proof_truth(latest_scan: dict | None = None, summary: dict | None = None) -> dict:
+    latest_scan = dict(latest_scan or {})
+    summary = dict(summary or {})
+    p577 = dict(summary.get("p577_canonical_selected_candidate_submit_consumption") or {})
+    p554 = dict(summary.get("p554_submit_phase_truth") or {})
+    submit_rows = list(
+        summary.get("selected_submission_rows")
+        or summary.get("would_submit")
+        or latest_scan.get("would_submit")
+        or []
+    )
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    submit_row_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_rows
+        if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
+    ])
+    p577_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p577.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    p577_seen = bool(p577)
+    submit_phase_terminal = bool(p554.get("submit_terminal"))
+    submit_phase_reached = bool(
+        p554.get("submit_phase_reached")
+        or submit_rows
+        or str(p554.get("status") or "").strip().lower() in {"submit_complete", "submit_started", "submit_phase_started"}
+    )
+    return {
+        "enabled": True,
+        "latest_post_deploy_submit_cycle_seen": bool(
+            p577_seen
+            and submit_phase_reached
+            and (submit_phase_terminal or submit_rows)
+        ),
+        "p577_submit_consumption_seen": bool(p577_seen),
+        "p577_submit_consumption_ready": bool(p577.get("submit_consumption_ready")),
+        "p577_selected_symbols": list(p577_symbols),
+        "selected_symbols": list(selected_symbols),
+        "submit_phase_reached": bool(submit_phase_reached),
+        "submit_phase_terminal": bool(submit_phase_terminal),
+        "submit_row_count": len(submit_rows),
+        "submit_row_symbols": list(submit_row_symbols),
+        "reason": (
+            "p577_submit_cycle_terminal_or_rows_seen"
+            if p577_seen and submit_phase_reached and (submit_phase_terminal or submit_rows)
+            else "p577_not_yet_seen_in_terminal_submit_cycle"
+            if not p577_seen
+            else "p577_seen_waiting_for_submit_terminal_rows"
+        ),
+    }
+
 def _p550_selected_submission_truth_snapshot_light(
     latest_scan: dict | None = None,
     summary: dict | None = None,
@@ -29675,6 +29763,8 @@ def _p550_selected_submission_truth_snapshot_light(
         }
         and not bool(p554_submit_phase_truth.get("submit_terminal"))
     )
+    p578_market_submit_truth = _p578_market_hours_submit_truth(latest_scan, summary)
+    p578_post_deploy_submit_proof = _p578_post_deploy_submit_proof_truth(latest_scan, summary)
     candidate_truth = _p576_canonical_eligible_selection_handoff_for_light(limit=max(lim, 100))
     eligible_symbols = list(candidate_truth.get("eligible_symbols") or _p413_eligible_new_entry_symbols_from_fast_payload(candidate_truth))
     row_selected_symbols = _dedupe_keep_order([
@@ -29803,6 +29893,12 @@ def _p550_selected_submission_truth_snapshot_light(
                 state_norm in {"ignored", "skipped"}
                 and reason_norm in {"outside_market_hours", "outside_scanner_session", "market_closed"}
             )
+            or (
+                not bool(p578_market_submit_truth.get("market_hours_submit_possible"))
+                and not submit_row
+                and not actual_submit_side_effect
+                and not pending_order_only_plan
+            )
         )
         rate_limited_retryable = bool(_p398_submit_row_rate_limited(submit_row))
         execution_quality_blocked = bool(
@@ -29925,6 +30021,10 @@ def _p550_selected_submission_truth_snapshot_light(
             "submit_pending": bool(submit_pending),
             "p554_submit_phase_truth": dict(p554_submit_phase_truth) if submit_pending else {},
             "after_hours_selected_not_submitted": bool(after_hours_selected_not_submitted),
+            "submit_gap_is_actionable": bool(submit_gap and p578_market_submit_truth.get("market_hours_submit_possible")),
+            "market_hours_submit_possible": bool(p578_market_submit_truth.get("market_hours_submit_possible")),
+            "latest_post_deploy_submit_cycle_seen": bool(p578_post_deploy_submit_proof.get("latest_post_deploy_submit_cycle_seen")),
+            "p577_submit_consumption_seen": bool(p578_post_deploy_submit_proof.get("p577_submit_consumption_seen")),
             "submit_state": submit_state,
             "submit_reason": submit_reason,
             "submit_order_id": submit_row.get("submit_order_id") or submit_row.get("order_id"),
@@ -29968,6 +30068,28 @@ def _p550_selected_submission_truth_snapshot_light(
         "p550_snapshot_only_light_endpoint": True,
         "p575_selection_repair": dict(p575_selection_repair),
         "p576_canonical_selection_handoff": p576_handoff,
+        "p578_after_hours_selected_gap_suppression": {
+            "enabled": True,
+            "market_hours_submit_possible": bool(p578_market_submit_truth.get("market_hours_submit_possible")),
+            "suppressed_symbols": [
+                row.get("symbol") for row in rows
+                if bool(row.get("after_hours_selected_not_submitted"))
+                and not bool(row.get("actual_submit_side_effect"))
+            ],
+            "reason": (
+                "cached_selected_rows_are_not_actionable_outside_market_hours"
+                if not bool(p578_market_submit_truth.get("market_hours_submit_possible"))
+                else "market_hours_submit_gaps_remain_actionable"
+            ),
+        },
+        "p578_post_deploy_submit_proof_truth": dict(p578_post_deploy_submit_proof),
+        "market_hours_submit_possible": bool(p578_market_submit_truth.get("market_hours_submit_possible")),
+        "latest_post_deploy_submit_cycle_seen": bool(p578_post_deploy_submit_proof.get("latest_post_deploy_submit_cycle_seen")),
+        "p577_submit_consumption_seen": bool(p578_post_deploy_submit_proof.get("p577_submit_consumption_seen")),
+        "submit_gap_is_actionable": bool(
+            p578_market_submit_truth.get("market_hours_submit_possible")
+            and any(bool(row.get("submit_gap")) for row in rows)
+        ),
         "p575_snapshot_position_symbols": sorted(snapshot_position_symbols),
         "does_not_read_lifecycle": True,
         "does_not_revalidate_selection": False,
