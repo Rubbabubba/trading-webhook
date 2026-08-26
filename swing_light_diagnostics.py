@@ -10,7 +10,46 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-584-current-scan-after-hours-recommendation-parity"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-585-scanner-runtime-contract-consolidation-dead-background-cleanup"
+
+
+def _scanner_light_compact_background_truth(background: dict | None) -> dict:
+    background = dict(background or {})
+    stage_details = background.get("stage_details") if isinstance(background.get("stage_details"), dict) else {}
+    dry_run_truth = background.get("dry_run_truth") if isinstance(background.get("dry_run_truth"), dict) else {}
+    release_gate_cache = (
+        dry_run_truth.get("release_gate_cache")
+        if isinstance(dry_run_truth.get("release_gate_cache"), dict)
+        else {}
+    )
+    return {
+        "status": background.get("status"),
+        "active": bool(background.get("active")),
+        "terminal": bool(background.get("terminal")),
+        "reason": background.get("reason"),
+        "stage": background.get("stage"),
+        "scan_attempt_id": background.get("scan_attempt_id"),
+        "started_utc": background.get("started_utc"),
+        "updated_utc": background.get("updated_utc"),
+        "completed_utc": background.get("completed_utc"),
+        "duration_ms": background.get("duration_ms"),
+        "symbols_scanned": background.get("symbols_scanned"),
+        "signals": background.get("signals"),
+        "would_trade": background.get("would_trade"),
+        "blocked": background.get("blocked"),
+        "error": background.get("error"),
+        "exception_type": background.get("exception_type"),
+        "candidate_truth_terminal": bool(background.get("candidate_truth_terminal")),
+        "candidate_truth_terminal_utc": background.get("candidate_truth_terminal_utc"),
+        "candidate_truth_selected_symbols": list(background.get("candidate_truth_selected_symbols") or []),
+        "effective_dry_run": dry_run_truth.get("effective_dry_run"),
+        "effective_dry_run_reason": dry_run_truth.get("effective_dry_run_reason"),
+        "release_gate_cached": bool(release_gate_cache.get("cached")),
+        "release_gate_live_orders_permitted": release_gate_cache.get("live_orders_permitted"),
+        "release_gate_go_live_eligible": release_gate_cache.get("go_live_eligible"),
+        "stage_selected_symbols": list(stage_details.get("selected_symbols") or []),
+        "stage_selected_count": stage_details.get("selected_count"),
+    }
 
 
 def selected_submission_truth_light_snapshot(
@@ -585,6 +624,85 @@ def scanner_light_snapshot(
         or latest_scan.get("_p579_canonical_light_consumer_truth")
         or {}
     )
+    background_historical_terminal = bool(
+        scanner_currently_ok
+        and not background_scan_active
+        and background_scan_terminal
+        and (
+            background_restart_lost
+            or str(scan_background_completion_truth.get("reason") or "").strip().lower()
+            in {
+                "background_scan_lost_after_restart_recovered",
+                "background_scan_lost_after_restart",
+            }
+        )
+    )
+    visible_background_truth = (
+        {
+            "status": "historical_terminal_compacted",
+            "active": False,
+            "terminal": True,
+            "reason": "historical_background_state_compacted_because_scanner_is_healthy",
+            "original_status": scan_background_completion_truth.get("status"),
+            "original_reason": scan_background_completion_truth.get("reason"),
+            "stage": scan_background_completion_truth.get("stage"),
+            "scan_attempt_id": scan_background_completion_truth.get("scan_attempt_id"),
+            "completed_utc": scan_background_completion_truth.get("completed_utc"),
+            "candidate_truth_selected_symbols": list(scan_background_completion_truth.get("candidate_truth_selected_symbols") or []),
+        }
+        if background_historical_terminal
+        else scan_background_completion_truth
+    )
+    historical_background_terminal_truth = (
+        _scanner_light_compact_background_truth(scan_background_completion_truth)
+        if background_historical_terminal
+        else {}
+    )
+    scanner_runtime_contract = {
+        "version": SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
+        "status": scanner_status,
+        "healthy": bool(scanner_currently_ok),
+        "active_scan": {
+            "active": bool(background_scan_active or effective_in_flight),
+            "in_flight_run": bool(effective_in_flight or (background_scan_active and not background_timed_out)),
+            "background_scan_active": bool(background_scan_active),
+            "stage": scan_background_completion_truth.get("stage"),
+            "scan_attempt_id": scan_background_completion_truth.get("scan_attempt_id"),
+            "age_sec": round(background_age_sec, 2) if background_age_sec is not None else None,
+            "over_budget": bool(background_over_budget or in_flight_over_budget),
+            "timed_out": bool(background_timed_out),
+        },
+        "latest_terminal_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "source": canonical_scan_source,
+            "scanned": latest_scan.get("scanned"),
+            "signals": latest_scan.get("signals"),
+            "would_trade": latest_scan.get("would_trade"),
+            "blocked": latest_scan.get("blocked"),
+            "duration_ms": latest_scan.get("duration_ms"),
+        },
+        "last_candidate_bearing_scan": {
+            "source": canonical_scan_source,
+            "selected_total": int(scan_summary.get("selected_total") or 0),
+            "selected_symbols": list(scan_summary.get("selected_symbols") or []),
+            "eligible_total": int(scan_summary.get("eligible_total") or scan_summary.get("eligible_count") or 0),
+            "candidate_bearing": bool(scan_summary.get("candidate_bearing_scan")),
+            "trade_judgable": bool(scan_summary.get("trade_judgable")),
+        },
+        "warnings": {
+            "active": list(active_warning_codes),
+            "recovered": list(recovered_warning_codes),
+            "historical": list(historical_warning_codes),
+        },
+        "background_history_compacted": bool(background_historical_terminal),
+        "historical_background_terminal_truth": historical_background_terminal_truth,
+        "operator_summary": (
+            "healthy_candidate_scan_available"
+            if scanner_currently_ok and latest_scan_completed
+            else scanner_status
+        ),
+    }
 
     return {
         "ok": True,
@@ -604,11 +722,14 @@ def scanner_light_snapshot(
         "scanner_failure_root_cause_historical": scanner_failure_root_cause_historical,
         "canonical_scan_source": canonical_scan_source,
         "p579_canonical_light_consumer_truth": canonical_consumer_truth,
+        "p585_scanner_runtime_contract": scanner_runtime_contract,
+        "p585_background_history_compacted": bool(background_historical_terminal),
         "swing_candidate_eval_module_version": swing_candidate_eval_module_version,
         "swing_candidate_eval_module_status": swing_candidate_eval_module_status,
         "p484_candidate_eval_module": p484_candidate_eval_module,
         "scanner_runtime_hotspot_truth": scanner_runtime_hotspot_truth,
-        "scan_background_completion_truth": scan_background_completion_truth,
+        "scan_background_completion_truth": visible_background_truth,
+        "historical_background_terminal_truth": historical_background_terminal_truth,
         "background_scan_runtime_truth": {
             "active": bool(background_scan_active),
             "age_sec": round(background_age_sec, 2) if background_age_sec is not None else None,
@@ -625,6 +746,7 @@ def scanner_light_snapshot(
             "duration_ms": int(background_duration_ms),
             "stage": scan_background_completion_truth.get("stage"),
             "scan_attempt_id": scan_background_completion_truth.get("scan_attempt_id"),
+            "historical_terminal_compacted": bool(background_historical_terminal),
         },
         "in_flight_run": bool(effective_in_flight or (background_scan_active and not background_timed_out)),
         "raw_in_flight_run": bool(in_flight),
@@ -684,10 +806,11 @@ def scanner_light_snapshot(
             "eligible_total": int(scan_summary.get("eligible_total") or scan_summary.get("eligible_count") or 0),
             "stale_preopen_scan": bool(scan_summary.get("stale_preopen_scan") or latest_scan.get("stale_preopen_scan")),
             "post_open_scan_missing": bool(post_open_scan_missing),
-            "scan_background_completion_truth": scan_background_completion_truth,
+            "scan_background_completion_truth": visible_background_truth,
             "swing_candidate_eval_module_version": swing_candidate_eval_module_version,
             "swing_candidate_eval_module_status": swing_candidate_eval_module_status,
             "p484_candidate_eval_module": p484_candidate_eval_module,
+            "p585_scanner_runtime_contract": scanner_runtime_contract,
         },
     }
 
