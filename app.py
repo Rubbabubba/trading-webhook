@@ -2993,7 +2993,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-563-broker-submit-timeout-retry-contract"
+PATCH_VERSION = "patch-564-resolved-submit-timeout-truth-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17381,6 +17381,24 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for sym in list(p540_selected_consumer_truth.get("selected_submit_timeout_symbols") or [])
         if str(sym or "").strip()
     ])
+    resolved_submit_timeout_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected_submit_timeout_symbols)
+        if str(sym or "").strip().upper() in (
+            set(active_symbols)
+            | set(pending_symbols)
+            | set(actual_submit_side_effect_symbols)
+        )
+    ] + [
+        str(sym or "").strip().upper()
+        for sym in list(p540_selected_consumer_truth.get("resolved_submit_timeout_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    if resolved_submit_timeout_symbols:
+        selected_submit_timeout_symbols = [
+            sym for sym in selected_submit_timeout_symbols
+            if sym not in set(resolved_submit_timeout_symbols)
+        ]
     p524_terminal_evidence_symbols = _dedupe_keep_order(
         list(submit_row_symbols)
         + list(active_symbols)
@@ -17392,6 +17410,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         + list(retryable_spread_block_symbols)
         + list(after_hours_selected_symbols)
         + list(selected_submit_timeout_symbols)
+        + list(resolved_submit_timeout_symbols)
     )
     p524_selection_revalidation = _p524_revalidate_current_selected_symbols(
         production_selected_symbols,
@@ -17465,6 +17484,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif selected_submit_timeout_symbols:
         path_status = "selected_submit_timeout_requires_reconcile"
         recommended_action = "check_orders_and_reconcile_before_retrying_selected_symbols"
+    elif resolved_submit_timeout_symbols and set(selected_symbols).issubset(set(active_symbols) | set(pending_symbols) | set(actual_submit_side_effect_symbols)):
+        path_status = "selected_timeout_resolved_by_active_plan"
+        recommended_action = "monitor_active_positions"
     elif missing_submit_symbols or submit_gap_symbols:
         path_status = "selected_submit_gap_detected"
         recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
@@ -17493,6 +17515,20 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         path_status = "no_selected_candidate"
         recommended_action = "monitor_next_scan"
 
+    p564_submit_phase_truth = dict(p554_submit_phase_truth)
+    if resolved_submit_timeout_symbols:
+        p564_submit_phase_truth["selected_submit_timeout_symbols"] = list(selected_submit_timeout_symbols)
+        p564_submit_phase_truth["selected_submit_timeout_count"] = len(selected_submit_timeout_symbols)
+        p564_submit_phase_truth["resolved_submit_timeout_symbols"] = list(resolved_submit_timeout_symbols)
+        p564_submit_phase_truth["resolved_submit_timeout_count"] = len(resolved_submit_timeout_symbols)
+        p564_submit_phase_truth["actual_submit_side_effect_symbols"] = _dedupe_keep_order(
+            list(p564_submit_phase_truth.get("actual_submit_side_effect_symbols") or [])
+            + list(resolved_submit_timeout_symbols)
+        )
+        if not selected_submit_timeout_symbols and str(p564_submit_phase_truth.get("terminal_gap_reason") or "") == "selected_submit_timeout_requires_reconcile":
+            p564_submit_phase_truth["terminal_gap_reason"] = "selected_timeout_resolved_by_active_plan"
+        p564_submit_phase_truth["p564_resolved_timeout_truth_cleanup"] = True
+
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -17512,7 +17548,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or 0),
             "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced")),
         },
-        "p554_submit_phase_truth": dict(p554_submit_phase_truth),
+        "p554_submit_phase_truth": p564_submit_phase_truth,
         "p554_submit_phase_pending": bool(p554_submit_pending),
         "p557_submit_capable_selection_truth": dict(p557_submit_capable_truth),
         "p557_advisory_selected_symbols": list(p557_advisory_selected_symbols),
@@ -17611,6 +17647,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "after_hours_selected_count": len(after_hours_selected_symbols),
             "selected_submit_timeout_symbols": selected_submit_timeout_symbols,
             "selected_submit_timeout_count": len(selected_submit_timeout_symbols),
+            "resolved_submit_timeout_symbols": resolved_submit_timeout_symbols,
+            "resolved_submit_timeout_count": len(resolved_submit_timeout_symbols),
             "submit_phase_pending": bool(p554_submit_pending),
             "submit_gap_symbols": submit_gap_symbols,
             "missing_submit_symbols": missing_submit_symbols,
@@ -28821,6 +28859,7 @@ def _p550_selected_submission_truth_snapshot_light(
             or reason_norm == "selected_submit_timeout"
             or str(submit_row.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
         )
+        selected_submit_timeout_resolved = bool(selected_submit_timeout and actual_submit_side_effect)
         submit_pending = bool(
             p554_submit_pending
             and sym in p554_pending_symbols
@@ -28887,6 +28926,7 @@ def _p550_selected_submission_truth_snapshot_light(
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": dict(retryable_spread_block),
             "selected_submit_timeout": bool(selected_submit_timeout),
+            "selected_submit_timeout_resolved": bool(selected_submit_timeout_resolved),
             "submit_pending": bool(submit_pending),
             "p554_submit_phase_truth": dict(p554_submit_phase_truth) if submit_pending else {},
             "after_hours_selected_not_submitted": bool(after_hours_selected_not_submitted),
@@ -28904,6 +28944,27 @@ def _p550_selected_submission_truth_snapshot_light(
         selected_symbols=selected_symbols,
         rows=rows,
     )
+    p564_unresolved_timeout_symbols = [
+        row.get("symbol") for row in rows
+        if bool(row.get("selected_submit_timeout"))
+        and not bool(row.get("selected_submit_timeout_resolved"))
+    ]
+    p564_resolved_timeout_symbols = [
+        row.get("symbol") for row in rows if bool(row.get("selected_submit_timeout_resolved"))
+    ]
+    p564_submit_phase_truth = dict(p554_submit_phase_truth)
+    if p564_resolved_timeout_symbols:
+        p564_submit_phase_truth["selected_submit_timeout_symbols"] = list(p564_unresolved_timeout_symbols)
+        p564_submit_phase_truth["selected_submit_timeout_count"] = len(p564_unresolved_timeout_symbols)
+        p564_submit_phase_truth["resolved_submit_timeout_symbols"] = list(p564_resolved_timeout_symbols)
+        p564_submit_phase_truth["resolved_submit_timeout_count"] = len(p564_resolved_timeout_symbols)
+        p564_submit_phase_truth["actual_submit_side_effect_symbols"] = _dedupe_keep_order(
+            list(p564_submit_phase_truth.get("actual_submit_side_effect_symbols") or [])
+            + list(p564_resolved_timeout_symbols)
+        )
+        if not p564_unresolved_timeout_symbols and str(p564_submit_phase_truth.get("terminal_gap_reason") or "") == "selected_submit_timeout_requires_reconcile":
+            p564_submit_phase_truth["terminal_gap_reason"] = "selected_timeout_resolved_by_active_plan"
+        p564_submit_phase_truth["p564_resolved_timeout_truth_cleanup"] = True
     out.update({
         "patch_version": PATCH_VERSION,
         "p550_snapshot_only_light_endpoint": True,
@@ -28918,15 +28979,25 @@ def _p550_selected_submission_truth_snapshot_light(
             "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or len(submit_rows_all)),
             "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced") or submit_rows_all),
         },
-        "p554_submit_phase_truth": dict(p554_submit_phase_truth),
+        "p554_submit_phase_truth": p564_submit_phase_truth,
         "p557_submit_capable_selection_truth": dict(p557_submit_capable_truth),
         "p557_advisory_selected_symbols": list(p557_advisory_selected_symbols),
         "p557_cached_selection_suppressed_from_submit_gap": bool(p557_advisory_selected_symbols),
         "selected_submit_timeout_symbols": [
-            row.get("symbol") for row in rows if bool(row.get("selected_submit_timeout"))
+            row.get("symbol") for row in rows
+            if bool(row.get("selected_submit_timeout"))
+            and not bool(row.get("selected_submit_timeout_resolved"))
         ],
         "selected_submit_timeout_count": len([
-            row for row in rows if bool(row.get("selected_submit_timeout"))
+            row for row in rows
+            if bool(row.get("selected_submit_timeout"))
+            and not bool(row.get("selected_submit_timeout_resolved"))
+        ]),
+        "resolved_submit_timeout_symbols": [
+            row.get("symbol") for row in rows if bool(row.get("selected_submit_timeout_resolved"))
+        ],
+        "resolved_submit_timeout_count": len([
+            row for row in rows if bool(row.get("selected_submit_timeout_resolved"))
         ]),
         "submit_pending_symbols": [
             row.get("symbol") for row in rows if bool(row.get("submit_pending"))

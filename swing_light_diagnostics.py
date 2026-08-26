@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-563-broker-submit-timeout-retry-contract"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-564-resolved-submit-timeout-truth-cleanup"
 
 
 def selected_submission_truth_light_snapshot(
@@ -99,7 +99,20 @@ def selected_submission_truth_light_snapshot(
     selected_submit_timeout_symbols = [
         row.get("symbol")
         for row in rows
-        if row.get("symbol") and bool(row.get("selected_submit_timeout"))
+        if row.get("symbol")
+        and bool(row.get("selected_submit_timeout"))
+        and not bool(row.get("actual_submit_side_effect", row.get("side_effect_detected_light")))
+        and str(row.get("retry_evidence_status") or "") != "resolved_by_active_plan_or_submit_side_effect"
+    ]
+    resolved_submit_timeout_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol")
+        and bool(row.get("selected_submit_timeout"))
+        and (
+            bool(row.get("actual_submit_side_effect", row.get("side_effect_detected_light")))
+            or str(row.get("retry_evidence_status") or "") == "resolved_by_active_plan_or_submit_side_effect"
+        )
     ]
     submit_pending_symbol_set = set(submit_pending_symbols)
     selected_submit_timeout_symbol_set = set(selected_submit_timeout_symbols)
@@ -155,12 +168,16 @@ def selected_submission_truth_light_snapshot(
         "submit_pending_count": len(submit_pending_symbols),
         "selected_submit_timeout_symbols": selected_submit_timeout_symbols,
         "selected_submit_timeout_count": len(selected_submit_timeout_symbols),
+        "resolved_submit_timeout_symbols": resolved_submit_timeout_symbols,
+        "resolved_submit_timeout_count": len(resolved_submit_timeout_symbols),
         "rows": list(rows),
         "recommended_action": (
             "selected_candidate_submit_pending"
             if submit_pending_symbols
             else "selected_submit_timeout_requires_reconcile"
             if selected_submit_timeout_symbols
+            else "selected_timeout_resolved_by_active_plan"
+            if resolved_submit_timeout_symbols
             else "rate_limited_selected_submit_waiting_for_retry"
             if rate_limited_retry_symbols
             else "after_hours_selected_not_submitted_monitor_next_open"
