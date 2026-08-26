@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-559-per-symbol-submit-timeout-submit-phase-terminal-publish"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-560-selected-candidate-direct-submit-handoff-enforcement"
 
 
 def selected_submission_truth_light_snapshot(

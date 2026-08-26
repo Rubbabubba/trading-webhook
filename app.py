@@ -2989,7 +2989,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-559-per-symbol-submit-timeout-submit-phase-terminal-publish"
+PATCH_VERSION = "patch-560-selected-candidate-direct-submit-handoff-enforcement"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -32818,15 +32818,31 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             p461_terminal_candidate_evaluation=True,
         )
 
-        p461_effective_dry_run_after = bool(effective_entry_dry_run("worker_scan"))
-        p461_terminal_close["release_gate_rechecked_after_fresh_scan"] = True
-        p461_terminal_close["effective_dry_run_recheck_value"] = bool(p461_effective_dry_run_after)
-        if bool(effective_dry_run) and not p461_effective_dry_run_after:
-            effective_dry_run = False
-            p461_terminal_close["release_gate_bootstrap_unlocked_submit"] = True
-        else:
+        p560_release_gate_recheck_skipped = not bool(effective_dry_run)
+        if p560_release_gate_recheck_skipped:
+            p461_effective_dry_run_after = False
+            p461_terminal_close["release_gate_rechecked_after_fresh_scan"] = False
+            p461_terminal_close["release_gate_recheck_skipped_reason"] = "live_submit_already_permitted"
+            p461_terminal_close["effective_dry_run_recheck_value"] = False
             p461_terminal_close["release_gate_bootstrap_unlocked_submit"] = False
+        else:
+            p461_effective_dry_run_after = bool(effective_entry_dry_run("worker_scan"))
+            p461_terminal_close["release_gate_rechecked_after_fresh_scan"] = True
+            p461_terminal_close["release_gate_recheck_skipped_reason"] = "not_skipped_dry_run_recheck_required"
+            p461_terminal_close["effective_dry_run_recheck_value"] = bool(p461_effective_dry_run_after)
+            if bool(effective_dry_run) and not p461_effective_dry_run_after:
+                effective_dry_run = False
+                p461_terminal_close["release_gate_bootstrap_unlocked_submit"] = True
+            else:
+                p461_terminal_close["release_gate_bootstrap_unlocked_submit"] = False
         p461_terminal_close["effective_dry_run_after"] = bool(effective_dry_run)
+        p461_terminal_close["p560_direct_submit_handoff_enforcement"] = {
+            "enabled": True,
+            "selected_symbols": list(p461_pre_submit_selected_symbols),
+            "submit_handoff_unblocked": not bool(effective_dry_run),
+            "release_gate_recheck_skipped": bool(p560_release_gate_recheck_skipped),
+            "reason": "selected_candidates_continue_to_submit_phase_without_extra_release_gate_call",
+        }
         summary["p461_terminal_close_before_submit"] = dict(p461_terminal_close)
 
         set_last_scan_fn(
@@ -32843,12 +32859,27 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
             effective_dry_run=bool(effective_dry_run),
             p461_terminal_candidate_evaluation=True,
             p461_release_gate_self_block_rechecked=True,
+            p560_direct_submit_handoff_enforcement=True,
         )
+
+    summary["p560_direct_submit_handoff_enforcement"] = {
+        "enabled": True,
+        "selected_symbols": list(p461_pre_submit_selected_symbols),
+        "release_gate_recheck_skipped": not bool(effective_dry_run),
+        "submit_handoff_unblocked": not bool(effective_dry_run),
+        "submit_phase_next": bool(p461_pre_submit_selected_symbols),
+        "reason": (
+            "live_submit_already_permitted_selected_candidates_continue_to_submit_phase"
+            if p461_pre_submit_selected_symbols and not bool(effective_dry_run)
+            else "dry_run_or_no_selected_candidates"
+        ),
+    }
 
     _p402_stage_checkpoint(
         "submit_start",
         selected_count=len(selected),
         selected_symbols=[c.get("symbol") for c in selected],
+        p560_direct_submit_handoff_enforcement=True,
     )
     p554_submit_start_symbols = _dedupe_keep_order([
         str((row or {}).get("symbol") or "").strip().upper()
@@ -32915,7 +32946,7 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     elif p399_pre_scan_retry_candidates:
         p399_pre_scan_retry_submit = _p399_submit_swing_candidate_rows(
             p399_pre_scan_retry_candidates,
-            effective_dry_run=bool(effective_dry_run or effective_entry_dry_run("worker_scan")),
+            effective_dry_run=bool(effective_dry_run),
             scan_reason="post_candidate_truth_rate_limit_retry",
             loss_day_throttle=loss_day_throttle,
             candidate_slots=p399_retry_slots,
