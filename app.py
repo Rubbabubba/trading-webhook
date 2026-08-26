@@ -2981,7 +2981,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-553-selection-complete-not-submit-terminal-direct-submit-enforcement"
+PATCH_VERSION = "patch-554-selection-complete-submit-phase-enforcement-submit-gap-terminal-reason"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17084,6 +17084,16 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     summary = dict((latest_scan or {}).get("summary") or summary or {})
     p481_canonical_scan_truth = dict((latest_scan or {}).get("_p481_canonical_scan_truth") or {})
     p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+    p554_submit_phase_truth = dict(summary.get("p554_submit_phase_truth") or {})
+    p554_status = str(p554_submit_phase_truth.get("status") or "").strip().lower()
+    p554_submit_pending = bool(
+        p554_status in {
+            "selection_complete_submit_pending",
+            "submit_started",
+            "submit_phase_started",
+        }
+        and not bool(p554_submit_phase_truth.get("submit_terminal"))
+    )
     p547_selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
         for sym in list(p547_selection_snapshot.get("selected_symbols") or [])
@@ -17385,6 +17395,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         if str(sym or "").strip()
         and str(sym or "").strip().upper() not in p524_stale_selected_symbols
         and str(sym or "").strip().upper() not in set(after_hours_selected_symbols)
+        and not bool(p554_submit_pending)
     ])
     missing_submit_symbols = [
         sym for sym in production_selected_symbols
@@ -17394,6 +17405,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         and sym not in set(rate_limited_symbols)
         and sym not in set(queued_rate_limit_symbols)
         and sym not in set(after_hours_selected_symbols)
+        and not bool(p554_submit_pending)
     ]
     selected_not_attempted_symbols = [
         sym for sym in production_selected_symbols
@@ -17406,7 +17418,10 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     budget_sec = int(SCAN_RUNTIME_BUDGET_SEC or 0)
     runtime_over_budget = bool(budget_sec > 0 and duration_ms > budget_sec * 1000)
 
-    if missing_submit_symbols or submit_gap_symbols:
+    if p554_submit_pending and production_selected_symbols:
+        path_status = "submit_phase_pending"
+        recommended_action = "wait_for_submit_phase_completion_or_check_scanner_light"
+    elif missing_submit_symbols or submit_gap_symbols:
         path_status = "selected_submit_gap_detected"
         recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
     elif after_hours_selected_symbols:
@@ -17453,6 +17468,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or 0),
             "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced")),
         },
+        "p554_submit_phase_truth": dict(p554_submit_phase_truth),
+        "p554_submit_phase_pending": bool(p554_submit_pending),
         "p484_candidate_eval_module": _p551_candidate_eval_module_status_compact(),
         "swing_candidate_eval_module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
         "swing_candidate_eval_module_status": _p551_candidate_eval_module_status_compact(),
@@ -17545,6 +17562,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "retryable_spread_block_symbols": retryable_spread_block_symbols,
             "after_hours_selected_symbols": after_hours_selected_symbols,
             "after_hours_selected_count": len(after_hours_selected_symbols),
+            "submit_phase_pending": bool(p554_submit_pending),
             "submit_gap_symbols": submit_gap_symbols,
             "missing_submit_symbols": missing_submit_symbols,
             "p524_selection_revalidation": p524_selection_revalidation,
@@ -28451,6 +28469,22 @@ def _p550_selected_submission_truth_snapshot_light(
         for row in submit_rows_all
         if str((row or {}).get("symbol") or "").strip()
     }
+    p554_submit_phase_truth = dict(summary.get("p554_submit_phase_truth") or {})
+    p554_status = str(p554_submit_phase_truth.get("status") or "").strip().lower()
+    p554_pending_symbols = set(_dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p554_submit_phase_truth.get("selected_symbols") or selected_symbols or [])
+        if str(sym or "").strip()
+    ]))
+    p554_submit_pending = bool(
+        selected_symbols
+        and p554_status in {
+            "selection_complete_submit_pending",
+            "submit_started",
+            "submit_phase_started",
+        }
+        and not bool(p554_submit_phase_truth.get("submit_terminal"))
+    )
     candidate_truth = _p548_snapshot_candidate_truth_no_recompute(latest_scan, summary, limit=lim)
     eligible_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(candidate_truth)
     rows: list[dict] = []
@@ -28494,8 +28528,15 @@ def _p550_selected_submission_truth_snapshot_light(
             submit_state,
             submit_reason,
         )
+        submit_pending = bool(
+            p554_submit_pending
+            and sym in p554_pending_symbols
+            and not submit_row
+            and not actual_submit_side_effect
+        )
         submit_gap = bool(
             not actual_submit_side_effect
+            and not submit_pending
             and not after_hours_selected_not_submitted
             and not rate_limited_retryable
             and not execution_quality_blocked
@@ -28513,6 +28554,8 @@ def _p550_selected_submission_truth_snapshot_light(
             "submit_gap_type": (
                 "none"
                 if actual_submit_side_effect
+                else "submit_pending"
+                if submit_pending
                 else "after_hours_selected_not_submitted"
                 if after_hours_selected_not_submitted
                 else "rate_limited_retryable"
@@ -28528,6 +28571,8 @@ def _p550_selected_submission_truth_snapshot_light(
             "retry_evidence_status": (
                 "resolved_by_active_plan_or_submit_side_effect"
                 if actual_submit_side_effect
+                else "submit_phase_pending"
+                if submit_pending
                 else "after_hours_selected_not_submitted"
                 if after_hours_selected_not_submitted
                 else "waiting_for_rate_limit_retry"
@@ -28543,6 +28588,8 @@ def _p550_selected_submission_truth_snapshot_light(
             "rate_limited_retryable": bool(rate_limited_retryable),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": dict(retryable_spread_block),
+            "submit_pending": bool(submit_pending),
+            "p554_submit_phase_truth": dict(p554_submit_phase_truth) if submit_pending else {},
             "after_hours_selected_not_submitted": bool(after_hours_selected_not_submitted),
             "submit_state": submit_state,
             "submit_reason": submit_reason,
@@ -28572,6 +28619,13 @@ def _p550_selected_submission_truth_snapshot_light(
             "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or len(submit_rows_all)),
             "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced") or submit_rows_all),
         },
+        "p554_submit_phase_truth": dict(p554_submit_phase_truth),
+        "submit_pending_symbols": [
+            row.get("symbol") for row in rows if bool(row.get("submit_pending"))
+        ],
+        "submit_pending_count": len([
+            row for row in rows if bool(row.get("submit_pending"))
+        ]),
         "eligible_new_entry_truth": {
             "count": len(eligible_symbols),
             "symbols": eligible_symbols,
@@ -32057,6 +32111,21 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
                 "selected_count": len(selected_symbols),
             },
             "p549_selection_complete_terminal_close": dict(p549_terminal_close),
+            "p554_submit_phase_truth": {
+                "enabled": True,
+                "status": "selection_complete_submit_pending" if selected_symbols else "no_submit_needed",
+                "submit_phase_reached": False,
+                "submit_terminal": False if selected_symbols else True,
+                "selected_count": len(selected_symbols),
+                "selected_symbols": list(selected_symbols),
+                "submit_row_count": 0,
+                "submit_row_symbols": [],
+                "reason": (
+                    "selected_candidates_require_submit_phase"
+                    if selected_symbols
+                    else "no_selected_candidates"
+                ),
+            },
             "heavy_reports_deferred_from_hot_path": bool(p401_hot_path.get("defer_labs")),
             "index_symbol": SWING_INDEX_SYMBOL,
             "index_alignment_ok": index_ok,
@@ -32383,6 +32452,31 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         selected_count=len(selected),
         selected_symbols=[c.get("symbol") for c in selected],
     )
+    p554_submit_start_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(selected or [])
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    if p554_submit_start_symbols:
+        try:
+            _p456_mark_background_scan(
+                status="running",
+                active=True,
+                terminal=False,
+                reason="submit_phase_started",
+                stage="submit_start",
+                stage_details={
+                    "selected_count": len(p554_submit_start_symbols),
+                    "selected_symbols": list(p554_submit_start_symbols),
+                    "submit_phase_reached": True,
+                    "p554_submit_phase_enforcement": True,
+                },
+                candidate_truth_terminal=False,
+                candidate_truth_selected_symbols=list(p554_submit_start_symbols),
+                p554_submit_phase_enforcement=True,
+            )
+        except Exception:
+            pass
 
     p552_submit_clock_truth = _p552_market_close_entry_scan_truth()
     p552_late_submit_non_actionable = bool(
@@ -32619,6 +32713,25 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         "p537_pre_submit_fallback_selection": dict(p537_pre_submit_fallback_selection),
         "p399_partial_submit_finalization": dict(p399_partial_submit_finalization),
         "p553_submit_finalization_truth": dict(p553_submit_finalization_truth),
+        "p554_submit_phase_truth": {
+            "enabled": True,
+            "status": "submit_complete",
+            "submit_phase_reached": True,
+            "submit_terminal": True,
+            "selected_count": len(p522_selected_symbols_for_summary),
+            "selected_symbols": list(p522_selected_symbols_for_summary),
+            "submit_row_count": len(p522_submit_row_symbols),
+            "submit_row_symbols": list(p522_submit_row_symbols),
+            "attempted_symbols": list(p522_attempted_symbols),
+            "actual_submit_side_effect_symbols": list(p522_actual_submit_symbols),
+            "submit_gap_symbols": list(p522_submit_gap_symbols),
+            "submit_gap_count": len(p522_submit_gap_symbols),
+            "terminal_gap_reason": (
+                "selected_candidate_without_terminal_submit_evidence"
+                if p522_submit_gap_symbols
+                else "none"
+            ),
+        },
     })
     if p522_submit_gap_symbols:
         summary["selected_submit_gap_reason"] = "selected_candidate_without_terminal_submit_evidence"
@@ -32637,6 +32750,33 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
         effective_dry_run=bool(effective_dry_run),
         p522_submit_terminal_publish=True,
     )
+    try:
+        _p456_mark_background_scan(
+            status="completed",
+            active=False,
+            terminal=True,
+            reason="submit_phase_completed",
+            completed_utc=datetime.now(timezone.utc).isoformat(),
+            stage="submit_complete",
+            stage_details={
+                "selected_count": len(p522_selected_symbols_for_summary),
+                "selected_symbols": list(p522_selected_symbols_for_summary),
+                "submit_row_count": len(p522_submit_row_symbols),
+                "submit_row_symbols": list(p522_submit_row_symbols),
+                "attempted_symbols": list(p522_attempted_symbols),
+                "actual_submit_side_effect_symbols": list(p522_actual_submit_symbols),
+                "submit_gap_symbols": list(p522_submit_gap_symbols),
+                "submit_gap_count": len(p522_submit_gap_symbols),
+                "submit_phase_reached": True,
+                "p554_submit_terminal_required": bool(p522_selected_symbols_for_summary),
+            },
+            candidate_truth_terminal=True,
+            candidate_truth_terminal_utc=datetime.now(timezone.utc).isoformat(),
+            candidate_truth_selected_symbols=list(p522_selected_symbols_for_summary),
+            p554_submit_phase_enforcement=True,
+        )
+    except Exception:
+        pass
     selected_submission_finalizer = {
         "enabled": False,
         "reason": "swing_production_core_direct_submit",
