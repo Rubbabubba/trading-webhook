@@ -2989,7 +2989,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-561-remove-pre-submit-pending-publish-force-submit-phase"
+PATCH_VERSION = "patch-562-submit-complete-terminal-state-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28094,12 +28094,23 @@ def _p402_stage_checkpoint(stage: str, **details) -> dict:
                     return dict(row)
 
                 if bg_status in {"accepted", "running"}:
-                    SWING_SCAN_BACKGROUND_COMPLETION["status"] = "running"
+                    terminal_submit_complete = row["stage"] == "submit_complete"
+                    SWING_SCAN_BACKGROUND_COMPLETION["status"] = "completed" if terminal_submit_complete else "running"
+                    SWING_SCAN_BACKGROUND_COMPLETION["active"] = False if terminal_submit_complete else True
+                    SWING_SCAN_BACKGROUND_COMPLETION["terminal"] = True if terminal_submit_complete else False
                     SWING_SCAN_BACKGROUND_COMPLETION["stage"] = row["stage"]
                     SWING_SCAN_BACKGROUND_COMPLETION["stage_details"] = dict(row.get("details") or {})
                     SWING_SCAN_BACKGROUND_COMPLETION["stage_utc"] = row["ts_utc"]
                     SWING_SCAN_BACKGROUND_COMPLETION["updated_utc"] = row["ts_utc"]
                     SWING_SCAN_BACKGROUND_COMPLETION["boot_id"] = SYSTEM_BOOT_ID
+                    if terminal_submit_complete:
+                        SWING_SCAN_BACKGROUND_COMPLETION["completed_utc"] = row["ts_utc"]
+                        SWING_SCAN_BACKGROUND_COMPLETION["reason"] = "submit_phase_completed"
+                        SWING_SCAN_BACKGROUND_COMPLETION["candidate_truth_terminal"] = True
+                        SWING_SCAN_BACKGROUND_COMPLETION["candidate_truth_terminal_utc"] = row["ts_utc"]
+                        SWING_SCAN_BACKGROUND_COMPLETION["candidate_truth_selected_symbols"] = list(
+                            details_dict.get("selected_symbols") or []
+                        )
                     if row["stage"] == "selection_complete":
                         SWING_SCAN_BACKGROUND_COMPLETION["candidate_truth_terminal"] = True
                         SWING_SCAN_BACKGROUND_COMPLETION["candidate_truth_terminal_utc"] = row["ts_utc"]
@@ -28315,6 +28326,24 @@ def _p455_scanner_failure_root_cause(
 def _p456_background_scan_truth() -> dict:
     with SWING_SCAN_BACKGROUND_LOCK:
         state = dict(SWING_SCAN_BACKGROUND_COMPLETION or {})
+        if (
+            str(state.get("stage") or "").strip().lower() == "submit_complete"
+            and str(state.get("status") or "").strip().lower() in {"accepted", "running"}
+        ):
+            now_iso = datetime.now(timezone.utc).isoformat()
+            state.update({
+                "status": "completed",
+                "active": False,
+                "terminal": True,
+                "reason": "submit_phase_completed",
+                "completed_utc": state.get("completed_utc") or state.get("updated_utc") or now_iso,
+                "updated_utc": now_iso,
+                "candidate_truth_terminal": True,
+                "candidate_truth_terminal_utc": state.get("candidate_truth_terminal_utc") or state.get("updated_utc") or now_iso,
+                "p562_submit_complete_terminal_state_sync": True,
+            })
+            SWING_SCAN_BACKGROUND_COMPLETION.clear()
+            SWING_SCAN_BACKGROUND_COMPLETION.update(state)
     status = str(state.get("status") or "idle").strip().lower()
     return {
         "enabled": bool(SCAN_FAST_RESPONSE_ENABLED),
@@ -28342,6 +28371,7 @@ def _p456_background_scan_truth() -> dict:
         "effective_dry_run": state.get("effective_dry_run"),
         "effective_dry_run_reason": state.get("effective_dry_run_reason"),
         "dry_run_truth": state.get("dry_run_truth"),
+        "p562_submit_complete_terminal_state_sync": bool(state.get("p562_submit_complete_terminal_state_sync")),
     }
 
 def _p456_mark_background_scan(**updates) -> dict:
@@ -32979,6 +33009,11 @@ def run_swing_daily_scan(effective_dry_run: bool, set_last_scan_fn, elapsed_ms_f
     _p402_stage_checkpoint(
         "submit_complete",
         selected_count=len(selected),
+        selected_symbols=_dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list(selected or [])
+            if str((row or {}).get("symbol") or "").strip()
+        ]),
         attempted_symbols=_dedupe_keep_order(list(p399_pre_scan_retry_submit.get("attempted_symbols") or []) + list(p399_selected_submit.get("attempted_symbols") or [])),
         submitted_symbols=_dedupe_keep_order(list(p399_pre_scan_retry_submit.get("submitted_symbols") or []) + list(p399_selected_submit.get("submitted_symbols") or [])),
         rate_limited_symbols=_dedupe_keep_order(list(p399_pre_scan_retry_submit.get("rate_limited_symbols") or []) + list(p399_selected_submit.get("rate_limited_symbols") or [])),
