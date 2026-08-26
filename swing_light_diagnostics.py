@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-564-resolved-submit-timeout-truth-cleanup"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-569-scanner-runtime-hotspot-truth-stale-submit-timeout-cleanup"
 
 
 def selected_submission_truth_light_snapshot(
@@ -205,6 +205,54 @@ def _scanner_light_iso_age_sec(value: Any) -> float | None:
         return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
     except Exception:
         return None
+
+def _scanner_runtime_hotspot_truth(latest_scan: dict, scan_summary: dict, budget_sec: int) -> dict:
+    timing_ms = {}
+    for source in (
+        scan_summary.get("timing_ms"),
+        latest_scan.get("timing_ms"),
+        (latest_scan.get("summary") or {}).get("timing_ms") if isinstance(latest_scan.get("summary"), dict) else {},
+    ):
+        if isinstance(source, dict) and source:
+            timing_ms = dict(source)
+            break
+    cleaned = {}
+    for key, value in timing_ms.items():
+        try:
+            cleaned[str(key)] = int(float(value or 0))
+        except Exception:
+            continue
+    sorted_stages = sorted(
+        [{"stage": stage, "duration_ms": ms} for stage, ms in cleaned.items() if stage != "total"],
+        key=lambda row: int(row.get("duration_ms") or 0),
+        reverse=True,
+    )
+    try:
+        duration_ms = int(float(latest_scan.get("duration_ms") or scan_summary.get("duration_ms") or cleaned.get("total") or 0))
+    except Exception:
+        duration_ms = 0
+    budget = max(1, int(budget_sec or 240))
+    budget_ms = budget * 1000
+    return {
+        "enabled": True,
+        "duration_ms": duration_ms,
+        "duration_sec": round(duration_ms / 1000.0, 2),
+        "budget_sec": budget,
+        "budget_ms": budget_ms,
+        "over_budget": bool(duration_ms > budget_ms),
+        "stage_timing_available": bool(cleaned),
+        "top_stage": sorted_stages[0].get("stage") if sorted_stages else None,
+        "top_stage_ms": sorted_stages[0].get("duration_ms") if sorted_stages else None,
+        "top_stages": sorted_stages[:5],
+        "timing_ms": cleaned,
+        "recommended_action": (
+            "scanner_hotspot_identified_reduce_top_stage_cost"
+            if duration_ms > budget_ms and cleaned
+            else "scanner_over_budget_but_stage_timing_missing"
+            if duration_ms > budget_ms
+            else "scanner_runtime_within_budget"
+        ),
+    }
 
 def scanner_light_snapshot(
     *,
@@ -452,6 +500,7 @@ def scanner_light_snapshot(
         or swing_candidate_eval_module_status
         or {}
     )
+    scanner_runtime_hotspot_truth = _scanner_runtime_hotspot_truth(latest_scan, scan_summary, budget_sec)
 
     return {
         "ok": True,
@@ -472,6 +521,7 @@ def scanner_light_snapshot(
         "swing_candidate_eval_module_version": swing_candidate_eval_module_version,
         "swing_candidate_eval_module_status": swing_candidate_eval_module_status,
         "p484_candidate_eval_module": p484_candidate_eval_module,
+        "scanner_runtime_hotspot_truth": scanner_runtime_hotspot_truth,
         "scan_background_completion_truth": scan_background_completion_truth,
         "background_scan_runtime_truth": {
             "active": bool(background_scan_active),
@@ -528,6 +578,8 @@ def scanner_light_snapshot(
             "background_scan_heartbeat_stale": bool(background_heartbeat_stale),
             "background_thread_entry_missing": bool(background_thread_entry_missing),
             "background_scan_lost_after_restart_aged": bool(scanner_failure_root_cause_historical),
+            "scanner_runtime_over_budget": bool(scanner_runtime_hotspot_truth.get("over_budget")),
+            "scanner_runtime_top_stage": scanner_runtime_hotspot_truth.get("top_stage"),
         },
         "latest_scan": {
             "ts_utc": latest_scan.get("ts_utc"),

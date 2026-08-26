@@ -2993,7 +2993,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-568-current-scan-fast-truth-source-sync-completed-scanner-grace-cleanup"
+PATCH_VERSION = "patch-569-scanner-runtime-hotspot-truth-stale-submit-timeout-cleanup-fast-broker-pnl-snapshot"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17381,6 +17381,24 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for sym in list(p540_selected_consumer_truth.get("selected_submit_timeout_symbols") or [])
         if str(sym or "").strip()
     ])
+    p569_stale_selected_submit_timeout_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in submit_rows_all
+        if str((row or {}).get("symbol") or "").strip()
+        and str((row or {}).get("symbol") or "").strip().upper() in set(selected_submit_timeout_symbols)
+        and _p569_selected_submit_timeout_is_stale(
+            row,
+            latest_scan,
+            active_symbols=set(active_symbols),
+            pending_symbols=set(pending_symbols),
+            side_effect_symbols=set(actual_submit_side_effect_symbols),
+        )
+    ])
+    if p569_stale_selected_submit_timeout_symbols:
+        selected_submit_timeout_symbols = [
+            sym for sym in selected_submit_timeout_symbols
+            if sym not in set(p569_stale_selected_submit_timeout_symbols)
+        ]
     resolved_submit_timeout_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
         for sym in list(selected_submit_timeout_symbols)
@@ -17410,6 +17428,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         + list(retryable_spread_block_symbols)
         + list(after_hours_selected_symbols)
         + list(selected_submit_timeout_symbols)
+        + list(p569_stale_selected_submit_timeout_symbols)
         + list(resolved_submit_timeout_symbols)
     )
     p524_selection_revalidation = _p524_revalidate_current_selected_symbols(
@@ -17484,6 +17503,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif selected_submit_timeout_symbols:
         path_status = "selected_submit_timeout_requires_reconcile"
         recommended_action = "check_orders_and_reconcile_before_retrying_selected_symbols"
+    elif p569_stale_selected_submit_timeout_symbols:
+        path_status = "stale_selected_submit_timeout_suppressed"
+        recommended_action = "monitor_next_scan_or_retry_only_if_symbol_reappears_selected"
     elif resolved_submit_timeout_symbols and set(selected_symbols).issubset(set(active_symbols) | set(pending_symbols) | set(actual_submit_side_effect_symbols)):
         path_status = "selected_timeout_resolved_by_active_plan"
         recommended_action = "monitor_active_positions"
@@ -17647,6 +17669,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "after_hours_selected_count": len(after_hours_selected_symbols),
             "selected_submit_timeout_symbols": selected_submit_timeout_symbols,
             "selected_submit_timeout_count": len(selected_submit_timeout_symbols),
+            "stale_selected_submit_timeout_symbols": p569_stale_selected_submit_timeout_symbols,
+            "stale_selected_submit_timeout_count": len(p569_stale_selected_submit_timeout_symbols),
             "resolved_submit_timeout_symbols": resolved_submit_timeout_symbols,
             "resolved_submit_timeout_count": len(resolved_submit_timeout_symbols),
             "submit_phase_pending": bool(p554_submit_pending),
@@ -22408,6 +22432,105 @@ def _p295_broker_daily_goal_progress(pnl_truth: dict | None = None) -> dict:
         "low_target_hit": bool(primary is not None and float(primary) >= low),
         "high_target_hit": bool(primary is not None and float(primary) >= high),
         "note": "Use broker/account daily change for the operator daily goal; realized+unrealized remains strategy attribution.",
+    }
+
+def _p569_account_daily_pnl_snapshot_bounded(timeout_sec: float = 2.0) -> dict:
+    timeout = max(0.5, float(timeout_sec or 2.0))
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="broker-goal-snapshot")
+    future = executor.submit(_account_daily_pnl_snapshot)
+    try:
+        snap = dict(future.result(timeout=timeout) or {})
+        snap["p569_bounded_account_snapshot"] = True
+        snap["timeout_sec"] = timeout
+        return snap
+    except FuturesTimeoutError:
+        future.cancel()
+        cached = _p545_latest_cached_buying_power_snapshot()
+        return {
+            "ok": False,
+            "source": "cached_after_account_daily_pnl_timeout",
+            "cached": True,
+            "p569_bounded_account_snapshot": True,
+            "live_account_timeout": True,
+            "timeout_sec": timeout,
+            "account_daily_pnl": None,
+            "equity": cached.get("equity"),
+            "last_equity": cached.get("last_equity"),
+            "buying_power": cached.get("buying_power"),
+            "cash": cached.get("cash"),
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "ts_ny": now_ny().isoformat(),
+        }
+    except Exception as exc:
+        cached = _p545_latest_cached_buying_power_snapshot()
+        return {
+            "ok": False,
+            "source": "cached_after_account_daily_pnl_error",
+            "cached": True,
+            "p569_bounded_account_snapshot": True,
+            "live_account_error": str(exc),
+            "timeout_sec": timeout,
+            "account_daily_pnl": None,
+            "equity": cached.get("equity"),
+            "last_equity": cached.get("last_equity"),
+            "buying_power": cached.get("buying_power"),
+            "cash": cached.get("cash"),
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "ts_ny": now_ny().isoformat(),
+        }
+    finally:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
+
+def _p569_fast_broker_daily_goal_truth() -> dict:
+    account_pnl = _p569_account_daily_pnl_snapshot_bounded(timeout_sec=2.0)
+    progress = _p295_broker_daily_goal_progress({
+        "account_daily_pnl": account_pnl.get("account_daily_pnl"),
+        "today_net_pnl": 0.0,
+        "today_realized_pnl": None,
+        "today_unrealized_pnl": None,
+    })
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "broker_daily_goal_truth_fast",
+        "fast_snapshot_only": True,
+        "heavy_available": True,
+        "heavy_endpoint": "/diagnostics/broker_daily_goal_truth?heavy=true",
+        "does_not_fetch_orders": True,
+        "does_not_sync_strategy_performance": True,
+        "daily_goal_progress": progress,
+        "today_pnl_truth": {
+            "ok": bool(account_pnl.get("ok")),
+            "accounting_source": account_pnl.get("source"),
+            "account_daily_pnl_source": account_pnl.get("source"),
+            "account_daily_pnl": account_pnl.get("account_daily_pnl"),
+            "account_daily_pnl_pct": account_pnl.get("account_daily_pnl_pct"),
+            "account_equity": account_pnl.get("equity"),
+            "account_last_equity": account_pnl.get("last_equity"),
+            "account_pnl_ok": bool(account_pnl.get("ok")),
+            "today_realized_pnl": None,
+            "today_unrealized_pnl": None,
+            "today_net_pnl": account_pnl.get("account_daily_pnl"),
+            "closed_trades_today": None,
+            "sample_rows": [],
+            "account_pnl": account_pnl,
+            "p569_fast_snapshot_only": True,
+        },
+        "pilot_universe": {
+            "enabled": bool(SWING_PILOT_UNIVERSE_ENABLED),
+            "symbols": _p295_swing_pilot_symbols(),
+            "runtime_symbols": universe_symbols(),
+            "ma_in_runtime": "MA" in set(universe_symbols()),
+        },
+        "defensive_relaxation_guard": {
+            "pilot_only": bool(SWING_DEFENSIVE_RELAXATION_PILOT_ONLY),
+            "pilot_symbols": _p295_defensive_relaxation_pilot_symbols(),
+        },
+        "daily_goal_preservation_exit": {"deferred_in_fast_mode": True},
+        "recommended_action": "use_fast_daily_goal_for_operator_status; add heavy=true only for broker fill reconciliation",
     }
 
 
@@ -28752,6 +28875,52 @@ def _p549_selection_complete_terminal_close(
         updates["expected_scan_attempt_id"] = scan_attempt_id
     return _p456_mark_background_scan(**updates)
 
+def _p569_selected_submit_timeout_age_sec(row: dict | None, latest_scan: dict | None = None) -> float | None:
+    record = dict(row or {})
+    scan = dict(latest_scan or {})
+    for key in (
+        "ts_utc",
+        "submitted_utc",
+        "attempted_utc",
+        "created_utc",
+        "updated_utc",
+        "scan_ts_utc",
+        "selected_utc",
+    ):
+        dt = _safe_parse_iso_utc(record.get(key))
+        if dt is not None:
+            return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    dt = _safe_parse_iso_utc(scan.get("ts_utc"))
+    if dt is not None:
+        return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    return None
+
+def _p569_selected_submit_timeout_is_stale(
+    row: dict | None,
+    latest_scan: dict | None = None,
+    *,
+    active_symbols: set[str] | None = None,
+    pending_symbols: set[str] | None = None,
+    side_effect_symbols: set[str] | None = None,
+) -> bool:
+    record = dict(row or {})
+    sym = str(record.get("symbol") or "").strip().upper()
+    protected = set(active_symbols or set()) | set(pending_symbols or set()) | set(side_effect_symbols or set())
+    if sym and sym in protected:
+        return False
+    reason_norm = str(record.get("submit_reason") or record.get("reason") or "").strip().lower()
+    is_timeout = bool(
+        record.get("p559_selected_submit_timeout")
+        or record.get("selected_submit_timeout")
+        or reason_norm == "selected_submit_timeout"
+        or str(record.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
+    )
+    if not is_timeout:
+        return False
+    age_sec = _p569_selected_submit_timeout_age_sec(record, latest_scan)
+    ttl_sec = max(600, int(SCANNER_INTERVAL_SEC or 300) * 2)
+    return bool(age_sec is not None and age_sec > ttl_sec)
+
 def _p550_selected_submission_truth_snapshot_light(
     latest_scan: dict | None = None,
     summary: dict | None = None,
@@ -28813,6 +28982,16 @@ def _p550_selected_submission_truth_snapshot_light(
         selected_symbols = []
         p554_submit_pending = False
         p554_pending_symbols = set()
+    active_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip() and isinstance(plan, dict) and bool(plan.get("active"))
+    }
+    pending_entry_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip() and isinstance(plan, dict) and _plan_is_pending_entry(plan)
+    }
     rows: list[dict] = []
     for sym in selected_symbols[:lim]:
         submit_row = dict(submit_by_symbol.get(sym) or {})
@@ -28859,7 +29038,19 @@ def _p550_selected_submission_truth_snapshot_light(
             or reason_norm == "selected_submit_timeout"
             or str(submit_row.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
         )
+        selected_submit_timeout_age_sec = _p569_selected_submit_timeout_age_sec(submit_row, latest_scan)
         selected_submit_timeout_resolved = bool(selected_submit_timeout and actual_submit_side_effect)
+        stale_selected_submit_timeout = bool(
+            selected_submit_timeout
+            and not selected_submit_timeout_resolved
+            and _p569_selected_submit_timeout_is_stale(
+                submit_row,
+                latest_scan,
+                active_symbols=active_symbols,
+                pending_symbols=pending_entry_symbols,
+            )
+        )
+        effective_selected_submit_timeout = bool(selected_submit_timeout and not stale_selected_submit_timeout)
         submit_pending = bool(
             p554_submit_pending
             and sym in p554_pending_symbols
@@ -28872,7 +29063,8 @@ def _p550_selected_submission_truth_snapshot_light(
             and not after_hours_selected_not_submitted
             and not rate_limited_retryable
             and not execution_quality_blocked
-            and not selected_submit_timeout
+            and not effective_selected_submit_timeout
+            and not stale_selected_submit_timeout
             and not bool(retryable_spread_block.get("retryable"))
         )
         rows.append({
@@ -28898,7 +29090,9 @@ def _p550_selected_submission_truth_snapshot_light(
                 else "execution_quality_blocked"
                 if execution_quality_blocked
                 else "selected_submit_timeout"
-                if selected_submit_timeout
+                if effective_selected_submit_timeout
+                else "stale_selected_submit_timeout_suppressed"
+                if stale_selected_submit_timeout
                 else "unattempted"
                 if not submit_attempted
                 else "terminal_failed"
@@ -28917,7 +29111,9 @@ def _p550_selected_submission_truth_snapshot_light(
                 else "blocked_by_execution_quality"
                 if execution_quality_blocked
                 else "selected_submit_timeout_requires_reconcile"
-                if selected_submit_timeout
+                if effective_selected_submit_timeout
+                else "stale_selected_submit_timeout_suppressed"
+                if stale_selected_submit_timeout
                 else "submit_gap_unattempted"
                 if not submit_attempted
                 else "submit_gap_terminal_failed"
@@ -28925,7 +29121,10 @@ def _p550_selected_submission_truth_snapshot_light(
             "rate_limited_retryable": bool(rate_limited_retryable),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": dict(retryable_spread_block),
-            "selected_submit_timeout": bool(selected_submit_timeout),
+            "selected_submit_timeout": bool(effective_selected_submit_timeout),
+            "raw_selected_submit_timeout": bool(selected_submit_timeout),
+            "stale_selected_submit_timeout_suppressed": bool(stale_selected_submit_timeout),
+            "selected_submit_timeout_age_sec": round(float(selected_submit_timeout_age_sec), 2) if selected_submit_timeout_age_sec is not None else None,
             "selected_submit_timeout_resolved": bool(selected_submit_timeout_resolved),
             "submit_pending": bool(submit_pending),
             "p554_submit_phase_truth": dict(p554_submit_phase_truth) if submit_pending else {},
@@ -28951,6 +29150,9 @@ def _p550_selected_submission_truth_snapshot_light(
     ]
     p564_resolved_timeout_symbols = [
         row.get("symbol") for row in rows if bool(row.get("selected_submit_timeout_resolved"))
+    ]
+    p569_stale_timeout_symbols = [
+        row.get("symbol") for row in rows if bool(row.get("stale_selected_submit_timeout_suppressed"))
     ]
     p564_submit_phase_truth = dict(p554_submit_phase_truth)
     if p564_resolved_timeout_symbols:
@@ -28999,6 +29201,15 @@ def _p550_selected_submission_truth_snapshot_light(
         "resolved_submit_timeout_count": len([
             row for row in rows if bool(row.get("selected_submit_timeout_resolved"))
         ]),
+        "stale_selected_submit_timeout_symbols": list(p569_stale_timeout_symbols),
+        "stale_selected_submit_timeout_count": len(p569_stale_timeout_symbols),
+        "p569_stale_submit_timeout_cleanup": {
+            "enabled": True,
+            "suppressed_symbols": list(p569_stale_timeout_symbols),
+            "suppressed_count": len(p569_stale_timeout_symbols),
+            "ttl_sec": max(600, int(SCANNER_INTERVAL_SEC or 300) * 2),
+            "only_suppresses_when_no_active_or_pending_plan": True,
+        },
         "submit_pending_symbols": [
             row.get("symbol") for row in rows if bool(row.get("submit_pending"))
         ],
@@ -57488,11 +57699,16 @@ def diagnostics_daily_goal_preservation_exit(request: Request):
 @app.get("/diagnostics/broker_daily_goal_truth")
 def diagnostics_broker_daily_goal_truth(request: Request):
     require_admin_if_configured(request)
+    heavy = str(request.query_params.get("heavy") or "").strip().lower() in {"1", "true", "yes", "y"}
+    if not heavy:
+        return _p569_fast_broker_daily_goal_truth()
     pnl = today_pnl_truth_snapshot()
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
-        "mode": "broker_daily_goal_truth",
+        "mode": "broker_daily_goal_truth_heavy",
+        "fast_available": True,
+        "fast_endpoint": "/diagnostics/broker_daily_goal_truth",
         "daily_goal_progress": pnl.get("daily_goal_progress") or _p295_broker_daily_goal_progress(pnl),
         "today_pnl_truth": pnl,
         "pilot_universe": {
