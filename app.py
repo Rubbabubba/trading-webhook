@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-579-scanner-canonical-state-consumer-cleanup"
+PATCH_VERSION = "patch-580-submit-trace-canonical-scan-consumer-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17104,7 +17104,13 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan = dict(latest_scan or LAST_SCAN or {})
     summary = dict((latest_scan or {}).get("summary") or summary or {})
+    p580_canonical = _p579_canonical_light_scan_consumer(latest_scan, summary)
+    p580_canonical_truth = dict(p580_canonical.get("truth") or {})
+    if bool(p580_canonical_truth.get("replacement_applied")):
+        latest_scan = dict(p580_canonical.get("scan") or latest_scan)
+        summary = dict(p580_canonical.get("summary") or latest_scan.get("summary") or summary or {})
     p481_canonical_scan_truth = dict((latest_scan or {}).get("_p481_canonical_scan_truth") or {})
+    summary["p580_submit_trace_canonical_scan_consumer_sync"] = dict(p580_canonical_truth)
     p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
     p554_submit_phase_truth = dict(summary.get("p554_submit_phase_truth") or {})
     p554_status = str(p554_submit_phase_truth.get("status") or "").strip().lower()
@@ -17566,6 +17572,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "heavy_url_hint": "/diagnostics/swing_submit_path_trace?heavy=true",
         "read_only": True,
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
+        "p580_submit_trace_canonical_scan_consumer_sync": dict(p580_canonical_truth),
         "p481_canonical_scan_truth": _p551_canonical_scan_truth_compact(p481_canonical_scan_truth),
         "p547_selection_submit_snapshot": {
             "source_stage": p547_selection_snapshot.get("source_stage"),
@@ -17588,6 +17595,8 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "ts_utc": latest_scan.get("ts_utc"),
             "reason": latest_scan.get("reason"),
             "source": latest_scan.get("_scan_source"),
+            "p580_effective_scan_source": p580_canonical_truth.get("chosen_source"),
+            "p580_replaced_stale_scan": bool(p580_canonical_truth.get("replacement_applied")),
             "fallback_from_last_scan_reason": latest_scan.get("fallback_from_last_scan_reason"),
             "runtime_budget_sanitized": bool(latest_scan.get("runtime_budget_sanitized")),
             "candidate_cache_adopted": bool(summary.get("candidate_cache_adopted")),
