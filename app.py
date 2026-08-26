@@ -1177,7 +1177,7 @@ SWING_STALE_INTENT_MAX_PENDING_AGE_SEC = getenv_int_any(
 )
 SWING_SUBMIT_PENDING_STALE_SEC = getenv_int_any(
     "SWING_SUBMIT_PENDING_STALE_SEC",
-    default=45,
+    default=300,
 )
 SWING_STALE_INTENT_KEEP_RECENT = getenv_int_any(
     "SWING_STALE_INTENT_KEEP_RECENT",
@@ -2985,7 +2985,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-557-fast-payload-selected-submit-bridge-regime-terminal-correction"
+PATCH_VERSION = "patch-558-submit-pending-terminal-enforcement-new-scan-deferral"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29147,7 +29147,11 @@ def _p555_stale_submit_pending_truth(state: dict | None = None) -> dict:
     age_sec = _p462_iso_age_sec(
         row.get("stage_utc") or row.get("updated_utc") or row.get("started_utc")
     )
-    stale_after_sec = max(15, int(SWING_SUBMIT_PENDING_STALE_SEC or 45))
+    stale_after_sec = max(
+        240,
+        int(SWING_SUBMIT_PENDING_STALE_SEC or 300),
+        int(SCAN_RUNTIME_BUDGET_SEC or 180) + 60,
+    )
     stale = bool(
         active
         and stage == "selection_complete"
@@ -29166,6 +29170,8 @@ def _p555_stale_submit_pending_truth(state: dict | None = None) -> dict:
         "selected_count": len(selected_symbols),
         "age_sec": round(float(age_sec), 2) if age_sec is not None else None,
         "stale_after_sec": int(stale_after_sec),
+        "p558_submit_pending_terminal_enforcement": True,
+        "p558_new_scan_deferral_until_submit_timeout": True,
         "scan_attempt_id": row.get("scan_attempt_id"),
     }
 
@@ -29223,6 +29229,12 @@ def _p555_close_stale_submit_pending_for_retry(reason: str = "stale_submit_pendi
 def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: str, source_meta: dict) -> JSONResponse:
     age_sec = _p462_iso_age_sec(existing.get("started_utc"))
     heartbeat_age_sec = _p462_iso_age_sec(existing.get("updated_utc"))
+    submit_pending_truth = _p555_stale_submit_pending_truth(existing)
+    submit_pending_active = bool(
+        submit_pending_truth.get("active")
+        and submit_pending_truth.get("reason") == "selection_complete_submit_pending"
+        and submit_pending_truth.get("selected_symbols")
+    )
     return JSONResponse(
         status_code=202,
         content={
@@ -29237,6 +29249,16 @@ def _p462_active_background_scan_response(existing: dict, *, scan_attempt_id: st
             "scan_attempt_id": scan_attempt_id,
             "existing_scan_attempt_id": existing.get("scan_attempt_id"),
             "idempotency_status": "background_single_flight_reused",
+            "p558_submit_pending_terminal_enforcement": {
+                "enabled": True,
+                "new_scan_deferred": bool(submit_pending_active),
+                "reason": (
+                    "existing_selection_submit_pending_owns_scanner"
+                    if submit_pending_active
+                    else "existing_background_scan_owns_scanner"
+                ),
+                "submit_pending_truth": dict(submit_pending_truth),
+            },
             "background_age_sec": round(age_sec, 2) if age_sec is not None else None,
             "background_heartbeat_age_sec": round(heartbeat_age_sec, 2) if heartbeat_age_sec is not None else None,
             "recommended_recheck_sec": max(60, int(SCAN_RUNTIME_BUDGET_SEC or 180)),
@@ -29642,13 +29664,16 @@ def _p456_start_swing_scan_background(
 
     thread_start_close = _p465_close_stale_thread_start_without_entry("background_thread_start_proof_missing_before_retry")
     timeout_close = _p462h_close_timed_out_background_scan("background_scan_runtime_timeout_before_retry")
-    stale_submit_pending_close = _p555_close_stale_submit_pending_for_retry(
-        "stale_submit_pending_recovered_before_retry"
-    )
     existing_bg = _p456_background_scan_truth()
     existing_status = str(existing_bg.get("status") or "").strip().lower()
     existing_active = existing_status in {"accepted", "running"}
     existing_timeout_truth = _p462h_background_scan_timeout_truth(existing_bg)
+    existing_submit_pending_truth = _p555_stale_submit_pending_truth(existing_bg)
+    stale_submit_pending_close = {"closed": False, "reason": "submit_pending_owns_scanner_until_timeout", "truth": existing_submit_pending_truth}
+    if bool(existing_timeout_truth.get("timed_out")):
+        stale_submit_pending_close = _p555_close_stale_submit_pending_for_retry(
+            "stale_submit_pending_recovered_after_runtime_timeout"
+        )
     existing_age_sec = existing_timeout_truth.get("started_age_sec")
     existing_thread_alive = _p462_background_thread_alive()
     stale_after_sec = max(90, int(SCAN_RUNTIME_BUDGET_SEC or 180) + 60)
