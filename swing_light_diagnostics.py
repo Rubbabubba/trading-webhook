@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-562-submit-complete-terminal-state-sync"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-563-broker-submit-timeout-retry-contract"
 
 
 def selected_submission_truth_light_snapshot(

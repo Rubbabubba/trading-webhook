@@ -1183,6 +1183,10 @@ SWING_SELECTED_SUBMIT_TIMEOUT_SEC = getenv_int_any(
     "SWING_SELECTED_SUBMIT_TIMEOUT_SEC",
     default=20,
 )
+ALPACA_SUBMIT_HTTP_TIMEOUT_SEC = getenv_int_any(
+    "ALPACA_SUBMIT_HTTP_TIMEOUT_SEC",
+    default=8,
+)
 SWING_STALE_INTENT_KEEP_RECENT = getenv_int_any(
     "SWING_STALE_INTENT_KEEP_RECENT",
     default=25,
@@ -2989,7 +2993,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-562-submit-complete-terminal-state-sync"
+PATCH_VERSION = "patch-563-broker-submit-timeout-retry-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3322,6 +3326,7 @@ def persist_scan_runtime_state(reason: str = ""):
         "last_successful_production_scan": dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {}),
         "swing_scan_background_completion": dict(SWING_SCAN_BACKGROUND_COMPLETION or {}),
         "spread_blocked_selected_retry_queue": dict(SPREAD_BLOCKED_SELECTED_RETRY_QUEUE or {}),
+        "rate_limit_selected_submit_retry_queue": dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE or {}),
         "same_day_exit_submit_locks": dict(SAME_DAY_EXIT_SUBMIT_LOCKS or {}),
         "scan_history": list(SCAN_HISTORY or []),
         "candidate_history": list(CANDIDATE_HISTORY or []),
@@ -3331,7 +3336,7 @@ def persist_scan_runtime_state(reason: str = ""):
 
 def restore_scan_runtime_state() -> dict:
     payload = _safe_json_read(SCAN_STATE_PATH)
-    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "swing_scan_background_completion_restored": False, "swing_scan_background_lost_after_restart": False, "spread_blocked_retry_queue_restored": False, "same_day_exit_submit_locks_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
+    restored = {"path": SCAN_STATE_PATH, "loaded": False, "last_scan_restored": False, "last_successful_production_scan_restored": False, "swing_scan_background_completion_restored": False, "swing_scan_background_lost_after_restart": False, "spread_blocked_retry_queue_restored": False, "rate_limit_selected_submit_retry_queue_restored": False, "same_day_exit_submit_locks_restored": False, "scan_history_restored": 0, "candidate_history_restored": 0, "last_swing_candidates_restored": 0}
     if not payload:
         return restored
     try:
@@ -3339,6 +3344,7 @@ def restore_scan_runtime_state() -> dict:
         last_successful_production_scan = payload.get("last_successful_production_scan") or {}
         swing_scan_background_completion = payload.get("swing_scan_background_completion") or {}
         spread_blocked_retry_queue = payload.get("spread_blocked_selected_retry_queue") or {}
+        rate_limit_selected_submit_retry_queue = payload.get("rate_limit_selected_submit_retry_queue") or {}
         same_day_exit_submit_locks = payload.get("same_day_exit_submit_locks") or {}
         scan_history = payload.get("scan_history") or []
         candidate_history = payload.get("candidate_history") or []
@@ -3375,6 +3381,10 @@ def restore_scan_runtime_state() -> dict:
             SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.clear()
             SPREAD_BLOCKED_SELECTED_RETRY_QUEUE.update(spread_blocked_retry_queue)
             restored["spread_blocked_retry_queue_restored"] = True
+        if isinstance(rate_limit_selected_submit_retry_queue, dict) and rate_limit_selected_submit_retry_queue:
+            P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.clear()
+            P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.update(rate_limit_selected_submit_retry_queue)
+            restored["rate_limit_selected_submit_retry_queue_restored"] = True
         if isinstance(same_day_exit_submit_locks, dict) and same_day_exit_submit_locks:
             SAME_DAY_EXIT_SUBMIT_LOCKS.clear()
             SAME_DAY_EXIT_SUBMIT_LOCKS.update(same_day_exit_submit_locks)
@@ -3395,7 +3405,7 @@ def restore_scan_runtime_state() -> dict:
                 if isinstance(row, dict)
             ])
             restored["last_swing_candidates_restored"] = len(LAST_SWING_CANDIDATES)
-        restored["loaded"] = restored["last_scan_restored"] or restored["last_successful_production_scan_restored"] or bool(restored["spread_blocked_retry_queue_restored"]) or bool(restored["same_day_exit_submit_locks_restored"]) or bool(restored["scan_history_restored"]) or bool(restored["candidate_history_restored"])
+        restored["loaded"] = restored["last_scan_restored"] or restored["last_successful_production_scan_restored"] or bool(restored["spread_blocked_retry_queue_restored"]) or bool(restored["rate_limit_selected_submit_retry_queue_restored"]) or bool(restored["same_day_exit_submit_locks_restored"]) or bool(restored["scan_history_restored"]) or bool(restored["candidate_history_restored"])
     except Exception as e:
         restored["error"] = str(e)
     globals()["SCAN_STATE_RESTORE"] = restored
@@ -8460,7 +8470,7 @@ def _alpaca_submit_order_rest(symbol: str, side: str, qty: float, client_order_i
         },
         method="POST",
     )
-    with urlopen(req, timeout=20) as resp:
+    with urlopen(req, timeout=max(1, int(ALPACA_SUBMIT_HTTP_TIMEOUT_SEC or 8))) as resp:
         raw = resp.read().decode("utf-8") if resp else ""
     data = json.loads(raw) if raw else {}
     if not isinstance(data, dict):
@@ -8484,7 +8494,7 @@ def _alpaca_submit_limit_order_rest(symbol: str, side: str, qty: float, limit_pr
         },
         method="POST",
     )
-    with urlopen(req, timeout=20) as resp:
+    with urlopen(req, timeout=max(1, int(ALPACA_SUBMIT_HTTP_TIMEOUT_SEC or 8))) as resp:
         raw = resp.read().decode("utf-8") if resp else ""
     data = json.loads(raw) if raw else {}
     if not isinstance(data, dict):
@@ -28037,6 +28047,8 @@ def _p399_submit_swing_candidate_rows(
         elif _p398_submit_row_rate_limited(row, submit_meta=submit_meta, resp=resp):
             row["submit_state"] = "retryable_rate_limit"
             row["p387_rate_limit_retry_queue"] = _p387_queue_rate_limited_selected_submit(c, row)
+        elif _p563_submit_row_selected_timeout(row):
+            row["p563_selected_submit_timeout_retry_queue"] = _p563_queue_selected_submit_timeout(c, row)
 
         would_submit.append(row)
 
@@ -42647,6 +42659,43 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 pass
             return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": plan}
 
+        existing_open_order = find_open_order_for_symbol(symbol)
+        if existing_open_order:
+            adopted = _adopt_open_broker_order_as_plan(
+                symbol,
+                existing_open_order,
+                source=str((meta or {}).get("selected_source") or source or "reconcile"),
+                signal=signal,
+                base_price=float(base_price),
+                meta=meta,
+            )
+            record_decision(
+                "ENTRY",
+                source,
+                symbol,
+                side=side,
+                signal=signal,
+                action="ignored",
+                reason="broker_backed_execution_exists",
+                qty=qty,
+                meta={
+                    "snapshot": snapshot,
+                    "open_order": existing_open_order,
+                    "p563_pre_submit_open_order_adopted": True,
+                    **(meta or {}),
+                },
+            )
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "broker_backed_execution_exists",
+                "symbol": symbol,
+                "signal": signal,
+                "open_order": existing_open_order,
+                "plan": adopted,
+                "p563_pre_submit_open_order_adopted": True,
+            }
+
         submit_order_type = "market"
         submit_price = float(base_price)
 
@@ -42951,6 +43000,72 @@ def _p387_queue_rate_limited_selected_submit(candidate: dict | None, submit_row:
     return {"queued": True, "key": key, "attempts": attempts, "reason": "rate_limited_selected_submit_queued"}
 
 
+def _p563_submit_row_selected_timeout(row: dict | None) -> bool:
+    r = dict(row or {})
+    reason = str(r.get("submit_reason") or r.get("reason") or "").strip().lower()
+    return bool(
+        r.get("p559_selected_submit_timeout")
+        or r.get("selected_submit_timeout")
+        or reason == "selected_submit_timeout"
+        or str(r.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
+    )
+
+
+def _p563_queue_selected_submit_timeout(candidate: dict | None, submit_row: dict | None) -> dict:
+    if not bool(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED):
+        return {"queued": False, "reason": "selected_submit_retry_disabled"}
+
+    c = dict(candidate or {})
+    row = dict(submit_row or {})
+    sym = str(c.get("symbol") or row.get("symbol") or "").strip().upper()
+    sig = str(c.get("signal") or row.get("signal") or row.get("strategy") or "daily_breakout").strip() or "daily_breakout"
+    side = str(c.get("side") or row.get("side") or "buy").strip().lower() or "buy"
+    reason = str(row.get("submit_reason") or row.get("reason") or "selected_submit_timeout").strip()
+
+    if not sym:
+        return {"queued": False, "reason": "missing_symbol"}
+    if not _p563_submit_row_selected_timeout(row):
+        return {"queued": False, "reason": "not_selected_submit_timeout"}
+
+    key = _p387_rate_limit_retry_key(sym, sig)
+    prior = dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.get(key) or {})
+    attempts = int(prior.get("attempts") or 0) + 1
+    now_utc = datetime.now(timezone.utc)
+
+    queued = {
+        "key": key,
+        "queued_utc": now_utc.isoformat(),
+        "queued_ny": now_ny().isoformat(),
+        "queued_utc_ts": now_utc.timestamp(),
+        "patch_version": PATCH_VERSION,
+        "symbol": sym,
+        "side": side,
+        "signal": sig,
+        "source": str(c.get("submit_source") or c.get("source") or row.get("source") or "swing_production_reset"),
+        "entry_type": str(c.get("entry_type") or row.get("entry_type") or "swing_production_contract"),
+        "rank_score": _safe_float(c.get("rank_score") or row.get("rank_score") or 0.0),
+        "signal_family": str(c.get("signal_family") or row.get("signal_family") or "primary"),
+        "attempts": attempts,
+        "first_reason": prior.get("first_reason") or reason,
+        "last_reason": reason,
+        "retry_kind": "selected_submit_timeout",
+        "requires_reconcile_before_retry": True,
+        "candidate": c,
+        "submit_row": row,
+    }
+    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key] = queued
+    persist_scan_runtime_state(reason="p563_selected_submit_timeout_retry_queued")
+    try:
+        _record_scanner_telemetry(
+            "submit_retry_queued",
+            "selected_submit_timeout",
+            details={"symbol": sym, "signal": sig, "key": key, "attempts": attempts},
+        )
+    except Exception:
+        pass
+    return {"queued": True, "key": key, "attempts": attempts, "reason": "selected_submit_timeout_retry_queued"}
+
+
 def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int | None = None) -> list[dict]:
     if not bool(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED):
         return []
@@ -42977,6 +43092,8 @@ def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int |
             "p387_rate_limit_retry_attempt": int(row.get("attempts") or 0) + 1,
             "p387_rate_limit_retry_first_reason": row.get("first_reason"),
             "p387_rate_limit_retry_last_reason": row.get("last_reason"),
+            "p563_submit_retry_kind": row.get("retry_kind") or "rate_limited",
+            "p563_requires_open_order_side_effect_check": bool(row.get("retry_kind") == "selected_submit_timeout"),
         })
         out.append(candidate)
     return out
@@ -44635,6 +44752,17 @@ def _p298_selected_submission_truth_light() -> dict:
     )
     snapshot_out["p330_after_hours_truth"] = p330_after_hours_truth
     snapshot_out["p387_rate_limit_retry_queue_count"] = len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
+    snapshot_out["p563_selected_submit_retry_queue_symbols"] = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+        if str((row or {}).get("symbol") or "").strip()
+    ])
+    snapshot_out["p563_selected_submit_timeout_retry_queue_symbols"] = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+        if str((row or {}).get("symbol") or "").strip()
+        and str((row or {}).get("retry_kind") or "").strip().lower() == "selected_submit_timeout"
+    ])
     snapshot_out["p550_heavy_truth_replaced_by_snapshot"] = True
     return snapshot_out
     p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
@@ -63472,7 +63600,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     scan_reason=requested_reason or "scheduled",
                 )
                 submit_source = str(plan.get("submit_source") or plan.get("source") or "worker_scan").strip() or "worker_scan"
-                resp = submit_scan_trade(sym, side, sig, meta={
+                submit_meta_payload = {
                     "rank_score": payload["rank_score"],
                     "signal_family": payload["signal_family"],
                     "selected_by_scanner": True,
@@ -63488,7 +63616,19 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     "p387_rate_limit_retry": bool(plan.get("p387_rate_limit_retry")),
                     "p387_rate_limit_retry_key": plan.get("p387_rate_limit_retry_key"),
                     "p387_rate_limit_retry_attempt": plan.get("p387_rate_limit_retry_attempt"),
-                }, source=submit_source)
+                    "p563_submit_retry_kind": plan.get("p563_submit_retry_kind"),
+                }
+
+                def _scanner_submit_call():
+                    return submit_scan_trade(sym, side, sig, meta=submit_meta_payload, source=submit_source)
+
+                resp = _p559_submit_selected_candidate_with_timeout(
+                    _scanner_submit_call,
+                    symbol=sym,
+                    signal=sig,
+                    source_name=submit_source,
+                    live_allowed=not bool(effective_dry_run),
+                )
                 submit_meta = _classify_scan_submit_response(resp)
                 record_decision(
                     "SCAN",
@@ -63541,6 +63681,11 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 elif _p398_submit_row_rate_limited(submit_row_for_summary, submit_meta=submit_meta, resp=resp):
                     submit_row_for_summary["submit_state"] = "retryable_rate_limit"
                     submit_row_for_summary["p387_rate_limit_retry_queue"] = _p387_queue_rate_limited_selected_submit(
+                        plan,
+                        submit_row_for_summary,
+                    )
+                elif _p563_submit_row_selected_timeout(submit_row_for_summary):
+                    submit_row_for_summary["p563_selected_submit_timeout_retry_queue"] = _p563_queue_selected_submit_timeout(
                         plan,
                         submit_row_for_summary,
                     )
