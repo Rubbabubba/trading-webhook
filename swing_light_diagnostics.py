@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-570-stale-submit-retry-queue-prune-cached-broker-daily-pnl-truth"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-571-canonical-candidate-truth-sync-scanner-hotspot-stage-timing-restore"
 
 
 def selected_submission_truth_light_snapshot(
