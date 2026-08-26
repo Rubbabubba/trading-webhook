@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-581-scanner-light-source-label-sync-canonical-truth-visibility"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-582-submit-trace-after-hours-recommendation-sync"
 
 
 def selected_submission_truth_light_snapshot(

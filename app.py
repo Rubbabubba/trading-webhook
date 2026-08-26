@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-581-scanner-light-source-label-sync-canonical-truth-visibility"
+PATCH_VERSION = "patch-582-submit-trace-after-hours-recommendation-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17546,6 +17546,32 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     else:
         path_status = "no_selected_candidate"
         recommended_action = "monitor_next_scan"
+    p582_after_hours_recommendation_sync = {
+        "applied": False,
+        "reason": "submit_trace_recommendation_already_current",
+        "consumer_recommended_action": p540_selected_consumer_truth.get("recommended_action"),
+        "consumer_after_hours_selected_not_submitted": bool(
+            p540_selected_consumer_truth.get("after_hours_selected_not_submitted")
+        ),
+        "market_hours_submit_possible": bool(
+            p540_selected_consumer_truth.get("market_hours_submit_possible")
+        ),
+    }
+    if (
+        bool(p540_selected_consumer_truth.get("after_hours_selected_not_submitted"))
+        and not bool(p540_selected_consumer_truth.get("market_hours_submit_possible"))
+        and not bool(p554_submit_pending)
+    ):
+        previous_path_status = path_status
+        previous_recommended_action = recommended_action
+        path_status = "after_hours_selected_not_submitted"
+        recommended_action = "wait_for_next_market_scan"
+        p582_after_hours_recommendation_sync.update({
+            "applied": True,
+            "reason": "selected_submission_truth_says_cached_after_hours_selection_is_not_actionable",
+            "previous_path_status": previous_path_status,
+            "previous_recommended_action": previous_recommended_action,
+        })
 
     p564_submit_phase_truth = dict(p554_submit_phase_truth)
     if resolved_submit_timeout_symbols:
@@ -17573,6 +17599,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "read_only": True,
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
         "p580_submit_trace_canonical_scan_consumer_sync": dict(p580_canonical_truth),
+        "p582_after_hours_recommendation_sync": dict(p582_after_hours_recommendation_sync),
         "p481_canonical_scan_truth": _p551_canonical_scan_truth_compact(p481_canonical_scan_truth),
         "p547_selection_submit_snapshot": {
             "source_stage": p547_selection_snapshot.get("source_stage"),
