@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-583-submit-trace-selected-submission-parity-stale-timeout-downgrade"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-584-current-scan-after-hours-recommendation-parity"
 
 
 def selected_submission_truth_light_snapshot(

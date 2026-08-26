@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-583-submit-trace-selected-submission-parity-stale-timeout-downgrade"
+PATCH_VERSION = "patch-584-current-scan-after-hours-recommendation-parity"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -41443,6 +41443,45 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         status = "no_candidate_flow"
         recommended_action = "inspect_scanner_runtime"
 
+    p579_truth = dict(p573_snapshot.get("p579_canonical_light_consumer_truth") or {})
+    p579_raw_latest = dict(p579_truth.get("raw_latest") or {})
+    raw_latest_reason = str(
+        p579_raw_latest.get("reason")
+        or latest_summary.get("scan_reason")
+        or dict(LAST_SCAN or {}).get("reason")
+        or ""
+    ).strip().lower()
+    chosen_source = str(p579_truth.get("chosen_source") or scan_source or "").strip()
+    p584_market_hours_submit_truth = _p578_market_hours_submit_truth(
+        p579_raw_latest or scan,
+        latest_summary or summary,
+    )
+    p584_after_hours_recommendation_parity = {
+        "applied": False,
+        "reason": "current_scan_recommendation_already_current",
+        "selected_symbols": list(selected_symbols),
+        "chosen_source": chosen_source,
+        "raw_latest_reason": raw_latest_reason or None,
+        "replacement_applied": bool(p579_truth.get("replacement_applied")),
+        "market_hours_submit_possible": bool(p584_market_hours_submit_truth.get("market_hours_submit_possible")),
+    }
+    if (
+        selected_symbols
+        and status == "selecting"
+        and recommended_action == "monitor_submissions"
+        and bool(p579_truth.get("replacement_applied"))
+        and raw_latest_reason in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+        and not bool(p584_market_hours_submit_truth.get("market_hours_submit_possible"))
+    ):
+        status = "after_hours_selected_not_submitted"
+        recommended_action = "wait_for_next_market_scan"
+        p584_after_hours_recommendation_parity.update({
+            "applied": True,
+            "reason": "preserved_candidate_scan_selected_symbols_are_not_submit_actionable_after_hours",
+            "status": status,
+            "recommended_action": recommended_action,
+        })
+
     candidate_rows = [_p565_compact_current_scan_row(row) for row in rows_all[:lim]]
     eligible_rows = [_p565_compact_current_scan_row(row) for row in eligible_rows_all[:lim]]
     top_candidates = [_p565_compact_current_scan_row(row) for row in rows_all[:min(lim, 10)]]
@@ -41463,6 +41502,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "p567_limited_cached_row_walk": True,
         "p571_canonical_candidate_truth_sync": True,
         "p573_true_zero_load_candidate_snapshot": True,
+        "p584_after_hours_recommendation_parity": dict(p584_after_hours_recommendation_parity),
         "p568_truth_source_synced_with_submit_trace": True,
         "p566_true_fast_current_scan_snapshot": True,
         "p565_fast_current_scan_suppression_snapshot": True,
