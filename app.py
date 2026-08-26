@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-573-true-zero-load-candidate-snapshot-restored-retry-prune-background-stale-close"
+PATCH_VERSION = "patch-574-overbudget-scan-truth-stale-submit-tombstone-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -3670,18 +3670,19 @@ def _p473_accept_over_budget_candidate_truth(scan: dict | None, source: str = ""
     summary = dict(row.get("summary") or {})
     background = dict(row.get("scan_background_completion_truth") or summary.get("scan_background_completion_truth") or {})
     existing_reason = str(row.get("reason") or summary.get("scan_reason") or "").strip()
-    accepted_reason = "partial_scan_completed" if bool((summary.get("incremental_scan") or {}).get("partial_scan")) else "scan_completed"
+    accepted_reason = "partial_scan_runtime_budget_exceeded" if bool((summary.get("incremental_scan") or {}).get("partial_scan")) else "scan_runtime_budget_exceeded"
 
     if existing_reason in {"scan_completed", "partial_scan_completed", "scan_runtime_budget_exceeded", "background_scan_runtime_budget_exceeded", ""}:
         row["reason"] = accepted_reason
 
     row["p473_over_budget_candidate_truth_accepted"] = True
+    row["p574_over_budget_candidate_truth_retained"] = True
     row["p473_over_budget_candidate_truth_source"] = source or "candidate_truth_atomic_publish"
     row["runtime_budget_sanitized"] = False
     row["runtime_budget_ms"] = budget_ms
     row["duration_ms"] = duration_ms
     row["actionable_for_diagnostics"] = True
-    row["fresh_but_over_budget"] = False
+    row["fresh_but_over_budget"] = True
 
     if str(row.get("exception_type") or "") == "BackgroundScanRuntimeBudgetExceeded":
         row["exception_type"] = None
@@ -3693,19 +3694,21 @@ def _p473_accept_over_budget_candidate_truth(scan: dict | None, source: str = ""
 
     summary["scan_reason"] = row.get("reason")
     summary["p473_over_budget_candidate_truth_accepted"] = True
+    summary["p574_over_budget_candidate_truth_retained"] = True
     summary["runtime_budget_ms"] = budget_ms
     summary["duration_ms"] = duration_ms
     summary["actionable_for_diagnostics"] = True
-    summary["fresh_but_over_budget"] = False
+    summary["fresh_but_over_budget"] = True
 
     if background:
-        background["status"] = "completed"
+        background["status"] = "completed_over_budget"
         background["active"] = False
         background["terminal"] = True
         background["reason"] = row.get("reason")
         background["duration_ms"] = duration_ms
         background["runtime_budget_ms"] = budget_ms
         background["p473_over_budget_candidate_truth_accepted"] = True
+        background["p574_over_budget_candidate_truth_retained"] = True
         if str(background.get("exception_type") or "") == "BackgroundScanRuntimeBudgetExceeded":
             background["exception_type"] = None
         if str(background.get("error") or "").lower().strip() in {
@@ -3789,7 +3792,7 @@ def _p464_is_actionable_market_scan(scan: dict | None) -> bool:
         return False
 
     if reason not in {"scan_completed", "partial_scan_completed"}:
-        if reason == "scan_runtime_budget_exceeded" and bool(scan.get("actionable_for_diagnostics")):
+        if reason in {"scan_runtime_budget_exceeded", "partial_scan_runtime_budget_exceeded"} and bool(scan.get("actionable_for_diagnostics")):
             return bool(truth.get("candidate_bearing"))
         return False
     if _p464_scan_over_runtime_budget(scan) and not bool(scan.get("actionable_for_diagnostics")):
@@ -29068,13 +29071,17 @@ def _p573_zero_load_candidate_snapshot_for_light(limit: int = 100) -> dict:
         row for row in fast_rows
         if bool(row.get("eligible")) and not bool(row.get("open_position"))
     ]
-    if not selected_symbols:
-        selected_symbols = _dedupe_keep_order([
-            str((row or {}).get("symbol") or "").strip().upper()
-            for row in fast_rows
-            if bool((row or {}).get("selected"))
-            and str((row or {}).get("symbol") or "").strip()
-        ])
+    row_selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in fast_rows
+        if bool((row or {}).get("selected"))
+        and not bool((row or {}).get("open_position"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    if fast_rows:
+        selected_symbols = row_selected_symbols
+    elif not selected_symbols:
+        selected_symbols = row_selected_symbols
 
     return {
         "ok": True,
@@ -29083,6 +29090,12 @@ def _p573_zero_load_candidate_snapshot_for_light(limit: int = 100) -> dict:
         "scan_source": scan_source,
         "selected_symbols": selected_symbols,
         "selected_total": len(selected_symbols),
+        "p574_selected_symbols_source": (
+            "current_candidate_rows"
+            if fast_rows
+            else "cached_summary_selected_symbols"
+        ),
+        "p574_summary_selected_symbols": list(scan_summary.get("selected_symbols") or []),
         "candidate_count": int(scan_summary.get("candidates_total") or len(fast_rows) or 0),
         "eligible_count": int(scan_summary.get("eligible_total") or len(eligible_rows) or 0),
         "candidate_rows": fast_rows,
@@ -29107,9 +29120,26 @@ def _p571_stage_timing_from_scan_sources(latest_scan: dict | None = None, summar
         ("last_scan.summary.timing_ms", (LAST_SCAN.get("summary") or {}).get("timing_ms") if isinstance(LAST_SCAN.get("summary"), dict) else {}),
         ("last_scan.timing_ms", LAST_SCAN.get("timing_ms")),
         ("last_actionable_market_scan.summary.timing_ms", (LAST_ACTIONABLE_MARKET_SCAN.get("summary") or {}).get("timing_ms") if isinstance(LAST_ACTIONABLE_MARKET_SCAN.get("summary"), dict) else {}),
+        ("background.stage_details.timing_ms", (scan_summary.get("scan_background_completion_truth") or {}).get("stage_details", {}).get("timing_ms") if isinstance(scan_summary.get("scan_background_completion_truth"), dict) and isinstance((scan_summary.get("scan_background_completion_truth") or {}).get("stage_details"), dict) else {}),
+        ("latest_background.stage_details.timing_ms", (scan.get("scan_background_completion_truth") or {}).get("stage_details", {}).get("timing_ms") if isinstance(scan.get("scan_background_completion_truth"), dict) and isinstance((scan.get("scan_background_completion_truth") or {}).get("stage_details"), dict) else {}),
     ):
         if isinstance(source, dict) and source:
             sources.append((name, dict(source)))
+    if not sources:
+        for source_name, background in (
+            ("summary.scan_background_completion_truth", scan_summary.get("scan_background_completion_truth")),
+            ("latest_scan.scan_background_completion_truth", scan.get("scan_background_completion_truth")),
+        ):
+            if not isinstance(background, dict):
+                continue
+            stage = str(background.get("stage") or background.get("reason") or "").strip()
+            try:
+                duration = int(float(background.get("duration_ms") or 0))
+            except Exception:
+                duration = 0
+            if stage and duration > 0:
+                sources.append((source_name, {"total": duration, stage: duration}))
+                break
     if not sources:
         for row in reversed(list(SCAN_HISTORY or [])):
             if not isinstance(row, dict):
@@ -29119,6 +29149,16 @@ def _p571_stage_timing_from_scan_sources(latest_scan: dict | None = None, summar
             if isinstance(source, dict) and source:
                 sources.append(("scan_history.timing_ms", dict(source)))
                 break
+            background = row.get("scan_background_completion_truth") or row_summary.get("scan_background_completion_truth")
+            if isinstance(background, dict):
+                stage = str(background.get("stage") or background.get("reason") or "").strip()
+                try:
+                    duration = int(float(background.get("duration_ms") or 0))
+                except Exception:
+                    duration = 0
+                if stage and duration > 0:
+                    sources.append(("scan_history.background_stage", {"total": duration, stage: duration}))
+                    break
     if not sources:
         return {
             "available": False,
@@ -40545,9 +40585,16 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         row for row in rows_all
         if bool(row.get("eligible")) and not bool(row.get("open_position"))
     ]
+    selected_source_values = (
+        p573_snapshot.get("selected_symbols")
+        if isinstance(p573_snapshot, dict) and "selected_symbols" in p573_snapshot
+        else summary.get("selected_symbols")
+        if "selected_symbols" in summary
+        else scan.get("selected_symbols")
+    )
     selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
-        for sym in list(p573_snapshot.get("selected_symbols") or summary.get("selected_symbols") or scan.get("selected_symbols") or [])
+        for sym in list(selected_source_values or [])
         if str(sym or "").strip()
     ])
     p572_selected_open_position_scrub = _p572_scrub_selected_open_position_symbols(
@@ -40680,6 +40727,8 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "p573_zero_load_candidate_snapshot": {
             "source": p573_snapshot.get("source"),
             "scan_source": p573_snapshot.get("scan_source"),
+            "selected_symbols_source": p573_snapshot.get("p574_selected_symbols_source"),
+            "summary_selected_symbols": list(p573_snapshot.get("p574_summary_selected_symbols") or []),
             "candidate_count": p573_snapshot.get("candidate_count"),
             "eligible_count": p573_snapshot.get("eligible_count"),
             "selected_total": p573_snapshot.get("selected_total"),

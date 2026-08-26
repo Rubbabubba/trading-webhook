@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-573-true-zero-load-candidate-snapshot-restored-retry-prune-background-stale-close"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-574-overbudget-scan-truth-stale-submit-tombstone-cleanup"
 
 
 def selected_submission_truth_light_snapshot(
@@ -20,6 +20,27 @@ def selected_submission_truth_light_snapshot(
     selected_symbols: list[str],
     rows: list[dict],
 ) -> dict:
+    stale_rows = [
+        dict(row)
+        for row in rows
+        if row.get("symbol") and bool(row.get("stale_selected_submit_timeout_suppressed"))
+    ]
+    active_rows = [
+        dict(row)
+        for row in rows
+        if not bool(row.get("stale_selected_submit_timeout_suppressed"))
+    ]
+    rows = active_rows
+    stale_selected_submit_timeout_symbols = [
+        row.get("symbol")
+        for row in stale_rows
+        if row.get("symbol")
+    ]
+    selected_symbols = [
+        sym
+        for sym in list(selected_symbols or [])
+        if sym not in set(stale_selected_submit_timeout_symbols)
+    ]
     submit_gap_symbols = [
         row.get("symbol")
         for row in rows
@@ -114,11 +135,6 @@ def selected_submission_truth_light_snapshot(
             or str(row.get("retry_evidence_status") or "") == "resolved_by_active_plan_or_submit_side_effect"
         )
     ]
-    stale_selected_submit_timeout_symbols = [
-        row.get("symbol")
-        for row in rows
-        if row.get("symbol") and bool(row.get("stale_selected_submit_timeout_suppressed"))
-    ]
     submit_pending_symbol_set = set(submit_pending_symbols)
     selected_submit_timeout_symbol_set = set(selected_submit_timeout_symbols)
     stale_selected_submit_timeout_symbol_set = set(stale_selected_submit_timeout_symbols)
@@ -179,14 +195,24 @@ def selected_submission_truth_light_snapshot(
         "resolved_submit_timeout_count": len(resolved_submit_timeout_symbols),
         "stale_selected_submit_timeout_symbols": stale_selected_submit_timeout_symbols,
         "stale_selected_submit_timeout_count": len(stale_selected_submit_timeout_symbols),
+        "stale_selected_submit_timeout_rows_tombstoned": stale_rows,
+        "p574_stale_selected_timeout_tombstone": {
+            "enabled": True,
+            "tombstoned_count": len(stale_rows),
+            "tombstoned_symbols": stale_selected_submit_timeout_symbols,
+            "current_rows_count": len(rows),
+            "reason": (
+                "stale_selected_submit_timeout_rows_removed_from_current_submission_truth"
+                if stale_rows
+                else "no_stale_selected_submit_timeout_rows"
+            ),
+        },
         "rows": list(rows),
         "recommended_action": (
             "selected_candidate_submit_pending"
             if submit_pending_symbols
             else "selected_submit_timeout_requires_reconcile"
             if selected_submit_timeout_symbols
-            else "stale_selected_submit_timeout_suppressed"
-            if stale_selected_submit_timeout_symbols
             else "selected_timeout_resolved_by_active_plan"
             if resolved_submit_timeout_symbols
             else "rate_limited_selected_submit_waiting_for_retry"
@@ -201,6 +227,8 @@ def selected_submission_truth_light_snapshot(
             if retryable_spread_block_symbols or retry_waiting_symbols
             else "selected_symbols_have_actual_submit_side_effect"
             if selected_symbols
+            else "stale_selected_timeout_rows_tombstoned_monitor_next_scan"
+            if stale_selected_submit_timeout_symbols
             else "no_selected_symbols_found"
         ),
     }
