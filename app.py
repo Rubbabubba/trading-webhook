@@ -2993,7 +2993,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-566-true-fast-current-scan-snapshot-near-miss-cache-only"
+PATCH_VERSION = "patch-567-zero-load-current-scan-snapshot-runtime-restore-bypass"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -39885,6 +39885,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
     summary = dict(scan.get("summary") or {})
 
     rows_all: list[dict] = []
+    seen_symbols: set[str] = set()
     for source_rows in (
         summary.get("selected_candidate_rows_for_truth"),
         summary.get("candidate_rows_for_truth"),
@@ -39892,16 +39893,19 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         summary.get("top_candidates"),
     ):
         for row in list(source_rows or []):
-            if isinstance(row, dict):
-                rows_all.append(dict(row))
-
-    by_symbol: dict[str, dict] = {}
-    for row in rows_all:
-        sym = str(row.get("symbol") or "").strip().upper()
-        if sym and sym not in by_symbol:
-            row["symbol"] = sym
-            by_symbol[sym] = row
-    rows_all = list(by_symbol.values())
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "").strip().upper()
+            if not sym or sym in seen_symbols:
+                continue
+            item = dict(row)
+            item["symbol"] = sym
+            rows_all.append(item)
+            seen_symbols.add(sym)
+            if len(rows_all) >= lim:
+                break
+        if len(rows_all) >= lim:
+            break
 
     eligible_rows_all = [
         row for row in rows_all
@@ -39988,9 +39992,11 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "current_scan_suppression_truth",
-        "payload_mode": "true_fast_snapshot",
-        "source": "p566_direct_scan_cache_only",
+        "payload_mode": "zero_load_fast_snapshot",
+        "source": "p567_zero_load_scan_cache_only",
         "read_only": True,
+        "p567_runtime_restore_bypassed": True,
+        "p567_limited_cached_row_walk": True,
         "p566_true_fast_current_scan_snapshot": True,
         "p565_fast_current_scan_suppression_snapshot": True,
         "does_not_recompute_candidate_payload": True,
@@ -40016,7 +40022,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
             "selected_total": selected_total,
             "has_candidate_rows": bool(rows_all),
             "scan_truth_phase": phase or None,
-            "source": "p566_cache_only_inline_truth",
+            "source": "p567_cache_only_inline_truth",
         },
         "latest_scan": {
             "ts_utc": scan.get("ts_utc"),
@@ -40068,6 +40074,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
             "last_actionable_scan_has_summary": bool(actionable_summary),
             "preferred_scan_source": scan_source,
             "candidate_row_source": "summary_cached_rows",
+            "row_walk_limit": lim,
         },
     }
 
@@ -62565,9 +62572,11 @@ def diagnostics_swing_daily_health_brief():
 
 @app.get("/diagnostics/current_scan_suppression_truth")
 def diagnostics_current_scan_suppression_truth(limit: int = 50, heavy: bool = False):
-    _ensure_runtime_state_loaded()
     if bool(heavy):
+        _ensure_runtime_state_loaded()
         return _p277h_current_scan_suppression_truth(limit=limit)
+    if not LAST_SCAN and not LAST_ACTIONABLE_MARKET_SCAN:
+        _ensure_runtime_state_loaded()
     return _p565_current_scan_suppression_truth_fast(limit=limit)
 
 @app.get("/diagnostics/defensive_tier_near_miss_report")
