@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-572-selected-symbol-open-position-scrub-retry-terminal-prune-scan-timing-publish-truth"
+PATCH_VERSION = "patch-573-true-zero-load-candidate-snapshot-restored-retry-prune-background-stale-close"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -22549,10 +22549,24 @@ def _p569_fast_broker_daily_goal_truth() -> dict:
     account_pnl = cached_account_pnl if cached_account_pnl.get("account_daily_pnl") not in (None, "") else _p569_account_daily_pnl_snapshot_bounded(timeout_sec=2.0)
     progress = _p295_broker_daily_goal_progress({
         "account_daily_pnl": account_pnl.get("account_daily_pnl"),
-        "today_net_pnl": 0.0,
+        "today_net_pnl": None,
         "today_realized_pnl": None,
         "today_unrealized_pnl": None,
     })
+    if account_pnl.get("account_daily_pnl") in (None, ""):
+        progress.update({
+            "primary_source": "broker_account_daily_change_unavailable",
+            "primary_daily_pnl": None,
+            "broker_account_daily_pnl": None,
+            "strategy_realized_plus_unrealized": None,
+            "progress_to_low_pct": None,
+            "progress_to_high_pct": None,
+            "remaining_to_low": None,
+            "remaining_to_high": None,
+            "low_target_hit": False,
+            "high_target_hit": False,
+            "p573_no_fake_zero_daily_goal": True,
+        })
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -22567,6 +22581,7 @@ def _p569_fast_broker_daily_goal_truth() -> dict:
             "cache_source": cached_account_pnl.get("source"),
             "fallback_source": account_pnl.get("source"),
             "account_daily_pnl_available": bool(account_pnl.get("account_daily_pnl") not in (None, "")),
+            "p573_no_fake_zero_daily_goal": bool(account_pnl.get("account_daily_pnl") in (None, "")),
         },
         "daily_goal_progress": progress,
         "today_pnl_truth": {
@@ -28584,6 +28599,39 @@ def _p456_background_scan_truth() -> dict:
             })
             SWING_SCAN_BACKGROUND_COMPLETION.clear()
             SWING_SCAN_BACKGROUND_COMPLETION.update(state)
+        status_l = str(state.get("status") or "").strip().lower()
+        active = status_l in {"accepted", "running"} and not bool(state.get("terminal"))
+        heartbeat_age_sec = _p462_iso_age_sec(state.get("updated_utc") or state.get("stage_utc") or state.get("started_utc"))
+        stale_after_sec = max(
+            int(SCAN_RUNTIME_BUDGET_SEC or 180) + 60,
+            int(SCANNER_TIMEOUT_SEC or 240) + 30,
+        )
+        if active and heartbeat_age_sec is not None and float(heartbeat_age_sec) > float(stale_after_sec):
+            now_iso = datetime.now(timezone.utc).isoformat()
+            state.update({
+                "status": "skipped",
+                "active": False,
+                "terminal": True,
+                "reason": "background_scan_heartbeat_stale_terminal_close",
+                "completed_utc": state.get("completed_utc") or now_iso,
+                "updated_utc": now_iso,
+                "error": None,
+                "exception_type": None,
+                "traceback_tail": None,
+                "p573_background_stale_close": {
+                    "closed": True,
+                    "heartbeat_age_sec": round(float(heartbeat_age_sec), 2),
+                    "stale_after_sec": int(stale_after_sec),
+                    "previous_status": status_l,
+                    "previous_stage": state.get("stage"),
+                },
+            })
+            SWING_SCAN_BACKGROUND_COMPLETION.clear()
+            SWING_SCAN_BACKGROUND_COMPLETION.update(state)
+            try:
+                persist_scan_runtime_state(reason="p573_background_scan_heartbeat_stale_terminal_close")
+            except Exception:
+                pass
     status = str(state.get("status") or "idle").strip().lower()
     return {
         "enabled": bool(SCAN_FAST_RESPONSE_ENABLED),
@@ -28612,6 +28660,7 @@ def _p456_background_scan_truth() -> dict:
         "effective_dry_run_reason": state.get("effective_dry_run_reason"),
         "dry_run_truth": state.get("dry_run_truth"),
         "p562_submit_complete_terminal_state_sync": bool(state.get("p562_submit_complete_terminal_state_sync")),
+        "p573_background_stale_close": dict(state.get("p573_background_stale_close") or {}),
     }
 
 def _p456_mark_background_scan(**updates) -> dict:
@@ -28910,6 +28959,141 @@ def _p572_scrub_selected_open_position_symbols(
             if scrubbed
             else "no_open_position_selected_symbols"
         ),
+    }
+
+def _p573_zero_load_candidate_snapshot_for_light(limit: int = 100) -> dict:
+    lim = max(1, min(int(limit or 100), 250))
+
+    def _summary_rows(summary: dict | None) -> list[dict]:
+        summary = dict(summary or {})
+        rows: list[dict] = []
+        seen: set[str] = set()
+        for source_rows in (
+            summary.get("p547_selection_submit_snapshot", {}).get("selected_rows")
+            if isinstance(summary.get("p547_selection_submit_snapshot"), dict)
+            else [],
+            summary.get("selected_candidate_rows_for_truth"),
+            summary.get("candidate_rows_for_truth"),
+            summary.get("top_new_entry_candidates"),
+            summary.get("top_candidates"),
+            summary.get("items"),
+        ):
+            for row in list(source_rows or []):
+                if not isinstance(row, dict):
+                    continue
+                sym = str((row or {}).get("symbol") or "").strip().upper()
+                if not sym or sym in seen:
+                    continue
+                item = dict(row or {})
+                item["symbol"] = sym
+                rows.append(item)
+                seen.add(sym)
+                if len(rows) >= lim:
+                    return rows
+        return rows
+
+    scans: list[tuple[str, dict]] = []
+    for name, row in (
+        ("last_scan", LAST_SCAN),
+        ("last_actionable_market_scan", LAST_ACTIONABLE_MARKET_SCAN),
+        ("last_successful_production_scan", LAST_SUCCESSFUL_PRODUCTION_SCAN),
+    ):
+        if isinstance(row, dict) and row:
+            scans.append((name, dict(row)))
+    for row in reversed(list(SCAN_HISTORY or [])):
+        if isinstance(row, dict) and row:
+            scans.append(("scan_history", dict(row)))
+            if len(scans) >= 12:
+                break
+
+    selected_symbols: list[str] = []
+    rows: list[dict] = []
+    scan_source = "empty"
+    scan_meta: dict = {}
+    scan_summary: dict = {}
+    for name, scan in scans:
+        summary = dict(scan.get("summary") or {})
+        selected = _dedupe_keep_order([
+            str(sym or "").strip().upper()
+            for sym in list(
+                summary.get("selected_symbols")
+                or scan.get("selected_symbols")
+                or []
+            )
+            if str(sym or "").strip()
+        ])
+        candidate_rows = _summary_rows(summary)
+        if selected or candidate_rows:
+            selected_symbols = selected
+            rows = candidate_rows
+            scan_source = name
+            scan_summary = summary
+            scan_meta = {
+                "ts_utc": scan.get("ts_utc"),
+                "reason": scan.get("reason") or summary.get("scan_reason"),
+                "scanned": scan.get("scanned") if scan.get("scanned") is not None else summary.get("symbols_eval_total"),
+                "signals": scan.get("signals"),
+                "would_trade": scan.get("would_trade"),
+                "blocked": scan.get("blocked"),
+                "duration_ms": scan.get("duration_ms") if scan.get("duration_ms") is not None else summary.get("duration_ms"),
+                "source": name,
+                "runtime_budget_sanitized": bool(scan.get("runtime_budget_sanitized")),
+            }
+            break
+
+    if not rows and LAST_SWING_CANDIDATES:
+        rows = [
+            dict(row or {})
+            for row in list(LAST_SWING_CANDIDATES or [])[:lim]
+            if isinstance(row, dict)
+        ]
+        scan_source = "last_swing_candidates_memory"
+        scan_meta = {
+            "ts_utc": (LAST_SCAN or {}).get("ts_utc"),
+            "reason": (LAST_SCAN or {}).get("reason") or "last_swing_candidates_memory",
+            "scanned": (LAST_SCAN or {}).get("scanned"),
+            "signals": (LAST_SCAN or {}).get("signals"),
+            "would_trade": (LAST_SCAN or {}).get("would_trade"),
+            "blocked": (LAST_SCAN or {}).get("blocked"),
+            "duration_ms": (LAST_SCAN or {}).get("duration_ms"),
+            "source": scan_source,
+            "runtime_budget_sanitized": bool((LAST_SCAN or {}).get("runtime_budget_sanitized")),
+        }
+        scan_summary = dict((LAST_SCAN or {}).get("summary") or {})
+
+    rows = _p412_rebuild_current_candidate_contract_rows(rows) if rows else []
+    open_symbols = set(_p404_active_position_symbols_light())
+    fast_rows = [_p406_candidate_row_fast(row, open_symbols=open_symbols) for row in rows[:lim]]
+    eligible_rows = [
+        row for row in fast_rows
+        if bool(row.get("eligible")) and not bool(row.get("open_position"))
+    ]
+    if not selected_symbols:
+        selected_symbols = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in fast_rows
+            if bool((row or {}).get("selected"))
+            and str((row or {}).get("symbol") or "").strip()
+        ])
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "source": "p573_zero_load_candidate_snapshot",
+        "scan_source": scan_source,
+        "selected_symbols": selected_symbols,
+        "selected_total": len(selected_symbols),
+        "candidate_count": int(scan_summary.get("candidates_total") or len(fast_rows) or 0),
+        "eligible_count": int(scan_summary.get("eligible_total") or len(eligible_rows) or 0),
+        "candidate_rows": fast_rows,
+        "eligible_new_entry_rows_all": eligible_rows,
+        "top_candidates": fast_rows[:min(lim, 15)],
+        "effective_scan_meta": scan_meta,
+        "reason_counts": dict(scan_summary.get("rejection_counts") or {}),
+        "top_rejection_reasons": list(scan_summary.get("top_rejection_reasons") or []),
+        "does_not_call_effective_scan_builder": True,
+        "does_not_fetch_bars": True,
+        "does_not_call_broker": True,
     }
 
 def _p571_stage_timing_from_scan_sources(latest_scan: dict | None = None, summary: dict | None = None) -> dict:
@@ -40316,16 +40500,12 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         scan_source = "last_actionable_market_scan"
     summary = dict(scan.get("summary") or {})
     open_symbols = set(_p404_active_position_symbols_light())
-    p571_snapshot = _p571_canonical_candidate_snapshot_for_light(
-        scan,
-        summary,
-        limit=max(lim, 100),
-    )
+    p573_snapshot = _p573_zero_load_candidate_snapshot_for_light(limit=max(lim, 100))
 
     rows_all: list[dict] = []
     seen_symbols: set[str] = set()
     for source_rows in (
-        p571_snapshot.get("candidate_rows"),
+        p573_snapshot.get("candidate_rows"),
         summary.get("selected_candidate_rows_for_truth"),
         summary.get("candidate_rows_for_truth"),
         summary.get("top_new_entry_candidates"),
@@ -40345,7 +40525,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
                 break
         if len(rows_all) >= lim:
             break
-    row_source = "p571_canonical_candidate_snapshot" if rows_all else "summary_cached_rows"
+    row_source = "p573_zero_load_candidate_snapshot" if rows_all else "summary_cached_rows"
     if not rows_all and LAST_SWING_CANDIDATES:
         for row in list(LAST_SWING_CANDIDATES or []):
             if not isinstance(row, dict):
@@ -40367,7 +40547,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
     ]
     selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
-        for sym in list(p571_snapshot.get("selected_symbols") or summary.get("selected_symbols") or scan.get("selected_symbols") or [])
+        for sym in list(p573_snapshot.get("selected_symbols") or summary.get("selected_symbols") or scan.get("selected_symbols") or [])
         if str(sym or "").strip()
     ])
     p572_selected_open_position_scrub = _p572_scrub_selected_open_position_symbols(
@@ -40407,8 +40587,8 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         if _p277_reason_family(reason) == "protective"
     }
 
-    candidates_total = int(summary.get("candidates_total") or len(rows_all) or 0)
-    eligible_total = int(p571_snapshot.get("eligible_count") or summary.get("eligible_total") or len(eligible_rows_all) or 0)
+    candidates_total = int(p573_snapshot.get("candidate_count") or summary.get("candidates_total") or len(rows_all) or 0)
+    eligible_total = int(p573_snapshot.get("eligible_count") or summary.get("eligible_total") or len(eligible_rows_all) or 0)
     selected_total = len(selected_symbols)
     symbols_eval_total = int(summary.get("symbols_eval_total") or scan.get("scanned") or candidates_total or 0)
     has_candidate_truth = bool(symbols_eval_total or candidates_total or rows_all or reason_counts)
@@ -40458,6 +40638,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "p567_runtime_restore_bypassed": True,
         "p567_limited_cached_row_walk": True,
         "p571_canonical_candidate_truth_sync": True,
+        "p573_true_zero_load_candidate_snapshot": True,
         "p568_truth_source_synced_with_submit_trace": True,
         "p566_true_fast_current_scan_snapshot": True,
         "p565_fast_current_scan_suppression_snapshot": True,
@@ -40487,25 +40668,35 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
             "source": "p567_cache_only_inline_truth",
         },
         "p571_canonical_candidate_snapshot": {
-            "source": p571_snapshot.get("source"),
-            "effective_market_scan_source": p571_snapshot.get("effective_market_scan_source"),
-            "candidate_count": p571_snapshot.get("candidate_count"),
-            "eligible_count": p571_snapshot.get("eligible_count"),
-            "selected_total": p571_snapshot.get("selected_total"),
-            "selected_symbols": list(p571_snapshot.get("selected_symbols") or []),
-            "row_count": len(list(p571_snapshot.get("candidate_rows") or [])),
+            "source": p573_snapshot.get("source"),
+            "effective_market_scan_source": p573_snapshot.get("scan_source"),
+            "candidate_count": p573_snapshot.get("candidate_count"),
+            "eligible_count": p573_snapshot.get("eligible_count"),
+            "selected_total": p573_snapshot.get("selected_total"),
+            "selected_symbols": list(p573_snapshot.get("selected_symbols") or []),
+            "row_count": len(list(p573_snapshot.get("candidate_rows") or [])),
+            "p573_zero_load_alias": True,
+        },
+        "p573_zero_load_candidate_snapshot": {
+            "source": p573_snapshot.get("source"),
+            "scan_source": p573_snapshot.get("scan_source"),
+            "candidate_count": p573_snapshot.get("candidate_count"),
+            "eligible_count": p573_snapshot.get("eligible_count"),
+            "selected_total": p573_snapshot.get("selected_total"),
+            "selected_symbols": list(p573_snapshot.get("selected_symbols") or []),
+            "row_count": len(list(p573_snapshot.get("candidate_rows") or [])),
         },
         "p572_selected_open_position_scrub": dict(p572_selected_open_position_scrub),
         "latest_scan": {
-            "ts_utc": scan.get("ts_utc") or (p571_snapshot.get("effective_scan_meta") or {}).get("ts_utc"),
-            "reason": scan.get("reason") or summary.get("scan_reason") or (p571_snapshot.get("effective_scan_meta") or {}).get("reason"),
-            "scanned": scan.get("scanned") if scan.get("scanned") is not None else (p571_snapshot.get("effective_scan_meta") or {}).get("scanned"),
-            "signals": scan.get("signals") if scan.get("signals") is not None else (p571_snapshot.get("effective_scan_meta") or {}).get("signals"),
-            "would_trade": scan.get("would_trade") if scan.get("would_trade") is not None else (p571_snapshot.get("effective_scan_meta") or {}).get("would_trade"),
-            "blocked": scan.get("blocked") if scan.get("blocked") is not None else (p571_snapshot.get("effective_scan_meta") or {}).get("blocked"),
-            "duration_ms": scan.get("duration_ms") if scan.get("duration_ms") is not None else (p571_snapshot.get("effective_scan_meta") or {}).get("duration_ms"),
-            "source": scan_source or (p571_snapshot.get("effective_scan_meta") or {}).get("source"),
-            "runtime_budget_sanitized": bool(scan.get("runtime_budget_sanitized") or (p571_snapshot.get("effective_scan_meta") or {}).get("runtime_budget_sanitized")),
+            "ts_utc": scan.get("ts_utc") or (p573_snapshot.get("effective_scan_meta") or {}).get("ts_utc"),
+            "reason": scan.get("reason") or summary.get("scan_reason") or (p573_snapshot.get("effective_scan_meta") or {}).get("reason"),
+            "scanned": scan.get("scanned") if scan.get("scanned") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("scanned"),
+            "signals": scan.get("signals") if scan.get("signals") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("signals"),
+            "would_trade": scan.get("would_trade") if scan.get("would_trade") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("would_trade"),
+            "blocked": scan.get("blocked") if scan.get("blocked") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("blocked"),
+            "duration_ms": scan.get("duration_ms") if scan.get("duration_ms") is not None else (p573_snapshot.get("effective_scan_meta") or {}).get("duration_ms"),
+            "source": (p573_snapshot.get("effective_scan_meta") or {}).get("source") or scan_source,
+            "runtime_budget_sanitized": bool(scan.get("runtime_budget_sanitized") or (p573_snapshot.get("effective_scan_meta") or {}).get("runtime_budget_sanitized")),
         },
         "runtime_universe_coverage": {
             "omitted_from_fast_payload": True,
@@ -40548,7 +40739,8 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
             "candidate_row_source": row_source,
             "row_walk_limit": lim,
             "fallback_used": row_source != "summary_cached_rows",
-            "canonical_candidate_snapshot_used": bool(p571_snapshot.get("p571_canonical_candidate_truth_sync")),
+            "canonical_candidate_snapshot_used": False,
+            "true_zero_load_candidate_snapshot_used": bool(p573_snapshot.get("source") == "p573_zero_load_candidate_snapshot"),
         },
     }
 
@@ -43744,6 +43936,12 @@ def _p387_prune_rate_limit_selected_submit_retry_queue() -> dict:
         for sym, plan in dict(TRADE_PLAN or {}).items()
         if str(sym or "").strip() and isinstance(plan, dict) and _plan_is_pending_entry(plan)
     }
+    latest_summary = dict((LAST_SCAN or {}).get("summary") or {})
+    latest_selected_symbols = set(_dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(latest_summary.get("selected_symbols") or (LAST_SCAN or {}).get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ]))
     for key, row in list(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.items()):
         try:
             queued_ts = float(row.get("queued_utc_ts") or 0.0)
@@ -43778,6 +43976,27 @@ def _p387_prune_rate_limit_selected_submit_retry_queue() -> dict:
                 or str((row or {}).get("retry_evidence_status") or "").strip().lower() == "stale_selected_submit_timeout_suppressed"
             )
         )
+        no_longer_current_selected = bool(
+            retry_kind == "selected_submit_timeout"
+            and latest_selected_symbols
+            and row_symbol
+            and row_symbol not in latest_selected_symbols
+            and row_symbol not in active_symbols
+            and row_symbol not in pending_symbols
+        )
+        retry_age_sec = max(0.0, now_ts - queued_ts) if queued_ts > 0 else None
+        selected_timeout_age_sec = _p569_selected_submit_timeout_age_sec(
+            submit_row if submit_row else row,
+            LAST_SCAN,
+        )
+        restored_shape_stale_timeout = bool(
+            retry_kind == "selected_submit_timeout"
+            and row_symbol
+            and row_symbol not in active_symbols
+            and row_symbol not in pending_symbols
+            and selected_timeout_age_sec is not None
+            and float(selected_timeout_age_sec) > float(ttl)
+        )
         prune_reason = ""
         if queued_ts <= 0:
             prune_reason = "missing_queued_timestamp"
@@ -43787,6 +44006,10 @@ def _p387_prune_rate_limit_selected_submit_retry_queue() -> dict:
             prune_reason = "selected_submit_timeout_resolved_terminal"
         elif terminal_stale:
             prune_reason = "stale_selected_submit_timeout_without_active_or_pending_plan"
+        elif no_longer_current_selected:
+            prune_reason = "selected_submit_timeout_no_longer_current_selected"
+        elif restored_shape_stale_timeout:
+            prune_reason = "restored_selected_submit_timeout_age_expired"
         if prune_reason:
             P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.pop(key, None)
             removed.append({
@@ -43794,6 +44017,8 @@ def _p387_prune_rate_limit_selected_submit_retry_queue() -> dict:
                 "symbol": row_symbol,
                 "retry_kind": row.get("retry_kind"),
                 "submit_reason": submit_reason,
+                "retry_age_sec": round(float(retry_age_sec), 2) if retry_age_sec is not None else None,
+                "selected_timeout_age_sec": round(float(selected_timeout_age_sec), 2) if selected_timeout_age_sec is not None else None,
                 "reason": prune_reason,
             })
     P570_STALE_SUBMIT_RETRY_PRUNE_LAST.clear()
@@ -43804,6 +44029,8 @@ def _p387_prune_rate_limit_selected_submit_retry_queue() -> dict:
         "remaining_count": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
         "ttl_sec": ttl,
         "p572_terminal_prune_enabled": True,
+        "p573_restored_shape_prune_enabled": True,
+        "latest_selected_symbols": sorted(latest_selected_symbols),
     })
     if removed:
         persist_scan_runtime_state(reason="p570_stale_submit_retry_queue_pruned")

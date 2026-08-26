@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-572-selected-symbol-open-position-scrub-retry-terminal-prune-scan-timing-publish-truth"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-573-true-zero-load-candidate-snapshot-restored-retry-prune-background-stale-close"
 
 
 def selected_submission_truth_light_snapshot(
