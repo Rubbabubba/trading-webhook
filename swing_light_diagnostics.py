@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-574-overbudget-scan-truth-stale-submit-tombstone-cleanup"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-575-pending-entry-status-sync-eligible-promotion-repair"
 
 
 def selected_submission_truth_light_snapshot(
@@ -117,12 +117,23 @@ def selected_submission_truth_light_snapshot(
         for row in rows
         if row.get("symbol") and bool(row.get("submit_pending"))
     ]
+    pending_order_sync_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol")
+        and (
+            bool(row.get("pending_order_only_plan"))
+            or str(row.get("retry_evidence_status") or "") == "pending_entry_order_needs_broker_status_sync"
+            or str(row.get("submit_gap_type") or "") == "pending_entry_order_needs_broker_status_sync"
+        )
+    ]
     selected_submit_timeout_symbols = [
         row.get("symbol")
         for row in rows
         if row.get("symbol")
         and bool(row.get("selected_submit_timeout"))
         and not bool(row.get("actual_submit_side_effect", row.get("side_effect_detected_light")))
+        and row.get("symbol") not in set(pending_order_sync_symbols)
         and str(row.get("retry_evidence_status") or "") != "resolved_by_active_plan_or_submit_side_effect"
     ]
     resolved_submit_timeout_symbols = [
@@ -189,6 +200,8 @@ def selected_submission_truth_light_snapshot(
         "submit_gap_terminal_failed_count": len(submit_gap_terminal_failed_symbols),
         "submit_pending_symbols": submit_pending_symbols,
         "submit_pending_count": len(submit_pending_symbols),
+        "pending_order_sync_symbols": pending_order_sync_symbols,
+        "pending_order_sync_count": len(pending_order_sync_symbols),
         "selected_submit_timeout_symbols": selected_submit_timeout_symbols,
         "selected_submit_timeout_count": len(selected_submit_timeout_symbols),
         "resolved_submit_timeout_symbols": resolved_submit_timeout_symbols,
@@ -211,6 +224,8 @@ def selected_submission_truth_light_snapshot(
         "recommended_action": (
             "selected_candidate_submit_pending"
             if submit_pending_symbols
+            else "sync_pending_entry_order_status_with_broker"
+            if pending_order_sync_symbols
             else "selected_submit_timeout_requires_reconcile"
             if selected_submit_timeout_symbols
             else "selected_timeout_resolved_by_active_plan"

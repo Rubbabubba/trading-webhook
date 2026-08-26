@@ -2994,7 +2994,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-574-overbudget-scan-truth-stale-submit-tombstone-cleanup"
+PATCH_VERSION = "patch-575-pending-entry-status-sync-eligible-promotion-repair"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29366,6 +29366,21 @@ def _p569_selected_submit_timeout_is_stale(
     ttl_sec = max(600, int(SCANNER_INTERVAL_SEC or 300) * 2)
     return bool(age_sec is not None and age_sec > ttl_sec)
 
+def _p575_snapshot_position_symbols_light() -> set[str]:
+    latest_snapshot = {}
+    try:
+        latest_snapshot = read_positions_snapshot()
+    except Exception:
+        latest_snapshot = {}
+    rows = []
+    if isinstance(latest_snapshot, dict):
+        rows = list(latest_snapshot.get("positions") or latest_snapshot.get("items") or [])
+    return {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if str((row or {}).get("symbol") or "").strip()
+    }
+
 def _p550_selected_submission_truth_snapshot_light(
     latest_scan: dict | None = None,
     summary: dict | None = None,
@@ -29420,6 +29435,76 @@ def _p550_selected_submission_truth_snapshot_light(
     )
     candidate_truth = _p548_snapshot_candidate_truth_no_recompute(latest_scan, summary, limit=lim)
     eligible_symbols = _p413_eligible_new_entry_symbols_from_fast_payload(candidate_truth)
+    row_selected_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(candidate_truth.get("candidate_rows") or [])
+        if isinstance(row, dict)
+        and bool((row or {}).get("selected"))
+        and not bool((row or {}).get("open_position"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    stale_summary_selected_symbols = list(selected_symbols)
+    p575_selection_repair = {
+        "applied": False,
+        "source": "cached_summary_selected_symbols",
+        "previous_selected_symbols": stale_summary_selected_symbols,
+        "row_selected_symbols": row_selected_symbols,
+        "eligible_symbols": list(eligible_symbols),
+        "selected_symbols": list(selected_symbols),
+        "reason": "cached_selected_symbols_preserved",
+    }
+    if candidate_truth.get("candidate_rows") is not None:
+        if row_selected_symbols:
+            selected_symbols = list(row_selected_symbols)
+            p575_selection_repair.update({
+                "applied": True,
+                "source": "current_candidate_selected_rows",
+                "selected_symbols": list(selected_symbols),
+                "reason": "selected_symbols_synced_from_current_candidate_rows",
+            })
+        elif eligible_symbols:
+            fallback = _p536_fallback_selected_symbols_from_eligible_rows(
+                candidate_truth,
+                max_symbols=max(1, min(
+                    int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
+                    int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
+                )),
+                blocked_symbols=[],
+                reason="p575_selected_submission_promoted_from_current_eligible_rows",
+            )
+            if fallback.get("applied"):
+                selected_symbols = list(fallback.get("selected_symbols") or [])
+                p575_selection_repair.update({
+                    "applied": True,
+                    "source": "current_eligible_rows",
+                    "selected_symbols": list(selected_symbols),
+                    "selected_rows": list(fallback.get("selected_rows") or []),
+                    "reason": "selected_symbols_promoted_from_current_eligible_rows",
+                })
+            else:
+                selected_symbols = list(eligible_symbols[:max(1, min(
+                    int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
+                    int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
+                ))])
+                p575_selection_repair.update({
+                    "applied": bool(selected_symbols),
+                    "source": "current_eligible_symbols",
+                    "selected_symbols": list(selected_symbols),
+                    "fallback_reason": fallback.get("reason"),
+                    "reason": (
+                        "selected_symbols_promoted_from_current_eligible_symbol_list"
+                        if selected_symbols
+                        else fallback.get("reason") or "no_rejection_free_eligible_rows_available"
+                    ),
+                })
+        elif selected_symbols:
+            selected_symbols = []
+            p575_selection_repair.update({
+                "applied": True,
+                "source": "current_candidate_rows_empty_selection",
+                "selected_symbols": [],
+                "reason": "stale_cached_selected_symbols_removed_no_current_selected_or_eligible_rows",
+            })
     p557_submit_capable_truth = _p557_submit_capable_selection_truth(latest_scan, summary)
     p557_advisory_selected_symbols = []
     if bool(p557_submit_capable_truth.get("selection_advisory_only")):
@@ -29437,6 +29522,7 @@ def _p550_selected_submission_truth_snapshot_light(
         for sym, plan in dict(TRADE_PLAN or {}).items()
         if str(sym or "").strip() and isinstance(plan, dict) and _plan_is_pending_entry(plan)
     }
+    snapshot_position_symbols = _p575_snapshot_position_symbols_light()
     rows: list[dict] = []
     for sym in selected_symbols[:lim]:
         submit_row = dict(submit_by_symbol.get(sym) or {})
@@ -29452,12 +29538,13 @@ def _p550_selected_submission_truth_snapshot_light(
         )
         active_plan = bool(plan.get("active"))
         pending_entry_plan = bool(_plan_is_pending_entry(plan))
+        active_position_plan = bool(active_plan and sym in snapshot_position_symbols and not pending_entry_plan)
+        pending_order_only_plan = bool(pending_entry_plan and sym not in snapshot_position_symbols)
         actual_submit_side_effect = bool(
             submit_row.get("actual_submit_side_effect")
             or submit_row.get("order_id")
             or submit_row.get("submit_order_id")
-            or active_plan
-            or pending_entry_plan
+            or active_position_plan
         )
         reason_norm = submit_reason.lower()
         state_norm = submit_state.lower()
@@ -29484,7 +29571,11 @@ def _p550_selected_submission_truth_snapshot_light(
             or str(submit_row.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
         )
         selected_submit_timeout_age_sec = _p569_selected_submit_timeout_age_sec(submit_row, latest_scan)
-        selected_submit_timeout_resolved = bool(selected_submit_timeout and actual_submit_side_effect)
+        selected_submit_timeout_resolved = bool(
+            selected_submit_timeout
+            and actual_submit_side_effect
+            and not pending_order_only_plan
+        )
         stale_selected_submit_timeout = bool(
             selected_submit_timeout
             and not selected_submit_timeout_resolved
@@ -29495,7 +29586,11 @@ def _p550_selected_submission_truth_snapshot_light(
                 pending_symbols=pending_entry_symbols,
             )
         )
-        effective_selected_submit_timeout = bool(selected_submit_timeout and not stale_selected_submit_timeout)
+        effective_selected_submit_timeout = bool(
+            selected_submit_timeout
+            and not stale_selected_submit_timeout
+            and not pending_order_only_plan
+        )
         submit_pending = bool(
             p554_submit_pending
             and sym in p554_pending_symbols
@@ -29504,6 +29599,7 @@ def _p550_selected_submission_truth_snapshot_light(
         )
         submit_gap = bool(
             not actual_submit_side_effect
+            and not pending_order_only_plan
             and not submit_pending
             and not after_hours_selected_not_submitted
             and not rate_limited_retryable
@@ -29519,11 +29615,15 @@ def _p550_selected_submission_truth_snapshot_light(
             "actual_submit_side_effect": bool(actual_submit_side_effect),
             "side_effect_detected_light": bool(actual_submit_side_effect),
             "active_plan": bool(active_plan),
+            "active_position_plan": bool(active_position_plan),
             "pending_entry_plan": bool(pending_entry_plan),
+            "pending_order_only_plan": bool(pending_order_only_plan),
             "submit_gap": bool(submit_gap),
             "submit_gap_type": (
                 "none"
                 if actual_submit_side_effect
+                else "pending_entry_order_needs_broker_status_sync"
+                if pending_order_only_plan
                 else "submit_pending"
                 if submit_pending
                 else "after_hours_selected_not_submitted"
@@ -29545,6 +29645,8 @@ def _p550_selected_submission_truth_snapshot_light(
             "retry_evidence_status": (
                 "resolved_by_active_plan_or_submit_side_effect"
                 if actual_submit_side_effect
+                else "pending_entry_order_needs_broker_status_sync"
+                if pending_order_only_plan
                 else "submit_phase_pending"
                 if submit_pending
                 else "after_hours_selected_not_submitted"
@@ -29615,8 +29717,11 @@ def _p550_selected_submission_truth_snapshot_light(
     out.update({
         "patch_version": PATCH_VERSION,
         "p550_snapshot_only_light_endpoint": True,
+        "p575_selection_repair": dict(p575_selection_repair),
+        "p575_snapshot_position_symbols": sorted(snapshot_position_symbols),
         "does_not_read_lifecycle": True,
-        "does_not_revalidate_selection": True,
+        "does_not_revalidate_selection": False,
+        "does_not_recompute_selection": True,
         "does_not_call_broker": True,
         "does_not_recompute_candidate_payload": True,
         "p547_selection_submit_snapshot": {
@@ -40603,6 +40708,46 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         open_symbols=open_symbols,
     )
     selected_symbols = list(p572_selected_open_position_scrub.get("active_selected_symbols") or [])
+    p575_current_selection_promotion = {
+        "applied": False,
+        "source": "existing_selected_symbols",
+        "selected_symbols": list(selected_symbols),
+        "eligible_symbols": [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in eligible_rows_all
+            if str((row or {}).get("symbol") or "").strip()
+        ],
+        "reason": "selected_symbols_already_present",
+    }
+    if not selected_symbols and eligible_rows_all:
+        promotion_limit = max(1, min(
+            int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
+            int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
+        ))
+        promoted_rows = sorted(
+            [dict(row or {}) for row in eligible_rows_all],
+            key=lambda row: (
+                float(_safe_float(row.get("rank_score"), 0.0)),
+                float(_safe_float(row.get("selection_quality_score"), 0.0)),
+            ),
+            reverse=True,
+        )[:promotion_limit]
+        selected_symbols = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in promoted_rows
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+        p575_current_selection_promotion.update({
+            "applied": bool(selected_symbols),
+            "source": "current_eligible_rows",
+            "selected_symbols": list(selected_symbols),
+            "selected_rows": promoted_rows,
+            "reason": (
+                "selected_symbols_promoted_from_current_eligible_rows"
+                if selected_symbols
+                else "eligible_rows_present_but_no_symbol_available"
+            ),
+        })
 
     reason_counts = {}
     for item in list(summary.get("top_rejection_reasons") or []):
@@ -40736,6 +40881,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
             "row_count": len(list(p573_snapshot.get("candidate_rows") or [])),
         },
         "p572_selected_open_position_scrub": dict(p572_selected_open_position_scrub),
+        "p575_current_selection_promotion": dict(p575_current_selection_promotion),
         "latest_scan": {
             "ts_utc": scan.get("ts_utc") or (p573_snapshot.get("effective_scan_meta") or {}).get("ts_utc"),
             "reason": scan.get("reason") or summary.get("scan_reason") or (p573_snapshot.get("effective_scan_meta") or {}).get("reason"),
