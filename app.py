@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-588-selected-submit-timeout-reconcile-auto-clear-retry-proof"
+PATCH_VERSION = "patch-589-selected-timeout-submit-row-adoption-retry-queue-gap-backfill"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17104,15 +17104,14 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         selected_symbols = []
         production_selected_symbols = []
 
+    p589_submit_row_adoption = _p589_adopt_selected_submit_rows_for_light(
+        summary,
+        latest_scan,
+        p547_selection_snapshot,
+    )
     submit_rows_all = [
         dict(row or {})
-        for row in list(
-            p547_selection_snapshot.get("submit_rows")
-            or summary.get("selected_submission_rows")
-            or summary.get("would_submit")
-            or latest_scan.get("would_submit")
-            or []
-        )
+        for row in list(p589_submit_row_adoption.get("rows") or [])
         if isinstance(row, dict)
     ]
     if not submit_rows_all:
@@ -17549,6 +17548,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "read_only": True,
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
         "p580_submit_trace_canonical_scan_consumer_sync": dict(p580_canonical_truth),
+        "p589_selected_timeout_submit_row_adoption": dict(p589_submit_row_adoption),
         "p582_after_hours_recommendation_sync": dict(p582_after_hours_recommendation_sync),
         "p583_stale_timeout_after_hours_downgrade": dict(p583_stale_timeout_after_hours_downgrade),
         "p481_canonical_scan_truth": _p551_canonical_scan_truth_compact(p481_canonical_scan_truth),
@@ -29893,6 +29893,111 @@ def _p588_auto_clear_selected_submit_timeout_retry(rows: list[dict] | None, late
         ),
     }
 
+def _p589_adopt_selected_submit_rows_for_light(
+    summary: dict | None,
+    latest_scan: dict | None,
+    p547_selection_snapshot: dict | None = None,
+) -> dict:
+    summary = dict(summary or {})
+    latest_scan = dict(latest_scan or {})
+    p547_selection_snapshot = dict(p547_selection_snapshot or summary.get("p547_selection_submit_snapshot") or {})
+    source_rows = [
+        dict(row or {})
+        for row in list(
+            p547_selection_snapshot.get("submit_rows")
+            or summary.get("selected_submission_rows")
+            or summary.get("would_submit")
+            or latest_scan.get("would_submit")
+            or []
+        )
+        if isinstance(row, dict)
+    ]
+    rows = list(source_rows)
+    adopted: list[dict] = []
+    existing_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    selected_truth = summary.get("selected_submission_truth")
+    selected_truth_rows = list(selected_truth.get("rows") or []) if isinstance(selected_truth, dict) else []
+    for truth_row in selected_truth_rows:
+        if not isinstance(truth_row, dict):
+            continue
+        scan_submit_row = truth_row.get("scan_submit_row")
+        adopted_row = dict(scan_submit_row) if isinstance(scan_submit_row, dict) else dict(truth_row)
+        sym = str(adopted_row.get("symbol") or truth_row.get("symbol") or "").strip().upper()
+        if not sym or sym in existing_symbols:
+            continue
+        adopted_row["symbol"] = sym
+        adopted_row["submit_state"] = adopted_row.get("submit_state") or truth_row.get("submit_state")
+        adopted_row["submit_reason"] = adopted_row.get("submit_reason") or truth_row.get("submit_reason")
+        adopted_row["submit_attempted"] = bool(adopted_row.get("submit_attempted") or truth_row.get("submit_attempted"))
+        adopted_row["actual_submit_side_effect"] = bool(
+            adopted_row.get("actual_submit_side_effect")
+            or truth_row.get("actual_submit_side_effect")
+        )
+        adopted_row["p589_adopted_from_selected_submission_truth"] = True
+        rows.append(adopted_row)
+        adopted.append({"symbol": sym, "source": "selected_submission_truth.rows"})
+        existing_symbols.add(sym)
+
+    return {
+        "rows": rows,
+        "source_row_count": len(source_rows),
+        "adopted_count": len(adopted),
+        "adopted_symbols": [row.get("symbol") for row in adopted],
+        "adopted": adopted[:20],
+        "source": (
+            "direct_summary_submit_rows"
+            if source_rows
+            else "selected_submission_truth_rows"
+            if adopted
+            else "no_submit_rows_available"
+        ),
+    }
+
+def _p589_backfill_selected_timeout_retry_queue_from_rows(rows: list[dict] | None, latest_scan: dict | None = None) -> dict:
+    backfilled: list[dict] = []
+    skipped: list[dict] = []
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        evidence = _p588_selected_submit_timeout_clean_reconcile_evidence(row, latest_scan)
+        sym = str(evidence.get("symbol") or "").strip().upper()
+        if not sym or not bool(evidence.get("is_selected_submit_timeout")):
+            continue
+        sig = str(evidence.get("signal") or row.get("signal") or row.get("strategy") or "daily_breakout").strip() or "daily_breakout"
+        key = _p387_rate_limit_retry_key(sym, sig)
+        if key in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE:
+            skipped.append({"symbol": sym, "key": key, "reason": "retry_queue_row_already_exists"})
+            continue
+        if not bool(evidence.get("clean_to_retry")):
+            skipped.append({**evidence, "key": key, "reason": "selected_timeout_not_clean_for_retry_backfill"})
+            continue
+        queue_result = _p563_queue_selected_submit_timeout(row, row)
+        if bool(queue_result.get("queued")):
+            backfilled.append({"symbol": sym, "key": queue_result.get("key") or key, "reason": "selected_timeout_retry_queue_backfilled"})
+        else:
+            skipped.append({"symbol": sym, "key": key, "reason": queue_result.get("reason") or "queue_backfill_not_queued"})
+    if backfilled:
+        try:
+            persist_scan_runtime_state(reason="p589_selected_timeout_retry_queue_backfilled")
+        except Exception:
+            pass
+    return {
+        "enabled": True,
+        "backfilled_count": len(backfilled),
+        "backfilled_symbols": [row.get("symbol") for row in backfilled],
+        "skipped_count": len(skipped),
+        "skipped": skipped[:20],
+        "recommended_action": (
+            "wait_for_retry_queue_consumption"
+            if backfilled
+            else "no_selected_timeout_retry_queue_backfill_needed"
+        ),
+    }
+
 def _p575_snapshot_position_symbols_light() -> set[str]:
     latest_snapshot = {}
     try:
@@ -30016,15 +30121,14 @@ def _p550_selected_submission_truth_snapshot_light(
         )
         if str(sym or "").strip()
     ])
+    p589_submit_row_adoption = _p589_adopt_selected_submit_rows_for_light(
+        summary,
+        latest_scan,
+        p547_selection_snapshot,
+    )
     submit_rows_all = [
         dict(row or {})
-        for row in list(
-            p547_selection_snapshot.get("submit_rows")
-            or summary.get("selected_submission_rows")
-            or summary.get("would_submit")
-            or latest_scan.get("would_submit")
-            or []
-        )
+        for row in list(p589_submit_row_adoption.get("rows") or [])
         if isinstance(row, dict)
     ]
     submit_by_symbol = {
@@ -30318,6 +30422,7 @@ def _p550_selected_submission_truth_snapshot_light(
             "scan_submit_row": submit_row or None,
         })
 
+    p589_retry_queue_backfill = _p589_backfill_selected_timeout_retry_queue_from_rows(rows, latest_scan)
     p588_reconcile_auto_clear = _p588_auto_clear_selected_submit_timeout_retry(rows, latest_scan)
     out = swing_diag_selected_submission_truth_light_snapshot(
         patch_version=PATCH_VERSION,
@@ -30370,6 +30475,8 @@ def _p550_selected_submission_truth_snapshot_light(
         },
         "p578_post_deploy_submit_proof_truth": dict(p578_post_deploy_submit_proof),
         "p588_selected_submit_timeout_reconcile_auto_clear": dict(p588_reconcile_auto_clear),
+        "p589_selected_timeout_submit_row_adoption": dict(p589_submit_row_adoption),
+        "p589_selected_timeout_retry_queue_backfill": dict(p589_retry_queue_backfill),
         "market_hours_submit_possible": bool(p578_market_submit_truth.get("market_hours_submit_possible")),
         "latest_post_deploy_submit_cycle_seen": bool(p578_post_deploy_submit_proof.get("latest_post_deploy_submit_cycle_seen")),
         "p577_submit_consumption_seen": bool(p578_post_deploy_submit_proof.get("p577_submit_consumption_seen")),

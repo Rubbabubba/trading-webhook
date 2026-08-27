@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-588-selected-submit-timeout-reconcile-auto-clear-retry-proof"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-589-selected-timeout-submit-row-adoption-retry-queue-gap-backfill"
 
 
 def _scanner_light_compact_background_truth(background: dict | None) -> dict:
