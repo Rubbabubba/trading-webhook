@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-591-effective-selected-symbol-authority-legacy-repair-override-suppression"
+PATCH_VERSION = "patch-592-current-scan-status-authority-sync-eligible-recommendation-suppression"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -41721,9 +41721,29 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
     )
     trade_judgable = bool(has_candidate_truth and not regime_only)
 
+    p592_current_scan_status_authority_sync = {
+        "enabled": True,
+        "applied": False,
+        "effective_authority_active": bool(p591_effective_selection_authority),
+        "authoritative_symbols": list(p591_effective_selected_symbols),
+        "eligible_symbols_suppressed": [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in eligible_rows_all
+            if str((row or {}).get("symbol") or "").strip()
+        ],
+        "reason": "normal_current_scan_status_flow",
+    }
+
     if selected_symbols:
         status = "selecting"
         recommended_action = "monitor_submissions"
+    elif p591_effective_selection_authority:
+        status = "captured_candidate_monitor_existing_position"
+        recommended_action = "monitor_active_positions"
+        p592_current_scan_status_authority_sync.update({
+            "applied": True,
+            "reason": "effective_selected_symbol_authority_suppressed_eligible_not_selected_recommendation",
+        })
     elif eligible_rows_all:
         status = "eligible_new_entry_not_selected"
         recommended_action = "sync_selected_symbols_from_current_eligible_contract_rows"
@@ -41813,6 +41833,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
                 else "current_selection_can_be_evaluated_normally"
             ),
         },
+        "p592_current_scan_status_authority_sync": dict(p592_current_scan_status_authority_sync),
         "p584_after_hours_recommendation_parity": dict(p584_after_hours_recommendation_parity),
         "p568_truth_source_synced_with_submit_trace": True,
         "p566_true_fast_current_scan_snapshot": True,
