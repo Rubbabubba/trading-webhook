@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-589-selected-timeout-submit-row-adoption-retry-queue-gap-backfill"
+PATCH_VERSION = "patch-590-effective-scan-source-unification-submit-row-current-scan-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17024,11 +17024,11 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan = dict(latest_scan or LAST_SCAN or {})
     summary = dict((latest_scan or {}).get("summary") or summary or {})
-    p580_canonical = _p579_canonical_light_scan_consumer(latest_scan, summary)
-    p580_canonical_truth = dict(p580_canonical.get("truth") or {})
-    if bool(p580_canonical_truth.get("replacement_applied")):
-        latest_scan = dict(p580_canonical.get("scan") or latest_scan)
-        summary = dict(p580_canonical.get("summary") or latest_scan.get("summary") or summary or {})
+    p590_context = _p590_effective_light_scan_context(latest_scan, summary)
+    latest_scan = dict(p590_context.get("scan") or latest_scan)
+    summary = dict(p590_context.get("summary") or latest_scan.get("summary") or summary or {})
+    p580_canonical = dict(p590_context.get("p579") or {})
+    p580_canonical_truth = dict((p580_canonical.get("truth") if isinstance(p580_canonical, dict) else {}) or {})
     p481_canonical_scan_truth = dict((latest_scan or {}).get("_p481_canonical_scan_truth") or {})
     summary["p580_submit_trace_canonical_scan_consumer_sync"] = dict(p580_canonical_truth)
     p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
@@ -17072,7 +17072,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
 
     selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
-        for sym in list(p547_selected_symbols or summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
+        for sym in list(p590_context.get("selected_symbols") or p547_selected_symbols or summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
         if str(sym or "").strip()
     ])
     production_selected_symbols = _dedupe_keep_order([
@@ -17547,6 +17547,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "heavy_url_hint": "/diagnostics/swing_submit_path_trace?heavy=true",
         "read_only": True,
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
+        "p590_effective_scan_source_unification": dict(p590_context.get("truth") or {}),
         "p580_submit_trace_canonical_scan_consumer_sync": dict(p580_canonical_truth),
         "p589_selected_timeout_submit_row_adoption": dict(p589_submit_row_adoption),
         "p582_after_hours_recommendation_sync": dict(p582_after_hours_recommendation_sync),
@@ -29998,6 +29999,60 @@ def _p589_backfill_selected_timeout_retry_queue_from_rows(rows: list[dict] | Non
         ),
     }
 
+def _p590_effective_light_scan_context(latest_scan: dict | None = None, summary: dict | None = None) -> dict:
+    p579 = _p579_canonical_light_scan_consumer(latest_scan, summary)
+    scan = dict(p579.get("scan") or latest_scan or LAST_SCAN or {})
+    scan_summary = dict(p579.get("summary") or scan.get("summary") or summary or {})
+    truth = dict(p579.get("truth") or scan.get("_p579_canonical_light_consumer_truth") or {})
+    p547_selection_snapshot = dict(scan_summary.get("p547_selection_submit_snapshot") or {})
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(
+            p547_selection_snapshot.get("selected_symbols")
+            or scan_summary.get("selected_symbols")
+            or scan.get("selected_symbols")
+            or []
+        )
+        if str(sym or "").strip()
+    ])
+    submit_adoption = _p589_adopt_selected_submit_rows_for_light(
+        scan_summary,
+        scan,
+        p547_selection_snapshot,
+    )
+    submit_row_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(submit_adoption.get("rows") or [])
+        if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
+    ])
+    proof = {
+        "enabled": True,
+        "chosen_source": truth.get("chosen_source") or scan.get("_scan_source") or "last_scan",
+        "replacement_applied": bool(truth.get("replacement_applied")),
+        "selected_symbols": list(selected_symbols),
+        "selected_count": len(selected_symbols),
+        "submit_row_symbols": list(submit_row_symbols),
+        "submit_row_count": len(submit_row_symbols),
+        "scan_ts_utc": scan.get("ts_utc"),
+        "scan_reason": scan.get("reason") or scan_summary.get("scan_reason"),
+        "candidate_bearing": bool((truth.get("chosen") or {}).get("candidate_bearing") or truth.get("candidate_bearing")),
+        "trade_judgable": bool((truth.get("chosen") or {}).get("trade_judgable") or truth.get("trade_judgable")),
+        "canonical_truth": dict(truth),
+        "submit_row_adoption": dict(submit_adoption),
+        "reason": "single_effective_scan_context_for_light_consumers",
+    }
+    scan_summary["p590_effective_scan_source_unification"] = dict(proof)
+    scan["summary"] = scan_summary
+    scan["_p590_effective_scan_source_unification"] = dict(proof)
+    return {
+        "scan": scan,
+        "summary": scan_summary,
+        "truth": proof,
+        "p579": dict(p579),
+        "selected_symbols": list(selected_symbols),
+        "submit_rows": list(submit_adoption.get("rows") or []),
+    }
+
 def _p575_snapshot_position_symbols_light() -> set[str]:
     latest_snapshot = {}
     try:
@@ -30109,12 +30164,16 @@ def _p550_selected_submission_truth_snapshot_light(
 ) -> dict:
     latest_scan = dict(latest_scan or LAST_SCAN or {})
     summary = dict(summary or (latest_scan.get("summary") if isinstance(latest_scan.get("summary"), dict) else {}) or {})
+    p590_context = _p590_effective_light_scan_context(latest_scan, summary)
+    latest_scan = dict(p590_context.get("scan") or latest_scan)
+    summary = dict(p590_context.get("summary") or latest_scan.get("summary") or summary)
     lim = max(1, min(int(limit or 50), 100))
     p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
     selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
         for sym in list(
-            p547_selection_snapshot.get("selected_symbols")
+            p590_context.get("selected_symbols")
+            or p547_selection_snapshot.get("selected_symbols")
             or summary.get("selected_symbols")
             or latest_scan.get("selected_symbols")
             or []
@@ -30457,6 +30516,7 @@ def _p550_selected_submission_truth_snapshot_light(
     out.update({
         "patch_version": PATCH_VERSION,
         "p550_snapshot_only_light_endpoint": True,
+        "p590_effective_scan_source_unification": dict(p590_context.get("truth") or {}),
         "p575_selection_repair": dict(p575_selection_repair),
         "p576_canonical_selection_handoff": p576_handoff,
         "p578_after_hours_selected_gap_suppression": {
@@ -41446,6 +41506,13 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         scan = actionable
         scan_source = "last_actionable_market_scan"
     summary = dict(scan.get("summary") or {})
+    p590_context = _p590_effective_light_scan_context(scan, summary)
+    scan = dict(p590_context.get("scan") or scan)
+    summary = dict(p590_context.get("summary") or scan.get("summary") or summary)
+    p590_truth = dict(p590_context.get("truth") or {})
+    if p590_truth.get("chosen_source"):
+        scan_source = str(p590_truth.get("chosen_source") or scan_source)
+    latest_summary = dict(scan.get("summary") or latest_summary or {})
     open_symbols = set(_p404_active_position_symbols_light())
     p573_snapshot = _p573_zero_load_candidate_snapshot_for_light(limit=max(lim, 100))
     p573_effective_scan_meta = dict(p573_snapshot.get("effective_scan_meta") or {})
@@ -41495,13 +41562,14 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         row for row in rows_all
         if bool(row.get("eligible")) and not bool(row.get("open_position"))
     ]
-    selected_source_values = (
-        p573_snapshot.get("selected_symbols")
-        if isinstance(p573_snapshot, dict) and "selected_symbols" in p573_snapshot
-        else summary.get("selected_symbols")
-        if "selected_symbols" in summary
-        else scan.get("selected_symbols")
-    )
+    if p590_context.get("selected_symbols"):
+        selected_source_values = p590_context.get("selected_symbols")
+    elif isinstance(p573_snapshot, dict) and "selected_symbols" in p573_snapshot:
+        selected_source_values = p573_snapshot.get("selected_symbols")
+    elif "selected_symbols" in summary:
+        selected_source_values = summary.get("selected_symbols")
+    else:
+        selected_source_values = scan.get("selected_symbols")
     selected_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
         for sym in list(selected_source_values or [])
@@ -41513,6 +41581,17 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         open_symbols=open_symbols,
     )
     selected_symbols = list(p572_selected_open_position_scrub.get("active_selected_symbols") or [])
+    selected_symbol_set = set(selected_symbols)
+    if selected_symbol_set:
+        for row in rows_all:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "").strip().upper()
+            raw_selected = bool(row.get("selected"))
+            row["raw_selected"] = raw_selected
+            row["selected"] = bool(sym and sym in selected_symbol_set)
+            if raw_selected and not row["selected"]:
+                row["p590_selected_flag_scrubbed"] = True
     p575_current_selection_promotion = {
         "applied": False,
         "source": "existing_selected_symbols",
@@ -41676,6 +41755,7 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "p567_limited_cached_row_walk": True,
         "p571_canonical_candidate_truth_sync": True,
         "p573_true_zero_load_candidate_snapshot": True,
+        "p590_effective_scan_source_unification": dict(p590_truth),
         "p584_after_hours_recommendation_parity": dict(p584_after_hours_recommendation_parity),
         "p568_truth_source_synced_with_submit_trace": True,
         "p566_true_fast_current_scan_snapshot": True,
