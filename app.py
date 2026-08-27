@@ -3003,7 +3003,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-603-foreground-retry-micro-drain-submit-proof-sync"
+PATCH_VERSION = "patch-604-pending-entry-alignment-worker-exit-heartbeat-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -48799,6 +48799,77 @@ def _p298_scanner_light() -> dict:
     )
 
 
+def _p604_pending_entry_alignment_row(symbol: str, plan: dict | None, snapshot_symbols: set[str] | None = None) -> dict:
+    sym = str(symbol or "").strip().upper()
+    p = dict(plan or {})
+    snapshots = set(snapshot_symbols or set())
+    order_status = str(p.get("order_status") or "").strip().lower()
+    execution_state = str(p.get("execution_state") or p.get("lifecycle_state") or "").strip().lower()
+    order_id = str(p.get("order_id") or p.get("entry_order_id") or "").strip()
+    pending_entry = bool(_plan_is_pending_entry(p))
+    has_snapshot_position = bool(sym and sym in snapshots)
+    pending_without_position = bool(pending_entry and not has_snapshot_position)
+    return {
+        "symbol": sym,
+        "has_snapshot_position": has_snapshot_position,
+        "pending_entry": pending_entry,
+        "pending_entry_without_position": pending_without_position,
+        "order_status": order_status or None,
+        "execution_state": execution_state or None,
+        "order_id": order_id or None,
+        "status": (
+            "open_position"
+            if has_snapshot_position
+            else "pending_entry_order_waiting_for_fill"
+            if pending_without_position
+            else "stale_without_position"
+        ),
+    }
+
+
+def _p604_pending_entry_alignment_truth(active_plan_rows: list[dict] | None, snapshot_symbols: set[str] | None = None) -> dict:
+    rows = [
+        _p604_pending_entry_alignment_row(
+            str((row or {}).get("symbol") or "").strip().upper(),
+            row,
+            snapshot_symbols=snapshot_symbols,
+        )
+        for row in list(active_plan_rows or [])
+        if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip()
+    ]
+    pending_rows = [row for row in rows if bool(row.get("pending_entry_without_position"))]
+    stale_rows = [row for row in rows if str(row.get("status") or "") == "stale_without_position"]
+    open_position_rows = [row for row in rows if str(row.get("status") or "") == "open_position"]
+    return {
+        "enabled": True,
+        "row_count": len(rows),
+        "open_position_count": len(open_position_rows),
+        "pending_entry_without_position_count": len(pending_rows),
+        "pending_entry_without_position_symbols": [
+            row.get("symbol") for row in pending_rows if row.get("symbol")
+        ],
+        "unexpected_stale_without_position_count": len(stale_rows),
+        "unexpected_stale_without_position_symbols": [
+            row.get("symbol") for row in stale_rows if row.get("symbol")
+        ],
+        "rows": rows[:25],
+        "status": (
+            "unexpected_stale_active_plan_without_position"
+            if stale_rows
+            else "pending_entry_orders_aligned"
+            if pending_rows
+            else "snapshot_positions_aligned"
+        ),
+        "recommended_action": (
+            "run_reconcile_light_apply_cleanup_if_confirmed_stale"
+            if stale_rows
+            else "monitor_pending_entry_order_status"
+            if pending_rows
+            else "none"
+        ),
+    }
+
+
 def _p298_live_positions_light() -> dict:
     latest_snapshot = {}
     try:
@@ -48816,13 +48887,40 @@ def _p298_live_positions_light() -> dict:
     }
 
     active_plans = [
-        {"symbol": sym, "status": plan.get("status"), "source": plan.get("source")}
+        {
+            "symbol": sym,
+            "status": plan.get("status"),
+            "source": plan.get("source"),
+            "order_status": plan.get("order_status"),
+            "execution_state": plan.get("execution_state") or plan.get("lifecycle_state"),
+            "order_id": plan.get("order_id") or plan.get("entry_order_id"),
+            "filled_qty": plan.get("filled_qty"),
+            "submitted_qty": plan.get("submitted_qty") or plan.get("qty"),
+            "pending_entry": bool(_plan_is_pending_entry(plan)),
+        }
         for sym, plan in (TRADE_PLAN or {}).items()
         if isinstance(plan, dict) and bool(plan.get("active"))
     ]
-    stale_active_plans = [
+    raw_stale_active_plans = [
         row for row in active_plans
         if str((row or {}).get("symbol") or "").strip().upper() not in snapshot_symbols
+    ]
+    p604_pending_entry_alignment = _p604_pending_entry_alignment_truth(active_plans, snapshot_symbols=snapshot_symbols)
+    stale_active_plans = [
+        row for row in raw_stale_active_plans
+        if not bool(_p604_pending_entry_alignment_row(
+            str((row or {}).get("symbol") or "").strip().upper(),
+            row,
+            snapshot_symbols=snapshot_symbols,
+        ).get("pending_entry_without_position"))
+    ]
+    pending_entry_stale_plans = [
+        row for row in raw_stale_active_plans
+        if bool(_p604_pending_entry_alignment_row(
+            str((row or {}).get("symbol") or "").strip().upper(),
+            row,
+            snapshot_symbols=snapshot_symbols,
+        ).get("pending_entry_without_position"))
     ]
     missing_internal_plans = [
         sym for sym in sorted(snapshot_symbols)
@@ -48858,11 +48956,15 @@ def _p298_live_positions_light() -> dict:
             "snapshot_position_count": len(snapshot_positions),
             "active_plan_count": len(active_plans),
             "stale_active_plan_count": len(stale_active_plans),
+            "raw_stale_active_plan_count": len(raw_stale_active_plans),
+            "pending_entry_stale_plan_count": len(pending_entry_stale_plans),
             "missing_internal_plan_count": len(missing_internal_plans),
             "open_order_count": None,
             "position_truth_status": (
                 "stale_active_plan_snapshot_mismatch"
                 if stale_active_plans
+                else "pending_entry_orders_aligned"
+                if pending_entry_stale_plans
                 else "missing_internal_plan_snapshot_mismatch"
                 if missing_internal_plans
                 else "light_snapshot_aligned"
@@ -48871,7 +48973,9 @@ def _p298_live_positions_light() -> dict:
         "positions": snapshot_positions[:25],
         "active_plans": active_plans[:25],
         "stale_active_plans": stale_active_plans[:25],
+        "pending_entry_stale_plans": pending_entry_stale_plans[:25],
         "missing_internal_plan_symbols": missing_internal_plans[:25],
+        "p604_pending_entry_alignment_truth": p604_pending_entry_alignment,
         "p570_missing_plan_reconcile_nudge": p570_missing_plan_reconcile_nudge,
         "stale_plan_truth": {
             "active": bool(stale_active_plans or missing_internal_plans),
@@ -48881,10 +48985,17 @@ def _p298_live_positions_light() -> dict:
                 for row in stale_active_plans
                 if str((row or {}).get("symbol") or "").strip()
             ],
+            "pending_entry_waiting_for_fill_symbols": [
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in pending_entry_stale_plans
+                if str((row or {}).get("symbol") or "").strip()
+            ],
             "missing_internal_plan_symbols": list(missing_internal_plans[:25]),
             "recommended_action": (
                 "run_reconcile_light_or_position_truth_before_new_entries"
                 if stale_active_plans or missing_internal_plans
+                else "monitor_pending_entry_order_status"
+                if pending_entry_stale_plans
                 else "position_snapshot_and_active_plans_aligned"
             ),
         },
@@ -49092,6 +49203,10 @@ def _p298_reconcile_light(apply_cleanup: bool = False) -> dict:
         for sym in list(stale_cleanup.get("open_order_symbols") or [])
         if str(sym or "").strip()
     }
+    active_plans_without_snapshot_position = sorted(active_plan_symbols - snapshot_symbols)
+    active_plans_without_snapshot_or_open_order = sorted(active_plan_symbols - snapshot_symbols - open_order_symbols)
+    active_plans_backed_by_open_order = sorted((active_plan_symbols - snapshot_symbols) & open_order_symbols)
+    effective_aligned_light = bool((snapshot_symbols | open_order_symbols) == active_plan_symbols)
 
     return {
         "ok": True,
@@ -49103,13 +49218,42 @@ def _p298_reconcile_light(apply_cleanup: bool = False) -> dict:
             "active_plan_count": len(active_plan_symbols),
             "open_order_count": len(open_order_symbols),
             "symbols_without_active_plan": sorted(snapshot_symbols - active_plan_symbols),
-            "active_plans_without_snapshot_position": sorted(active_plan_symbols - snapshot_symbols),
-            "active_plans_without_snapshot_or_open_order": sorted(active_plan_symbols - snapshot_symbols - open_order_symbols),
-            "aligned_light": snapshot_symbols | open_order_symbols == active_plan_symbols,
+            "active_plans_without_snapshot_position": active_plans_without_snapshot_position,
+            "active_plans_backed_by_open_order": active_plans_backed_by_open_order,
+            "active_plans_without_snapshot_or_open_order": active_plans_without_snapshot_or_open_order,
+            "aligned_light": effective_aligned_light,
+            "effective_position_truth_status": (
+                "aligned_with_open_orders"
+                if effective_aligned_light and active_plans_backed_by_open_order
+                else "aligned"
+                if effective_aligned_light
+                else "active_plan_without_position_or_open_order"
+                if active_plans_without_snapshot_or_open_order
+                else "snapshot_or_open_order_mismatch"
+            ),
         },
         "snapshot_symbols": sorted(snapshot_symbols),
         "active_plan_symbols": sorted(active_plan_symbols),
         "open_order_symbols": sorted(open_order_symbols),
+        "p604_pending_entry_alignment_truth": {
+            "enabled": True,
+            "active_plans_backed_by_open_order": active_plans_backed_by_open_order,
+            "active_plans_without_snapshot_or_open_order": active_plans_without_snapshot_or_open_order,
+            "status": (
+                "pending_entry_orders_aligned"
+                if effective_aligned_light and active_plans_backed_by_open_order
+                else "no_pending_entry_alignment_needed"
+                if effective_aligned_light
+                else "unexpected_stale_active_plan_without_position_or_order"
+            ),
+            "recommended_action": (
+                "monitor_pending_entry_order_status"
+                if effective_aligned_light and active_plans_backed_by_open_order
+                else "none"
+                if effective_aligned_light
+                else "inspect_reconcile_light_apply_cleanup"
+            ),
+        },
         "p438_stale_closed_plan_cleanup": stale_cleanup,
         "startup_state": STARTUP_STATE,
     }
@@ -65207,6 +65351,71 @@ def _universe_redesign_snapshot(limit: int = 10, target_size: int | None = None)
         'rationale': rationale,
     }
 
+def _p604_worker_exit_effective_heartbeat_truth(heartbeat: dict | None, recent: list[dict] | None) -> dict:
+    hb = dict(heartbeat or {})
+    rows = [dict(row or {}) for row in list(recent or []) if isinstance(row, dict)]
+    hb_status = str(hb.get("status") or "").strip().lower()
+    hb_ts_raw = str(hb.get("ts_utc") or "").strip()
+    hb_dt = None
+    if hb_ts_raw:
+        try:
+            hb_dt = datetime.fromisoformat(hb_ts_raw)
+            if hb_dt.tzinfo is None:
+                hb_dt = hb_dt.replace(tzinfo=timezone.utc)
+            hb_dt = hb_dt.astimezone(timezone.utc)
+        except Exception:
+            hb_dt = None
+    newer_activity = []
+    for row in rows:
+        raw = str(row.get("ts_utc") or "").strip()
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(timezone.utc)
+        except Exception:
+            continue
+        if hb_dt is None or dt >= hb_dt:
+            newer_activity.append({**row, "_dt_utc": dt})
+    error_like_after_started = [
+        row for row in newer_activity
+        if "failed" in str(row.get("action") or "").lower()
+        or "error" in str(row.get("action") or "").lower()
+        or "failed" in str(row.get("reason") or "").lower()
+        or "error" in str(row.get("reason") or "").lower()
+    ]
+    activity_after_started = bool(hb_status == "started" and newer_activity and not error_like_after_started)
+    latest_activity = dict(newer_activity[-1]) if newer_activity else {}
+    latest_activity.pop("_dt_utc", None)
+    return {
+        "enabled": True,
+        "raw_heartbeat_status": hb_status or None,
+        "activity_after_started": bool(activity_after_started),
+        "activity_after_started_count": len(newer_activity),
+        "error_like_after_started_count": len(error_like_after_started),
+        "latest_activity": latest_activity,
+        "effective_heartbeat_status": (
+            "activity_confirmed_after_started"
+            if activity_after_started
+            else hb_status
+            if hb_status
+            else "unknown"
+        ),
+        "effective_terminal_status_seen": bool(
+            hb_status and hb_status != "started"
+            or activity_after_started
+        ),
+        "started_status_is_diagnostic_only": bool(activity_after_started),
+        "recommended_action": (
+            "treat_worker_exit_as_healthy_activity_confirmed"
+            if activity_after_started
+            else "use_raw_heartbeat_status"
+        ),
+    }
+
+
 def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
     now_utc = datetime.now(timezone.utc)
     hb = dict(LAST_EXIT_HEARTBEAT or {})
@@ -65291,8 +65500,15 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
             })
 
     status = str(hb.get("status") or "").lower()
+    p604_heartbeat_truth = _p604_worker_exit_effective_heartbeat_truth(hb, recent)
+    effective_terminal_status_seen = bool(p604_heartbeat_truth.get("effective_terminal_status_seen"))
     stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
-    started_stale = bool(status == "started" and age_sec is not None and age_sec > stale_threshold)
+    started_stale = bool(
+        status == "started"
+        and not bool(p604_heartbeat_truth.get("activity_after_started"))
+        and age_sec is not None
+        and age_sec > stale_threshold
+    )
     terminal_status_seen = bool(status and status != "started")
     heartbeat_error_fresh = bool(
         status in {"error", "failed"}
@@ -65320,9 +65536,12 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         "heartbeat": hb,
         "heartbeat_age_sec": age_sec,
         "heartbeat_status": status,
+        "effective_heartbeat_status": p604_heartbeat_truth.get("effective_heartbeat_status"),
+        "p604_worker_exit_effective_heartbeat_truth": p604_heartbeat_truth,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
+        "effective_terminal_status_seen": effective_terminal_status_seen,
         "heartbeat_error_fresh": heartbeat_error_fresh,
         "sync_contract_ok": sync_contract_ok,
         "fresh_sync_guard_count": len(fresh_sync_guard_rows),
@@ -65440,8 +65659,15 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
                 "filled_qty": plan.get("filled_qty"),
             })
     status = str(hb.get("status") or "").lower()
+    p604_heartbeat_truth = _p604_worker_exit_effective_heartbeat_truth(hb, recent)
+    effective_terminal_status_seen = bool(p604_heartbeat_truth.get("effective_terminal_status_seen"))
     stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
-    started_stale = bool(status == "started" and age_sec is not None and age_sec > stale_threshold)
+    started_stale = bool(
+        status == "started"
+        and not bool(p604_heartbeat_truth.get("activity_after_started"))
+        and age_sec is not None
+        and age_sec > stale_threshold
+    )
     terminal_status_seen = bool(status and status != "started")
     heartbeat_error_fresh = bool(
         status in {"error", "failed"}
@@ -65516,6 +65742,9 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
+        "effective_heartbeat_status": p604_heartbeat_truth.get("effective_heartbeat_status"),
+        "effective_terminal_status_seen": effective_terminal_status_seen,
+        "p604_worker_exit_effective_heartbeat_truth": p604_heartbeat_truth,
         "recommended_action": recommended_action,
         "active_plan_count": len(active_plans),
         "active_plans": active_plans[:10],
