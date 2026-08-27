@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-587-current-scan-submit-recommendation-parity-from-submit-hours-truth"
+PATCH_VERSION = "patch-588-selected-submit-timeout-reconcile-auto-clear-retry-proof"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29748,6 +29748,151 @@ def _p569_selected_submit_timeout_is_stale(
     ttl_sec = max(600, int(SCANNER_INTERVAL_SEC or 300) * 2)
     return bool(age_sec is not None and age_sec > ttl_sec)
 
+def _p588_selected_submit_timeout_clean_reconcile_evidence(row: dict | None, latest_scan: dict | None = None) -> dict:
+    record = dict(row or {})
+    submit_row = record.get("scan_submit_row") if isinstance(record.get("scan_submit_row"), dict) else {}
+    if not submit_row and isinstance(record.get("submit_row"), dict):
+        submit_row = dict(record.get("submit_row") or {})
+    merged = {**dict(submit_row or {}), **record}
+    sym = str(merged.get("symbol") or "").strip().upper()
+    signal = str(merged.get("signal") or merged.get("strategy") or "daily_breakout").strip() or "daily_breakout"
+    reason_norm = str(merged.get("submit_reason") or merged.get("reason") or "").strip().lower()
+    is_timeout = bool(
+        merged.get("p559_selected_submit_timeout")
+        or merged.get("selected_submit_timeout")
+        or merged.get("raw_selected_submit_timeout")
+        or reason_norm == "selected_submit_timeout"
+        or str(merged.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
+    )
+    plan = dict((TRADE_PLAN or {}).get(sym) or {}) if sym else {}
+    try:
+        snapshot_position_symbols = _p575_snapshot_position_symbols_light()
+    except Exception:
+        snapshot_position_symbols = set()
+    has_plan_side_effect = bool(plan.get("active") or _plan_is_pending_entry(plan))
+    has_position_side_effect = bool(sym and sym in set(snapshot_position_symbols or set()))
+    has_order_side_effect = bool(
+        merged.get("submit_order_id")
+        or merged.get("order_id")
+        or merged.get("plan_order_id")
+        or plan.get("order_id")
+    )
+    has_pending_side_effect = bool(
+        merged.get("pending_entry_plan")
+        or merged.get("pending_order_only_plan")
+        or merged.get("submit_pending")
+    )
+    has_explicit_side_effect = bool(
+        merged.get("actual_submit_side_effect")
+        or merged.get("side_effect_detected_light")
+        or merged.get("active_plan")
+        or merged.get("active_position_plan")
+    )
+    clean = bool(
+        sym
+        and is_timeout
+        and not has_plan_side_effect
+        and not has_position_side_effect
+        and not has_order_side_effect
+        and not has_pending_side_effect
+        and not has_explicit_side_effect
+    )
+    return {
+        "symbol": sym,
+        "signal": signal,
+        "is_selected_submit_timeout": bool(is_timeout),
+        "clean_to_retry": bool(clean),
+        "has_plan_side_effect": bool(has_plan_side_effect),
+        "has_position_side_effect": bool(has_position_side_effect),
+        "has_order_side_effect": bool(has_order_side_effect),
+        "has_pending_side_effect": bool(has_pending_side_effect),
+        "has_explicit_side_effect": bool(has_explicit_side_effect),
+        "selected_submit_timeout_age_sec": _p569_selected_submit_timeout_age_sec(merged, latest_scan),
+        "reason": (
+            "selected_submit_timeout_clean_no_side_effect_retry_unlocked"
+            if clean
+            else "selected_submit_timeout_reconcile_not_clean"
+            if is_timeout
+            else "not_selected_submit_timeout"
+        ),
+    }
+
+def _p588_auto_clear_selected_submit_timeout_retry(rows: list[dict] | None, latest_scan: dict | None = None) -> dict:
+    cleared: list[dict] = []
+    blocked: list[dict] = []
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        evidence = _p588_selected_submit_timeout_clean_reconcile_evidence(row, latest_scan)
+        sym = str(evidence.get("symbol") or "").strip().upper()
+        if not sym or not bool(evidence.get("is_selected_submit_timeout")):
+            continue
+        if not bool(evidence.get("clean_to_retry")):
+            blocked.append(evidence)
+            continue
+
+        sig = str(evidence.get("signal") or row.get("signal") or "daily_breakout").strip() or "daily_breakout"
+        key = _p387_rate_limit_retry_key(sym, sig)
+        queue_row = P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.get(key)
+        queue_updated = False
+        if not (
+            isinstance(queue_row, dict)
+            and str(queue_row.get("retry_kind") or "").strip().lower() == "selected_submit_timeout"
+        ):
+            blocked.append({
+                **evidence,
+                "queue_key": key,
+                "reason": "selected_submit_timeout_clean_but_retry_queue_row_missing",
+            })
+            continue
+        now_iso = datetime.now(timezone.utc).isoformat()
+        queue_row["requires_reconcile_before_retry"] = False
+        queue_row["p588_reconcile_auto_cleared"] = True
+        queue_row["p588_reconcile_auto_cleared_utc"] = now_iso
+        queue_row["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+        queue_row["last_reason"] = "selected_submit_timeout_clean_retry_waiting"
+        if isinstance(queue_row.get("submit_row"), dict):
+            queue_row["submit_row"]["requires_reconcile_before_retry"] = False
+            queue_row["submit_row"]["p588_reconcile_auto_cleared"] = True
+            queue_row["submit_row"]["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key] = queue_row
+        queue_updated = True
+
+        row["selected_submit_timeout"] = False
+        row["p588_effective_selected_submit_timeout_suppressed"] = True
+        row["p588_reconcile_auto_clear"] = dict(evidence)
+        row["submit_gap_type"] = "selected_submit_timeout_clean_retry_waiting"
+        row["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+        row["submit_gap_is_actionable"] = False
+        if isinstance(row.get("scan_submit_row"), dict):
+            row["scan_submit_row"]["requires_reconcile_before_retry"] = False
+            row["scan_submit_row"]["p588_reconcile_auto_cleared"] = True
+            row["scan_submit_row"]["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+        cleared.append({**evidence, "queue_key": key, "queue_updated": bool(queue_updated)})
+
+    if cleared:
+        try:
+            persist_scan_runtime_state(reason="p588_selected_submit_timeout_reconcile_auto_cleared")
+        except Exception:
+            pass
+    return {
+        "enabled": True,
+        "cleared_count": len(cleared),
+        "cleared_symbols": [row.get("symbol") for row in cleared],
+        "queue_updated_count": len([row for row in cleared if row.get("queue_updated")]),
+        "queue_updated_symbols": [row.get("symbol") for row in cleared if row.get("queue_updated")],
+        "blocked_count": len(blocked),
+        "blocked": blocked[:20],
+        "cleared": cleared[:20],
+        "recommended_action": (
+            "wait_for_retry_queue_consumption"
+            if cleared
+            else "check_orders_and_reconcile_before_retrying_selected_symbols"
+            if blocked
+            else "no_selected_submit_timeout_reconcile_clear_needed"
+        ),
+    }
+
 def _p575_snapshot_position_symbols_light() -> set[str]:
     latest_snapshot = {}
     try:
@@ -30173,6 +30318,7 @@ def _p550_selected_submission_truth_snapshot_light(
             "scan_submit_row": submit_row or None,
         })
 
+    p588_reconcile_auto_clear = _p588_auto_clear_selected_submit_timeout_retry(rows, latest_scan)
     out = swing_diag_selected_submission_truth_light_snapshot(
         patch_version=PATCH_VERSION,
         latest_scan=latest_scan,
@@ -30223,6 +30369,7 @@ def _p550_selected_submission_truth_snapshot_light(
             ),
         },
         "p578_post_deploy_submit_proof_truth": dict(p578_post_deploy_submit_proof),
+        "p588_selected_submit_timeout_reconcile_auto_clear": dict(p588_reconcile_auto_clear),
         "market_hours_submit_possible": bool(p578_market_submit_truth.get("market_hours_submit_possible")),
         "latest_post_deploy_submit_cycle_seen": bool(p578_post_deploy_submit_proof.get("latest_post_deploy_submit_cycle_seen")),
         "p577_submit_consumption_seen": bool(p578_post_deploy_submit_proof.get("p577_submit_consumption_seen")),
@@ -44956,6 +45103,19 @@ def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int |
     )
     out = []
     for row in rows[:lim]:
+        if str((row or {}).get("retry_kind") or "").strip().lower() == "selected_submit_timeout":
+            evidence = _p588_selected_submit_timeout_clean_reconcile_evidence(
+                row.get("submit_row") if isinstance(row.get("submit_row"), dict) else row,
+                LAST_SCAN,
+            )
+            if bool(evidence.get("clean_to_retry")):
+                key = str(row.get("key") or _p387_rate_limit_retry_key(row.get("symbol"), row.get("signal"))).strip()
+                if key and key in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE:
+                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["requires_reconcile_before_retry"] = False
+                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p588_reconcile_auto_cleared"] = True
+                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p588_reconcile_auto_cleared_utc"] = datetime.now(timezone.utc).isoformat()
+                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+                    row = dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key])
         candidate = dict(row.get("candidate") or {})
         candidate.update({
             "symbol": row.get("symbol"),
@@ -44972,7 +45132,16 @@ def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int |
             "p387_rate_limit_retry_first_reason": row.get("first_reason"),
             "p387_rate_limit_retry_last_reason": row.get("last_reason"),
             "p563_submit_retry_kind": row.get("retry_kind") or "rate_limited",
-            "p563_requires_open_order_side_effect_check": bool(row.get("retry_kind") == "selected_submit_timeout"),
+            "p563_requires_open_order_side_effect_check": bool(
+                row.get("retry_kind") == "selected_submit_timeout"
+                and bool(row.get("requires_reconcile_before_retry"))
+            ),
+            "p588_selected_timeout_reconcile_auto_cleared": bool(row.get("p588_reconcile_auto_cleared")),
+            "p588_retry_unlocked": bool(
+                row.get("retry_kind") == "selected_submit_timeout"
+                and row.get("p588_reconcile_auto_cleared")
+                and not bool(row.get("requires_reconcile_before_retry"))
+            ),
         })
         out.append(candidate)
     return out

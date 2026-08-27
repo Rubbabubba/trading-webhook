@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-585-scanner-runtime-contract-consolidation-dead-background-cleanup"
+SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION = "patch-588-selected-submit-timeout-reconcile-auto-clear-retry-proof"
 
 
 def _scanner_light_compact_background_truth(background: dict | None) -> dict:
@@ -137,7 +137,17 @@ def selected_submission_truth_light_snapshot(
         row.get("symbol")
         for row in rows
         if row.get("symbol")
-        and str(row.get("retry_evidence_status") or "") in {"waiting_for_spread_retry", "waiting_for_rate_limit_retry"}
+        and str(row.get("retry_evidence_status") or "") in {
+            "waiting_for_spread_retry",
+            "waiting_for_rate_limit_retry",
+            "selected_submit_timeout_clean_retry_waiting",
+        }
+    ]
+    selected_timeout_clean_retry_symbols = [
+        row.get("symbol")
+        for row in rows
+        if row.get("symbol")
+        and str(row.get("retry_evidence_status") or "") == "selected_submit_timeout_clean_retry_waiting"
     ]
     rate_limited_retry_symbols = [
         row.get("symbol")
@@ -247,6 +257,8 @@ def selected_submission_truth_light_snapshot(
         "retry_resolved_count": len(retry_resolved_symbols),
         "retry_waiting_symbols": retry_waiting_symbols,
         "retry_waiting_count": len(retry_waiting_symbols),
+        "selected_timeout_clean_retry_symbols": selected_timeout_clean_retry_symbols,
+        "selected_timeout_clean_retry_count": len(selected_timeout_clean_retry_symbols),
         "rate_limited_retry_symbols": rate_limited_retry_symbols,
         "rate_limited_retry_count": len(rate_limited_retry_symbols),
         "submit_gap_unattempted_symbols": submit_gap_unattempted_symbols,
@@ -285,6 +297,8 @@ def selected_submission_truth_light_snapshot(
             if selected_submit_timeout_symbols
             else "selected_timeout_resolved_by_active_plan"
             if resolved_submit_timeout_symbols
+            else "selected_timeout_retry_waiting_for_consumption"
+            if selected_timeout_clean_retry_symbols
             else "rate_limited_selected_submit_waiting_for_retry"
             if rate_limited_retry_symbols
             else "wait_for_next_market_scan"
@@ -296,7 +310,7 @@ def selected_submission_truth_light_snapshot(
             else "selected_candidate_blocked_by_execution_quality"
             if execution_quality_block_symbols
             else "retryable_spread_block_waiting_for_quote_improvement"
-            if retryable_spread_block_symbols or retry_waiting_symbols
+            if retryable_spread_block_symbols
             else "selected_symbols_have_actual_submit_side_effect"
             if selected_symbols
             else "stale_selected_timeout_rows_tombstoned_monitor_next_scan"
