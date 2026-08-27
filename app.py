@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-595-submit-path-trace-uses-selected-submission-light-truth"
+PATCH_VERSION = "patch-596-retry-queue-consumption-truth-selected-timeout-reattempt-finalizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -29945,6 +29945,71 @@ def _p588_auto_clear_selected_submit_timeout_retry(rows: list[dict] | None, late
         ),
     }
 
+def _p596_selected_timeout_retry_queue_consumption_truth(
+    symbol: str,
+    signal: str | None = None,
+    submit_row: dict | None = None,
+    latest_scan: dict | None = None,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    sig = str(signal or "daily_breakout").strip() or "daily_breakout"
+    key = _p387_rate_limit_retry_key(sym, sig)
+    row = dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.get(key) or {})
+    if not sym:
+        return {"enabled": True, "queued": False, "key": key, "reason": "missing_symbol"}
+    if not row:
+        return {"enabled": True, "queued": False, "key": key, "reason": "retry_queue_row_missing"}
+    retry_kind = str(row.get("retry_kind") or "").strip().lower()
+    if retry_kind != "selected_submit_timeout":
+        return {
+            "enabled": True,
+            "queued": True,
+            "key": key,
+            "retry_kind": retry_kind or "rate_limited",
+            "clean_to_retry": False,
+            "reason": "retry_queue_row_not_selected_timeout",
+        }
+
+    evidence = _p588_selected_submit_timeout_clean_reconcile_evidence(
+        submit_row if isinstance(submit_row, dict) and submit_row else row.get("submit_row") if isinstance(row.get("submit_row"), dict) else row,
+        latest_scan,
+    )
+    clean_to_retry = bool(evidence.get("clean_to_retry"))
+    if clean_to_retry:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        row["requires_reconcile_before_retry"] = False
+        row["p588_reconcile_auto_cleared"] = True
+        row["p596_retry_consumption_ready"] = True
+        row["p596_retry_consumption_ready_utc"] = now_iso
+        row["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+        row["last_reason"] = "selected_submit_timeout_clean_retry_waiting"
+        if isinstance(row.get("submit_row"), dict):
+            row["submit_row"]["requires_reconcile_before_retry"] = False
+            row["submit_row"]["p588_reconcile_auto_cleared"] = True
+            row["submit_row"]["p596_retry_consumption_ready"] = True
+            row["submit_row"]["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key] = row
+
+    return {
+        "enabled": True,
+        "queued": True,
+        "key": key,
+        "symbol": sym,
+        "signal": sig,
+        "retry_kind": retry_kind,
+        "attempts": int(row.get("attempts") or 0),
+        "requires_reconcile_before_retry": bool(row.get("requires_reconcile_before_retry")),
+        "clean_to_retry": clean_to_retry,
+        "consumable_next_scan": bool(clean_to_retry and not bool(row.get("requires_reconcile_before_retry"))),
+        "retry_evidence_status": row.get("retry_evidence_status"),
+        "evidence": evidence,
+        "reason": (
+            "selected_timeout_retry_consumable_next_scan"
+            if clean_to_retry and not bool(row.get("requires_reconcile_before_retry"))
+            else "selected_timeout_retry_waiting_for_clean_reconcile"
+        ),
+    }
+
 def _p589_adopt_selected_submit_rows_for_light(
     summary: dict | None,
     latest_scan: dict | None,
@@ -30429,6 +30494,16 @@ def _p550_selected_submission_truth_snapshot_light(
             or reason_norm == "selected_submit_timeout"
             or str(submit_row.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
         )
+        p596_retry_consumption_truth = _p596_selected_timeout_retry_queue_consumption_truth(
+            sym,
+            submit_row.get("signal") or submit_row.get("strategy") or "daily_breakout",
+            submit_row,
+            latest_scan,
+        ) if selected_submit_timeout else {"enabled": True, "queued": False, "reason": "not_selected_submit_timeout"}
+        selected_timeout_retry_consumable = bool(
+            p596_retry_consumption_truth.get("queued")
+            and p596_retry_consumption_truth.get("consumable_next_scan")
+        )
         selected_submit_timeout_age_sec = _p569_selected_submit_timeout_age_sec(submit_row, latest_scan)
         selected_submit_timeout_resolved = bool(
             selected_submit_timeout
@@ -30438,6 +30513,7 @@ def _p550_selected_submission_truth_snapshot_light(
         stale_selected_submit_timeout = bool(
             selected_submit_timeout
             and not selected_submit_timeout_resolved
+            and not selected_timeout_retry_consumable
             and _p569_selected_submit_timeout_is_stale(
                 submit_row,
                 latest_scan,
@@ -30449,6 +30525,7 @@ def _p550_selected_submission_truth_snapshot_light(
             selected_submit_timeout
             and not stale_selected_submit_timeout
             and not selected_submit_timeout_resolved
+            and not selected_timeout_retry_consumable
             and not pending_order_only_plan
         )
         submit_pending = bool(
@@ -30497,6 +30574,8 @@ def _p550_selected_submission_truth_snapshot_light(
                 if execution_quality_blocked
                 else "selected_submit_timeout"
                 if effective_selected_submit_timeout
+                else "selected_submit_timeout_clean_retry_waiting"
+                if selected_timeout_retry_consumable
                 else "stale_selected_submit_timeout_suppressed"
                 if stale_selected_submit_timeout
                 else "unattempted"
@@ -30520,6 +30599,8 @@ def _p550_selected_submission_truth_snapshot_light(
                 if execution_quality_blocked
                 else "selected_submit_timeout_requires_reconcile"
                 if effective_selected_submit_timeout
+                else "selected_submit_timeout_clean_retry_waiting"
+                if selected_timeout_retry_consumable
                 else "stale_selected_submit_timeout_suppressed"
                 if stale_selected_submit_timeout
                 else "submit_gap_unattempted"
@@ -30529,8 +30610,14 @@ def _p550_selected_submission_truth_snapshot_light(
             "rate_limited_retryable": bool(rate_limited_retryable),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": dict(retryable_spread_block),
-            "selected_submit_timeout": bool(selected_submit_timeout and not stale_selected_submit_timeout),
+            "selected_submit_timeout": bool(
+                selected_submit_timeout
+                and not stale_selected_submit_timeout
+                and not selected_timeout_retry_consumable
+            ),
             "raw_selected_submit_timeout": bool(selected_submit_timeout),
+            "selected_timeout_retry_consumable": bool(selected_timeout_retry_consumable),
+            "p596_retry_queue_consumption_truth": dict(p596_retry_consumption_truth),
             "stale_selected_submit_timeout_suppressed": bool(stale_selected_submit_timeout),
             "selected_submit_timeout_age_sec": round(float(selected_submit_timeout_age_sec), 2) if selected_submit_timeout_age_sec is not None else None,
             "selected_submit_timeout_resolved": bool(selected_submit_timeout_resolved),
@@ -30551,6 +30638,15 @@ def _p550_selected_submission_truth_snapshot_light(
 
     p589_retry_queue_backfill = _p589_backfill_selected_timeout_retry_queue_from_rows(rows, latest_scan)
     p588_reconcile_auto_clear = _p588_auto_clear_selected_submit_timeout_retry(rows, latest_scan)
+    p596_retry_consumable_rows = [
+        row for row in rows
+        if bool((row.get("p596_retry_queue_consumption_truth") or {}).get("consumable_next_scan"))
+    ]
+    p596_retry_blocked_rows = [
+        row for row in rows
+        if bool((row.get("p596_retry_queue_consumption_truth") or {}).get("queued"))
+        and not bool((row.get("p596_retry_queue_consumption_truth") or {}).get("consumable_next_scan"))
+    ]
     out = swing_diag_selected_submission_truth_light_snapshot(
         patch_version=PATCH_VERSION,
         latest_scan=latest_scan,
@@ -30618,6 +30714,25 @@ def _p550_selected_submission_truth_snapshot_light(
         "p588_selected_submit_timeout_reconcile_auto_clear": dict(p588_reconcile_auto_clear),
         "p589_selected_timeout_submit_row_adoption": dict(p589_submit_row_adoption),
         "p589_selected_timeout_retry_queue_backfill": dict(p589_retry_queue_backfill),
+        "p596_retry_queue_consumption_truth": {
+            "enabled": True,
+            "queue_count": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
+            "consumable_count": len(p596_retry_consumable_rows),
+            "consumable_symbols": [
+                row.get("symbol") for row in p596_retry_consumable_rows if row.get("symbol")
+            ],
+            "blocked_count": len(p596_retry_blocked_rows),
+            "blocked_symbols": [
+                row.get("symbol") for row in p596_retry_blocked_rows if row.get("symbol")
+            ],
+            "recommended_action": (
+                "wait_for_retry_queue_consumption"
+                if p596_retry_consumable_rows
+                else "inspect_retry_queue_blockers"
+                if p596_retry_blocked_rows
+                else "no_selected_timeout_retry_queue_work"
+            ),
+        },
         "market_hours_submit_possible": bool(p578_market_submit_truth.get("market_hours_submit_possible")),
         "latest_post_deploy_submit_cycle_seen": bool(p578_post_deploy_submit_proof.get("latest_post_deploy_submit_cycle_seen")),
         "p577_submit_consumption_seen": bool(p578_post_deploy_submit_proof.get("p577_submit_consumption_seen")),
