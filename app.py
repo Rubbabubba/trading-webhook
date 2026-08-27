@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-594-selected-submission-active-position-timeout-resolution-sync"
+PATCH_VERSION = "patch-595-submit-path-trace-uses-selected-submission-light-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17138,6 +17138,24 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for row in list((p540_selected_consumer_truth.get("p536_fallback_selection") or {}).get("selected_rows") or [])
         if isinstance(row, dict)
     ]
+    p595_consumer_unresolved_timeout_symbols = set(_dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p540_selected_consumer_truth.get("selected_submit_timeout_symbols") or [])
+        if str(sym or "").strip()
+    ]))
+    p595_consumer_resolved_timeout_symbols = set(_dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p540_selected_consumer_truth.get("resolved_submit_timeout_symbols") or [])
+        if str(sym or "").strip()
+    ]))
+    p595_consumer_retry_waiting_symbols = set(_dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in (
+            list(p540_selected_consumer_truth.get("selected_timeout_clean_retry_symbols") or [])
+            + list(p540_selected_consumer_truth.get("retry_waiting_symbols") or [])
+        )
+        if str(sym or "").strip()
+    ]))
     if p540_consumer_rows:
         existing_submit_symbols = {
             str((row or {}).get("symbol") or "").strip().upper()
@@ -17328,6 +17346,13 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             sym for sym in selected_submit_timeout_symbols
             if sym not in set(p569_stale_selected_submit_timeout_symbols)
         ]
+    if p595_consumer_retry_waiting_symbols or p595_consumer_resolved_timeout_symbols:
+        selected_submit_timeout_symbols = [
+            sym for sym in selected_submit_timeout_symbols
+            if sym in p595_consumer_unresolved_timeout_symbols
+            and sym not in p595_consumer_retry_waiting_symbols
+            and sym not in p595_consumer_resolved_timeout_symbols
+        ]
     resolved_submit_timeout_symbols = _dedupe_keep_order([
         str(sym or "").strip().upper()
         for sym in list(selected_submit_timeout_symbols)
@@ -17357,6 +17382,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         + list(retryable_spread_block_symbols)
         + list(after_hours_selected_symbols)
         + list(selected_submit_timeout_symbols)
+        + list(p595_consumer_retry_waiting_symbols)
         + list(p569_stale_selected_submit_timeout_symbols)
         + list(resolved_submit_timeout_symbols)
     )
@@ -17432,6 +17458,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif selected_submit_timeout_symbols:
         path_status = "selected_submit_timeout_requires_reconcile"
         recommended_action = "check_orders_and_reconcile_before_retrying_selected_symbols"
+    elif p595_consumer_retry_waiting_symbols:
+        path_status = "selected_timeout_retry_waiting_for_consumption"
+        recommended_action = "wait_for_retry_queue_consumption"
     elif p569_stale_selected_submit_timeout_symbols:
         path_status = "stale_selected_submit_timeout_suppressed"
         recommended_action = "monitor_next_scan_or_retry_only_if_symbol_reappears_selected"
@@ -17535,6 +17564,14 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         if not selected_submit_timeout_symbols and str(p564_submit_phase_truth.get("terminal_gap_reason") or "") == "selected_submit_timeout_requires_reconcile":
             p564_submit_phase_truth["terminal_gap_reason"] = "selected_timeout_resolved_by_active_plan"
         p564_submit_phase_truth["p564_resolved_timeout_truth_cleanup"] = True
+    if p595_consumer_retry_waiting_symbols and not selected_submit_timeout_symbols:
+        p564_submit_phase_truth["selected_submit_timeout_symbols"] = []
+        p564_submit_phase_truth["selected_submit_timeout_count"] = 0
+        p564_submit_phase_truth["selected_timeout_clean_retry_symbols"] = sorted(p595_consumer_retry_waiting_symbols)
+        p564_submit_phase_truth["selected_timeout_clean_retry_count"] = len(p595_consumer_retry_waiting_symbols)
+        if str(p564_submit_phase_truth.get("terminal_gap_reason") or "") == "selected_submit_timeout_requires_reconcile":
+            p564_submit_phase_truth["terminal_gap_reason"] = "selected_timeout_retry_waiting_for_consumption"
+        p564_submit_phase_truth["p595_selected_submission_light_truth_sync"] = True
 
     return {
         "ok": True,
@@ -17548,6 +17585,20 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         "read_only": True,
         "source": str(latest_scan.get("_scan_source") or "last_scan_runtime_snapshot"),
         "p590_effective_scan_source_unification": dict(p590_context.get("truth") or {}),
+        "p595_selected_submission_light_truth_sync": {
+            "enabled": True,
+            "consumer_recommended_action": p540_selected_consumer_truth.get("recommended_action"),
+            "consumer_unresolved_timeout_symbols": sorted(p595_consumer_unresolved_timeout_symbols),
+            "consumer_resolved_timeout_symbols": sorted(p595_consumer_resolved_timeout_symbols),
+            "consumer_retry_waiting_symbols": sorted(p595_consumer_retry_waiting_symbols),
+            "trace_unresolved_timeout_symbols": list(selected_submit_timeout_symbols),
+            "applied": bool(
+                p595_consumer_retry_waiting_symbols
+                or p595_consumer_resolved_timeout_symbols
+                or p595_consumer_unresolved_timeout_symbols
+            ),
+            "reason": "submit_trace_defers_to_selected_submission_light_timeout_classification",
+        },
         "p580_submit_trace_canonical_scan_consumer_sync": dict(p580_canonical_truth),
         "p589_selected_timeout_submit_row_adoption": dict(p589_submit_row_adoption),
         "p582_after_hours_recommendation_sync": dict(p582_after_hours_recommendation_sync),
