@@ -2809,6 +2809,8 @@ P352_RATE_LIMIT_SUBMIT_RECOVERY: list[dict] = []
 P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE: dict[str, dict] = {}
 P598_SUBMIT_TIMEOUT_TRACE: dict[str, dict] = {}
 P570_STALE_SUBMIT_RETRY_PRUNE_LAST: dict = {}
+P603_FOREGROUND_RETRY_MICRO_DRAIN_LOCK = threading.RLock()
+P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST: dict = {}
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
@@ -3001,7 +3003,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-602-selected-timeout-retry-priority-consumption-truth"
+PATCH_VERSION = "patch-603-foreground-retry-micro-drain-submit-proof-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -31068,6 +31070,13 @@ def _p550_selected_submission_truth_snapshot_light(
         "p588_selected_submit_timeout_reconcile_auto_clear": dict(p588_reconcile_auto_clear),
         "p589_selected_timeout_submit_row_adoption": dict(p589_submit_row_adoption),
         "p589_selected_timeout_retry_queue_backfill": dict(p589_retry_queue_backfill),
+        "p603_foreground_retry_micro_drain": dict(P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST or {
+            "ok": True,
+            "mode": "foreground_retry_micro_drain",
+            "attempted_count": 0,
+            "side_effect_count": 0,
+            "recommended_action": "waiting_for_next_worker_scan_request",
+        }),
         "p596_retry_queue_consumption_truth": {
             "enabled": True,
             "queue_count": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
@@ -31080,7 +31089,11 @@ def _p550_selected_submission_truth_snapshot_light(
                 row.get("symbol") for row in p596_retry_blocked_rows if row.get("symbol")
             ],
             "recommended_action": (
-                "wait_for_retry_queue_consumption"
+                "monitor_active_positions"
+                if int((P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST or {}).get("side_effect_count") or 0) > 0
+                else "inspect_p603_foreground_retry_micro_drain"
+                if int((P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST or {}).get("attempted_count") or 0) > 0
+                else "wait_for_retry_queue_consumption"
                 if p596_retry_consumable_rows
                 else "inspect_retry_queue_blockers"
                 if p596_retry_blocked_rows
@@ -46160,6 +46173,320 @@ def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int |
         out.append(candidate)
     return out
 
+def _p603_publish_foreground_retry_micro_drain(payload: dict | None) -> dict:
+    out = dict(payload or {})
+    out.setdefault("patch_version", PATCH_VERSION)
+    out.setdefault("ts_utc", datetime.now(timezone.utc).isoformat())
+    P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST.clear()
+    P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST.update(out)
+    return dict(P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST)
+
+
+def _p603_foreground_retry_micro_drain(
+    *,
+    effective_dry_run: bool | None = None,
+    requested_reason: str | None = None,
+    source_meta: dict | None = None,
+    max_items: int | None = None,
+) -> dict:
+    started = _time.perf_counter()
+    source_meta = dict(source_meta or {})
+    limit = max(0, min(
+        int(max_items if max_items is not None else SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1),
+        1,
+    ))
+    base = {
+        "ok": True,
+        "mode": "foreground_retry_micro_drain",
+        "enabled": bool(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED),
+        "limit": int(limit),
+        "requested_reason": str(requested_reason or "scheduled"),
+        "source_kind": source_meta.get("source_kind"),
+        "scan_attempt_id": source_meta.get("scan_attempt_id"),
+        "attempted_count": 0,
+        "submitted_count": 0,
+        "side_effect_count": 0,
+        "timeout_count": 0,
+        "blocked_count": 0,
+        "error_count": 0,
+        "attempted_symbols": [],
+        "submitted_symbols": [],
+        "side_effect_symbols": [],
+        "timeout_symbols": [],
+        "blocked_symbols": [],
+        "error_symbols": [],
+        "rows": [],
+        "recommended_action": "no_retry_micro_drain_work",
+    }
+    if not bool(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED):
+        base["recommended_action"] = "selected_submit_retry_disabled"
+        return _p603_publish_foreground_retry_micro_drain(base)
+    if limit <= 0:
+        base["recommended_action"] = "retry_micro_drain_limit_zero"
+        return _p603_publish_foreground_retry_micro_drain(base)
+    if not in_market_hours():
+        base["recommended_action"] = "market_closed_wait_for_next_open"
+        return _p603_publish_foreground_retry_micro_drain(base)
+    if not P603_FOREGROUND_RETRY_MICRO_DRAIN_LOCK.acquire(blocking=False):
+        base["active"] = True
+        base["recommended_action"] = "retry_micro_drain_already_running"
+        return _p603_publish_foreground_retry_micro_drain(base)
+
+    try:
+        candidates = _p387_pending_rate_limited_selected_submit_retry_candidates(max_items=limit)
+        consumable_candidates = [
+            dict(row or {})
+            for row in list(candidates or [])
+            if bool((row or {}).get("p602_retry_consumable_now"))
+        ]
+        base["queue_count_before"] = len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
+        base["candidate_count"] = len(candidates)
+        base["consumable_count"] = len(consumable_candidates)
+        base["consumable_symbols"] = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in consumable_candidates
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+        if not consumable_candidates:
+            base["recommended_action"] = (
+                "retry_queue_present_but_no_consumable_rows"
+                if P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE
+                else "no_retry_queue_rows"
+            )
+            return _p603_publish_foreground_retry_micro_drain(base)
+
+        reconcile_started = _time.perf_counter()
+        try:
+            reconcile_actions = reconcile_trade_plans_from_alpaca()
+            base["reconcile_before_submit"] = {
+                "ok": True,
+                "duration_ms": int(max(0.0, (_time.perf_counter() - reconcile_started) * 1000.0)),
+                "action_count": len(reconcile_actions or []),
+            }
+        except Exception as reconcile_err:
+            base["reconcile_before_submit"] = {
+                "ok": False,
+                "duration_ms": int(max(0.0, (_time.perf_counter() - reconcile_started) * 1000.0)),
+                "error": str(reconcile_err),
+                "exception_type": type(reconcile_err).__name__,
+            }
+            base["recommended_action"] = "retry_micro_drain_blocked_by_reconcile_error"
+            return _p603_publish_foreground_retry_micro_drain(base)
+
+        candidates = _p387_pending_rate_limited_selected_submit_retry_candidates(max_items=limit)
+        consumable_candidates = [
+            dict(row or {})
+            for row in list(candidates or [])
+            if bool((row or {}).get("p602_retry_consumable_now"))
+        ]
+        base["candidate_count_after_reconcile"] = len(candidates)
+        base["consumable_count_after_reconcile"] = len(consumable_candidates)
+        base["consumable_symbols_after_reconcile"] = _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in consumable_candidates
+            if str((row or {}).get("symbol") or "").strip()
+        ])
+        if not consumable_candidates:
+            base["recommended_action"] = "retry_queue_resolved_or_blocked_after_reconcile"
+            return _p603_publish_foreground_retry_micro_drain(base)
+
+        live_allowed = not bool(effective_dry_run if effective_dry_run is not None else effective_entry_dry_run("worker_scan"))
+        for plan in consumable_candidates[:limit]:
+            sym = str(plan.get("symbol") or "").strip().upper()
+            side = str(plan.get("side") or "buy").strip().lower() or "buy"
+            sig = str(plan.get("signal") or "daily_breakout").strip() or "daily_breakout"
+            submit_source = str(plan.get("submit_source") or plan.get("source") or "worker_scan").strip() or "worker_scan"
+            attempt_id = f"{sym}|{sig}|{int(datetime.now(timezone.utc).timestamp() * 1000)}|{uuid.uuid4().hex[:8]}"
+            submit_meta_payload = {
+                "rank_score": float(plan.get("rank_score") or plan.get("score") or 0.0),
+                "signal_family": plan.get("signal_family") or "primary",
+                "selected_by_scanner": True,
+                "candidate_slots": 1,
+                "scan_reason": requested_reason or "scheduled",
+                "selected_source": submit_source,
+                "symbol": sym,
+                "signal": sig,
+                "p600_submit_attempt_id": attempt_id,
+                "p603_foreground_retry_micro_drain": True,
+                "p387_rate_limit_retry": bool(plan.get("p387_rate_limit_retry")),
+                "p387_rate_limit_retry_key": plan.get("p387_rate_limit_retry_key"),
+                "p387_rate_limit_retry_attempt": plan.get("p387_rate_limit_retry_attempt"),
+                "p563_submit_retry_kind": plan.get("p563_submit_retry_kind"),
+            }
+
+            _p598_mark_submit_timeout_trace(
+                sym,
+                sig,
+                "p603_micro_drain_start",
+                attempt_id=attempt_id,
+                source=submit_source,
+                side=side,
+                live_allowed=bool(live_allowed),
+                retry_attempt=plan.get("p387_rate_limit_retry_attempt"),
+            )
+
+            def _p603_submit_call():
+                _p598_mark_submit_timeout_trace(
+                    sym,
+                    sig,
+                    "p603_submit_call_start",
+                    attempt_id=attempt_id,
+                    source=submit_source,
+                    side=side,
+                    retry=True,
+                    retry_attempt=plan.get("p387_rate_limit_retry_attempt"),
+                )
+                submit_response = submit_scan_trade(sym, side, sig, meta=submit_meta_payload, source=submit_source)
+                _p598_mark_submit_timeout_trace(
+                    sym,
+                    sig,
+                    "p603_submit_call_returned",
+                    attempt_id=attempt_id,
+                    source=submit_source,
+                    ok=bool((submit_response or {}).get("ok")),
+                    submitted=bool((submit_response or {}).get("submitted")),
+                    reason=(submit_response or {}).get("reason"),
+                    order_id=(submit_response or {}).get("order_id") or (submit_response or {}).get("submit_order_id"),
+                )
+                return submit_response
+
+            try:
+                resp = _p559_submit_selected_candidate_with_timeout(
+                    _p603_submit_call,
+                    symbol=sym,
+                    signal=sig,
+                    source_name=submit_source,
+                    live_allowed=bool(live_allowed),
+                    attempt_id=attempt_id,
+                )
+            except Exception as exc:
+                resp = {
+                    "ok": False,
+                    "rejected": True,
+                    "reason": "p603_retry_micro_drain_exception",
+                    "error": str(exc),
+                    "exception_type": type(exc).__name__,
+                    "submitted": False,
+                    "submit_attempted": True,
+                    "p600_submit_attempt_id": attempt_id,
+                }
+                _p598_mark_submit_timeout_trace(
+                    sym,
+                    sig,
+                    "p603_submit_call_exception",
+                    attempt_id=attempt_id,
+                    source=submit_source,
+                    error=str(exc),
+                    exception_type=type(exc).__name__,
+                )
+
+            submit_meta = _classify_scan_submit_response(resp)
+            actual_side_effect = False
+            side_effect_reasons = []
+            try:
+                plan_after_submit = dict((TRADE_PLAN or {}).get(sym) or {})
+                if bool(plan_after_submit.get("active")):
+                    actual_side_effect = True
+                    side_effect_reasons.append("active_plan")
+                if _plan_is_pending_entry(plan_after_submit):
+                    actual_side_effect = True
+                    side_effect_reasons.append("pending_entry_plan")
+                if submit_meta.get("state") in {"submitted", "preview_only"}:
+                    actual_side_effect = True
+                    side_effect_reasons.append(f"submit_state:{submit_meta.get('state')}")
+            except Exception as side_effect_err:
+                side_effect_reasons.append(f"side_effect_check_error:{side_effect_err}")
+
+            submit_row = {
+                **dict(plan or {}),
+                **dict(resp or {}),
+                "symbol": sym,
+                "side": side,
+                "signal": sig,
+                "p600_submit_attempt_id": attempt_id,
+                "p603_foreground_retry_micro_drain": True,
+                "submit_state": submit_meta.get("state"),
+                "submit_reason": submit_meta.get("reason"),
+                "submit_attempted": bool(submit_meta.get("attempted")),
+                "submit_order_id": submit_meta.get("order_id"),
+                "actual_submit_side_effect": bool(actual_side_effect),
+                "side_effect_reasons": _dedupe_candidate_reasons(side_effect_reasons),
+                "submit_gap": not bool(actual_side_effect),
+                "p598_submit_timeout_trace": dict(
+                    (resp or {}).get("p598_submit_timeout_trace")
+                    or _p598_submit_timeout_trace(sym, sig)
+                ),
+            }
+
+            if actual_side_effect:
+                _p387_clear_rate_limit_selected_submit_retry(sym, sig, reason="p603_submit_side_effect_detected")
+            elif _p398_submit_row_rate_limited(submit_row, submit_meta=submit_meta, resp=resp):
+                submit_row["submit_state"] = "retryable_rate_limit"
+                submit_row["p387_rate_limit_retry_queue"] = _p387_queue_rate_limited_selected_submit(plan, submit_row)
+            elif _p563_submit_row_selected_timeout(submit_row):
+                submit_row["p563_selected_submit_timeout_retry_queue"] = _p563_queue_selected_submit_timeout(plan, submit_row)
+
+            base["rows"].append(submit_row)
+            base["attempted_symbols"].append(sym)
+            if bool(actual_side_effect):
+                base["side_effect_symbols"].append(sym)
+            if bool((resp or {}).get("submitted")) or submit_meta.get("state") == "submitted":
+                base["submitted_symbols"].append(sym)
+            if submit_meta.get("state") == "timeout":
+                base["timeout_symbols"].append(sym)
+            elif submit_meta.get("state") in {"blocked", "error"}:
+                base["blocked_symbols"].append(sym)
+
+            record_decision(
+                "SCAN",
+                "worker_scan",
+                symbol=sym,
+                side=side,
+                signal=sig,
+                action=f"p603_retry_micro_drain_{submit_meta.get('state')}",
+                reason=submit_meta.get("reason", ""),
+                order_id=submit_meta.get("order_id", ""),
+                meta={
+                    "p600_submit_attempt_id": attempt_id,
+                    "p603_foreground_retry_micro_drain": True,
+                    "actual_submit_side_effect": bool(actual_side_effect),
+                    "retry_attempt": plan.get("p387_rate_limit_retry_attempt"),
+                },
+            )
+
+        base["attempted_symbols"] = _dedupe_keep_order(base["attempted_symbols"])
+        base["submitted_symbols"] = _dedupe_keep_order(base["submitted_symbols"])
+        base["side_effect_symbols"] = _dedupe_keep_order(base["side_effect_symbols"])
+        base["timeout_symbols"] = _dedupe_keep_order(base["timeout_symbols"])
+        base["blocked_symbols"] = _dedupe_keep_order(base["blocked_symbols"])
+        base["attempted_count"] = len(base["attempted_symbols"])
+        base["submitted_count"] = len(base["submitted_symbols"])
+        base["side_effect_count"] = len(base["side_effect_symbols"])
+        base["timeout_count"] = len(base["timeout_symbols"])
+        base["blocked_count"] = len(base["blocked_symbols"])
+        base["queue_count_after"] = len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
+        base["duration_ms"] = int(max(0.0, (_time.perf_counter() - started) * 1000.0))
+        base["recommended_action"] = (
+            "monitor_active_positions"
+            if base["side_effect_symbols"]
+            else "inspect_p600_entry_capacity_truth_for_submit_block"
+            if base["blocked_symbols"]
+            else "selected_retry_timed_out_again_inspect_trace"
+            if base["timeout_symbols"]
+            else "retry_micro_drain_attempted_no_side_effect"
+        )
+        try:
+            persist_scan_runtime_state(reason="p603_foreground_retry_micro_drain")
+        except Exception:
+            pass
+        return _p603_publish_foreground_retry_micro_drain(base)
+    finally:
+        try:
+            P603_FOREGROUND_RETRY_MICRO_DRAIN_LOCK.release()
+        except Exception:
+            pass
+
+
 def _p387_clear_rate_limit_selected_submit_retry(symbol: str, signal: str | None = None, reason: str = "cleared") -> None:
     key = _p387_rate_limit_retry_key(symbol, signal)
     row = P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.pop(key, None)
@@ -48325,6 +48652,7 @@ def _p298_scanner_light() -> dict:
     latest_scan["p571_stage_timing_truth"] = dict(p571_stage_timing)
     latest_scan["p555_stale_submit_pending_truth"] = dict(p555_stale_submit_pending_truth)
     latest_scan["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
+    latest_scan["p603_foreground_retry_micro_drain"] = dict(P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST or {})
     latest_scan["p579_canonical_light_consumer_truth"] = dict(p579_truth)
     latest_scan["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
     latest_scan["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
@@ -48355,6 +48683,7 @@ def _p298_scanner_light() -> dict:
     summary["p571_stage_timing_truth"] = dict(p571_stage_timing)
     summary["p555_stale_submit_pending_truth"] = dict(p555_stale_submit_pending_truth)
     summary["p469_release_gate_cache_truth"] = dict(p469_release_gate_cache_truth)
+    summary["p603_foreground_retry_micro_drain"] = dict(P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST or {})
     summary["p579_canonical_light_consumer_truth"] = dict(p579_truth)
     summary["candidate_bearing_scan"] = bool(p475_latest_truth.get("candidate_bearing"))
     summary["trade_judgable"] = bool(p475_latest_truth.get("trade_judgable"))
@@ -65985,6 +66314,20 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             except Exception:
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
+
+        p603_foreground_retry_micro_drain = _p603_foreground_retry_micro_drain(
+            effective_dry_run=effective_entry_dry_run("worker_scan"),
+            requested_reason=requested_reason or "scheduled",
+            source_meta=source_meta,
+            max_items=1,
+        )
+        body["p603_foreground_retry_micro_drain"] = dict(p603_foreground_retry_micro_drain)
+        source_meta["p603_retry_micro_drain_attempted_count"] = int(
+            p603_foreground_retry_micro_drain.get("attempted_count") or 0
+        )
+        source_meta["p603_retry_micro_drain_side_effect_count"] = int(
+            p603_foreground_retry_micro_drain.get("side_effect_count") or 0
+        )
 
 # Fast-close worker-triggered swing scans so the scanner service does not time out.
 # Keep this before reconcile and before full release-gate dry-run evaluation.
