@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-596-retry-queue-consumption-truth-selected-timeout-reattempt-finalizer"
+PATCH_VERSION = "patch-597-retry-queue-slot-reservation-drain-proof"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17735,6 +17735,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "pre_scan_retry_submit": dict(summary.get("p399_pre_scan_retry_submit") or {}),
             "partial_submit_finalization": dict(summary.get("p399_partial_submit_finalization") or {}),
         },
+        "p597_retry_queue_drain_truth": dict(summary.get("p597_retry_queue_drain_truth") or {}),
         "eligible_new_entry_rows": eligible_new_entry_rows[:lim],
         "rows": submit_rows,
         "row_count": len(submit_rows),
@@ -66177,7 +66178,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         ignored_ranked_out = []
         candidate_slots = candidate_slots_available()
         ranked_candidates = []
-        if signals:
+        if signals or P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE:
             for plan in signals:
                 rank_score = float(plan.get("rank_score", plan.get("score", 0.0)) or 0.0)
                 raw_score = float(plan.get("score", 0.0) or 0.0)
@@ -66202,11 +66203,36 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 if str((row or {}).get("symbol") or "").strip()
             }
             normal_slot_count = max(0, min(candidate_slots, int(max(1, SCANNER_MAX_ENTRIES_PER_SCAN))) - len(durable_retry_candidates))
-            allowed_submits = durable_retry_candidates + [
+            normal_submit_candidates = [
                 row for row in ranked_candidates
                 if str((row or {}).get("symbol") or "").strip().upper() not in durable_retry_symbols
-            ][:normal_slot_count]
-            for skipped in ranked_candidates[len(allowed_submits):]:
+            ]
+            allowed_normal_submits = normal_submit_candidates[:normal_slot_count]
+            allowed_submits = durable_retry_candidates + allowed_normal_submits
+            scan_summary["p597_retry_queue_drain_truth"] = {
+                "enabled": True,
+                "candidate_slots": int(candidate_slots),
+                "retry_queue_count_before_submit": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
+                "retry_candidates_reserved_count": len(durable_retry_candidates),
+                "retry_candidates_reserved_symbols": sorted(durable_retry_symbols),
+                "normal_slot_count": int(normal_slot_count),
+                "normal_allowed_symbols": _dedupe_keep_order([
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in allowed_normal_submits
+                    if str((row or {}).get("symbol") or "").strip()
+                ]),
+                "allowed_submit_symbols": _dedupe_keep_order([
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in allowed_submits
+                    if str((row or {}).get("symbol") or "").strip()
+                ]),
+                "reason": (
+                    "retry_queue_candidates_reserved_before_normal_candidates"
+                    if durable_retry_candidates
+                    else "no_retry_queue_candidates_available"
+                ),
+            }
+            for skipped in normal_submit_candidates[normal_slot_count:]:
                 record_decision("SCAN", "worker_scan", symbol=skipped.get("symbol", ""), side=skipped.get("side", ""), signal=skipped.get("signal", ""), action="ignored", reason="lower_rank_than_top_slots", meta={"rank_score": float(skipped.get("rank_score", skipped.get("score", 0.0)) or 0.0), "candidate_slots": candidate_slots})
                 ignored_ranked_out.append({"symbol": skipped.get("symbol"), "signal": skipped.get("signal"), "rank_score": float(skipped.get("rank_score", skipped.get("score", 0.0)) or 0.0), "reason": "lower_rank_than_top_slots"})
 
@@ -66387,6 +66413,23 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             ]
             scan_summary["selected_submit_gap_symbols"] = submit_gap_symbols
             scan_summary["selected_submit_gap_count"] = len(submit_gap_symbols)
+            scan_summary["p597_retry_queue_drain_truth"] = {
+                **dict(scan_summary.get("p597_retry_queue_drain_truth") or {}),
+                "attempted_retry_symbols": _dedupe_keep_order([
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in would_submit
+                    if bool((row or {}).get("p387_rate_limit_retry"))
+                    and str((row or {}).get("symbol") or "").strip()
+                ]),
+                "retry_queue_count_after_submit": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
+                "retry_queue_symbols_after_submit": _dedupe_keep_order([
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+                    if str((row or {}).get("symbol") or "").strip()
+                ]),
+                "actual_submit_side_effect_symbols": list(actual_submit_symbols),
+                "selected_submit_gap_symbols": list(submit_gap_symbols),
+            }
             if submit_gap_symbols:
                 scan_summary["selected_submit_gap_active"] = True
                 scan_summary["selected_submit_gap_reason"] = "selected_candidate_without_actual_submit_side_effect"
