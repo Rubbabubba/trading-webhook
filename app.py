@@ -3003,7 +3003,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-604-pending-entry-alignment-worker-exit-heartbeat-truth"
+PATCH_VERSION = "patch-605-broker-position-plan-recovery-stale-deactivation-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -6384,6 +6384,39 @@ def read_positions_snapshot() -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _p605_broker_position_snapshot_truth(snapshot: dict | None = None, max_age_sec: int = 900) -> dict:
+    snap = dict(snapshot or read_positions_snapshot() or {})
+    positions = list(snap.get("positions") or snap.get("items") or [])
+    positions_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in positions
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    ts_raw = str(snap.get("ts_utc") or "").strip()
+    age_sec = None
+    fresh = False
+    if ts_raw:
+        try:
+            parsed = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age_sec = max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
+            fresh = age_sec <= max(30, int(max_age_sec or 0))
+        except Exception:
+            age_sec = None
+    return {
+        "enabled": True,
+        "fresh": bool(fresh),
+        "age_sec": round(age_sec, 3) if age_sec is not None else None,
+        "max_age_sec": int(max_age_sec or 0),
+        "reason": snap.get("reason"),
+        "ts_utc": snap.get("ts_utc"),
+        "symbols": sorted(positions_by_symbol),
+        "positions_by_symbol": positions_by_symbol,
+        "position_count": len(positions_by_symbol),
+    }
 
 
 def _bootstrap_journal_decisions():
@@ -11718,6 +11751,21 @@ def sync_trade_plan_with_broker(symbol: str, plan: dict) -> dict:
     age_sec = max(0.0, (now - submitted_at).total_seconds()) if submitted_at else None
 
     qty_signed, pos_side = get_position(symbol)
+    p605_snapshot_truth = _p605_broker_position_snapshot_truth()
+    p605_snapshot_position = dict((p605_snapshot_truth.get("positions_by_symbol") or {}).get(symbol) or {})
+    if qty_signed == 0 and p605_snapshot_truth.get("fresh") and p605_snapshot_position:
+        snapshot_qty = _safe_float(p605_snapshot_position.get("qty") or 0.0)
+        if snapshot_qty != 0:
+            qty_signed = snapshot_qty
+            pos_side = "long" if snapshot_qty > 0 else "short"
+            out["changes"].append("p605_qty_restored_from_fresh_position_snapshot")
+            out["p605_broker_position_snapshot_guard"] = {
+                "active": True,
+                "reason": "fresh_snapshot_has_broker_position",
+                "snapshot_age_sec": p605_snapshot_truth.get("age_sec"),
+                "snapshot_reason": p605_snapshot_truth.get("reason"),
+                "snapshot_qty": snapshot_qty,
+            }
     order_status = {}
     order_id = str(plan.get("order_id") or "").strip()
     if PLAN_RECONCILE_ORDER_STATUS and order_id:
@@ -22033,6 +22081,8 @@ def _daily_stop_flatten_decision(ts_ny: datetime | None = None) -> dict:
 
 def _deactivate_plans_without_broker_positions(source: str = "reconcile", reason: str = "broker_flat_verified") -> list[dict]:
     live_symbols: set[str] = set()
+    snapshot_truth = _p605_broker_position_snapshot_truth()
+    snapshot_symbols = set(snapshot_truth.get("symbols") or [])
     try:
         live_symbols.update({str((p or {}).get("symbol") or "").upper() for p in list_open_positions_details_allowed()})
     except Exception:
@@ -22041,6 +22091,8 @@ def _deactivate_plans_without_broker_positions(source: str = "reconcile", reason
         live_symbols.update({str((p or {}).get("symbol") or "").upper() for p in list_open_positions_allowed()})
     except Exception:
         pass
+    if snapshot_truth.get("fresh"):
+        live_symbols.update(snapshot_symbols)
     try:
         open_order_symbols = {str((o or {}).get("symbol") or "").upper() for o in list_open_orders_safe()}
     except Exception:
@@ -22051,6 +22103,17 @@ def _deactivate_plans_without_broker_positions(source: str = "reconcile", reason
         if not symbol or symbol in live_symbols or symbol in open_order_symbols:
             continue
         if not isinstance(plan, dict) or not bool(plan.get("active")) or _plan_is_pending_entry(plan):
+            continue
+        if not live_symbols and not snapshot_truth.get("fresh"):
+            action = {
+                "symbol": symbol,
+                "action": "guarded_stale_plan_deactivation",
+                "reason": "broker_position_truth_not_fresh",
+                "snapshot_age_sec": snapshot_truth.get("age_sec"),
+                "snapshot_reason": snapshot_truth.get("reason"),
+            }
+            actions.append(action)
+            record_decision("RECONCILE", source, symbol, action="deactivation_guarded", reason="broker_position_truth_not_fresh", meta=action)
             continue
         plan["active"] = False
         plan["stale_position_recovered_at"] = now_ny().isoformat()
@@ -45196,6 +45259,21 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
 
     _p599_trace("pre_lock_position_check_start")
     qty_signed, pos_side = get_position(symbol)
+    p605_snapshot_truth = _p605_broker_position_snapshot_truth()
+    p605_snapshot_position = dict((p605_snapshot_truth.get("positions_by_symbol") or {}).get(symbol) or {})
+    if qty_signed == 0 and p605_snapshot_truth.get("fresh") and p605_snapshot_position:
+        snapshot_qty = _safe_float(p605_snapshot_position.get("qty") or 0.0)
+        if snapshot_qty != 0:
+            qty_signed = snapshot_qty
+            pos_side = "long" if snapshot_qty > 0 else "short"
+            out["changes"].append("p605_qty_restored_from_fresh_position_snapshot")
+            out["p605_broker_position_snapshot_guard"] = {
+                "active": True,
+                "reason": "fresh_snapshot_has_broker_position",
+                "snapshot_age_sec": p605_snapshot_truth.get("age_sec"),
+                "snapshot_reason": p605_snapshot_truth.get("reason"),
+                "snapshot_qty": snapshot_qty,
+            }
     _p599_trace("pre_lock_position_check_returned", qty_signed=qty_signed, position_side=pos_side)
     if qty_signed != 0:
         desired_side = "long" if side == "buy" else "short"
@@ -48930,6 +49008,20 @@ def _p298_live_positions_light() -> dict:
             if str((row or {}).get("symbol") or "").strip()
         }
     ]
+    p605_snapshot_truth = _p605_broker_position_snapshot_truth(snapshot=latest_snapshot)
+    p605_broker_position_plan_recovery_truth = {
+        "enabled": True,
+        "fresh_snapshot": bool(p605_snapshot_truth.get("fresh")),
+        "snapshot_age_sec": p605_snapshot_truth.get("age_sec"),
+        "missing_plan_symbols": list(missing_internal_plans[:25]),
+        "recovery_expected_from": "worker_exit_reconcile_trade_plans_from_alpaca",
+        "stale_deactivation_guard": "fresh_snapshot_positions_are_never_deactivated_as_orphans",
+        "recommended_action": (
+            "run_or_wait_for_worker_exit_reconcile"
+            if missing_internal_plans
+            else "none"
+        ),
+    }
     p570_missing_plan_reconcile_nudge = {
         "active": bool(missing_internal_plans),
         "symbols": list(missing_internal_plans[:25]),
@@ -48976,6 +49068,7 @@ def _p298_live_positions_light() -> dict:
         "pending_entry_stale_plans": pending_entry_stale_plans[:25],
         "missing_internal_plan_symbols": missing_internal_plans[:25],
         "p604_pending_entry_alignment_truth": p604_pending_entry_alignment,
+        "p605_broker_position_plan_recovery_truth": p605_broker_position_plan_recovery_truth,
         "p570_missing_plan_reconcile_nudge": p570_missing_plan_reconcile_nudge,
         "stale_plan_truth": {
             "active": bool(stale_active_plans or missing_internal_plans),
@@ -49286,10 +49379,12 @@ def _p364_snapshot_position_by_symbol() -> dict[str, dict]:
 
 def _p364_active_exit_protection_truth() -> dict:
     positions_by_symbol = _p364_snapshot_position_by_symbol()
+    p605_snapshot_truth = _p605_broker_position_snapshot_truth()
     rows = []
     missing_protection = []
     actionable_exit_watch = []
     pending_entry_protection_pending = []
+    p605_recovery_needed_symbols = []
 
     for symbol in sorted(set(positions_by_symbol) | {
         str(sym or "").strip().upper()
@@ -49305,6 +49400,7 @@ def _p364_active_exit_protection_truth() -> dict:
         has_broker_position_snapshot = symbol in positions_by_symbol
         pending_entry_plan = bool(_plan_is_pending_entry(plan))
         pending_entry_without_position = bool(pending_entry_plan and not has_broker_position_snapshot)
+        p605_broker_position_plan_recovery_needed = bool(has_broker_position_snapshot and not has_plan)
 
         qty = _safe_float(pos.get("qty") or plan.get("filled_qty") or plan.get("submitted_qty") or 0.0)
         abs_qty = abs(qty)
@@ -49387,6 +49483,8 @@ def _p364_active_exit_protection_truth() -> dict:
             else
             "protected"
             if exit_worker_has_enough_data and has_hard_exit_level
+            else "broker_position_plan_recovery_needed"
+            if p605_broker_position_plan_recovery_needed
             else "plan_missing"
             if not has_plan
             else "price_or_qty_missing"
@@ -49404,6 +49502,7 @@ def _p364_active_exit_protection_truth() -> dict:
             "symbol": symbol,
             "has_broker_position_snapshot": has_broker_position_snapshot,
             "has_active_plan": has_plan,
+            "p605_broker_position_plan_recovery_needed": p605_broker_position_plan_recovery_needed,
             "pending_entry_plan": pending_entry_plan,
             "pending_entry_without_position": pending_entry_without_position,
             "qty": qty,
@@ -49438,6 +49537,8 @@ def _p364_active_exit_protection_truth() -> dict:
             pending_entry_protection_pending.append(row)
         elif protection_status != "protected":
             missing_protection.append(symbol)
+        if p605_broker_position_plan_recovery_needed:
+            p605_recovery_needed_symbols.append(symbol)
         if row["exit_trigger_now"] or (protection_status != "protected" and not pending_entry_without_position):
             actionable_exit_watch.append(row)
 
@@ -49499,6 +49600,8 @@ def _p364_active_exit_protection_truth() -> dict:
                 if str(row.get("closest_exit_reason") or "") == "forbidden_short_position_cleanup"
             ],
             "all_active_positions_protected": len(missing_protection) == 0,
+            "p605_broker_position_plan_recovery_needed_count": len(p605_recovery_needed_symbols),
+            "p605_broker_position_plan_recovery_needed_symbols": p605_recovery_needed_symbols,
         },
         "missing_protection_symbols": missing_protection,
         "pending_entry_protection_pending_symbols": [
@@ -49509,6 +49612,19 @@ def _p364_active_exit_protection_truth() -> dict:
         "pending_entry_protection_pending": pending_entry_protection_pending,
         "actionable_exit_watch": actionable_exit_watch,
         "rows": rows,
+        "p605_broker_position_plan_recovery_truth": {
+            "enabled": True,
+            "fresh_snapshot": bool(p605_snapshot_truth.get("fresh")),
+            "snapshot_age_sec": p605_snapshot_truth.get("age_sec"),
+            "snapshot_reason": p605_snapshot_truth.get("reason"),
+            "recovery_needed_symbols": p605_recovery_needed_symbols,
+            "stale_deactivation_guard": "fresh_snapshot_positions_are_never_deactivated_as_orphans",
+            "recommended_action": (
+                "run_or_wait_for_worker_exit_reconcile"
+                if p605_recovery_needed_symbols
+                else "none"
+            ),
+        },
         "p600_exit_watch_verification": {
             "enabled": True,
             "watch_count": len(actionable_exit_watch),
@@ -49522,6 +49638,9 @@ def _p364_active_exit_protection_truth() -> dict:
             ),
         },
         "recommended_action": (
+            "run_or_wait_for_worker_exit_reconcile"
+            if p605_recovery_needed_symbols
+            else
             "inspect_missing_exit_protection_symbols"
             if missing_protection
             else "monitor_pending_entry_order_status"
