@@ -3001,7 +3001,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-600-entry-capacity-truth-submit-attempt-trace-isolation-ma-exit-watch-verification"
+PATCH_VERSION = "patch-601-fast-submit-drawdown-contract-retry-consumption-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -45100,7 +45100,15 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
 
     if STRATEGY_MODE == "swing":
         _p599_trace("swing_drawdown_circuit_check_start", strategy_name=strategy_name)
-        drawdown_block = _p261_strategy_entry_block(strategy_name)
+        drawdown_block = _p601_strategy_entry_block_for_submit(strategy_name, source, meta=meta)
+        _p599_trace(
+            "swing_drawdown_circuit_check_returned",
+            blocked=bool(drawdown_block.get("blocked")),
+            reason=drawdown_block.get("reason"),
+            p601_fast_submit_drawdown_contract=bool(drawdown_block.get("p601_fast_submit_drawdown_contract")),
+            deferred=bool((drawdown_block.get("circuit") or {}).get("deferred")),
+            elapsed_ms=drawdown_block.get("p601_drawdown_check_elapsed_ms"),
+        )
         if drawdown_block.get("blocked"):
             _p599_trace("execute_entry_signal_ignored", reason="swing_post_change_drawdown_circuit")
             record_decision(
@@ -55827,6 +55835,57 @@ def _p261_strategy_entry_block(strategy: str) -> dict:
         "strategy": normalized,
         "circuit": circuit,
     }
+
+
+def _p601_submit_path_drawdown_check_should_defer(source: str, meta: dict | None = None) -> bool:
+    if str(STRATEGY_MODE or "").strip().lower() != "swing":
+        return False
+    m = dict(meta or {})
+    src = str(source or "").strip().lower()
+    selected_source = str(m.get("selected_source") or "").strip().lower()
+    production_sources = {
+        "worker_scan",
+        "swing_production_reset",
+        "swing_fast_scan",
+        "scan",
+    }
+    return bool(
+        bool(m.get("selected_by_scanner"))
+        or src in production_sources
+        or selected_source in production_sources
+    )
+
+
+def _p601_strategy_entry_block_for_submit(strategy: str, source: str, meta: dict | None = None) -> dict:
+    normalized = str(strategy or "").strip().lower()
+    if _p601_submit_path_drawdown_check_should_defer(source, meta=meta):
+        return {
+            "blocked": False,
+            "reason": "submit_path_drawdown_check_deferred_after_scanner_selection",
+            "strategy": normalized,
+            "p601_fast_submit_drawdown_contract": True,
+            "circuit": {
+                "ok": True,
+                "patch_version": PATCH_VERSION,
+                "mode": "swing_post_change_drawdown_circuit",
+                "enabled": bool(SWING_POST_CHANGE_DRAWDOWN_GUARD_ENABLED),
+                "advisory_only": bool(SWING_POST_CHANGE_DRAWDOWN_ADVISORY_ONLY),
+                "deferred": True,
+                "block_new_entries": False,
+                "guarded_strategies": sorted(set(SWING_POST_CHANGE_DRAWDOWN_GUARD_STRATEGIES)),
+                "reason": "submit_path_uses_scanner_approved_contract_heavy_report_deferred",
+                "p601_submit_path_deferred": True,
+                "heavy_report_endpoint": "/diagnostics/swing_post_change_drawdown_circuit",
+            },
+        }
+    started = _time.monotonic()
+    block = _p261_strategy_entry_block(normalized)
+    try:
+        block["p601_drawdown_check_elapsed_ms"] = int((_time.monotonic() - started) * 1000)
+        block["p601_fast_submit_drawdown_contract"] = False
+    except Exception:
+        pass
+    return block
 
 def _p262_entry_dt(row: dict | None):
     row = dict(row or {})
