@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-590-effective-scan-source-unification-submit-row-current-scan-sync"
+PATCH_VERSION = "patch-591-effective-selected-symbol-authority-legacy-repair-override-suppression"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -30234,7 +30234,20 @@ def _p550_selected_submission_truth_snapshot_light(
         "reason": "cached_selected_symbols_preserved",
     }
     p576_handoff = dict(candidate_truth.get("p576_canonical_selection_handoff") or {})
-    if candidate_truth.get("candidate_rows") is not None:
+    p591_effective_selection_authority = bool(
+        (p590_context.get("truth") or {}).get("trade_judgable")
+        and p590_context.get("selected_symbols")
+    )
+    if p591_effective_selection_authority:
+        p575_selection_repair.update({
+            "applied": False,
+            "source": "p590_effective_scan_context",
+            "selected_symbols": list(selected_symbols),
+            "p576_handoff": p576_handoff,
+            "p591_legacy_repair_override_suppressed": True,
+            "reason": "effective_trade_judgable_scan_selection_is_authoritative",
+        })
+    elif candidate_truth.get("candidate_rows") is not None:
         canonical_selected_symbols = _dedupe_keep_order([
             str(sym or "").strip().upper()
             for sym in list(candidate_truth.get("selected_symbols") or row_selected_symbols or [])
@@ -30517,6 +30530,19 @@ def _p550_selected_submission_truth_snapshot_light(
         "patch_version": PATCH_VERSION,
         "p550_snapshot_only_light_endpoint": True,
         "p590_effective_scan_source_unification": dict(p590_context.get("truth") or {}),
+        "p591_effective_selected_symbol_authority": {
+            "enabled": True,
+            "active": bool(p591_effective_selection_authority),
+            "authoritative_symbols": list(p590_context.get("selected_symbols") or []),
+            "legacy_repair_override_suppressed": bool(
+                p575_selection_repair.get("p591_legacy_repair_override_suppressed")
+            ),
+            "reason": (
+                "effective_trade_judgable_scan_selection_is_authoritative"
+                if p591_effective_selection_authority
+                else "legacy_repair_allowed_no_authoritative_effective_selection"
+            ),
+        },
         "p575_selection_repair": dict(p575_selection_repair),
         "p576_canonical_selection_handoff": p576_handoff,
         "p578_after_hours_selected_gap_suppression": {
@@ -30644,6 +30670,9 @@ def _p550_current_scan_suppression_snapshot_payload(
     if selected_symbols:
         status = "selecting"
         recommended_action = "monitor_submissions"
+    elif p591_effective_selection_authority:
+        status = "captured_candidate_monitor_existing_position"
+        recommended_action = "monitor_active_positions"
     elif eligible_rows_all:
         status = "eligible_new_entry_not_selected"
         recommended_action = "sync_selected_symbols_from_current_eligible_contract_rows"
@@ -41575,6 +41604,15 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         for sym in list(selected_source_values or [])
         if str(sym or "").strip()
     ])
+    p591_effective_selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p590_context.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    p591_effective_selection_authority = bool(
+        p591_effective_selected_symbols
+        and bool(p590_truth.get("trade_judgable"))
+    )
     p572_selected_open_position_scrub = _p572_scrub_selected_open_position_symbols(
         selected_symbols,
         rows_all,
@@ -41601,9 +41639,15 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
             for row in eligible_rows_all
             if str((row or {}).get("symbol") or "").strip()
         ],
-        "reason": "selected_symbols_already_present",
+        "p591_effective_selected_symbols": list(p591_effective_selected_symbols),
+        "p591_legacy_promotion_suppressed": bool(p591_effective_selection_authority and not selected_symbols),
+        "reason": (
+            "effective_selection_already_submitted_or_active_no_eligible_promotion"
+            if p591_effective_selection_authority and not selected_symbols
+            else "selected_symbols_already_present"
+        ),
     }
-    if not selected_symbols and eligible_rows_all:
+    if not selected_symbols and eligible_rows_all and not p591_effective_selection_authority:
         promotion_limit = max(1, min(
             int(SCANNER_MAX_ENTRIES_PER_SCAN or 1),
             int(SWING_PRODUCTION_RESET_MAX_ENTRIES_PER_SCAN or 1),
@@ -41756,6 +41800,19 @@ def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
         "p571_canonical_candidate_truth_sync": True,
         "p573_true_zero_load_candidate_snapshot": True,
         "p590_effective_scan_source_unification": dict(p590_truth),
+        "p591_effective_selected_symbol_authority": {
+            "enabled": True,
+            "active": bool(p591_effective_selection_authority),
+            "authoritative_symbols": list(p591_effective_selected_symbols),
+            "legacy_promotion_suppressed": bool(
+                p575_current_selection_promotion.get("p591_legacy_promotion_suppressed")
+            ),
+            "reason": (
+                "effective_selection_already_submitted_or_active_no_eligible_promotion"
+                if p591_effective_selection_authority and not selected_symbols
+                else "current_selection_can_be_evaluated_normally"
+            ),
+        },
         "p584_after_hours_recommendation_parity": dict(p584_after_hours_recommendation_parity),
         "p568_truth_source_synced_with_submit_trace": True,
         "p566_true_fast_current_scan_snapshot": True,
