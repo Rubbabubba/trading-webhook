@@ -3001,7 +3001,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-601-fast-submit-drawdown-contract-retry-consumption-truth"
+PATCH_VERSION = "patch-602-selected-timeout-retry-priority-consumption-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -46041,41 +46041,88 @@ def _p563_queue_selected_submit_timeout(candidate: dict | None, submit_row: dict
     return {"queued": True, "key": key, "attempts": attempts, "reason": "selected_submit_timeout_retry_queued"}
 
 
+def _p602_refresh_selected_timeout_retry_row(row: dict | None) -> dict:
+    r = dict(row or {})
+    retry_kind = str(r.get("retry_kind") or "").strip().lower()
+    sym = str(r.get("symbol") or "").strip().upper()
+    sig = str(r.get("signal") or "daily_breakout").strip() or "daily_breakout"
+    key = str(r.get("key") or _p387_rate_limit_retry_key(sym, sig)).strip()
+    if retry_kind != "selected_submit_timeout":
+        r["p602_retry_consumable_now"] = True
+        r["p602_retry_priority"] = 50
+        r["p602_retry_priority_reason"] = "rate_limit_or_standard_retry"
+        return r
+
+    evidence = _p588_selected_submit_timeout_clean_reconcile_evidence(
+        r.get("submit_row") if isinstance(r.get("submit_row"), dict) else r,
+        LAST_SCAN,
+    )
+    attempts = int(r.get("attempts") or 0)
+    fast_fail_guard = bool(
+        attempts >= int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12)
+        or r.get("p598_retry_fast_fail_guard")
+    )
+    clean_to_retry = bool(evidence.get("clean_to_retry"))
+    consumable = bool(clean_to_retry and not fast_fail_guard)
+    if clean_to_retry:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        r["requires_reconcile_before_retry"] = False
+        r["p588_reconcile_auto_cleared"] = True
+        r["p588_reconcile_auto_cleared_utc"] = r.get("p588_reconcile_auto_cleared_utc") or now_iso
+        r["p596_retry_consumption_ready"] = True
+        r["p596_retry_consumption_ready_utc"] = now_iso
+        r["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+        r["last_reason"] = "selected_submit_timeout_clean_retry_waiting"
+        if isinstance(r.get("submit_row"), dict):
+            r["submit_row"]["requires_reconcile_before_retry"] = False
+            r["submit_row"]["p588_reconcile_auto_cleared"] = True
+            r["submit_row"]["p596_retry_consumption_ready"] = True
+            r["submit_row"]["retry_evidence_status"] = r["retry_evidence_status"]
+    if fast_fail_guard:
+        r["p598_retry_fast_fail_guard"] = True
+        r["retry_evidence_status"] = "selected_submit_timeout_retry_fast_failed_inspect_trace"
+        r["last_reason"] = "selected_submit_timeout_retry_fast_failed_inspect_trace"
+        r["p598_retry_fast_fail_reason"] = "selected_submit_timeout_retry_attempt_ceiling_reached"
+        r["p598_retry_fast_fail_max_attempts"] = int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12)
+    r["p602_retry_consumable_now"] = consumable
+    r["p602_retry_priority"] = 0 if consumable else 90
+    r["p602_retry_priority_reason"] = (
+        "selected_timeout_consumable_prioritized"
+        if consumable
+        else "selected_timeout_fast_failed"
+        if fast_fail_guard
+        else "selected_timeout_waiting_for_clean_reconcile"
+    )
+    r["p602_clean_to_retry"] = clean_to_retry
+    r["p602_reconcile_evidence"] = evidence
+    if key and key in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE:
+        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key] = r
+    return r
+
+
 def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int | None = None) -> list[dict]:
     if not bool(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED):
         return []
     _p387_prune_rate_limit_selected_submit_retry_queue()
     lim = max(0, int(max_items if max_items is not None else SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1))
+    rows = [
+        _p602_refresh_selected_timeout_retry_row(row)
+        for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+    ]
     rows = sorted(
-        [dict(row or {}) for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()],
-        key=lambda row: float(row.get("queued_utc_ts") or 0.0),
+        rows,
+        key=lambda row: (
+            int(row.get("p602_retry_priority") if row.get("p602_retry_priority") is not None else 50),
+            float(row.get("queued_utc_ts") or 0.0),
+        ),
     )
     out = []
-    for row in rows[:lim]:
+    for row in rows:
+        if len(out) >= lim:
+            break
         if str((row or {}).get("retry_kind") or "").strip().lower() == "selected_submit_timeout":
-            evidence = _p588_selected_submit_timeout_clean_reconcile_evidence(
-                row.get("submit_row") if isinstance(row.get("submit_row"), dict) else row,
-                LAST_SCAN,
-            )
-            if bool(evidence.get("clean_to_retry")):
-                key = str(row.get("key") or _p387_rate_limit_retry_key(row.get("symbol"), row.get("signal"))).strip()
-                if key and key in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE:
-                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["requires_reconcile_before_retry"] = False
-                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p588_reconcile_auto_cleared"] = True
-                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p588_reconcile_auto_cleared_utc"] = datetime.now(timezone.utc).isoformat()
-                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
-                    attempts = int(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key].get("attempts") or 0)
-                    if attempts >= int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12):
-                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p598_retry_fast_fail_guard"] = True
-                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["retry_evidence_status"] = "selected_submit_timeout_retry_fast_failed_inspect_trace"
-                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p598_retry_fast_fail_reason"] = "selected_submit_timeout_retry_attempt_ceiling_reached"
-                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p598_retry_fast_fail_max_attempts"] = int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12)
-                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p598_submit_timeout_trace"] = _p598_submit_timeout_trace(
-                            row.get("symbol"),
-                            row.get("signal"),
-                        )
-                        continue
-                    row = dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key])
+            if not bool(row.get("p602_retry_consumable_now")):
+                continue
         candidate = dict(row.get("candidate") or {})
         candidate.update({
             "symbol": row.get("symbol"),
@@ -46097,6 +46144,9 @@ def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int |
                 and bool(row.get("requires_reconcile_before_retry"))
             ),
             "p588_selected_timeout_reconcile_auto_cleared": bool(row.get("p588_reconcile_auto_cleared")),
+            "p602_retry_consumable_now": bool(row.get("p602_retry_consumable_now")),
+            "p602_retry_priority": row.get("p602_retry_priority"),
+            "p602_retry_priority_reason": row.get("p602_retry_priority_reason"),
             "p588_retry_unlocked": bool(
                 row.get("retry_kind") == "selected_submit_timeout"
                 and row.get("p588_reconcile_auto_cleared")
@@ -66855,6 +66905,12 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 for row in durable_retry_candidates
                 if str((row or {}).get("symbol") or "").strip()
             }
+            p602_consumable_retry_symbols = _dedupe_keep_order([
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in durable_retry_candidates
+                if bool((row or {}).get("p602_retry_consumable_now"))
+                and str((row or {}).get("symbol") or "").strip()
+            ])
             normal_slot_count = max(0, min(candidate_slots, int(max(1, SCANNER_MAX_ENTRIES_PER_SCAN))) - len(durable_retry_candidates))
             normal_submit_candidates = [
                 row for row in ranked_candidates
@@ -66868,6 +66924,17 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 "retry_queue_count_before_submit": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
                 "retry_candidates_reserved_count": len(durable_retry_candidates),
                 "retry_candidates_reserved_symbols": sorted(durable_retry_symbols),
+                "p602_consumable_retry_symbols": p602_consumable_retry_symbols,
+                "p602_retry_candidate_order": [
+                    {
+                        "symbol": str((row or {}).get("symbol") or "").strip().upper(),
+                        "retry_kind": (row or {}).get("p563_submit_retry_kind"),
+                        "attempt": (row or {}).get("p387_rate_limit_retry_attempt"),
+                        "priority": (row or {}).get("p602_retry_priority"),
+                        "priority_reason": (row or {}).get("p602_retry_priority_reason"),
+                    }
+                    for row in durable_retry_candidates
+                ],
                 "normal_slot_count": int(normal_slot_count),
                 "normal_allowed_symbols": _dedupe_keep_order([
                     str((row or {}).get("symbol") or "").strip().upper()
@@ -67124,6 +67191,16 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 ]),
                 "actual_submit_side_effect_symbols": list(actual_submit_symbols),
                 "selected_submit_gap_symbols": list(submit_gap_symbols),
+                "p602_consumed_retry_symbols": _dedupe_keep_order([
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in would_submit
+                    if bool((row or {}).get("p387_rate_limit_retry"))
+                    and str((row or {}).get("symbol") or "").strip()
+                    and str((row or {}).get("symbol") or "").strip().upper() not in {
+                        str((queue_row or {}).get("symbol") or "").strip().upper()
+                        for queue_row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+                    }
+                ]),
             }
             if submit_gap_symbols:
                 scan_summary["selected_submit_gap_active"] = True
