@@ -3003,7 +3003,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-605-broker-position-plan-recovery-stale-deactivation-guard"
+PATCH_VERSION = "patch-606-partial-profit-readiness-light-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -49377,6 +49377,171 @@ def _p364_snapshot_position_by_symbol() -> dict[str, dict]:
     return out
 
 
+def _p606_partial_profit_readiness_truth(limit: int = 25) -> dict:
+    positions_by_symbol = _p364_snapshot_position_by_symbol()
+    rows = []
+    ready_symbols = []
+    near_symbols = []
+    already_taken_symbols = []
+    missing_plan_symbols = []
+    pending_entry_symbols = []
+
+    generic_trigger_r = float(SWING_PARTIAL_PROFIT_R or 0.0)
+    breakout_trigger_r = float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.0)
+    near_trigger_floor = 0.8
+
+    active_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in (TRADE_PLAN or {}).items()
+        if isinstance(plan, dict) and bool(plan.get("active"))
+    }
+    for symbol in sorted(set(positions_by_symbol) | active_symbols):
+        if not symbol:
+            continue
+        pos = dict(positions_by_symbol.get(symbol) or {})
+        plan = dict((TRADE_PLAN or {}).get(symbol) or {})
+        has_position = bool(pos)
+        has_plan = bool(plan and plan.get("active"))
+        pending_entry = bool(has_plan and _plan_is_pending_entry(plan) and not has_position)
+        if pending_entry:
+            pending_entry_symbols.append(symbol)
+            continue
+        if has_position and not has_plan:
+            missing_plan_symbols.append(symbol)
+            rows.append({
+                "symbol": symbol,
+                "status": "missing_active_plan",
+                "ready": False,
+                "recommended_action": "worker_exit_reconcile_should_recover_plan_first",
+            })
+            continue
+        if not has_position or not has_plan:
+            continue
+
+        qty = abs(_safe_float(pos.get("qty") or plan.get("filled_qty") or plan.get("qty") or 0.0))
+        px = _safe_float(pos.get("current_price") or pos.get("last_price") or 0.0)
+        entry = _safe_float(pos.get("avg_entry_price") or plan.get("entry_price") or plan.get("avg_fill_price") or 0.0)
+        plan_for_qty = dict(plan)
+        if qty > 0:
+            plan_for_qty["_broker_available_qty"] = qty
+            plan_for_qty["_broker_qty_source"] = "partial_profit_position_snapshot"
+
+        unrealized_r = _swing_unrealized_r(plan_for_qty, px) if px > 0 else 0.0
+        partial_taken = bool(plan.get("partial_profit_taken"))
+        fraction = min(max(float(SWING_PARTIAL_PROFIT_FRACTION or 0.5), 0.05), 0.95)
+        qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
+        min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
+        generic_ready = bool(
+            SWING_PARTIAL_PROFIT_ENABLED
+            and not partial_taken
+            and qty > 0
+            and unrealized_r >= generic_trigger_r
+            and qty_to_close >= min_qty
+            and qty_to_close < qty
+        )
+        breakout_bias = _p444_breakout_partial_profit_bias_state(
+            symbol,
+            plan_for_qty,
+            px,
+            {"stall_r": unrealized_r},
+        )
+        breakout_ready = bool(breakout_bias.get("applies"))
+        ready = bool(generic_ready or breakout_ready)
+        trigger_r = breakout_trigger_r if breakout_ready else generic_trigger_r
+        progress_to_trigger = (unrealized_r / trigger_r) if trigger_r > 0 else 0.0
+        near = bool((not ready) and (not partial_taken) and progress_to_trigger >= near_trigger_floor)
+        status = (
+            "partial_profit_ready"
+            if ready
+            else "partial_profit_already_taken"
+            if partial_taken
+            else "near_partial_profit"
+            if near
+            else "monitor"
+        )
+        reason = (
+            str(breakout_bias.get("reason") or "breakout_partial_profit_bias_ready")
+            if breakout_ready
+            else "partial_profit_ready"
+            if generic_ready
+            else "partial_profit_taken"
+            if partial_taken
+            else "near_trigger"
+            if near
+            else "below_trigger"
+        )
+        if ready:
+            ready_symbols.append(symbol)
+        elif near:
+            near_symbols.append(symbol)
+        elif partial_taken:
+            already_taken_symbols.append(symbol)
+
+        rows.append({
+            "symbol": symbol,
+            "status": status,
+            "ready": ready,
+            "near": near,
+            "reason": reason,
+            "qty": round(qty, 4),
+            "qty_to_close": round(qty_to_close, 4),
+            "qty_to_close_source": "broker_position_snapshot_clamped",
+            "entry_price": round(entry, 4),
+            "current_price": round(px, 4),
+            "unrealized_pl": round(_safe_float(pos.get("unrealized_pl") or 0.0), 4),
+            "unrealized_r": round(unrealized_r, 4),
+            "generic_trigger_r": generic_trigger_r,
+            "breakout_trigger_r": breakout_trigger_r,
+            "progress_to_active_trigger": round(progress_to_trigger, 4),
+            "partial_profit_taken": partial_taken,
+            "is_daily_breakout": bool(_p378_is_daily_breakout_plan(plan)),
+            "breakout_partial_profit_bias": breakout_bias,
+            "worker_exit_would_attempt_partial": ready,
+        })
+
+    rows.sort(key=lambda r: (not bool(r.get("ready")), not bool(r.get("near")), str(r.get("symbol") or "")))
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "partial_profit_readiness_truth",
+        "source": "positions_snapshot_and_memory_no_broker_refresh",
+        "broker_free": True,
+        "config": {
+            "partial_profit_enabled": bool(SWING_PARTIAL_PROFIT_ENABLED),
+            "partial_profit_r": generic_trigger_r,
+            "partial_profit_fraction": float(SWING_PARTIAL_PROFIT_FRACTION or 0.0),
+            "partial_profit_min_qty": float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+            "breakout_partial_profit_bias_enabled": bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
+            "breakout_partial_profit_r": breakout_trigger_r,
+            "breakout_partial_profit_fraction": float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.0),
+        },
+        "summary": {
+            "position_count": len(positions_by_symbol),
+            "row_count": len(rows),
+            "ready_count": len(ready_symbols),
+            "near_count": len(near_symbols),
+            "already_taken_count": len(already_taken_symbols),
+            "missing_plan_count": len(missing_plan_symbols),
+            "pending_entry_count": len(pending_entry_symbols),
+        },
+        "ready_symbols": ready_symbols,
+        "near_symbols": near_symbols,
+        "already_taken_symbols": already_taken_symbols,
+        "missing_plan_symbols": missing_plan_symbols,
+        "pending_entry_symbols": pending_entry_symbols,
+        "rows": rows[:max(1, int(limit or 25))],
+        "recommended_action": (
+            "worker_exit_should_take_partial_profit"
+            if ready_symbols
+            else "monitor_near_partial_profit_symbols"
+            if near_symbols
+            else "recover_missing_plans_before_partial_profit"
+            if missing_plan_symbols
+            else "monitor"
+        ),
+    }
+
+
 def _p364_active_exit_protection_truth() -> dict:
     positions_by_symbol = _p364_snapshot_position_by_symbol()
     p605_snapshot_truth = _p605_broker_position_snapshot_truth()
@@ -64159,6 +64324,7 @@ def _p361_swing_light_endpoint_manifest() -> dict:
             f"{base}/live_positions_light",
             f"{base}/reconcile_light",
             f"{base}/active_exit_protection_truth",
+            f"{base}/partial_profit_readiness_truth",
             f"{base}/breakout_stall_loss_containment",
             f"{base}/forbidden_short_cleanup_truth",
             f"{base}/same_day_stall_exit_churn_audit",
@@ -65932,6 +66098,10 @@ def diagnostics_post_fill_risk_recheck_evidence(limit: int = 20):
 @app.get("/diagnostics/active_exit_protection_truth")
 def diagnostics_active_exit_protection_truth():
     return JSONResponse(content=_p364_active_exit_protection_truth())
+
+@app.get("/diagnostics/partial_profit_readiness_truth")
+def diagnostics_partial_profit_readiness_truth(limit: int = 25):
+    return JSONResponse(content=_p606_partial_profit_readiness_truth(limit=limit))
 
 @app.get("/diagnostics/breakout_stall_loss_containment")
 def diagnostics_breakout_stall_loss_containment():
