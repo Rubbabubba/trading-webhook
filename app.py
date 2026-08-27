@@ -3003,7 +3003,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-607-worker-exit-fast-close-recovery-first"
+PATCH_VERSION = "patch-608-worker-effective-terminal-heartbeat-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -65800,13 +65800,27 @@ def _p604_worker_exit_effective_heartbeat_truth(heartbeat: dict | None, recent: 
             continue
         if hb_dt is None or dt >= hb_dt:
             newer_activity.append({**row, "_dt_utc": dt})
-    error_like_after_started = [
-        row for row in newer_activity
-        if "failed" in str(row.get("action") or "").lower()
-        or "error" in str(row.get("action") or "").lower()
-        or "failed" in str(row.get("reason") or "").lower()
-        or "error" in str(row.get("reason") or "").lower()
-    ]
+    benign_failed_word_reasons = {"daily_breakout_failed_followthrough_exit"}
+    benign_failed_word_actions = {
+        "daily_breakout_failed_followthrough_exit",
+        "exit_daily_breakout_failed_followthrough_exit",
+    }
+    error_like_after_started = []
+    for row in newer_activity:
+        action_l = str(row.get("action") or "").strip().lower()
+        reason_l = str(row.get("reason") or "").strip().lower()
+        if (
+            (
+                ("failed" in action_l or "error" in action_l)
+                and action_l not in benign_failed_word_actions
+                and not action_l.endswith("_idempotency")
+            )
+            or (
+                ("failed" in reason_l or "error" in reason_l)
+                and reason_l not in benign_failed_word_reasons
+            )
+        ):
+            error_like_after_started.append(row)
     activity_after_started = bool(hb_status == "started" and newer_activity and not error_like_after_started)
     latest_activity = dict(newer_activity[-1]) if newer_activity else {}
     latest_activity.pop("_dt_utc", None)
@@ -65835,6 +65849,18 @@ def _p604_worker_exit_effective_heartbeat_truth(heartbeat: dict | None, recent: 
             else "use_raw_heartbeat_status"
         ),
     }
+
+
+def _p608_worker_display_heartbeat(heartbeat: dict | None, effective_truth: dict | None) -> dict:
+    hb = dict(heartbeat or {})
+    truth = dict(effective_truth or {})
+    if bool(truth.get("activity_after_started")) and str(hb.get("status") or "").strip().lower() == "started":
+        hb["raw_status"] = "started"
+        hb["status"] = "activity_confirmed_terminal"
+        hb["terminalized_by"] = PATCH_VERSION
+        hb["terminalized_reason"] = "worker_activity_confirmed_after_started_heartbeat"
+        hb["latest_activity"] = dict(truth.get("latest_activity") or {})
+    return hb
 
 
 def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
@@ -65936,17 +65962,19 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
 
     status = str(hb.get("status") or "").lower()
     p604_heartbeat_truth = _p604_worker_exit_effective_heartbeat_truth(hb, recent)
+    display_hb = _p608_worker_display_heartbeat(hb, p604_heartbeat_truth)
+    display_status = str(display_hb.get("status") or "").lower()
     effective_terminal_status_seen = bool(p604_heartbeat_truth.get("effective_terminal_status_seen"))
     stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
     started_stale = bool(
-        status == "started"
+        display_status == "started"
         and not bool(p604_heartbeat_truth.get("activity_after_started"))
         and age_sec is not None
         and age_sec > stale_threshold
     )
-    terminal_status_seen = bool(status and status != "started")
+    terminal_status_seen = bool(display_status and display_status != "started")
     heartbeat_error_fresh = bool(
-        status in {"error", "failed"}
+        display_status in {"error", "failed"}
         and (age_sec is None or age_sec <= worker_error_fresh_window_sec)
     )
     sync_contract_ok = len(fresh_sync_guard_rows) == 0
@@ -65968,10 +65996,20 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         "heavy_available": True,
         "heavy_endpoint": "/diagnostics/worker_exit_status?detail=heavy",
         "heavy_route": "/diagnostics/worker_exit_status_heavy",
-        "heartbeat": hb,
+        "heartbeat": display_hb,
+        "raw_heartbeat": hb,
         "heartbeat_age_sec": age_sec,
-        "heartbeat_status": status,
+        "heartbeat_status": display_status,
+        "raw_heartbeat_status": status,
         "effective_heartbeat_status": p604_heartbeat_truth.get("effective_heartbeat_status"),
+        "p608_worker_terminal_heartbeat_cleanup": {
+            "enabled": True,
+            "raw_status": status,
+            "display_status": display_status,
+            "terminalized": bool(display_hb.get("terminalized_by")),
+            "reason": display_hb.get("terminalized_reason"),
+            "latest_activity": display_hb.get("latest_activity"),
+        },
         "p604_worker_exit_effective_heartbeat_truth": p604_heartbeat_truth,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
@@ -66109,17 +66147,19 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             })
     status = str(hb.get("status") or "").lower()
     p604_heartbeat_truth = _p604_worker_exit_effective_heartbeat_truth(hb, recent)
+    display_hb = _p608_worker_display_heartbeat(hb, p604_heartbeat_truth)
+    display_status = str(display_hb.get("status") or "").lower()
     effective_terminal_status_seen = bool(p604_heartbeat_truth.get("effective_terminal_status_seen"))
     stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
     started_stale = bool(
-        status == "started"
+        display_status == "started"
         and not bool(p604_heartbeat_truth.get("activity_after_started"))
         and age_sec is not None
         and age_sec > stale_threshold
     )
-    terminal_status_seen = bool(status and status != "started")
+    terminal_status_seen = bool(display_status and display_status != "started")
     heartbeat_error_fresh = bool(
-        status in {"error", "failed"}
+        display_status in {"error", "failed"}
         and (age_sec is None or age_sec <= worker_error_fresh_window_sec)
     )
     healthy_base = bool(not heartbeat_error_fresh and not started_stale)
@@ -66167,7 +66207,8 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
-        "heartbeat": hb,
+        "heartbeat": display_hb,
+        "raw_heartbeat": hb,
         "heartbeat_age_sec": age_sec,
         "exit_submit_retry_readiness": exit_retry_readiness,
         "post_fill_risk_recheck_evidence": post_fill_risk_recheck_evidence,
@@ -66191,8 +66232,18 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
+        "heartbeat_status": display_status,
+        "raw_heartbeat_status": status,
         "effective_heartbeat_status": p604_heartbeat_truth.get("effective_heartbeat_status"),
         "effective_terminal_status_seen": effective_terminal_status_seen,
+        "p608_worker_terminal_heartbeat_cleanup": {
+            "enabled": True,
+            "raw_status": status,
+            "display_status": display_status,
+            "terminalized": bool(display_hb.get("terminalized_by")),
+            "reason": display_hb.get("terminalized_reason"),
+            "latest_activity": display_hb.get("latest_activity"),
+        },
         "p604_worker_exit_effective_heartbeat_truth": p604_heartbeat_truth,
         "recommended_action": recommended_action,
         "active_plan_count": len(active_plans),
