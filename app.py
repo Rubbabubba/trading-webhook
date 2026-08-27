@@ -3001,7 +3001,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-598-direct-submit-timeout-root-cause-trace-retry-fast-fail-guard"
+PATCH_VERSION = "patch-599-execute-entry-signal-stage-trace-stale-timeout-queue-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -28231,6 +28231,40 @@ def _p598_submit_timeout_trace(symbol: str, signal: str | None = None) -> dict:
         "reason": "no_submit_timeout_trace_seen",
     })
 
+
+def _p599_current_selected_symbols_for_timeout_retry_cleanup(latest_scan: dict | None = None) -> list[str]:
+    scan = dict(latest_scan or LAST_SCAN or {})
+    summary = dict(scan.get("summary") if isinstance(scan.get("summary"), dict) else {})
+    selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+    selected_truth = summary.get("selected_submission_truth") if isinstance(summary.get("selected_submission_truth"), dict) else {}
+    selected_truth_rows = [
+        dict(row or {})
+        for row in list((selected_truth or {}).get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    candidates = [
+        selection_snapshot.get("selected_symbols"),
+        summary.get("selected_symbols"),
+        summary.get("production_contract_selected_symbols"),
+        scan.get("selected_symbols"),
+        scan.get("production_contract_selected_symbols"),
+        [
+            row.get("symbol")
+            for row in selected_truth_rows
+            if str(row.get("symbol") or "").strip()
+            and not bool(row.get("stale_selected_submit_timeout_suppressed"))
+        ],
+    ]
+    out: list[str] = []
+    for values in candidates:
+        for sym in list(values or []):
+            text = str(sym or "").strip().upper()
+            if text and text not in out:
+                out.append(text)
+        if out:
+            break
+    return out
+
 def _p399_submit_swing_candidate_rows(
     rows: list | None,
     *,
@@ -30795,11 +30829,34 @@ def _p550_selected_submission_truth_snapshot_light(
             "last_stage": (row.get("p598_submit_timeout_trace") or {}).get("last_stage"),
             "last_stage_utc": (row.get("p598_submit_timeout_trace") or {}).get("last_stage_utc"),
             "event_count": (row.get("p598_submit_timeout_trace") or {}).get("event_count"),
+            "last_events": list((row.get("p598_submit_timeout_trace") or {}).get("events") or [])[-10:],
         }
         for row in rows
         if isinstance(row.get("p598_submit_timeout_trace"), dict)
         and (row.get("p598_submit_timeout_trace") or {}).get("events")
     ]
+    p598_seen_symbols = {
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in p598_timeout_trace_rows
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    for key, trace in sorted(dict(P598_SUBMIT_TIMEOUT_TRACE or {}).items()):
+        if not isinstance(trace, dict):
+            continue
+        sym = str(trace.get("symbol") or "").strip().upper()
+        if not sym or sym in p598_seen_symbols:
+            continue
+        p598_timeout_trace_rows.append({
+            "symbol": sym,
+            "submit_gap_type": "trace_store_only",
+            "retry_evidence_status": "submit_timeout_trace_available",
+            "last_stage": trace.get("last_stage"),
+            "last_stage_utc": trace.get("last_stage_utc"),
+            "event_count": trace.get("event_count"),
+            "last_events": list(trace.get("events") or [])[-10:],
+            "key": key,
+        })
+        p598_seen_symbols.add(sym)
     out = swing_diag_selected_submission_truth_light_snapshot(
         patch_version=PATCH_VERSION,
         latest_scan=latest_scan,
@@ -44823,6 +44880,18 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
     side = (side or "").lower().strip()
     signal = (signal or "").strip()
 
+    def _p599_trace(stage: str, **details) -> dict:
+        try:
+            return _p598_mark_submit_timeout_trace(symbol, signal, stage, source=source, side=side, **details)
+        except Exception:
+            return {}
+
+    _p599_trace(
+        "execute_entry_signal_normalized",
+        selected_source=selected_source,
+        strategy=(meta or {}).get("strategy") or (meta or {}).get("strategy_name"),
+    )
+
     if not symbol:
         return {"ok": False, "rejected": True, "reason": "symbol_required"}
     if side not in ("buy", "sell"):
@@ -44878,18 +44947,28 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 "strategy_name": strategy_name,
                 "drawdown_circuit": drawdown_block,
             }
+    _p599_trace("market_clock_snapshot_start")
     market_clock = _market_clock_snapshot()
+    _p599_trace("market_clock_snapshot_returned", is_open=bool(market_clock.get("is_open")))
     if ONLY_MARKET_HOURS and not bool(market_clock.get("is_open")):
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="outside_market_hours", meta={"market_clock": market_clock, **(meta or {})})
         return {"ok": True, "ignored": True, "reason": "outside_market_hours", "symbol": symbol, "signal": signal, "market_clock": market_clock}
 
+    _p599_trace("pending_order_entry_freeze_snapshot_start")
     pending_freeze = _pending_order_entry_freeze_snapshot(symbol)
+    _p599_trace(
+        "pending_order_entry_freeze_snapshot_returned",
+        active=bool(pending_freeze.get("active")),
+        open_order_count=pending_freeze.get("open_order_count"),
+    )
     if bool(pending_freeze.get("active")):
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="pending_order_entry_freeze", meta={"pending_order_entry_freeze": pending_freeze, **(meta or {})})
         return {"ok": True, "ignored": True, "reason": "pending_order_entry_freeze", "symbol": symbol, "signal": signal, "pending_order_entry_freeze": pending_freeze}
 
     if side == "sell" and not ALLOW_SHORT:
+        _p599_trace("sell_position_check_start")
         qty_signed, _pos_side = get_position(symbol)
+        _p599_trace("sell_position_check_returned", qty_signed=qty_signed, position_side=_pos_side)
         if qty_signed > 0:
             out = close_position(symbol)
             if symbol in TRADE_PLAN:
@@ -44914,7 +44993,9 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="plan_active", meta=meta)
         return {"ok": True, "ignored": True, "reason": "plan_active", "symbol": symbol, "signal": signal}
 
+    _p599_trace("pre_lock_position_check_start")
     qty_signed, pos_side = get_position(symbol)
+    _p599_trace("pre_lock_position_check_returned", qty_signed=qty_signed, position_side=pos_side)
     if qty_signed != 0:
         desired_side = "long" if side == "buy" else "short"
         if desired_side == pos_side:
@@ -44937,15 +45018,26 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="max_open_positions_reached", meta=meta)
         return {"ok": True, "ignored": True, "reason": "max_open_positions_reached", "symbol": symbol, "signal": signal, "max_open_positions": MAX_OPEN_POSITIONS}
 
+    _p599_trace("symbol_lock_start", lock_sec=SYMBOL_LOCK_SEC)
     if not take_symbol_lock(symbol, SYMBOL_LOCK_SEC):
+        _p599_trace("symbol_lock_rejected")
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="symbol_locked", meta=meta)
         return {"ok": True, "ignored": True, "reason": "symbol_locked", "symbol": symbol, "signal": signal}
+    _p599_trace("symbol_lock_acquired")
 
     effective_dry_run = effective_entry_dry_run(source)
     payload = None
 
     try:
+        _p599_trace("quote_snapshot_start")
         snapshot = get_latest_quote_snapshot(symbol)
+        _p599_trace(
+            "quote_snapshot_returned",
+            price=snapshot.get("price"),
+            quote_ok=bool(snapshot.get("quote_ok")),
+            fresh=bool(snapshot.get("fresh")),
+            spread_pct=snapshot.get("spread_pct"),
+        )
         base_price = snapshot.get("price")
         if base_price is None or float(base_price) <= 0:
             raise ValueError("latest_price_missing")
@@ -44992,6 +45084,11 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 or bool(SWING_LIMIT_ENTRY_FOR_SPREAD_OVERRIDE_ENABLED)
             ):
                 p328_limit_entry = limit_preview
+                _p599_trace(
+                    "spread_limit_entry_preview_allowed",
+                    limit_price=limit_preview.get("limit_price"),
+                    spread_pct=spread_pct,
+                )
                 limit_reason = (
                     "protective_limit_entry_for_spread_override"
                     if spread_override.get("allowed")
@@ -45057,9 +45154,16 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 )
 
         if p328_limit_entry is None and _p353_requires_protective_limit_entry(source, signal, meta=meta):
+            _p599_trace("forced_limit_entry_preview_start")
             forced_limit_preview = _p328_limit_entry_preview(symbol, side, snapshot, meta=meta)
             snapshot["production_limit_entry_required"] = True
             snapshot["production_limit_entry_preview"] = forced_limit_preview
+            _p599_trace(
+                "forced_limit_entry_preview_returned",
+                allowed=bool(forced_limit_preview.get("allowed")),
+                limit_price=forced_limit_preview.get("limit_price"),
+                reason=forced_limit_preview.get("reason"),
+            )
 
             if forced_limit_preview.get("allowed"):
                 p328_limit_entry = forced_limit_preview
@@ -45105,7 +45209,9 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                     "production_limit_required": True,
                 }
 
+        _p599_trace("post_lock_position_check_start")
         qty_signed_post_lock, pos_side_post_lock = get_position(symbol)
+        _p599_trace("post_lock_position_check_returned", qty_signed=qty_signed_post_lock, position_side=pos_side_post_lock)
         if qty_signed_post_lock != 0:
             desired_side = "long" if side == "buy" else "short"
             reason = f"position_open_after_lock:{pos_side_post_lock}"
@@ -45115,7 +45221,13 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             record_decision("ENTRY", source, symbol, side=side, signal=signal, action="ignored", reason="plan_active_after_lock", meta={"snapshot": snapshot, **(meta or {})})
             return {"ok": True, "ignored": True, "reason": "plan_active_after_lock", "symbol": symbol, "signal": signal, "snapshot": snapshot}
 
+        _p599_trace("entry_level_preview_start", base_price=base_price)
         entry_level_preview = _p388_entry_level_preview(side, float(base_price), meta=meta)
+        _p599_trace(
+            "entry_level_preview_returned",
+            stop_price=entry_level_preview.get("stop_price"),
+            take_price=entry_level_preview.get("take_price"),
+        )
         meta.setdefault("stop_price", entry_level_preview.get("stop_price"))
         meta.setdefault("take_price", entry_level_preview.get("take_price"))
         meta.setdefault("target_price", entry_level_preview.get("take_price"))
@@ -45125,12 +45237,20 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             **entry_level_preview,
         }
 
+        _p599_trace("compute_qty_start", base_price=base_price)
         risk_qty = compute_qty(float(base_price), side=side, meta=meta) if side == "buy" else round(abs(qty_signed), 2)
+        _p599_trace("compute_qty_returned", risk_qty=risk_qty)
         qty = risk_qty
         affordability = None
         if side == "buy":
+            _p599_trace("affordability_clip_start", base_price=base_price, risk_qty=risk_qty)
             affordability = clip_qty_for_affordability(float(base_price), float(risk_qty))
             qty = float(affordability.get("submitted_qty") or 0.0)
+            _p599_trace(
+                "affordability_clip_returned",
+                submitted_qty=qty,
+                reason=affordability.get("reason"),
+            )
             if affordability.get("reason"):
                 reason = str(affordability.get("reason"))
                 record_decision("ENTRY", source, symbol, side=side, signal=signal, action="rejected", reason=reason, qty=risk_qty, meta={"snapshot": snapshot, "affordability": affordability, **(meta or {})})
@@ -45184,7 +45304,13 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 pass
             return {"ok": True, "submitted": False, "dry_run": True, "order": payload, "plan": plan}
 
+        _p599_trace("pre_submit_open_order_check_start")
         existing_open_order = find_open_order_for_symbol(symbol)
+        _p599_trace(
+            "pre_submit_open_order_check_returned",
+            found=bool(existing_open_order),
+            order_id=(existing_open_order or {}).get("id") if isinstance(existing_open_order, dict) else None,
+        )
         if existing_open_order:
             adopted = _adopt_open_broker_order_as_plan(
                 symbol,
@@ -45246,10 +45372,25 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 limit_entry=p328_limit_entry,
                 snapshot=snapshot,
             )
+            _p599_trace("broker_submit_start", order_type="limit", qty=qty, limit_price=submit_price)
             order = submit_limit_order(symbol, side, qty, submit_price)
+            _p599_trace(
+                "broker_submit_returned",
+                order_type="limit",
+                order_id=str(_order_attr(order, "id", "")),
+                client_order_id=str(_order_attr(order, "client_order_id", "")),
+            )
         else:
+            _p599_trace("broker_submit_start", order_type="market", qty=qty)
             order = submit_market_order(symbol, side, qty)
+            _p599_trace(
+                "broker_submit_returned",
+                order_type="market",
+                order_id=str(_order_attr(order, "id", "")),
+                client_order_id=str(_order_attr(order, "client_order_id", "")),
+            )
 
+        _p599_trace("plan_build_start", order_type=submit_order_type, submit_price=submit_price)
         plan = build_trade_plan(symbol, side, qty, submit_price, signal, meta=meta)
         plan["source"] = source
         plan["order_id"] = str(_order_attr(order, "id", ""))
@@ -45281,6 +45422,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
                 plan=plan,
             )
         TRADE_PLAN[symbol] = plan
+        _p599_trace("plan_build_returned", order_id=plan.get("order_id"), order_status=plan.get("order_status"))
         _ensure_execution_lifecycle_plan(symbol, plan)
         _transition_execution_lifecycle(
             plan,
@@ -45298,7 +45440,9 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             },
             allow_illegal=True,
         )
+        _p599_trace("entry_persistence_start", order_id=str(_order_attr(order, "id", "")))
         persist_positions_snapshot(reason="entry_submitted", extra={"symbol": symbol, "order_id": str(_order_attr(order, "id", "")), "source": source, "signal": signal})
+        _p599_trace("entry_persistence_returned", order_id=str(_order_attr(order, "id", "")))
         log("ORDER_SUBMITTED", symbol=symbol, side=side, qty=qty, order_id=str(_order_attr(order, "id", "")), signal=signal, source=source)
         record_decision("ENTRY", source, symbol, side=side, signal=signal, action="order_submitted", reason="", order_id=str(_order_attr(order, "id", "")), qty=qty, meta={"snapshot": snapshot, **(meta or {})})
         try:
@@ -45318,9 +45462,11 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             )
         except Exception:
             pass
+        _p599_trace("execute_entry_signal_success_return", order_id=str(_order_attr(order, "id", "")), order_type=submit_order_type)
         return {"ok": True, "submitted": True, "order_id": str(_order_attr(order, "id", "")), "order_type": submit_order_type, "limit_price": submit_price if submit_order_type == "limit" else None, "protective_limit_submit_evidence": p337_limit_submit_evidence, "order": payload, "plan": plan}
     except Exception as e:
         submit_error = str(e)
+        _p599_trace("execute_entry_signal_exception", error=submit_error, exception_type=type(e).__name__)
         rate_limited = _p352_is_alpaca_rate_limit_error(submit_error)
         evidence_stage = "rate_limited" if rate_limited else "rejected"
 
@@ -45475,11 +45621,14 @@ def _p387_prune_rate_limit_selected_submit_retry_queue() -> dict:
         if str(sym or "").strip() and isinstance(plan, dict) and _plan_is_pending_entry(plan)
     }
     latest_summary = dict((LAST_SCAN or {}).get("summary") or {})
-    latest_selected_symbols = set(_dedupe_keep_order([
+    latest_selected_symbols = set(_dedupe_keep_order(
+        _p599_current_selected_symbols_for_timeout_retry_cleanup(LAST_SCAN)
+        or [
         str(sym or "").strip().upper()
         for sym in list(latest_summary.get("selected_symbols") or (LAST_SCAN or {}).get("selected_symbols") or [])
         if str(sym or "").strip()
-    ]))
+        ]
+    ))
     for key, row in list(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.items()):
         try:
             queued_ts = float(row.get("queued_utc_ts") or 0.0)
@@ -45545,7 +45694,7 @@ def _p387_prune_rate_limit_selected_submit_retry_queue() -> dict:
         elif terminal_stale:
             prune_reason = "stale_selected_submit_timeout_without_active_or_pending_plan"
         elif no_longer_current_selected:
-            prune_reason = "selected_submit_timeout_no_longer_current_selected"
+            prune_reason = "p599_selected_submit_timeout_no_longer_current_selected"
         elif restored_shape_stale_timeout:
             prune_reason = "restored_selected_submit_timeout_age_expired"
         if prune_reason:
