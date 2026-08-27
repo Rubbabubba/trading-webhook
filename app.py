@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-592-current-scan-status-authority-sync-eligible-recommendation-suppression"
+PATCH_VERSION = "patch-593-pending-entry-exclusion-from-exit-protection-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -48015,6 +48015,7 @@ def _p364_active_exit_protection_truth() -> dict:
     rows = []
     missing_protection = []
     actionable_exit_watch = []
+    pending_entry_protection_pending = []
 
     for symbol in sorted(set(positions_by_symbol) | {
         str(sym or "").strip().upper()
@@ -48027,6 +48028,9 @@ def _p364_active_exit_protection_truth() -> dict:
         pos = dict(positions_by_symbol.get(symbol) or {})
         plan = dict((TRADE_PLAN or {}).get(symbol) or {})
         has_plan = bool(plan and plan.get("active"))
+        has_broker_position_snapshot = symbol in positions_by_symbol
+        pending_entry_plan = bool(_plan_is_pending_entry(plan))
+        pending_entry_without_position = bool(pending_entry_plan and not has_broker_position_snapshot)
 
         qty = _safe_float(pos.get("qty") or plan.get("filled_qty") or plan.get("submitted_qty") or 0.0)
         abs_qty = abs(qty)
@@ -48104,6 +48108,9 @@ def _p364_active_exit_protection_truth() -> dict:
         has_hard_exit_level = bool(stop_price > 0 or profit_lock_price > 0 or take_price > 0)
         exit_worker_has_enough_data = bool(has_plan and abs_qty > 0 and current_price > 0 and entry_price > 0)
         protection_status = (
+            "pending_entry_waiting_for_fill"
+            if pending_entry_without_position
+            else
             "protected"
             if exit_worker_has_enough_data and has_hard_exit_level
             else "plan_missing"
@@ -48121,8 +48128,10 @@ def _p364_active_exit_protection_truth() -> dict:
 
         row = {
             "symbol": symbol,
-            "has_broker_position_snapshot": symbol in positions_by_symbol,
+            "has_broker_position_snapshot": has_broker_position_snapshot,
             "has_active_plan": has_plan,
+            "pending_entry_plan": pending_entry_plan,
+            "pending_entry_without_position": pending_entry_without_position,
             "qty": qty,
             "entry_price": entry_price,
             "current_price": current_price,
@@ -48151,9 +48160,11 @@ def _p364_active_exit_protection_truth() -> dict:
         }
         rows.append(row)
 
-        if protection_status != "protected":
+        if pending_entry_without_position:
+            pending_entry_protection_pending.append(row)
+        elif protection_status != "protected":
             missing_protection.append(symbol)
-        if row["exit_trigger_now"] or protection_status != "protected":
+        if row["exit_trigger_now"] or (protection_status != "protected" and not pending_entry_without_position):
             actionable_exit_watch.append(row)
 
     return {
@@ -48170,6 +48181,12 @@ def _p364_active_exit_protection_truth() -> dict:
             "row_count": len(rows),
             "missing_protection_count": len(missing_protection),
             "exit_watch_count": len(actionable_exit_watch),
+            "pending_entry_protection_pending_count": len(pending_entry_protection_pending),
+            "pending_entry_protection_pending_symbols": [
+                row.get("symbol")
+                for row in pending_entry_protection_pending
+                if row.get("symbol")
+            ],
             "giveback_exit_due_count": len([
                 row for row in rows
                 if str(row.get("closest_exit_reason") or "") == "daily_breakout_profit_giveback_preservation_exit"
@@ -48200,11 +48217,19 @@ def _p364_active_exit_protection_truth() -> dict:
             "all_active_positions_protected": len(missing_protection) == 0,
         },
         "missing_protection_symbols": missing_protection,
+        "pending_entry_protection_pending_symbols": [
+            row.get("symbol")
+            for row in pending_entry_protection_pending
+            if row.get("symbol")
+        ],
+        "pending_entry_protection_pending": pending_entry_protection_pending,
         "actionable_exit_watch": actionable_exit_watch,
         "rows": rows,
         "recommended_action": (
             "inspect_missing_exit_protection_symbols"
             if missing_protection
+            else "monitor_pending_entry_order_status"
+            if pending_entry_protection_pending
             else "monitor_exit_worker"
             if actionable_exit_watch
             else "none"
