@@ -3003,7 +3003,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-606-partial-profit-readiness-light-truth"
+PATCH_VERSION = "patch-607-worker-exit-fast-close-recovery-first"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -49542,6 +49542,87 @@ def _p606_partial_profit_readiness_truth(limit: int = 25) -> dict:
     }
 
 
+P607_WORKER_EXIT_FAST_CLOSE_BUDGET_SEC = max(
+    20.0,
+    min(90.0, float(getenv_any("WORKER_EXIT_FAST_CLOSE_BUDGET_SEC", default="70") or 70)),
+)
+
+
+def _p607_worker_elapsed_sec(started_monotonic: float) -> float:
+    try:
+        return max(0.0, float(_time.time()) - float(started_monotonic or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _p607_reconcile_action_symbols(actions: list[dict]) -> list[str]:
+    symbols = []
+    for row in list(actions or []):
+        sym = str((row or {}).get("symbol") or "").strip().upper()
+        if sym and sym not in symbols:
+            symbols.append(sym)
+    return symbols
+
+
+def _p607_worker_budget_truth(started_monotonic: float, stage: str = "") -> dict:
+    elapsed = _p607_worker_elapsed_sec(started_monotonic)
+    budget = float(P607_WORKER_EXIT_FAST_CLOSE_BUDGET_SEC)
+    return {
+        "patch_version": PATCH_VERSION,
+        "stage": str(stage or "unknown"),
+        "elapsed_sec": round(elapsed, 3),
+        "budget_sec": round(budget, 3),
+        "budget_exceeded": bool(elapsed >= budget),
+        "remaining_sec": round(max(0.0, budget - elapsed), 3),
+    }
+
+
+def _p607_worker_recovery_first_truth(reconcile_actions: list[dict], started_monotonic: float) -> dict:
+    actions = list(reconcile_actions or [])
+    recovery_actions = [
+        row for row in actions
+        if str((row or {}).get("action") or "") in {
+            "recovered_plan",
+            "recovered_open_order_plan",
+            "canceled_exit_order_plan_normalized",
+            "self_healed_terminal_entry_plan",
+        }
+    ]
+    protection_truth = _p364_active_exit_protection_truth()
+    protection_summary = dict(protection_truth.get("summary") or {})
+    recovery_needed_symbols = list(
+        (protection_truth.get("p605_broker_position_plan_recovery_truth") or {}).get("recovery_needed_symbols")
+        or protection_summary.get("p605_broker_position_plan_recovery_needed_symbols")
+        or []
+    )
+    missing_symbols = list(protection_truth.get("missing_protection_symbols") or [])
+    budget_truth = _p607_worker_budget_truth(started_monotonic, stage="post_reconcile")
+    return {
+        "patch_version": PATCH_VERSION,
+        "mode": "worker_exit_recovery_first_truth",
+        "reconcile_action_count": len(actions),
+        "reconcile_action_symbols": _p607_reconcile_action_symbols(actions),
+        "recovery_action_count": len(recovery_actions),
+        "recovery_action_symbols": _p607_reconcile_action_symbols(recovery_actions),
+        "recovery_needed_symbols_after_reconcile": recovery_needed_symbols,
+        "missing_protection_symbols_after_reconcile": missing_symbols,
+        "all_active_positions_protected_after_reconcile": bool(
+            protection_summary.get("all_active_positions_protected")
+        ),
+        "budget_truth": budget_truth,
+        "fast_close_required": bool(recovery_actions or recovery_needed_symbols or budget_truth.get("budget_exceeded")),
+        "recommended_action": (
+            "worker_exit_recovered_position_stop_here_next_cycle_handles_exits"
+            if recovery_actions
+            else "worker_exit_reconcile_incomplete_investigate_missing_plan_recovery"
+            if recovery_needed_symbols
+            else "worker_exit_budget_exceeded_stop_here"
+            if budget_truth.get("budget_exceeded")
+            else "continue_exit_cycle"
+        ),
+    }
+
+
 def _p364_active_exit_protection_truth() -> dict:
     positions_by_symbol = _p364_snapshot_position_by_symbol()
     p605_snapshot_truth = _p605_broker_position_snapshot_truth()
@@ -50606,8 +50687,13 @@ def _p342_daily_goal_preservation_exit_plan() -> dict:
 @app.post("/worker/exit")
 def worker_exit(body: dict = Body(default_factory=dict)):
     """Synchronous worker endpoint so heavy Alpaca/exit work runs in FastAPI threadpool, not on the event loop."""
+    worker_started_monotonic = _time.time()
     cleanup_caches()
-    update_exit_heartbeat(status="started")
+    update_exit_heartbeat(
+        status="started",
+        patch_version=PATCH_VERSION,
+        p607_worker_budget_sec=P607_WORKER_EXIT_FAST_CLOSE_BUDGET_SEC,
+    )
 
     if body is None:
         body = {}
@@ -50629,6 +50715,26 @@ def worker_exit(body: dict = Body(default_factory=dict)):
     stale_recovery_actions = _deactivate_plans_without_broker_positions(source="worker_exit", reason="broker_flat_verified")
     if stale_recovery_actions:
         reconcile_actions.extend(stale_recovery_actions)
+    p607_recovery_first = _p607_worker_recovery_first_truth(reconcile_actions, worker_started_monotonic)
+    if bool(p607_recovery_first.get("fast_close_required")):
+        update_exit_heartbeat(
+            status="recovery_first_fast_close",
+            results=0,
+            reconcile=len(reconcile_actions),
+            p607_worker_recovery_first=p607_recovery_first,
+            p607_worker_budget_truth=p607_recovery_first.get("budget_truth"),
+            recovery_action_symbols=p607_recovery_first.get("recovery_action_symbols"),
+            recovery_needed_symbols=p607_recovery_first.get("recovery_needed_symbols_after_reconcile"),
+        )
+        return {
+            "ok": True,
+            "mode": "worker_exit_recovery_first_fast_close",
+            "reason": p607_recovery_first.get("recommended_action"),
+            "ts_ny": now_ny().isoformat(),
+            "reconcile": reconcile_actions,
+            "p607_worker_recovery_first": p607_recovery_first,
+            "results": [],
+        }
     
     if daily_stop_hit():
         activate_daily_halt("daily_stop_hit")
@@ -50803,6 +50909,30 @@ def worker_exit(body: dict = Body(default_factory=dict)):
 
     # Manage active plans with stop/take
     for symbol, plan in list(TRADE_PLAN.items()):
+        p607_budget_truth = _p607_worker_budget_truth(worker_started_monotonic, stage=f"pre_symbol:{symbol}")
+        if bool(p607_budget_truth.get("budget_exceeded")):
+            results.append({
+                "symbol": str(symbol or "").upper(),
+                "action": "worker_exit_budget_fast_close",
+                "reason": "p607_runtime_budget_exceeded_before_symbol",
+                "p607_worker_budget_truth": p607_budget_truth,
+            })
+            update_exit_heartbeat(
+                status="budget_fast_close",
+                results=len(results),
+                reconcile=len(reconcile_actions),
+                p607_worker_budget_truth=p607_budget_truth,
+            )
+            return {
+                "ok": True,
+                "mode": "worker_exit_budget_fast_close",
+                "reason": "p607_runtime_budget_exceeded_before_symbol",
+                "ts_ny": now.isoformat(),
+                "reconcile": reconcile_actions,
+                "results": results,
+                "p607_worker_budget_truth": p607_budget_truth,
+            }
+
         if not plan.get("active") and not _plan_is_pending_entry(plan):
             continue
 
@@ -51224,23 +51354,27 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                                 meta={"forced": True, "worker_exit_forcing_enabled": True})
     except Exception as e:
         logger.exception("TRADES_TODAY_ERROR err=%s", e)
-    if results or reconcile_actions:
+    p607_final_budget_truth = _p607_worker_budget_truth(worker_started_monotonic, stage="pre_final_snapshot")
+    if (results or reconcile_actions) and not bool(p607_final_budget_truth.get("budget_exceeded")):
         persist_positions_snapshot(
             reason="worker_exit_cycle",
             extra={
                 "results_count": len(results),
                 "reconcile_count": len(reconcile_actions),
                 "daily_goal_preservation": daily_goal_preservation if "daily_goal_preservation" in locals() else {},
+                "p607_worker_budget_truth": p607_final_budget_truth,
             },
         )
     update_exit_heartbeat(
-        status="ok",
+        status="ok" if not bool(p607_final_budget_truth.get("budget_exceeded")) else "ok_snapshot_deferred_budget",
         results=len(results),
         reconcile=len(reconcile_actions),
         daily_goal_preservation_action=(daily_goal_preservation or {}).get("recommended_action") if "daily_goal_preservation" in locals() else None,
         daily_goal_preservation_close_symbols=(daily_goal_preservation or {}).get("close_symbols") if "daily_goal_preservation" in locals() else [],
         trades_today_worker_exit_forcing_enabled=bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
         trades_today_worker_exit_forcing_isolated=bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
+        p607_worker_budget_truth=p607_final_budget_truth,
+        snapshot_deferred_for_budget=bool(p607_final_budget_truth.get("budget_exceeded")),
     )
     return {
         "ok": True,
@@ -51248,6 +51382,8 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         "reconcile": reconcile_actions,
         "daily_goal_preservation": daily_goal_preservation if "daily_goal_preservation" in locals() else {},
         "results": results,
+        "p607_worker_budget_truth": p607_final_budget_truth,
+        "snapshot_deferred_for_budget": bool(p607_final_budget_truth.get("budget_exceeded")),
     }
 
 
@@ -65727,15 +65863,29 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         })
     recent = recent[-max(1, min(int(limit or 10), 25)):]
 
+    benign_failed_word_reasons = {
+        "daily_breakout_failed_followthrough_exit",
+    }
+    benign_failed_word_actions = {
+        "daily_breakout_failed_followthrough_exit",
+        "exit_daily_breakout_failed_followthrough_exit",
+    }
     worker_error_fresh_window_sec = 900
     error_like = []
     historical_error_like = []
     for r in recent:
+        action_l = str(r.get("action") or "").strip().lower()
+        reason_l = str(r.get("reason") or "").strip().lower()
         is_error_like = (
-            "failed" in str(r.get("action") or "")
-            or "error" in str(r.get("action") or "")
-            or "failed" in str(r.get("reason") or "")
-            or "error" in str(r.get("reason") or "")
+            (
+                ("failed" in action_l or "error" in action_l)
+                and action_l not in benign_failed_word_actions
+                and not action_l.endswith("_idempotency")
+            )
+            or (
+                ("failed" in reason_l or "error" in reason_l)
+                and reason_l not in benign_failed_word_reasons
+            )
         )
         if not is_error_like:
             continue
@@ -65888,15 +66038,29 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             "reason": row.get("reason"),
         })
     recent = recent[-max(1, min(int(limit or 20), 50)):]
+    benign_failed_word_reasons = {
+        "daily_breakout_failed_followthrough_exit",
+    }
+    benign_failed_word_actions = {
+        "daily_breakout_failed_followthrough_exit",
+        "exit_daily_breakout_failed_followthrough_exit",
+    }
     worker_error_fresh_window_sec = 900
     error_like = []
     historical_error_like = []
     for r in recent:
+        action_l = str(r.get("action") or "").strip().lower()
+        reason_l = str(r.get("reason") or "").strip().lower()
         is_error_like = (
-            "failed" in str(r.get("action") or "")
-            or "error" in str(r.get("action") or "")
-            or "failed" in str(r.get("reason") or "")
-            or "error" in str(r.get("reason") or "")
+            (
+                ("failed" in action_l or "error" in action_l)
+                and action_l not in benign_failed_word_actions
+                and not action_l.endswith("_idempotency")
+            )
+            or (
+                ("failed" in reason_l or "error" in reason_l)
+                and reason_l not in benign_failed_word_reasons
+            )
         )
         if not is_error_like:
             continue
