@@ -2996,7 +2996,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-593-pending-entry-exclusion-from-exit-protection-truth"
+PATCH_VERSION = "patch-594-selected-submission-active-position-timeout-resolution-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -30336,14 +30336,16 @@ def _p550_selected_submission_truth_snapshot_light(
             or submit_row.get("order_id")
             or submit_row.get("submit_order_id")
         )
+        broker_position_open = bool(sym in snapshot_position_symbols)
         active_plan = bool(plan.get("active"))
         pending_entry_plan = bool(_plan_is_pending_entry(plan))
-        active_position_plan = bool(active_plan and sym in snapshot_position_symbols and not pending_entry_plan)
-        pending_order_only_plan = bool(pending_entry_plan and sym not in snapshot_position_symbols)
+        active_position_plan = bool(active_plan and broker_position_open)
+        pending_order_only_plan = bool(pending_entry_plan and not broker_position_open)
         actual_submit_side_effect = bool(
             submit_row.get("actual_submit_side_effect")
             or submit_row.get("order_id")
             or submit_row.get("submit_order_id")
+            or broker_position_open
             or active_position_plan
         )
         reason_norm = submit_reason.lower()
@@ -30395,6 +30397,7 @@ def _p550_selected_submission_truth_snapshot_light(
         effective_selected_submit_timeout = bool(
             selected_submit_timeout
             and not stale_selected_submit_timeout
+            and not selected_submit_timeout_resolved
             and not pending_order_only_plan
         )
         submit_pending = bool(
@@ -30421,6 +30424,7 @@ def _p550_selected_submission_truth_snapshot_light(
             "actual_submit_side_effect": bool(actual_submit_side_effect),
             "side_effect_detected_light": bool(actual_submit_side_effect),
             "active_plan": bool(active_plan),
+            "broker_position_open": bool(broker_position_open),
             "active_position_plan": bool(active_position_plan),
             "pending_entry_plan": bool(pending_entry_plan),
             "pending_order_only_plan": bool(pending_order_only_plan),
@@ -30474,7 +30478,7 @@ def _p550_selected_submission_truth_snapshot_light(
             "rate_limited_retryable": bool(rate_limited_retryable),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "retryable_spread_block": dict(retryable_spread_block),
-            "selected_submit_timeout": bool(effective_selected_submit_timeout),
+            "selected_submit_timeout": bool(selected_submit_timeout and not stale_selected_submit_timeout),
             "raw_selected_submit_timeout": bool(selected_submit_timeout),
             "stale_selected_submit_timeout_suppressed": bool(stale_selected_submit_timeout),
             "selected_submit_timeout_age_sec": round(float(selected_submit_timeout_age_sec), 2) if selected_submit_timeout_age_sec is not None else None,
