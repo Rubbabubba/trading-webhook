@@ -2807,6 +2807,7 @@ TRADE_PLAN: dict[str, dict] = {}          # symbol -> plan dict
 P337_PROTECTIVE_LIMIT_SUBMIT_EVIDENCE: list[dict] = []
 P352_RATE_LIMIT_SUBMIT_RECOVERY: list[dict] = []
 P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE: dict[str, dict] = {}
+P598_SUBMIT_TIMEOUT_TRACE: dict[str, dict] = {}
 P570_STALE_SUBMIT_RETRY_PRUNE_LAST: dict = {}
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
@@ -2928,6 +2929,10 @@ ALPACA_SUBMIT_RATE_LIMIT_RETRY_MAX_ATTEMPTS = max(1, int(getenv_any("ALPACA_SUBM
 SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED = env_bool_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED", default=True)
 SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC = getenv_int_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC", default=900)
 SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN = getenv_int_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN", default=1)
+SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS = max(
+    1,
+    getenv_int_any("SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS", default=12),
+)
 DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT = env_bool_any("DIAGNOSTIC_BUNDLE_COMPACT_DEFAULT", default="true")
 DIAGNOSTIC_BUNDLE_MAX_ROWS = max(1, int(getenv_any("DIAGNOSTIC_BUNDLE_MAX_ROWS", default="10") or 10))
 DIAGNOSTIC_SCANNER_HISTORY_LIMIT = max(0, int(getenv_any("DIAGNOSTIC_SCANNER_HISTORY_LIMIT", default="10") or 10))
@@ -2996,7 +3001,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-597-retry-queue-slot-reservation-drain-proof"
+PATCH_VERSION = "patch-598-direct-submit-timeout-root-cause-trace-retry-fast-fail-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17736,6 +17741,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "partial_submit_finalization": dict(summary.get("p399_partial_submit_finalization") or {}),
         },
         "p597_retry_queue_drain_truth": dict(summary.get("p597_retry_queue_drain_truth") or {}),
+        "p598_direct_submit_timeout_root_cause_trace": dict(
+            p540_selected_consumer_truth.get("p598_direct_submit_timeout_root_cause_trace") or {}
+        ),
         "eligible_new_entry_rows": eligible_new_entry_rows[:lim],
         "rows": submit_rows,
         "row_count": len(submit_rows),
@@ -28094,12 +28102,64 @@ def _p559_submit_selected_candidate_with_timeout(
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"swing-submit-{sym or 'symbol'}")
     timed_out = False
     try:
-        future = executor.submit(submit_fn)
+        _p598_mark_submit_timeout_trace(
+            sym,
+            signal,
+            "timeout_wrapper_start",
+            source=source_name,
+            timeout_sec=timeout,
+            live_allowed=bool(live_allowed),
+        )
+
+        def _p598_traced_submit_call():
+            _p598_mark_submit_timeout_trace(
+                sym,
+                signal,
+                "submit_callable_start",
+                source=source_name,
+                timeout_sec=timeout,
+                live_allowed=bool(live_allowed),
+            )
+            try:
+                result = dict(submit_fn() or {})
+                _p598_mark_submit_timeout_trace(
+                    sym,
+                    signal,
+                    "submit_callable_returned",
+                    source=source_name,
+                    ok=bool(result.get("ok")),
+                    submitted=bool(result.get("submitted")),
+                    reason=result.get("reason") or result.get("submit_reason"),
+                    order_id=result.get("order_id") or result.get("submit_order_id"),
+                )
+                return result
+            except Exception as exc:
+                _p598_mark_submit_timeout_trace(
+                    sym,
+                    signal,
+                    "submit_callable_exception",
+                    source=source_name,
+                    error=str(exc),
+                    exception_type=type(exc).__name__,
+                )
+                raise
+
+        future = executor.submit(_p598_traced_submit_call)
         try:
-            return dict(future.result(timeout=timeout) or {})
+            result = dict(future.result(timeout=timeout) or {})
+            result.setdefault("p598_submit_timeout_trace", _p598_submit_timeout_trace(sym, signal))
+            return result
         except FuturesTimeoutError:
             timed_out = True
             future.cancel()
+            trace = _p598_mark_submit_timeout_trace(
+                sym,
+                signal,
+                "timeout_wrapper_timeout",
+                source=source_name,
+                timeout_sec=timeout,
+                live_allowed=bool(live_allowed),
+            )
             return {
                 "ok": False,
                 "rejected": True,
@@ -28116,9 +28176,60 @@ def _p559_submit_selected_candidate_with_timeout(
                 "p559_selected_submit_timeout": True,
                 "p559_submit_timeout_sec": timeout,
                 "p559_live_allowed": bool(live_allowed),
+                "p598_submit_timeout_trace": trace,
             }
     finally:
         executor.shutdown(wait=not timed_out, cancel_futures=True)
+
+
+def _p598_submit_timeout_trace_key(symbol: str, signal: str | None = None) -> str:
+    return _p387_rate_limit_retry_key(symbol, signal)
+
+
+def _p598_mark_submit_timeout_trace(symbol: str, signal: str | None, stage: str, **details) -> dict:
+    sym = str(symbol or "").strip().upper()
+    sig = str(signal or "daily_breakout").strip() or "daily_breakout"
+    key = _p598_submit_timeout_trace_key(sym, sig)
+    now_dt = datetime.now(timezone.utc)
+    prior = dict(P598_SUBMIT_TIMEOUT_TRACE.get(key) or {})
+    events = [
+        dict(row or {})
+        for row in list(prior.get("events") or [])
+        if isinstance(row, dict)
+    ][-24:]
+    event = {
+        "ts_utc": now_dt.isoformat(),
+        "stage": str(stage or "unknown"),
+    }
+    for k, v in dict(details or {}).items():
+        if v is not None:
+            event[k] = v
+    events.append(event)
+    row = {
+        **prior,
+        "key": key,
+        "symbol": sym,
+        "signal": sig,
+        "last_stage": event["stage"],
+        "last_stage_utc": event["ts_utc"],
+        "updated_utc": event["ts_utc"],
+        "event_count": len(events),
+        "events": events[-25:],
+        "patch_version": PATCH_VERSION,
+    }
+    P598_SUBMIT_TIMEOUT_TRACE[key] = row
+    return dict(row)
+
+
+def _p598_submit_timeout_trace(symbol: str, signal: str | None = None) -> dict:
+    key = _p598_submit_timeout_trace_key(symbol, signal)
+    return dict(P598_SUBMIT_TIMEOUT_TRACE.get(key) or {
+        "key": key,
+        "symbol": str(symbol or "").strip().upper(),
+        "signal": str(signal or "daily_breakout").strip() or "daily_breakout",
+        "events": [],
+        "reason": "no_submit_timeout_trace_seen",
+    })
 
 def _p399_submit_swing_candidate_rows(
     rows: list | None,
@@ -29976,6 +30087,11 @@ def _p596_selected_timeout_retry_queue_consumption_truth(
         latest_scan,
     )
     clean_to_retry = bool(evidence.get("clean_to_retry"))
+    attempts = int(row.get("attempts") or 0)
+    fast_fail_guard = bool(
+        attempts >= int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12)
+        or row.get("p598_retry_fast_fail_guard")
+    )
     if clean_to_retry:
         now_iso = datetime.now(timezone.utc).isoformat()
         row["requires_reconcile_before_retry"] = False
@@ -29984,11 +30100,17 @@ def _p596_selected_timeout_retry_queue_consumption_truth(
         row["p596_retry_consumption_ready_utc"] = now_iso
         row["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
         row["last_reason"] = "selected_submit_timeout_clean_retry_waiting"
+        if fast_fail_guard:
+            row["p598_retry_fast_fail_guard"] = True
+            row["retry_evidence_status"] = "selected_submit_timeout_retry_fast_failed_inspect_trace"
+            row["last_reason"] = "selected_submit_timeout_retry_fast_failed_inspect_trace"
+            row["p598_retry_fast_fail_reason"] = "selected_submit_timeout_retry_attempt_ceiling_reached"
+            row["p598_retry_fast_fail_max_attempts"] = int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12)
         if isinstance(row.get("submit_row"), dict):
             row["submit_row"]["requires_reconcile_before_retry"] = False
             row["submit_row"]["p588_reconcile_auto_cleared"] = True
             row["submit_row"]["p596_retry_consumption_ready"] = True
-            row["submit_row"]["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+            row["submit_row"]["retry_evidence_status"] = row["retry_evidence_status"]
         P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key] = row
 
     return {
@@ -29998,13 +30120,22 @@ def _p596_selected_timeout_retry_queue_consumption_truth(
         "symbol": sym,
         "signal": sig,
         "retry_kind": retry_kind,
-        "attempts": int(row.get("attempts") or 0),
+        "attempts": attempts,
         "requires_reconcile_before_retry": bool(row.get("requires_reconcile_before_retry")),
         "clean_to_retry": clean_to_retry,
-        "consumable_next_scan": bool(clean_to_retry and not bool(row.get("requires_reconcile_before_retry"))),
+        "consumable_next_scan": bool(
+            clean_to_retry
+            and not bool(row.get("requires_reconcile_before_retry"))
+            and not bool(fast_fail_guard)
+        ),
+        "p598_retry_fast_fail_guard": bool(fast_fail_guard),
+        "p598_submit_timeout_trace": _p598_submit_timeout_trace(sym, sig),
         "retry_evidence_status": row.get("retry_evidence_status"),
         "evidence": evidence,
         "reason": (
+            "selected_timeout_retry_fast_failed_inspect_trace"
+            if fast_fail_guard
+            else
             "selected_timeout_retry_consumable_next_scan"
             if clean_to_retry and not bool(row.get("requires_reconcile_before_retry"))
             else "selected_timeout_retry_waiting_for_clean_reconcile"
@@ -30495,6 +30626,13 @@ def _p550_selected_submission_truth_snapshot_light(
             or reason_norm == "selected_submit_timeout"
             or str(submit_row.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
         )
+        p598_submit_timeout_trace = dict(
+            submit_row.get("p598_submit_timeout_trace")
+            or _p598_submit_timeout_trace(
+                sym,
+                submit_row.get("signal") or submit_row.get("strategy") or "daily_breakout",
+            )
+        )
         p596_retry_consumption_truth = _p596_selected_timeout_retry_queue_consumption_truth(
             sym,
             submit_row.get("signal") or submit_row.get("strategy") or "daily_breakout",
@@ -30619,6 +30757,7 @@ def _p550_selected_submission_truth_snapshot_light(
             "raw_selected_submit_timeout": bool(selected_submit_timeout),
             "selected_timeout_retry_consumable": bool(selected_timeout_retry_consumable),
             "p596_retry_queue_consumption_truth": dict(p596_retry_consumption_truth),
+            "p598_submit_timeout_trace": dict(p598_submit_timeout_trace) if selected_submit_timeout or selected_timeout_retry_consumable else {},
             "stale_selected_submit_timeout_suppressed": bool(stale_selected_submit_timeout),
             "selected_submit_timeout_age_sec": round(float(selected_submit_timeout_age_sec), 2) if selected_submit_timeout_age_sec is not None else None,
             "selected_submit_timeout_resolved": bool(selected_submit_timeout_resolved),
@@ -30647,6 +30786,19 @@ def _p550_selected_submission_truth_snapshot_light(
         row for row in rows
         if bool((row.get("p596_retry_queue_consumption_truth") or {}).get("queued"))
         and not bool((row.get("p596_retry_queue_consumption_truth") or {}).get("consumable_next_scan"))
+    ]
+    p598_timeout_trace_rows = [
+        {
+            "symbol": row.get("symbol"),
+            "submit_gap_type": row.get("submit_gap_type"),
+            "retry_evidence_status": row.get("retry_evidence_status"),
+            "last_stage": (row.get("p598_submit_timeout_trace") or {}).get("last_stage"),
+            "last_stage_utc": (row.get("p598_submit_timeout_trace") or {}).get("last_stage_utc"),
+            "event_count": (row.get("p598_submit_timeout_trace") or {}).get("event_count"),
+        }
+        for row in rows
+        if isinstance(row.get("p598_submit_timeout_trace"), dict)
+        and (row.get("p598_submit_timeout_trace") or {}).get("events")
     ]
     out = swing_diag_selected_submission_truth_light_snapshot(
         patch_version=PATCH_VERSION,
@@ -30732,6 +30884,20 @@ def _p550_selected_submission_truth_snapshot_light(
                 else "inspect_retry_queue_blockers"
                 if p596_retry_blocked_rows
                 else "no_selected_timeout_retry_queue_work"
+            ),
+        },
+        "p598_direct_submit_timeout_root_cause_trace": {
+            "enabled": True,
+            "trace_count": len(p598_timeout_trace_rows),
+            "trace_symbols": [
+                row.get("symbol") for row in p598_timeout_trace_rows if row.get("symbol")
+            ],
+            "rows": p598_timeout_trace_rows[:lim],
+            "retry_fast_fail_max_attempts": int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12),
+            "recommended_action": (
+                "inspect_trace_last_stage_for_hanging_submit_layer"
+                if p598_timeout_trace_rows
+                else "no_submit_timeout_trace_seen"
             ),
         },
         "market_hours_submit_possible": bool(p578_market_submit_truth.get("market_hours_submit_possible")),
@@ -45551,6 +45717,17 @@ def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int |
                     P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p588_reconcile_auto_cleared"] = True
                     P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p588_reconcile_auto_cleared_utc"] = datetime.now(timezone.utc).isoformat()
                     P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["retry_evidence_status"] = "selected_submit_timeout_clean_retry_waiting"
+                    attempts = int(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key].get("attempts") or 0)
+                    if attempts >= int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12):
+                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p598_retry_fast_fail_guard"] = True
+                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["retry_evidence_status"] = "selected_submit_timeout_retry_fast_failed_inspect_trace"
+                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p598_retry_fast_fail_reason"] = "selected_submit_timeout_retry_attempt_ceiling_reached"
+                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p598_retry_fast_fail_max_attempts"] = int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12)
+                        P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key]["p598_submit_timeout_trace"] = _p598_submit_timeout_trace(
+                            row.get("symbol"),
+                            row.get("signal"),
+                        )
+                        continue
                     row = dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE[key])
         candidate = dict(row.get("candidate") or {})
         candidate.update({
@@ -45578,6 +45755,10 @@ def _p387_pending_rate_limited_selected_submit_retry_candidates(max_items: int |
                 and row.get("p588_reconcile_auto_cleared")
                 and not bool(row.get("requires_reconcile_before_retry"))
             ),
+            "p598_submit_timeout_trace": _p598_submit_timeout_trace(
+                row.get("symbol"),
+                row.get("signal"),
+            ) if str((row or {}).get("retry_kind") or "").strip().lower() == "selected_submit_timeout" else {},
         })
         out.append(candidate)
     return out
@@ -45599,7 +45780,36 @@ def _p387_clear_rate_limit_selected_submit_retry(symbol: str, signal: str | None
 def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = None, source: str = "worker_scan") -> dict:
     """Submit an order originating from the scanner through the shared execution path."""
     source_name = str(source or "worker_scan").strip() or "worker_scan"
-    first = execute_entry_signal(symbol=symbol, side=side, signal=signal, source=source_name, meta=meta)
+    _p598_mark_submit_timeout_trace(
+        symbol,
+        signal,
+        "execute_entry_signal_start",
+        source=source_name,
+        side=side,
+        retry_attempt=(meta or {}).get("p387_rate_limit_retry_attempt") or (meta or {}).get("rate_limit_retry_attempt"),
+    )
+    try:
+        first = execute_entry_signal(symbol=symbol, side=side, signal=signal, source=source_name, meta=meta)
+        _p598_mark_submit_timeout_trace(
+            symbol,
+            signal,
+            "execute_entry_signal_returned",
+            source=source_name,
+            ok=bool(first.get("ok")),
+            submitted=bool(first.get("submitted")),
+            reason=first.get("reason"),
+            order_id=first.get("order_id") or first.get("submit_order_id"),
+        )
+    except Exception as exc:
+        _p598_mark_submit_timeout_trace(
+            symbol,
+            signal,
+            "execute_entry_signal_exception",
+            source=source_name,
+            error=str(exc),
+            exception_type=type(exc).__name__,
+        )
+        raise
 
     if not bool(ALPACA_SUBMIT_RATE_LIMIT_RETRY_ENABLED):
         return first
@@ -45642,7 +45852,24 @@ def submit_scan_trade(symbol: str, side: str, signal: str, meta: dict | None = N
     retry_meta = dict(meta or {})
     retry_meta["rate_limit_retry"] = True
     retry_meta["rate_limit_retry_attempt"] = 2
+    _p598_mark_submit_timeout_trace(
+        symbol,
+        signal,
+        "execute_entry_signal_rate_limit_retry_start",
+        source=source_name,
+        retry_attempt=2,
+    )
     retry = execute_entry_signal(symbol=symbol, side=side, signal=signal, source=source_name, meta=retry_meta)
+    _p598_mark_submit_timeout_trace(
+        symbol,
+        signal,
+        "execute_entry_signal_rate_limit_retry_returned",
+        source=source_name,
+        ok=bool(retry.get("ok")),
+        submitted=bool(retry.get("submitted")),
+        reason=retry.get("reason"),
+        order_id=retry.get("order_id") or retry.get("submit_order_id"),
+    )
     retry["rate_limit_retry"] = {
         "attempted": True,
         "first_reason": first.get("reason"),
@@ -66276,7 +66503,38 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 }
 
                 def _scanner_submit_call():
-                    return submit_scan_trade(sym, side, sig, meta=submit_meta_payload, source=submit_source)
+                    _p598_mark_submit_timeout_trace(
+                        sym,
+                        sig,
+                        "scanner_submit_call_start",
+                        source=submit_source,
+                        side=side,
+                        retry=bool(plan.get("p387_rate_limit_retry")),
+                        retry_attempt=plan.get("p387_rate_limit_retry_attempt"),
+                    )
+                    try:
+                        submit_response = submit_scan_trade(sym, side, sig, meta=submit_meta_payload, source=submit_source)
+                        _p598_mark_submit_timeout_trace(
+                            sym,
+                            sig,
+                            "scanner_submit_call_returned",
+                            source=submit_source,
+                            ok=bool((submit_response or {}).get("ok")),
+                            submitted=bool((submit_response or {}).get("submitted")),
+                            reason=(submit_response or {}).get("reason"),
+                            order_id=(submit_response or {}).get("order_id") or (submit_response or {}).get("submit_order_id"),
+                        )
+                        return submit_response
+                    except Exception as exc:
+                        _p598_mark_submit_timeout_trace(
+                            sym,
+                            sig,
+                            "scanner_submit_call_exception",
+                            source=submit_source,
+                            error=str(exc),
+                            exception_type=type(exc).__name__,
+                        )
+                        raise
 
                 resp = _p559_submit_selected_candidate_with_timeout(
                     _scanner_submit_call,
@@ -66324,6 +66582,10 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                     "submit_reason": submit_meta.get("reason"),
                     "submit_attempted": bool(submit_meta.get("attempted")),
                     "submit_order_id": submit_meta.get("order_id"),
+                    "p598_submit_timeout_trace": dict(
+                        resp.get("p598_submit_timeout_trace")
+                        or _p598_submit_timeout_trace(sym, sig)
+                    ),
                     "actual_submit_side_effect": bool(actual_side_effect),
                     "side_effect_reasons": _dedupe_candidate_reasons(side_effect_reasons),
                     "submit_gap": not bool(actual_side_effect),
