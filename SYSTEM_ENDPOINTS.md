@@ -8,6 +8,8 @@ https://trading-webhook-q4d5.onrender.com/dashboard/full
 https://trading-webhook-q4d5.onrender.com/dashboard/live
 https://trading-webhook-q4d5.onrender.com/dashboard/research
 https://trading-webhook-q4d5.onrender.com/diagnostics/actionable_watchlist
+https://trading-webhook-q4d5.onrender.com/diagnostics/active_exit_protection_truth
+https://trading-webhook-q4d5.onrender.com/diagnostics/active_exit_protection_truth?detail=heavy
 https://trading-webhook-q4d5.onrender.com/diagnostics/alerts
 https://trading-webhook-q4d5.onrender.com/diagnostics/alternate_entry_shadow
 https://trading-webhook-q4d5.onrender.com/diagnostics/bars_5m
@@ -184,6 +186,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/swing_core_status
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_current_profit_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_daily_health_brief
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_damage_guard
+https://trading-webhook-q4d5.onrender.com/diagnostics/swing_exit_protection_module_status
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_execution_module_status
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_fast_scan_trigger
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_full

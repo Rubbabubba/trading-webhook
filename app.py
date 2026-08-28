@@ -138,6 +138,11 @@ from swing_execution import (
     clamp_exit_qty as swing_exec_clamp_exit_qty,
     qty_source_from_plan as swing_exec_qty_source_from_plan,
 )
+from swing_exit_protection import (
+    SWING_EXIT_PROTECTION_MODULE_VERSION,
+    build_fast_active_exit_snapshot as swing_exit_build_fast_active_exit_snapshot,
+    exit_protection_module_status as swing_exit_protection_module_status,
+)
 from swing_execution_submit import (
     SWING_EXECUTION_SUBMIT_MODULE_VERSION,
     SwingLimitEntryConfig,
@@ -3072,7 +3077,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-619-worker-exit-light-active-check-deferral"
+PATCH_VERSION = "patch-620-exit-protection-module-extraction-prep-active-exit-fast-snapshot"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -50979,6 +50984,15 @@ def _p364_active_exit_protection_truth() -> dict:
     }
 
 
+def _p620_active_exit_protection_truth_fast(limit: int = 20) -> dict:
+    return swing_exit_build_fast_active_exit_snapshot(
+        positions_by_symbol=_p364_snapshot_position_by_symbol(),
+        trade_plan=TRADE_PLAN,
+        patch_version=PATCH_VERSION,
+        limit=limit,
+    )
+
+
 def _p364_same_day_stall_exit_churn_audit(limit: int = 25) -> dict:
     today = now_ny().date()
     rows = []
@@ -67504,8 +67518,20 @@ def diagnostics_post_fill_risk_recheck_evidence(limit: int = 20):
     return JSONResponse(content=_p416_post_fill_risk_recheck_evidence(limit=limit))
 
 @app.get("/diagnostics/active_exit_protection_truth")
-def diagnostics_active_exit_protection_truth():
-    return JSONResponse(content=_p364_active_exit_protection_truth())
+def diagnostics_active_exit_protection_truth(limit: int = 20, detail: str = "light", heavy: bool = False):
+    heavy_requested = bool(heavy) or str(detail or "").strip().lower() in {"heavy", "full", "detail", "debug"}
+    payload = _p364_active_exit_protection_truth() if heavy_requested else _p620_active_exit_protection_truth_fast(limit=limit)
+    if isinstance(payload, dict):
+        payload["default_detail"] = "light"
+        payload["requested_detail"] = "heavy" if heavy_requested else "light"
+        payload["swing_exit_protection_module_status"] = swing_exit_protection_module_status(
+            patch_version=PATCH_VERSION
+        )
+    return JSONResponse(content=payload)
+
+@app.get("/diagnostics/swing_exit_protection_module_status")
+def diagnostics_swing_exit_protection_module_status():
+    return JSONResponse(content=swing_exit_protection_module_status(patch_version=PATCH_VERSION))
 
 @app.get("/diagnostics/partial_profit_readiness_truth")
 def diagnostics_partial_profit_readiness_truth(limit: int = 25):
