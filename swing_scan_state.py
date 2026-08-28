@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_SCAN_STATE_MODULE_VERSION = "patch-586-scan-truth-normalizer-module-extraction"
+SWING_SCAN_STATE_MODULE_VERSION = "patch-611-scanner-state-contract-extraction-prep"
 
 
 def candidate_bearing_truth(scan: dict | None) -> dict:
@@ -200,6 +200,96 @@ def tombstone_historical_background_failure(background_truth: dict | None) -> di
     }
 
 
+def build_scanner_state_contract(
+    *,
+    scanner_status: str | None,
+    latest_scan: dict | None,
+    background_truth: dict | None,
+    active_warning_codes: list | None,
+    recommended_action: str | None = None,
+) -> dict:
+    def _intish(value: Any) -> int:
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return 0
+
+    latest = dict(latest_scan or {})
+    background = dict(background_truth or {})
+    warnings = [str(x) for x in list(active_warning_codes or []) if str(x or "").strip()]
+
+    reason = str(latest.get("reason") or "").strip()
+    selected_symbols = [
+        str(sym or "").strip().upper()
+        for sym in list(latest.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ]
+    status = str(scanner_status or "").strip() or "unknown"
+    background_active = bool(background.get("active"))
+    background_terminal = bool(background.get("terminal"))
+    latest_has_candidate_truth = bool(
+        _intish(latest.get("scanned")) > 0
+        or _intish(latest.get("eligible_total")) > 0
+        or _intish(latest.get("selected_total")) > 0
+        or bool(selected_symbols)
+    )
+    latest_terminal = bool(
+        reason
+        and reason
+        not in {
+            "outside_market_hours",
+            "regime_only_non_actionable",
+            "scan_request_received",
+            "scan_background_started",
+        }
+    )
+    actionable_scan_available = bool(latest_terminal and latest_has_candidate_truth)
+
+    if background_active and not background_terminal:
+        next_action = "wait_for_background_scan_terminal_close"
+    elif actionable_scan_available and selected_symbols:
+        next_action = "monitor_submission_and_active_position_truth"
+    elif actionable_scan_available:
+        next_action = "monitor_next_scan_or_candidate_gate_pressure"
+    elif warnings:
+        next_action = "inspect_scanner_light_warning_codes"
+    else:
+        next_action = recommended_action or "monitor_next_scan"
+
+    return {
+        "ok": True,
+        "module": "swing_scan_state",
+        "module_version": SWING_SCAN_STATE_MODULE_VERSION,
+        "status": status,
+        "healthy": status in {"healthy", "background_scan_running"},
+        "actionable_scan_available": actionable_scan_available,
+        "latest_scan": {
+            "ts_utc": latest.get("ts_utc"),
+            "reason": reason or None,
+            "source": latest.get("source") or latest.get("_scan_source"),
+            "scanned": latest.get("scanned"),
+            "signals": latest.get("signals"),
+            "would_trade": latest.get("would_trade"),
+            "blocked": latest.get("blocked"),
+            "eligible_total": latest.get("eligible_total"),
+            "selected_total": latest.get("selected_total"),
+            "selected_symbols": selected_symbols,
+            "duration_ms": latest.get("duration_ms"),
+        },
+        "background": {
+            "active": background_active,
+            "terminal": background_terminal,
+            "status": background.get("status"),
+            "stage": background.get("stage"),
+            "reason": background.get("reason"),
+            "scan_attempt_id": background.get("scan_attempt_id"),
+        },
+        "active_warning_codes": warnings,
+        "recommended_action": next_action,
+        "extraction_phase": "scanner_state_contract_prep",
+    }
+
+
 def scan_state_module_status(*, patch_version: str) -> dict:
     return {
         "ok": True,
@@ -216,6 +306,7 @@ def scan_state_module_status(*, patch_version: str) -> dict:
             "scan_truth_contract_normalization",
             "canonical_scan_contract_shape",
             "historical_background_failure_tombstone_shape",
+            "scanner_state_contract_shape",
         ],
-        "next_extraction_target": "move_last_candidate_bearing_scan_lookup_after_market_proof",
+        "next_extraction_target": "move_scanner_light_state_assembly_out_of_app_py",
     }
