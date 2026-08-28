@@ -140,6 +140,7 @@ from swing_execution import (
 )
 from swing_exit_protection import (
     SWING_EXIT_PROTECTION_MODULE_VERSION,
+    build_breakout_stall_loss_containment_report as swing_exit_build_breakout_stall_loss_report,
     build_fast_active_exit_snapshot as swing_exit_build_fast_active_exit_snapshot,
     exit_protection_module_status as swing_exit_protection_module_status,
 )
@@ -3077,7 +3078,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-621-exit-protection-row-contract-extraction-fast-parity"
+PATCH_VERSION = "patch-622-exit-protection-dynamic-evidence-split-prep"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -67540,64 +67541,23 @@ def diagnostics_partial_profit_readiness_truth(limit: int = 25):
 @app.get("/diagnostics/breakout_stall_loss_containment")
 def diagnostics_breakout_stall_loss_containment():
     truth = _p364_active_exit_protection_truth()
-    rows = []
-    for row in list(truth.get("rows") or []):
-        if not isinstance(row, dict):
-            continue
-        dynamic = dict(row.get("dynamic_exit_preview") or {})
-        partial_bias = dict(row.get("breakout_partial_profit_bias") or {})
-        reduce_first = dict(row.get("breakout_stall_loss_reduce_first") or {})
-        if partial_bias.get("is_daily_breakout") or reduce_first.get("is_daily_breakout"):
-            rows.append({
-                "symbol": row.get("symbol"),
-                "qty": row.get("qty"),
-                "entry_price": row.get("entry_price"),
-                "current_price": row.get("current_price"),
-                "unrealized_pl": row.get("unrealized_pl"),
-                "closest_exit_reason": row.get("closest_exit_reason"),
-                "dynamic_flags": dynamic.get("flags"),
-                "stall_r": dynamic.get("stall_r"),
-                "partial_profit_ready": dynamic.get("partial_profit_ready"),
-                "partial_profit_qty": dynamic.get("partial_profit_qty"),
-                "partial_profit_reason": dynamic.get("partial_profit_reason"),
-                "stall_exit": dynamic.get("stall_exit"),
-                "stall_loss_guard": dynamic.get("stall_loss_guard"),
-                "breakout_partial_profit_bias": partial_bias,
-                "breakout_stall_loss_reduce_first": reduce_first,
-            })
-
-    return JSONResponse(content={
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "breakout_stall_loss_containment",
-        "enabled": {
-            "breakout_partial_profit_bias": bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
-            "breakout_stall_loss_reduce_first": bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
+    payload = swing_exit_build_breakout_stall_loss_report(
+        active_exit_truth=truth,
+        config={
+            "enabled": {
+                "breakout_partial_profit_bias": bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
+                "breakout_stall_loss_reduce_first": bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
+            },
+            "config": {
+                "breakout_partial_profit_r": float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.0),
+                "breakout_partial_profit_fraction": float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.0),
+                "breakout_stall_loss_reduce_fraction": float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.0),
+                "partial_profit_min_qty": float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+            },
         },
-        "config": {
-            "breakout_partial_profit_r": float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.0),
-            "breakout_partial_profit_fraction": float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.0),
-            "breakout_stall_loss_reduce_fraction": float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.0),
-            "partial_profit_min_qty": float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
-        },
-        "breakout_position_count": len(rows),
-        "partial_profit_bias_ready_symbols": [
-            row.get("symbol") for row in rows
-            if bool((row.get("breakout_partial_profit_bias") or {}).get("applies"))
-        ],
-        "stall_loss_reduce_first_ready_symbols": [
-            row.get("symbol") for row in rows
-            if bool((row.get("breakout_stall_loss_reduce_first") or {}).get("applies"))
-        ],
-        "rows": rows,
-        "recommended_action": (
-            "worker_exit_should_reduce_breakout_stall_loss_candidates"
-            if any(bool((row.get("breakout_stall_loss_reduce_first") or {}).get("applies")) for row in rows)
-            else "worker_exit_should_take_breakout_partial_profit"
-            if any(bool((row.get("breakout_partial_profit_bias") or {}).get("applies")) for row in rows)
-            else "monitor_active_breakout_positions"
-        ),
-    })
+        patch_version=PATCH_VERSION,
+    )
+    return JSONResponse(content=payload)
 
 @app.get("/diagnostics/broker_native_position_risk_truth")
 def diagnostics_broker_native_position_risk_truth():

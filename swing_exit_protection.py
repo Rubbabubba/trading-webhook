@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-621-exit-protection-row-contract-extraction"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-622-exit-dynamic-evidence-split-prep"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -298,6 +298,77 @@ def build_fast_active_exit_snapshot(
     }
 
 
+def breakout_dynamic_evidence_row(row: dict | None) -> dict | None:
+    source = dict(row or {})
+    dynamic = dict(source.get("dynamic_exit_preview") or {})
+    partial_bias = dict(source.get("breakout_partial_profit_bias") or {})
+    reduce_first = dict(source.get("breakout_stall_loss_reduce_first") or {})
+    if not (partial_bias.get("is_daily_breakout") or reduce_first.get("is_daily_breakout")):
+        return None
+    return {
+        "symbol": source.get("symbol"),
+        "qty": source.get("qty"),
+        "entry_price": source.get("entry_price"),
+        "current_price": source.get("current_price"),
+        "unrealized_pl": source.get("unrealized_pl"),
+        "closest_exit_reason": source.get("closest_exit_reason"),
+        "dynamic_flags": dynamic.get("flags"),
+        "stall_r": dynamic.get("stall_r"),
+        "partial_profit_ready": dynamic.get("partial_profit_ready"),
+        "partial_profit_qty": dynamic.get("partial_profit_qty"),
+        "partial_profit_reason": dynamic.get("partial_profit_reason"),
+        "stall_exit": dynamic.get("stall_exit"),
+        "stall_loss_guard": dynamic.get("stall_loss_guard"),
+        "breakout_partial_profit_bias": partial_bias,
+        "breakout_stall_loss_reduce_first": reduce_first,
+    }
+
+
+def build_breakout_stall_loss_containment_report(
+    *,
+    active_exit_truth: dict | None,
+    config: dict | None,
+    patch_version: str,
+) -> dict:
+    rows = []
+    for row in list((active_exit_truth or {}).get("rows") or []):
+        if not isinstance(row, dict):
+            continue
+        evidence = breakout_dynamic_evidence_row(row)
+        if evidence:
+            rows.append(evidence)
+
+    partial_ready = [
+        row.get("symbol") for row in rows
+        if bool((row.get("breakout_partial_profit_bias") or {}).get("applies"))
+    ]
+    reduce_ready = [
+        row.get("symbol") for row in rows
+        if bool((row.get("breakout_stall_loss_reduce_first") or {}).get("applies"))
+    ]
+
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "breakout_stall_loss_containment",
+        "source": "swing_exit_protection_dynamic_evidence_report",
+        "enabled": dict((config or {}).get("enabled") or {}),
+        "config": dict((config or {}).get("config") or {}),
+        "breakout_position_count": len(rows),
+        "partial_profit_bias_ready_symbols": partial_ready,
+        "stall_loss_reduce_first_ready_symbols": reduce_ready,
+        "rows": rows,
+        "module_status": exit_protection_module_status(patch_version=patch_version),
+        "recommended_action": (
+            "worker_exit_should_reduce_breakout_stall_loss_candidates"
+            if reduce_ready
+            else "worker_exit_should_take_breakout_partial_profit"
+            if partial_ready
+            else "monitor_active_breakout_positions"
+        ),
+    }
+
+
 def exit_protection_module_status(*, patch_version: str) -> dict:
     return {
         "ok": True,
@@ -315,7 +386,8 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "position_protection_status_classifier",
             "pending_entry_protection_contract",
             "broker_position_plan_recovery_contract",
+            "breakout_dynamic_evidence_report_shape",
             "exit_protection_module_status",
         ],
-        "next_extraction_target": "move_active_exit_protection_truth_out_of_app_py",
+        "next_extraction_target": "move_dynamic_exit_preview_calculation_out_of_app_py",
     }
