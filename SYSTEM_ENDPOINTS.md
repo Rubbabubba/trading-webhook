@@ -37,6 +37,8 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/current_open_stall_risk_pr
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_execution_proof
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_preview
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth
+https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth?detail=expanded
+https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth?heavy=true
 https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_attribution_recovery_lab
 https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_circuit_release_criteria
 https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_rollback_lab

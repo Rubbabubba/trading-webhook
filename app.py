@@ -3072,7 +3072,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-616-fast-ledger-pure-memory-snapshot-native-broker-verification-truth"
+PATCH_VERSION = "patch-617-current-scan-pure-cache-snapshot-heavy-detail-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -42568,6 +42568,204 @@ def _p565_compact_current_scan_row(row: dict | None) -> dict:
         out["rejection_reason_count"] = len(reasons)
     return out
 
+def _p617_current_scan_suppression_truth_snapshot(limit: int = 50) -> dict:
+    lim = max(1, min(int(limit or 50), 50))
+    latest = dict(LAST_SCAN or {})
+    latest_summary = dict(latest.get("summary") or {})
+    actionable = dict(LAST_ACTIONABLE_MARKET_SCAN or {})
+    actionable_summary = dict(actionable.get("summary") or {})
+    scan = latest
+    summary = latest_summary
+    scan_source = "last_scan"
+    if actionable and (
+        actionable_summary.get("candidate_rows_for_truth")
+        or actionable_summary.get("selected_candidate_rows_for_truth")
+        or actionable_summary.get("top_new_entry_candidates")
+        or actionable_summary.get("top_candidates")
+        or actionable_summary.get("rejection_counts")
+        or actionable_summary.get("top_rejection_reasons")
+    ):
+        scan = actionable
+        summary = actionable_summary
+        scan_source = "last_actionable_market_scan"
+
+    row_sources = (
+        ("selected_candidate_rows_for_truth", summary.get("selected_candidate_rows_for_truth")),
+        ("candidate_rows_for_truth", summary.get("candidate_rows_for_truth")),
+        ("top_new_entry_candidates", summary.get("top_new_entry_candidates")),
+        ("top_candidates", summary.get("top_candidates")),
+        ("latest_scan_candidate_rows", scan.get("candidate_rows")),
+    )
+    rows_all: list[dict] = []
+    seen_symbols: set[str] = set()
+    row_source = "none"
+    for name, source_rows in row_sources:
+        for row in list(source_rows or []):
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "").strip().upper()
+            if not sym or sym in seen_symbols:
+                continue
+            item = _p565_compact_current_scan_row(row)
+            item["symbol"] = sym
+            rows_all.append(item)
+            seen_symbols.add(sym)
+            row_source = name
+            if len(rows_all) >= lim:
+                break
+        if rows_all:
+            break
+
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("selected_symbols") or scan.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    selected_symbol_set = set(selected_symbols)
+    for row in rows_all:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if selected_symbol_set:
+            row["selected"] = bool(sym in selected_symbol_set)
+
+    eligible_rows = [
+        row for row in rows_all
+        if bool(row.get("eligible")) and not bool(row.get("open_position"))
+    ]
+    reason_counts = {
+        str(reason): int(count or 0)
+        for reason, count in dict(summary.get("rejection_counts") or {}).items()
+        if str(reason).strip()
+    }
+    if not reason_counts:
+        for item in list(summary.get("top_rejection_reasons") or []):
+            if not isinstance(item, dict):
+                continue
+            reason = str(item.get("reason") or "").strip()
+            if reason:
+                reason_counts[reason] = int(item.get("count") or 0)
+    reason_counts = dict(sorted(reason_counts.items(), key=lambda item: item[1], reverse=True))
+
+    candidates_total = int(
+        summary.get("candidates_total")
+        or summary.get("candidate_count")
+        or scan.get("candidates_total")
+        or len(rows_all)
+        or 0
+    )
+    eligible_total = int(
+        summary.get("eligible_total")
+        or summary.get("eligible_count")
+        or len(eligible_rows)
+        or 0
+    )
+    selected_total = len(selected_symbols)
+    symbols_eval_total = int(summary.get("symbols_eval_total") or scan.get("scanned") or candidates_total or 0)
+    phase = str(summary.get("scan_truth_phase") or "").strip()
+    latest_reason = str(scan.get("reason") or summary.get("scan_reason") or "").strip().lower()
+    regime_only = bool(
+        phase in {"regime_to_candidate_fast_publish", "regime_truth_only_before_candidate_eval"}
+        or summary.get("p474_regime_fast_publish")
+        or summary.get("p470_regime_budget_close")
+    )
+    has_candidate_truth = bool(symbols_eval_total or candidates_total or rows_all or reason_counts)
+    trade_judgable = bool(has_candidate_truth and not regime_only and latest_reason not in {"outside_market_hours", "scan_exception"})
+
+    if selected_symbols:
+        status = "selecting"
+        recommended_action = "monitor_submissions"
+    elif eligible_rows:
+        status = "eligible_new_entry_not_selected"
+        recommended_action = "sync_selected_symbols_from_current_eligible_contract_rows"
+    elif rows_all or reason_counts:
+        status = "no_current_eligible_candidates"
+        recommended_action = "wait_for_better_setup_or_review_near_misses"
+    elif not trade_judgable:
+        status = "scan_not_trade_judgable"
+        recommended_action = "wait_for_candidate_bearing_scan_completion"
+    else:
+        status = "no_candidate_flow"
+        recommended_action = "inspect_scanner_runtime"
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "current_scan_suppression_truth",
+        "payload_mode": "pure_cache_fast_snapshot",
+        "source": "p617_current_scan_pure_cache_snapshot",
+        "read_only": True,
+        "fast_contract": "no_runtime_restore_no_effective_scan_builder_no_broker_no_candidate_rebuild",
+        "does_not_recompute_candidate_payload": True,
+        "does_not_fetch_bars": True,
+        "does_not_call_broker": True,
+        "does_not_call_effective_scan_builder": True,
+        "heavy_available": True,
+        "heavy_url_hint": "/diagnostics/current_scan_suppression_truth?heavy=true&limit=10",
+        "expanded_url_hint": "/diagnostics/current_scan_suppression_truth?detail=expanded&limit=10",
+        "status": status,
+        "recommended_action": recommended_action,
+        "effective_market_scan_source": scan_source,
+        "candidate_bearing_scan": bool(has_candidate_truth),
+        "trade_judgable": bool(trade_judgable),
+        "regime_only_non_actionable": bool(regime_only),
+        "p475_scan_truth_contract": {
+            "candidate_bearing": bool(has_candidate_truth),
+            "trade_judgable": bool(trade_judgable),
+            "regime_only_non_actionable": bool(regime_only),
+            "symbols_eval_total": symbols_eval_total,
+            "candidates_total": candidates_total,
+            "eligible_total": eligible_total,
+            "selected_total": selected_total,
+            "has_candidate_rows": bool(rows_all),
+            "scan_truth_phase": phase or None,
+            "source": "p617_inline_cache_truth",
+        },
+        "latest_scan": {
+            "ts_utc": scan.get("ts_utc"),
+            "reason": scan.get("reason") or summary.get("scan_reason"),
+            "scanned": scan.get("scanned"),
+            "signals": scan.get("signals"),
+            "would_trade": scan.get("would_trade"),
+            "blocked": scan.get("blocked"),
+            "duration_ms": scan.get("duration_ms"),
+            "source": scan_source,
+            "runtime_budget_sanitized": bool(scan.get("runtime_budget_sanitized")),
+        },
+        "runtime_universe_coverage": {
+            "omitted_from_fast_payload": True,
+            "available_in_heavy": True,
+        },
+        "candidate_count": candidates_total,
+        "display_candidate_count": len(rows_all),
+        "eligible_count": eligible_total,
+        "eligible_symbols": [row.get("symbol") for row in eligible_rows],
+        "eligible_not_selected_count": len(eligible_rows) if not selected_symbols else 0,
+        "eligible_not_selected_symbols": [row.get("symbol") for row in eligible_rows] if not selected_symbols else [],
+        "selected_total": selected_total,
+        "selected_symbols": selected_symbols,
+        "reason_counts": reason_counts,
+        "candidate_rows": rows_all[:lim],
+        "eligible_new_entry_rows_all": eligible_rows[:lim],
+        "top_candidates": rows_all[:min(lim, 10)],
+        "top_new_entry_candidates": [
+            row for row in rows_all
+            if not bool(row.get("open_position"))
+        ][:min(lim, 10)],
+        "compact_row_fields": True,
+        "omitted_heavy_fields": [
+            "runtime_universe_coverage_rebuild",
+            "canonical_candidate_handoff",
+            "candidate_eval_module_full_status",
+            "full_candidate_row_payload",
+        ],
+        "cache_truth": {
+            "raw_last_scan_has_summary": bool(latest_summary),
+            "last_actionable_scan_has_summary": bool(actionable_summary),
+            "preferred_scan_source": scan_source,
+            "candidate_row_source": row_source,
+            "row_walk_limit": lim,
+        },
+    }
+
 def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
     lim = max(1, min(int(limit or 50), 50))
     scan_source = "last_scan"
@@ -67610,13 +67808,18 @@ def diagnostics_swing_daily_health_brief():
     return _p277_swing_daily_health_brief()
 
 @app.get("/diagnostics/current_scan_suppression_truth")
-def diagnostics_current_scan_suppression_truth(limit: int = 50, heavy: bool = False):
+def diagnostics_current_scan_suppression_truth(limit: int = 50, heavy: bool = False, detail: str = "light"):
     if bool(heavy):
         _ensure_runtime_state_loaded()
         return _p277h_current_scan_suppression_truth(limit=limit)
     if not LAST_SCAN and not LAST_ACTIONABLE_MARKET_SCAN:
         _ensure_runtime_state_loaded()
-    return _p565_current_scan_suppression_truth_fast(limit=limit)
+    if str(detail or "").strip().lower() in {"expanded", "legacy_fast"}:
+        return _p565_current_scan_suppression_truth_fast(limit=limit)
+    if str(detail or "").strip().lower() in {"heavy", "full"}:
+        _ensure_runtime_state_loaded()
+        return _p277h_current_scan_suppression_truth(limit=limit)
+    return _p617_current_scan_suppression_truth_snapshot(limit=limit)
 
 @app.get("/diagnostics/defensive_tier_near_miss_report")
 def diagnostics_defensive_tier_near_miss_report(limit: int = 50):
