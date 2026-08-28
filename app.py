@@ -2013,6 +2013,54 @@ SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN = getenv_int_any(
     "SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN",
     default=1,
 )
+SWING_CROSS_REGIME_WINNER_SLEEVE_DEFAULT_SYMBOLS = (
+    "BAC,JPM,V,MA,ANET,MRVL,UBER,SMCI,NFLX,CRM,ADBE,PLTR,SPY,QQQ"
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_ENABLED = env_bool_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_ENABLED",
+    default=True,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_SYMBOLS = getenv_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_SYMBOLS",
+    default=SWING_CROSS_REGIME_WINNER_SLEEVE_DEFAULT_SYMBOLS,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_RISK_DOLLARS = getenv_float_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_RISK_DOLLARS",
+    default=60.0,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_TARGET_R_MULT = getenv_float_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_TARGET_R_MULT",
+    default=2.0,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_RANK_SCORE = getenv_float_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_RANK_SCORE",
+    default=103.0,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_BELOW_BREAKOUT_PCT = getenv_float_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_BELOW_BREAKOUT_PCT",
+    default=0.09,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_RISK_PER_SHARE_PCT",
+    default=0.12,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_CLOSE_TO_HIGH_PCT = getenv_float_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_CLOSE_TO_HIGH_PCT",
+    default=0.985,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_TARGET_PATH_SCORE = getenv_float_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_TARGET_PATH_SCORE",
+    default=0.0,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_ENTRIES_PER_DAY = getenv_int_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_ENTRIES_PER_DAY",
+    default=3,
+)
+SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_ENTRIES_PER_SCAN = getenv_int_any(
+    "SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_ENTRIES_PER_SCAN",
+    default=1,
+)
+
 SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED = env_bool_any(
     "SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED",
     default=True,
@@ -3003,7 +3051,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-608-worker-effective-terminal-heartbeat-cleanup"
+PATCH_VERSION = "patch-609-cross-regime-winner-sleeve-production-profile-universe-priority-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -24945,6 +24993,43 @@ def _p300_selection_contract_cleanup(rows: list | None) -> list[dict]:
         cleaned.append(c)
     return cleaned
 
+def _p609_cross_regime_winner_sleeve_profile() -> dict:
+    symbols = str(
+        SWING_CROSS_REGIME_WINNER_SLEEVE_SYMBOLS
+        or SWING_CROSS_REGIME_WINNER_SLEEVE_DEFAULT_SYMBOLS
+        or ""
+    )
+    return {
+        "enabled": bool(SWING_CROSS_REGIME_WINNER_SLEEVE_ENABLED),
+        "name": "cross_regime_winner_sleeve",
+        "symbols": symbols,
+        "symbol_count": len(_dedupe_keep_order([s for s in symbols.split(",") if s.strip()])),
+        "contract": {
+            "risk_dollars": float(SWING_CROSS_REGIME_WINNER_SLEEVE_RISK_DOLLARS),
+            "target_r_mult": float(SWING_CROSS_REGIME_WINNER_SLEEVE_TARGET_R_MULT),
+            "min_rank_score": float(SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_RANK_SCORE),
+            "max_below_breakout_pct": float(SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_BELOW_BREAKOUT_PCT),
+            "max_risk_per_share_pct": float(SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_RISK_PER_SHARE_PCT),
+            "max_entries_per_day": int(SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_ENTRIES_PER_DAY),
+            "max_entries_per_scan": int(SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_ENTRIES_PER_SCAN),
+            "sleeve_symbols": symbols,
+            "sleeve_min_rank_score": float(SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_RANK_SCORE),
+            "sleeve_max_below_breakout_pct": float(SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_BELOW_BREAKOUT_PCT),
+            "sleeve_max_risk_pct": float(SWING_CROSS_REGIME_WINNER_SLEEVE_MAX_RISK_PER_SHARE_PCT),
+            "sleeve_min_close_to_high_pct": float(SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_CLOSE_TO_HIGH_PCT),
+            "sleeve_min_target_path_score": float(SWING_CROSS_REGIME_WINNER_SLEEVE_MIN_TARGET_PATH_SCORE),
+        },
+        "replay_basis": {
+            "recent_cross_regime_window": "last_14_completed_sessions",
+            "best_recent_scenario": "risk_60_daily_3_scan_1_target_2p0_rank_103_below_9pct",
+            "best_recent_total_pnl": 547.33,
+            "best_recent_win_rate": 0.8462,
+            "best_recent_avg_r": 0.7017,
+            "first_2k_window_total_pnl": 505.67,
+        },
+        "purpose": "primary capital allocation sleeve; broader universe remains discovery/watch coverage",
+    }
+
 def _p459_active_swing_regime_profile() -> dict:
     mode = str(SWING_FIRST_2K_REGIME_PROFILE_MODE or "auto").strip().lower()
     regime = dict(globals().get("LAST_REGIME_SNAPSHOT") or {})
@@ -24994,6 +25079,11 @@ def _p459_active_swing_regime_profile() -> dict:
             "max_entries_per_scan": int(SWING_FIRST_2K_CHOP_MAX_ENTRIES_PER_SCAN),
             "sleeve_symbols": str(SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS or ""),
         }
+        cross_profile = _p609_cross_regime_winner_sleeve_profile()
+        if bool(cross_profile.get("enabled")):
+            contract = dict(cross_profile.get("contract") or contract)
+            profile = "cross_regime_winner_sleeve"
+            reason = "recent_replay_prefers_cross_regime_winner_sleeve_during_non_momentum_tape"
     else:
         contract = {
             "risk_dollars": float(RISK_DOLLARS or 0.0),
@@ -25023,7 +25113,9 @@ def _p459_active_swing_regime_profile() -> dict:
             "momentum_best": "risk_60_daily_5_scan_1_target_2p0_rank_103_below_9pct",
             "chop_window": "2026-07-01_to_2026-07-31",
             "chop_best": "risk_30_daily_4_scan_2_target_1p5_rank_100_below_9pct",
+            "cross_regime_winner_sleeve": _p609_cross_regime_winner_sleeve_profile().get("replay_basis"),
         },
+        "cross_regime_winner_sleeve": _p609_cross_regime_winner_sleeve_profile(),
     }
 
 def _p459_effective_swing_risk_dollars() -> float:
@@ -25039,6 +25131,10 @@ def _p459_effective_swing_target_r_mult() -> float:
 def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
     profile = _p459_active_swing_regime_profile()
     contract = dict(profile.get("contract") or {})
+    def _contract_value(key: str, fallback):
+        value = contract.get(key)
+        return fallback if value is None or str(value).strip() == "" else value
+
     return SwingProductionContractConfig(
         production_reset_enabled=bool(SWING_PRODUCTION_RESET_ENABLED),
         min_rank_score=float(contract.get("min_rank_score") or SWING_PRODUCTION_RESET_MIN_RANK_SCORE),
@@ -25066,11 +25162,11 @@ def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
         near_rank_revival_max_entries_per_scan=int(SWING_PRODUCTION_NEAR_RANK_REVIVAL_MAX_ENTRIES_PER_SCAN),
         first_2k_geometry_sleeve_enabled=bool(SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED),
         first_2k_geometry_sleeve_symbols=str(contract.get("sleeve_symbols") or SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS),
-        first_2k_geometry_sleeve_min_rank_score=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE),
-        first_2k_geometry_sleeve_max_below_breakout_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT),
-        first_2k_geometry_sleeve_min_close_to_high_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT),
-        first_2k_geometry_sleeve_max_risk_pct=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT),
-        first_2k_geometry_sleeve_min_target_path_score=float(SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_TARGET_PATH_SCORE),
+        first_2k_geometry_sleeve_min_rank_score=float(_contract_value("sleeve_min_rank_score", SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE)),
+        first_2k_geometry_sleeve_max_below_breakout_pct=float(_contract_value("sleeve_max_below_breakout_pct", SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT)),
+        first_2k_geometry_sleeve_min_close_to_high_pct=float(_contract_value("sleeve_min_close_to_high_pct", SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT)),
+        first_2k_geometry_sleeve_max_risk_pct=float(_contract_value("sleeve_max_risk_pct", SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT)),
+        first_2k_geometry_sleeve_min_target_path_score=float(_contract_value("sleeve_min_target_path_score", SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_TARGET_PATH_SCORE)),
         first_2k_geometry_sleeve_max_entries_per_scan=int(contract.get("max_entries_per_scan") or SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN),
         regime_profile_enabled=bool(profile.get("enabled")),
         active_regime_profile=str(profile.get("active_profile") or "static"),
@@ -65360,11 +65456,19 @@ def diagnostics_swing_runtime_config():
                 "enabled": _cfg_bool("SWING_FIRST_2K_GEOMETRY_SLEEVE_ENABLED"),
                 "can_block_entries": False,
                 "symbols": _cfg_str("SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS"),
+                "effective_profile_symbols": str((first_2k_profile.get("contract") or {}).get("sleeve_symbols") or ""),
                 "min_rank_score": _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE", 0.0),
+                "effective_min_rank_score": float((first_2k_profile.get("contract") or {}).get("sleeve_min_rank_score") or _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_RANK_SCORE", 0.0)),
                 "max_below_breakout_pct": _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT", 0.0),
+                "effective_max_below_breakout_pct": float((first_2k_profile.get("contract") or {}).get("sleeve_max_below_breakout_pct") or _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_BELOW_BREAKOUT_PCT", 0.0)),
                 "min_close_to_high_pct": _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT", 0.0),
+                "effective_min_close_to_high_pct": float((first_2k_profile.get("contract") or {}).get("sleeve_min_close_to_high_pct") or _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MIN_CLOSE_TO_HIGH_PCT", 0.0)),
                 "max_risk_pct": _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT", 0.0),
+                "effective_max_risk_pct": float((first_2k_profile.get("contract") or {}).get("sleeve_max_risk_pct") or _cfg_float("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_RISK_PCT", 0.0)),
+                "effective_min_target_path_score": float((first_2k_profile.get("contract") or {}).get("sleeve_min_target_path_score") or 0.0),
                 "max_entries_per_scan": _cfg_int("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN", 0),
+                "effective_max_entries_per_scan": int((first_2k_profile.get("contract") or {}).get("max_entries_per_scan") or _cfg_int("SWING_FIRST_2K_GEOMETRY_SLEEVE_MAX_ENTRIES_PER_SCAN", 0)),
+                "cross_regime_winner_sleeve": first_2k_profile.get("cross_regime_winner_sleeve"),
                 "purpose": "single controlled near-breakout sleeve for first-2k/index style winners; replaces broad star-alignment loosening",
             },
             "dollar_risk_selection_truth": {
