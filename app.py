@@ -3052,7 +3052,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-611-scanner-state-contract-extraction-prep"
+PATCH_VERSION = "patch-612-exit-worker-trigger-queue-ordering-idempotency-skip-fast-forward"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -9821,7 +9821,19 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
             guard = meta.get("broker_qty_exit_clamp") if isinstance(meta.get("broker_qty_exit_clamp"), dict) else {}
             idem_guard = meta.get("same_day_exit_submit_idempotency") if isinstance(meta.get("same_day_exit_submit_idempotency"), dict) else {}
             action = str(row.get("action") or "")
-            if not guard and not idem_guard and action not in {"exit_blocked_broker_qty_zero", "exit_qty_clamped_to_broker_qty", "exit_submit_blocked_same_day_idempotency"}:
+            same_day_block_action = action in {
+                "blocked_same_day_exit",
+                "exit_submit_blocked_same_day_idempotency",
+                "exit_worker_idempotency_skip_fast_forward",
+            }
+            worker_budget_action = action == "worker_exit_budget_fast_close"
+            if (
+                not guard
+                and not idem_guard
+                and not same_day_block_action
+                and not worker_budget_action
+                and action not in {"exit_blocked_broker_qty_zero", "exit_qty_clamped_to_broker_qty"}
+            ):
                 continue
 
             rows.append({
@@ -9836,10 +9848,12 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
                 "requested_qty": guard.get("requested_qty"),
                 "broker_available_qty": guard.get("broker_available_qty"),
                 "clamped_qty": guard.get("clamped_qty"),
-                "blocked": bool(guard.get("blocked")),
-                "same_day_exit_idempotency_status": idem_guard.get("status"),
-                "same_day_exit_idempotency_blocked": bool(idem_guard.get("blocked")),
+                "blocked": bool(guard.get("blocked") or same_day_block_action),
+                "same_day_exit_idempotency_status": idem_guard.get("status") or ("blocked" if same_day_block_action else None),
+                "same_day_exit_idempotency_blocked": bool(idem_guard.get("blocked") or same_day_block_action),
                 "same_day_exit_prior_order_id": idem_guard.get("prior_order_id"),
+                "skip_fast_forward": bool(meta.get("skip_fast_forward")),
+                "worker_budget_exceeded": bool((meta.get("p607_worker_budget_truth") or {}).get("budget_exceeded") if isinstance(meta.get("p607_worker_budget_truth"), dict) else False),
             })
     except Exception as exc:
         return {
@@ -9850,7 +9864,7 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
             "items": rows,
         }
 
-    blocked = [r for r in rows if bool(r.get("blocked"))]
+    blocked = [r for r in rows if bool(r.get("blocked") or r.get("same_day_exit_idempotency_blocked"))]
     clamped = [
         r for r in rows
         if str(r.get("guard_reason") or "") == "exit_qty_clamped_to_broker_qty"
@@ -49882,6 +49896,181 @@ def _p607_worker_recovery_first_truth(reconcile_actions: list[dict], started_mon
     }
 
 
+def _p612_exit_trigger_priority_queue(limit: int = 50) -> dict:
+    try:
+        protection_truth = _p364_active_exit_protection_truth()
+        rows = [
+            dict(row or {})
+            for row in list(protection_truth.get("actionable_exit_watch") or [])
+            if isinstance(row, dict) and bool(row.get("exit_trigger_now"))
+        ]
+    except Exception as exc:
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "exit_trigger_priority_queue",
+            "error": str(exc),
+            "symbols": [],
+            "rows": [],
+            "recommended_action": "fall_back_to_trade_plan_iteration_order",
+        }
+
+    reason_rank = {
+        "forbidden_short_position_cleanup": 0,
+        "stop": 1,
+        "profit_lock_stop": 2,
+        "target": 3,
+        "daily_breakout_profit_giveback_preservation_exit": 4,
+        "daily_breakout_failed_followthrough_exit": 5,
+        "time_exit": 6,
+    }
+
+    def _sort_key(row: dict) -> tuple:
+        reason = str(row.get("closest_exit_reason") or "none")
+        blocked = bool(row.get("same_day_exit_blocked_for_closest_reason"))
+        return (
+            1 if blocked else 0,
+            int(reason_rank.get(reason, 99)),
+            str(row.get("symbol") or ""),
+        )
+
+    rows.sort(key=_sort_key)
+    symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if str(row.get("symbol") or "").strip()
+    ])[:max(1, min(int(limit or 50), 100))]
+    rows = [row for row in rows if str(row.get("symbol") or "").strip().upper() in set(symbols)]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "exit_trigger_priority_queue",
+        "source": "active_exit_protection_truth",
+        "trigger_count": len(rows),
+        "symbols": symbols,
+        "reasons_by_symbol": {
+            str(row.get("symbol") or "").strip().upper(): str(row.get("closest_exit_reason") or "none")
+            for row in rows
+            if str(row.get("symbol") or "").strip()
+        },
+        "blocked_same_day_symbols": [
+            str(row.get("symbol") or "").strip().upper()
+            for row in rows
+            if bool(row.get("same_day_exit_blocked_for_closest_reason")) and str(row.get("symbol") or "").strip()
+        ],
+        "rows": rows,
+        "recommended_action": "worker_exit_process_trigger_symbols_first" if symbols else "no_exit_triggers_due",
+    }
+
+
+def _p612_order_exit_plan_items(plan_items: list[tuple], priority_symbols: list[str]) -> list[tuple]:
+    plan_item_map = {
+        str(sym or "").strip().upper(): (sym, plan)
+        for sym, plan in list(plan_items or [])
+        if str(sym or "").strip()
+    }
+    priority_set = {str(sym or "").strip().upper() for sym in list(priority_symbols or []) if str(sym or "").strip()}
+    ordered = []
+    for sym in list(priority_symbols or []):
+        key = str(sym or "").strip().upper()
+        item = plan_item_map.get(key)
+        if item is not None:
+            ordered.append(item)
+    for sym, plan in list(plan_items or []):
+        if str(sym or "").strip().upper() not in priority_set:
+            ordered.append((sym, plan))
+    return ordered
+
+
+def _p612_same_day_exit_fast_forward_result(symbol: str, plan: dict, reason: str, **extra) -> dict:
+    sym = str(symbol or "").strip().upper()
+    meta = {
+        "same_day_exit_submit_idempotency": {
+            "status": "blocked",
+            "blocked": True,
+            "reason": str(reason or "same_day_exit_blocked"),
+        },
+        "skip_fast_forward": True,
+        "patch_version": PATCH_VERSION,
+    }
+    if extra:
+        meta["context"] = dict(extra)
+    try:
+        record_decision(
+            "EXIT",
+            "worker_exit",
+            sym,
+            side=str((plan or {}).get("side") or "buy"),
+            signal=str((plan or {}).get("signal") or ""),
+            action="exit_worker_idempotency_skip_fast_forward",
+            reason=str(reason or "same_day_exit_blocked"),
+            meta=meta,
+        )
+    except Exception:
+        pass
+    return {
+        "symbol": sym,
+        "action": "exit_worker_idempotency_skip_fast_forward",
+        "reason": str(reason or "same_day_exit_blocked"),
+        "same_day_exit_idempotency_blocked": True,
+        "skip_fast_forward": True,
+        **dict(extra),
+    }
+
+
+def _p612_active_exit_worker_gap_truth(display_status: str, active_exit_truth: dict | None = None) -> dict:
+    status = str(display_status or "").strip().lower()
+    should_check = status in {"started", "budget_fast_close"}
+    if not should_check and active_exit_truth is None:
+        return {
+            "checked": False,
+            "reason": "worker_status_not_started_or_budget_fast_close",
+            "worker_status": status,
+            "active_exit_watch_count": None,
+            "status_unhealthy": False,
+            "recommended_action": "none",
+        }
+    try:
+        truth = dict(active_exit_truth or _p364_active_exit_protection_truth())
+        summary = dict(truth.get("summary") or {})
+        watch_rows = [
+            dict(row or {})
+            for row in list(truth.get("actionable_exit_watch") or [])
+            if isinstance(row, dict)
+        ]
+        due_symbols = _dedupe_keep_order([
+            str(row.get("symbol") or "").strip().upper()
+            for row in watch_rows
+            if bool(row.get("exit_trigger_now")) and str(row.get("symbol") or "").strip()
+        ])
+        watch_count = int(summary.get("exit_watch_count") or len(watch_rows) or 0)
+        unhealthy = bool(status in {"started", "budget_fast_close"} and watch_count > 0)
+        return {
+            "checked": True,
+            "worker_status": status,
+            "active_exit_watch_count": watch_count,
+            "due_exit_symbols": due_symbols,
+            "due_exit_count": len(due_symbols),
+            "status_unhealthy": unhealthy,
+            "recommended_action": (
+                "worker_exit_has_due_exits_without_terminal_completion"
+                if unhealthy
+                else "monitor_exit_worker"
+                if watch_count > 0
+                else "none"
+            ),
+        }
+    except Exception as exc:
+        return {
+            "checked": True,
+            "worker_status": status,
+            "error": str(exc),
+            "active_exit_watch_count": None,
+            "status_unhealthy": bool(status in {"started", "budget_fast_close"}),
+            "recommended_action": "inspect_active_exit_protection_truth",
+        }
+
+
 def _p364_active_exit_protection_truth() -> dict:
     positions_by_symbol = _p364_snapshot_position_by_symbol()
     p605_snapshot_truth = _p605_broker_position_snapshot_truth()
@@ -51118,6 +51307,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             "reconcile": reconcile_actions,
         }
 
+    p612_exit_trigger_queue = _p612_exit_trigger_priority_queue()
     daily_goal_preservation = _p342_daily_goal_preservation_exit_plan()
     if bool(daily_goal_preservation.get("enabled")) and bool(daily_goal_preservation.get("should_act")):
         for row in list(daily_goal_preservation.get("rows") or []):
@@ -51174,8 +51364,13 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 meta={"daily_goal_preservation": daily_goal_preservation, "result": out},
             )
 
-    # Manage active plans with stop/take
-    for symbol, plan in list(TRADE_PLAN.items()):
+    # Manage active plans with stop/take. Triggered exits are processed first so a
+    # stale/idempotent symbol cannot consume the cycle before due exits are reached.
+    p612_ordered_plan_items = _p612_order_exit_plan_items(
+        list(TRADE_PLAN.items()),
+        list(p612_exit_trigger_queue.get("symbols") or []),
+    )
+    for symbol, plan in p612_ordered_plan_items:
         p607_budget_truth = _p607_worker_budget_truth(worker_started_monotonic, stage=f"pre_symbol:{symbol}")
         if bool(p607_budget_truth.get("budget_exceeded")):
             results.append({
@@ -51183,12 +51378,28 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "action": "worker_exit_budget_fast_close",
                 "reason": "p607_runtime_budget_exceeded_before_symbol",
                 "p607_worker_budget_truth": p607_budget_truth,
+                "p612_exit_trigger_queue": p612_exit_trigger_queue,
             })
+            record_decision(
+                "EXIT",
+                "worker_exit",
+                str(symbol or "").upper(),
+                action="worker_exit_budget_fast_close",
+                reason="p607_runtime_budget_exceeded_before_symbol",
+                meta={
+                    "p607_worker_budget_truth": p607_budget_truth,
+                    "p612_exit_trigger_queue": {
+                        "trigger_count": p612_exit_trigger_queue.get("trigger_count"),
+                        "symbols": p612_exit_trigger_queue.get("symbols"),
+                    },
+                },
+            )
             update_exit_heartbeat(
                 status="budget_fast_close",
                 results=len(results),
                 reconcile=len(reconcile_actions),
                 p607_worker_budget_truth=p607_budget_truth,
+                p612_exit_trigger_queue=p612_exit_trigger_queue,
             )
             return {
                 "ok": True,
@@ -51198,6 +51409,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "reconcile": reconcile_actions,
                 "results": results,
                 "p607_worker_budget_truth": p607_budget_truth,
+                "p612_exit_trigger_queue": p612_exit_trigger_queue,
             }
 
         if not plan.get("active") and not _plan_is_pending_entry(plan):
@@ -51360,14 +51572,14 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             plan["last_exit_attempt_ts"] = now_ts
             reason = "daily_breakout_profit_giveback_preservation_exit"
             if same_day_exit_blocked(plan, reason=reason):
-                results.append({
-                    "symbol": symbol,
-                    "action": "blocked_same_day_exit",
-                    "reason": reason,
-                    "days_held": hold_days,
-                    "daily_breakout_profit_giveback": dynamic_exit.get("daily_breakout_profit_giveback"),
-                    "dynamic_flags": dynamic_exit.get("flags", []),
-                })
+                results.append(_p612_same_day_exit_fast_forward_result(
+                    symbol,
+                    plan,
+                    reason,
+                    days_held=hold_days,
+                    daily_breakout_profit_giveback=dynamic_exit.get("daily_breakout_profit_giveback"),
+                    dynamic_flags=dynamic_exit.get("flags", []),
+                ))
                 continue
 
             out = close_position(symbol, reason=reason, source="worker_exit")
@@ -51401,14 +51613,14 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             plan["last_exit_attempt_ts"] = now_ts
             reason = "daily_breakout_failed_followthrough_exit"
             if same_day_exit_blocked(plan, reason=reason):
-                results.append({
-                    "symbol": symbol,
-                    "action": "blocked_same_day_exit",
-                    "reason": reason,
-                    "days_held": hold_days,
-                    "daily_breakout_failed_followthrough": dynamic_exit.get("daily_breakout_failed_followthrough"),
-                    "dynamic_flags": dynamic_exit.get("flags", []),
-                })
+                results.append(_p612_same_day_exit_fast_forward_result(
+                    symbol,
+                    plan,
+                    reason,
+                    days_held=hold_days,
+                    daily_breakout_failed_followthrough=dynamic_exit.get("daily_breakout_failed_followthrough"),
+                    dynamic_flags=dynamic_exit.get("flags", []),
+                ))
                 continue
             out = close_position(symbol, reason=reason, source="worker_exit")
             if out.get("closed"):
@@ -51521,7 +51733,13 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             if dynamic_exit.get("time_exit_grace"):
                 results.append({"symbol": symbol, "action": "time_exit_grace", "days_held": hold_days, "price": px, "stop": stop_price, "take": take_price, "dynamic_flags": dynamic_exit.get("flags", [])})
             elif same_day_exit_blocked(plan, reason="time_exit"):
-                results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": "time_exit", "days_held": hold_days})
+                results.append(_p612_same_day_exit_fast_forward_result(
+                    symbol,
+                    plan,
+                    "time_exit",
+                    days_held=hold_days,
+                    dynamic_flags=dynamic_exit.get("flags", []),
+                ))
             else:
                 plan["last_exit_attempt_ts"] = now_ts
                 out = close_position(symbol, reason="time_exit", source="worker_exit")
@@ -51535,7 +51753,14 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             plan["last_exit_attempt_ts"] = now_ts
             reason = "stall_loss_guard" if "stall_loss_guard_ready" in set(dynamic_exit.get("flags") or []) else "stall_exit"
             if same_day_exit_blocked(plan, reason=reason):
-                results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": reason, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r")})
+                results.append(_p612_same_day_exit_fast_forward_result(
+                    symbol,
+                    plan,
+                    reason,
+                    days_held=hold_days,
+                    dynamic_flags=dynamic_exit.get("flags", []),
+                    stall_r=dynamic_exit.get("stall_r"),
+                ))
                 continue
             out = close_position(symbol, reason=reason, source="worker_exit")
             if out.get("closed"):
@@ -51550,7 +51775,13 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             plan["last_exit_attempt_ts"] = now_ts
             reason = "stop" if hit_stop else ("profit_lock_stop" if hit_profit_lock else "target")
             if same_day_exit_blocked(plan, reason=reason):
-                results.append({"symbol": symbol, "action": "blocked_same_day_exit", "reason": reason, "days_held": hold_days})
+                results.append(_p612_same_day_exit_fast_forward_result(
+                    symbol,
+                    plan,
+                    reason,
+                    days_held=hold_days,
+                    dynamic_flags=dynamic_exit.get("flags", []),
+                ))
                 continue
             out = close_position(symbol, reason=reason, source="worker_exit")
             if out.get("closed"):
@@ -51630,6 +51861,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "reconcile_count": len(reconcile_actions),
                 "daily_goal_preservation": daily_goal_preservation if "daily_goal_preservation" in locals() else {},
                 "p607_worker_budget_truth": p607_final_budget_truth,
+                "p612_exit_trigger_queue": p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
             },
         )
     update_exit_heartbeat(
@@ -51641,6 +51873,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         trades_today_worker_exit_forcing_enabled=bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
         trades_today_worker_exit_forcing_isolated=bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
         p607_worker_budget_truth=p607_final_budget_truth,
+        p612_exit_trigger_queue=p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
         snapshot_deferred_for_budget=bool(p607_final_budget_truth.get("budget_exceeded")),
     )
     return {
@@ -51650,6 +51883,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         "daily_goal_preservation": daily_goal_preservation if "daily_goal_preservation" in locals() else {},
         "results": results,
         "p607_worker_budget_truth": p607_final_budget_truth,
+        "p612_exit_trigger_queue": p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
         "snapshot_deferred_for_budget": bool(p607_final_budget_truth.get("budget_exceeded")),
     }
 
@@ -66253,10 +66487,14 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         and (age_sec is None or age_sec <= worker_error_fresh_window_sec)
     )
     sync_contract_ok = len(fresh_sync_guard_rows) == 0
-    healthy = bool(not heartbeat_error_fresh and not started_stale and sync_contract_ok and not error_like)
+    p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status)
+    p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
+    healthy = bool(not heartbeat_error_fresh and not started_stale and sync_contract_ok and not error_like and not p612_exit_worker_gap_unhealthy)
 
     if started_stale:
         recommended_action = "inspect_worker_exit_status_heavy"
+    elif p612_exit_worker_gap_unhealthy:
+        recommended_action = str(p612_exit_worker_gap_truth.get("recommended_action") or "inspect_active_exit_protection_truth")
     elif not sync_contract_ok:
         recommended_action = "inspect_fresh_sync_return_guard"
     elif heartbeat_error_fresh or error_like:
@@ -66311,11 +66549,8 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
             "reason": "fast_default_use_exit_submit_retry_readiness_endpoint",
             "endpoint": "/diagnostics/exit_submit_retry_readiness",
         },
-        "active_exit_summary": {
-            "skipped": True,
-            "reason": "fast_default_use_active_exit_protection_truth_endpoint",
-            "endpoint": "/diagnostics/active_exit_protection_truth",
-        },
+        "active_exit_summary": p612_exit_worker_gap_truth,
+        "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
         "trades_today_forcing_isolation": {
             "trades_today_enable": bool(TRADES_TODAY_ENABLE),
             "worker_exit_forcing_enabled": bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
@@ -66454,10 +66689,16 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     risk_evidence_error = post_fill_risk_recheck_evidence.get("error")
     exit_retry_action = str(exit_retry_readiness.get("recommended_action") or "none")
     exit_retry_clean = exit_retry_action in {"", "none"}
-    final_healthy = bool(healthy_base and sync_contract_ok and risk_evidence_ok and exit_retry_clean)
+    active_exit_truth = _p364_active_exit_protection_truth()
+    active_exit_summary = dict(active_exit_truth.get("summary") or {})
+    p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status, active_exit_truth=active_exit_truth)
+    p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
+    final_healthy = bool(healthy_base and sync_contract_ok and risk_evidence_ok and exit_retry_clean and not p612_exit_worker_gap_unhealthy)
 
     if started_stale:
         recommended_action = "investigate_worker_exit_started_without_completion"
+    elif p612_exit_worker_gap_unhealthy:
+        recommended_action = str(p612_exit_worker_gap_truth.get("recommended_action") or "inspect_active_exit_protection_truth")
     elif not sync_contract_ok:
         recommended_action = "inspect_fresh_sync_return_guard"
     elif not risk_evidence_ok:
@@ -66469,8 +66710,6 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     else:
         recommended_action = "none"
 
-    active_exit_truth = _p364_active_exit_protection_truth()
-    active_exit_summary = dict(active_exit_truth.get("summary") or {})
     heartbeat_giveback_symbols = list(hb.get("giveback_exit_due_symbols") or [])
     active_giveback_symbols = list(active_exit_summary.get("giveback_exit_due_symbols") or [])
     stale_giveback_heartbeat = bool(
@@ -66504,6 +66743,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
                 else "none"
             ),
         },
+        "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
