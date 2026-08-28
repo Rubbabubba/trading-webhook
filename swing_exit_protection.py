@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-623-breakout-stall-containment-light-snapshot"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-624-dynamic-exit-preview-module-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -298,6 +298,94 @@ def build_fast_active_exit_snapshot(
     }
 
 
+def build_breakout_partial_profit_bias_state(
+    *,
+    symbol: str,
+    qty: float,
+    qty_source: str,
+    qty_to_close: float,
+    unrealized_r: float,
+    is_daily_breakout: bool,
+    partial_taken: bool,
+    enabled: bool,
+    trigger_r: float,
+    fraction: float,
+    min_qty: float,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    available_qty = _safe_float(qty)
+    close_qty = _safe_float(qty_to_close)
+    trigger = _safe_float(trigger_r, 0.75)
+    applies = bool(
+        enabled
+        and is_daily_breakout
+        and available_qty > 0
+        and not partial_taken
+        and unrealized_r >= trigger
+        and close_qty >= _safe_float(min_qty)
+        and close_qty < available_qty
+    )
+
+    return {
+        "enabled": bool(enabled),
+        "symbol": sym,
+        "is_daily_breakout": bool(is_daily_breakout),
+        "applies": applies,
+        "reason": "breakout_partial_profit_bias_ready" if applies else "not_ready",
+        "unrealized_r": round(_safe_float(unrealized_r), 4),
+        "trigger_r": trigger,
+        "qty": round(available_qty, 4),
+        "qty_source": str(qty_source or "unknown"),
+        "qty_to_close": round(close_qty, 4),
+        "fraction": round(_safe_float(fraction), 4),
+        "partial_taken": bool(partial_taken),
+        "module_contract": "breakout_partial_profit_bias_state",
+    }
+
+
+def build_breakout_stall_loss_reduce_first_state(
+    *,
+    symbol: str,
+    qty: float,
+    qty_source: str,
+    qty_to_close: float,
+    unrealized_r: float,
+    is_daily_breakout: bool,
+    stall_loss_due: bool,
+    already_taken: bool,
+    enabled: bool,
+    fraction: float,
+    min_qty: float,
+) -> dict:
+    sym = str(symbol or "").strip().upper()
+    available_qty = _safe_float(qty)
+    close_qty = _safe_float(qty_to_close)
+    applies = bool(
+        enabled
+        and is_daily_breakout
+        and stall_loss_due
+        and close_qty >= _safe_float(min_qty)
+        and close_qty < available_qty
+        and not already_taken
+    )
+
+    return {
+        "enabled": bool(enabled),
+        "symbol": sym,
+        "is_daily_breakout": bool(is_daily_breakout),
+        "applies": applies,
+        "reason": "breakout_stall_loss_reduce_first_ready" if applies else "not_ready",
+        "stall_loss_due": bool(stall_loss_due),
+        "unrealized_r": round(_safe_float(unrealized_r), 4),
+        "qty": round(available_qty, 4),
+        "qty_source": str(qty_source or "unknown"),
+        "qty_to_close": round(close_qty, 4),
+        "fraction": round(_safe_float(fraction), 4),
+        "already_taken": bool(already_taken),
+        "module_contract": "breakout_stall_loss_reduce_first_state",
+    }
+
+
 def breakout_dynamic_evidence_row(row: dict | None) -> dict | None:
     source = dict(row or {})
     dynamic = dict(source.get("dynamic_exit_preview") or {})
@@ -466,9 +554,11 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "position_protection_status_classifier",
             "pending_entry_protection_contract",
             "broker_position_plan_recovery_contract",
+            "breakout_partial_profit_bias_state",
+            "breakout_stall_loss_reduce_first_state",
             "breakout_dynamic_evidence_report_shape",
             "breakout_stall_loss_fast_snapshot_shape",
             "exit_protection_module_status",
         ],
-        "next_extraction_target": "move_dynamic_exit_preview_calculation_out_of_app_py",
+        "next_extraction_target": "move_remaining_dynamic_exit_preview_calculation_out_of_app_py",
     }
