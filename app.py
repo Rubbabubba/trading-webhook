@@ -154,6 +154,7 @@ from swing_exit_protection import (
     build_fast_active_exit_snapshot as swing_exit_build_fast_active_exit_snapshot,
     build_partial_profit_state as swing_exit_build_partial_profit_state,
     build_time_exit_grace_state as swing_exit_build_time_exit_grace_state,
+    dynamic_exit_preview_contract_status as swing_exit_dynamic_preview_contract_status,
     exit_protection_module_status as swing_exit_protection_module_status,
 )
 from swing_execution_submit import (
@@ -3090,7 +3091,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-626-dynamic-exit-apply-helper-extraction-exit-wrapper-deletion-readiness"
+PATCH_VERSION = "patch-627-app-exit-preview-wrapper-tombstone-module-parity-status-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -45164,6 +45165,7 @@ def _p446_clamp_exit_qty(qty_to_close: float, available_qty: float) -> float:
     return _normalize_close_qty(float(swing_exec_clamp_exit_qty(qty_to_close, available_qty)))
 
 def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
+    """Compatibility shim: app.py supplies runtime facts, module owns decision shape."""
     plan = plan if isinstance(plan, dict) else {}
     dyn = dict(dynamic_exit or {})
     sym = str(symbol or plan.get("symbol") or "").strip().upper()
@@ -45176,7 +45178,7 @@ def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px:
     qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
     min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
 
-    return swing_exit_build_breakout_partial_profit_bias_state(
+    payload = swing_exit_build_breakout_partial_profit_bias_state(
         symbol=sym,
         qty=qty,
         qty_source=qty_source,
@@ -45189,9 +45191,13 @@ def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px:
         fraction=fraction,
         min_qty=min_qty,
     )
+    payload["app_wrapper_status"] = "compatibility_tombstone"
+    payload["app_wrapper_delete_ready_after"] = "live_parity_capture"
+    return payload
 
 
 def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
+    """Compatibility shim: app.py supplies runtime facts, module owns decision shape."""
     plan = plan if isinstance(plan, dict) else {}
     dyn = dict(dynamic_exit or {})
     sym = str(symbol or plan.get("symbol") or "").strip().upper()
@@ -45203,7 +45209,7 @@ def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None,
     qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
     min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
 
-    return swing_exit_build_breakout_stall_reduce_first_state(
+    payload = swing_exit_build_breakout_stall_reduce_first_state(
         symbol=sym,
         qty=qty,
         qty_source=qty_source,
@@ -45216,6 +45222,9 @@ def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None,
         fraction=fraction,
         min_qty=min_qty,
     )
+    payload["app_wrapper_status"] = "compatibility_tombstone"
+    payload["app_wrapper_delete_ready_after"] = "live_parity_capture"
+    return payload
 
 def _p380_daily_breakout_failed_followthrough_state(symbol: str, plan: dict | None, px: float) -> dict:
     plan = plan if isinstance(plan, dict) else {}
@@ -67517,15 +67526,9 @@ def diagnostics_active_exit_protection_truth(limit: int = 20, detail: str = "lig
         payload["swing_exit_protection_module_status"] = swing_exit_protection_module_status(
             patch_version=PATCH_VERSION
         )
-        payload["dynamic_exit_preview_contract"] = {
-            "dynamic_exit_preview_base_owner": "swing_exit_protection",
-            "dynamic_exit_apply_helpers_owner": "swing_exit_protection",
-            "partial_profit_state_owner": "swing_exit_protection",
-            "time_exit_grace_state_owner": "swing_exit_protection",
-            "breakout_partial_profit_bias_state_owner": "swing_exit_protection",
-            "breakout_stall_loss_reduce_first_state_owner": "swing_exit_protection",
-            "active_exit_heavy_uses_module_contract": bool(heavy_requested),
-        }
+        payload["dynamic_exit_preview_contract"] = swing_exit_dynamic_preview_contract_status(
+            heavy_requested=heavy_requested
+        )
     return JSONResponse(content=payload)
 
 @app.get("/diagnostics/swing_exit_protection_module_status")

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-626-dynamic-exit-apply-helper-extraction"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-627-app-exit-preview-wrapper-tombstone"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -546,6 +546,24 @@ def apply_stall_loss_reduce_first_state(
     _append_flag(dynamic_exit, "breakout_stall_loss_reduce_first_ready")
 
 
+def dynamic_exit_preview_contract_status(*, heavy_requested: bool = False) -> dict:
+    return {
+        "dynamic_exit_preview_base_owner": "swing_exit_protection",
+        "dynamic_exit_apply_helpers_owner": "swing_exit_protection",
+        "partial_profit_state_owner": "swing_exit_protection",
+        "time_exit_grace_state_owner": "swing_exit_protection",
+        "breakout_partial_profit_bias_state_owner": "swing_exit_protection",
+        "breakout_stall_loss_reduce_first_state_owner": "swing_exit_protection",
+        "app_wrapper_status": "compatibility_tombstone",
+        "app_wrappers_remaining": [
+            "_p444_breakout_partial_profit_bias_state",
+            "_p444_breakout_stall_loss_reduce_first_state",
+        ],
+        "app_wrappers_delete_ready_after": "live_parity_capture",
+        "active_exit_heavy_uses_module_contract": bool(heavy_requested),
+    }
+
+
 def build_breakout_stall_loss_reduce_first_state(
     *,
     symbol: str,
@@ -761,11 +779,16 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "partial_profit_state",
             "time_exit_grace_state",
             "dynamic_exit_apply_helpers",
+            "dynamic_exit_preview_contract_status",
             "breakout_partial_profit_bias_state",
             "breakout_stall_loss_reduce_first_state",
             "breakout_dynamic_evidence_report_shape",
             "breakout_stall_loss_fast_snapshot_shape",
             "exit_protection_module_status",
+        ],
+        "compatibility_wrappers_remaining": [
+            "_p444_breakout_partial_profit_bias_state",
+            "_p444_breakout_stall_loss_reduce_first_state",
         ],
         "next_extraction_target": "delete_app_exit_preview_wrapper_clutter_after_live_parity",
     }
