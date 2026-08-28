@@ -140,6 +140,12 @@ from swing_execution import (
 )
 from swing_exit_protection import (
     SWING_EXIT_PROTECTION_MODULE_VERSION,
+    apply_daily_breakout_giveback_state as swing_exit_apply_daily_breakout_giveback_state,
+    apply_failed_followthrough_state as swing_exit_apply_failed_followthrough_state,
+    apply_partial_profit_state as swing_exit_apply_partial_profit_state,
+    apply_stall_loss_reduce_first_state as swing_exit_apply_stall_loss_reduce_first_state,
+    apply_time_exit_grace_state as swing_exit_apply_time_exit_grace_state,
+    apply_triggered_qty_state as swing_exit_apply_triggered_qty_state,
     build_breakout_partial_profit_bias_state as swing_exit_build_breakout_partial_profit_bias_state,
     build_breakout_stall_loss_reduce_first_state as swing_exit_build_breakout_stall_reduce_first_state,
     build_breakout_stall_loss_fast_snapshot as swing_exit_build_breakout_stall_loss_fast_snapshot,
@@ -3084,7 +3090,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-625-remaining-dynamic-exit-preview-helper-extraction-wrapper-deletion-prep"
+PATCH_VERSION = "patch-626-dynamic-exit-apply-helper-extraction-exit-wrapper-deletion-readiness"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -45537,42 +45543,38 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
     out["stall_r"] = round(unrealized_r, 4)
 
     breakout_giveback = _p378_daily_breakout_profit_giveback_state(symbol, plan, float(px))
-    out["daily_breakout_profit_giveback"] = breakout_giveback
-    if breakout_giveback.get("updates"):
-        out["updates"].update(dict(breakout_giveback.get("updates") or {}))
-    if breakout_giveback.get("profit_lock_armed"):
-        out["flags"].append("daily_breakout_profit_lock_armed")
-    if breakout_giveback.get("triggered"):
-        out["daily_breakout_profit_giveback_exit"] = True
-        out["flags"].append("daily_breakout_profit_giveback_preservation_exit")
+    swing_exit_apply_daily_breakout_giveback_state(out, breakout_giveback)
 
     failed_followthrough = _p380_daily_breakout_failed_followthrough_state(symbol, plan, float(px))
-    out["daily_breakout_failed_followthrough"] = failed_followthrough
-    if failed_followthrough.get("triggered"):
-        out["daily_breakout_failed_followthrough_exit"] = True
-        out["flags"].append("daily_breakout_failed_followthrough_exit")
+    swing_exit_apply_failed_followthrough_state(out, failed_followthrough)
 
     proposed_stop = current_stop
     proposed_profit_lock = current_profit_lock
     if _safe_float(out.get("updates", {}).get("profit_lock_price") or 0.0, 0.0) > proposed_profit_lock:
         proposed_profit_lock = _safe_float(out.get("updates", {}).get("profit_lock_price"), proposed_profit_lock)
     legacy_oversized = _p389_legacy_oversized_position_normalization_plan(symbol, plan, float(px))
-    out["legacy_oversized_normalization"] = dict(legacy_oversized)
-    if bool(legacy_oversized.get("triggered")):
-        out["legacy_oversized_normalization_ready"] = True
-        out["legacy_oversized_normalization_qty"] = float(legacy_oversized.get("qty_to_close") or 0.0)
-        out["flags"].append("legacy_oversized_normalization_ready")
-        out["updates"]["break_even_armed"] = True
-        proposed_profit_lock = max(proposed_profit_lock, entry)
+    proposed_profit_lock = swing_exit_apply_triggered_qty_state(
+        out,
+        legacy_oversized,
+        state_key="legacy_oversized_normalization",
+        ready_key="legacy_oversized_normalization_ready",
+        qty_key="legacy_oversized_normalization_qty",
+        flag="legacy_oversized_normalization_ready",
+        entry_price=entry,
+        proposed_profit_lock=proposed_profit_lock,
+    )
 
     oversized_winner = _p388_oversized_winner_preservation_plan(symbol, plan, float(px))
-    out["oversized_winner_preservation"] = dict(oversized_winner)
-    if bool(oversized_winner.get("triggered")):
-        out["oversized_winner_preservation_ready"] = True
-        out["oversized_winner_preservation_qty"] = float(oversized_winner.get("qty_to_close") or 0.0)
-        out["flags"].append("oversized_winner_preservation_ready")
-        out["updates"]["break_even_armed"] = True
-        proposed_profit_lock = max(proposed_profit_lock, entry)
+    proposed_profit_lock = swing_exit_apply_triggered_qty_state(
+        out,
+        oversized_winner,
+        state_key="oversized_winner_preservation",
+        ready_key="oversized_winner_preservation_ready",
+        qty_key="oversized_winner_preservation_qty",
+        flag="oversized_winner_preservation_ready",
+        entry_price=entry,
+        proposed_profit_lock=proposed_profit_lock,
+    )
 
     partial_taken = bool((plan or {}).get("partial_profit_taken"))
 
@@ -45587,22 +45589,25 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         min_qty=float(SWING_PARTIAL_PROFIT_MIN_QTY),
         qty_to_close=_normalize_close_qty(qty_now * fraction),
     )
-    out["partial_profit"] = dict(partial_profit)
-    if partial_profit.get("applies"):
-        out["partial_profit_ready"] = True
-        out["partial_profit_qty"] = partial_profit.get("qty_to_close")
-        out["partial_profit_reason"] = "partial_profit"
-        out["flags"].append("partial_profit_ready")
+    swing_exit_apply_partial_profit_state(
+        out,
+        partial_profit,
+        state_key="partial_profit",
+        reason="partial_profit",
+        flag="partial_profit_ready",
+    )
 
     breakout_bias = _p444_breakout_partial_profit_bias_state(symbol, plan, px, out)
-    out["breakout_partial_profit_bias"] = breakout_bias
-    if breakout_bias.get("applies"):
-        out["partial_profit_ready"] = True
-        out["partial_profit_qty"] = breakout_bias.get("qty_to_close")
-        out["partial_profit_reason"] = "breakout_partial_profit_bias"
-        out["flags"].append("breakout_partial_profit_bias_ready")
-        out["updates"]["break_even_armed"] = True
-        proposed_profit_lock = max(proposed_profit_lock, entry)
+    proposed_profit_lock = swing_exit_apply_partial_profit_state(
+        out,
+        breakout_bias,
+        state_key="breakout_partial_profit_bias",
+        reason="breakout_partial_profit_bias",
+        flag="breakout_partial_profit_bias_ready",
+        entry_price=entry,
+        proposed_profit_lock=proposed_profit_lock,
+        arm_break_even=True,
+    )
 
     if SWING_ENABLE_BREAK_EVEN_STOP and unrealized_r >= float(SWING_BREAK_EVEN_R):
         out["updates"]["break_even_armed"] = True
@@ -45632,12 +45637,12 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         grace_r=float(SWING_TIME_EXIT_GRACE_R),
         grace_days=int(SWING_TIME_EXIT_GRACE_DAYS),
     )
-    out["time_exit_grace_state"] = dict(time_exit_grace)
-    if time_exit_grace.get("applies"):
-        out["time_exit_grace"] = True
-        out["updates"]["time_exit_grace_active"] = True
-        out["flags"].append("time_exit_grace")
-        proposed_profit_lock = max(proposed_profit_lock, entry)
+    proposed_profit_lock = swing_exit_apply_time_exit_grace_state(
+        out,
+        time_exit_grace,
+        entry_price=entry,
+        proposed_profit_lock=proposed_profit_lock,
+    )
 
     proposed = dict(plan or {})
     proposed["stop_price"] = round(proposed_stop, 4)
@@ -45677,14 +45682,7 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         out["flags"].append("stall_loss_guard_ready")
 
         reduce_first = _p444_breakout_stall_loss_reduce_first_state(symbol, plan, px, out)
-        out["breakout_stall_loss_reduce_first"] = reduce_first
-        if reduce_first.get("applies"):
-            out["stall_exit"] = False
-            out["stall_loss_guard"] = False
-            out["partial_profit_ready"] = True
-            out["partial_profit_qty"] = reduce_first.get("qty_to_close")
-            out["partial_profit_reason"] = "breakout_stall_loss_reduce_first"
-            out["flags"].append("breakout_stall_loss_reduce_first_ready")
+        swing_exit_apply_stall_loss_reduce_first_state(out, reduce_first)
     
     if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R) and not out.get("time_exit_grace"):
         out["stall_exit"] = True
@@ -67521,6 +67519,7 @@ def diagnostics_active_exit_protection_truth(limit: int = 20, detail: str = "lig
         )
         payload["dynamic_exit_preview_contract"] = {
             "dynamic_exit_preview_base_owner": "swing_exit_protection",
+            "dynamic_exit_apply_helpers_owner": "swing_exit_protection",
             "partial_profit_state_owner": "swing_exit_protection",
             "time_exit_grace_state_owner": "swing_exit_protection",
             "breakout_partial_profit_bias_state_owner": "swing_exit_protection",

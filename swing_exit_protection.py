@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-625-remaining-dynamic-exit-preview-helper-extraction"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-626-dynamic-exit-apply-helper-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -430,6 +430,122 @@ def build_time_exit_grace_state(
     }
 
 
+def _append_flag(dynamic_exit: dict, flag: str) -> None:
+    flags = dynamic_exit.setdefault("flags", [])
+    if flag and flag not in flags:
+        flags.append(flag)
+
+
+def apply_daily_breakout_giveback_state(
+    dynamic_exit: dict,
+    state: dict | None,
+) -> None:
+    giveback = dict(state or {})
+    dynamic_exit["daily_breakout_profit_giveback"] = giveback
+    if giveback.get("updates"):
+        dynamic_exit.setdefault("updates", {}).update(dict(giveback.get("updates") or {}))
+    if giveback.get("profit_lock_armed"):
+        _append_flag(dynamic_exit, "daily_breakout_profit_lock_armed")
+    if giveback.get("triggered"):
+        dynamic_exit["daily_breakout_profit_giveback_exit"] = True
+        _append_flag(dynamic_exit, "daily_breakout_profit_giveback_preservation_exit")
+
+
+def apply_failed_followthrough_state(
+    dynamic_exit: dict,
+    state: dict | None,
+) -> None:
+    followthrough = dict(state or {})
+    dynamic_exit["daily_breakout_failed_followthrough"] = followthrough
+    if followthrough.get("triggered"):
+        dynamic_exit["daily_breakout_failed_followthrough_exit"] = True
+        _append_flag(dynamic_exit, "daily_breakout_failed_followthrough_exit")
+
+
+def apply_triggered_qty_state(
+    dynamic_exit: dict,
+    state: dict | None,
+    *,
+    state_key: str,
+    ready_key: str,
+    qty_key: str,
+    flag: str,
+    entry_price: float,
+    proposed_profit_lock: float,
+) -> float:
+    payload = dict(state or {})
+    dynamic_exit[state_key] = payload
+    if not bool(payload.get("triggered")):
+        return _safe_float(proposed_profit_lock)
+
+    dynamic_exit[ready_key] = True
+    dynamic_exit[qty_key] = _safe_float(payload.get("qty_to_close"))
+    _append_flag(dynamic_exit, flag)
+    dynamic_exit.setdefault("updates", {})["break_even_armed"] = True
+    return max(_safe_float(proposed_profit_lock), _safe_float(entry_price))
+
+
+def apply_partial_profit_state(
+    dynamic_exit: dict,
+    state: dict | None,
+    *,
+    state_key: str,
+    reason: str,
+    flag: str,
+    entry_price: float = 0.0,
+    proposed_profit_lock: float = 0.0,
+    arm_break_even: bool = False,
+) -> float:
+    payload = dict(state or {})
+    dynamic_exit[state_key] = payload
+    if not bool(payload.get("applies")):
+        return _safe_float(proposed_profit_lock)
+
+    dynamic_exit["partial_profit_ready"] = True
+    dynamic_exit["partial_profit_qty"] = payload.get("qty_to_close")
+    dynamic_exit["partial_profit_reason"] = reason
+    _append_flag(dynamic_exit, flag)
+    if arm_break_even:
+        dynamic_exit.setdefault("updates", {})["break_even_armed"] = True
+        return max(_safe_float(proposed_profit_lock), _safe_float(entry_price))
+    return _safe_float(proposed_profit_lock)
+
+
+def apply_time_exit_grace_state(
+    dynamic_exit: dict,
+    state: dict | None,
+    *,
+    entry_price: float,
+    proposed_profit_lock: float,
+) -> float:
+    payload = dict(state or {})
+    dynamic_exit["time_exit_grace_state"] = payload
+    if not bool(payload.get("applies")):
+        return _safe_float(proposed_profit_lock)
+
+    dynamic_exit["time_exit_grace"] = True
+    dynamic_exit.setdefault("updates", {})["time_exit_grace_active"] = True
+    _append_flag(dynamic_exit, "time_exit_grace")
+    return max(_safe_float(proposed_profit_lock), _safe_float(entry_price))
+
+
+def apply_stall_loss_reduce_first_state(
+    dynamic_exit: dict,
+    state: dict | None,
+) -> None:
+    payload = dict(state or {})
+    dynamic_exit["breakout_stall_loss_reduce_first"] = payload
+    if not bool(payload.get("applies")):
+        return
+
+    dynamic_exit["stall_exit"] = False
+    dynamic_exit["stall_loss_guard"] = False
+    dynamic_exit["partial_profit_ready"] = True
+    dynamic_exit["partial_profit_qty"] = payload.get("qty_to_close")
+    dynamic_exit["partial_profit_reason"] = "breakout_stall_loss_reduce_first"
+    _append_flag(dynamic_exit, "breakout_stall_loss_reduce_first_ready")
+
+
 def build_breakout_stall_loss_reduce_first_state(
     *,
     symbol: str,
@@ -644,11 +760,12 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "dynamic_exit_preview_base",
             "partial_profit_state",
             "time_exit_grace_state",
+            "dynamic_exit_apply_helpers",
             "breakout_partial_profit_bias_state",
             "breakout_stall_loss_reduce_first_state",
             "breakout_dynamic_evidence_report_shape",
             "breakout_stall_loss_fast_snapshot_shape",
             "exit_protection_module_status",
         ],
-        "next_extraction_target": "move_remaining_dynamic_exit_preview_calculation_out_of_app_py",
+        "next_extraction_target": "delete_app_exit_preview_wrapper_clutter_after_live_parity",
     }
