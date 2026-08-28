@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-620-exit-protection-module-extraction-prep"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-621-exit-protection-row-contract-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -34,10 +34,77 @@ def _dedupe_keep_order(values: list[Any]) -> list[Any]:
     return out
 
 
+def is_pending_entry_plan(plan: dict | None) -> bool:
+    trade_plan = dict(plan or {})
+    status = str(trade_plan.get("status") or "").strip().lower()
+    order_status = str(trade_plan.get("order_status") or "").strip().lower()
+    execution_state = str(trade_plan.get("execution_state") or "").strip().lower()
+    filled_qty = _safe_float(trade_plan.get("filled_qty") or 0.0)
+    submitted_qty = _safe_float(trade_plan.get("submitted_qty") or 0.0)
+
+    return bool(
+        status in {"pending", "submitted", "accepted", "open_order", "entry_submitted"}
+        or order_status in {"new", "accepted", "pending_new", "submitted", "partially_filled"}
+        or execution_state in {"pending", "submitted", "accepted", "open_order"}
+        or (submitted_qty > 0 and filled_qty <= 0 and order_status not in {"filled", "canceled", "cancelled", "expired", "rejected"})
+    )
+
+
+def classify_exit_reason(
+    *,
+    current_price: float,
+    stop_price: float,
+    target_price: float,
+    profit_lock_price: float,
+) -> dict:
+    hit_stop = bool(stop_price > 0 and current_price > 0 and current_price <= stop_price)
+    hit_profit_lock = bool(profit_lock_price > 0 and current_price > 0 and current_price <= profit_lock_price)
+    hit_target = bool(target_price > 0 and current_price > 0 and current_price >= target_price)
+    closest_exit_reason = "none"
+    if hit_stop:
+        closest_exit_reason = "stop"
+    elif hit_profit_lock:
+        closest_exit_reason = "profit_lock_stop"
+    elif hit_target:
+        closest_exit_reason = "target"
+    return {
+        "closest_exit_reason": closest_exit_reason,
+        "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target),
+        "hit_stop": hit_stop,
+        "hit_profit_lock": hit_profit_lock,
+        "hit_target": hit_target,
+    }
+
+
+def classify_protection_status(
+    *,
+    has_plan: bool,
+    has_broker_position_snapshot: bool,
+    pending_entry_without_position: bool,
+    has_enough_data: bool,
+    has_exit_level: bool,
+) -> str:
+    if pending_entry_without_position:
+        return "pending_entry_waiting_for_fill"
+    if has_plan and has_enough_data and has_exit_level:
+        return "protected"
+    if has_broker_position_snapshot and not has_plan:
+        return "broker_position_plan_recovery_needed"
+    if not has_plan:
+        return "plan_missing"
+    if not has_enough_data:
+        return "price_or_qty_missing"
+    return "missing_exit_levels"
+
+
 def _position_row(symbol: str, position: dict | None, plan: dict | None) -> dict:
     pos = dict(position or {})
     trade_plan = dict(plan or {})
     has_plan = bool(trade_plan and trade_plan.get("active"))
+    has_broker_position_snapshot = bool(pos)
+    pending_entry_plan = bool(is_pending_entry_plan(trade_plan))
+    pending_entry_without_position = bool(pending_entry_plan and not has_broker_position_snapshot)
+    recovery_needed = bool(has_broker_position_snapshot and not has_plan)
     qty = _safe_float(pos.get("qty") or trade_plan.get("filled_qty") or trade_plan.get("submitted_qty") or 0.0)
     current_price = _safe_float(pos.get("current_price") or pos.get("last_price") or 0.0)
     entry_price = _safe_float(
@@ -50,33 +117,28 @@ def _position_row(symbol: str, position: dict | None, plan: dict | None) -> dict
     target_price = _safe_float(trade_plan.get("take_price") or trade_plan.get("target_price") or 0.0)
     profit_lock_price = _safe_float(trade_plan.get("profit_lock_price") or 0.0)
     has_exit_level = bool(stop_price > 0 or target_price > 0 or profit_lock_price > 0)
-    has_enough_data = bool(abs(qty) > 0 and current_price > 0 and entry_price > 0)
-
-    hit_stop = bool(stop_price > 0 and current_price > 0 and current_price <= stop_price)
-    hit_profit_lock = bool(profit_lock_price > 0 and current_price > 0 and current_price <= profit_lock_price)
-    hit_target = bool(target_price > 0 and current_price > 0 and current_price >= target_price)
-    closest_exit_reason = "none"
-    if hit_stop:
-        closest_exit_reason = "stop"
-    elif hit_profit_lock:
-        closest_exit_reason = "profit_lock_stop"
-    elif hit_target:
-        closest_exit_reason = "target"
-
-    protection_status = (
-        "protected"
-        if has_plan and has_enough_data and has_exit_level
-        else "plan_missing"
-        if not has_plan
-        else "price_or_qty_missing"
-        if not has_enough_data
-        else "missing_exit_levels"
+    has_enough_data = bool(has_plan and abs(qty) > 0 and current_price > 0 and entry_price > 0)
+    exit_reason = classify_exit_reason(
+        current_price=current_price,
+        stop_price=stop_price,
+        target_price=target_price,
+        profit_lock_price=profit_lock_price,
+    )
+    protection_status = classify_protection_status(
+        has_plan=has_plan,
+        has_broker_position_snapshot=has_broker_position_snapshot,
+        pending_entry_without_position=pending_entry_without_position,
+        has_enough_data=has_enough_data,
+        has_exit_level=has_exit_level,
     )
 
     return {
         "symbol": symbol,
-        "has_broker_position_snapshot": bool(pos),
+        "has_broker_position_snapshot": has_broker_position_snapshot,
         "has_active_plan": has_plan,
+        "p605_broker_position_plan_recovery_needed": recovery_needed,
+        "pending_entry_plan": pending_entry_plan,
+        "pending_entry_without_position": pending_entry_without_position,
         "qty": qty,
         "entry_price": entry_price,
         "current_price": current_price,
@@ -84,8 +146,8 @@ def _position_row(symbol: str, position: dict | None, plan: dict | None) -> dict
         "stop_price": stop_price or None,
         "target_price": target_price or None,
         "profit_lock_price": profit_lock_price or None,
-        "closest_exit_reason": closest_exit_reason,
-        "exit_trigger_now": bool(hit_stop or hit_profit_lock or hit_target),
+        "closest_exit_reason": exit_reason["closest_exit_reason"],
+        "exit_trigger_now": bool(exit_reason["exit_trigger_now"]),
         "exit_worker_has_enough_data": has_enough_data,
         "protection_status": protection_status,
         "order_status": trade_plan.get("order_status"),
@@ -113,8 +175,22 @@ def build_fast_active_exit_snapshot(
     }
     symbols = sorted(set(positions) | set(plans))
     rows = [_position_row(sym, positions.get(sym), plans.get(sym)) for sym in symbols]
-    missing = [row.get("symbol") for row in rows if row.get("protection_status") != "protected"]
-    watch = [row for row in rows if bool(row.get("exit_trigger_now")) or row.get("protection_status") != "protected"]
+    pending_entry_rows = [row for row in rows if bool(row.get("pending_entry_without_position"))]
+    recovery_needed_symbols = [
+        row.get("symbol")
+        for row in rows
+        if bool(row.get("p605_broker_position_plan_recovery_needed"))
+    ]
+    missing = [
+        row.get("symbol")
+        for row in rows
+        if row.get("protection_status") != "protected" and not bool(row.get("pending_entry_without_position"))
+    ]
+    watch = [
+        row for row in rows
+        if bool(row.get("exit_trigger_now"))
+        or (row.get("protection_status") != "protected" and not bool(row.get("pending_entry_without_position")))
+    ]
     due_symbols = _dedupe_keep_order([
         str(row.get("symbol") or "").strip().upper()
         for row in watch
@@ -138,14 +214,31 @@ def build_fast_active_exit_snapshot(
             "row_count": len(rows),
             "missing_protection_count": len(missing),
             "exit_watch_count": len(watch),
+            "pending_entry_protection_pending_count": len(pending_entry_rows),
+            "pending_entry_protection_pending_symbols": [
+                row.get("symbol")
+                for row in pending_entry_rows
+                if row.get("symbol")
+            ],
             "giveback_exit_due_count": None,
             "giveback_exit_due_symbols": [],
             "failed_followthrough_exit_due_count": None,
             "failed_followthrough_exit_due_symbols": [],
+            "forbidden_short_cleanup_due_count": None,
+            "forbidden_short_cleanup_due_symbols": [],
             "all_active_positions_protected": len(missing) == 0,
+            "p605_broker_position_plan_recovery_needed_count": len(recovery_needed_symbols),
+            "p605_broker_position_plan_recovery_needed_symbols": recovery_needed_symbols,
             "fast_snapshot_only": True,
+            "status_parity_with_heavy": "core_position_plan_protection_fields",
         },
         "missing_protection_symbols": missing,
+        "pending_entry_protection_pending_symbols": [
+            row.get("symbol")
+            for row in pending_entry_rows
+            if row.get("symbol")
+        ],
+        "pending_entry_protection_pending": pending_entry_rows[:lim],
         "actionable_exit_watch": watch[:lim],
         "rows": rows[:lim],
         "fast_omitted_fields": [
@@ -157,11 +250,49 @@ def build_fast_active_exit_snapshot(
             "forbidden_short_cleanup",
         ],
         "module_status": exit_protection_module_status(patch_version=patch_version),
+        "p600_exit_watch_verification": {
+            "enabled": True,
+            "watch_count": len(watch),
+            "watch_symbols": [
+                row.get("symbol")
+                for row in watch
+                if row.get("symbol")
+            ],
+            "watch_reasons_by_symbol": {
+                str(row.get("symbol") or ""): str(row.get("closest_exit_reason") or "none")
+                for row in watch
+                if row.get("symbol")
+            },
+            "all_active_positions_protected": len(missing) == 0,
+            "fast_snapshot_only": True,
+            "recommended_action": (
+                "worker_exit_should_attempt_or_monitor_watch_symbols"
+                if watch
+                else "no_exit_watch_symbols"
+            ),
+        },
+        "p605_broker_position_plan_recovery_truth": {
+            "enabled": True,
+            "fresh_snapshot": None,
+            "snapshot_age_sec": None,
+            "snapshot_reason": "omitted_from_fast_snapshot",
+            "recovery_needed_symbols": recovery_needed_symbols,
+            "stale_deactivation_guard": "fresh_snapshot_positions_are_never_deactivated_as_orphans",
+            "recommended_action": (
+                "run_or_wait_for_worker_exit_reconcile"
+                if recovery_needed_symbols
+                else "none"
+            ),
+        },
         "recommended_action": (
-            "inspect_active_exit_protection_truth_heavy_for_due_exit_details"
+            "run_or_wait_for_worker_exit_reconcile"
+            if recovery_needed_symbols
+            else "inspect_active_exit_protection_truth_heavy_for_due_exit_details"
             if due_symbols
             else "inspect_missing_exit_protection_symbols"
             if missing
+            else "monitor_pending_entry_order_status"
+            if pending_entry_rows
             else "none"
         ),
     }
@@ -180,6 +311,10 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
         "extraction_phase": "prep",
         "responsibilities": [
             "active_exit_fast_snapshot_shape",
+            "exit_reason_core_classifier",
+            "position_protection_status_classifier",
+            "pending_entry_protection_contract",
+            "broker_position_plan_recovery_contract",
             "exit_protection_module_status",
         ],
         "next_extraction_target": "move_active_exit_protection_truth_out_of_app_py",
