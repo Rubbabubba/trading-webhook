@@ -3072,7 +3072,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-618-current-scan-fast-state-adoption-heavy-safe-wrapper-worker-exit-fast-skip"
+PATCH_VERSION = "patch-619-worker-exit-light-active-check-deferral"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -67129,26 +67129,22 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         and (age_sec is None or age_sec <= worker_error_fresh_window_sec)
     )
     sync_contract_ok = len(fresh_sync_guard_rows) == 0
-    p618_skip_active_exit_gap_check = bool(
+    p619_light_endpoint_defers_active_exit_gap_check = bool(
         sync_contract_ok
         and not heartbeat_error_fresh
         and not started_stale
         and not error_like
-        and (
-            display_status in {"ok", "success", "completed", "activity_confirmed_terminal", "activity_confirmed_after_started"}
-            or effective_terminal_status_seen
-            or bool(p604_heartbeat_truth.get("activity_after_started"))
-        )
     )
-    if p618_skip_active_exit_gap_check:
+    if p619_light_endpoint_defers_active_exit_gap_check:
         p612_exit_worker_gap_truth = {
             "checked": False,
-            "reason": "p618_fast_default_skipped_active_exit_gap_check_healthy_worker",
+            "reason": "p619_light_endpoint_defers_active_exit_gap_check",
             "worker_status": display_status,
             "active_exit_watch_count": None,
             "status_unhealthy": False,
             "recommended_action": "none",
             "heavy_endpoint": "/diagnostics/worker_exit_status?detail=heavy",
+            "active_exit_endpoint": "/diagnostics/active_exit_protection_truth?limit=20",
         }
     else:
         p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status)
@@ -67215,11 +67211,21 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         },
         "active_exit_summary": p612_exit_worker_gap_truth,
         "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
-        "p618_worker_exit_fast_skip": {
-            "active_exit_gap_check_skipped": bool(p618_skip_active_exit_gap_check),
+        "p619_worker_exit_light_deferral": {
+            "active_exit_gap_check_deferred": bool(p619_light_endpoint_defers_active_exit_gap_check),
             "reason": (
-                "healthy_worker_status_uses_light_endpoint_without_active_exit_rebuild"
-                if p618_skip_active_exit_gap_check
+                "fast_light_endpoint_uses_worker_heartbeat_and_recent_decisions_only"
+                if p619_light_endpoint_defers_active_exit_gap_check
+                else "fresh_error_or_stale_started_status_requires_gap_check"
+            ),
+            "heavy_endpoint": "/diagnostics/worker_exit_status?detail=heavy",
+            "active_exit_endpoint": "/diagnostics/active_exit_protection_truth?limit=20",
+        },
+        "p618_worker_exit_fast_skip": {
+            "active_exit_gap_check_skipped": bool(p619_light_endpoint_defers_active_exit_gap_check),
+            "reason": (
+                "superseded_by_p619_light_deferral"
+                if p619_light_endpoint_defers_active_exit_gap_check
                 else "active_exit_gap_check_needed"
             ),
         },
