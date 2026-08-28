@@ -3072,7 +3072,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-614-fast-broker-trade-ledger-breakout-kill-zone-risk-downshift"
+PATCH_VERSION = "patch-615-cache-first-fast-broker-ledger-heavy-refresh-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -9468,11 +9468,93 @@ def _p614_breakout_risk_downshift(candidate: dict | None) -> dict:
     }
 
 
-def _p614_fast_broker_trade_ledger(limit: int = 25) -> dict:
+def _p614_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False, detail: str = "light") -> dict:
     lim = max(1, min(int(limit or 25), 100))
     timeout = max(1.0, float(SWING_FAST_BROKER_TRADE_LEDGER_TIMEOUT_SEC or 6.0))
     cache = globals().setdefault("P614_FAST_BROKER_TRADE_LEDGER_CACHE", {})
     today = now_ny().date().isoformat()
+    heavy_requested = bool(refresh) or str(detail or "").strip().lower() in {"heavy", "full", "refresh"}
+
+    def _cache_age_sec(payload: dict) -> float | None:
+        try:
+            ts = str((payload or {}).get("cached_utc") or "")
+            if not ts:
+                return None
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return round((datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds(), 3)
+        except Exception:
+            return None
+
+    def _row_from_strategy(row: dict) -> dict:
+        symbol = str((row or {}).get("symbol") or "").strip().upper()
+        gross = _safe_float((row or {}).get("gross_pnl"), 0.0)
+        return {
+            "symbol": symbol,
+            "gross_pnl": round(gross, 4),
+            "result": "win" if gross > 0 else "loss" if gross < 0 else "flat",
+            "qty": row.get("qty"),
+            "entry_price": row.get("entry_price"),
+            "exit_price": row.get("exit_price"),
+            "entry_order_id": row.get("entry_order_id"),
+            "exit_order_id": row.get("exit_order_id"),
+            "ts_utc": row.get("ts_utc"),
+            "strategy_name": row.get("strategy_name"),
+            "signal": row.get("signal") or row.get("reason"),
+            "entry_type": row.get("entry_type"),
+            "rank_score": row.get("rank_score"),
+            "selection_quality_score": row.get("selection_quality_score"),
+            "attribution_source": row.get("attribution_source") or row.get("preferred_basis") or row.get("source"),
+        }
+
+    def _from_strategy_cache() -> dict:
+        broker_pref = _p254_broker_preferred_today_strategy_realized_pnl()
+        rows = [_row_from_strategy(r) for r in list((broker_pref or {}).get("rows") or []) if isinstance(r, dict)]
+        rows.sort(key=lambda r: str(r.get("ts_utc") or ""))
+        wins = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) > 0]
+        losses = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) < 0]
+        return {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "fast_broker_trade_ledger",
+            "read_only": True,
+            "source": "strategy_state_broker_reconciled_cache",
+            "today_ny": today,
+            "timed_out": False,
+            "heavy_available": True,
+            "heavy_endpoint": "/diagnostics/fast_broker_trade_ledger?detail=heavy",
+            "refresh_endpoint": "/diagnostics/fast_broker_trade_ledger?refresh=true",
+            "closed_trades_today": int((broker_pref or {}).get("closed_trades_today") or len(rows)),
+            "broker_exit_fills_today": int((broker_pref or {}).get("broker_reconciled_rows_today") or 0),
+            "today_realized_pnl": round(_safe_float((broker_pref or {}).get("today_realized_pnl"), sum(_safe_float(r.get("gross_pnl"), 0.0) for r in rows)), 4),
+            "wins_today": len(wins),
+            "losses_today": len(losses),
+            "largest_loss": min(rows, key=lambda r: _safe_float(r.get("gross_pnl"), 0.0), default={}),
+            "largest_win": max(rows, key=lambda r: _safe_float(r.get("gross_pnl"), 0.0), default={}),
+            "rows": rows[-lim:],
+            "recommended_action": "use_heavy_refresh_only_when_native_broker_order_history_is_needed",
+        }
+
+    if not heavy_requested:
+        cached = dict(cache or {})
+        if cached:
+            cached.update({
+                "ok": True,
+                "patch_version": PATCH_VERSION,
+                "mode": "fast_broker_trade_ledger",
+                "source": "cached_broker_order_ledger",
+                "read_only": True,
+                "timed_out": False,
+                "cache_age_sec": _cache_age_sec(cached),
+                "heavy_available": True,
+                "heavy_endpoint": "/diagnostics/fast_broker_trade_ledger?detail=heavy",
+                "refresh_endpoint": "/diagnostics/fast_broker_trade_ledger?refresh=true",
+                "recommended_action": "cached_broker_trade_ledger_returned",
+            })
+            cached["rows"] = list(cached.get("rows") or [])[-lim:]
+            return cached
+        return _from_strategy_cache()
 
     def _build() -> dict:
         broker = _today_realized_pnl_from_broker_orders()
@@ -9509,8 +9591,13 @@ def _p614_fast_broker_trade_ledger(limit: int = 25) -> dict:
             "mode": "fast_broker_trade_ledger",
             "read_only": True,
             "source": "alpaca_orders_today_bounded",
+            "heavy_requested": True,
             "today_ny": today,
             "timed_out": False,
+            "timeout_sec": timeout,
+            "heavy_available": True,
+            "heavy_endpoint": "/diagnostics/fast_broker_trade_ledger?detail=heavy",
+            "refresh_endpoint": "/diagnostics/fast_broker_trade_ledger?refresh=true",
             "closed_trades_today": int((broker or {}).get("closed_trades_today") or len(rows)),
             "broker_exit_fills_today": int((broker or {}).get("broker_exit_fills_today") or 0),
             "today_realized_pnl": round(_safe_float((broker or {}).get("today_realized_pnl"), sum(_safe_float(r.get("gross_pnl"), 0.0) for r in rows)), 4),
@@ -9537,26 +9624,26 @@ def _p614_fast_broker_trade_ledger(limit: int = 25) -> dict:
                 "patch_version": PATCH_VERSION,
                 "mode": "fast_broker_trade_ledger",
                 "source": "cached_after_timeout",
+                "read_only": True,
                 "timed_out": True,
                 "timeout_sec": timeout,
-                "recommended_action": "cached_trade_ledger_returned_broker_orders_slow",
+                "cache_age_sec": _cache_age_sec(cached),
+                "heavy_available": True,
+                "heavy_endpoint": "/diagnostics/fast_broker_trade_ledger?detail=heavy",
+                "refresh_endpoint": "/diagnostics/fast_broker_trade_ledger?refresh=true",
+                "recommended_action": "cached_trade_ledger_returned_native_broker_orders_slow",
             })
+            cached["rows"] = list(cached.get("rows") or [])[-lim:]
             return cached
-        return {
-            "ok": True,
-            "patch_version": PATCH_VERSION,
-            "mode": "fast_broker_trade_ledger",
-            "read_only": True,
-            "source": "timeout_no_cache",
-            "today_ny": today,
+        fallback = _from_strategy_cache()
+        fallback.update({
+            "source": "strategy_state_cache_after_native_broker_timeout",
             "timed_out": True,
             "timeout_sec": timeout,
-            "closed_trades_today": 0,
-            "broker_exit_fills_today": 0,
-            "today_realized_pnl": 0.0,
-            "rows": [],
-            "recommended_action": "broker_order_history_slow_retry_or_use_orders_endpoint",
-        }
+            "native_broker_refresh_failed_fast": True,
+            "recommended_action": "fast_strategy_cache_returned_native_broker_history_slow",
+        })
+        return fallback
     except Exception as exc:
         return {
             "ok": False,
@@ -67212,8 +67299,8 @@ def diagnostics_broker_preferred_loss_attribution_truth():
     return JSONResponse(content=_p373_broker_preferred_loss_attribution_truth())
 
 @app.get("/diagnostics/fast_broker_trade_ledger")
-def diagnostics_fast_broker_trade_ledger(limit: int = 25):
-    return JSONResponse(content=_p614_fast_broker_trade_ledger(limit=limit))
+def diagnostics_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False, detail: str = "light"):
+    return JSONResponse(content=_p614_fast_broker_trade_ledger(limit=limit, refresh=refresh, detail=detail))
 
 @app.get("/diagnostics/position_truth")
 def diagnostics_position_truth(request: Request):
