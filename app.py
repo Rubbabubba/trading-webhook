@@ -2978,7 +2978,7 @@ ALPACA_SUBMIT_RATE_LIMIT_RETRY_DELAY_SEC = max(0.0, float(getenv_any("ALPACA_SUB
 ALPACA_SUBMIT_RATE_LIMIT_RETRY_MAX_ATTEMPTS = max(1, int(getenv_any("ALPACA_SUBMIT_RATE_LIMIT_RETRY_MAX_ATTEMPTS", default="2") or 2))
 SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED = env_bool_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_ENABLED", default=True)
 SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC = getenv_int_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_TTL_SEC", default=900)
-SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN = getenv_int_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN", default=1)
+SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN = getenv_int_any("SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN", default=2)
 SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS = max(
     1,
     getenv_int_any("SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS", default=12),
@@ -3051,7 +3051,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-609-cross-regime-winner-sleeve-production-profile-universe-priority-cleanup"
+PATCH_VERSION = "patch-610-selected-submit-retry-execution-finalizer-broker-position-plan-recovery-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -46365,10 +46365,7 @@ def _p603_foreground_retry_micro_drain(
 ) -> dict:
     started = _time.perf_counter()
     source_meta = dict(source_meta or {})
-    limit = max(0, min(
-        int(max_items if max_items is not None else SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1),
-        1,
-    ))
+    limit = max(0, int(max_items if max_items is not None else SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 1))
     base = {
         "ok": True,
         "mode": "foreground_retry_micro_drain",
@@ -46432,10 +46429,14 @@ def _p603_foreground_retry_micro_drain(
         reconcile_started = _time.perf_counter()
         try:
             reconcile_actions = reconcile_trade_plans_from_alpaca()
+            snapshot_recovery = _p610_recover_missing_snapshot_position_plans(
+                source="retry_micro_drain_pre_submit"
+            )
             base["reconcile_before_submit"] = {
                 "ok": True,
                 "duration_ms": int(max(0.0, (_time.perf_counter() - reconcile_started) * 1000.0)),
                 "action_count": len(reconcile_actions or []),
+                "snapshot_recovery": snapshot_recovery,
             }
         except Exception as reconcile_err:
             base["reconcile_before_submit"] = {
@@ -46555,6 +46556,21 @@ def _p603_foreground_retry_micro_drain(
                 )
 
             submit_meta = _classify_scan_submit_response(resp)
+            post_timeout_recovery = {}
+            if submit_meta.get("state") == "timeout":
+                try:
+                    post_timeout_recovery = {
+                        "reconcile_actions": reconcile_trade_plans_from_alpaca(),
+                        "snapshot_recovery": _p610_recover_missing_snapshot_position_plans(
+                            source="retry_micro_drain_post_timeout"
+                        ),
+                    }
+                except Exception as recovery_err:
+                    post_timeout_recovery = {
+                        "ok": False,
+                        "error": str(recovery_err),
+                        "exception_type": type(recovery_err).__name__,
+                    }
             actual_side_effect = False
             side_effect_reasons = []
             try:
@@ -46568,6 +46584,17 @@ def _p603_foreground_retry_micro_drain(
                 if submit_meta.get("state") in {"submitted", "preview_only"}:
                     actual_side_effect = True
                     side_effect_reasons.append(f"submit_state:{submit_meta.get('state')}")
+                if any(
+                    str((row or {}).get("symbol") or "").strip().upper() == sym
+                    for row in list((post_timeout_recovery.get("reconcile_actions") or []))
+                ):
+                    plan_after_submit = dict((TRADE_PLAN or {}).get(sym) or {})
+                    if bool(plan_after_submit.get("active")):
+                        actual_side_effect = True
+                        side_effect_reasons.append("post_timeout_reconcile_active_plan")
+                if sym in set(post_timeout_recovery.get("snapshot_recovery", {}).get("recovered_symbols") or []):
+                    actual_side_effect = True
+                    side_effect_reasons.append("post_timeout_snapshot_recovery")
             except Exception as side_effect_err:
                 side_effect_reasons.append(f"side_effect_check_error:{side_effect_err}")
 
@@ -46586,6 +46613,7 @@ def _p603_foreground_retry_micro_drain(
                 "actual_submit_side_effect": bool(actual_side_effect),
                 "side_effect_reasons": _dedupe_candidate_reasons(side_effect_reasons),
                 "submit_gap": not bool(actual_side_effect),
+                "p610_post_timeout_recovery": post_timeout_recovery,
                 "p598_submit_timeout_trace": dict(
                     (resp or {}).get("p598_submit_timeout_trace")
                     or _p598_submit_timeout_trace(sym, sig)
@@ -46598,7 +46626,18 @@ def _p603_foreground_retry_micro_drain(
                 submit_row["submit_state"] = "retryable_rate_limit"
                 submit_row["p387_rate_limit_retry_queue"] = _p387_queue_rate_limited_selected_submit(plan, submit_row)
             elif _p563_submit_row_selected_timeout(submit_row):
-                submit_row["p563_selected_submit_timeout_retry_queue"] = _p563_queue_selected_submit_timeout(plan, submit_row)
+                retry_key = _p387_rate_limit_retry_key(sym, sig)
+                retry_row = dict(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.get(retry_key) or {})
+                next_attempts = int(retry_row.get("attempts") or 0)
+                if next_attempts >= int(SWING_SELECTED_SUBMIT_TIMEOUT_RETRY_MAX_ATTEMPTS or 12):
+                    P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.pop(retry_key, None)
+                    submit_row["submit_state"] = "terminal_failed"
+                    submit_row["submit_reason"] = "selected_submit_timeout_retry_attempt_ceiling_reached"
+                    submit_row["retry_evidence_status"] = "selected_submit_timeout_terminal_failed"
+                    submit_row["p610_retry_terminalized"] = True
+                    submit_row["submit_gap"] = True
+                else:
+                    submit_row["p563_selected_submit_timeout_retry_queue"] = _p563_queue_selected_submit_timeout(plan, submit_row)
 
             base["rows"].append(submit_row)
             base["attempted_symbols"].append(sym)
@@ -49044,7 +49083,120 @@ def _p604_pending_entry_alignment_truth(active_plan_rows: list[dict] | None, sna
     }
 
 
+def _p610_recover_missing_snapshot_position_plans(source: str = "snapshot_position_plan_recovery") -> dict:
+    try:
+        latest_snapshot = read_positions_snapshot()
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "recovered_count": 0,
+            "recovered_symbols": [],
+            "skipped_count": 1,
+            "skipped": [{"symbol": "", "reason": "positions_snapshot_read_failed", "error": str(exc)}],
+            "recommended_action": "inspect_positions_snapshot",
+        }
+
+    snapshot_truth = _p605_broker_position_snapshot_truth(snapshot=latest_snapshot)
+    if not bool(snapshot_truth.get("fresh")):
+        return {
+            "enabled": True,
+            "fresh_snapshot": False,
+            "snapshot_age_sec": snapshot_truth.get("age_sec"),
+            "recovered_count": 0,
+            "recovered_symbols": [],
+            "skipped_count": 0,
+            "skipped": [],
+            "recommended_action": "wait_for_fresh_position_snapshot",
+        }
+
+    positions = list((latest_snapshot or {}).get("positions") or (latest_snapshot or {}).get("items") or [])
+    recovered: list[dict] = []
+    skipped: list[dict] = []
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        existing = TRADE_PLAN.get(sym)
+        if isinstance(existing, dict) and bool(existing.get("active")):
+            continue
+        qty_signed = _safe_float(row.get("qty"), 0.0)
+        if qty_signed == 0:
+            skipped.append({"symbol": sym, "reason": "snapshot_qty_zero"})
+            continue
+        entry_price = _safe_float(row.get("avg_entry_price") or row.get("entry_price"), 0.0)
+        if entry_price <= 0:
+            skipped.append({"symbol": sym, "reason": "snapshot_avg_entry_missing"})
+            continue
+
+        side = "buy" if qty_signed > 0 else "sell"
+        qty = abs(float(qty_signed))
+        inferred_meta = _infer_recovered_plan_attribution(sym)
+        recovered_signal = _valid_strategy_identity(
+            inferred_meta.get("signal") or inferred_meta.get("strategy_name")
+        ) or "RECOVERED"
+        plan = build_trade_plan(sym, side, qty, float(entry_price), signal=recovered_signal, meta=inferred_meta)
+        plan["recovered"] = True
+        plan["recovered_at"] = now_ny().isoformat()
+        plan["recovered_from"] = "fresh_positions_snapshot"
+        plan["recovered_original_signal"] = plan.get("recovered_original_signal") or "RECOVERED"
+        plan["recovered_original_strategy_name"] = plan.get("recovered_original_strategy_name") or "RECOVERED"
+        plan = _apply_recovered_plan_attribution(plan, sym)
+        plan["days_held"] = plan_days_held(plan)
+        with STATE_LOCK:
+            TRADE_PLAN[sym] = plan
+        _ensure_execution_lifecycle_plan(sym, plan)
+        _transition_execution_lifecycle(
+            plan,
+            sym,
+            "filled",
+            reason="recovered_open_position_from_snapshot",
+            details={"qty": qty, "entry_price": float(entry_price), "source": source},
+            allow_illegal=True,
+        )
+        _ensure_exit_arm_for_symbol(
+            sym,
+            plan,
+            source=source,
+            qty_signed=float(qty_signed),
+            entry_price=float(entry_price),
+        )
+        recovered.append({"symbol": sym, "qty": qty_signed, "entry": float(entry_price)})
+        record_decision(
+            "RECONCILE",
+            "worker_exit",
+            sym,
+            side=side,
+            signal="RECOVERED",
+            action="recovered_plan_from_snapshot",
+            reason="missing_internal_plan",
+            qty=qty_signed,
+            entry_price=float(entry_price),
+            meta={"source": source, "patch_version": PATCH_VERSION},
+        )
+
+    if recovered:
+        try:
+            persist_positions_snapshot(reason="p610_snapshot_position_plan_recovery", extra={"actions": recovered})
+        except Exception:
+            pass
+    return {
+        "enabled": True,
+        "fresh_snapshot": True,
+        "snapshot_age_sec": snapshot_truth.get("age_sec"),
+        "recovered_count": len(recovered),
+        "recovered_symbols": [row.get("symbol") for row in recovered],
+        "skipped_count": len(skipped),
+        "skipped": skipped[:20],
+        "recommended_action": "monitor_active_positions" if recovered else "no_missing_snapshot_position_plans",
+    }
+
+
 def _p298_live_positions_light() -> dict:
+    p610_snapshot_plan_recovery = _p610_recover_missing_snapshot_position_plans(
+        source="live_positions_light"
+    )
     latest_snapshot = {}
     try:
         latest_snapshot = read_positions_snapshot()
@@ -49165,6 +49317,7 @@ def _p298_live_positions_light() -> dict:
         "missing_internal_plan_symbols": missing_internal_plans[:25],
         "p604_pending_entry_alignment_truth": p604_pending_entry_alignment,
         "p605_broker_position_plan_recovery_truth": p605_broker_position_plan_recovery_truth,
+        "p610_snapshot_position_plan_recovery": p610_snapshot_plan_recovery,
         "p570_missing_plan_reconcile_nudge": p570_missing_plan_reconcile_nudge,
         "stale_plan_truth": {
             "active": bool(stale_active_plans or missing_internal_plans),
@@ -50808,6 +50961,14 @@ def worker_exit(body: dict = Body(default_factory=dict)):
     # Reconcile internal plans from Alpaca positions before loss-control decisions so
     # stale snapshot plans are not treated as live broker truth after a liquidation.
     reconcile_actions = reconcile_trade_plans_from_alpaca()
+    p610_snapshot_recovery = _p610_recover_missing_snapshot_position_plans(source="worker_exit")
+    for row in list(p610_snapshot_recovery.get("recovered_symbols") or []):
+        reconcile_actions.append({
+            "symbol": row,
+            "action": "recovered_plan_from_snapshot",
+            "reason": "missing_internal_plan",
+            "source": "worker_exit",
+        })
     stale_recovery_actions = _deactivate_plans_without_broker_positions(source="worker_exit", reason="broker_flat_verified")
     if stale_recovery_actions:
         reconcile_actions.extend(stale_recovery_actions)
@@ -67156,7 +67317,7 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             effective_dry_run=effective_entry_dry_run("worker_scan"),
             requested_reason=requested_reason or "scheduled",
             source_meta=source_meta,
-            max_items=1,
+            max_items=int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 2),
         )
         body["p603_foreground_retry_micro_drain"] = dict(p603_foreground_retry_micro_drain)
         source_meta["p603_retry_micro_drain_attempted_count"] = int(
