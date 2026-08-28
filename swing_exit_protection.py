@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-624-dynamic-exit-preview-module-extraction"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-625-remaining-dynamic-exit-preview-helper-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -343,6 +343,93 @@ def build_breakout_partial_profit_bias_state(
     }
 
 
+def build_dynamic_exit_preview_base(*, strategy_mode: str, side: str) -> dict:
+    out = {
+        "updates": {},
+        "flags": [],
+        "stall_exit": False,
+        "stall_r": 0.0,
+        "partial_profit_ready": False,
+        "partial_profit_qty": 0.0,
+        "oversized_winner_preservation_ready": False,
+        "oversized_winner_preservation_qty": 0.0,
+        "oversized_winner_preservation": {},
+        "legacy_oversized_normalization_ready": False,
+        "legacy_oversized_normalization_qty": 0.0,
+        "legacy_oversized_normalization": {},
+        "time_exit_grace": False,
+        "module_contract": "dynamic_exit_preview_base",
+    }
+    if str(strategy_mode or "").strip().lower() != "swing":
+        out["inactive_reason"] = "strategy_mode_not_swing"
+    elif str(side or "buy").strip().lower() != "buy":
+        out["inactive_reason"] = "non_long_position"
+    return out
+
+
+def build_partial_profit_state(
+    *,
+    qty: float,
+    unrealized_r: float,
+    partial_taken: bool,
+    enabled: bool,
+    trigger_r: float,
+    fraction: float,
+    min_qty: float,
+    qty_to_close: float,
+) -> dict:
+    available_qty = _safe_float(qty)
+    close_qty = _safe_float(qty_to_close)
+    applies = bool(
+        enabled
+        and not partial_taken
+        and _safe_float(unrealized_r) >= _safe_float(trigger_r)
+        and close_qty >= _safe_float(min_qty)
+        and close_qty < available_qty
+    )
+    return {
+        "enabled": bool(enabled),
+        "applies": applies,
+        "reason": "partial_profit_ready" if applies else "not_ready",
+        "unrealized_r": round(_safe_float(unrealized_r), 4),
+        "trigger_r": _safe_float(trigger_r),
+        "qty": round(available_qty, 4),
+        "qty_to_close": round(close_qty, 4),
+        "fraction": round(_safe_float(fraction), 4),
+        "partial_taken": bool(partial_taken),
+        "module_contract": "partial_profit_state",
+    }
+
+
+def build_time_exit_grace_state(
+    *,
+    hold_days: int | float,
+    max_hold_days: int | float,
+    unrealized_r: float,
+    grace_r: float,
+    grace_days: int | float,
+) -> dict:
+    hold = _safe_float(hold_days)
+    max_hold = _safe_float(max_hold_days)
+    grace_window_days = max(int(_safe_float(grace_days)), 0)
+    applies = bool(
+        max_hold > 0
+        and hold >= max_hold
+        and _safe_float(unrealized_r) >= _safe_float(grace_r)
+        and hold < (max_hold + grace_window_days)
+    )
+    return {
+        "applies": applies,
+        "reason": "time_exit_grace" if applies else "not_ready",
+        "hold_days": round(hold, 4),
+        "max_hold_days": int(max_hold),
+        "unrealized_r": round(_safe_float(unrealized_r), 4),
+        "grace_r": _safe_float(grace_r),
+        "grace_days": grace_window_days,
+        "module_contract": "time_exit_grace_state",
+    }
+
+
 def build_breakout_stall_loss_reduce_first_state(
     *,
     symbol: str,
@@ -554,6 +641,9 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "position_protection_status_classifier",
             "pending_entry_protection_contract",
             "broker_position_plan_recovery_contract",
+            "dynamic_exit_preview_base",
+            "partial_profit_state",
+            "time_exit_grace_state",
             "breakout_partial_profit_bias_state",
             "breakout_stall_loss_reduce_first_state",
             "breakout_dynamic_evidence_report_shape",
