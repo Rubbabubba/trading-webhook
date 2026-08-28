@@ -3072,7 +3072,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-615-cache-first-fast-broker-ledger-heavy-refresh-opt-in"
+PATCH_VERSION = "patch-616-fast-ledger-pure-memory-snapshot-native-broker-verification-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -9509,8 +9509,21 @@ def _p614_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False, detai
         }
 
     def _from_strategy_cache() -> dict:
-        broker_pref = _p254_broker_preferred_today_strategy_realized_pnl()
-        rows = [_row_from_strategy(r) for r in list((broker_pref or {}).get("rows") or []) if isinstance(r, dict)]
+        strategy_rows = _p228_today_strategy_rows()
+        broker_rows = [
+            r for r in strategy_rows
+            if str(r.get("source") or "") == "alpaca_orders_reconciled"
+            or str(r.get("reason") or "") == "broker_exit_fill"
+            or bool(r.get("broker_reconciled"))
+        ]
+        shadow_rows = [
+            r for r in strategy_rows
+            if str(r.get("source") or "") == "worker_exit"
+            and not bool(r.get("broker_reconciled"))
+            and not str(r.get("exit_order_id") or "").strip()
+        ]
+        economic_rows = broker_rows if broker_rows else strategy_rows
+        rows = [_row_from_strategy(r) for r in list(economic_rows or []) if isinstance(r, dict)]
         rows.sort(key=lambda r: str(r.get("ts_utc") or ""))
         wins = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) > 0]
         losses = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) < 0]
@@ -9519,45 +9532,35 @@ def _p614_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False, detai
             "patch_version": PATCH_VERSION,
             "mode": "fast_broker_trade_ledger",
             "read_only": True,
-            "source": "strategy_state_broker_reconciled_cache",
+            "source": "strategy_performance_state_memory",
+            "fast_contract": "no_broker_calls_no_heavy_pairing",
             "today_ny": today,
             "timed_out": False,
             "heavy_available": True,
             "heavy_endpoint": "/diagnostics/fast_broker_trade_ledger?detail=heavy",
             "refresh_endpoint": "/diagnostics/fast_broker_trade_ledger?refresh=true",
-            "closed_trades_today": int((broker_pref or {}).get("closed_trades_today") or len(rows)),
-            "broker_exit_fills_today": int((broker_pref or {}).get("broker_reconciled_rows_today") or 0),
-            "today_realized_pnl": round(_safe_float((broker_pref or {}).get("today_realized_pnl"), sum(_safe_float(r.get("gross_pnl"), 0.0) for r in rows)), 4),
+            "closed_trades_today": len(rows),
+            "broker_exit_fills_today": len(broker_rows),
+            "strategy_rows_today": len(strategy_rows),
+            "broker_reconciled_rows_today": len(broker_rows),
+            "shadow_worker_exit_rows_today": len(shadow_rows),
+            "ledger_basis": "broker_reconciled_rows" if broker_rows else "strategy_rows_memory",
+            "today_realized_pnl": round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in rows), 4),
             "wins_today": len(wins),
             "losses_today": len(losses),
             "largest_loss": min(rows, key=lambda r: _safe_float(r.get("gross_pnl"), 0.0), default={}),
             "largest_win": max(rows, key=lambda r: _safe_float(r.get("gross_pnl"), 0.0), default={}),
             "rows": rows[-lim:],
-            "recommended_action": "use_heavy_refresh_only_when_native_broker_order_history_is_needed",
+            "recommended_action": "fast_memory_trade_ledger_returned_use_heavy_only_for_native_broker_verification",
         }
 
     if not heavy_requested:
-        cached = dict(cache or {})
-        if cached:
-            cached.update({
-                "ok": True,
-                "patch_version": PATCH_VERSION,
-                "mode": "fast_broker_trade_ledger",
-                "source": "cached_broker_order_ledger",
-                "read_only": True,
-                "timed_out": False,
-                "cache_age_sec": _cache_age_sec(cached),
-                "heavy_available": True,
-                "heavy_endpoint": "/diagnostics/fast_broker_trade_ledger?detail=heavy",
-                "refresh_endpoint": "/diagnostics/fast_broker_trade_ledger?refresh=true",
-                "recommended_action": "cached_broker_trade_ledger_returned",
-            })
-            cached["rows"] = list(cached.get("rows") or [])[-lim:]
-            return cached
         return _from_strategy_cache()
 
     def _build() -> dict:
         broker = _today_realized_pnl_from_broker_orders()
+        memory = _from_strategy_cache()
+        memory_rows = list((memory or {}).get("rows") or [])
         rows = []
         for row in list((broker or {}).get("rows") or []):
             if not isinstance(row, dict):
@@ -9585,6 +9588,13 @@ def _p614_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False, detai
         rows.sort(key=lambda r: str(r.get("ts_utc") or ""))
         wins = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) > 0]
         losses = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) < 0]
+        broker_row_count = len(rows)
+        memory_row_count = len(memory_rows)
+        verification_status = "native_broker_rows_available"
+        if broker_row_count <= 0 and memory_row_count > 0:
+            verification_status = "native_broker_empty_strategy_memory_has_rows"
+        elif broker_row_count != memory_row_count:
+            verification_status = "native_broker_count_differs_from_strategy_memory"
         payload = {
             "ok": True,
             "patch_version": PATCH_VERSION,
@@ -9592,6 +9602,10 @@ def _p614_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False, detai
             "read_only": True,
             "source": "alpaca_orders_today_bounded",
             "heavy_requested": True,
+            "native_broker_verification_only": True,
+            "native_broker_verification_status": verification_status,
+            "strategy_memory_row_count": memory_row_count,
+            "strategy_memory_realized_pnl": memory.get("today_realized_pnl"),
             "today_ny": today,
             "timed_out": False,
             "timeout_sec": timeout,
@@ -9606,7 +9620,11 @@ def _p614_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False, detai
             "largest_loss": min(rows, key=lambda r: _safe_float(r.get("gross_pnl"), 0.0), default={}),
             "largest_win": max(rows, key=lambda r: _safe_float(r.get("gross_pnl"), 0.0), default={}),
             "rows": rows[-lim:],
-            "recommended_action": "review_loss_rows_and_breakout_downshift_truth" if losses else "no_broker_loss_rows_today",
+            "recommended_action": (
+                "use_fast_memory_ledger_for_economics_native_broker_history_empty"
+                if verification_status == "native_broker_empty_strategy_memory_has_rows"
+                else "review_loss_rows_and_breakout_downshift_truth" if losses else "no_broker_loss_rows_today"
+            ),
         }
         cache.clear()
         cache.update({**payload, "cached_utc": datetime.now(timezone.utc).isoformat()})
