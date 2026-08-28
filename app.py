@@ -3052,7 +3052,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-612-exit-worker-trigger-queue-ordering-idempotency-skip-fast-forward"
+PATCH_VERSION = "patch-613-close-position-idempotency-terminal-skip-exit-evidence-event-filter-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -9091,6 +9091,7 @@ def _p373_record_exit_submit_idempotency_block(
     return {
         "closed": False,
         "blocked": True,
+        "terminal_for_worker_pass": True,
         "symbol": sym,
         "qty": qty,
         "close_side": close_side,
@@ -9814,7 +9815,8 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
                 break
             if not isinstance(row, dict):
                 continue
-            if str(row.get("category") or "").upper() != "EXIT":
+            row_event = str(row.get("event") or row.get("category") or "").upper()
+            if row_event != "EXIT":
                 continue
 
             meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
@@ -9824,6 +9826,7 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
             same_day_block_action = action in {
                 "blocked_same_day_exit",
                 "exit_submit_blocked_same_day_idempotency",
+                "exit_submit_idempotency_skip_terminal",
                 "exit_worker_idempotency_skip_fast_forward",
             }
             worker_budget_action = action == "worker_exit_budget_fast_close"
@@ -9839,6 +9842,7 @@ def _p351_exit_guard_evidence_light(limit: int = 20) -> dict:
             rows.append({
                 "ts": row.get("ts") or row.get("ts_utc") or row.get("time"),
                 "symbol": str(row.get("symbol") or "").upper(),
+                "event": row_event,
                 "source": row.get("source"),
                 "action": action,
                 "reason": row.get("reason"),
@@ -50018,6 +50022,72 @@ def _p612_same_day_exit_fast_forward_result(symbol: str, plan: dict, reason: str
     }
 
 
+def _p613_exit_submit_idempotency_blocked(out: dict | None) -> bool:
+    if not isinstance(out, dict):
+        return False
+    guard = out.get("same_day_exit_submit_idempotency")
+    guard_blocked = isinstance(guard, dict) and bool(guard.get("blocked"))
+    return bool(guard_blocked or str(out.get("reason") or "") == "same_day_exit_submit_idempotency")
+
+
+def _p613_worker_exit_action(out: dict | None, failed_action: str) -> str:
+    if _p613_exit_submit_idempotency_blocked(out):
+        return "exit_submit_idempotency_skip_terminal"
+    return str(failed_action or "exit_failed")
+
+
+def _p613_recent_terminal_exit_idempotency_blocks(window_sec: int | None = None, limit: int = 500) -> dict:
+    window = max(1, int(window_sec or SAME_DAY_EXIT_SUBMIT_IDEMPOTENCY_WINDOW_SEC or 900))
+    now_utc = datetime.now(timezone.utc)
+    rows = []
+    symbols = []
+    for row in reversed(list(DECISIONS or [])[-max(1, min(int(limit or 500), 2000)):]):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("event") or row.get("category") or "").upper() != "EXIT":
+            continue
+        action = str(row.get("action") or "").strip()
+        if action not in {
+            "exit_submit_blocked_same_day_idempotency",
+            "exit_worker_idempotency_skip_fast_forward",
+            "exit_submit_idempotency_skip_terminal",
+        }:
+            continue
+        ts_raw = row.get("ts_utc") or row.get("ts") or row.get("time")
+        age_sec = None
+        try:
+            if ts_raw:
+                ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age_sec = max(0.0, (now_utc - ts.astimezone(timezone.utc)).total_seconds())
+        except Exception:
+            age_sec = None
+        if age_sec is not None and age_sec > window:
+            continue
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        if sym not in symbols:
+            symbols.append(sym)
+        rows.append({
+            "ts_utc": ts_raw,
+            "symbol": sym,
+            "action": action,
+            "reason": row.get("reason"),
+            "age_sec": round(age_sec, 2) if age_sec is not None else None,
+            "terminal_for_worker_pass": True,
+        })
+    return {
+        "patch_version": PATCH_VERSION,
+        "mode": "recent_terminal_exit_idempotency_blocks",
+        "window_sec": window,
+        "symbols": symbols,
+        "count": len(rows),
+        "rows": rows,
+    }
+
+
 def _p612_active_exit_worker_gap_truth(display_status: str, active_exit_truth: dict | None = None) -> dict:
     status = str(display_status or "").strip().lower()
     should_check = status in {"started", "budget_fast_close"}
@@ -50043,18 +50113,28 @@ def _p612_active_exit_worker_gap_truth(display_status: str, active_exit_truth: d
             for row in watch_rows
             if bool(row.get("exit_trigger_now")) and str(row.get("symbol") or "").strip()
         ])
+        terminal_blocks = _p613_recent_terminal_exit_idempotency_blocks()
+        terminal_block_symbols = set(terminal_blocks.get("symbols") or [])
+        unresolved_due_symbols = [sym for sym in due_symbols if sym not in terminal_block_symbols]
         watch_count = int(summary.get("exit_watch_count") or len(watch_rows) or 0)
-        unhealthy = bool(status in {"started", "budget_fast_close"} and watch_count > 0)
+        unhealthy = bool(status in {"started", "budget_fast_close"} and unresolved_due_symbols)
         return {
             "checked": True,
             "worker_status": status,
             "active_exit_watch_count": watch_count,
             "due_exit_symbols": due_symbols,
             "due_exit_count": len(due_symbols),
+            "terminal_idempotency_block_symbols": sorted(terminal_block_symbols),
+            "terminal_idempotency_block_count": len(terminal_block_symbols),
+            "unresolved_due_exit_symbols": unresolved_due_symbols,
+            "unresolved_due_exit_count": len(unresolved_due_symbols),
+            "terminal_idempotency_blocks": terminal_blocks,
             "status_unhealthy": unhealthy,
             "recommended_action": (
                 "worker_exit_has_due_exits_without_terminal_completion"
                 if unhealthy
+                else "recent_exit_submit_idempotency_block_covers_due_exit_monitor_pending_close"
+                if due_symbols and terminal_block_symbols
                 else "monitor_exit_worker"
                 if watch_count > 0
                 else "none"
@@ -51463,7 +51543,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             else:
                 results.append({
                     "symbol": symbol,
-                    "action": f"{reason}_failed",
+                    "action": _p613_worker_exit_action(out, f"{reason}_failed"),
                     "forbidden_short_cleanup": forbidden_short_cleanup,
                     **dict(out or {}),
                 })
@@ -51558,7 +51638,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             else:
                 results.append({
                     "symbol": symbol,
-                    "action": f"{reason}_failed",
+                    "action": _p613_worker_exit_action(out, f"{reason}_failed"),
                     "price": px,
                     "days_held": hold_days,
                     "damage_guard": damage_guard,
@@ -51601,7 +51681,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             else:
                 results.append({
                     "symbol": symbol,
-                    "action": f"{reason}_failed",
+                    "action": _p613_worker_exit_action(out, f"{reason}_failed"),
                     "price": px,
                     "days_held": hold_days,
                     "daily_breakout_profit_giveback": dynamic_exit.get("daily_breakout_profit_giveback"),
@@ -51641,7 +51721,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             else:
                 results.append({
                     "symbol": symbol,
-                    "action": f"{reason}_failed",
+                    "action": _p613_worker_exit_action(out, f"{reason}_failed"),
                     "price": px,
                     "days_held": hold_days,
                     "daily_breakout_failed_followthrough": dynamic_exit.get("daily_breakout_failed_followthrough"),
@@ -51768,7 +51848,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
                 results.append({"symbol": symbol, "action": reason, "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
             else:
-                results.append({"symbol": symbol, "action": f"{reason}_failed", "price": px, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
+                results.append({"symbol": symbol, "action": _p613_worker_exit_action(out, f"{reason}_failed"), "price": px, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r"), **out})
             continue
 
         if hit_stop or hit_profit_lock or hit_take:
@@ -51789,7 +51869,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
                 results.append({"symbol": symbol, "action": f"exit_{reason}", "price": px, "stop": stop_price, "profit_lock": profit_lock_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), **out})
             else:
-                results.append({"symbol": symbol, "action": f"exit_{reason}_failed", "price": px, "days_held": hold_days, "profit_lock": profit_lock_price, "dynamic_flags": dynamic_exit.get("flags", []), **out})
+                results.append({"symbol": symbol, "action": _p613_worker_exit_action(out, f"exit_{reason}_failed"), "price": px, "days_held": hold_days, "profit_lock": profit_lock_price, "dynamic_flags": dynamic_exit.get("flags", []), **out})
         else:
             results.append({"symbol": symbol, "action": "hold", "price": px, "stop": stop_price, "take": take_price, "days_held": hold_days, "dynamic_flags": dynamic_exit.get("flags", []), "stall_r": dynamic_exit.get("stall_r")})
 
