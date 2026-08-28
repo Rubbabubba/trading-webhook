@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-622-exit-dynamic-evidence-split-prep"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-623-breakout-stall-containment-light-snapshot"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -369,6 +369,86 @@ def build_breakout_stall_loss_containment_report(
     }
 
 
+def build_breakout_stall_loss_fast_snapshot(
+    *,
+    active_exit_snapshot: dict | None,
+    config: dict | None,
+    patch_version: str,
+    limit: int = 20,
+) -> dict:
+    snapshot = dict(active_exit_snapshot or {})
+    summary = dict(snapshot.get("summary") or {})
+    rows = [
+        dict(row)
+        for row in list(snapshot.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    safe_limit = max(1, min(int(limit or 20), 50))
+
+    preview = []
+    for row in rows[:safe_limit]:
+        preview.append({
+            "symbol": row.get("symbol"),
+            "side": row.get("side"),
+            "qty": row.get("qty"),
+            "entry_price": row.get("entry_price"),
+            "current_price": row.get("current_price"),
+            "unrealized_pl": row.get("unrealized_pl"),
+            "closest_exit_reason": row.get("closest_exit_reason"),
+            "protection_status": row.get("protection_status"),
+            "exit_trigger_now": row.get("exit_trigger_now"),
+            "stop_price": row.get("stop_price"),
+            "target_price": row.get("target_price"),
+            "profit_lock_price": row.get("profit_lock_price"),
+        })
+
+    exit_watch_count = int(
+        snapshot.get("exit_watch_count")
+        or summary.get("exit_watch_count")
+        or 0
+    )
+    missing_protection_count = int(
+        summary.get("missing_protection_count")
+        or snapshot.get("missing_protection_count")
+        or 0
+    )
+
+    if exit_watch_count or missing_protection_count:
+        recommended_action = "inspect_breakout_stall_loss_containment_heavy"
+    else:
+        recommended_action = "none"
+
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "breakout_stall_loss_containment",
+        "payload_mode": "fast_snapshot",
+        "source": "swing_exit_protection_fast_active_exit_snapshot",
+        "read_only": True,
+        "dynamic_evidence_available": False,
+        "dynamic_evidence_deferred": True,
+        "heavy_available": True,
+        "heavy_endpoint": "/diagnostics/breakout_stall_loss_containment?detail=heavy&limit=20",
+        "enabled": dict((config or {}).get("enabled") or {}),
+        "config": dict((config or {}).get("config") or {}),
+        "active_exit_summary": {
+            "position_count": summary.get("position_count"),
+            "active_plan_count": summary.get("active_plan_count"),
+            "missing_protection_count": missing_protection_count,
+            "exit_watch_count": exit_watch_count,
+            "all_active_positions_protected": summary.get("all_active_positions_protected"),
+        },
+        "breakout_position_count": None,
+        "breakout_position_count_reason": "dynamic breakout evidence is deferred in light mode",
+        "partial_profit_bias_ready_symbols": [],
+        "stall_loss_reduce_first_ready_symbols": [],
+        "rows": [],
+        "active_exit_rows_preview": preview,
+        "module_status": exit_protection_module_status(patch_version=patch_version),
+        "recommended_action": recommended_action,
+    }
+
+
 def exit_protection_module_status(*, patch_version: str) -> dict:
     return {
         "ok": True,
@@ -387,6 +467,7 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "pending_entry_protection_contract",
             "broker_position_plan_recovery_contract",
             "breakout_dynamic_evidence_report_shape",
+            "breakout_stall_loss_fast_snapshot_shape",
             "exit_protection_module_status",
         ],
         "next_extraction_target": "move_dynamic_exit_preview_calculation_out_of_app_py",

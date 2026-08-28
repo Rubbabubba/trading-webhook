@@ -140,6 +140,7 @@ from swing_execution import (
 )
 from swing_exit_protection import (
     SWING_EXIT_PROTECTION_MODULE_VERSION,
+    build_breakout_stall_loss_fast_snapshot as swing_exit_build_breakout_stall_loss_fast_snapshot,
     build_breakout_stall_loss_containment_report as swing_exit_build_breakout_stall_loss_report,
     build_fast_active_exit_snapshot as swing_exit_build_fast_active_exit_snapshot,
     exit_protection_module_status as swing_exit_protection_module_status,
@@ -3078,7 +3079,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-622-exit-protection-dynamic-evidence-split-prep"
+PATCH_VERSION = "patch-623-breakout-stall-containment-light-snapshot-heavy-opt-in"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -67539,24 +67540,43 @@ def diagnostics_partial_profit_readiness_truth(limit: int = 25):
     return JSONResponse(content=_p606_partial_profit_readiness_truth(limit=limit))
 
 @app.get("/diagnostics/breakout_stall_loss_containment")
-def diagnostics_breakout_stall_loss_containment():
-    truth = _p364_active_exit_protection_truth()
-    payload = swing_exit_build_breakout_stall_loss_report(
-        active_exit_truth=truth,
-        config={
-            "enabled": {
-                "breakout_partial_profit_bias": bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
-                "breakout_stall_loss_reduce_first": bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
-            },
-            "config": {
-                "breakout_partial_profit_r": float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.0),
-                "breakout_partial_profit_fraction": float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.0),
-                "breakout_stall_loss_reduce_fraction": float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.0),
-                "partial_profit_min_qty": float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
-            },
+def diagnostics_breakout_stall_loss_containment(limit: int = 20, detail: str = "light", heavy: bool = False):
+    heavy_requested = bool(heavy) or str(detail or "").strip().lower() in {"heavy", "full", "detail", "debug"}
+    config = {
+        "enabled": {
+            "breakout_partial_profit_bias": bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
+            "breakout_stall_loss_reduce_first": bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
         },
-        patch_version=PATCH_VERSION,
-    )
+        "config": {
+            "breakout_partial_profit_r": float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.0),
+            "breakout_partial_profit_fraction": float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.0),
+            "breakout_stall_loss_reduce_fraction": float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.0),
+            "partial_profit_min_qty": float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+        },
+    }
+    if heavy_requested:
+        truth = _p364_active_exit_protection_truth()
+        payload = swing_exit_build_breakout_stall_loss_report(
+            active_exit_truth=truth,
+            config=config,
+            patch_version=PATCH_VERSION,
+        )
+        if isinstance(payload, dict):
+            payload["payload_mode"] = "heavy_dynamic_rebuild"
+            payload["heavy_requested"] = True
+    else:
+        truth = _p620_active_exit_protection_truth_fast(limit=limit)
+        payload = swing_exit_build_breakout_stall_loss_fast_snapshot(
+            active_exit_snapshot=truth,
+            config=config,
+            patch_version=PATCH_VERSION,
+            limit=limit,
+        )
+    if isinstance(payload, dict):
+        payload["default_detail"] = "light"
+        payload["requested_detail"] = "heavy" if heavy_requested else "light"
+        payload["heavy_available"] = True
+        payload["heavy_endpoint"] = "/diagnostics/breakout_stall_loss_containment?detail=heavy&limit=20"
     return JSONResponse(content=payload)
 
 @app.get("/diagnostics/broker_native_position_risk_truth")

@@ -14,6 +14,8 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/alerts
 https://trading-webhook-q4d5.onrender.com/diagnostics/alternate_entry_shadow
 https://trading-webhook-q4d5.onrender.com/diagnostics/bars_5m
 https://trading-webhook-q4d5.onrender.com/diagnostics/bars_debug
+https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_stall_loss_containment
+https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_stall_loss_containment?detail=heavy
 https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_distance_relaxation_replay
 https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_quality_risk_downshift
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_backed_exposure_truth
