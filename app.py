@@ -3072,7 +3072,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-617-current-scan-pure-cache-snapshot-heavy-detail-opt-in"
+PATCH_VERSION = "patch-618-current-scan-fast-state-adoption-heavy-safe-wrapper-worker-exit-fast-skip"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -31715,6 +31715,11 @@ def _p550_current_scan_suppression_snapshot_payload(
         for reason, count in dict(reason_summary.get("reason_counts") or {}).items()
         if _p277_reason_family(reason) == "protective"
     }
+    p591_effective_selection_authority = bool(
+        selected_symbols
+        and not bool(candidate_truth.get("regime_only_non_actionable"))
+        and str(latest_scan.get("reason") or summary.get("scan_reason") or "").strip().lower() not in {"outside_market_hours", "scan_exception"}
+    )
     latest_reason = str(latest_scan.get("reason") or "").strip().lower()
     if selected_symbols:
         status = "selecting"
@@ -42574,20 +42579,36 @@ def _p617_current_scan_suppression_truth_snapshot(limit: int = 50) -> dict:
     latest_summary = dict(latest.get("summary") or {})
     actionable = dict(LAST_ACTIONABLE_MARKET_SCAN or {})
     actionable_summary = dict(actionable.get("summary") or {})
+    successful = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
+    successful_summary = dict(successful.get("summary") or {})
     scan = latest
     summary = latest_summary
     scan_source = "last_scan"
-    if actionable and (
-        actionable_summary.get("candidate_rows_for_truth")
-        or actionable_summary.get("selected_candidate_rows_for_truth")
-        or actionable_summary.get("top_new_entry_candidates")
-        or actionable_summary.get("top_candidates")
-        or actionable_summary.get("rejection_counts")
-        or actionable_summary.get("top_rejection_reasons")
+
+    def _has_candidate_bearing_cache(candidate_scan: dict, candidate_summary: dict) -> bool:
+        return bool(candidate_scan) and bool(
+            candidate_summary.get("candidate_rows_for_truth")
+            or candidate_summary.get("selected_candidate_rows_for_truth")
+            or candidate_summary.get("top_new_entry_candidates")
+            or candidate_summary.get("top_candidates")
+            or candidate_summary.get("rejection_counts")
+            or candidate_summary.get("top_rejection_reasons")
+            or candidate_scan.get("candidate_rows")
+            or candidate_scan.get("selected_symbols")
+            or candidate_scan.get("scanned")
+            or candidate_scan.get("candidates_total")
+        )
+
+    for candidate_source, candidate_scan, candidate_summary in (
+        ("last_actionable_market_scan", actionable, actionable_summary),
+        ("last_successful_production_scan", successful, successful_summary),
+        ("last_scan", latest, latest_summary),
     ):
-        scan = actionable
-        summary = actionable_summary
-        scan_source = "last_actionable_market_scan"
+        if _has_candidate_bearing_cache(candidate_scan, candidate_summary):
+            scan = candidate_scan
+            summary = candidate_summary
+            scan_source = candidate_source
+            break
 
     row_sources = (
         ("selected_candidate_rows_for_truth", summary.get("selected_candidate_rows_for_truth")),
@@ -42760,11 +42781,33 @@ def _p617_current_scan_suppression_truth_snapshot(limit: int = 50) -> dict:
         "cache_truth": {
             "raw_last_scan_has_summary": bool(latest_summary),
             "last_actionable_scan_has_summary": bool(actionable_summary),
+            "last_successful_production_scan_has_summary": bool(successful_summary),
             "preferred_scan_source": scan_source,
+            "p618_successful_scan_adoption": bool(scan_source == "last_successful_production_scan"),
             "candidate_row_source": row_source,
             "row_walk_limit": lim,
         },
     }
+
+def _p618_safe_current_scan_heavy(limit: int = 50) -> dict:
+    try:
+        _ensure_runtime_state_loaded()
+        return _p277h_current_scan_suppression_truth(limit=limit)
+    except Exception as exc:
+        logger.exception("P618_CURRENT_SCAN_HEAVY_SAFE_WRAPPER_FAILED")
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "current_scan_suppression_truth",
+            "payload_mode": "heavy_safe_wrapper",
+            "source": "p618_current_scan_heavy_safe_wrapper",
+            "limit": limit,
+            "error": str(exc),
+            "exception_type": type(exc).__name__,
+            "default_endpoint": "/diagnostics/current_scan_suppression_truth?limit=10",
+            "expanded_endpoint": "/diagnostics/current_scan_suppression_truth?detail=expanded&limit=10",
+            "recommended_action": "use_default_or_expanded_current_scan_snapshot_and_inspect_logs",
+        }
 
 def _p565_current_scan_suppression_truth_fast(limit: int = 50) -> dict:
     lim = max(1, min(int(limit or 50), 50))
@@ -67086,7 +67129,29 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         and (age_sec is None or age_sec <= worker_error_fresh_window_sec)
     )
     sync_contract_ok = len(fresh_sync_guard_rows) == 0
-    p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status)
+    p618_skip_active_exit_gap_check = bool(
+        sync_contract_ok
+        and not heartbeat_error_fresh
+        and not started_stale
+        and not error_like
+        and (
+            display_status in {"ok", "success", "completed", "activity_confirmed_terminal", "activity_confirmed_after_started"}
+            or effective_terminal_status_seen
+            or bool(p604_heartbeat_truth.get("activity_after_started"))
+        )
+    )
+    if p618_skip_active_exit_gap_check:
+        p612_exit_worker_gap_truth = {
+            "checked": False,
+            "reason": "p618_fast_default_skipped_active_exit_gap_check_healthy_worker",
+            "worker_status": display_status,
+            "active_exit_watch_count": None,
+            "status_unhealthy": False,
+            "recommended_action": "none",
+            "heavy_endpoint": "/diagnostics/worker_exit_status?detail=heavy",
+        }
+    else:
+        p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status)
     p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
     healthy = bool(not heartbeat_error_fresh and not started_stale and sync_contract_ok and not error_like and not p612_exit_worker_gap_unhealthy)
 
@@ -67150,6 +67215,14 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         },
         "active_exit_summary": p612_exit_worker_gap_truth,
         "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
+        "p618_worker_exit_fast_skip": {
+            "active_exit_gap_check_skipped": bool(p618_skip_active_exit_gap_check),
+            "reason": (
+                "healthy_worker_status_uses_light_endpoint_without_active_exit_rebuild"
+                if p618_skip_active_exit_gap_check
+                else "active_exit_gap_check_needed"
+            ),
+        },
         "trades_today_forcing_isolation": {
             "trades_today_enable": bool(TRADES_TODAY_ENABLE),
             "worker_exit_forcing_enabled": bool(TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
@@ -67810,15 +67883,13 @@ def diagnostics_swing_daily_health_brief():
 @app.get("/diagnostics/current_scan_suppression_truth")
 def diagnostics_current_scan_suppression_truth(limit: int = 50, heavy: bool = False, detail: str = "light"):
     if bool(heavy):
-        _ensure_runtime_state_loaded()
-        return _p277h_current_scan_suppression_truth(limit=limit)
+        return _p618_safe_current_scan_heavy(limit=limit)
     if not LAST_SCAN and not LAST_ACTIONABLE_MARKET_SCAN:
         _ensure_runtime_state_loaded()
     if str(detail or "").strip().lower() in {"expanded", "legacy_fast"}:
         return _p565_current_scan_suppression_truth_fast(limit=limit)
     if str(detail or "").strip().lower() in {"heavy", "full"}:
-        _ensure_runtime_state_loaded()
-        return _p277h_current_scan_suppression_truth(limit=limit)
+        return _p618_safe_current_scan_heavy(limit=limit)
     return _p617_current_scan_suppression_truth_snapshot(limit=limit)
 
 @app.get("/diagnostics/defensive_tier_near_miss_report")
