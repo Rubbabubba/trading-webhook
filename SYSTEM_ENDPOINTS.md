@@ -13,6 +13,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/alternate_entry_shadow
 https://trading-webhook-q4d5.onrender.com/diagnostics/bars_5m
 https://trading-webhook-q4d5.onrender.com/diagnostics/bars_debug
 https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_distance_relaxation_replay
+https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_quality_risk_downshift
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_backed_exposure_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_daily_goal_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_daily_pnl_dedup
@@ -66,6 +67,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/execution_visibility
 https://trading-webhook-q4d5.onrender.com/diagnostics/exits
 https://trading-webhook-q4d5.onrender.com/diagnostics/exit_guard_evidence_light
 https://trading-webhook-q4d5.onrender.com/diagnostics/expanded_swing_universe_discovery
+https://trading-webhook-q4d5.onrender.com/diagnostics/fast_broker_trade_ledger
 https://trading-webhook-q4d5.onrender.com/diagnostics/failure_decomp
 https://trading-webhook-q4d5.onrender.com/diagnostics/filter_pressure
 https://trading-webhook-q4d5.onrender.com/diagnostics/first_2k_rank_relaxation_replay

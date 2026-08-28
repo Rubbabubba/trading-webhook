@@ -2218,6 +2218,26 @@ BREAKOUT_EARLY_FOLLOW_THROUGH_BLOCK_ENTRY_TYPES = {
     ).split(",")
     if s.strip()
 }
+SWING_BREAKOUT_KILL_ZONE_RISK_DOWNSHIFT_ENABLED = env_bool_any(
+    "SWING_BREAKOUT_KILL_ZONE_RISK_DOWNSHIFT_ENABLED",
+    default=True,
+)
+SWING_BREAKOUT_KILL_ZONE_RISK_MULTIPLIER = getenv_float_any(
+    "SWING_BREAKOUT_KILL_ZONE_RISK_MULTIPLIER",
+    default=0.50,
+)
+SWING_BREAKOUT_KILL_ZONE_SOFT_RANK_SCORE = getenv_float_any(
+    "SWING_BREAKOUT_KILL_ZONE_SOFT_RANK_SCORE",
+    default=110.0,
+)
+SWING_BREAKOUT_KILL_ZONE_MAX_RISK_PER_SHARE_PCT = getenv_float_any(
+    "SWING_BREAKOUT_KILL_ZONE_MAX_RISK_PER_SHARE_PCT",
+    default=0.10,
+)
+SWING_FAST_BROKER_TRADE_LEDGER_TIMEOUT_SEC = getenv_float_any(
+    "SWING_FAST_BROKER_TRADE_LEDGER_TIMEOUT_SEC",
+    default=6.0,
+)
 BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT = getenv_float_any(
     "BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT",
     default=0.75,
@@ -3052,7 +3072,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-613-close-position-idempotency-terminal-skip-exit-evidence-event-filter-fix"
+PATCH_VERSION = "patch-614-fast-broker-trade-ledger-breakout-kill-zone-risk-downshift"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -7944,6 +7964,7 @@ def _p388_entry_level_preview(side: str, price: float, meta: dict | None = None)
 def compute_qty(price: float, side: str = "buy", meta: dict | None = None) -> float:
     if price <= 0:
         raise ValueError("Price must be > 0")
+    meta = dict(meta or {})
 
     levels = _p388_entry_level_preview(side, price, meta=meta)
     risk_per_share = float(levels.get("risk_per_share") or 0.0)
@@ -7952,6 +7973,10 @@ def compute_qty(price: float, side: str = "buy", meta: dict | None = None) -> fl
         raise ValueError("entry risk_per_share must be > 0")
 
     effective_risk_dollars = _p459_effective_swing_risk_dollars()
+    downshift = dict(meta.get("p614_breakout_risk_downshift") or {})
+    if bool(downshift.get("applies")):
+        multiplier = max(0.05, min(1.0, float(_safe_float(downshift.get("risk_multiplier"), 1.0))))
+        effective_risk_dollars = float(effective_risk_dollars or 0.0) * multiplier
     qty = float(effective_risk_dollars or 0.0) / risk_per_share
 
     if bool(SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED):
@@ -9373,6 +9398,180 @@ def _p376_classify_entry_loss(row: dict, entry_quality: dict, kill_zone: dict) -
     if not entry_quality:
         reasons.append("entry_quality_missing")
     return _dedupe_keep_order(reasons)
+
+
+def _p614_breakout_risk_downshift(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    symbol = str(c.get("symbol") or "").strip().upper()
+    strategy = str(
+        c.get("strategy")
+        or c.get("strategy_name")
+        or c.get("signal")
+        or ""
+    ).strip().lower()
+    entry_type = str(c.get("entry_type") or c.get("selected_source") or "").strip().lower()
+    mean_reversion_name = str(MEAN_REVERSION_STRATEGY_NAME or "daily_mean_reversion").strip().lower()
+    rank_score = _safe_float(c.get("rank_score"), 0.0)
+    risk_pct = _p410_geometry_value_pct(c, "risk_per_share_pct")
+    breakout_distance = _p410_geometry_value_pct(c, "breakout_distance_pct")
+    close_to_high = _p410_geometry_value_pct(c, "close_to_high_pct")
+    breakout_gate = _p377_breakout_early_follow_through_gate(c)
+    is_breakout = bool(
+        strategy != mean_reversion_name
+        and (
+            strategy in {"daily_breakout", str(BREAKOUT_STRATEGY_NAME or "").strip().lower()}
+            or "breakout" in entry_type
+            or bool((c.get("swing_production_contract") or {}).get("checks"))
+        )
+    )
+
+    reasons = []
+    if bool(breakout_gate.get("blocked")):
+        reasons.append(str(breakout_gate.get("reason") or "breakout_lacks_early_follow_through"))
+    if rank_score > 0 and rank_score < float(SWING_BREAKOUT_KILL_ZONE_SOFT_RANK_SCORE or 110.0):
+        reasons.append("breakout_rank_soft")
+    if risk_pct > float(SWING_BREAKOUT_KILL_ZONE_MAX_RISK_PER_SHARE_PCT or 0.10) * 100.0:
+        reasons.append("breakout_risk_per_share_wide")
+    if close_to_high > 0 and close_to_high < 98.5:
+        reasons.append("breakout_not_close_enough_to_high")
+    if breakout_distance > 2.5:
+        reasons.append("breakout_extension_high")
+
+    applies = bool(
+        SWING_BREAKOUT_KILL_ZONE_RISK_DOWNSHIFT_ENABLED
+        and is_breakout
+        and reasons
+    )
+    multiplier = max(
+        0.05,
+        min(1.0, float(_safe_float(SWING_BREAKOUT_KILL_ZONE_RISK_MULTIPLIER, 0.50))),
+    )
+
+    return {
+        "enabled": bool(SWING_BREAKOUT_KILL_ZONE_RISK_DOWNSHIFT_ENABLED),
+        "applies": bool(applies),
+        "symbol": symbol,
+        "strategy": strategy or None,
+        "entry_type": entry_type or None,
+        "risk_multiplier": round(multiplier if applies else 1.0, 4),
+        "configured_risk_multiplier": round(multiplier, 4),
+        "reason": "breakout_quality_risk_downshift" if applies else "ok",
+        "reasons": _dedupe_keep_order(reasons),
+        "rank_score": round(rank_score, 4) if rank_score else None,
+        "soft_rank_score": float(SWING_BREAKOUT_KILL_ZONE_SOFT_RANK_SCORE or 110.0),
+        "risk_per_share_pct": risk_pct,
+        "max_risk_per_share_pct": round(float(SWING_BREAKOUT_KILL_ZONE_MAX_RISK_PER_SHARE_PCT or 0.10) * 100.0, 4),
+        "breakout_distance_pct": breakout_distance,
+        "close_to_high_pct": close_to_high,
+        "breakout_early_follow_through_gate": breakout_gate,
+        "contract": "risk_downshift_only_no_new_entry_block",
+    }
+
+
+def _p614_fast_broker_trade_ledger(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    timeout = max(1.0, float(SWING_FAST_BROKER_TRADE_LEDGER_TIMEOUT_SEC or 6.0))
+    cache = globals().setdefault("P614_FAST_BROKER_TRADE_LEDGER_CACHE", {})
+    today = now_ny().date().isoformat()
+
+    def _build() -> dict:
+        broker = _today_realized_pnl_from_broker_orders()
+        rows = []
+        for row in list((broker or {}).get("rows") or []):
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            gross = _safe_float(row.get("gross_pnl"), 0.0)
+            inferred = _infer_recovered_plan_attribution(symbol, order_id=str(row.get("entry_order_id") or "")) if symbol else {}
+            rows.append({
+                "symbol": symbol,
+                "gross_pnl": round(gross, 4),
+                "result": "win" if gross > 0 else "loss" if gross < 0 else "flat",
+                "qty": row.get("qty"),
+                "entry_price": row.get("entry_price"),
+                "exit_price": row.get("exit_price"),
+                "entry_order_id": row.get("entry_order_id"),
+                "exit_order_id": row.get("exit_order_id"),
+                "ts_utc": row.get("ts_utc"),
+                "strategy_name": inferred.get("strategy_name"),
+                "signal": inferred.get("signal"),
+                "entry_type": inferred.get("entry_type"),
+                "rank_score": inferred.get("rank_score"),
+                "selection_quality_score": inferred.get("selection_quality_score"),
+                "attribution_source": inferred.get("attribution_source"),
+            })
+        rows.sort(key=lambda r: str(r.get("ts_utc") or ""))
+        wins = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) > 0]
+        losses = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) < 0]
+        payload = {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "fast_broker_trade_ledger",
+            "read_only": True,
+            "source": "alpaca_orders_today_bounded",
+            "today_ny": today,
+            "timed_out": False,
+            "closed_trades_today": int((broker or {}).get("closed_trades_today") or len(rows)),
+            "broker_exit_fills_today": int((broker or {}).get("broker_exit_fills_today") or 0),
+            "today_realized_pnl": round(_safe_float((broker or {}).get("today_realized_pnl"), sum(_safe_float(r.get("gross_pnl"), 0.0) for r in rows)), 4),
+            "wins_today": len(wins),
+            "losses_today": len(losses),
+            "largest_loss": min(rows, key=lambda r: _safe_float(r.get("gross_pnl"), 0.0), default={}),
+            "largest_win": max(rows, key=lambda r: _safe_float(r.get("gross_pnl"), 0.0), default={}),
+            "rows": rows[-lim:],
+            "recommended_action": "review_loss_rows_and_breakout_downshift_truth" if losses else "no_broker_loss_rows_today",
+        }
+        cache.clear()
+        cache.update({**payload, "cached_utc": datetime.now(timezone.utc).isoformat()})
+        return payload
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fast-broker-trade-ledger")
+    try:
+        future = executor.submit(_build)
+        return dict(future.result(timeout=timeout))
+    except FuturesTimeoutError:
+        cached = dict(cache or {})
+        if cached:
+            cached.update({
+                "ok": True,
+                "patch_version": PATCH_VERSION,
+                "mode": "fast_broker_trade_ledger",
+                "source": "cached_after_timeout",
+                "timed_out": True,
+                "timeout_sec": timeout,
+                "recommended_action": "cached_trade_ledger_returned_broker_orders_slow",
+            })
+            return cached
+        return {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "fast_broker_trade_ledger",
+            "read_only": True,
+            "source": "timeout_no_cache",
+            "today_ny": today,
+            "timed_out": True,
+            "timeout_sec": timeout,
+            "closed_trades_today": 0,
+            "broker_exit_fills_today": 0,
+            "today_realized_pnl": 0.0,
+            "rows": [],
+            "recommended_action": "broker_order_history_slow_retry_or_use_orders_endpoint",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "fast_broker_trade_ledger",
+            "read_only": True,
+            "source": "exception",
+            "today_ny": today,
+            "error": str(exc),
+            "exception_type": type(exc).__name__,
+            "rows": [],
+            "recommended_action": "inspect_broker_order_history_error",
+        }
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _p376_same_day_breakout_loss_forensics(limit: int = 20) -> dict:
@@ -28694,6 +28893,8 @@ def _p399_submit_swing_candidate_rows(
             "p387_rate_limit_retry_key": c.get("p387_rate_limit_retry_key"),
             "p387_rate_limit_retry_attempt": c.get("p387_rate_limit_retry_attempt"),
         }
+        p614_breakout_risk_downshift = _p614_breakout_risk_downshift(c)
+        meta["p614_breakout_risk_downshift"] = p614_breakout_risk_downshift
 
         selected_submission_payloads.append({
             "symbol": sym,
@@ -28786,6 +28987,7 @@ def _p399_submit_swing_candidate_rows(
                 "entry_type": entry_type,
                 "source": source_name,
             },
+            "p614_breakout_risk_downshift": p614_breakout_risk_downshift,
         }
 
         if bool(row.get("actual_submit_side_effect")):
@@ -45629,12 +45831,17 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         meta["p388_true_dollar_risk_sizing"] = {
             "enabled": bool(SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED),
             "configured_risk_dollars": float(RISK_DOLLARS or 0.0),
+            "p614_breakout_risk_downshift": dict(meta.get("p614_breakout_risk_downshift") or {}),
             **entry_level_preview,
         }
 
         _p599_trace("compute_qty_start", base_price=base_price)
         risk_qty = compute_qty(float(base_price), side=side, meta=meta) if side == "buy" else round(abs(qty_signed), 2)
-        _p599_trace("compute_qty_returned", risk_qty=risk_qty)
+        _p599_trace(
+            "compute_qty_returned",
+            risk_qty=risk_qty,
+            p614_breakout_risk_downshift=meta.get("p614_breakout_risk_downshift"),
+        )
         qty = risk_qty
         affordability = None
         entry_capacity_truth = {}
@@ -65978,6 +66185,15 @@ def diagnostics_swing_runtime_config():
                 "legacy_oversized_normalization_min_unrealized_dollars": _cfg_float("SWING_LEGACY_OVERSIZED_NORMALIZATION_MIN_UNREALIZED_DOLLARS", 0.0),
                 "purpose": "true dollar-risk sizing is enforced before submit; existing legacy oversized positions are normalized through worker_exit",
             },
+            "breakout_quality_risk_downshift": {
+                "enabled": _cfg_bool("SWING_BREAKOUT_KILL_ZONE_RISK_DOWNSHIFT_ENABLED", True),
+                "can_block_entries": False,
+                "risk_multiplier": _cfg_float("SWING_BREAKOUT_KILL_ZONE_RISK_MULTIPLIER", 0.50),
+                "soft_rank_score": _cfg_float("SWING_BREAKOUT_KILL_ZONE_SOFT_RANK_SCORE", 110.0),
+                "max_risk_per_share_pct": _cfg_float("SWING_BREAKOUT_KILL_ZONE_MAX_RISK_PER_SHARE_PCT", 0.10),
+                "contract": "submit_sizing_downshift_only",
+                "purpose": "reduce weak breakout dollar risk without adding another selection blocker",
+            },
         },
         exit_guards={
             "opening_damage_guard": {
@@ -66995,6 +67211,10 @@ def diagnostics_same_day_exit_submit_lock_truth(limit: int = 20):
 def diagnostics_broker_preferred_loss_attribution_truth():
     return JSONResponse(content=_p373_broker_preferred_loss_attribution_truth())
 
+@app.get("/diagnostics/fast_broker_trade_ledger")
+def diagnostics_fast_broker_trade_ledger(limit: int = 25):
+    return JSONResponse(content=_p614_fast_broker_trade_ledger(limit=limit))
+
 @app.get("/diagnostics/position_truth")
 def diagnostics_position_truth(request: Request):
     require_admin_if_configured(request)
@@ -67081,6 +67301,54 @@ def diagnostics_breakout_dollar_risk_containment(limit: int = 20):
             for row in contained[: max(1, int(limit or 20))]
         ],
         "recommended_action": "contained_high_dollar_risk_breakout_candidates" if contained else "none",
+    })
+
+@app.get("/diagnostics/breakout_quality_risk_downshift")
+def diagnostics_breakout_quality_risk_downshift(limit: int = 20):
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    rows = [
+        dict(row or {})
+        for row in list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
+        if isinstance(row, dict)
+    ]
+    checked = [
+        {
+            "symbol": row.get("symbol"),
+            "selected": bool(row.get("selected")),
+            "eligible": bool(row.get("eligible")),
+            "entry_type": row.get("entry_type"),
+            "signal": row.get("signal"),
+            "rank_score": row.get("rank_score"),
+            "risk_per_share_pct": row.get("risk_per_share_pct"),
+            "breakout_distance_pct": row.get("breakout_distance_pct"),
+            "close_to_high_pct": row.get("close_to_high_pct"),
+            "downshift": _p614_breakout_risk_downshift(row),
+            "rejection_reasons": row.get("rejection_reasons"),
+        }
+        for row in rows[: max(1, min(int(limit or 20), 50))]
+    ]
+    downshifted = [r for r in checked if bool((r.get("downshift") or {}).get("applies"))]
+    return JSONResponse(content={
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "breakout_quality_risk_downshift",
+        "read_only": True,
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "latest_scan_reason": latest_scan.get("reason"),
+        "enabled": bool(SWING_BREAKOUT_KILL_ZONE_RISK_DOWNSHIFT_ENABLED),
+        "risk_multiplier": float(SWING_BREAKOUT_KILL_ZONE_RISK_MULTIPLIER or 0.50),
+        "downshift_count": len(downshifted),
+        "downshift_symbols": [
+            str(row.get("symbol") or "").strip().upper()
+            for row in downshifted
+            if str(row.get("symbol") or "").strip()
+        ],
+        "rows": checked,
+        "recommended_action": (
+            "weak_breakout_candidates_will_size_down_on_submit"
+            if downshifted
+            else "no_current_breakout_downshift_needed"
+        ),
     })
 
 @app.get("/diagnostics/broker_reconciled_performance_cleanup")
