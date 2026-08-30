@@ -147,7 +147,7 @@ from swing_exit_protection import (
     apply_time_exit_grace_state as swing_exit_apply_time_exit_grace_state,
     apply_triggered_qty_state as swing_exit_apply_triggered_qty_state,
     build_breakout_partial_profit_bias_runtime_state as swing_exit_build_breakout_partial_profit_bias_runtime_state,
-    build_breakout_stall_loss_reduce_first_runtime_state as swing_exit_build_breakout_stall_reduce_first_runtime_state,
+    build_breakout_stall_loss_reduce_first_runtime_state as swing_exit_build_breakout_stall_loss_reduce_first_runtime_state,
     build_breakout_stall_loss_fast_snapshot as swing_exit_build_breakout_stall_loss_fast_snapshot,
     build_breakout_stall_loss_containment_report as swing_exit_build_breakout_stall_loss_report,
     build_dynamic_exit_preview_base as swing_exit_build_dynamic_exit_preview_base,
@@ -3091,7 +3091,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-629-exit-runtime-adapter-boundary-promotion"
+PATCH_VERSION = "patch-629-hotfix-heavy-exit-runtime-adapter-alias-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
