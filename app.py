@@ -3091,7 +3091,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-627-app-exit-preview-wrapper-tombstone-module-parity-status-cleanup"
+PATCH_VERSION = "patch-628-exit-preview-wrapper-deletion-module-runtime-adapter-promotion"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -45164,8 +45164,12 @@ def _p445_qty_source(plan: dict | None) -> str:
 def _p446_clamp_exit_qty(qty_to_close: float, available_qty: float) -> float:
     return _normalize_close_qty(float(swing_exec_clamp_exit_qty(qty_to_close, available_qty)))
 
-def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
-    """Compatibility shim: app.py supplies runtime facts, module owns decision shape."""
+def _swing_exit_breakout_partial_profit_bias_runtime_state(
+    symbol: str,
+    plan: dict | None,
+    px: float,
+    dynamic_exit: dict | None = None,
+) -> dict:
     plan = plan if isinstance(plan, dict) else {}
     dyn = dict(dynamic_exit or {})
     sym = str(symbol or plan.get("symbol") or "").strip().upper()
@@ -45178,7 +45182,7 @@ def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px:
     qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
     min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
 
-    payload = swing_exit_build_breakout_partial_profit_bias_state(
+    return swing_exit_build_breakout_partial_profit_bias_state(
         symbol=sym,
         qty=qty,
         qty_source=qty_source,
@@ -45191,13 +45195,14 @@ def _p444_breakout_partial_profit_bias_state(symbol: str, plan: dict | None, px:
         fraction=fraction,
         min_qty=min_qty,
     )
-    payload["app_wrapper_status"] = "compatibility_tombstone"
-    payload["app_wrapper_delete_ready_after"] = "live_parity_capture"
-    return payload
 
 
-def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
-    """Compatibility shim: app.py supplies runtime facts, module owns decision shape."""
+def _swing_exit_breakout_stall_loss_reduce_first_runtime_state(
+    symbol: str,
+    plan: dict | None,
+    px: float,
+    dynamic_exit: dict | None = None,
+) -> dict:
     plan = plan if isinstance(plan, dict) else {}
     dyn = dict(dynamic_exit or {})
     sym = str(symbol or plan.get("symbol") or "").strip().upper()
@@ -45209,7 +45214,7 @@ def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None,
     qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
     min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
 
-    payload = swing_exit_build_breakout_stall_reduce_first_state(
+    return swing_exit_build_breakout_stall_reduce_first_state(
         symbol=sym,
         qty=qty,
         qty_source=qty_source,
@@ -45222,9 +45227,6 @@ def _p444_breakout_stall_loss_reduce_first_state(symbol: str, plan: dict | None,
         fraction=fraction,
         min_qty=min_qty,
     )
-    payload["app_wrapper_status"] = "compatibility_tombstone"
-    payload["app_wrapper_delete_ready_after"] = "live_parity_capture"
-    return payload
 
 def _p380_daily_breakout_failed_followthrough_state(symbol: str, plan: dict | None, px: float) -> dict:
     plan = plan if isinstance(plan, dict) else {}
@@ -45606,7 +45608,7 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         flag="partial_profit_ready",
     )
 
-    breakout_bias = _p444_breakout_partial_profit_bias_state(symbol, plan, px, out)
+    breakout_bias = _swing_exit_breakout_partial_profit_bias_runtime_state(symbol, plan, px, out)
     proposed_profit_lock = swing_exit_apply_partial_profit_state(
         out,
         breakout_bias,
@@ -45690,7 +45692,7 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         out["stall_loss_guard"] = True
         out["flags"].append("stall_loss_guard_ready")
 
-        reduce_first = _p444_breakout_stall_loss_reduce_first_state(symbol, plan, px, out)
+        reduce_first = _swing_exit_breakout_stall_loss_reduce_first_runtime_state(symbol, plan, px, out)
         swing_exit_apply_stall_loss_reduce_first_state(out, reduce_first)
     
     if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R) and not out.get("time_exit_grace"):
@@ -50273,7 +50275,7 @@ def _p606_partial_profit_readiness_truth(limit: int = 25) -> dict:
             and qty_to_close >= min_qty
             and qty_to_close < qty
         )
-        breakout_bias = _p444_breakout_partial_profit_bias_state(
+        breakout_bias = _swing_exit_breakout_partial_profit_bias_runtime_state(
             symbol,
             plan_for_qty,
             px,
@@ -50778,12 +50780,12 @@ def _p364_active_exit_protection_truth() -> dict:
             else {"flags": []}
         )
         breakout_partial_profit_bias = (
-            _p444_breakout_partial_profit_bias_state(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
+            _swing_exit_breakout_partial_profit_bias_runtime_state(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
             if has_plan and current_price > 0
             else {"applies": False}
         )
         breakout_stall_loss_reduce_first = (
-            _p444_breakout_stall_loss_reduce_first_state(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
+            _swing_exit_breakout_stall_loss_reduce_first_runtime_state(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
             if has_plan and current_price > 0
             else {"applies": False}
         )

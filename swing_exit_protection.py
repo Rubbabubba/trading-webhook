@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-627-app-exit-preview-wrapper-tombstone"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-628-exit-preview-wrapper-deletion"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -554,12 +554,9 @@ def dynamic_exit_preview_contract_status(*, heavy_requested: bool = False) -> di
         "time_exit_grace_state_owner": "swing_exit_protection",
         "breakout_partial_profit_bias_state_owner": "swing_exit_protection",
         "breakout_stall_loss_reduce_first_state_owner": "swing_exit_protection",
-        "app_wrapper_status": "compatibility_tombstone",
-        "app_wrappers_remaining": [
-            "_p444_breakout_partial_profit_bias_state",
-            "_p444_breakout_stall_loss_reduce_first_state",
-        ],
-        "app_wrappers_delete_ready_after": "live_parity_capture",
+        "app_wrapper_status": "deleted",
+        "app_wrappers_remaining": [],
+        "runtime_adapter_owner": "app_runtime_facts_only",
         "active_exit_heavy_uses_module_contract": bool(heavy_requested),
     }
 
@@ -786,9 +783,7 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "breakout_stall_loss_fast_snapshot_shape",
             "exit_protection_module_status",
         ],
-        "compatibility_wrappers_remaining": [
-            "_p444_breakout_partial_profit_bias_state",
-            "_p444_breakout_stall_loss_reduce_first_state",
-        ],
-        "next_extraction_target": "delete_app_exit_preview_wrapper_clutter_after_live_parity",
+        "compatibility_wrappers_remaining": [],
+        "runtime_adapter_owner": "app_runtime_facts_only",
+        "next_extraction_target": "move_runtime_fact_adapter_to_exit_module_boundary",
     }
