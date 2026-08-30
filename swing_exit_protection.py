@@ -13,7 +13,7 @@ from swing_execution import clamp_exit_qty as _execution_clamp_exit_qty
 from swing_execution import format_order_qty as _execution_format_order_qty
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-629-exit-runtime-adapter-boundary-promotion"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-630-exit-runtime-facts-boundary-promotion"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -42,6 +42,28 @@ def _clamp_exit_qty(qty_to_close: Any, available_qty: Any) -> float:
     if available <= 0 or requested <= 0:
         return 0.0
     return _normalize_exit_qty(_execution_clamp_exit_qty(requested, available))
+
+
+def build_exit_runtime_facts(
+    *,
+    symbol: str,
+    plan: dict | None,
+    dynamic_exit: dict | None,
+    qty: float,
+    qty_source: str,
+    unrealized_r: float,
+    is_daily_breakout: bool,
+) -> dict:
+    trade_plan = dict(plan or {})
+    dynamic = dict(dynamic_exit or {})
+    sym = str(symbol or trade_plan.get("symbol") or "").strip().upper()
+    return {
+        "symbol": sym,
+        "qty": _normalize_exit_qty(qty),
+        "qty_source": str(qty_source or "unknown"),
+        "unrealized_r": _safe_float(dynamic.get("stall_r"), unrealized_r),
+        "is_daily_breakout": bool(is_daily_breakout),
+    }
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -579,7 +601,8 @@ def dynamic_exit_preview_contract_status(*, heavy_requested: bool = False) -> di
         "app_wrapper_status": "deleted",
         "app_wrappers_remaining": [],
         "runtime_adapter_owner": "swing_exit_protection",
-        "runtime_facts_owner": "app_runtime_facts_only",
+        "runtime_facts_owner": "swing_exit_protection",
+        "runtime_input_owner": "app_runtime_values_only",
         "active_exit_heavy_uses_module_contract": bool(heavy_requested),
     }
 
@@ -874,6 +897,7 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "dynamic_exit_preview_contract_status",
             "breakout_partial_profit_bias_state",
             "breakout_stall_loss_reduce_first_state",
+            "exit_runtime_facts",
             "breakout_partial_profit_bias_runtime_state",
             "breakout_stall_loss_reduce_first_runtime_state",
             "breakout_dynamic_evidence_report_shape",
@@ -882,6 +906,7 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
         ],
         "compatibility_wrappers_remaining": [],
         "runtime_adapter_owner": "swing_exit_protection",
-        "runtime_facts_owner": "app_runtime_facts_only",
-        "next_extraction_target": "move_runtime_facts_out_of_app_boundary",
+        "runtime_facts_owner": "swing_exit_protection",
+        "runtime_input_owner": "app_runtime_values_only",
+        "next_extraction_target": "move_runtime_input_collection_to_exit_module_boundary",
     }
