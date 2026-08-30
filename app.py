@@ -151,7 +151,7 @@ from swing_exit_protection import (
     build_breakout_stall_loss_fast_snapshot as swing_exit_build_breakout_stall_loss_fast_snapshot,
     build_breakout_stall_loss_containment_report as swing_exit_build_breakout_stall_loss_report,
     build_dynamic_exit_preview_base as swing_exit_build_dynamic_exit_preview_base,
-    build_exit_runtime_facts as swing_exit_build_runtime_facts,
+    build_exit_runtime_facts_from_plan as swing_exit_build_runtime_facts_from_plan,
     build_fast_active_exit_snapshot as swing_exit_build_fast_active_exit_snapshot,
     build_partial_profit_state as swing_exit_build_partial_profit_state,
     build_time_exit_grace_state as swing_exit_build_time_exit_grace_state,
@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-630-exit-runtime-facts-boundary-promotion"
+PATCH_VERSION = "patch-631-exit-runtime-input-collection-boundary"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -45545,14 +45545,15 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         flag="partial_profit_ready",
     )
 
-    exit_facts = swing_exit_build_runtime_facts(
+    exit_facts = swing_exit_build_runtime_facts_from_plan(
         symbol=symbol,
         plan=plan,
+        px=px,
         dynamic_exit=out,
-        qty=_p445_plan_available_qty(plan),
-        qty_source=_p445_qty_source(plan),
-        unrealized_r=_swing_unrealized_r(plan, px),
-        is_daily_breakout=_p378_is_daily_breakout_plan(plan),
+        available_qty_fn=_p445_plan_available_qty,
+        qty_source_fn=_p445_qty_source,
+        unrealized_r_fn=_swing_unrealized_r,
+        is_daily_breakout_fn=_p378_is_daily_breakout_plan,
     )
     breakout_bias = swing_exit_build_breakout_partial_profit_bias_runtime_state(
         plan=plan,
@@ -50243,14 +50244,15 @@ def _p606_partial_profit_readiness_truth(limit: int = 25) -> dict:
             trigger_r=float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.75),
             fraction=float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.5),
             min_qty=float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
-            **swing_exit_build_runtime_facts(
+            **swing_exit_build_runtime_facts_from_plan(
                 symbol=symbol,
                 plan=plan_for_qty,
+                px=px,
                 dynamic_exit={"stall_r": unrealized_r},
-                qty=_p445_plan_available_qty(plan_for_qty),
-                qty_source=_p445_qty_source(plan_for_qty),
-                unrealized_r=unrealized_r,
-                is_daily_breakout=_p378_is_daily_breakout_plan(plan_for_qty),
+                available_qty_fn=_p445_plan_available_qty,
+                qty_source_fn=_p445_qty_source,
+                unrealized_r_fn=_swing_unrealized_r,
+                is_daily_breakout_fn=_p378_is_daily_breakout_plan,
             ),
         )
         breakout_ready = bool(breakout_bias.get("applies"))
@@ -50752,14 +50754,15 @@ def _p364_active_exit_protection_truth() -> dict:
             else {"flags": []}
         )
         exit_facts = (
-            swing_exit_build_runtime_facts(
+            swing_exit_build_runtime_facts_from_plan(
                 symbol=symbol,
                 plan=plan_for_dynamic,
+                px=float(current_price),
                 dynamic_exit=dynamic_preview,
-                qty=_p445_plan_available_qty(plan_for_dynamic),
-                qty_source=_p445_qty_source(plan_for_dynamic),
-                unrealized_r=_swing_unrealized_r(plan_for_dynamic, float(current_price)),
-                is_daily_breakout=_p378_is_daily_breakout_plan(plan_for_dynamic),
+                available_qty_fn=_p445_plan_available_qty,
+                qty_source_fn=_p445_qty_source,
+                unrealized_r_fn=_swing_unrealized_r,
+                is_daily_breakout_fn=_p378_is_daily_breakout_plan,
             )
             if has_plan and current_price > 0
             else {}
