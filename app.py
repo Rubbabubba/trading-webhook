@@ -146,8 +146,8 @@ from swing_exit_protection import (
     apply_stall_loss_reduce_first_state as swing_exit_apply_stall_loss_reduce_first_state,
     apply_time_exit_grace_state as swing_exit_apply_time_exit_grace_state,
     apply_triggered_qty_state as swing_exit_apply_triggered_qty_state,
-    build_breakout_partial_profit_bias_state as swing_exit_build_breakout_partial_profit_bias_state,
-    build_breakout_stall_loss_reduce_first_state as swing_exit_build_breakout_stall_reduce_first_state,
+    build_breakout_partial_profit_bias_runtime_state as swing_exit_build_breakout_partial_profit_bias_runtime_state,
+    build_breakout_stall_loss_reduce_first_runtime_state as swing_exit_build_breakout_stall_reduce_first_runtime_state,
     build_breakout_stall_loss_fast_snapshot as swing_exit_build_breakout_stall_loss_fast_snapshot,
     build_breakout_stall_loss_containment_report as swing_exit_build_breakout_stall_loss_report,
     build_dynamic_exit_preview_base as swing_exit_build_dynamic_exit_preview_base,
@@ -3091,7 +3091,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-628-exit-preview-wrapper-deletion-module-runtime-adapter-promotion"
+PATCH_VERSION = "patch-629-exit-runtime-adapter-boundary-promotion"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -45164,69 +45164,17 @@ def _p445_qty_source(plan: dict | None) -> str:
 def _p446_clamp_exit_qty(qty_to_close: float, available_qty: float) -> float:
     return _normalize_close_qty(float(swing_exec_clamp_exit_qty(qty_to_close, available_qty)))
 
-def _swing_exit_breakout_partial_profit_bias_runtime_state(
-    symbol: str,
-    plan: dict | None,
-    px: float,
-    dynamic_exit: dict | None = None,
-) -> dict:
+def _swing_exit_runtime_facts(symbol: str, plan: dict | None, px: float, dynamic_exit: dict | None = None) -> dict:
     plan = plan if isinstance(plan, dict) else {}
     dyn = dict(dynamic_exit or {})
     sym = str(symbol or plan.get("symbol") or "").strip().upper()
-    qty = _p445_plan_available_qty(plan)
-    qty_source = _p445_qty_source(plan)
-    unrealized_r = _safe_float(dyn.get("stall_r"), _swing_unrealized_r(plan, px))
-    partial_taken = bool(plan.get("partial_profit_taken") or plan.get("breakout_partial_profit_bias_taken"))
-
-    fraction = min(max(float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.5), 0.05), 0.95)
-    qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
-    min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
-
-    return swing_exit_build_breakout_partial_profit_bias_state(
-        symbol=sym,
-        qty=qty,
-        qty_source=qty_source,
-        qty_to_close=qty_to_close,
-        unrealized_r=unrealized_r,
-        is_daily_breakout=bool(_p378_is_daily_breakout_plan(plan)),
-        partial_taken=partial_taken,
-        enabled=bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
-        trigger_r=float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.75),
-        fraction=fraction,
-        min_qty=min_qty,
-    )
-
-
-def _swing_exit_breakout_stall_loss_reduce_first_runtime_state(
-    symbol: str,
-    plan: dict | None,
-    px: float,
-    dynamic_exit: dict | None = None,
-) -> dict:
-    plan = plan if isinstance(plan, dict) else {}
-    dyn = dict(dynamic_exit or {})
-    sym = str(symbol or plan.get("symbol") or "").strip().upper()
-    flags = set(str(x or "") for x in list(dyn.get("flags") or []))
-    stall_loss_due = bool("stall_loss_guard_ready" in flags or dyn.get("stall_loss_guard"))
-    qty = _p445_plan_available_qty(plan)
-    qty_source = _p445_qty_source(plan)
-    fraction = min(max(float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.5), 0.05), 0.95)
-    qty_to_close = _p446_clamp_exit_qty(qty * fraction, qty)
-    min_qty = float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0)
-
-    return swing_exit_build_breakout_stall_reduce_first_state(
-        symbol=sym,
-        qty=qty,
-        qty_source=qty_source,
-        qty_to_close=qty_to_close,
-        unrealized_r=_safe_float(dyn.get("stall_r"), _swing_unrealized_r(plan, px)),
-        is_daily_breakout=bool(_p378_is_daily_breakout_plan(plan)),
-        stall_loss_due=bool(stall_loss_due),
-        already_taken=bool(plan.get("breakout_stall_loss_reduce_first_taken")),
-        enabled=bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
-        fraction=fraction,
-        min_qty=min_qty,
-    )
+    return {
+        "symbol": sym,
+        "qty": _p445_plan_available_qty(plan),
+        "qty_source": _p445_qty_source(plan),
+        "unrealized_r": _safe_float(dyn.get("stall_r"), _swing_unrealized_r(plan, px)),
+        "is_daily_breakout": bool(_p378_is_daily_breakout_plan(plan)),
+    }
 
 def _p380_daily_breakout_failed_followthrough_state(symbol: str, plan: dict | None, px: float) -> dict:
     plan = plan if isinstance(plan, dict) else {}
@@ -45608,7 +45556,16 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         flag="partial_profit_ready",
     )
 
-    breakout_bias = _swing_exit_breakout_partial_profit_bias_runtime_state(symbol, plan, px, out)
+    exit_facts = _swing_exit_runtime_facts(symbol, plan, px, out)
+    breakout_bias = swing_exit_build_breakout_partial_profit_bias_runtime_state(
+        plan=plan,
+        dynamic_exit=out,
+        enabled=bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
+        trigger_r=float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.75),
+        fraction=float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.5),
+        min_qty=float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+        **exit_facts,
+    )
     proposed_profit_lock = swing_exit_apply_partial_profit_state(
         out,
         breakout_bias,
@@ -45692,7 +45649,14 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         out["stall_loss_guard"] = True
         out["flags"].append("stall_loss_guard_ready")
 
-        reduce_first = _swing_exit_breakout_stall_loss_reduce_first_runtime_state(symbol, plan, px, out)
+        reduce_first = swing_exit_build_breakout_stall_loss_reduce_first_runtime_state(
+            plan=plan,
+            dynamic_exit=out,
+            enabled=bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
+            fraction=float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.5),
+            min_qty=float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+            **exit_facts,
+        )
         swing_exit_apply_stall_loss_reduce_first_state(out, reduce_first)
     
     if SWING_STALL_EXIT_DAYS > 0 and hold_days >= int(SWING_STALL_EXIT_DAYS) and unrealized_r < float(SWING_STALL_MIN_R) and not out.get("time_exit_grace"):
@@ -50275,11 +50239,14 @@ def _p606_partial_profit_readiness_truth(limit: int = 25) -> dict:
             and qty_to_close >= min_qty
             and qty_to_close < qty
         )
-        breakout_bias = _swing_exit_breakout_partial_profit_bias_runtime_state(
-            symbol,
-            plan_for_qty,
-            px,
-            {"stall_r": unrealized_r},
+        breakout_bias = swing_exit_build_breakout_partial_profit_bias_runtime_state(
+            plan=plan_for_qty,
+            dynamic_exit={"stall_r": unrealized_r},
+            enabled=bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
+            trigger_r=float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.75),
+            fraction=float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.5),
+            min_qty=float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+            **_swing_exit_runtime_facts(symbol, plan_for_qty, px, {"stall_r": unrealized_r}),
         )
         breakout_ready = bool(breakout_bias.get("applies"))
         ready = bool(generic_ready or breakout_ready)
@@ -50779,13 +50746,33 @@ def _p364_active_exit_protection_truth() -> dict:
             if has_plan and current_price > 0
             else {"flags": []}
         )
+        exit_facts = (
+            _swing_exit_runtime_facts(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
+            if has_plan and current_price > 0
+            else {}
+        )
         breakout_partial_profit_bias = (
-            _swing_exit_breakout_partial_profit_bias_runtime_state(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
+            swing_exit_build_breakout_partial_profit_bias_runtime_state(
+                plan=plan_for_dynamic,
+                dynamic_exit=dynamic_preview,
+                enabled=bool(SWING_BREAKOUT_PARTIAL_PROFIT_BIAS_ENABLED),
+                trigger_r=float(SWING_BREAKOUT_PARTIAL_PROFIT_R or 0.75),
+                fraction=float(SWING_BREAKOUT_PARTIAL_PROFIT_FRACTION or 0.5),
+                min_qty=float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+                **exit_facts,
+            )
             if has_plan and current_price > 0
             else {"applies": False}
         )
         breakout_stall_loss_reduce_first = (
-            _swing_exit_breakout_stall_loss_reduce_first_runtime_state(symbol, plan_for_dynamic, float(current_price), dynamic_preview)
+            swing_exit_build_breakout_stall_loss_reduce_first_runtime_state(
+                plan=plan_for_dynamic,
+                dynamic_exit=dynamic_preview,
+                enabled=bool(SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED),
+                fraction=float(SWING_BREAKOUT_STALL_LOSS_REDUCE_FRACTION or 0.5),
+                min_qty=float(SWING_PARTIAL_PROFIT_MIN_QTY or 0.0),
+                **exit_facts,
+            )
             if has_plan and current_price > 0
             else {"applies": False}
         )

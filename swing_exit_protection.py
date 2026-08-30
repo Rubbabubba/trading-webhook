@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from swing_execution import clamp_exit_qty as _execution_clamp_exit_qty
+from swing_execution import format_order_qty as _execution_format_order_qty
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-628-exit-preview-wrapper-deletion"
+
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-629-exit-runtime-adapter-boundary-promotion"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -20,6 +23,25 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _clamp_fraction(value: Any, default: float = 0.5) -> float:
+    return min(max(_safe_float(value, default), 0.05), 0.95)
+
+
+def _normalize_exit_qty(qty: Any) -> float:
+    value = abs(_safe_float(qty))
+    if value <= 0:
+        return 0.0
+    return _safe_float(_execution_format_order_qty(value))
+
+
+def _clamp_exit_qty(qty_to_close: Any, available_qty: Any) -> float:
+    available = _normalize_exit_qty(available_qty)
+    requested = _normalize_exit_qty(qty_to_close)
+    if available <= 0 or requested <= 0:
+        return 0.0
+    return _normalize_exit_qty(_execution_clamp_exit_qty(requested, available))
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -556,7 +578,8 @@ def dynamic_exit_preview_contract_status(*, heavy_requested: bool = False) -> di
         "breakout_stall_loss_reduce_first_state_owner": "swing_exit_protection",
         "app_wrapper_status": "deleted",
         "app_wrappers_remaining": [],
-        "runtime_adapter_owner": "app_runtime_facts_only",
+        "runtime_adapter_owner": "swing_exit_protection",
+        "runtime_facts_owner": "app_runtime_facts_only",
         "active_exit_heavy_uses_module_contract": bool(heavy_requested),
     }
 
@@ -602,6 +625,78 @@ def build_breakout_stall_loss_reduce_first_state(
         "already_taken": bool(already_taken),
         "module_contract": "breakout_stall_loss_reduce_first_state",
     }
+
+
+def build_breakout_partial_profit_bias_runtime_state(
+    *,
+    symbol: str,
+    plan: dict | None,
+    dynamic_exit: dict | None,
+    qty: float,
+    qty_source: str,
+    unrealized_r: float,
+    is_daily_breakout: bool,
+    enabled: bool,
+    trigger_r: float,
+    fraction: float,
+    min_qty: float,
+) -> dict:
+    trade_plan = dict(plan or {})
+    close_fraction = _clamp_fraction(fraction)
+    available_qty = _normalize_exit_qty(qty)
+    qty_to_close = _clamp_exit_qty(available_qty * close_fraction, available_qty)
+    partial_taken = bool(
+        trade_plan.get("partial_profit_taken")
+        or trade_plan.get("breakout_partial_profit_bias_taken")
+    )
+    return build_breakout_partial_profit_bias_state(
+        symbol=symbol,
+        qty=available_qty,
+        qty_source=qty_source,
+        qty_to_close=qty_to_close,
+        unrealized_r=_safe_float((dynamic_exit or {}).get("stall_r"), unrealized_r),
+        is_daily_breakout=bool(is_daily_breakout),
+        partial_taken=partial_taken,
+        enabled=bool(enabled),
+        trigger_r=_safe_float(trigger_r),
+        fraction=close_fraction,
+        min_qty=_safe_float(min_qty),
+    )
+
+
+def build_breakout_stall_loss_reduce_first_runtime_state(
+    *,
+    symbol: str,
+    plan: dict | None,
+    dynamic_exit: dict | None,
+    qty: float,
+    qty_source: str,
+    unrealized_r: float,
+    is_daily_breakout: bool,
+    enabled: bool,
+    fraction: float,
+    min_qty: float,
+) -> dict:
+    trade_plan = dict(plan or {})
+    dynamic = dict(dynamic_exit or {})
+    flags = {str(x or "") for x in list(dynamic.get("flags") or [])}
+    stall_loss_due = bool("stall_loss_guard_ready" in flags or dynamic.get("stall_loss_guard"))
+    close_fraction = _clamp_fraction(fraction)
+    available_qty = _normalize_exit_qty(qty)
+    qty_to_close = _clamp_exit_qty(available_qty * close_fraction, available_qty)
+    return build_breakout_stall_loss_reduce_first_state(
+        symbol=symbol,
+        qty=available_qty,
+        qty_source=qty_source,
+        qty_to_close=qty_to_close,
+        unrealized_r=_safe_float(dynamic.get("stall_r"), unrealized_r),
+        is_daily_breakout=bool(is_daily_breakout),
+        stall_loss_due=bool(stall_loss_due),
+        already_taken=bool(trade_plan.get("breakout_stall_loss_reduce_first_taken")),
+        enabled=bool(enabled),
+        fraction=close_fraction,
+        min_qty=_safe_float(min_qty),
+    )
 
 
 def breakout_dynamic_evidence_row(row: dict | None) -> dict | None:
@@ -779,11 +874,14 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "dynamic_exit_preview_contract_status",
             "breakout_partial_profit_bias_state",
             "breakout_stall_loss_reduce_first_state",
+            "breakout_partial_profit_bias_runtime_state",
+            "breakout_stall_loss_reduce_first_runtime_state",
             "breakout_dynamic_evidence_report_shape",
             "breakout_stall_loss_fast_snapshot_shape",
             "exit_protection_module_status",
         ],
         "compatibility_wrappers_remaining": [],
-        "runtime_adapter_owner": "app_runtime_facts_only",
-        "next_extraction_target": "move_runtime_fact_adapter_to_exit_module_boundary",
+        "runtime_adapter_owner": "swing_exit_protection",
+        "runtime_facts_owner": "app_runtime_facts_only",
+        "next_extraction_target": "move_runtime_facts_out_of_app_boundary",
     }
