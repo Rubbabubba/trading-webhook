@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from swing_execution import available_qty_from_plan as _execution_available_qty_from_plan
 from swing_execution import clamp_exit_qty as _execution_clamp_exit_qty
 from swing_execution import format_order_qty as _execution_format_order_qty
+from swing_execution import qty_source_from_plan as _execution_qty_source_from_plan
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-631-exit-runtime-input-collection-boundary"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-632-exit-runtime-qty-source-callback-removal"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -81,18 +83,28 @@ def build_exit_runtime_facts_from_plan(
     plan: dict | None,
     px: float,
     dynamic_exit: dict | None,
-    available_qty_fn: Any,
-    qty_source_fn: Any,
     unrealized_r_fn: Any,
     is_daily_breakout_fn: Any,
+    available_qty_fn: Any = None,
+    qty_source_fn: Any = None,
 ) -> dict:
     trade_plan = dict(plan or {})
+    qty = (
+        _call_runtime_fn(available_qty_fn, trade_plan, default=0.0)
+        if callable(available_qty_fn)
+        else _execution_available_qty_from_plan(trade_plan)
+    )
+    qty_source = (
+        _call_runtime_fn(qty_source_fn, trade_plan, default="unknown")
+        if callable(qty_source_fn)
+        else _execution_qty_source_from_plan(trade_plan)
+    )
     return build_exit_runtime_facts(
         symbol=symbol,
         plan=trade_plan,
         dynamic_exit=dynamic_exit,
-        qty=_call_runtime_fn(available_qty_fn, trade_plan, default=0.0),
-        qty_source=_call_runtime_fn(qty_source_fn, trade_plan, default="unknown"),
+        qty=qty,
+        qty_source=qty_source,
         unrealized_r=_call_runtime_fn(unrealized_r_fn, trade_plan, px, default=0.0),
         is_daily_breakout=_call_runtime_fn(is_daily_breakout_fn, trade_plan, default=False),
     )
@@ -635,7 +647,8 @@ def dynamic_exit_preview_contract_status(*, heavy_requested: bool = False) -> di
         "runtime_adapter_owner": "swing_exit_protection",
         "runtime_facts_owner": "swing_exit_protection",
         "runtime_input_collection_owner": "swing_exit_protection",
-        "runtime_input_owner": "app_runtime_callbacks_only",
+        "runtime_qty_source_owner": "swing_exit_protection",
+        "runtime_input_owner": "app_strategy_callbacks_only",
         "active_exit_heavy_uses_module_contract": bool(heavy_requested),
     }
 
@@ -942,6 +955,7 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
         "runtime_adapter_owner": "swing_exit_protection",
         "runtime_facts_owner": "swing_exit_protection",
         "runtime_input_collection_owner": "swing_exit_protection",
-        "runtime_input_owner": "app_runtime_callbacks_only",
-        "next_extraction_target": "move_exit_runtime_callback_sources_to_module_boundary",
+        "runtime_qty_source_owner": "swing_exit_protection",
+        "runtime_input_owner": "app_strategy_callbacks_only",
+        "next_extraction_target": "move_exit_strategy_callback_sources_to_module_boundary",
     }

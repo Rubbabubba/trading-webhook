@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-631-exit-runtime-input-collection-boundary"
+PATCH_VERSION = "patch-632-exit-runtime-qty-source-callback-removal"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -45550,8 +45550,6 @@ def _calc_swing_dynamic_levels(symbol: str, plan: dict, px: float) -> dict:
         plan=plan,
         px=px,
         dynamic_exit=out,
-        available_qty_fn=_p445_plan_available_qty,
-        qty_source_fn=_p445_qty_source,
         unrealized_r_fn=_swing_unrealized_r,
         is_daily_breakout_fn=_p378_is_daily_breakout_plan,
     )
@@ -50249,8 +50247,6 @@ def _p606_partial_profit_readiness_truth(limit: int = 25) -> dict:
                 plan=plan_for_qty,
                 px=px,
                 dynamic_exit={"stall_r": unrealized_r},
-                available_qty_fn=_p445_plan_available_qty,
-                qty_source_fn=_p445_qty_source,
                 unrealized_r_fn=_swing_unrealized_r,
                 is_daily_breakout_fn=_p378_is_daily_breakout_plan,
             ),
@@ -50759,8 +50755,6 @@ def _p364_active_exit_protection_truth() -> dict:
                 plan=plan_for_dynamic,
                 px=float(current_price),
                 dynamic_exit=dynamic_preview,
-                available_qty_fn=_p445_plan_available_qty,
-                qty_source_fn=_p445_qty_source,
                 unrealized_r_fn=_swing_unrealized_r,
                 is_daily_breakout_fn=_p378_is_daily_breakout_plan,
             )
