@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-638-exit-retry-idempotency-ready-sync-goal-path-ranking-cleanup"
+PATCH_VERSION = "patch-639-broker-daily-goal-snapshot-cache-consistency-profit-path-pnl-source-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23209,9 +23209,114 @@ def _p570_cached_account_daily_pnl_snapshot() -> dict:
         "p570_cached_account_daily_pnl": False,
     }
 
+P639_DAILY_GOAL_LAST_VALID_CACHE: dict = {
+    "ny_date": None,
+    "account_pnl": None,
+    "cached_monotonic": 0.0,
+}
+P639_DAILY_GOAL_LAST_VALID_TTL_SEC = 300.0
+
+
+def _p639_account_daily_pnl_available(account_pnl: dict | None) -> bool:
+    return isinstance(account_pnl, dict) and account_pnl.get("account_daily_pnl") not in (None, "")
+
+
+def _p639_store_last_valid_daily_goal_account_snapshot(account_pnl: dict | None) -> dict:
+    if not _p639_account_daily_pnl_available(account_pnl):
+        return {"stored": False, "reason": "account_daily_pnl_unavailable"}
+    ny_now = now_ny()
+    cached = dict(account_pnl or {})
+    cached["p639_last_valid_daily_goal_cache_stored"] = True
+    cached["p639_cached_ny_date"] = ny_now.date().isoformat()
+    cached["p639_cached_utc"] = datetime.now(timezone.utc).isoformat()
+    cached["p639_cached_ny"] = ny_now.isoformat()
+    P639_DAILY_GOAL_LAST_VALID_CACHE.update({
+        "ny_date": ny_now.date().isoformat(),
+        "account_pnl": cached,
+        "cached_monotonic": _time.monotonic(),
+    })
+    return {
+        "stored": True,
+        "ny_date": ny_now.date().isoformat(),
+        "source": cached.get("source"),
+        "account_daily_pnl": cached.get("account_daily_pnl"),
+    }
+
+
+def _p639_last_valid_daily_goal_account_snapshot() -> dict:
+    cached = P639_DAILY_GOAL_LAST_VALID_CACHE.get("account_pnl")
+    if not _p639_account_daily_pnl_available(cached):
+        return {"available": False, "reason": "no_last_valid_account_daily_pnl"}
+    ny_date = str(P639_DAILY_GOAL_LAST_VALID_CACHE.get("ny_date") or "")
+    if ny_date != now_ny().date().isoformat():
+        return {"available": False, "reason": "last_valid_account_daily_pnl_not_today", "ny_date": ny_date}
+    age_sec = max(0.0, _time.monotonic() - _safe_float(P639_DAILY_GOAL_LAST_VALID_CACHE.get("cached_monotonic"), 0.0))
+    if age_sec > P639_DAILY_GOAL_LAST_VALID_TTL_SEC:
+        return {
+            "available": False,
+            "reason": "last_valid_account_daily_pnl_stale",
+            "age_sec": round(age_sec, 3),
+            "ttl_sec": round(P639_DAILY_GOAL_LAST_VALID_TTL_SEC, 3),
+        }
+    out = dict(cached or {})
+    out.update({
+        "ok": True,
+        "source": "p639_last_valid_account_daily_pnl_cache",
+        "cached": True,
+        "p639_last_valid_daily_goal_cache_used": True,
+        "p639_cache_age_sec": round(age_sec, 3),
+        "p639_cache_ttl_sec": round(P639_DAILY_GOAL_LAST_VALID_TTL_SEC, 3),
+    })
+    return {"available": True, "account_pnl": out, "age_sec": round(age_sec, 3)}
+
+
+def _p639_daily_goal_snapshot_consistency(
+    *,
+    cached_account_pnl: dict,
+    account_pnl: dict,
+    selected_source: str,
+    fallback_used: bool,
+    fallback_lookup: dict | None = None,
+    store_result: dict | None = None,
+) -> dict:
+    return {
+        "enabled": True,
+        "selected_source": selected_source,
+        "account_daily_pnl_available": _p639_account_daily_pnl_available(account_pnl),
+        "account_daily_pnl": account_pnl.get("account_daily_pnl") if isinstance(account_pnl, dict) else None,
+        "cache_source": cached_account_pnl.get("source") if isinstance(cached_account_pnl, dict) else None,
+        "cache_used": bool(isinstance(account_pnl, dict) and (
+            account_pnl.get("p570_cached_account_daily_pnl")
+            or account_pnl.get("p639_last_valid_daily_goal_cache_used")
+        )),
+        "last_valid_fallback_used": bool(fallback_used),
+        "last_valid_fallback_lookup": fallback_lookup or {},
+        "last_valid_store": store_result or {},
+        "single_payload_for_composed_reports": True,
+        "read_only": True,
+        "does_not_submit_orders": True,
+    }
+
+
 def _p569_fast_broker_daily_goal_truth() -> dict:
     cached_account_pnl = _p570_cached_account_daily_pnl_snapshot()
-    account_pnl = cached_account_pnl if cached_account_pnl.get("account_daily_pnl") not in (None, "") else _p569_account_daily_pnl_snapshot_bounded(timeout_sec=2.0)
+    selected_source = "p570_cached_account_daily_pnl"
+    fallback_used = False
+    fallback_lookup: dict | None = None
+    store_result: dict | None = None
+    if _p639_account_daily_pnl_available(cached_account_pnl):
+        account_pnl = cached_account_pnl
+    else:
+        account_pnl = _p569_account_daily_pnl_snapshot_bounded(timeout_sec=2.0)
+        selected_source = "p569_bounded_account_daily_pnl_snapshot"
+        if _p639_account_daily_pnl_available(account_pnl):
+            store_result = _p639_store_last_valid_daily_goal_account_snapshot(account_pnl)
+        else:
+            fallback_lookup = _p639_last_valid_daily_goal_account_snapshot()
+            if bool(fallback_lookup.get("available")):
+                account_pnl = dict(fallback_lookup.get("account_pnl") or {})
+                selected_source = "p639_last_valid_account_daily_pnl_cache"
+                fallback_used = True
     progress = _p295_broker_daily_goal_progress({
         "account_daily_pnl": account_pnl.get("account_daily_pnl"),
         "today_net_pnl": None,
@@ -23248,6 +23353,14 @@ def _p569_fast_broker_daily_goal_truth() -> dict:
             "account_daily_pnl_available": bool(account_pnl.get("account_daily_pnl") not in (None, "")),
             "p573_no_fake_zero_daily_goal": bool(account_pnl.get("account_daily_pnl") in (None, "")),
         },
+        "p639_broker_daily_goal_snapshot_consistency": _p639_daily_goal_snapshot_consistency(
+            cached_account_pnl=cached_account_pnl,
+            account_pnl=account_pnl,
+            selected_source=selected_source,
+            fallback_used=fallback_used,
+            fallback_lookup=fallback_lookup,
+            store_result=store_result,
+        ),
         "daily_goal_progress": progress,
         "today_pnl_truth": {
             "ok": bool(account_pnl.get("ok")),
@@ -50480,8 +50593,8 @@ def _p636_position_profit_rows(limit: int = 25) -> list[dict]:
     return rows[:max(1, min(int(limit or 25), 100))]
 
 
-def _p636_profit_capture_readiness_truth(limit: int = 25) -> dict:
-    goal_payload = _p569_fast_broker_daily_goal_truth()
+def _p636_profit_capture_readiness_truth(limit: int = 25, goal_payload: dict | None = None) -> dict:
+    goal_payload = dict(goal_payload or _p569_fast_broker_daily_goal_truth() or {})
     goal = dict(goal_payload.get("daily_goal_progress") or {})
     partial = _p606_partial_profit_readiness_truth(limit=max(25, int(limit or 25)))
     position_rows = _p636_position_profit_rows(limit=max(25, int(limit or 25)))
@@ -50536,6 +50649,7 @@ def _p636_profit_capture_readiness_truth(limit: int = 25) -> dict:
         "read_only": True,
         "does_not_submit_orders": True,
         "daily_goal_progress": goal,
+        "p639_broker_daily_goal_snapshot_consistency": goal_payload.get("p639_broker_daily_goal_snapshot_consistency") or {},
         "summary": {
             "broker_daily_pnl": round(primary, 4),
             "target_low": round(target_low, 4),
@@ -50622,9 +50736,15 @@ def _p636_weak_position_capital_drag_audit(limit: int = 25) -> dict:
     }
 
 
-def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
-    profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)))
-    drag = _p636_weak_position_capital_drag_audit(limit=max(25, int(limit or 25)))
+def _p637_daily_goal_path_truth(
+    limit: int = 25,
+    goal_payload: dict | None = None,
+    profit_payload: dict | None = None,
+    drag_payload: dict | None = None,
+) -> dict:
+    goal_payload = dict(goal_payload or _p569_fast_broker_daily_goal_truth() or {})
+    profit = dict(profit_payload or _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)), goal_payload=goal_payload) or {})
+    drag = dict(drag_payload or _p636_weak_position_capital_drag_audit(limit=max(25, int(limit or 25))) or {})
     goal = dict(profit.get("daily_goal_progress") or {})
     rows = list(profit.get("rows") or [])
     primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
@@ -50704,6 +50824,7 @@ def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
         "read_only": True,
         "does_not_submit_orders": True,
         "daily_goal_progress": goal,
+        "p639_broker_daily_goal_snapshot_consistency": goal_payload.get("p639_broker_daily_goal_snapshot_consistency") or profit.get("p639_broker_daily_goal_snapshot_consistency") or {},
         "summary": {
             "broker_daily_pnl": round(primary, 4),
             "target_low": round(target_low, 4),
@@ -50740,9 +50861,15 @@ def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
 
 
 def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
-    path = _p637_daily_goal_path_truth(limit=max(25, int(limit or 25)))
+    goal_payload = _p569_fast_broker_daily_goal_truth()
     drag = _p636_weak_position_capital_drag_audit(limit=max(25, int(limit or 25)))
-    profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)))
+    profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)), goal_payload=goal_payload)
+    path = _p637_daily_goal_path_truth(
+        limit=max(25, int(limit or 25)),
+        goal_payload=goal_payload,
+        profit_payload=profit,
+        drag_payload=drag,
+    )
     goal = dict(path.get("daily_goal_progress") or {})
     primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
     target_low = max(0.01, _safe_float(goal.get("target_low"), 100.0))
@@ -50793,6 +50920,7 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
         "read_only": True,
         "does_not_submit_orders": True,
         "daily_goal_progress": goal,
+        "p639_broker_daily_goal_snapshot_consistency": goal_payload.get("p639_broker_daily_goal_snapshot_consistency") or {},
         "summary": {
             "below_daily_low_goal": below_goal,
             "broker_daily_pnl": round(primary, 4),
