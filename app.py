@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-639-broker-daily-goal-snapshot-cache-consistency-profit-path-pnl-source-sync"
+PATCH_VERSION = "patch-640-terminal-exit-block-visibility-sync-profit-capture-actionability-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -50615,8 +50615,10 @@ def _p636_profit_capture_readiness_truth(limit: int = 25, goal_payload: dict | N
         if upside > 0:
             total_target_upside += upside
         capture_status = (
-            "exit_due_now"
-            if bool(row.get("exit_trigger_now"))
+            "exit_actionable_now"
+            if bool(row.get("exit_actionable_now"))
+            else "exit_due_terminal_idempotency_covered"
+            if bool(row.get("exit_trigger_now")) and bool(row.get("terminal_exit_idempotency_blocked"))
             else "partial_profit_ready"
             if bool(part.get("ready"))
             else "near_partial_profit"
@@ -50639,6 +50641,12 @@ def _p636_profit_capture_readiness_truth(limit: int = 25, goal_payload: dict | N
     ready_symbols = [r.get("symbol") for r in enriched if bool(r.get("partial_profit_ready"))]
     near_symbols = [r.get("symbol") for r in enriched if bool(r.get("near_partial_profit"))]
     exit_due_symbols = [r.get("symbol") for r in enriched if bool(r.get("exit_trigger_now"))]
+    actionable_exit_due_symbols = [r.get("symbol") for r in enriched if bool(r.get("exit_actionable_now"))]
+    terminal_covered_exit_due_symbols = [
+        r.get("symbol")
+        for r in enriched
+        if bool(r.get("exit_trigger_now")) and bool(r.get("terminal_exit_idempotency_blocked"))
+    ]
     target_low = _safe_float(goal.get("target_low"), 100.0)
     primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
     return {
@@ -50659,18 +50667,32 @@ def _p636_profit_capture_readiness_truth(limit: int = 25, goal_payload: dict | N
             "ready_partial_profit_count": len(ready_symbols),
             "near_partial_profit_count": len(near_symbols),
             "exit_due_count": len(exit_due_symbols),
+            "actionable_exit_due_count": len(actionable_exit_due_symbols),
+            "terminal_covered_exit_due_count": len(terminal_covered_exit_due_symbols),
             "winner_count": len([r for r in enriched if _safe_float(r.get("unrealized_pl"), 0.0) > 0]),
             "loser_count": len([r for r in enriched if _safe_float(r.get("unrealized_pl"), 0.0) < 0]),
         },
         "ready_partial_profit_symbols": ready_symbols,
         "near_partial_profit_symbols": near_symbols,
         "exit_due_symbols": exit_due_symbols,
+        "actionable_exit_due_symbols": actionable_exit_due_symbols,
+        "terminal_covered_exit_due_symbols": terminal_covered_exit_due_symbols,
+        "p640_profit_capture_actionability_cleanup": {
+            "enabled": True,
+            "exit_due_symbols_are_raw_conditions": True,
+            "recommended_action_uses_actionable_exit_due": True,
+            "terminal_covered_exit_due_symbols": terminal_covered_exit_due_symbols,
+            "read_only": True,
+            "does_not_submit_orders": True,
+        },
         "rows": enriched[:max(1, min(int(limit or 25), 100))],
         "recommended_action": (
             "worker_exit_should_handle_due_or_partial_profit_symbols"
-            if exit_due_symbols or ready_symbols
+            if actionable_exit_due_symbols or ready_symbols
             else "monitor_near_partial_profit_symbols"
             if near_symbols
+            else "terminal_exit_block_covers_current_due_symbols"
+            if terminal_covered_exit_due_symbols
             else "let_winners_work_review_capital_drag"
         ),
     }
@@ -51640,12 +51662,114 @@ def _p364_active_exit_protection_truth() -> dict:
 
 
 def _p620_active_exit_protection_truth_fast(limit: int = 20) -> dict:
-    return swing_exit_build_fast_active_exit_snapshot(
+    payload = swing_exit_build_fast_active_exit_snapshot(
         positions_by_symbol=_p364_snapshot_position_by_symbol(),
         trade_plan=TRADE_PLAN,
         patch_version=PATCH_VERSION,
         limit=limit,
     )
+    return _p640_apply_terminal_exit_actionability(payload)
+
+
+def _p640_apply_terminal_exit_actionability(active_exit_truth: dict | None) -> dict:
+    payload = dict(active_exit_truth or {})
+    rows = [
+        dict(row or {})
+        for row in list(payload.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    watch_rows = [
+        dict(row or {})
+        for row in list(payload.get("actionable_exit_watch") or [])
+        if isinstance(row, dict)
+    ]
+    terminal_blocks = _p613_recent_terminal_exit_idempotency_blocks()
+    terminal_symbols = set(str(sym or "").strip().upper() for sym in list(terminal_blocks.get("symbols") or []) if str(sym or "").strip())
+
+    def annotate(row: dict) -> dict:
+        sym = str(row.get("symbol") or "").strip().upper()
+        exit_due = bool(row.get("exit_trigger_now"))
+        terminal_blocked = bool(exit_due and sym in terminal_symbols)
+        protection_missing = bool(row.get("protection_status") != "protected" and not bool(row.get("pending_entry_without_position")))
+        out = dict(row)
+        out["terminal_exit_idempotency_blocked"] = terminal_blocked
+        out["exit_actionable_now"] = bool((exit_due and not terminal_blocked) or protection_missing)
+        out["exit_actionability_status"] = (
+            "terminal_idempotency_block_covers_exit_due"
+            if terminal_blocked
+            else "actionable_exit_due"
+            if exit_due
+            else "protection_recovery_needed"
+            if protection_missing
+            else "not_actionable"
+        )
+        return out
+
+    annotated_rows = [annotate(row) for row in rows]
+    annotated_by_symbol = {
+        str(row.get("symbol") or "").strip().upper(): row
+        for row in annotated_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    annotated_watch = [
+        annotated_by_symbol.get(str(row.get("symbol") or "").strip().upper(), annotate(row))
+        for row in watch_rows
+    ]
+    due_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in annotated_watch
+        if bool(row.get("exit_trigger_now")) and str(row.get("symbol") or "").strip()
+    ])
+    terminal_due_symbols = [sym for sym in due_symbols if sym in terminal_symbols]
+    actionable_watch = [row for row in annotated_watch if bool(row.get("exit_actionable_now"))]
+    actionable_due_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in actionable_watch
+        if bool(row.get("exit_trigger_now")) and str(row.get("symbol") or "").strip()
+    ])
+
+    summary = dict(payload.get("summary") or {})
+    summary.update({
+        "exit_watch_count": len(actionable_watch),
+        "raw_exit_watch_count": int(summary.get("exit_watch_count") or len(annotated_watch) or 0),
+        "exit_due_count": len(due_symbols),
+        "actionable_exit_due_count": len(actionable_due_symbols),
+        "actionable_exit_due_symbols": actionable_due_symbols,
+        "terminal_idempotency_blocked_exit_due_count": len(terminal_due_symbols),
+        "terminal_idempotency_blocked_exit_due_symbols": terminal_due_symbols,
+    })
+    payload["summary"] = summary
+    payload["rows"] = annotated_rows
+    payload["actionable_exit_watch"] = actionable_watch[:max(1, min(int(len(annotated_watch) or 20), 100))]
+    payload["p640_terminal_exit_actionability_sync"] = {
+        "enabled": True,
+        "terminal_idempotency_block_symbols": sorted(terminal_symbols),
+        "raw_exit_due_symbols": due_symbols,
+        "actionable_exit_due_symbols": actionable_due_symbols,
+        "terminal_blocked_exit_due_symbols": terminal_due_symbols,
+        "exit_watch_count_uses_actionable_rows": True,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "recommended_action": (
+            "worker_exit_should_handle_actionable_due_symbols"
+            if actionable_due_symbols
+            else "terminal_exit_block_covers_current_due_symbols"
+            if terminal_due_symbols
+            else "none"
+        ),
+    }
+    payload["recommended_action"] = (
+        "run_or_wait_for_worker_exit_reconcile"
+        if summary.get("p605_broker_position_plan_recovery_needed_symbols")
+        else "inspect_missing_exit_protection_symbols"
+        if summary.get("missing_protection_count")
+        else "monitor_pending_entry_order_status"
+        if summary.get("pending_entry_protection_pending_count")
+        else "monitor_exit_worker"
+        if actionable_due_symbols
+        else "none"
+    )
+    return payload
 
 
 def _p364_same_day_stall_exit_churn_audit(limit: int = 25) -> dict:
@@ -68216,6 +68340,8 @@ def diagnostics_active_exit_protection_truth(limit: int = 20, detail: str = "lig
     heavy_requested = bool(heavy) or str(detail or "").strip().lower() in {"heavy", "full", "detail", "debug"}
     payload = _p364_active_exit_protection_truth() if heavy_requested else _p620_active_exit_protection_truth_fast(limit=limit)
     if isinstance(payload, dict):
+        if heavy_requested:
+            payload = _p640_apply_terminal_exit_actionability(payload)
         payload["default_detail"] = "light"
         payload["requested_detail"] = "heavy" if heavy_requested else "light"
         payload["swing_exit_protection_module_status"] = swing_exit_protection_module_status(
