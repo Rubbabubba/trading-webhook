@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-637-daily-goal-path-truth-capital-rotation-readiness-audit"
+PATCH_VERSION = "patch-638-exit-retry-idempotency-ready-sync-goal-path-ranking-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -10767,6 +10767,12 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
         for row in list(active_exit_truth.get("rows") or [])
         if isinstance(row, dict)
     }
+    terminal_blocks = _p613_recent_terminal_exit_idempotency_blocks()
+    terminal_block_symbols = {
+        str(sym or "").strip().upper()
+        for sym in list(terminal_blocks.get("symbols") or [])
+        if str(sym or "").strip()
+    }
 
     for sym, plan in list((TRADE_PLAN or {}).items()):
         if not isinstance(plan, dict) or not bool(plan.get("active")):
@@ -10823,6 +10829,7 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             plan_ref=plan,
             close_side=close_side,
         )
+        terminal_idempotency_blocked = bool(symbol in terminal_block_symbols)
 
         retryable = bool(classification.get("retryable"))
         blocked_reasons = []
@@ -10832,6 +10839,8 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             blocked_reasons.append("pending_close_order_exists")
         if bool(idem_guard.get("blocked")):
             blocked_reasons.append("same_day_exit_submit_idempotency")
+        if terminal_idempotency_blocked:
+            blocked_reasons.append("recent_terminal_exit_idempotency_block")
         if not current_exit_trigger_now:
             blocked_reasons.append("current_exit_trigger_not_due")
         if not market_open:
@@ -10845,6 +10854,7 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             and current_exit_trigger_now
             and not pending_close
             and not idem_guard.get("blocked")
+            and not terminal_idempotency_blocked
         )
         ready = bool(ready_at_next_open and market_open)
 
@@ -10870,6 +10880,7 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             "current_exit_reason": current_exit_reason,
             "pending_close_order": bool(pending_close),
             "same_day_exit_idempotency_blocked": bool(idem_guard.get("blocked")),
+            "terminal_exit_idempotency_blocked": terminal_idempotency_blocked,
             "blocked_reasons": blocked_reasons,
             "last_exit_submit_error_at": plan.get("last_exit_submit_error_at"),
             "last_exit_submit_error": plan.get("last_exit_submit_error"),
@@ -10881,23 +10892,30 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
     current_due_rows = [r for r in uncleared_rows if bool(r.get("current_exit_trigger_now"))]
     retryable_current_due_rows = [r for r in current_due_rows if bool(r.get("retryable"))]
     nonretryable_current_due_rows = [r for r in current_due_rows if not bool(r.get("retryable"))]
-    blocked_current_due_rows = [
+    terminal_blocked_current_due_rows = [r for r in current_due_rows if bool(r.get("terminal_exit_idempotency_blocked"))]
+    actionable_current_due_rows = [
         r for r in current_due_rows
+        if not bool(r.get("terminal_exit_idempotency_blocked"))
+    ]
+    blocked_current_due_rows = [
+        r for r in actionable_current_due_rows
         if not bool(r.get("ready")) and bool(r.get("blocked_reasons"))
     ]
     non_due_retry_rows = [
         r for r in uncleared_rows
         if bool(r.get("retryable")) and not bool(r.get("current_exit_trigger_now"))
     ]
-    action_required = bool(ready_rows or current_due_rows)
+    action_required = bool(ready_rows or actionable_current_due_rows)
     if ready_rows:
         recommended_action = "worker_exit_should_retry_ready_exit_submits"
-    elif nonretryable_current_due_rows:
+    elif nonretryable_current_due_rows and actionable_current_due_rows:
         recommended_action = "inspect_nonretryable_exit_submit_failures"
-    elif retryable_current_due_rows and not market_open:
+    elif retryable_current_due_rows and actionable_current_due_rows and not market_open:
         recommended_action = "wait_for_regular_market_open"
     elif blocked_current_due_rows:
         recommended_action = "inspect_blocked_due_exit_retry_rows"
+    elif terminal_blocked_current_due_rows and not actionable_current_due_rows:
+        recommended_action = "none"
     elif non_due_retry_rows:
         recommended_action = "none"
     elif uncleared_rows:
@@ -10916,12 +10934,25 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
         "ready_symbols": [r.get("symbol") for r in ready_rows],
         "current_due_count": len(current_due_rows),
         "current_due_symbols": [r.get("symbol") for r in current_due_rows],
+        "actionable_current_due_count": len(actionable_current_due_rows),
+        "actionable_current_due_symbols": [r.get("symbol") for r in actionable_current_due_rows],
         "retryable_current_due_count": len(retryable_current_due_rows),
         "nonretryable_current_due_count": len(nonretryable_current_due_rows),
+        "terminal_blocked_current_due_count": len(terminal_blocked_current_due_rows),
+        "terminal_blocked_current_due_symbols": [r.get("symbol") for r in terminal_blocked_current_due_rows],
         "blocked_current_due_count": len(blocked_current_due_rows),
         "non_due_retry_count": len(non_due_retry_rows),
         "non_due_retry_symbols": [r.get("symbol") for r in non_due_retry_rows],
         "action_required": action_required,
+        "p638_exit_retry_idempotency_ready_sync": {
+            "enabled": True,
+            "terminal_idempotency_block_symbols": sorted(terminal_block_symbols),
+            "terminal_blocked_current_due_symbols": [r.get("symbol") for r in terminal_blocked_current_due_rows],
+            "terminal_blocks_count": int(terminal_blocks.get("count") or 0),
+            "ready_rows_exclude_recent_terminal_idempotency_blocks": True,
+            "health_blocking": bool(actionable_current_due_rows),
+            "recommended_action": recommended_action,
+        },
         "p635_non_due_retry_aging_truth": {
             "enabled": True,
             "non_due_retry_count": len(non_due_retry_rows),
@@ -50607,15 +50638,20 @@ def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
         unreal = _safe_float(row.get("unrealized_pl"), 0.0)
         risk_to_stop = _safe_float(row.get("risk_to_stop_dollars"), 0.0)
         distance_to_stop = _safe_float(row.get("distance_to_stop_dollars"), 0.0)
+        is_drag = bool(str(row.get("profit_capture_status") or "") == "drag_watch" or unreal < 0)
+        clean_goal_candidate = bool(not is_drag and upside > 0)
         contribution_to_low = min(upside, remaining_low) if remaining_low > 0 else 0.0
         contribution_pct = (contribution_to_low / remaining_low * 100.0) if remaining_low > 0 else 100.0
         downside_pressure = abs(min(0.0, unreal)) + max(0.0, risk_to_stop - max(0.0, distance_to_stop))
-        path_quality_score = contribution_to_low + max(0.0, unreal) - (downside_pressure * 0.5)
+        clean_contribution_to_low = contribution_to_low if clean_goal_candidate else 0.0
+        path_quality_score = clean_contribution_to_low + max(0.0, unreal) - (downside_pressure * 0.5)
         role = (
             "goal_gap_closer"
-            if contribution_to_low >= max(10.0, remaining_low * 0.25)
+            if clean_goal_candidate and contribution_to_low >= max(10.0, remaining_low * 0.25)
             else "supporting_winner"
             if unreal > 0
+            else "recovery_upside_with_drag"
+            if is_drag and upside > 0
             else "capital_drag"
             if unreal < 0
             else "neutral"
@@ -50626,9 +50662,12 @@ def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
             "unrealized_pl": round(unreal, 4),
             "target_upside_dollars": round(upside, 4),
             "contribution_to_low_target_dollars": round(contribution_to_low, 4),
+            "clean_contribution_to_low_target_dollars": round(clean_contribution_to_low, 4),
             "contribution_to_low_target_pct": round(contribution_pct, 2),
             "risk_to_stop_dollars": round(risk_to_stop, 4),
             "distance_to_stop_dollars": row.get("distance_to_stop_dollars"),
+            "clean_goal_candidate": clean_goal_candidate,
+            "recovery_upside_only": bool(is_drag and upside > 0),
             "partial_profit_status": row.get("partial_profit_status"),
             "profit_capture_status": row.get("profit_capture_status"),
             "exit_trigger_now": bool(row.get("exit_trigger_now")),
@@ -50638,6 +50677,8 @@ def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
                 if role == "goal_gap_closer"
                 else "let_winner_work"
                 if role == "supporting_winner"
+                else "recovery_upside_not_clean_goal_path"
+                if role == "recovery_upside_with_drag"
                 else "review_capital_drag"
                 if role == "capital_drag"
                 else "monitor"
@@ -50645,8 +50686,14 @@ def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
         })
     path_rows.sort(key=lambda r: _safe_float(r.get("path_quality_score"), 0.0), reverse=True)
     positive_upside = sum(max(0.0, _safe_float(r.get("target_upside_dollars"), 0.0)) for r in rows)
-    goal_low_reachable_from_targets = bool(primary + positive_upside >= target_low)
-    goal_high_reachable_from_targets = bool(primary + positive_upside >= target_high)
+    clean_positive_upside = sum(
+        max(0.0, _safe_float(r.get("target_upside_dollars"), 0.0))
+        for r in rows
+        if _safe_float(r.get("unrealized_pl"), 0.0) >= 0
+    )
+    recovery_upside = max(0.0, positive_upside - clean_positive_upside)
+    goal_low_reachable_from_targets = bool(primary + clean_positive_upside >= target_low)
+    goal_high_reachable_from_targets = bool(primary + clean_positive_upside >= target_high)
     drag_symbols = list(drag.get("capital_drag_symbols") or [])
     near_stop_symbols = list(drag.get("near_stop_symbols") or [])
     return {
@@ -50665,9 +50712,14 @@ def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
             "remaining_to_high": round(remaining_high, 4),
             "open_unrealized_pl": _safe_float((profit.get("summary") or {}).get("open_unrealized_pl"), 0.0),
             "positive_target_upside_dollars": round(positive_upside, 4),
-            "goal_low_reachable_from_open_targets": goal_low_reachable_from_targets,
-            "goal_high_reachable_from_open_targets": goal_high_reachable_from_targets,
+            "clean_positive_target_upside_dollars": round(clean_positive_upside, 4),
+            "recovery_upside_dollars": round(recovery_upside, 4),
+            "goal_low_reachable_from_clean_open_targets": goal_low_reachable_from_targets,
+            "goal_high_reachable_from_clean_open_targets": goal_high_reachable_from_targets,
+            "goal_low_reachable_from_all_open_targets": bool(primary + positive_upside >= target_low),
+            "goal_high_reachable_from_all_open_targets": bool(primary + positive_upside >= target_high),
             "goal_gap_closer_count": len([r for r in path_rows if r.get("role") == "goal_gap_closer"]),
+            "recovery_upside_drag_count": len([r for r in path_rows if r.get("role") == "recovery_upside_with_drag"]),
             "capital_drag_count": int((drag.get("summary") or {}).get("capital_drag_count") or 0),
             "near_stop_drag_count": int((drag.get("summary") or {}).get("near_stop_drag_count") or 0),
         },
