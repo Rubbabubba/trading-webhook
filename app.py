@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-643-broker-clamped-ready-exit-retry-consumption-status-fast-sync"
+PATCH_VERSION = "patch-644-daily-goal-opportunity-map-clean-profit-path"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51031,6 +51031,124 @@ def _p637_daily_goal_path_truth(
     }
 
 
+def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
+    goal_payload = _p569_fast_broker_daily_goal_truth()
+    profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)), goal_payload=goal_payload)
+    drag = _p636_weak_position_capital_drag_audit(limit=max(25, int(limit or 25)))
+    path = _p637_daily_goal_path_truth(
+        limit=max(25, int(limit or 25)),
+        goal_payload=goal_payload,
+        profit_payload=profit,
+        drag_payload=drag,
+    )
+    goal = dict(path.get("daily_goal_progress") or {})
+    summary = dict(path.get("summary") or {})
+    profit_summary = dict(profit.get("summary") or {})
+    primary = _safe_float(goal.get("primary_daily_pnl"), _safe_float(summary.get("broker_daily_pnl"), 0.0))
+    target_low = max(0.01, _safe_float(goal.get("target_low"), _safe_float(summary.get("target_low"), 100.0)))
+    target_high = max(target_low, _safe_float(goal.get("target_high"), _safe_float(summary.get("target_high"), 200.0)))
+    remaining_low = max(0.0, _safe_float(goal.get("remaining_to_low"), target_low - primary))
+    remaining_high = max(0.0, _safe_float(goal.get("remaining_to_high"), target_high - primary))
+    clean_upside = max(0.0, _safe_float(summary.get("clean_positive_target_upside_dollars"), 0.0))
+    all_upside = max(0.0, _safe_float(summary.get("positive_target_upside_dollars"), 0.0))
+    recovery_upside = max(0.0, _safe_float(summary.get("recovery_upside_dollars"), max(0.0, all_upside - clean_upside)))
+    clean_goal_symbols = list(path.get("goal_gap_closer_symbols") or [])
+    drag_symbols = list(path.get("capital_drag_symbols") or [])
+    near_stop_symbols = list(path.get("near_stop_symbols") or [])
+    clean_gap_after_open_targets = max(0.0, remaining_low - clean_upside)
+    all_gap_after_open_targets = max(0.0, remaining_low - all_upside)
+    daily_goal_state = (
+        "goal_low_hit"
+        if primary >= target_low
+        else "clean_open_targets_can_reach_goal"
+        if clean_gap_after_open_targets <= 0
+        else "open_targets_can_reach_goal_but_drag_dependent"
+        if all_gap_after_open_targets <= 0
+        else "fresh_quality_entry_needed"
+    )
+    profit_path = (
+        "preserve_profit"
+        if primary >= target_low
+        else "let_clean_winners_work"
+        if clean_gap_after_open_targets <= 0 and clean_goal_symbols
+        else "manage_drag_and_wait_for_recovery"
+        if all_gap_after_open_targets <= 0 and drag_symbols
+        else "needs_new_high_quality_candidate"
+    )
+    rows = []
+    for row in list(path.get("rows") or [])[:max(1, min(int(limit or 25), 100))]:
+        role = str(row.get("role") or "")
+        rows.append({
+            "symbol": row.get("symbol"),
+            "role": role,
+            "unrealized_pl": row.get("unrealized_pl"),
+            "target_upside_dollars": row.get("target_upside_dollars"),
+            "clean_contribution_to_low_target_dollars": row.get("clean_contribution_to_low_target_dollars"),
+            "risk_to_stop_dollars": row.get("risk_to_stop_dollars"),
+            "distance_to_stop_dollars": row.get("distance_to_stop_dollars"),
+            "partial_profit_status": row.get("partial_profit_status"),
+            "profit_capture_status": row.get("profit_capture_status"),
+            "operator_priority": (
+                "primary_goal_closer"
+                if role == "goal_gap_closer"
+                else "let_winner_work"
+                if role == "supporting_winner"
+                else "drag_watch_no_manual_babysit"
+                if role in {"recovery_upside_with_drag", "capital_drag"}
+                else "monitor"
+            ),
+        })
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "daily_goal_opportunity_map",
+        "source": "daily_goal_path_truth_profit_capture_and_capital_drag",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "daily_goal_state": daily_goal_state,
+        "profit_path": profit_path,
+        "summary": {
+            "broker_daily_pnl": round(primary, 4),
+            "target_low": round(target_low, 4),
+            "target_high": round(target_high, 4),
+            "remaining_to_low": round(remaining_low, 4),
+            "remaining_to_high": round(remaining_high, 4),
+            "open_unrealized_pl": _safe_float(profit_summary.get("open_unrealized_pl"), 0.0),
+            "clean_positive_target_upside_dollars": round(clean_upside, 4),
+            "all_positive_target_upside_dollars": round(all_upside, 4),
+            "recovery_upside_dollars": round(recovery_upside, 4),
+            "gap_after_clean_open_targets": round(clean_gap_after_open_targets, 4),
+            "gap_after_all_open_targets": round(all_gap_after_open_targets, 4),
+            "goal_gap_closer_count": len(clean_goal_symbols),
+            "capital_drag_count": len(drag_symbols),
+            "near_stop_drag_count": len(near_stop_symbols),
+            "ready_partial_profit_count": int(profit_summary.get("ready_partial_profit_count") or 0),
+            "actionable_exit_due_count": int(profit_summary.get("actionable_exit_due_count") or 0),
+        },
+        "goal_gap_closer_symbols": clean_goal_symbols,
+        "capital_drag_symbols": drag_symbols,
+        "near_stop_symbols": near_stop_symbols,
+        "rows": rows,
+        "p644_clean_profit_path_contract": {
+            "enabled": True,
+            "uses_existing_reports_only": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "daily_goal_operator_truth_consolidated": True,
+        },
+        "recommended_action": (
+            "preserve_profit_and_avoid_low_quality_new_entries"
+            if primary >= target_low
+            else "let_clean_goal_gap_closers_work"
+            if clean_gap_after_open_targets <= 0 and clean_goal_symbols
+            else "watch_drag_symbols_but_do_not_force_manual_exit"
+            if all_gap_after_open_targets <= 0 and drag_symbols
+            else "wait_for_next_scan_quality_candidate_or_reduce_drag"
+        ),
+    }
+
+
 def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
     goal_payload = _p569_fast_broker_daily_goal_truth()
     drag = _p636_weak_position_capital_drag_audit(limit=max(25, int(limit or 25)))
@@ -68609,6 +68727,11 @@ def diagnostics_weak_position_capital_drag_audit(request: Request, limit: int = 
 def diagnostics_daily_goal_path_truth(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p637_daily_goal_path_truth(limit=limit))
+
+@app.get("/diagnostics/daily_goal_opportunity_map")
+def diagnostics_daily_goal_opportunity_map(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p644_daily_goal_opportunity_map(limit=limit))
 
 @app.get("/diagnostics/capital_rotation_readiness_audit")
 def diagnostics_capital_rotation_readiness_audit(request: Request, limit: int = 25):
