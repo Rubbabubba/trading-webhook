@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-642-queued-timeout-retry-submit-gap-row-normalization"
+PATCH_VERSION = "patch-643-broker-clamped-ready-exit-retry-consumption-status-fast-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51302,20 +51302,43 @@ def _p634_worker_consume_ready_exit_retries(limit: int = 20) -> dict:
             })
             continue
         reason = str(row.get("exit_reason") or row.get("current_exit_reason") or "exit").strip() or "exit"
+        broker_retry_qty = _normalize_close_qty(_safe_float(row.get("broker_retry_qty"), 0.0))
+        broker_qty_abs = _normalize_close_qty(abs(_safe_float(row.get("broker_qty_signed"), 0.0)))
+        use_broker_retry_qty = bool(broker_retry_qty > 0)
         try:
             plan["last_exit_attempt_ts"] = utc_ts()
-            out = close_position(symbol, reason=reason, source="worker_exit")
+            out = (
+                close_partial_position(
+                    symbol,
+                    broker_retry_qty,
+                    reason=reason,
+                    source="worker_exit",
+                )
+                if use_broker_retry_qty
+                else close_position(symbol, reason=reason, source="worker_exit")
+            )
+            full_broker_qty_close = bool(
+                out.get("closed")
+                and use_broker_retry_qty
+                and broker_qty_abs > 0
+                and broker_retry_qty >= _normalize_close_qty(max(0.0, broker_qty_abs - 0.0001))
+            )
             if out.get("closed"):
-                plan["active"] = False
+                if full_broker_qty_close or not use_broker_retry_qty:
+                    plan["active"] = False
                 try:
                     px = get_latest_price(symbol)
                 except Exception:
                     px = 0.0
-                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+                if full_broker_qty_close or not use_broker_retry_qty:
+                    _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
             results.append({
                 "symbol": symbol,
                 "action": "ready_exit_retry_consumed" if out.get("closed") else _p613_worker_exit_action(out, "ready_exit_retry_not_closed"),
                 "reason": reason,
+                "broker_retry_qty_used": broker_retry_qty if use_broker_retry_qty else None,
+                "broker_qty_signed": row.get("broker_qty_signed"),
+                "full_broker_qty_close": bool(full_broker_qty_close),
                 "p634_retry_row": row,
                 **dict(out or {}),
             })
@@ -67964,6 +67987,67 @@ def _p608_worker_display_heartbeat(heartbeat: dict | None, effective_truth: dict
     return hb
 
 
+def _p643_ready_exit_retry_consumption_status(heartbeat: dict | None) -> dict:
+    hb = dict(heartbeat or {})
+    consumption = dict(hb.get("p634_ready_exit_retry_consumption") or {})
+    results = [
+        dict(row or {})
+        for row in list(consumption.get("results") or [])
+        if isinstance(row, dict)
+    ]
+    consumed_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in results
+        if str(row.get("symbol") or "").strip()
+        and str(row.get("action") or "").strip().lower() == "ready_exit_retry_consumed"
+    ])
+    attempted_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in results
+        if str(row.get("symbol") or "").strip()
+    ])
+    error_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in results
+        if str(row.get("symbol") or "").strip()
+        and ("error" in str(row.get("action") or "").strip().lower() or bool(row.get("submit_error")))
+    ])
+    not_closed_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in results
+        if str(row.get("symbol") or "").strip()
+        and not bool(row.get("closed"))
+        and str(row.get("symbol") or "").strip().upper() not in set(error_symbols)
+    ])
+    return {
+        "enabled": True,
+        "source": "last_exit_heartbeat_p634_ready_exit_retry_consumption",
+        "ready_count": int(consumption.get("ready_count") or 0),
+        "ready_symbols": list(consumption.get("ready_symbols") or []),
+        "attempted_count": len(attempted_symbols),
+        "attempted_symbols": attempted_symbols,
+        "consumed_count": len(consumed_symbols),
+        "consumed_symbols": consumed_symbols,
+        "error_count": len(error_symbols),
+        "error_symbols": error_symbols,
+        "not_closed_count": len(not_closed_symbols),
+        "not_closed_symbols": not_closed_symbols,
+        "has_consumption_proof": bool(results),
+        "broker_clamped_retry_qty_supported": True,
+        "recommended_action": (
+            "monitor_active_positions"
+            if consumed_symbols
+            else "inspect_ready_exit_retry_errors"
+            if error_symbols
+            else "inspect_ready_exit_retry_not_closed"
+            if not_closed_symbols
+            else "wait_for_next_worker_exit_cycle"
+            if consumption.get("ready_count")
+            else "none"
+        ),
+    }
+
+
 def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
     now_utc = datetime.now(timezone.utc)
     hb = dict(LAST_EXIT_HEARTBEAT or {})
@@ -68064,6 +68148,7 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
     status = str(hb.get("status") or "").lower()
     p604_heartbeat_truth = _p604_worker_exit_effective_heartbeat_truth(hb, recent)
     display_hb = _p608_worker_display_heartbeat(hb, p604_heartbeat_truth)
+    p643_ready_retry_consumption_status = _p643_ready_exit_retry_consumption_status(display_hb)
     display_status = str(display_hb.get("status") or "").lower()
     effective_terminal_status_seen = bool(p604_heartbeat_truth.get("effective_terminal_status_seen"))
     stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
@@ -68134,6 +68219,7 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
             "latest_activity": display_hb.get("latest_activity"),
         },
         "p604_worker_exit_effective_heartbeat_truth": p604_heartbeat_truth,
+        "p643_ready_exit_retry_consumption_status": p643_ready_retry_consumption_status,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
@@ -68156,8 +68242,9 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         },
         "exit_retry_summary": {
             "skipped": True,
-            "reason": "fast_default_use_exit_submit_retry_readiness_endpoint",
+            "reason": "fast_default_uses_heartbeat_consumption_status_or_exit_submit_retry_readiness_endpoint",
             "endpoint": "/diagnostics/exit_submit_retry_readiness",
+            "last_worker_consumption": p643_ready_retry_consumption_status,
         },
         "active_exit_summary": p612_exit_worker_gap_truth,
         "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
@@ -68319,13 +68406,6 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     exit_retry_action_required = bool(exit_retry_readiness.get("action_required"))
     exit_retry_clean = bool(exit_retry_action in {"", "none"} or not exit_retry_action_required)
     active_exit_truth = _p620_active_exit_protection_truth_fast(limit=limit)
-    heavy_active_exit_truth = _p364_active_exit_protection_truth()
-    heavy_active_exit_summary = dict(heavy_active_exit_truth.get("summary") or {})
-    heavy_watch_symbols = _dedupe_keep_order([
-        str(row.get("symbol") or "").strip().upper()
-        for row in list(heavy_active_exit_truth.get("actionable_exit_watch") or [])
-        if isinstance(row, dict) and bool(row.get("exit_trigger_now")) and str(row.get("symbol") or "").strip()
-    ])
     active_exit_summary = dict(active_exit_truth.get("summary") or {})
     p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status, active_exit_truth=active_exit_truth)
     p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
@@ -68383,12 +68463,18 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             "canonical_source": str(active_exit_truth.get("mode") or "active_exit_protection_truth_fast"),
             "canonical_due_symbols": list(p612_exit_worker_gap_truth.get("due_exit_symbols") or []),
             "canonical_due_count": int(p612_exit_worker_gap_truth.get("due_exit_count") or 0),
-            "heavy_due_symbols": heavy_watch_symbols,
-            "heavy_due_count": len(heavy_watch_symbols),
-            "heavy_exit_watch_count": int(heavy_active_exit_summary.get("exit_watch_count") or len(heavy_watch_symbols) or 0),
+            "heavy_due_symbols": [],
+            "heavy_due_count": 0,
+            "heavy_exit_watch_count": None,
             "health_uses_canonical_due_truth": True,
-            "heavy_only_due_symbols": [sym for sym in heavy_watch_symbols if sym not in set(p612_exit_worker_gap_truth.get("due_exit_symbols") or [])],
-            "recommended_action": "use_canonical_due_truth_for_worker_health",
+            "heavy_only_due_symbols": [],
+            "p643_heavy_active_exit_detail_deferred": {
+                "enabled": True,
+                "reason": "worker_exit_status_uses_canonical_fast_active_exit_truth",
+                "heavy_detail_endpoint": "/diagnostics/active_exit_protection_truth?limit=20",
+                "health_behavior_changed": False,
+            },
+            "recommended_action": "use_canonical_fast_due_truth_for_worker_health",
         },
         "p634_ready_exit_retry_consumption": hb.get("p634_ready_exit_retry_consumption") or {},
         "p635_exit_worker_health_recommendation_cleanup": {
