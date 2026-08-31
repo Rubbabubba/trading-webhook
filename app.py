@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-635-exit-worker-health-recommendation-cleanup-non-due-retry-aging-truth"
+PATCH_VERSION = "patch-636-profit-capture-readiness-truth-weak-position-capital-drag-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -50398,6 +50398,199 @@ def _p606_partial_profit_readiness_truth(limit: int = 25) -> dict:
     }
 
 
+def _p636_position_profit_rows(limit: int = 25) -> list[dict]:
+    positions_by_symbol = _p364_snapshot_position_by_symbol()
+    active_exit_truth = _p620_active_exit_protection_truth_fast(limit=max(50, int(limit or 25)))
+    exit_rows = {
+        str(row.get("symbol") or "").strip().upper(): dict(row)
+        for row in list(active_exit_truth.get("rows") or [])
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    }
+    rows = []
+    for symbol in sorted(positions_by_symbol):
+        pos = dict(positions_by_symbol.get(symbol) or {})
+        plan = dict((TRADE_PLAN or {}).get(symbol) or {})
+        exit_row = dict(exit_rows.get(symbol) or {})
+        qty = abs(_safe_float(pos.get("qty") or exit_row.get("qty") or plan.get("filled_qty") or 0.0))
+        current_price = _safe_float(pos.get("current_price") or pos.get("last_price") or exit_row.get("current_price") or 0.0)
+        entry_price = _safe_float(pos.get("avg_entry_price") or exit_row.get("entry_price") or plan.get("avg_fill_price") or plan.get("entry_price") or 0.0)
+        stop_price = _safe_float(exit_row.get("stop_price") or plan.get("stop_price") or 0.0)
+        target_price = _safe_float(exit_row.get("target_price") or plan.get("take_price") or plan.get("target_price") or 0.0)
+        profit_lock_price = _safe_float(exit_row.get("profit_lock_price") or plan.get("profit_lock_price") or 0.0)
+        unrealized_pl = _safe_float(pos.get("unrealized_pl") or exit_row.get("unrealized_pl") or 0.0)
+        market_value = _safe_float(pos.get("market_value") or (qty * current_price if qty and current_price else 0.0))
+        risk_to_stop = max(0.0, (entry_price - stop_price) * qty) if qty > 0 and entry_price > 0 and stop_price > 0 else 0.0
+        distance_to_stop = ((current_price - stop_price) * qty) if qty > 0 and current_price > 0 and stop_price > 0 else None
+        target_upside = ((target_price - current_price) * qty) if qty > 0 and current_price > 0 and target_price > 0 else None
+        unrealized_r = _swing_unrealized_r(plan, current_price) if plan and current_price > 0 else 0.0
+        rows.append({
+            "symbol": symbol,
+            "qty": round(qty, 6),
+            "entry_price": round(entry_price, 4) if entry_price else None,
+            "current_price": round(current_price, 4) if current_price else None,
+            "market_value": round(market_value, 4),
+            "unrealized_pl": round(unrealized_pl, 4),
+            "unrealized_plpc": _safe_float(pos.get("unrealized_plpc") or 0.0),
+            "unrealized_r": round(unrealized_r, 4),
+            "stop_price": round(stop_price, 4) if stop_price else None,
+            "target_price": round(target_price, 4) if target_price else None,
+            "profit_lock_price": round(profit_lock_price, 4) if profit_lock_price else None,
+            "risk_to_stop_dollars": round(risk_to_stop, 4),
+            "distance_to_stop_dollars": round(distance_to_stop, 4) if distance_to_stop is not None else None,
+            "target_upside_dollars": round(target_upside, 4) if target_upside is not None else None,
+            "exit_trigger_now": bool(exit_row.get("exit_trigger_now")),
+            "closest_exit_reason": str(exit_row.get("closest_exit_reason") or "none"),
+            "protection_status": str(exit_row.get("protection_status") or "unknown"),
+            "has_active_plan": bool(plan and plan.get("active")),
+            "partial_profit_taken": bool(plan.get("partial_profit_taken")),
+            "is_daily_breakout": bool(_p378_is_daily_breakout_plan(plan)),
+        })
+    rows.sort(key=lambda r: _safe_float(r.get("unrealized_pl"), 0.0), reverse=True)
+    return rows[:max(1, min(int(limit or 25), 100))]
+
+
+def _p636_profit_capture_readiness_truth(limit: int = 25) -> dict:
+    goal_payload = _p569_fast_broker_daily_goal_truth()
+    goal = dict(goal_payload.get("daily_goal_progress") or {})
+    partial = _p606_partial_profit_readiness_truth(limit=max(25, int(limit or 25)))
+    position_rows = _p636_position_profit_rows(limit=max(25, int(limit or 25)))
+    partial_by_symbol = {
+        str(row.get("symbol") or "").strip().upper(): dict(row)
+        for row in list(partial.get("rows") or [])
+        if isinstance(row, dict)
+    }
+    enriched = []
+    total_unrealized = 0.0
+    total_target_upside = 0.0
+    for row in position_rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        part = dict(partial_by_symbol.get(sym) or {})
+        unreal = _safe_float(row.get("unrealized_pl"), 0.0)
+        upside = _safe_float(row.get("target_upside_dollars"), 0.0)
+        total_unrealized += unreal
+        if upside > 0:
+            total_target_upside += upside
+        capture_status = (
+            "exit_due_now"
+            if bool(row.get("exit_trigger_now"))
+            else "partial_profit_ready"
+            if bool(part.get("ready"))
+            else "near_partial_profit"
+            if bool(part.get("near"))
+            else "winner_working"
+            if unreal > 0
+            else "drag_watch"
+            if unreal < 0
+            else "flat"
+        )
+        enriched.append({
+            **row,
+            "partial_profit_status": part.get("status") or "unknown",
+            "partial_profit_ready": bool(part.get("ready")),
+            "near_partial_profit": bool(part.get("near")),
+            "partial_qty_to_close": part.get("qty_to_close"),
+            "partial_progress_to_trigger": part.get("progress_to_active_trigger"),
+            "profit_capture_status": capture_status,
+        })
+    ready_symbols = [r.get("symbol") for r in enriched if bool(r.get("partial_profit_ready"))]
+    near_symbols = [r.get("symbol") for r in enriched if bool(r.get("near_partial_profit"))]
+    exit_due_symbols = [r.get("symbol") for r in enriched if bool(r.get("exit_trigger_now"))]
+    target_low = _safe_float(goal.get("target_low"), 100.0)
+    primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "profit_capture_readiness_truth",
+        "source": "fast_daily_goal_positions_snapshot_partial_profit_truth",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "daily_goal_progress": goal,
+        "summary": {
+            "broker_daily_pnl": round(primary, 4),
+            "target_low": round(target_low, 4),
+            "remaining_to_low": round(_safe_float(goal.get("remaining_to_low"), max(0.0, target_low - primary)), 4),
+            "open_unrealized_pl": round(total_unrealized, 4),
+            "positive_target_upside_dollars": round(total_target_upside, 4),
+            "ready_partial_profit_count": len(ready_symbols),
+            "near_partial_profit_count": len(near_symbols),
+            "exit_due_count": len(exit_due_symbols),
+            "winner_count": len([r for r in enriched if _safe_float(r.get("unrealized_pl"), 0.0) > 0]),
+            "loser_count": len([r for r in enriched if _safe_float(r.get("unrealized_pl"), 0.0) < 0]),
+        },
+        "ready_partial_profit_symbols": ready_symbols,
+        "near_partial_profit_symbols": near_symbols,
+        "exit_due_symbols": exit_due_symbols,
+        "rows": enriched[:max(1, min(int(limit or 25), 100))],
+        "recommended_action": (
+            "worker_exit_should_handle_due_or_partial_profit_symbols"
+            if exit_due_symbols or ready_symbols
+            else "monitor_near_partial_profit_symbols"
+            if near_symbols
+            else "let_winners_work_review_capital_drag"
+        ),
+    }
+
+
+def _p636_weak_position_capital_drag_audit(limit: int = 25) -> dict:
+    rows = _p636_position_profit_rows(limit=max(50, int(limit or 25)))
+    drag_rows = []
+    for row in rows:
+        unreal = _safe_float(row.get("unrealized_pl"), 0.0)
+        market_value = _safe_float(row.get("market_value"), 0.0)
+        risk_to_stop = _safe_float(row.get("risk_to_stop_dollars"), 0.0)
+        distance_to_stop = row.get("distance_to_stop_dollars")
+        near_stop = bool(distance_to_stop is not None and _safe_float(distance_to_stop, 0.0) <= max(2.0, risk_to_stop * 0.2))
+        capital_drag = bool(unreal < 0 and (abs(unreal) >= 10.0 or _safe_float(row.get("unrealized_plpc"), 0.0) <= -0.01 or near_stop))
+        if not capital_drag and unreal >= 0:
+            continue
+        drag_score = abs(unreal) + (risk_to_stop * 0.25) + (market_value * 0.005 if unreal < 0 else 0.0)
+        status = (
+            "near_stop_drag"
+            if near_stop and unreal < 0
+            else "capital_drag"
+            if capital_drag
+            else "minor_loser"
+        )
+        drag_rows.append({
+            **row,
+            "capital_drag": capital_drag,
+            "near_stop": near_stop,
+            "drag_score": round(drag_score, 4),
+            "drag_status": status,
+            "recommended_operator_read": (
+                "worker_exit_should_manage_if_exit_trigger_appears"
+                if bool(row.get("exit_trigger_now"))
+                else "monitor_or_review_sleeve_quality_not_manual_babysit"
+            ),
+        })
+    drag_rows.sort(key=lambda r: _safe_float(r.get("drag_score"), 0.0), reverse=True)
+    total_drag_pl = sum(_safe_float(r.get("unrealized_pl"), 0.0) for r in drag_rows)
+    total_drag_market_value = sum(_safe_float(r.get("market_value"), 0.0) for r in drag_rows)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "weak_position_capital_drag_audit",
+        "source": "positions_snapshot_and_active_plan_memory",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "summary": {
+            "drag_row_count": len(drag_rows),
+            "capital_drag_count": len([r for r in drag_rows if bool(r.get("capital_drag"))]),
+            "near_stop_drag_count": len([r for r in drag_rows if bool(r.get("near_stop"))]),
+            "total_drag_unrealized_pl": round(total_drag_pl, 4),
+            "total_drag_market_value": round(total_drag_market_value, 4),
+        },
+        "capital_drag_symbols": [r.get("symbol") for r in drag_rows if bool(r.get("capital_drag"))],
+        "near_stop_symbols": [r.get("symbol") for r in drag_rows if bool(r.get("near_stop"))],
+        "rows": drag_rows[:max(1, min(int(limit or 25), 100))],
+        "recommended_action": (
+            "review_top_capital_drag_symbols_for_cleanup_or_exit_policy"
+            if drag_rows
+            else "no_material_capital_drag_detected"
+        ),
+    }
+
+
 P607_WORKER_EXIT_FAST_CLOSE_BUDGET_SEC = max(
     20.0,
     min(90.0, float(getenv_any("WORKER_EXIT_FAST_CLOSE_BUDGET_SEC", default="70") or 70)),
@@ -67689,6 +67882,16 @@ def diagnostics_swing_exit_protection_module_status():
 @app.get("/diagnostics/partial_profit_readiness_truth")
 def diagnostics_partial_profit_readiness_truth(limit: int = 25):
     return JSONResponse(content=_p606_partial_profit_readiness_truth(limit=limit))
+
+@app.get("/diagnostics/profit_capture_readiness_truth")
+def diagnostics_profit_capture_readiness_truth(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p636_profit_capture_readiness_truth(limit=limit))
+
+@app.get("/diagnostics/weak_position_capital_drag_audit")
+def diagnostics_weak_position_capital_drag_audit(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p636_weak_position_capital_drag_audit(limit=limit))
 
 @app.get("/diagnostics/breakout_stall_loss_containment")
 def diagnostics_breakout_stall_loss_containment(limit: int = 20, detail: str = "light", heavy: bool = False):

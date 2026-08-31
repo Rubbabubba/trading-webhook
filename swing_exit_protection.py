@@ -16,7 +16,7 @@ from swing_execution import format_order_qty as _execution_format_order_qty
 from swing_execution import qty_source_from_plan as _execution_qty_source_from_plan
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-635-exit-worker-health-recommendation-cleanup-non-due-retry-aging-truth"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-636-profit-capture-readiness-truth-weak-position-capital-drag-audit"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
