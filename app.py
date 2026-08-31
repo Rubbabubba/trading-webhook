@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-634-current-exit-reason-retry-sync-due-exit-worker-consumption-finalizer"
+PATCH_VERSION = "patch-635-exit-worker-health-recommendation-cleanup-non-due-retry-aging-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -10878,6 +10878,32 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
     rows = rows[:max(1, min(int(limit or 20), 50))]
     ready_rows = [r for r in rows if bool(r.get("ready"))]
     uncleared_rows = [r for r in rows if not bool(r.get("stale_failure_cleared"))]
+    current_due_rows = [r for r in uncleared_rows if bool(r.get("current_exit_trigger_now"))]
+    retryable_current_due_rows = [r for r in current_due_rows if bool(r.get("retryable"))]
+    nonretryable_current_due_rows = [r for r in current_due_rows if not bool(r.get("retryable"))]
+    blocked_current_due_rows = [
+        r for r in current_due_rows
+        if not bool(r.get("ready")) and bool(r.get("blocked_reasons"))
+    ]
+    non_due_retry_rows = [
+        r for r in uncleared_rows
+        if bool(r.get("retryable")) and not bool(r.get("current_exit_trigger_now"))
+    ]
+    action_required = bool(ready_rows or current_due_rows)
+    if ready_rows:
+        recommended_action = "worker_exit_should_retry_ready_exit_submits"
+    elif nonretryable_current_due_rows:
+        recommended_action = "inspect_nonretryable_exit_submit_failures"
+    elif retryable_current_due_rows and not market_open:
+        recommended_action = "wait_for_regular_market_open"
+    elif blocked_current_due_rows:
+        recommended_action = "inspect_blocked_due_exit_retry_rows"
+    elif non_due_retry_rows:
+        recommended_action = "none"
+    elif uncleared_rows:
+        recommended_action = "none"
+    else:
+        recommended_action = "none"
 
     return {
         "ok": True,
@@ -10888,16 +10914,24 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
         "row_count": len(rows),
         "ready_count": len(ready_rows),
         "ready_symbols": [r.get("symbol") for r in ready_rows],
+        "current_due_count": len(current_due_rows),
+        "current_due_symbols": [r.get("symbol") for r in current_due_rows],
+        "retryable_current_due_count": len(retryable_current_due_rows),
+        "nonretryable_current_due_count": len(nonretryable_current_due_rows),
+        "blocked_current_due_count": len(blocked_current_due_rows),
+        "non_due_retry_count": len(non_due_retry_rows),
+        "non_due_retry_symbols": [r.get("symbol") for r in non_due_retry_rows],
+        "action_required": action_required,
+        "p635_non_due_retry_aging_truth": {
+            "enabled": True,
+            "non_due_retry_count": len(non_due_retry_rows),
+            "non_due_retry_symbols": [r.get("symbol") for r in non_due_retry_rows],
+            "rows_are_historical_until_current_exit_due": True,
+            "health_blocking": False,
+            "recommended_action": "none" if non_due_retry_rows and not current_due_rows else recommended_action,
+        },
         "rows": rows,
-        "recommended_action": (
-            "worker_exit_should_retry_ready_exit_submits"
-            if ready_rows
-            else "wait_for_regular_market_open"
-            if uncleared_rows and not market_open
-            else "inspect_nonretryable_exit_submit_failures"
-            if uncleared_rows
-            else "none"
-        ),
+        "recommended_action": recommended_action,
     }
 
 def _record_exit_submit_failure(symbol: str, source: str, reason: str, close_side: str, qty: float, err) -> dict:
@@ -67465,7 +67499,8 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     risk_evidence_ok = bool(post_fill_risk_recheck_evidence.get("ok", False))
     risk_evidence_error = post_fill_risk_recheck_evidence.get("error")
     exit_retry_action = str(exit_retry_readiness.get("recommended_action") or "none")
-    exit_retry_clean = exit_retry_action in {"", "none"}
+    exit_retry_action_required = bool(exit_retry_readiness.get("action_required"))
+    exit_retry_clean = bool(exit_retry_action in {"", "none"} or not exit_retry_action_required)
     active_exit_truth = _p620_active_exit_protection_truth_fast(limit=limit)
     heavy_active_exit_truth = _p364_active_exit_protection_truth()
     heavy_active_exit_summary = dict(heavy_active_exit_truth.get("summary") or {})
@@ -67539,6 +67574,17 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             "recommended_action": "use_canonical_due_truth_for_worker_health",
         },
         "p634_ready_exit_retry_consumption": hb.get("p634_ready_exit_retry_consumption") or {},
+        "p635_exit_worker_health_recommendation_cleanup": {
+            "enabled": True,
+            "exit_retry_action": exit_retry_action,
+            "exit_retry_action_required": exit_retry_action_required,
+            "exit_retry_clean_for_worker_health": exit_retry_clean,
+            "non_due_retry_count": int(exit_retry_readiness.get("non_due_retry_count") or 0),
+            "non_due_retry_symbols": list(exit_retry_readiness.get("non_due_retry_symbols") or []),
+            "canonical_due_count": int(p612_exit_worker_gap_truth.get("due_exit_count") or 0),
+            "canonical_due_symbols": list(p612_exit_worker_gap_truth.get("due_exit_symbols") or []),
+            "health_uses_current_due_retry_truth": True,
+        },
         "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
