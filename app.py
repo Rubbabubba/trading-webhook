@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-646-drag-dependent-goal-gap-rotation-truth-sync"
+PATCH_VERSION = "patch-647-capital-rotation-action-contract-protection-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51210,6 +51210,111 @@ def _p646_goal_gap_rotation_operator_plan(
     }
 
 
+def _p647_capital_rotation_action_contract(
+    *,
+    rotation_rows: list,
+    active_exit_truth: dict | None,
+    rotation_plan: dict | None,
+) -> dict:
+    active_rows = {
+        str(row.get("symbol") or "").strip().upper(): dict(row or {})
+        for row in list((active_exit_truth or {}).get("rows") or [])
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    }
+    plan = dict(rotation_plan or {})
+    candidates = [
+        dict(row or {})
+        for row in list(rotation_rows or [])
+        if isinstance(row, dict) and bool(row.get("rotation_candidate"))
+    ]
+    action_rows = []
+    for row in candidates:
+        sym = str(row.get("symbol") or "").strip().upper()
+        exit_row = active_rows.get(sym, {})
+        protection_status = str(exit_row.get("protection_status") or "unknown")
+        exit_actionable = bool(exit_row.get("exit_actionable_now"))
+        exit_trigger = bool(exit_row.get("exit_trigger_now"))
+        protected = protection_status == "protected"
+        near_stop = bool(row.get("near_stop"))
+        capital_drag = bool(row.get("capital_drag"))
+        action_status = (
+            "worker_exit_actionable_first"
+            if exit_actionable
+            else "protected_near_stop_rotation_watch"
+            if protected and near_stop
+            else "protected_drag_rotation_watch"
+            if protected and capital_drag
+            else "protection_recovery_before_rotation"
+            if protection_status in {"broker_position_plan_recovery_needed", "plan_missing", "missing_exit_levels", "price_or_qty_missing"}
+            else "monitor"
+        )
+        action_rows.append({
+            "symbol": sym,
+            "rotation_reason": row.get("rotation_reason"),
+            "action_status": action_status,
+            "protected": protected,
+            "protection_status": protection_status,
+            "exit_actionable_now": exit_actionable,
+            "exit_trigger_now": exit_trigger,
+            "near_stop": near_stop,
+            "capital_drag": capital_drag,
+            "unrealized_pl": row.get("unrealized_pl"),
+            "market_value": row.get("market_value"),
+            "risk_to_stop_dollars": row.get("risk_to_stop_dollars"),
+            "distance_to_stop_dollars": row.get("distance_to_stop_dollars"),
+            "readiness_score": row.get("readiness_score"),
+            "replacement_focus": list(row.get("replacement_focus") or []),
+            "operator_note": (
+                "worker_exit_or_existing_stop_should_resolve_before_any_rotation_change"
+                if exit_actionable
+                else "protected_position_review_for_rotation_slot_release"
+                if protected and (near_stop or capital_drag)
+                else "fix_protection_truth_before_rotation_review"
+                if protection_status != "protected"
+                else "monitor"
+            ),
+        })
+    protected_candidates = [row for row in action_rows if bool(row.get("protected"))]
+    actionable_exit_rows = [row for row in action_rows if bool(row.get("exit_actionable_now"))]
+    near_stop_rows = [row for row in action_rows if bool(row.get("near_stop"))]
+    missing_protection_rows = [row for row in action_rows if not bool(row.get("protected"))]
+    recommended_action = (
+        "wait_for_worker_exit_before_rotation"
+        if actionable_exit_rows
+        else "fix_rotation_candidate_protection_before_action"
+        if missing_protection_rows
+        else "prepare_rotation_slot_release_review"
+        if protected_candidates and plan.get("profit_improvement_focus") == "capital_rotation"
+        else "no_rotation_action_needed"
+    )
+    return {
+        "enabled": True,
+        "patch_version": PATCH_VERSION,
+        "source": "capital_rotation_readiness_and_fast_exit_protection_snapshot",
+        "candidate_count": len(action_rows),
+        "candidate_symbols": [row.get("symbol") for row in action_rows],
+        "protected_candidate_count": len(protected_candidates),
+        "protected_candidate_symbols": [row.get("symbol") for row in protected_candidates],
+        "near_stop_candidate_count": len(near_stop_rows),
+        "near_stop_candidate_symbols": [row.get("symbol") for row in near_stop_rows],
+        "exit_actionable_candidate_count": len(actionable_exit_rows),
+        "exit_actionable_candidate_symbols": [row.get("symbol") for row in actionable_exit_rows],
+        "missing_protection_candidate_count": len(missing_protection_rows),
+        "missing_protection_candidate_symbols": [row.get("symbol") for row in missing_protection_rows],
+        "candidate_market_value": round(sum(_safe_float(row.get("market_value"), 0.0) for row in action_rows), 4),
+        "candidate_unrealized_pl": round(sum(_safe_float(row.get("unrealized_pl"), 0.0) for row in action_rows), 4),
+        "profit_improvement_focus": plan.get("profit_improvement_focus"),
+        "drag_dependency_dollars": plan.get("drag_dependency_dollars"),
+        "rows": action_rows,
+        "recommended_action": recommended_action,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "adds_trade_gate": False,
+        "changes_submit_behavior": False,
+        "changes_exit_behavior": False,
+    }
+
+
 def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
     goal_payload = _p569_fast_broker_daily_goal_truth()
     profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)), goal_payload=goal_payload)
@@ -51424,6 +51529,7 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
     rotation_rows.sort(key=lambda r: _safe_float(r.get("readiness_score"), 0.0), reverse=True)
     rotation_candidates = [r for r in rotation_rows if bool(r.get("rotation_candidate"))]
     path_summary = dict(path.get("summary") or {})
+    active_exit_truth = _p620_active_exit_protection_truth_fast(limit=max(25, int(limit or 25)))
     rotation_plan = _p646_goal_gap_rotation_operator_plan(
         primary=primary,
         target_low=target_low,
@@ -51437,6 +51543,11 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
         actionable_selected_symbols=[],
         retry_waiting_selected_symbols=[],
         non_actionable_selected_symbols=[],
+    )
+    rotation_action_contract = _p647_capital_rotation_action_contract(
+        rotation_rows=rotation_rows,
+        active_exit_truth=active_exit_truth,
+        rotation_plan=rotation_plan,
     )
     return {
         "ok": True,
@@ -51458,13 +51569,18 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
             "ready_partial_profit_count": int((profit.get("summary") or {}).get("ready_partial_profit_count") or 0),
             "drag_dependency_dollars": rotation_plan.get("drag_dependency_dollars"),
             "profit_improvement_focus": rotation_plan.get("profit_improvement_focus"),
+            "protected_rotation_candidate_count": rotation_action_contract.get("protected_candidate_count"),
+            "exit_actionable_rotation_candidate_count": rotation_action_contract.get("exit_actionable_candidate_count"),
+            "rotation_candidate_market_value": rotation_action_contract.get("candidate_market_value"),
+            "rotation_candidate_unrealized_pl": rotation_action_contract.get("candidate_unrealized_pl"),
         },
         "rotation_candidate_symbols": [r.get("symbol") for r in rotation_candidates],
         "replacement_focus_symbols": best_goal_symbols[:5],
         "rows": rotation_rows[:max(1, min(int(limit or 25), 100))],
         "p646_goal_gap_rotation_operator_plan": rotation_plan,
+        "p647_capital_rotation_action_contract": rotation_action_contract,
         "recommended_action": (
-            "review_rotation_candidates_before_behavior_change"
+            rotation_action_contract.get("recommended_action")
             if rotation_candidates and rotation_plan.get("profit_improvement_focus") == "capital_rotation"
             else "no_capital_rotation_candidate_detected"
         ),
