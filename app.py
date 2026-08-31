@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-632-exit-runtime-qty-source-callback-removal"
+PATCH_VERSION = "patch-633-broker-available-exit-qty-floor-clamp-canonical-exit-due-truth-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -8798,7 +8798,11 @@ def _normalize_close_qty(qty: float) -> float:
     q = abs(float(qty or 0.0))
     if q <= 0:
         return 0.0
-    return float(_format_order_qty(q))
+    scale = 1_000_000
+    floored = math.floor((q + 1e-12) * scale) / scale
+    if floored <= 0:
+        return 0.0
+    return float(_format_order_qty(floored))
 
 def _p350_broker_qty_exit_clamp(symbol: str, requested_qty: float, close_side: str, reason: str = "", source: str = "") -> dict:
     sym = str(symbol or "").strip().upper()
@@ -8829,7 +8833,7 @@ def _p350_broker_qty_exit_clamp(symbol: str, requested_qty: float, close_side: s
     else:
         broker_available = 0.0
 
-    clamped = _normalize_close_qty(min(requested, broker_available))
+    clamped = _normalize_close_qty(min(requested, _normalize_close_qty(broker_available)))
     blocked = clamped <= 0.0
 
     return {
@@ -10706,10 +10710,12 @@ def _p391_supersede_stale_overclose_failure(
     classification: dict,
     broker_qty_signed: float,
     close_side: str,
+    *,
+    force_current_due: bool = False,
 ) -> dict:
     if not isinstance(classification, dict):
         return {}
-    if bool(classification.get("stale_failure_cleared")):
+    if bool(classification.get("stale_failure_cleared")) and not bool(force_current_due):
         return dict(classification)
 
     out = dict(classification)
@@ -10735,6 +10741,8 @@ def _p391_supersede_stale_overclose_failure(
     out["retryable"] = True
     out["retry_timing"] = "next_worker_exit_cycle" if bool(out.get("market_open")) else "next_regular_market_open"
     out["failure_superseded"] = True
+    out["stale_failure_cleared"] = False
+    out["force_current_due"] = bool(force_current_due)
     out["superseded_reason"] = "current_broker_qty_available_for_clamped_exit"
     out["original_failed_qty"] = qty_error.get("requested_qty")
     out["original_error_available_qty"] = qty_error.get("available_qty")
@@ -10799,6 +10807,7 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             classification,
             qty_signed,
             close_side,
+            force_current_due=current_exit_trigger_now,
         )
         pending_close = _pending_close_order_for_symbol(symbol, close_side)
         idem_guard = _p373_same_day_exit_submit_guard(
@@ -50632,6 +50641,8 @@ def _p612_active_exit_worker_gap_truth(display_status: str, active_exit_truth: d
     try:
         truth = dict(active_exit_truth or _p364_active_exit_protection_truth())
         summary = dict(truth.get("summary") or {})
+        truth_mode = str(truth.get("mode") or "")
+        truth_source = str(truth.get("source") or truth.get("_scan_source") or "")
         watch_rows = [
             dict(row or {})
             for row in list(truth.get("actionable_exit_watch") or [])
@@ -50650,6 +50661,7 @@ def _p612_active_exit_worker_gap_truth(display_status: str, active_exit_truth: d
         return {
             "checked": True,
             "worker_status": status,
+            "canonical_exit_due_truth_source": truth_mode or truth_source or "active_exit_protection_truth",
             "active_exit_watch_count": watch_count,
             "due_exit_symbols": due_symbols,
             "due_exit_count": len(due_symbols),
@@ -67379,7 +67391,14 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     risk_evidence_error = post_fill_risk_recheck_evidence.get("error")
     exit_retry_action = str(exit_retry_readiness.get("recommended_action") or "none")
     exit_retry_clean = exit_retry_action in {"", "none"}
-    active_exit_truth = _p364_active_exit_protection_truth()
+    active_exit_truth = _p620_active_exit_protection_truth_fast(limit=limit)
+    heavy_active_exit_truth = _p364_active_exit_protection_truth()
+    heavy_active_exit_summary = dict(heavy_active_exit_truth.get("summary") or {})
+    heavy_watch_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in list(heavy_active_exit_truth.get("actionable_exit_watch") or [])
+        if isinstance(row, dict) and bool(row.get("exit_trigger_now")) and str(row.get("symbol") or "").strip()
+    ])
     active_exit_summary = dict(active_exit_truth.get("summary") or {})
     p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status, active_exit_truth=active_exit_truth)
     p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
@@ -67432,6 +67451,17 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
                 if active_giveback_symbols
                 else "none"
             ),
+        },
+        "p633_exit_due_truth_sync": {
+            "canonical_source": str(active_exit_truth.get("mode") or "active_exit_protection_truth_fast"),
+            "canonical_due_symbols": list(p612_exit_worker_gap_truth.get("due_exit_symbols") or []),
+            "canonical_due_count": int(p612_exit_worker_gap_truth.get("due_exit_count") or 0),
+            "heavy_due_symbols": heavy_watch_symbols,
+            "heavy_due_count": len(heavy_watch_symbols),
+            "heavy_exit_watch_count": int(heavy_active_exit_summary.get("exit_watch_count") or len(heavy_watch_symbols) or 0),
+            "health_uses_canonical_due_truth": True,
+            "heavy_only_due_symbols": [sym for sym in heavy_watch_symbols if sym not in set(p612_exit_worker_gap_truth.get("due_exit_symbols") or [])],
+            "recommended_action": "use_canonical_due_truth_for_worker_health",
         },
         "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
         "started_stale": started_stale,

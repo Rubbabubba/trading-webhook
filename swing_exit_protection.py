@@ -7,6 +7,7 @@ while the full exit engine is extracted in later cleanup phases.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from swing_execution import available_qty_from_plan as _execution_available_qty_from_plan
@@ -15,7 +16,7 @@ from swing_execution import format_order_qty as _execution_format_order_qty
 from swing_execution import qty_source_from_plan as _execution_qty_source_from_plan
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-632-exit-runtime-qty-source-callback-removal"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-633-broker-available-exit-qty-floor-clamp-canonical-exit-due-truth-sync"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -35,7 +36,11 @@ def _normalize_exit_qty(qty: Any) -> float:
     value = abs(_safe_float(qty))
     if value <= 0:
         return 0.0
-    return _safe_float(_execution_format_order_qty(value))
+    scale = 1_000_000
+    floored = math.floor((value + 1e-12) * scale) / scale
+    if floored <= 0:
+        return 0.0
+    return _safe_float(_execution_format_order_qty(floored))
 
 
 def _clamp_exit_qty(qty_to_close: Any, available_qty: Any) -> float:
