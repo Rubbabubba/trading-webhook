@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-645-profit-path-selected-candidate-truth-sync"
+PATCH_VERSION = "patch-646-drag-dependent-goal-gap-rotation-truth-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51116,6 +51116,100 @@ def _p645_selected_candidate_operator_truth(limit: int = 10) -> dict:
     }
 
 
+def _p646_goal_gap_rotation_operator_plan(
+    *,
+    primary: float,
+    target_low: float,
+    remaining_low: float,
+    clean_upside: float,
+    all_upside: float,
+    recovery_upside: float,
+    clean_goal_symbols: list,
+    drag_symbols: list,
+    near_stop_symbols: list,
+    actionable_selected_symbols: list,
+    retry_waiting_selected_symbols: list,
+    non_actionable_selected_symbols: list,
+) -> dict:
+    clean_gap = max(0.0, _safe_float(remaining_low, 0.0) - max(0.0, _safe_float(clean_upside, 0.0)))
+    all_gap = max(0.0, _safe_float(remaining_low, 0.0) - max(0.0, _safe_float(all_upside, 0.0)))
+    drag_dependency = max(0.0, clean_gap - all_gap)
+    clean_goal_symbols = _dedupe_keep_order(clean_goal_symbols or [])
+    drag_symbols = _dedupe_keep_order(drag_symbols or [])
+    near_stop_symbols = _dedupe_keep_order(near_stop_symbols or [])
+    actionable_selected_symbols = _dedupe_keep_order(actionable_selected_symbols or [])
+    retry_waiting_selected_symbols = _dedupe_keep_order(retry_waiting_selected_symbols or [])
+    non_actionable_selected_symbols = _dedupe_keep_order(non_actionable_selected_symbols or [])
+    goal_hit = bool(_safe_float(primary, 0.0) >= max(0.01, _safe_float(target_low, 100.0)))
+    clean_reaches_goal = bool(clean_gap <= 0)
+    drag_reaches_goal = bool(not clean_reaches_goal and all_gap <= 0 and drag_symbols)
+    needs_fresh_quality = bool(not goal_hit and not clean_reaches_goal and not drag_reaches_goal)
+    rotation_review_symbols = _dedupe_keep_order(near_stop_symbols + drag_symbols)
+    action = (
+        "preserve_profit_and_avoid_low_quality_new_entries"
+        if goal_hit
+        else "fix_actionable_selected_submit_gap"
+        if actionable_selected_symbols
+        else "let_clean_goal_gap_closers_work"
+        if clean_reaches_goal and clean_goal_symbols
+        else "review_drag_dependent_goal_path_for_rotation"
+        if drag_reaches_goal and rotation_review_symbols
+        else "wait_for_retry_or_next_quality_scan"
+        if retry_waiting_selected_symbols
+        else "wait_for_next_scan_quality_candidate_or_reduce_drag"
+        if needs_fresh_quality
+        else "monitor_goal_path"
+    )
+    return {
+        "enabled": True,
+        "patch_version": PATCH_VERSION,
+        "status": (
+            "goal_low_hit"
+            if goal_hit
+            else "clean_open_targets_can_reach_goal"
+            if clean_reaches_goal
+            else "drag_dependent_goal_path"
+            if drag_reaches_goal
+            else "fresh_quality_entry_needed"
+        ),
+        "clean_gap_after_open_targets": round(clean_gap, 4),
+        "all_gap_after_open_targets": round(all_gap, 4),
+        "drag_dependency_dollars": round(drag_dependency, 4),
+        "recovery_upside_dollars": round(max(0.0, _safe_float(recovery_upside, 0.0)), 4),
+        "clean_goal_symbols": clean_goal_symbols,
+        "rotation_review_symbols": rotation_review_symbols,
+        "near_stop_symbols": near_stop_symbols,
+        "drag_symbols": drag_symbols,
+        "actionable_selected_symbols": actionable_selected_symbols,
+        "retry_waiting_selected_symbols": retry_waiting_selected_symbols,
+        "non_actionable_selected_symbols": non_actionable_selected_symbols,
+        "profit_improvement_focus": (
+            "preserve_realized_goal"
+            if goal_hit
+            else "clean_winners"
+            if clean_reaches_goal
+            else "capital_rotation"
+            if drag_reaches_goal
+            else "fresh_quality_entry"
+        ),
+        "operator_guidance": (
+            "goal already hit; avoid forcing low quality adds"
+            if goal_hit
+            else "clean winners can reach the low goal without relying on losers"
+            if clean_reaches_goal
+            else "goal is reachable only if drag names recover; review rotation candidates without manual babysitting"
+            if drag_reaches_goal
+            else "current open targets do not cleanly close the goal gap; wait for a fresh high quality scan or reduce drag"
+        ),
+        "recommended_action": action,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "adds_trade_gate": False,
+        "changes_submit_behavior": False,
+        "changes_exit_behavior": False,
+    }
+
+
 def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
     goal_payload = _p569_fast_broker_daily_goal_truth()
     profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)), goal_payload=goal_payload)
@@ -51147,6 +51241,20 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
     near_stop_symbols = list(path.get("near_stop_symbols") or [])
     clean_gap_after_open_targets = max(0.0, remaining_low - clean_upside)
     all_gap_after_open_targets = max(0.0, remaining_low - all_upside)
+    p646_operator_plan = _p646_goal_gap_rotation_operator_plan(
+        primary=primary,
+        target_low=target_low,
+        remaining_low=remaining_low,
+        clean_upside=clean_upside,
+        all_upside=all_upside,
+        recovery_upside=recovery_upside,
+        clean_goal_symbols=clean_goal_symbols,
+        drag_symbols=drag_symbols,
+        near_stop_symbols=near_stop_symbols,
+        actionable_selected_symbols=actionable_selected_symbols,
+        retry_waiting_selected_symbols=retry_waiting_selected_symbols,
+        non_actionable_selected_symbols=non_actionable_selected_symbols,
+    )
     daily_goal_state = (
         "goal_low_hit"
         if primary >= target_low
@@ -51217,8 +51325,10 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
             "clean_positive_target_upside_dollars": round(clean_upside, 4),
             "all_positive_target_upside_dollars": round(all_upside, 4),
             "recovery_upside_dollars": round(recovery_upside, 4),
+            "drag_dependency_dollars": p646_operator_plan.get("drag_dependency_dollars"),
             "gap_after_clean_open_targets": round(clean_gap_after_open_targets, 4),
             "gap_after_all_open_targets": round(all_gap_after_open_targets, 4),
+            "profit_improvement_focus": p646_operator_plan.get("profit_improvement_focus"),
             "goal_gap_closer_count": len(clean_goal_symbols),
             "capital_drag_count": len(drag_symbols),
             "near_stop_drag_count": len(near_stop_symbols),
@@ -51248,6 +51358,7 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
             "changes_exit_behavior": False,
             "does_not_submit_orders": True,
         },
+        "p646_goal_gap_rotation_operator_plan": p646_operator_plan,
         "p644_clean_profit_path_contract": {
             "enabled": True,
             "uses_existing_reports_only": True,
@@ -51256,17 +51367,7 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
             "changes_exit_behavior": False,
             "daily_goal_operator_truth_consolidated": True,
         },
-        "recommended_action": (
-            "preserve_profit_and_avoid_low_quality_new_entries"
-            if primary >= target_low
-            else "fix_actionable_selected_submit_gap"
-            if actionable_selected_symbols
-            else "let_clean_goal_gap_closers_work"
-            if clean_gap_after_open_targets <= 0 and clean_goal_symbols
-            else "watch_drag_symbols_but_do_not_force_manual_exit"
-            if all_gap_after_open_targets <= 0 and drag_symbols
-            else "wait_for_next_scan_quality_candidate_or_reduce_drag"
-        ),
+        "recommended_action": p646_operator_plan.get("recommended_action") or "monitor_goal_path",
     }
 
 
@@ -51322,6 +51423,21 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
         })
     rotation_rows.sort(key=lambda r: _safe_float(r.get("readiness_score"), 0.0), reverse=True)
     rotation_candidates = [r for r in rotation_rows if bool(r.get("rotation_candidate"))]
+    path_summary = dict(path.get("summary") or {})
+    rotation_plan = _p646_goal_gap_rotation_operator_plan(
+        primary=primary,
+        target_low=target_low,
+        remaining_low=_safe_float(goal.get("remaining_to_low"), max(0.0, target_low - primary)),
+        clean_upside=_safe_float(path_summary.get("clean_positive_target_upside_dollars"), 0.0),
+        all_upside=_safe_float(path_summary.get("positive_target_upside_dollars"), 0.0),
+        recovery_upside=_safe_float(path_summary.get("recovery_upside_dollars"), 0.0),
+        clean_goal_symbols=best_goal_symbols,
+        drag_symbols=list(drag.get("capital_drag_symbols") or []),
+        near_stop_symbols=list(drag.get("near_stop_symbols") or []),
+        actionable_selected_symbols=[],
+        retry_waiting_selected_symbols=[],
+        non_actionable_selected_symbols=[],
+    )
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -51340,13 +51456,16 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
             "near_stop_drag_count": int((drag.get("summary") or {}).get("near_stop_drag_count") or 0),
             "goal_gap_closer_count": len(best_goal_symbols),
             "ready_partial_profit_count": int((profit.get("summary") or {}).get("ready_partial_profit_count") or 0),
+            "drag_dependency_dollars": rotation_plan.get("drag_dependency_dollars"),
+            "profit_improvement_focus": rotation_plan.get("profit_improvement_focus"),
         },
         "rotation_candidate_symbols": [r.get("symbol") for r in rotation_candidates],
         "replacement_focus_symbols": best_goal_symbols[:5],
         "rows": rotation_rows[:max(1, min(int(limit or 25), 100))],
+        "p646_goal_gap_rotation_operator_plan": rotation_plan,
         "recommended_action": (
             "review_rotation_candidates_before_behavior_change"
-            if rotation_candidates
+            if rotation_candidates and rotation_plan.get("profit_improvement_focus") == "capital_rotation"
             else "no_capital_rotation_candidate_detected"
         ),
     }
