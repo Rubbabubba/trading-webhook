@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-644-daily-goal-opportunity-map-clean-profit-path"
+PATCH_VERSION = "patch-645-profit-path-selected-candidate-truth-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51031,6 +51031,91 @@ def _p637_daily_goal_path_truth(
     }
 
 
+def _p645_selected_candidate_operator_truth(limit: int = 10) -> dict:
+    try:
+        selected = dict(_p550_selected_submission_truth_snapshot_light(limit=max(1, min(int(limit or 10), 25))) or {})
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "ok": False,
+            "error": str(exc),
+            "selected_symbols": [],
+            "status": "selected_candidate_truth_unavailable",
+            "recommended_action": "review_selected_submission_truth_light",
+        }
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    submit_gap_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected.get("submit_gap_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    pending_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected.get("submit_pending_symbols") or selected.get("pending_order_sync_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    retry_waiting_symbols = _dedupe_keep_order(
+        list(selected.get("selected_timeout_clean_retry_symbols") or [])
+        + list(selected.get("rate_limited_retry_symbols") or [])
+        + list(selected.get("retryable_spread_block_symbols") or [])
+    )
+    non_actionable_symbols = _dedupe_keep_order(
+        list((selected.get("p641_selected_submit_gap_actionability_sync") or {}).get("non_actionable_symbols") or [])
+        + list((selected.get("p642_queued_timeout_retry_gap_normalization") or {}).get("non_actionable_symbols") or [])
+        + list(selected.get("non_actionable_submit_gap_symbols") or [])
+    )
+    side_effect_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected.get("side_effect_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    status = (
+        "no_selected_candidate"
+        if not selected_symbols
+        else "selected_candidate_has_submit_side_effect"
+        if side_effect_symbols
+        else "selected_candidate_actionable_submit_gap"
+        if submit_gap_symbols
+        else "selected_candidate_pending_submit"
+        if pending_symbols
+        else "selected_candidate_waiting_retry"
+        if retry_waiting_symbols
+        else "selected_candidate_non_actionable"
+        if non_actionable_symbols
+        else "selected_candidate_monitor"
+    )
+    return {
+        "enabled": True,
+        "ok": bool(selected.get("ok", True)),
+        "source": "selected_submission_truth_light_snapshot",
+        "selected_symbols": selected_symbols,
+        "selected_count": len(selected_symbols),
+        "side_effect_symbols": side_effect_symbols,
+        "submit_gap_symbols": submit_gap_symbols,
+        "submit_gap_count": len(submit_gap_symbols),
+        "pending_symbols": pending_symbols,
+        "retry_waiting_symbols": retry_waiting_symbols,
+        "non_actionable_symbols": non_actionable_symbols,
+        "status": status,
+        "selected_recommended_action": selected.get("recommended_action"),
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "recommended_action": (
+            "inspect_submit_gap_before_waiting_for_new_candidates"
+            if submit_gap_symbols
+            else "wait_for_submit_retry_or_next_scan"
+            if retry_waiting_symbols
+            else "monitor_next_scan_for_actionable_candidate"
+            if non_actionable_symbols or not selected_symbols
+            else "monitor_selected_candidate"
+        ),
+    }
+
+
 def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
     goal_payload = _p569_fast_broker_daily_goal_truth()
     profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)), goal_payload=goal_payload)
@@ -51052,6 +51137,11 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
     clean_upside = max(0.0, _safe_float(summary.get("clean_positive_target_upside_dollars"), 0.0))
     all_upside = max(0.0, _safe_float(summary.get("positive_target_upside_dollars"), 0.0))
     recovery_upside = max(0.0, _safe_float(summary.get("recovery_upside_dollars"), max(0.0, all_upside - clean_upside)))
+    selected_candidate_truth = _p645_selected_candidate_operator_truth(limit=10)
+    selected_candidate_status = str(selected_candidate_truth.get("status") or "")
+    actionable_selected_symbols = list(selected_candidate_truth.get("submit_gap_symbols") or [])
+    non_actionable_selected_symbols = list(selected_candidate_truth.get("non_actionable_symbols") or [])
+    retry_waiting_selected_symbols = list(selected_candidate_truth.get("retry_waiting_symbols") or [])
     clean_goal_symbols = list(path.get("goal_gap_closer_symbols") or [])
     drag_symbols = list(path.get("capital_drag_symbols") or [])
     near_stop_symbols = list(path.get("near_stop_symbols") or [])
@@ -51074,6 +51164,15 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
         else "manage_drag_and_wait_for_recovery"
         if all_gap_after_open_targets <= 0 and drag_symbols
         else "needs_new_high_quality_candidate"
+    )
+    candidate_path = (
+        "selected_candidate_actionable_submit_gap"
+        if actionable_selected_symbols
+        else "selected_candidate_waiting_retry"
+        if retry_waiting_selected_symbols
+        else "selected_candidate_non_actionable"
+        if non_actionable_selected_symbols
+        else selected_candidate_status or "unknown"
     )
     rows = []
     for row in list(path.get("rows") or [])[:max(1, min(int(limit or 25), 100))]:
@@ -51107,6 +51206,7 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
         "does_not_submit_orders": True,
         "daily_goal_state": daily_goal_state,
         "profit_path": profit_path,
+        "candidate_path": candidate_path,
         "summary": {
             "broker_daily_pnl": round(primary, 4),
             "target_low": round(target_low, 4),
@@ -51124,11 +51224,30 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
             "near_stop_drag_count": len(near_stop_symbols),
             "ready_partial_profit_count": int(profit_summary.get("ready_partial_profit_count") or 0),
             "actionable_exit_due_count": int(profit_summary.get("actionable_exit_due_count") or 0),
+            "selected_candidate_count": int(selected_candidate_truth.get("selected_count") or 0),
+            "actionable_selected_candidate_count": len(actionable_selected_symbols),
+            "non_actionable_selected_candidate_count": len(non_actionable_selected_symbols),
+            "retry_waiting_selected_candidate_count": len(retry_waiting_selected_symbols),
         },
         "goal_gap_closer_symbols": clean_goal_symbols,
         "capital_drag_symbols": drag_symbols,
         "near_stop_symbols": near_stop_symbols,
+        "selected_candidate_symbols": list(selected_candidate_truth.get("selected_symbols") or []),
+        "actionable_selected_candidate_symbols": actionable_selected_symbols,
+        "non_actionable_selected_candidate_symbols": non_actionable_selected_symbols,
+        "retry_waiting_selected_candidate_symbols": retry_waiting_selected_symbols,
         "rows": rows,
+        "selected_candidate_operator_truth": selected_candidate_truth,
+        "p645_profit_path_selected_candidate_sync": {
+            "enabled": True,
+            "candidate_path": candidate_path,
+            "profit_path_remains_primary_when_clean_open_targets_can_reach_goal": True,
+            "selected_candidate_truth_is_operator_context_not_new_gate": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "does_not_submit_orders": True,
+        },
         "p644_clean_profit_path_contract": {
             "enabled": True,
             "uses_existing_reports_only": True,
@@ -51140,6 +51259,8 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
         "recommended_action": (
             "preserve_profit_and_avoid_low_quality_new_entries"
             if primary >= target_low
+            else "fix_actionable_selected_submit_gap"
+            if actionable_selected_symbols
             else "let_clean_goal_gap_closers_work"
             if clean_gap_after_open_targets <= 0 and clean_goal_symbols
             else "watch_drag_symbols_but_do_not_force_manual_exit"
