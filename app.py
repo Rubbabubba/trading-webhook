@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-633-broker-available-exit-qty-floor-clamp-canonical-exit-due-truth-sync"
+PATCH_VERSION = "patch-634-current-exit-reason-retry-sync-due-exit-worker-consumption-finalizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -10790,6 +10790,11 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
         active_exit_row = dict(active_exit_rows.get(symbol) or {})
         current_exit_trigger_now = bool(active_exit_row.get("exit_trigger_now"))
         current_exit_reason = str(active_exit_row.get("closest_exit_reason") or "none")
+        effective_exit_reason = (
+            current_exit_reason
+            if current_exit_trigger_now and current_exit_reason and current_exit_reason != "none"
+            else reason
+        )
         stale_overclose_cleanup = _p439_clear_stale_overclose_failure_if_current_risk_clean(
             symbol,
             plan,
@@ -10812,7 +10817,7 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
         pending_close = _pending_close_order_for_symbol(symbol, close_side)
         idem_guard = _p373_same_day_exit_submit_guard(
             symbol,
-            reason=reason,
+            reason=effective_exit_reason,
             source=str(plan.get("last_exit_submit_error_source") or "worker_exit"),
             qty=abs(_safe_float(plan.get("filled_qty") or plan.get("qty") or 0.0)),
             plan_ref=plan,
@@ -10850,7 +10855,9 @@ def _p390_exit_submit_retry_readiness(limit: int = 20) -> dict:
             "retryable": retryable,
             "retry_timing": classification.get("retry_timing"),
             "classification": classification.get("classification"),
-            "exit_reason": reason,
+            "exit_reason": effective_exit_reason,
+            "stale_exit_reason": reason,
+            "current_reason_override_applied": bool(effective_exit_reason != reason),
             "close_side": close_side,
             "broker_qty_signed": round(_safe_float(qty_signed, 0.0), 8),
             "broker_retry_qty": classification.get("broker_retry_qty"),
@@ -50524,6 +50531,66 @@ def _p612_order_exit_plan_items(plan_items: list[tuple], priority_symbols: list[
     return ordered
 
 
+def _p634_worker_consume_ready_exit_retries(limit: int = 20) -> dict:
+    readiness = _p390_exit_submit_retry_readiness(limit=limit)
+    rows = [
+        dict(row or {})
+        for row in list(readiness.get("rows") or [])
+        if isinstance(row, dict) and bool(row.get("ready"))
+    ]
+    results = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        plan = TRADE_PLAN.get(symbol)
+        if not isinstance(plan, dict) or not bool(plan.get("active")):
+            results.append({
+                "symbol": symbol,
+                "action": "ready_exit_retry_skipped",
+                "reason": "active_plan_missing",
+                "p634_retry_row": row,
+            })
+            continue
+        reason = str(row.get("exit_reason") or row.get("current_exit_reason") or "exit").strip() or "exit"
+        try:
+            plan["last_exit_attempt_ts"] = utc_ts()
+            out = close_position(symbol, reason=reason, source="worker_exit")
+            if out.get("closed"):
+                plan["active"] = False
+                try:
+                    px = get_latest_price(symbol)
+                except Exception:
+                    px = 0.0
+                _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+            results.append({
+                "symbol": symbol,
+                "action": "ready_exit_retry_consumed" if out.get("closed") else _p613_worker_exit_action(out, "ready_exit_retry_not_closed"),
+                "reason": reason,
+                "p634_retry_row": row,
+                **dict(out or {}),
+            })
+        except Exception as exc:
+            results.append({
+                "symbol": symbol,
+                "action": "ready_exit_retry_error",
+                "reason": reason,
+                "error": str(exc),
+                "p634_retry_row": row,
+            })
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "ready_exit_retry_consumption",
+        "readiness": readiness,
+        "ready_count": len(rows),
+        "ready_symbols": [row.get("symbol") for row in rows],
+        "results": results,
+        "terminal": True,
+        "recommended_action": "continue_exit_cycle" if rows else "no_ready_exit_retries",
+    }
+
+
 def _p612_same_day_exit_fast_forward_result(symbol: str, plan: dict, reason: str, **extra) -> dict:
     sym = str(symbol or "").strip().upper()
     meta = {
@@ -51965,6 +52032,9 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         }
 
     p612_exit_trigger_queue = _p612_exit_trigger_priority_queue()
+    p634_ready_exit_retry_consumption = _p634_worker_consume_ready_exit_retries()
+    if p634_ready_exit_retry_consumption.get("results"):
+        results.extend(list(p634_ready_exit_retry_consumption.get("results") or []))
     daily_goal_preservation = _p342_daily_goal_preservation_exit_plan()
     if bool(daily_goal_preservation.get("enabled")) and bool(daily_goal_preservation.get("should_act")):
         for row in list(daily_goal_preservation.get("rows") or []):
@@ -52057,6 +52127,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 reconcile=len(reconcile_actions),
                 p607_worker_budget_truth=p607_budget_truth,
                 p612_exit_trigger_queue=p612_exit_trigger_queue,
+                p634_ready_exit_retry_consumption=p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             )
             return {
                 "ok": True,
@@ -52067,6 +52138,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "results": results,
                 "p607_worker_budget_truth": p607_budget_truth,
                 "p612_exit_trigger_queue": p612_exit_trigger_queue,
+                "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             }
 
         if not plan.get("active") and not _plan_is_pending_entry(plan):
@@ -52519,6 +52591,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "daily_goal_preservation": daily_goal_preservation if "daily_goal_preservation" in locals() else {},
                 "p607_worker_budget_truth": p607_final_budget_truth,
                 "p612_exit_trigger_queue": p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
+                "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             },
         )
     update_exit_heartbeat(
@@ -52531,6 +52604,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         trades_today_worker_exit_forcing_isolated=bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
         p607_worker_budget_truth=p607_final_budget_truth,
         p612_exit_trigger_queue=p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
+        p634_ready_exit_retry_consumption=p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
         snapshot_deferred_for_budget=bool(p607_final_budget_truth.get("budget_exceeded")),
     )
     return {
@@ -52541,6 +52615,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         "results": results,
         "p607_worker_budget_truth": p607_final_budget_truth,
         "p612_exit_trigger_queue": p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
+        "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
         "snapshot_deferred_for_budget": bool(p607_final_budget_truth.get("budget_exceeded")),
     }
 
@@ -67463,6 +67538,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             "heavy_only_due_symbols": [sym for sym in heavy_watch_symbols if sym not in set(p612_exit_worker_gap_truth.get("due_exit_symbols") or [])],
             "recommended_action": "use_canonical_due_truth_for_worker_health",
         },
+        "p634_ready_exit_retry_consumption": hb.get("p634_ready_exit_retry_consumption") or {},
         "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
