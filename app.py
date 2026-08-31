@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-641-selected-not-would-trade-suppression-symbol-lock-submit-gap-sync"
+PATCH_VERSION = "patch-642-queued-timeout-retry-submit-gap-row-normalization"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17689,13 +17689,14 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for sym in list(p540_selected_consumer_truth.get("selected_symbols") or [])
         if str(sym or "").strip()
     ])
+    p641_consumer_non_actionable_source_symbols = _dedupe_keep_order(
+        list((p540_selected_consumer_truth.get("p641_selected_submit_gap_actionability_sync") or {}).get("non_actionable_symbols") or [])
+        + list((p540_selected_consumer_truth.get("p642_queued_timeout_retry_gap_normalization") or {}).get("non_actionable_symbols") or [])
+        + list(p540_selected_consumer_truth.get("non_actionable_submit_gap_symbols") or [])
+    )
     p641_consumer_non_actionable_symbols = set(_dedupe_keep_order([
         str(sym or "").strip().upper()
-        for sym in list(
-            (p540_selected_consumer_truth.get("p641_selected_submit_gap_actionability_sync") or {}).get("non_actionable_symbols")
-            or p540_selected_consumer_truth.get("non_actionable_submit_gap_symbols")
-            or []
-        )
+        for sym in p641_consumer_non_actionable_source_symbols
         if str(sym or "").strip()
     ]))
     if requested_symbols:
@@ -18342,6 +18343,13 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
                 "enabled": True,
                 "consumer_non_actionable_symbols": sorted(p641_consumer_non_actionable_symbols),
                 "submit_gap_symbols_are_actionable_only": True,
+                "read_only": True,
+                "does_not_submit_orders": True,
+            },
+            "p642_queued_timeout_retry_gap_normalization": {
+                "enabled": True,
+                "consumer_non_actionable_symbols": sorted(p641_consumer_non_actionable_symbols),
+                "queued_timeout_retry_rows_are_not_submit_gaps": True,
                 "read_only": True,
                 "does_not_submit_orders": True,
             },
@@ -31597,6 +31605,7 @@ def _p550_selected_submission_truth_snapshot_light(
             and not execution_quality_blocked
             and not selected_not_submit_capable
             and not symbol_lock_cooldown
+            and not selected_timeout_retry_consumable
             and not effective_selected_submit_timeout
             and not stale_selected_submit_timeout
             and not bool(retryable_spread_block.get("retryable"))
@@ -31685,6 +31694,7 @@ def _p550_selected_submission_truth_snapshot_light(
             ),
             "raw_selected_submit_timeout": bool(selected_submit_timeout),
             "selected_timeout_retry_consumable": bool(selected_timeout_retry_consumable),
+            "queued_timeout_retry_owned": bool(selected_timeout_retry_consumable),
             "p596_retry_queue_consumption_truth": dict(p596_retry_consumption_truth),
             "p598_submit_timeout_trace": dict(p598_submit_timeout_trace) if selected_submit_timeout or selected_timeout_retry_consumable else {},
             "stale_selected_submit_timeout_suppressed": bool(stale_selected_submit_timeout),
@@ -31699,12 +31709,15 @@ def _p550_selected_submission_truth_snapshot_light(
                 "submit_gap_is_actionable": bool(submit_gap and p578_market_submit_truth.get("market_hours_submit_possible")),
                 "selected_not_submit_capable": bool(selected_not_submit_capable),
                 "symbol_lock_cooldown": bool(symbol_lock_cooldown),
+                "queued_timeout_retry_owned": bool(selected_timeout_retry_consumable),
                 "candidate_would_trade": candidate_would_trade,
                 "reason": (
                     "selected_candidate_would_trade_false"
                     if selected_not_submit_capable
                     else "symbol_lock_cooldown_not_submit_gap"
                     if symbol_lock_cooldown
+                    else "queued_timeout_retry_waiting_not_submit_gap"
+                    if selected_timeout_retry_consumable
                     else "submit_gap_actionable"
                     if submit_gap and p578_market_submit_truth.get("market_hours_submit_possible")
                     else "not_actionable"
@@ -31801,11 +31814,23 @@ def _p550_selected_submission_truth_snapshot_light(
         list(p641_selected_not_submit_capable_symbols)
         + list(p641_symbol_lock_cooldown_symbols)
     )
+    p642_queued_timeout_retry_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict)
+        and bool((row or {}).get("queued_timeout_retry_owned"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    p642_non_actionable_selected_symbols = _dedupe_keep_order(
+        list(p641_non_actionable_selected_symbols)
+        + list(p642_queued_timeout_retry_symbols)
+    )
     if (
         p641_non_actionable_selected_symbols
         and not out.get("submit_gap_symbols")
         and not out.get("submit_pending_symbols")
         and not out.get("selected_submit_timeout_symbols")
+        and not out.get("selected_timeout_clean_retry_symbols")
         and not out.get("rate_limited_retry_symbols")
         and not out.get("retryable_spread_block_symbols")
         and not out.get("execution_quality_block_symbols")
@@ -31843,10 +31868,19 @@ def _p550_selected_submission_truth_snapshot_light(
             "enabled": True,
             "selected_not_submit_capable_symbols": p641_selected_not_submit_capable_symbols,
             "symbol_lock_cooldown_symbols": p641_symbol_lock_cooldown_symbols,
-            "non_actionable_symbols": p641_non_actionable_selected_symbols,
+            "non_actionable_symbols": p642_non_actionable_selected_symbols,
             "submit_gap_symbols_are_actionable_only": True,
             "symbol_locked_is_cooldown_not_terminal_failure": True,
             "would_trade_false_is_evidence_not_submit_gap": True,
+            "read_only": True,
+            "does_not_submit_orders": True,
+        },
+        "p642_queued_timeout_retry_gap_normalization": {
+            "enabled": True,
+            "queued_timeout_retry_symbols": p642_queued_timeout_retry_symbols,
+            "non_actionable_symbols": p642_non_actionable_selected_symbols,
+            "queued_timeout_retry_rows_are_not_submit_gaps": True,
+            "submit_gap_symbols_are_actionable_only": True,
             "read_only": True,
             "does_not_submit_orders": True,
         },
