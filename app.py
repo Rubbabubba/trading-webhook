@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-640-terminal-exit-block-visibility-sync-profit-capture-actionability-cleanup"
+PATCH_VERSION = "patch-641-selected-not-would-trade-suppression-symbol-lock-submit-gap-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17689,6 +17689,15 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for sym in list(p540_selected_consumer_truth.get("selected_symbols") or [])
         if str(sym or "").strip()
     ])
+    p641_consumer_non_actionable_symbols = set(_dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(
+            (p540_selected_consumer_truth.get("p641_selected_submit_gap_actionability_sync") or {}).get("non_actionable_symbols")
+            or p540_selected_consumer_truth.get("non_actionable_submit_gap_symbols")
+            or []
+        )
+        if str(sym or "").strip()
+    ]))
     if requested_symbols:
         p540_consumer_selected_symbols = [
             sym for sym in p540_consumer_selected_symbols
@@ -18029,6 +18038,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         str(sym or "").strip().upper()
         for sym in list(p540_selected_consumer_truth.get("submit_gap_symbols") or summary.get("selected_submit_gap_symbols") or [])
         if str(sym or "").strip()
+        and str(sym or "").strip().upper() not in p641_consumer_non_actionable_symbols
         and str(sym or "").strip().upper() not in p524_stale_selected_symbols
         and str(sym or "").strip().upper() not in set(after_hours_selected_symbols)
         and str(sym or "").strip().upper() not in set(selected_submit_timeout_symbols)
@@ -18039,6 +18049,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         if sym not in set(submit_row_symbols)
         and sym not in set(active_symbols)
         and sym not in set(pending_symbols)
+        and sym not in p641_consumer_non_actionable_symbols
         and sym not in set(rate_limited_symbols)
         and sym not in set(queued_rate_limit_symbols)
         and sym not in set(after_hours_selected_symbols)
@@ -18074,6 +18085,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif missing_submit_symbols or submit_gap_symbols:
         path_status = "selected_submit_gap_detected"
         recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
+    elif p641_consumer_non_actionable_symbols:
+        path_status = "selected_candidate_non_actionable"
+        recommended_action = "monitor_next_scan_or_wait_for_symbol_lock_cooldown"
     elif after_hours_selected_symbols:
         path_status = "after_hours_selected_not_submitted"
         recommended_action = "monitor_next_open_fresh_scan"
@@ -18276,6 +18290,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
                 "consumer_ok": bool(p540_selected_consumer_truth.get("ok")),
                 "consumer_selected_symbols": p540_consumer_selected_symbols,
                 "trace_selected_symbols": production_selected_symbols,
+                "consumer_non_actionable_symbols": sorted(p641_consumer_non_actionable_symbols),
                 "adopted_consumer_symbols": bool(
                     p540_consumer_selected_symbols
                     and p540_consumer_selected_symbols == production_selected_symbols
@@ -18323,6 +18338,13 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "submit_phase_pending": bool(p554_submit_pending),
             "submit_gap_symbols": submit_gap_symbols,
             "missing_submit_symbols": missing_submit_symbols,
+            "p641_selected_submit_gap_actionability_sync": {
+                "enabled": True,
+                "consumer_non_actionable_symbols": sorted(p641_consumer_non_actionable_symbols),
+                "submit_gap_symbols_are_actionable_only": True,
+                "read_only": True,
+                "does_not_submit_orders": True,
+            },
             "p524_selection_revalidation": p524_selection_revalidation,
             "stale_revalidated_blocked_symbols": list(p524_stale_selected_symbols),
             "p536_fallback_selection": dict(p536_fallback_selection),
@@ -31332,10 +31354,20 @@ def _p550_selected_submission_truth_snapshot_light(
     p578_market_submit_truth = _p578_market_hours_submit_truth(latest_scan, summary)
     p578_post_deploy_submit_proof = _p578_post_deploy_submit_proof_truth(latest_scan, summary)
     candidate_truth = _p576_canonical_eligible_selection_handoff_for_light(limit=max(lim, 100))
+    candidate_rows_for_selected_truth = [
+        dict(row or {})
+        for row in list(candidate_truth.get("candidate_rows") or [])
+        if isinstance(row, dict)
+    ]
+    candidate_by_symbol_for_selected_truth = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in candidate_rows_for_selected_truth
+        if str((row or {}).get("symbol") or "").strip()
+    }
     eligible_symbols = list(candidate_truth.get("eligible_symbols") or _p413_eligible_new_entry_symbols_from_fast_payload(candidate_truth))
     row_selected_symbols = _dedupe_keep_order([
         str((row or {}).get("symbol") or "").strip().upper()
-        for row in list(candidate_truth.get("candidate_rows") or [])
+        for row in candidate_rows_for_selected_truth
         if isinstance(row, dict)
         and bool((row or {}).get("selected"))
         and not bool((row or {}).get("open_position"))
@@ -31491,6 +31523,19 @@ def _p550_selected_submission_truth_snapshot_light(
             submit_state,
             submit_reason,
         )
+        candidate_row = dict(candidate_by_symbol_for_selected_truth.get(sym) or {})
+        candidate_would_trade = candidate_row.get("would_trade")
+        selected_not_submit_capable = bool(
+            candidate_row
+            and candidate_would_trade is False
+            and not actual_submit_side_effect
+            and not pending_order_only_plan
+        )
+        symbol_lock_cooldown = bool(
+            reason_norm == "symbol_locked"
+            and not actual_submit_side_effect
+            and not pending_order_only_plan
+        )
         selected_submit_timeout = bool(
             submit_row.get("p559_selected_submit_timeout")
             or reason_norm == "selected_submit_timeout"
@@ -31550,6 +31595,8 @@ def _p550_selected_submission_truth_snapshot_light(
             and not after_hours_selected_not_submitted
             and not rate_limited_retryable
             and not execution_quality_blocked
+            and not selected_not_submit_capable
+            and not symbol_lock_cooldown
             and not effective_selected_submit_timeout
             and not stale_selected_submit_timeout
             and not bool(retryable_spread_block.get("retryable"))
@@ -31581,6 +31628,10 @@ def _p550_selected_submission_truth_snapshot_light(
                 if bool(retryable_spread_block.get("retryable"))
                 else "execution_quality_blocked"
                 if execution_quality_blocked
+                else "selected_not_submit_capable"
+                if selected_not_submit_capable
+                else "non_actionable_symbol_lock_cooldown"
+                if symbol_lock_cooldown
                 else "selected_submit_timeout"
                 if effective_selected_submit_timeout
                 else "selected_submit_timeout_clean_retry_waiting"
@@ -31606,6 +31657,10 @@ def _p550_selected_submission_truth_snapshot_light(
                 if bool(retryable_spread_block.get("retryable"))
                 else "blocked_by_execution_quality"
                 if execution_quality_blocked
+                else "selected_not_submit_capable"
+                if selected_not_submit_capable
+                else "non_actionable_symbol_lock_cooldown"
+                if symbol_lock_cooldown
                 else "selected_submit_timeout_requires_reconcile"
                 if effective_selected_submit_timeout
                 else "selected_submit_timeout_clean_retry_waiting"
@@ -31618,6 +31673,10 @@ def _p550_selected_submission_truth_snapshot_light(
             ),
             "rate_limited_retryable": bool(rate_limited_retryable),
             "execution_quality_blocked": bool(execution_quality_blocked),
+            "selected_not_submit_capable": bool(selected_not_submit_capable),
+            "candidate_would_trade": candidate_would_trade,
+            "candidate_rejection_reasons": list(candidate_row.get("rejection_reasons") or []),
+            "symbol_lock_cooldown": bool(symbol_lock_cooldown),
             "retryable_spread_block": dict(retryable_spread_block),
             "selected_submit_timeout": bool(
                 selected_submit_timeout
@@ -31635,6 +31694,22 @@ def _p550_selected_submission_truth_snapshot_light(
             "p554_submit_phase_truth": dict(p554_submit_phase_truth) if submit_pending else {},
             "after_hours_selected_not_submitted": bool(after_hours_selected_not_submitted),
             "submit_gap_is_actionable": bool(submit_gap and p578_market_submit_truth.get("market_hours_submit_possible")),
+            "p641_selected_submit_gap_actionability": {
+                "enabled": True,
+                "submit_gap_is_actionable": bool(submit_gap and p578_market_submit_truth.get("market_hours_submit_possible")),
+                "selected_not_submit_capable": bool(selected_not_submit_capable),
+                "symbol_lock_cooldown": bool(symbol_lock_cooldown),
+                "candidate_would_trade": candidate_would_trade,
+                "reason": (
+                    "selected_candidate_would_trade_false"
+                    if selected_not_submit_capable
+                    else "symbol_lock_cooldown_not_submit_gap"
+                    if symbol_lock_cooldown
+                    else "submit_gap_actionable"
+                    if submit_gap and p578_market_submit_truth.get("market_hours_submit_possible")
+                    else "not_actionable"
+                ),
+            },
             "market_hours_submit_possible": bool(p578_market_submit_truth.get("market_hours_submit_possible")),
             "latest_post_deploy_submit_cycle_seen": bool(p578_post_deploy_submit_proof.get("latest_post_deploy_submit_cycle_seen")),
             "p577_submit_consumption_seen": bool(p578_post_deploy_submit_proof.get("p577_submit_consumption_seen")),
@@ -31708,6 +31783,35 @@ def _p550_selected_submission_truth_snapshot_light(
         selected_symbols=selected_symbols,
         rows=rows,
     )
+    p641_selected_not_submit_capable_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict)
+        and bool((row or {}).get("selected_not_submit_capable"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    p641_symbol_lock_cooldown_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict)
+        and bool((row or {}).get("symbol_lock_cooldown"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    p641_non_actionable_selected_symbols = _dedupe_keep_order(
+        list(p641_selected_not_submit_capable_symbols)
+        + list(p641_symbol_lock_cooldown_symbols)
+    )
+    if (
+        p641_non_actionable_selected_symbols
+        and not out.get("submit_gap_symbols")
+        and not out.get("submit_pending_symbols")
+        and not out.get("selected_submit_timeout_symbols")
+        and not out.get("rate_limited_retry_symbols")
+        and not out.get("retryable_spread_block_symbols")
+        and not out.get("execution_quality_block_symbols")
+    ):
+        out["recommended_action"] = "selected_candidate_non_actionable_monitor_next_scan"
+        out["selected_without_side_effect"] = False
     p564_unresolved_timeout_symbols = [
         row.get("symbol") for row in rows
         if bool(row.get("selected_submit_timeout"))
@@ -31735,6 +31839,17 @@ def _p550_selected_submission_truth_snapshot_light(
     out.update({
         "patch_version": PATCH_VERSION,
         "p550_snapshot_only_light_endpoint": True,
+        "p641_selected_submit_gap_actionability_sync": {
+            "enabled": True,
+            "selected_not_submit_capable_symbols": p641_selected_not_submit_capable_symbols,
+            "symbol_lock_cooldown_symbols": p641_symbol_lock_cooldown_symbols,
+            "non_actionable_symbols": p641_non_actionable_selected_symbols,
+            "submit_gap_symbols_are_actionable_only": True,
+            "symbol_locked_is_cooldown_not_terminal_failure": True,
+            "would_trade_false_is_evidence_not_submit_gap": True,
+            "read_only": True,
+            "does_not_submit_orders": True,
+        },
         "p590_effective_scan_source_unification": dict(p590_context.get("truth") or {}),
         "p591_effective_selected_symbol_authority": {
             "enabled": True,
@@ -31831,7 +31946,7 @@ def _p550_selected_submission_truth_snapshot_light(
         "p577_submit_consumption_seen": bool(p578_post_deploy_submit_proof.get("p577_submit_consumption_seen")),
         "submit_gap_is_actionable": bool(
             p578_market_submit_truth.get("market_hours_submit_possible")
-            and any(bool(row.get("submit_gap")) for row in rows)
+            and any(bool(row.get("submit_gap_is_actionable")) for row in rows)
         ),
         "p575_snapshot_position_symbols": sorted(snapshot_position_symbols),
         "does_not_read_lifecycle": True,
