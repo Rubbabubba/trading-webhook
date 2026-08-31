@@ -3092,7 +3092,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-636-profit-capture-readiness-truth-weak-position-capital-drag-audit"
+PATCH_VERSION = "patch-637-daily-goal-path-truth-capital-rotation-readiness-audit"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -50591,6 +50591,177 @@ def _p636_weak_position_capital_drag_audit(limit: int = 25) -> dict:
     }
 
 
+def _p637_daily_goal_path_truth(limit: int = 25) -> dict:
+    profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)))
+    drag = _p636_weak_position_capital_drag_audit(limit=max(25, int(limit or 25)))
+    goal = dict(profit.get("daily_goal_progress") or {})
+    rows = list(profit.get("rows") or [])
+    primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
+    target_low = max(0.01, _safe_float(goal.get("target_low"), 100.0))
+    target_high = max(target_low, _safe_float(goal.get("target_high"), 200.0))
+    remaining_low = max(0.0, _safe_float(goal.get("remaining_to_low"), target_low - primary))
+    remaining_high = max(0.0, _safe_float(goal.get("remaining_to_high"), target_high - primary))
+    path_rows = []
+    for row in rows:
+        upside = max(0.0, _safe_float(row.get("target_upside_dollars"), 0.0))
+        unreal = _safe_float(row.get("unrealized_pl"), 0.0)
+        risk_to_stop = _safe_float(row.get("risk_to_stop_dollars"), 0.0)
+        distance_to_stop = _safe_float(row.get("distance_to_stop_dollars"), 0.0)
+        contribution_to_low = min(upside, remaining_low) if remaining_low > 0 else 0.0
+        contribution_pct = (contribution_to_low / remaining_low * 100.0) if remaining_low > 0 else 100.0
+        downside_pressure = abs(min(0.0, unreal)) + max(0.0, risk_to_stop - max(0.0, distance_to_stop))
+        path_quality_score = contribution_to_low + max(0.0, unreal) - (downside_pressure * 0.5)
+        role = (
+            "goal_gap_closer"
+            if contribution_to_low >= max(10.0, remaining_low * 0.25)
+            else "supporting_winner"
+            if unreal > 0
+            else "capital_drag"
+            if unreal < 0
+            else "neutral"
+        )
+        path_rows.append({
+            "symbol": row.get("symbol"),
+            "role": role,
+            "unrealized_pl": round(unreal, 4),
+            "target_upside_dollars": round(upside, 4),
+            "contribution_to_low_target_dollars": round(contribution_to_low, 4),
+            "contribution_to_low_target_pct": round(contribution_pct, 2),
+            "risk_to_stop_dollars": round(risk_to_stop, 4),
+            "distance_to_stop_dollars": row.get("distance_to_stop_dollars"),
+            "partial_profit_status": row.get("partial_profit_status"),
+            "profit_capture_status": row.get("profit_capture_status"),
+            "exit_trigger_now": bool(row.get("exit_trigger_now")),
+            "path_quality_score": round(path_quality_score, 4),
+            "recommended_read": (
+                "primary_goal_path_symbol"
+                if role == "goal_gap_closer"
+                else "let_winner_work"
+                if role == "supporting_winner"
+                else "review_capital_drag"
+                if role == "capital_drag"
+                else "monitor"
+            ),
+        })
+    path_rows.sort(key=lambda r: _safe_float(r.get("path_quality_score"), 0.0), reverse=True)
+    positive_upside = sum(max(0.0, _safe_float(r.get("target_upside_dollars"), 0.0)) for r in rows)
+    goal_low_reachable_from_targets = bool(primary + positive_upside >= target_low)
+    goal_high_reachable_from_targets = bool(primary + positive_upside >= target_high)
+    drag_symbols = list(drag.get("capital_drag_symbols") or [])
+    near_stop_symbols = list(drag.get("near_stop_symbols") or [])
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "daily_goal_path_truth",
+        "source": "profit_capture_readiness_truth_and_capital_drag_audit",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "daily_goal_progress": goal,
+        "summary": {
+            "broker_daily_pnl": round(primary, 4),
+            "target_low": round(target_low, 4),
+            "target_high": round(target_high, 4),
+            "remaining_to_low": round(remaining_low, 4),
+            "remaining_to_high": round(remaining_high, 4),
+            "open_unrealized_pl": _safe_float((profit.get("summary") or {}).get("open_unrealized_pl"), 0.0),
+            "positive_target_upside_dollars": round(positive_upside, 4),
+            "goal_low_reachable_from_open_targets": goal_low_reachable_from_targets,
+            "goal_high_reachable_from_open_targets": goal_high_reachable_from_targets,
+            "goal_gap_closer_count": len([r for r in path_rows if r.get("role") == "goal_gap_closer"]),
+            "capital_drag_count": int((drag.get("summary") or {}).get("capital_drag_count") or 0),
+            "near_stop_drag_count": int((drag.get("summary") or {}).get("near_stop_drag_count") or 0),
+        },
+        "goal_gap_closer_symbols": [r.get("symbol") for r in path_rows if r.get("role") == "goal_gap_closer"],
+        "capital_drag_symbols": drag_symbols,
+        "near_stop_symbols": near_stop_symbols,
+        "rows": path_rows[:max(1, min(int(limit or 25), 100))],
+        "recommended_action": (
+            "goal_low_hit_preserve_profit"
+            if primary >= target_low
+            else "let_goal_gap_closers_work_watch_drag"
+            if goal_low_reachable_from_targets and path_rows
+            else "review_candidate_quality_and_capital_rotation"
+            if drag_symbols
+            else "wait_for_next_scan_or_winner_expansion"
+        ),
+    }
+
+
+def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
+    path = _p637_daily_goal_path_truth(limit=max(25, int(limit or 25)))
+    drag = _p636_weak_position_capital_drag_audit(limit=max(25, int(limit or 25)))
+    profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)))
+    goal = dict(path.get("daily_goal_progress") or {})
+    primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
+    target_low = max(0.01, _safe_float(goal.get("target_low"), 100.0))
+    below_goal = primary < target_low
+    goal_rows = list(path.get("rows") or [])
+    drag_rows = list(drag.get("rows") or [])
+    best_goal_symbols = [
+        r.get("symbol")
+        for r in goal_rows
+        if str(r.get("role") or "") == "goal_gap_closer"
+    ]
+    rotation_rows = []
+    for row in drag_rows:
+        unreal = _safe_float(row.get("unrealized_pl"), 0.0)
+        risk = _safe_float(row.get("risk_to_stop_dollars"), 0.0)
+        market_value = _safe_float(row.get("market_value"), 0.0)
+        near_stop = bool(row.get("near_stop"))
+        capital_drag = bool(row.get("capital_drag"))
+        readiness_score = abs(unreal) + (20.0 if near_stop else 0.0) + (risk * 0.25)
+        rotation_rows.append({
+            "symbol": row.get("symbol"),
+            "rotation_candidate": bool(below_goal and (capital_drag or near_stop)),
+            "rotation_reason": (
+                "near_stop_capital_drag_below_daily_goal"
+                if below_goal and near_stop
+                else "capital_drag_below_daily_goal"
+                if below_goal and capital_drag
+                else "monitor"
+            ),
+            "unrealized_pl": round(unreal, 4),
+            "market_value": round(market_value, 4),
+            "risk_to_stop_dollars": round(risk, 4),
+            "distance_to_stop_dollars": row.get("distance_to_stop_dollars"),
+            "near_stop": near_stop,
+            "capital_drag": capital_drag,
+            "exit_trigger_now": bool(row.get("exit_trigger_now")),
+            "readiness_score": round(readiness_score, 4),
+            "replacement_focus": best_goal_symbols[:5],
+            "operator_note": "diagnostic_only_no_rotation_order_submitted",
+        })
+    rotation_rows.sort(key=lambda r: _safe_float(r.get("readiness_score"), 0.0), reverse=True)
+    rotation_candidates = [r for r in rotation_rows if bool(r.get("rotation_candidate"))]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "capital_rotation_readiness_audit",
+        "source": "daily_goal_path_truth_and_weak_position_capital_drag_audit",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "daily_goal_progress": goal,
+        "summary": {
+            "below_daily_low_goal": below_goal,
+            "broker_daily_pnl": round(primary, 4),
+            "target_low": round(target_low, 4),
+            "rotation_candidate_count": len(rotation_candidates),
+            "capital_drag_count": int((drag.get("summary") or {}).get("capital_drag_count") or 0),
+            "near_stop_drag_count": int((drag.get("summary") or {}).get("near_stop_drag_count") or 0),
+            "goal_gap_closer_count": len(best_goal_symbols),
+            "ready_partial_profit_count": int((profit.get("summary") or {}).get("ready_partial_profit_count") or 0),
+        },
+        "rotation_candidate_symbols": [r.get("symbol") for r in rotation_candidates],
+        "replacement_focus_symbols": best_goal_symbols[:5],
+        "rows": rotation_rows[:max(1, min(int(limit or 25), 100))],
+        "recommended_action": (
+            "review_rotation_candidates_before_behavior_change"
+            if rotation_candidates
+            else "no_capital_rotation_candidate_detected"
+        ),
+    }
+
+
 P607_WORKER_EXIT_FAST_CLOSE_BUDGET_SEC = max(
     20.0,
     min(90.0, float(getenv_any("WORKER_EXIT_FAST_CLOSE_BUDGET_SEC", default="70") or 70)),
@@ -67892,6 +68063,16 @@ def diagnostics_profit_capture_readiness_truth(request: Request, limit: int = 25
 def diagnostics_weak_position_capital_drag_audit(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p636_weak_position_capital_drag_audit(limit=limit))
+
+@app.get("/diagnostics/daily_goal_path_truth")
+def diagnostics_daily_goal_path_truth(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p637_daily_goal_path_truth(limit=limit))
+
+@app.get("/diagnostics/capital_rotation_readiness_audit")
+def diagnostics_capital_rotation_readiness_audit(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p637_capital_rotation_readiness_audit(limit=limit))
 
 @app.get("/diagnostics/breakout_stall_loss_containment")
 def diagnostics_breakout_stall_loss_containment(limit: int = 20, detail: str = "light", heavy: bool = False):
