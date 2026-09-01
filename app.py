@@ -216,6 +216,7 @@ from swing_performance_reports import (
     build_daily_goal_path_truth as swing_perf_build_daily_goal_path_truth,
     build_fast_performance_alignment_brief as swing_perf_build_fast_performance_alignment_brief,
     build_goal_gap_rotation_operator_plan as swing_perf_build_goal_gap_rotation_operator_plan,
+    build_heavy_performance_alignment_deferral as swing_perf_build_heavy_performance_alignment_deferral,
     performance_reports_module_status as swing_perf_module_status,
 )
 
@@ -3101,7 +3102,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-652-fast-performance-alignment-brief-extraction"
+PATCH_VERSION = "patch-653-heavy-alignment-brief-safe-deferral"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -61530,9 +61531,25 @@ def diagnostics_swing_performance_alignment_brief(request: Request, limit: int =
         "attribution",
     }
     if heavy_requested:
+        force_heavy = str(request.query_params.get("force_heavy") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+        }
+        if not force_heavy:
+            fast_payload = _p652_fast_swing_performance_alignment_brief(limit=limit)
+            payload = swing_perf_build_heavy_performance_alignment_deferral(
+                patch_version=PATCH_VERSION,
+                fast_payload=fast_payload,
+                requested_detail="heavy",
+            )
+            payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+            return payload
         payload = _p418_swing_performance_alignment_brief_heavy(limit=limit)
         payload["requested_detail"] = "heavy"
         payload["heavy_uses_legacy_attribution_path"] = True
+        payload["force_heavy"] = True
         payload["fast_default_endpoint"] = "/diagnostics/swing_performance_alignment_brief?limit=10"
         return payload
     return _p652_fast_swing_performance_alignment_brief(limit=limit)

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-652-fast-performance-alignment-brief-extraction"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-653-heavy-alignment-brief-safe-deferral"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -776,6 +776,40 @@ def build_fast_performance_alignment_brief(
     }
 
 
+def build_heavy_performance_alignment_deferral(
+    *,
+    patch_version: str,
+    fast_payload: dict | None,
+    requested_detail: str = "heavy",
+) -> dict:
+    fast_payload = dict(fast_payload or {})
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "swing_performance_alignment_brief",
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "source": "heavy_alignment_brief_deferred_to_protect_operator_path",
+        "requested_detail": requested_detail or "heavy",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "status": fast_payload.get("status") or "heavy_deferred",
+        "recommended_action": fast_payload.get("recommended_action") or "use_fast_alignment_brief_for_operator_status",
+        "fast_payload": fast_payload,
+        "heavy_alignment_deferral_contract": {
+            "enabled": True,
+            "reason": "legacy_heavy_attribution_can_exceed_render_request_budget",
+            "default_heavy_request_is_safe": True,
+            "force_heavy_endpoint": "/diagnostics/swing_performance_alignment_brief?heavy=true&force_heavy=true&limit=10",
+            "fast_default_endpoint": "/diagnostics/swing_performance_alignment_brief?limit=10",
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "does_not_submit_orders": True,
+        },
+    }
+
+
 def performance_reports_module_status(*, patch_version: str) -> dict:
     return {
         "ok": True,
@@ -793,7 +827,8 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "capital_rotation_readiness_report_shape",
             "capital_rotation_action_contract_shape",
             "fast_performance_alignment_brief_shape",
+            "heavy_performance_alignment_deferral_shape",
             "profit_path_truth_contract_shape",
         ],
-        "next_extraction_target": "move_broker_reconciled_attribution_report_shapes_heavy_only",
+        "next_extraction_target": "move_broker_reconciled_attribution_report_shapes_to_offline_or_cached_report",
     }
