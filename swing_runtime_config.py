@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_RUNTIME_CONFIG_MODULE_VERSION = "patch-460-effective-profile-runtime-truth-restart-lost-scanner-failure-aging"
+SWING_RUNTIME_CONFIG_MODULE_VERSION = "patch-700-live-risk-hard-stop-validation-mode-contract"
 
 
 def build_swing_runtime_config_snapshot(

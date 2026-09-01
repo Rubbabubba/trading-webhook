@@ -37,6 +37,8 @@ Each roadmap patch should include:
 
 ### Patch 700: Live Risk Hard Stop + Validation Mode Contract
 
+Status: in local implementation
+
 Goal: prevent the bot from manufacturing trades while the edge is under review.
 
 Scope:
@@ -45,6 +47,7 @@ Scope:
 - Keep exit protection active in all modes.
 - Make entry submit paths check one shared mode helper instead of scattered env/gate checks.
 - Add operator-facing truth explaining whether new entries are paused, reduced, or normal.
+- Default unset deployments to `validation_pause_entries` so the hard stop is explicit until validation is complete.
 
 Expected outcome:
 

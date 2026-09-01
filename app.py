@@ -1885,6 +1885,9 @@ SCANNER_DRY_RUN = env_bool_any("SCANNER_DRY_RUN", default="true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
 NEW_ENTRIES_ENABLED = env_bool_any("NEW_ENTRIES_ENABLED", "ENTRIES_ENABLED", default="true")
 PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
+SWING_LIVE_RISK_MODE = getenv_any("SWING_LIVE_RISK_MODE", "LIVE_RISK_MODE", default="validation_pause_entries")
+SWING_VALIDATION_RISK_MULTIPLIER = getenv_float_any("SWING_VALIDATION_RISK_MULTIPLIER", default=0.25)
+SWING_VALIDATION_ALLOW_PAPER_ENTRIES = env_bool_any("SWING_VALIDATION_ALLOW_PAPER_ENTRIES", default=False)
 
 SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED = env_bool_any(
     "SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED",
@@ -3112,7 +3115,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-659-worker-exit-fast-noop-scan-manual-fast-handoff"
+PATCH_VERSION = "patch-700-live-risk-hard-stop-validation-mode-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -8017,6 +8020,7 @@ def compute_qty(price: float, side: str = "buy", meta: dict | None = None) -> fl
     if bool(downshift.get("applies")):
         multiplier = max(0.05, min(1.0, float(_safe_float(downshift.get("risk_multiplier"), 1.0))))
         effective_risk_dollars = float(effective_risk_dollars or 0.0) * multiplier
+    effective_risk_dollars = _p700_apply_validation_risk_dollars(effective_risk_dollars, source=str(meta.get("source") or "worker_scan"))
     qty = float(effective_risk_dollars or 0.0) / risk_per_share
 
     if bool(SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED):
@@ -22108,9 +22112,107 @@ def release_gate_status() -> dict:
         status["live_orders_permitted"] = False
     return status
 
+def _p700_normalize_live_risk_mode(value: str | None = None) -> str:
+    raw = str(SWING_LIVE_RISK_MODE if value is None else value or "").strip().lower()
+    raw = raw.replace("-", "_").replace(" ", "_")
+    aliases = {
+        "": "validation_pause_entries",
+        "pause": "validation_pause_entries",
+        "paused": "validation_pause_entries",
+        "validation": "validation_pause_entries",
+        "validation_pause": "validation_pause_entries",
+        "validation_paused": "validation_pause_entries",
+        "pause_entries": "validation_pause_entries",
+        "paused_entries": "validation_pause_entries",
+        "entries_paused": "validation_pause_entries",
+        "exits_only": "validation_pause_entries",
+        "hard_stop": "validation_pause_entries",
+        "safe": "reduced_risk",
+        "reduced": "reduced_risk",
+        "reducedrisk": "reduced_risk",
+        "reduced_risk": "reduced_risk",
+        "normal": "normal",
+        "live": "normal",
+    }
+    return aliases.get(raw, "validation_pause_entries")
+
+
+def _p700_validation_risk_multiplier() -> float:
+    try:
+        return max(0.01, min(1.0, float(SWING_VALIDATION_RISK_MULTIPLIER or 0.25)))
+    except Exception:
+        return 0.25
+
+
+def _p700_live_risk_validation_contract(source: str = "", mode: str | None = None, base_risk_dollars: float | None = None) -> dict:
+    source = str(source or "").strip() or "unknown"
+    raw_mode = str(SWING_LIVE_RISK_MODE if mode is None else mode or "").strip()
+    canonical_mode = _p700_normalize_live_risk_mode(raw_mode)
+    validation_pause_entries = canonical_mode == "validation_pause_entries"
+    reduced_risk = canonical_mode == "reduced_risk"
+    multiplier = _p700_validation_risk_multiplier() if reduced_risk else 1.0
+    base_risk = float(RISK_DOLLARS if base_risk_dollars is None else base_risk_dollars or 0.0)
+    effective_risk = round(max(0.0, base_risk * multiplier), 2)
+    entry_orders_permitted = bool(canonical_mode == "normal" or reduced_risk)
+    paper_entries_permitted = bool(entry_orders_permitted or SWING_VALIDATION_ALLOW_PAPER_ENTRIES)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "live_risk_validation_contract",
+        "raw_mode": raw_mode,
+        "canonical_mode": canonical_mode,
+        "validation_pause_entries": bool(validation_pause_entries),
+        "reduced_risk": bool(reduced_risk),
+        "normal": bool(canonical_mode == "normal"),
+        "entry_orders_permitted": bool(entry_orders_permitted),
+        "paper_entries_permitted": bool(paper_entries_permitted),
+        "exits_permitted_unchanged": True,
+        "blocks_worker_scan_entries": bool(validation_pause_entries and source == "worker_scan"),
+        "blocks_manual_entries": bool(validation_pause_entries and source != "worker_exit"),
+        "base_risk_dollars": round(base_risk, 2),
+        "effective_risk_multiplier": float(multiplier),
+        "effective_risk_dollars": effective_risk,
+        "env": {
+            "SWING_LIVE_RISK_MODE": raw_mode,
+            "SWING_VALIDATION_RISK_MULTIPLIER": float(_p700_validation_risk_multiplier()),
+            "SWING_VALIDATION_ALLOW_PAPER_ENTRIES": bool(SWING_VALIDATION_ALLOW_PAPER_ENTRIES),
+        },
+        "source": source,
+        "recommended_action": (
+            "validation_hard_stop_active_audit_broker_fills_only"
+            if validation_pause_entries
+            else (
+                "reduced_risk_validation_active_continue_evidence_capture"
+                if reduced_risk
+                else "normal_live_risk_mode_active"
+            )
+        ),
+    }
+
+
+def _p700_entry_admission_block(source: str = "", meta: dict | None = None) -> dict:
+    contract = _p700_live_risk_validation_contract(source)
+    blocked = bool(contract.get("validation_pause_entries"))
+    return {
+        "blocked": blocked,
+        "reason": "validation_pause_entries" if blocked else "",
+        "contract": contract,
+        "strategy": str((meta or {}).get("strategy") or (meta or {}).get("strategy_name") or "").strip(),
+    }
+
+
+def _p700_apply_validation_risk_dollars(risk_dollars: float, source: str = "worker_scan") -> float:
+    contract = _p700_live_risk_validation_contract(source)
+    if not bool(contract.get("reduced_risk")):
+        return float(risk_dollars or 0.0)
+    return float(risk_dollars or 0.0) * float(contract.get("effective_risk_multiplier") or 1.0)
+
+
 def is_live_trading_permitted(source: str = "") -> bool:
     source = str(source or "").strip()
     if DRY_RUN or (not LIVE_TRADING_ENABLED):
+        return False
+    if not bool(_p700_live_risk_validation_contract(source).get("entry_orders_permitted")):
         return False
     if source == "worker_scan" and (not NEW_ENTRIES_ENABLED):
         return False
@@ -22150,6 +22252,8 @@ def is_paper_execution_permitted(source: str = "") -> bool:
     stage = _normalize_release_stage(SYSTEM_RELEASE_STAGE, default="paper")
     if source != "worker_scan":
         return False
+    if not bool(_p700_live_risk_validation_contract(source).get("paper_entries_permitted")):
+        return False
     if not PAPER_EXECUTION_ENABLED:
         return False
     if stage != "paper":
@@ -22164,6 +22268,8 @@ def is_paper_execution_permitted(source: str = "") -> bool:
 
 
 def effective_entry_dry_run(source: str = "") -> bool:
+    if not bool(_p700_live_risk_validation_contract(source).get("entry_orders_permitted")):
+        return True
     if source == EARLY_ENTRY_OVERRIDE_SOURCE and SWING_EARLY_ENTRY_OVERRIDE_ENABLED:
         return False
     if is_paper_execution_permitted(source):
@@ -46051,6 +46157,30 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         return {"ok": False, "rejected": True, "reason": realized_halt.get("reason") or "realized_closed_trade_loss_halt", "realized_closed_trade_loss_halt": realized_halt}
 
     meta = dict(meta or {})
+    meta.setdefault("source", source)
+    p700_entry_block = _p700_entry_admission_block(source, meta=meta)
+    if bool(p700_entry_block.get("blocked")):
+        contract = dict(p700_entry_block.get("contract") or {})
+        _p599_trace("execute_entry_signal_ignored", reason=p700_entry_block.get("reason"), p700_live_risk_mode=contract.get("canonical_mode"))
+        record_decision(
+            "ENTRY",
+            source,
+            symbol,
+            side=side,
+            signal=signal,
+            action="ignored",
+            reason=p700_entry_block.get("reason") or "validation_pause_entries",
+            meta={**meta, "p700_live_risk_validation_contract": contract},
+        )
+        return {
+            "ok": True,
+            "ignored": True,
+            "reason": p700_entry_block.get("reason") or "validation_pause_entries",
+            "symbol": symbol,
+            "signal": signal,
+            "p700_live_risk_validation_contract": contract,
+        }
+    meta["p700_live_risk_validation_contract"] = dict(p700_entry_block.get("contract") or {})
     strategy_name = str(
         meta.get("strategy_name")
         or meta.get("strategy")
@@ -67815,6 +67945,8 @@ def diagnostics_swing_runtime_config():
         and not _cfg_bool("SCANNER_DRY_RUN")
     )
     first_2k_profile = _p459_active_swing_regime_profile()
+    effective_profile_risk_dollars = float((first_2k_profile.get("contract") or {}).get("risk_dollars") or _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0))
+    p700_worker_contract = _p700_live_risk_validation_contract("worker_scan", base_risk_dollars=effective_profile_risk_dollars)
 
     retired_paths = {
         "heavy_operator_bundle": {
@@ -67865,6 +67997,9 @@ def diagnostics_swing_runtime_config():
             "dry_run": _cfg_bool("DRY_RUN"),
             "scanner_dry_run": _cfg_bool("SCANNER_DRY_RUN"),
             "new_entries_enabled": _cfg_bool("NEW_ENTRIES_ENABLED"),
+            "live_risk_mode": p700_worker_contract.get("canonical_mode"),
+            "live_risk_entry_orders_permitted": bool(p700_worker_contract.get("entry_orders_permitted")),
+            "live_risk_exits_permitted_unchanged": bool(p700_worker_contract.get("exits_permitted_unchanged")),
             "kill_switch": _cfg_bool("KILL_SWITCH"),
             "daily_halt_active": bool(daily_halt_active()),
             "market_hours_required": _cfg_bool(["ONLY_MARKET_HOURS", "SWING_ONLY_MARKET_HOURS"], True),
@@ -67905,7 +68040,7 @@ def diagnostics_swing_runtime_config():
             "max_group_positions": _cfg_int("SWING_MAX_GROUP_POSITIONS", 0),
             "max_portfolio_exposure_pct": _cfg_float("SWING_MAX_PORTFOLIO_EXPOSURE_PCT", 0.0),
             "max_symbol_exposure_pct": _cfg_float("SWING_MAX_SYMBOL_EXPOSURE_PCT", 0.0),
-            "risk_per_trade_dollars": float((first_2k_profile.get("contract") or {}).get("risk_dollars") or _cfg_float(["RISK_DOLLARS", "SWING_RISK_PER_TRADE_DOLLARS"], 0.0)),
+            "risk_per_trade_dollars": effective_profile_risk_dollars,
             "target_r_mult": float((first_2k_profile.get("contract") or {}).get("target_r_mult") or _cfg_float("SWING_TARGET_R_MULT", 0.0)),
             "max_new_entries_per_day": int((first_2k_profile.get("contract") or {}).get("max_entries_per_day") or _cfg_int("SWING_MAX_NEW_ENTRIES_PER_DAY", 0)),
             "scanner_max_entries_per_scan": int((first_2k_profile.get("contract") or {}).get("max_entries_per_scan") or _cfg_int("SCANNER_MAX_ENTRIES_PER_SCAN", 0)),
@@ -68032,6 +68167,17 @@ def diagnostics_swing_runtime_config():
                 "contract": "submit_sizing_downshift_only",
                 "purpose": "reduce weak breakout dollar risk without adding another selection blocker",
             },
+            "live_risk_validation_mode": {
+                "enabled": p700_worker_contract.get("canonical_mode") != "normal",
+                "can_block_entries": bool(p700_worker_contract.get("validation_pause_entries")),
+                "can_reduce_sizing": bool(p700_worker_contract.get("reduced_risk")),
+                "canonical_mode": p700_worker_contract.get("canonical_mode"),
+                "entry_orders_permitted": bool(p700_worker_contract.get("entry_orders_permitted")),
+                "effective_risk_multiplier": p700_worker_contract.get("effective_risk_multiplier"),
+                "effective_risk_dollars": p700_worker_contract.get("effective_risk_dollars"),
+                "exits_permitted_unchanged": True,
+                "purpose": "roadmap_700_hard_stop_or_reduced_risk_validation_contract",
+            },
         },
         exit_guards={
             "opening_damage_guard": {
@@ -68083,6 +68229,7 @@ def diagnostics_swing_runtime_config():
                 "retired_queue_path_active": False,
                 "retired_finalizer_path_active": False,
             },
+            "live_risk_validation_contract": p700_worker_contract,
         },
         retired_paths=retired_paths,
         modules={
@@ -68091,6 +68238,12 @@ def diagnostics_swing_runtime_config():
             "swing_runtime_config": _cfg_str("SWING_RUNTIME_CONFIG_MODULE_VERSION", "missing"),
         },
     )
+
+
+@app.get("/diagnostics/live_risk_validation_contract")
+def diagnostics_live_risk_validation_contract(source: str = "worker_scan"):
+    return _p700_live_risk_validation_contract(source)
+
 
 @app.get("/diagnostics/build")
 def diagnostics_build():
