@@ -125,6 +125,8 @@ from swing_candidate_eval import (
 from swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
     SwingProductionContractConfig,
+    normalize_strategy_identity as swing_contract_normalize_strategy,
+    strategy_isolation_contract as swing_contract_strategy_isolation_contract,
     swing_production_contract as swing_contract_production_contract,
     apply_swing_production_contract as swing_contract_apply,
     swing_production_sort_key as swing_contract_sort_key,
@@ -2239,6 +2241,9 @@ SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION = env_bool_any(
     "SWING_PRODUCTION_RESET_ALLOW_MEAN_REVERSION",
     default=True,
 )
+SWING_STRATEGY_ISOLATION_MODE = str(
+    getenv_any("SWING_STRATEGY_ISOLATION_MODE", "STRATEGY_ISOLATION_MODE", default="all") or "all"
+).strip().lower()
 BREAKOUT_EARLY_FOLLOW_THROUGH_GATE_ENABLED = env_bool_any(
     "BREAKOUT_EARLY_FOLLOW_THROUGH_GATE_ENABLED",
     default=True,
@@ -3179,7 +3184,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-701E-read-only-refresh-status-explicit-pump-legacy-refresh-state-sanitizer"
+PATCH_VERSION = "patch-702-strategy-isolation-switch"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -26764,7 +26769,88 @@ def _p333_swing_selection_contract_config() -> SwingProductionContractConfig:
         active_regime_profile_reason=str(profile.get("reason") or ""),
         active_profile_target_r_mult=float(contract.get("target_r_mult") or SWING_TARGET_R_MULT or 0.0),
         active_profile_risk_dollars=float(contract.get("risk_dollars") or RISK_DOLLARS or 0.0),
+        strategy_isolation_mode=str(SWING_STRATEGY_ISOLATION_MODE or "all"),
     )
+
+def _p702_strategy_isolation_contract_snapshot(limit: int = 25) -> dict:
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    contract = swing_contract_strategy_isolation_contract(
+        mode=SWING_STRATEGY_ISOLATION_MODE,
+        patch_version=PATCH_VERSION,
+    )
+    allowed = set(contract.get("allowed_strategies") or [])
+    canonical_mode = str(contract.get("canonical_mode") or "all")
+    rows = [
+        dict(row or {})
+        for row in list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
+        if isinstance(row, dict)
+    ]
+    selected_symbols = {
+        str(sym or "").strip().upper()
+        for sym in list(summary.get("selected_symbols") or latest_scan.get("selected_symbols") or [])
+        if str(sym or "").strip()
+    }
+    strategy_counts: dict[str, int] = {}
+    selected_by_strategy: dict[str, list[str]] = {}
+    blocked_symbols: list[str] = []
+    sample_rows: list[dict] = []
+    for row in rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        strategy = swing_contract_normalize_strategy(row)
+        strategy_counts[strategy] = int(strategy_counts.get(strategy, 0) or 0) + 1
+        allowed_now = bool(strategy in allowed or canonical_mode == "all")
+        selected = bool(row.get("selected")) or bool(sym and sym in selected_symbols)
+        if selected:
+            selected_by_strategy.setdefault(strategy, []).append(sym)
+        if not allowed_now and sym:
+            blocked_symbols.append(sym)
+        if len(sample_rows) < max(1, int(limit or 25)):
+            sample_rows.append({
+                "symbol": sym,
+                "strategy": strategy,
+                "selected": selected,
+                "eligible": bool(row.get("eligible")),
+                "strategy_isolation_allowed": allowed_now,
+                "strategy_isolation_reason": "strategy_allowed" if allowed_now else f"strategy_isolation_disabled_{strategy}",
+                "entry_type": row.get("entry_type"),
+                "signal": row.get("signal"),
+                "selected_source": row.get("selected_source"),
+                "rejection_reasons": list(row.get("rejection_reasons") or []),
+            })
+
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "strategy_isolation_contract",
+        "read_only": True,
+        "does_not_fetch_bars": True,
+        "does_not_submit_orders": True,
+        "changes_state": False,
+        "contract": contract,
+        "env": {
+            "SWING_STRATEGY_ISOLATION_MODE": str(SWING_STRATEGY_ISOLATION_MODE or "all"),
+            "STRATEGY_ISOLATION_MODE": os.getenv("STRATEGY_ISOLATION_MODE"),
+        },
+        "production_behavior_changed": str(contract.get("canonical_mode") or "all") != "all",
+        "latest_scan_ts_utc": latest_scan.get("ts_utc"),
+        "latest_scan_reason": latest_scan.get("reason"),
+        "candidate_count_checked": len(rows),
+        "strategy_counts": dict(sorted(strategy_counts.items())),
+        "selected_symbols": sorted(selected_symbols),
+        "selected_by_strategy": {
+            key: _dedupe_keep_order(value)
+            for key, value in sorted(selected_by_strategy.items())
+        },
+        "blocked_by_isolation_count": len(_dedupe_keep_order(blocked_symbols)),
+        "blocked_by_isolation_symbols": _dedupe_keep_order(blocked_symbols)[: max(1, int(limit or 25))],
+        "rows": sample_rows,
+        "roadmap_step": "Patch 702: Strategy Isolation Switch",
+        "recommended_action": (
+            "default_all_mode_no_action"
+            if str(contract.get("canonical_mode") or "all") == "all"
+            else "run_isolated_replay_and_validate_before_live_promotion"
+        ),
+    }
 
 def _p323_value(candidate: dict | None, *keys):
     c = dict(candidate or {})
@@ -70430,6 +70516,11 @@ def diagnostics_daily_goal_opportunity_map(request: Request, limit: int = 25):
 def diagnostics_swing_performance_reports_module_status(request: Request):
     require_admin_if_configured(request)
     return JSONResponse(content=swing_perf_module_status(patch_version=PATCH_VERSION))
+
+@app.get("/diagnostics/strategy_isolation_contract")
+def diagnostics_strategy_isolation_contract(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p702_strategy_isolation_contract_snapshot(limit=limit))
 
 @app.get("/diagnostics/capital_rotation_readiness_audit")
 def diagnostics_capital_rotation_readiness_audit(request: Request, limit: int = 25):

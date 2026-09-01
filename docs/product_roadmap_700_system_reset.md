@@ -200,7 +200,7 @@ Post-deploy endpoints:
 
 ### Patch 701E: Read-Only Refresh Status + Explicit Pump Endpoint + Legacy Refresh State Sanitizer
 
-Status: local implementation complete.
+Status: deployed and verified.
 
 Goal: keep the durable broker-fill ledger, but make the operational contract clean and fast.
 
@@ -230,18 +230,23 @@ Post-deploy endpoints:
 
 ### Patch 702: Strategy Isolation Switch
 
+Status: local implementation complete.
+
 Goal: test daily breakout, intraday momentum, and intraday mean reversion independently.
 
 Scope:
 
-- Add one canonical strategy enablement contract.
+- Add one canonical strategy isolation contract in `swing_selection_contract.py`.
 - Ensure disabled strategies still report why they are disabled.
 - Avoid mixed-strategy attribution.
 - Make each selected candidate carry strategy, sleeve, regime, and profile identity.
+- Add `/diagnostics/strategy_isolation_contract` as the read-only operator truth surface.
+- Default to `SWING_STRATEGY_ISOLATION_MODE=all` so current production behavior is preserved unless validation explicitly isolates one engine.
 
 Expected outcome:
 
 - The system can run one engine at a time without hidden cross-contamination.
+- Patch 700 validation pause remains the live-entry safety layer; Patch 702 only controls strategy eligibility/attribution.
 
 Smoke tests:
 
@@ -252,6 +257,7 @@ Smoke tests:
 
 Post-deploy endpoints:
 
+- `/diagnostics/strategy_isolation_contract?limit=25`
 - `/diagnostics/swing_runtime_config`
 - `/diagnostics/current_scan_suppression_truth?limit=10`
 - `/diagnostics/swing_submit_path_trace?limit=10`

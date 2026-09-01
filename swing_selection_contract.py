@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Any
 
 
-SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-459-first-2k-regime-profile-switch-breakout-risk-target-calibration"
+SWING_SELECTION_CONTRACT_MODULE_VERSION = "patch-702-strategy-isolation-switch"
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,7 @@ class SwingProductionContractConfig:
     active_regime_profile_reason: str = "profile_switch_disabled"
     active_profile_target_r_mult: float = 2.0
     active_profile_risk_dollars: float = 30.0
+    strategy_isolation_mode: str = "all"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -101,6 +102,106 @@ def _symbol_set(csv_text: str | None) -> set[str]:
         if str(part or "").strip()
     }
 
+
+def normalize_strategy_identity(candidate_or_strategy: dict | str | None) -> str:
+    if isinstance(candidate_or_strategy, dict):
+        c = dict(candidate_or_strategy or {})
+        values = [
+            c.get("canonical_strategy"),
+            c.get("strategy_name"),
+            c.get("strategy"),
+            c.get("signal"),
+            c.get("entry_strategy"),
+            c.get("entry_type"),
+            c.get("selected_source"),
+        ]
+    else:
+        values = [candidate_or_strategy]
+
+    text = " ".join(str(v or "").strip().lower() for v in values if str(v or "").strip())
+    if not text:
+        return "unknown"
+    compact = text.replace("-", "_").replace(" ", "_")
+    if "mean_reversion" in compact or "meanreversion" in compact:
+        return "daily_mean_reversion"
+    if "intraday" in compact or "vwap" in compact or "momentum" in compact:
+        return "intraday_momentum"
+    if "breakout" in compact or "first_2k" in compact or "production_contract" in compact:
+        return "daily_breakout"
+    return compact
+
+
+def strategy_isolation_contract(
+    *,
+    mode: str | None = None,
+    patch_version: str | None = None,
+) -> dict:
+    configured_mode = str(mode or "all").strip().lower().replace("-", "_") or "all"
+    aliases = {
+        "": "all",
+        "off": "all",
+        "disabled": "all",
+        "normal": "all",
+        "all_strategies": "all",
+        "breakout": "daily_breakout_only",
+        "breakout_only": "daily_breakout_only",
+        "daily_breakout": "daily_breakout_only",
+        "daily_breakout_only": "daily_breakout_only",
+        "mean_reversion": "daily_mean_reversion_only",
+        "mean_reversion_only": "daily_mean_reversion_only",
+        "daily_mean_reversion": "daily_mean_reversion_only",
+        "daily_mean_reversion_only": "daily_mean_reversion_only",
+        "intraday": "intraday_momentum_only",
+        "intraday_only": "intraday_momentum_only",
+        "intraday_momentum": "intraday_momentum_only",
+        "intraday_momentum_only": "intraday_momentum_only",
+        "none": "none",
+        "pause": "none",
+        "paused": "none",
+    }
+    canonical_mode = aliases.get(configured_mode, configured_mode)
+    all_strategies = ["daily_breakout", "daily_mean_reversion", "intraday_momentum"]
+    allowed_by_mode = {
+        "all": list(all_strategies),
+        "daily_breakout_only": ["daily_breakout"],
+        "daily_mean_reversion_only": ["daily_mean_reversion"],
+        "intraday_momentum_only": ["intraday_momentum"],
+        "none": [],
+    }
+    recognized = canonical_mode in allowed_by_mode
+    allowed = allowed_by_mode.get(canonical_mode, list(all_strategies))
+    disabled = [name for name in all_strategies if name not in set(allowed)]
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "strategy_isolation_contract",
+        "configured_mode": configured_mode,
+        "canonical_mode": canonical_mode if recognized else "all",
+        "recognized_mode": bool(recognized),
+        "allowed_strategies": allowed,
+        "disabled_strategies": disabled if recognized else [],
+        "available_strategies": all_strategies,
+        "unknown_mode_fails_open": not bool(recognized),
+        "default_all_preserves_current_behavior": canonical_mode == "all" or not recognized,
+        "does_not_submit_orders": True,
+        "read_only": True,
+        "live_entries_still_governed_by": "live_risk_validation_contract",
+    }
+
+
+def strategy_allowed(candidate_or_strategy: dict | str | None, *, config: SwingProductionContractConfig) -> dict:
+    contract = strategy_isolation_contract(mode=config.strategy_isolation_mode)
+    strategy = normalize_strategy_identity(candidate_or_strategy)
+    canonical_mode = str(contract.get("canonical_mode") or "all")
+    allowed = set(contract.get("allowed_strategies") or [])
+    allowed_now = bool(strategy in allowed or canonical_mode == "all")
+    return {
+        "strategy": strategy,
+        "allowed": allowed_now,
+        "reason": "strategy_allowed" if allowed_now else f"strategy_isolation_disabled_{strategy or 'unknown'}",
+        "contract": contract,
+    }
+
 def swing_production_contract(
     candidate: dict | None,
     *,
@@ -110,7 +211,8 @@ def swing_production_contract(
 ) -> dict:
     c = dict(candidate or {})
     symbol = str(c.get("symbol") or "").strip().upper()
-    strategy = str(c.get("strategy") or c.get("signal") or "").strip().lower()
+    strategy = normalize_strategy_identity(c)
+    strategy_isolation = strategy_allowed(c, config=config)
     original_eligible = bool(c.get("eligible"))
     original_reasons = _dedupe_reasons(c.get("rejection_reasons") or [])
     global_reasons = _dedupe_reasons(global_block_reasons or [])
@@ -277,12 +379,16 @@ def swing_production_contract(
         "return_20d_ok": return_20d_ok,
         "target_path_score": target_path_score,
         "contract_path_ok": contract_path_ok,
+        "strategy_isolation_allowed": bool(strategy_isolation.get("allowed")),
     }
 
     if not executable:
         blockers.append(str(sizing_truth.get("sizing_block_reason") or "internal_sizing_qty_zero"))
 
-    if strategy == str(config.mean_reversion_strategy_name or "").strip().lower():
+    if not bool(strategy_isolation.get("allowed")):
+        blockers.append(str(strategy_isolation.get("reason") or "strategy_isolation_disabled_unknown"))
+
+    if strategy == normalize_strategy_identity(config.mean_reversion_strategy_name):
         if not bool(config.allow_mean_reversion):
             blockers.append("production_contract_mean_reversion_disabled")
         if not original_eligible and not blockers:
@@ -322,6 +428,7 @@ def swing_production_contract(
         "enabled": bool(config.production_reset_enabled),
         "symbol": symbol,
         "strategy": strategy,
+        "canonical_strategy": strategy,
         "approved": bool(config.production_reset_enabled) and not blockers,
         "blockers": blockers,
         "advisory_legacy_reasons": advisory,
@@ -341,6 +448,14 @@ def swing_production_contract(
             "reason": str(config.active_regime_profile_reason or ""),
             "target_r_mult": float(config.active_profile_target_r_mult or 0.0),
             "risk_dollars": float(config.active_profile_risk_dollars or 0.0),
+        },
+        "strategy_isolation": {
+            "mode": (strategy_isolation.get("contract") or {}).get("canonical_mode"),
+            "configured_mode": (strategy_isolation.get("contract") or {}).get("configured_mode"),
+            "allowed": bool(strategy_isolation.get("allowed")),
+            "reason": strategy_isolation.get("reason"),
+            "allowed_strategies": list((strategy_isolation.get("contract") or {}).get("allowed_strategies") or []),
+            "disabled_strategies": list((strategy_isolation.get("contract") or {}).get("disabled_strategies") or []),
         },
     }
 
@@ -403,7 +518,7 @@ def swing_production_sort_key(candidate: dict | None, *, config: SwingProduction
     c = dict(candidate or {})
     contract = dict(c.get("swing_production_contract") or {})
     return (
-        1 if str(c.get("strategy") or "").strip().lower() == str(config.breakout_strategy_name or "").strip().lower() else 0,
+        1 if normalize_strategy_identity(c) == "daily_breakout" else 0,
         float(_safe_float(contract.get("rank_score") or c.get("rank_score"))),
         float(_safe_float((c.get("target_path_profit") or {}).get("score") or c.get("target_path_score"))),
         float(_safe_float(c.get("selection_quality_score"))),
@@ -580,4 +695,5 @@ def finalize_production_contract_selection(
                 if bool(((row.get("swing_production_contract") or {}).get("checks") or {}).get("first_2k_geometry_sleeve_ok"))
             ],
         },
+        "strategy_isolation": strategy_isolation_contract(mode=config.strategy_isolation_mode),
     }

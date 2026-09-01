@@ -20,6 +20,9 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_distance_relaxati
 https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_quality_risk_downshift
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_backed_exposure_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_daily_goal_truth
+https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger
+https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger_refresh_pump
+https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger_refresh_status
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_daily_pnl_dedup
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_performance
 https://trading-webhook-q4d5.onrender.com/diagnostics/broker_submit_transport_dry_run_probe
@@ -176,6 +179,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/stall_loss_entry_feedback
 https://trading-webhook-q4d5.onrender.com/diagnostics/stall_loss_guard_live_validation
 https://trading-webhook-q4d5.onrender.com/diagnostics/state
 https://trading-webhook-q4d5.onrender.com/diagnostics/strategy
+https://trading-webhook-q4d5.onrender.com/diagnostics/strategy_isolation_contract
 https://trading-webhook-q4d5.onrender.com/diagnostics/strategy_performance
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing
 https://trading-webhook-q4d5.onrender.com/diagnostics/swing_auto_suppression_evidence
