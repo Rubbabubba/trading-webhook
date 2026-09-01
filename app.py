@@ -2293,6 +2293,22 @@ BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC = getenv_float_any(
     "BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC",
     default=6.0,
 )
+BROKER_FILLS_ONLY_LEDGER_SYMBOL_CHUNK_SIZE = getenv_int_any(
+    "BROKER_FILLS_ONLY_LEDGER_SYMBOL_CHUNK_SIZE",
+    default=8,
+)
+BROKER_FILLS_ONLY_LEDGER_PER_REQUEST_LIMIT = getenv_int_any(
+    "BROKER_FILLS_ONLY_LEDGER_PER_REQUEST_LIMIT",
+    default=50,
+)
+BROKER_FILLS_ONLY_LEDGER_MAX_REQUESTS = getenv_int_any(
+    "BROKER_FILLS_ONLY_LEDGER_MAX_REQUESTS",
+    default=8,
+)
+BROKER_FILLS_ONLY_LEDGER_REQUEST_TIMEOUT_SEC = getenv_float_any(
+    "BROKER_FILLS_ONLY_LEDGER_REQUEST_TIMEOUT_SEC",
+    default=2.5,
+)
 BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT = getenv_float_any(
     "BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT",
     default=0.75,
@@ -3128,7 +3144,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-701A-broker-fill-ledger-snapshot-cache-bounded-async-refresh"
+PATCH_VERSION = "patch-701B-broker-fill-history-windowing-incremental-ledger-refresh"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -8271,7 +8287,7 @@ def _alpaca_trading_base_url() -> str:
     return "https://paper-api.alpaca.markets" if APCA_PAPER else "https://api.alpaca.markets"
 
 
-def _alpaca_get_orders_rest(status: str = "all", limit: int = 100, symbols: list[str] | None = None, after_iso: str | None = None) -> list[dict]:
+def _alpaca_get_orders_rest(status: str = "all", limit: int = 100, symbols: list[str] | None = None, after_iso: str | None = None, timeout_sec: float | None = None) -> list[dict]:
     params = {"status": str(status or "all"), "limit": str(max(1, min(int(limit or 100), 500))), "direction": "desc", "nested": "true"}
     if symbols:
         syms = [str(s or "").upper() for s in symbols if str(s or "").upper()]
@@ -8290,7 +8306,7 @@ def _alpaca_get_orders_rest(status: str = "all", limit: int = 100, symbols: list
         method="GET",
     )
     try:
-        with urlopen(req, timeout=20) as resp:
+        with urlopen(req, timeout=max(1.0, float(timeout_sec if timeout_sec is not None else 20.0))) as resp:
             raw = resp.read().decode("utf-8") if resp else ""
         data = json.loads(raw) if raw else []
         return data if isinstance(data, list) else []
@@ -23034,10 +23050,95 @@ def _p701_fill_sort_ts(row: dict) -> str:
     return str((row or {}).get("filled_at") or (row or {}).get("submitted_at") or "")
 
 
-def _p701_build_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500) -> dict:
+def _p701b_ledger_symbols() -> list[str]:
+    symbols = []
+    for source in (
+        SCANNER_UNIVERSE_SYMBOLS,
+        SWING_CROSS_REGIME_WINNER_SLEEVE_SYMBOLS,
+        SWING_FIRST_2K_GEOMETRY_SLEEVE_SYMBOLS,
+    ):
+        symbols.extend([s.strip().upper() for s in str(source or "").split(",") if s.strip()])
+    symbols.extend([str(s or "").strip().upper() for s in sorted(ALLOWED_SYMBOLS or []) if str(s or "").strip()])
+    symbols.extend([str(s or "").strip().upper() for s in (TRADE_PLAN or {}).keys() if str(s or "").strip()])
+    return _dedupe_keep_order(symbols)
+
+
+def _p701b_symbol_chunks(symbols: list[str], size: int) -> list[list[str]]:
+    clean = _dedupe_keep_order([str(s or "").strip().upper() for s in list(symbols or []) if str(s or "").strip()])
+    chunk_size = max(1, min(int(size or 8), 25))
+    return [clean[i:i + chunk_size] for i in range(0, len(clean), chunk_size)]
+
+
+def _p701b_fetch_broker_orders_windowed(order_limit: int, deadline_sec: float) -> dict:
+    started = _time.monotonic()
+    order_lim = max(1, min(int(order_limit or 500), 500))
+    per_limit = max(1, min(int(BROKER_FILLS_ONLY_LEDGER_PER_REQUEST_LIMIT or 50), 100))
+    max_requests = max(1, min(int(BROKER_FILLS_ONLY_LEDGER_MAX_REQUESTS or 8), 50))
+    chunk_size = max(1, min(int(BROKER_FILLS_ONLY_LEDGER_SYMBOL_CHUNK_SIZE or 8), 25))
+    req_timeout = max(1.0, min(float(BROKER_FILLS_ONLY_LEDGER_REQUEST_TIMEOUT_SEC or 2.5), max(1.0, float(deadline_sec or 6.0))))
+    deadline = started + max(1.0, float(deadline_sec or 6.0))
+    symbols = _p701b_ledger_symbols()
+    chunks = _p701b_symbol_chunks(symbols, chunk_size) if symbols else [[]]
+    orders_by_id = {}
+    request_rows = []
+    deadline_hit = False
+
+    for chunk in chunks:
+        if len(request_rows) >= max_requests or len(orders_by_id) >= order_lim:
+            break
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0.25:
+            deadline_hit = True
+            break
+        timeout = min(req_timeout, max(1.0, remaining))
+        before_count = len(orders_by_id)
+        rows = _alpaca_get_orders_rest(
+            status="all",
+            limit=min(per_limit, max(1, order_lim - len(orders_by_id))),
+            symbols=chunk or None,
+            timeout_sec=timeout,
+        )
+        for order in list(rows or []):
+            oid = str(_order_attr(order, "id", "") or "")
+            key = oid or json.dumps(order, sort_keys=True, default=str)[:250]
+            orders_by_id.setdefault(key, order)
+        request_rows.append({
+            "symbols": chunk,
+            "returned": len(rows or []),
+            "new_orders": max(0, len(orders_by_id) - before_count),
+            "elapsed_sec": round(_time.monotonic() - started, 3),
+            "timeout_sec": round(timeout, 3),
+        })
+
+    elapsed = _time.monotonic() - started
+    if elapsed >= max(1.0, float(deadline_sec or 6.0)) and len(request_rows) < len(chunks):
+        deadline_hit = True
+    return {
+        "orders": list(orders_by_id.values())[:order_lim],
+        "windowing": {
+            "enabled": True,
+            "symbol_count": len(symbols),
+            "chunk_size": chunk_size,
+            "chunk_count": len(chunks),
+            "request_count": len(request_rows),
+            "max_requests": max_requests,
+            "per_request_limit": per_limit,
+            "request_timeout_sec": req_timeout,
+            "deadline_sec": max(1.0, float(deadline_sec or 6.0)),
+            "elapsed_sec": round(elapsed, 3),
+            "deadline_hit": bool(deadline_hit),
+            "complete": bool((not deadline_hit) and len(request_rows) >= len(chunks)),
+            "partial": bool(deadline_hit or len(request_rows) < len(chunks)),
+            "requests": request_rows,
+        },
+    }
+
+
+def _p701_build_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500, deadline_sec: float | None = None) -> dict:
     lim = max(1, min(int(limit or 200), 500))
     order_lim = max(lim, min(max(1, int(order_limit or 500)), 500))
-    orders = _alpaca_get_orders_rest(status="all", limit=order_lim)
+    fetch = _p701b_fetch_broker_orders_windowed(order_lim, deadline_sec or BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC)
+    orders = list(fetch.get("orders") or [])
     fills = []
     for order in list(orders or []):
         row = _filled_order_row(order)
@@ -23143,6 +23244,8 @@ def _p701_build_broker_fills_only_trade_ledger(limit: int = 200, order_limit: in
     )
     payload["source"] = "alpaca_order_fills_fifo_long_realized_ledger"
     payload["order_limit"] = order_lim
+    payload["p701b_windowed_refresh"] = dict(fetch.get("windowing") or {})
+    payload["partial_refresh"] = bool((fetch.get("windowing") or {}).get("partial"))
     payload["ledger_window_note"] = "Uses recent Alpaca filled orders only; internal state is attribution-only and never changes P/L."
     payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
     return payload
@@ -23221,6 +23324,8 @@ def _p701a_slice_broker_fills_ledger(payload: dict | None, limit: int, *, cache_
         "snapshot_path": BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_PATH,
         "refresh_timeout_sec": float(BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC or 0.0),
         "default_endpoint_is_cache_first": True,
+        "windowed_refresh_enabled": True,
+        "windowed_refresh": dict(out.get("p701b_windowed_refresh") or {}),
     }
     out["recommended_action"] = (
         "use_cached_broker_fills_ledger_for_audit"
@@ -23271,7 +23376,7 @@ def _p701a_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 5
     timeout = max(1.0, float(BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC or 6.0))
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="broker-fills-only-ledger")
     try:
-        future = executor.submit(_p701_build_broker_fills_only_trade_ledger, lim, order_limit)
+        future = executor.submit(_p701_build_broker_fills_only_trade_ledger, lim, order_limit, timeout)
         payload = dict(future.result(timeout=timeout))
         payload = _p701a_store_broker_fills_ledger_cache(payload, source="explicit_refresh")
         return _p701a_slice_broker_fills_ledger(

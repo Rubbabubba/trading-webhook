@@ -114,6 +114,25 @@ Expected outcome:
 - Heavy refresh cannot strand the operator request for minutes.
 - Worker shadows remain excluded from accounting.
 
+### Patch 701B: Broker Fill History Windowing + Incremental Ledger Refresh
+
+Status: in local implementation
+
+Goal: make broker-only ledger refresh produce useful partial data even when full Alpaca order history is slow.
+
+Scope:
+
+- Replace one large broker order-history pull with smaller symbol-windowed requests.
+- Add per-request timeout, max request count, and refresh deadline truth.
+- Persist complete or partial broker-fill ledger snapshots.
+- Keep default ledger endpoint cache-first and read-only.
+
+Expected outcome:
+
+- `refresh=true` returns bounded partial or complete broker-only ledger truth.
+- The default ledger endpoint stays fast.
+- The 200-trade audit can progress incrementally instead of blocking on one slow broker request.
+
 Post-deploy endpoints:
 
 - `/diagnostics/broker_preferred_daily_pnl_dedup`
