@@ -3098,7 +3098,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-648-performance-report-module-extraction-prep"
+PATCH_VERSION = "patch-649-actionable-exit-watch-fast-drain-worker-due-truth-fix"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51523,24 +51523,25 @@ def _p607_worker_recovery_first_truth(reconcile_actions: list[dict], started_mon
     }
 
 
-def _p612_exit_trigger_priority_queue(limit: int = 50) -> dict:
+def _p612_exit_trigger_priority_queue(limit: int = 50, fast_due_truth: dict | None = None) -> dict:
+    fast_due_truth = _p649_fast_actionable_exit_due_truth(limit=limit, active_exit_truth=None) if fast_due_truth is None else dict(fast_due_truth or {})
+    fast_rows = [
+        dict(row or {})
+        for row in list(fast_due_truth.get("rows") or [])
+        if isinstance(row, dict) and bool(row.get("exit_trigger_now"))
+    ]
     try:
         protection_truth = _p364_active_exit_protection_truth()
-        rows = [
+        heavy_rows = [
             dict(row or {})
             for row in list(protection_truth.get("actionable_exit_watch") or [])
             if isinstance(row, dict) and bool(row.get("exit_trigger_now"))
         ]
     except Exception as exc:
-        return {
-            "ok": False,
-            "patch_version": PATCH_VERSION,
-            "mode": "exit_trigger_priority_queue",
-            "error": str(exc),
-            "symbols": [],
-            "rows": [],
-            "recommended_action": "fall_back_to_trade_plan_iteration_order",
-        }
+        heavy_rows = []
+        heavy_error = str(exc)
+    else:
+        heavy_error = None
 
     reason_rank = {
         "forbidden_short_position_cleanup": 0,
@@ -51561,6 +51562,12 @@ def _p612_exit_trigger_priority_queue(limit: int = 50) -> dict:
             str(row.get("symbol") or ""),
         )
 
+    rows_by_symbol = {}
+    for row in fast_rows + heavy_rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if sym and sym not in rows_by_symbol:
+            rows_by_symbol[sym] = row
+    rows = list(rows_by_symbol.values())
     rows.sort(key=_sort_key)
     symbols = _dedupe_keep_order([
         str(row.get("symbol") or "").strip().upper()
@@ -51569,12 +51576,14 @@ def _p612_exit_trigger_priority_queue(limit: int = 50) -> dict:
     ])[:max(1, min(int(limit or 50), 100))]
     rows = [row for row in rows if str(row.get("symbol") or "").strip().upper() in set(symbols)]
     return {
-        "ok": True,
+        "ok": bool(rows or not heavy_error),
         "patch_version": PATCH_VERSION,
         "mode": "exit_trigger_priority_queue",
-        "source": "active_exit_protection_truth",
+        "source": "fast_actionable_exit_due_truth_plus_active_exit_protection_truth",
+        "heavy_error": heavy_error,
         "trigger_count": len(rows),
         "symbols": symbols,
+        "p649_fast_actionable_exit_due_truth": fast_due_truth,
         "reasons_by_symbol": {
             str(row.get("symbol") or "").strip().upper(): str(row.get("closest_exit_reason") or "none")
             for row in rows
@@ -51586,7 +51595,13 @@ def _p612_exit_trigger_priority_queue(limit: int = 50) -> dict:
             if bool(row.get("same_day_exit_blocked_for_closest_reason")) and str(row.get("symbol") or "").strip()
         ],
         "rows": rows,
-        "recommended_action": "worker_exit_process_trigger_symbols_first" if symbols else "no_exit_triggers_due",
+        "recommended_action": (
+            "worker_exit_process_trigger_symbols_first"
+            if symbols
+            else "fall_back_to_trade_plan_iteration_order"
+            if heavy_error
+            else "no_exit_triggers_due"
+        ),
     }
 
 
@@ -51825,11 +51840,16 @@ def _p612_active_exit_worker_gap_truth(display_status: str, active_exit_truth: d
         terminal_block_symbols = set(terminal_blocks.get("symbols") or [])
         unresolved_due_symbols = [sym for sym in due_symbols if sym not in terminal_block_symbols]
         watch_count = int(summary.get("exit_watch_count") or len(watch_rows) or 0)
-        unhealthy = bool(status in {"started", "budget_fast_close"} and unresolved_due_symbols)
+        market_open = bool(in_market_hours())
+        unhealthy = bool(
+            unresolved_due_symbols
+            and (status in {"started", "budget_fast_close"} or market_open)
+        )
         return {
             "checked": True,
             "worker_status": status,
             "canonical_exit_due_truth_source": truth_mode or truth_source or "active_exit_protection_truth",
+            "market_open": market_open,
             "active_exit_watch_count": watch_count,
             "due_exit_symbols": due_symbols,
             "due_exit_count": len(due_symbols),
@@ -52271,6 +52291,68 @@ def _p640_apply_terminal_exit_actionability(active_exit_truth: dict | None) -> d
         else "none"
     )
     return payload
+
+
+def _p649_fast_actionable_exit_due_truth(limit: int = 20, active_exit_truth: dict | None = None) -> dict:
+    try:
+        truth = dict(active_exit_truth or _p620_active_exit_protection_truth_fast(limit=limit) or {})
+    except Exception as exc:
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "fast_actionable_exit_due_truth",
+            "source": "active_exit_protection_truth_fast",
+            "error": str(exc),
+            "due_count": 0,
+            "due_symbols": [],
+            "rows": [],
+            "market_open": bool(in_market_hours()),
+            "worker_should_drain_now": False,
+            "recommended_action": "inspect_active_exit_protection_truth",
+        }
+    rows = [
+        dict(row or {})
+        for row in list(truth.get("actionable_exit_watch") or [])
+        if isinstance(row, dict)
+        and bool(row.get("exit_trigger_now"))
+        and bool(row.get("exit_actionable_now"))
+        and str(row.get("symbol") or "").strip()
+    ]
+    rows = rows[:max(1, min(int(limit or 20), 100))]
+    symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if str(row.get("symbol") or "").strip()
+    ])
+    market_open = bool(in_market_hours())
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "fast_actionable_exit_due_truth",
+        "source": str(truth.get("mode") or truth.get("source") or "active_exit_protection_truth_fast"),
+        "active_exit_truth_ok": bool(truth.get("ok", True)),
+        "active_exit_truth_error": truth.get("error"),
+        "read_only": True,
+        "does_not_fetch_broker": True,
+        "does_not_submit_orders": True,
+        "market_open": market_open,
+        "due_count": len(symbols),
+        "due_symbols": symbols,
+        "reasons_by_symbol": {
+            str(row.get("symbol") or "").strip().upper(): str(row.get("closest_exit_reason") or "none")
+            for row in rows
+            if str(row.get("symbol") or "").strip()
+        },
+        "rows": rows,
+        "worker_should_drain_now": bool(market_open and symbols),
+        "recommended_action": (
+            "worker_exit_should_fast_drain_actionable_due_symbols"
+            if market_open and symbols
+            else "wait_for_regular_market_open_to_drain_due_exits"
+            if symbols
+            else "no_actionable_exit_due"
+        ),
+    }
 
 
 def _p364_same_day_stall_exit_churn_audit(limit: int = 25) -> dict:
@@ -53234,7 +53316,10 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             "reconcile": reconcile_actions,
         }
 
-    p612_exit_trigger_queue = _p612_exit_trigger_priority_queue()
+    p649_fast_actionable_exit_due_truth = _p649_fast_actionable_exit_due_truth(limit=50)
+    p612_exit_trigger_queue = _p612_exit_trigger_priority_queue(
+        fast_due_truth=p649_fast_actionable_exit_due_truth,
+    )
     p634_ready_exit_retry_consumption = _p634_worker_consume_ready_exit_retries()
     if p634_ready_exit_retry_consumption.get("results"):
         results.extend(list(p634_ready_exit_retry_consumption.get("results") or []))
@@ -53330,6 +53415,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 reconcile=len(reconcile_actions),
                 p607_worker_budget_truth=p607_budget_truth,
                 p612_exit_trigger_queue=p612_exit_trigger_queue,
+                p649_fast_actionable_exit_due_truth=p649_fast_actionable_exit_due_truth,
                 p634_ready_exit_retry_consumption=p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             )
             return {
@@ -53341,6 +53427,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "results": results,
                 "p607_worker_budget_truth": p607_budget_truth,
                 "p612_exit_trigger_queue": p612_exit_trigger_queue,
+                "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth,
                 "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             }
 
@@ -53794,6 +53881,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "daily_goal_preservation": daily_goal_preservation if "daily_goal_preservation" in locals() else {},
                 "p607_worker_budget_truth": p607_final_budget_truth,
                 "p612_exit_trigger_queue": p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
+                "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth if "p649_fast_actionable_exit_due_truth" in locals() else {},
                 "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             },
         )
@@ -53807,6 +53895,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         trades_today_worker_exit_forcing_isolated=bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
         p607_worker_budget_truth=p607_final_budget_truth,
         p612_exit_trigger_queue=p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
+        p649_fast_actionable_exit_due_truth=p649_fast_actionable_exit_due_truth if "p649_fast_actionable_exit_due_truth" in locals() else {},
         p634_ready_exit_retry_consumption=p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
         snapshot_deferred_for_budget=bool(p607_final_budget_truth.get("budget_exceeded")),
     )
@@ -53818,6 +53907,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         "results": results,
         "p607_worker_budget_truth": p607_final_budget_truth,
         "p612_exit_trigger_queue": p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
+        "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth if "p649_fast_actionable_exit_due_truth" in locals() else {},
         "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
         "snapshot_deferred_for_budget": bool(p607_final_budget_truth.get("budget_exceeded")),
     }
@@ -68493,11 +68583,28 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         and (age_sec is None or age_sec <= worker_error_fresh_window_sec)
     )
     sync_contract_ok = len(fresh_sync_guard_rows) == 0
+    try:
+        active_exit_truth = _p620_active_exit_protection_truth_fast(limit=limit)
+    except Exception as exc:
+        active_exit_truth = {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "active_exit_protection_truth_fast",
+            "error": str(exc),
+            "summary": {},
+            "actionable_exit_watch": [],
+        }
+    p649_fast_actionable_exit_due_truth = _p649_fast_actionable_exit_due_truth(
+        limit=limit,
+        active_exit_truth=active_exit_truth,
+    )
+    p649_due_count = int(p649_fast_actionable_exit_due_truth.get("due_count") or 0)
     p619_light_endpoint_defers_active_exit_gap_check = bool(
         sync_contract_ok
         and not heartbeat_error_fresh
         and not started_stale
         and not error_like
+        and p649_due_count <= 0
     )
     if p619_light_endpoint_defers_active_exit_gap_check:
         p612_exit_worker_gap_truth = {
@@ -68511,12 +68618,20 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
             "active_exit_endpoint": "/diagnostics/active_exit_protection_truth?limit=20",
         }
     else:
-        p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status)
+        p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(
+            display_status,
+            active_exit_truth=active_exit_truth,
+        )
     p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
     healthy = bool(not heartbeat_error_fresh and not started_stale and sync_contract_ok and not error_like and not p612_exit_worker_gap_unhealthy)
 
     if started_stale:
         recommended_action = "inspect_worker_exit_status_heavy"
+    elif p649_due_count > 0 and bool(p649_fast_actionable_exit_due_truth.get("market_open")):
+        recommended_action = str(
+            p649_fast_actionable_exit_due_truth.get("recommended_action")
+            or "worker_exit_should_fast_drain_actionable_due_symbols"
+        )
     elif p612_exit_worker_gap_unhealthy:
         recommended_action = str(p612_exit_worker_gap_truth.get("recommended_action") or "inspect_active_exit_protection_truth")
     elif not sync_contract_ok:
@@ -68577,12 +68692,13 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         },
         "active_exit_summary": p612_exit_worker_gap_truth,
         "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
+        "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth,
         "p619_worker_exit_light_deferral": {
             "active_exit_gap_check_deferred": bool(p619_light_endpoint_defers_active_exit_gap_check),
             "reason": (
                 "fast_light_endpoint_uses_worker_heartbeat_and_recent_decisions_only"
                 if p619_light_endpoint_defers_active_exit_gap_check
-                else "fresh_error_or_stale_started_status_requires_gap_check"
+                else "fast_actionable_exit_due_or_worker_health_requires_gap_check"
             ),
             "heavy_endpoint": "/diagnostics/worker_exit_status?detail=heavy",
             "active_exit_endpoint": "/diagnostics/active_exit_protection_truth?limit=20",
@@ -68734,8 +68850,22 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     exit_retry_action = str(exit_retry_readiness.get("recommended_action") or "none")
     exit_retry_action_required = bool(exit_retry_readiness.get("action_required"))
     exit_retry_clean = bool(exit_retry_action in {"", "none"} or not exit_retry_action_required)
-    active_exit_truth = _p620_active_exit_protection_truth_fast(limit=limit)
+    try:
+        active_exit_truth = _p620_active_exit_protection_truth_fast(limit=limit)
+    except Exception as exc:
+        active_exit_truth = {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "active_exit_protection_truth_fast",
+            "error": str(exc),
+            "summary": {},
+            "actionable_exit_watch": [],
+        }
     active_exit_summary = dict(active_exit_truth.get("summary") or {})
+    p649_fast_actionable_exit_due_truth = _p649_fast_actionable_exit_due_truth(
+        limit=limit,
+        active_exit_truth=active_exit_truth,
+    )
     p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status, active_exit_truth=active_exit_truth)
     p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
     final_healthy = bool(healthy_base and sync_contract_ok and risk_evidence_ok and exit_retry_clean and not p612_exit_worker_gap_unhealthy)
@@ -68818,6 +68948,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             "health_uses_current_due_retry_truth": True,
         },
         "p612_exit_worker_gap_truth": p612_exit_worker_gap_truth,
+        "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
