@@ -3112,7 +3112,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-657-stall-loss-already-taken-terminal-cleanup-rotation-release-actionability-truth"
+PATCH_VERSION = "patch-658-worker-exit-due-first-fast-drain-worker-status-active-truth-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51338,6 +51338,183 @@ def _p612_order_exit_plan_items(plan_items: list[tuple], priority_symbols: list[
     return ordered
 
 
+def _p658_worker_drain_exit_trigger_queue(
+    queue: dict | None,
+    *,
+    worker_started_monotonic: float,
+    reconcile_actions: list[dict] | None = None,
+    max_symbols: int = 5,
+) -> dict:
+    q = dict(queue or {})
+    rows = [
+        dict(row or {})
+        for row in list(q.get("rows") or [])
+        if isinstance(row, dict)
+        and bool(row.get("exit_trigger_now"))
+        and bool(row.get("exit_actionable_now", True))
+        and str(row.get("symbol") or "").strip()
+    ]
+    if not rows:
+        return {
+            "ok": True,
+            "patch_version": PATCH_VERSION,
+            "mode": "worker_exit_due_first_fast_drain",
+            "enabled": True,
+            "attempted_count": 0,
+            "attempted_symbols": [],
+            "closed_count": 0,
+            "closed_symbols": [],
+            "pending_close_symbols": [],
+            "blocked_symbols": [],
+            "error_symbols": [],
+            "results": [],
+            "recommended_action": "no_priority_due_exits_to_drain",
+        }
+
+    lim = max(1, min(int(max_symbols or 5), 20))
+    results: list[dict] = []
+    attempted_symbols: list[str] = []
+    closed_symbols: list[str] = []
+    pending_close_symbols: list[str] = []
+    blocked_symbols: list[str] = []
+    error_symbols: list[str] = []
+    rows_by_symbol: dict[str, dict] = {}
+    for row in rows:
+        sym = str(row.get("symbol") or "").strip().upper()
+        if sym and sym not in rows_by_symbol:
+            rows_by_symbol[sym] = row
+
+    for symbol in list(rows_by_symbol)[:lim]:
+        row = rows_by_symbol[symbol]
+        plan = TRADE_PLAN.get(symbol)
+        if not isinstance(plan, dict) or not bool(plan.get("active")):
+            results.append({
+                "symbol": symbol,
+                "action": "due_first_exit_skipped",
+                "reason": "active_plan_missing",
+                "p658_due_row": row,
+            })
+            blocked_symbols.append(symbol)
+            continue
+
+        reason = str(row.get("closest_exit_reason") or row.get("reason") or "exit").strip() or "exit"
+        attempted_symbols.append(symbol)
+        plan["last_exit_attempt_ts"] = utc_ts()
+        try:
+            if same_day_exit_blocked(plan, reason=reason):
+                result = _p612_same_day_exit_fast_forward_result(
+                    symbol,
+                    plan,
+                    reason,
+                    p658_due_first_fast_drain=True,
+                    p658_due_row=row,
+                )
+            else:
+                out = close_position(symbol, reason=reason, source="worker_exit")
+                result = {
+                    "symbol": symbol,
+                    "action": "due_first_exit_submitted" if out.get("closed") else _p613_worker_exit_action(out, f"{reason}_failed"),
+                    "reason": reason,
+                    "price": row.get("current_price"),
+                    "p658_due_first_fast_drain": True,
+                    "p658_due_row": row,
+                    **dict(out or {}),
+                }
+                if out.get("closed"):
+                    plan["active"] = False
+                    closed_symbols.append(symbol)
+                    try:
+                        px = _safe_float(row.get("current_price") or get_latest_price(symbol), 0.0)
+                    except Exception:
+                        px = 0.0
+                    _append_strategy_closed_trade(plan, px, reason=reason, source="worker_exit")
+                elif out.get("pending_close_order"):
+                    pending_close_symbols.append(symbol)
+                else:
+                    blocked_symbols.append(symbol)
+            results.append(result)
+            record_decision(
+                "EXIT",
+                "worker_exit",
+                symbol,
+                side=str((plan or {}).get("side") or "buy"),
+                signal=str((plan or {}).get("signal") or ""),
+                action=str(result.get("action") or "due_first_exit_attempted"),
+                reason=reason,
+                price=row.get("current_price"),
+                qty=result.get("qty"),
+                order_id=result.get("order_id"),
+                meta={
+                    "p658_due_first_fast_drain": True,
+                    "p658_due_row": row,
+                    "p607_worker_budget_truth": _p607_worker_budget_truth(worker_started_monotonic, stage=f"p658_after_due_first:{symbol}"),
+                },
+            )
+        except Exception as exc:
+            error_symbols.append(symbol)
+            err = {
+                "symbol": symbol,
+                "action": "due_first_exit_error",
+                "reason": reason,
+                "error": str(exc),
+                "p658_due_first_fast_drain": True,
+                "p658_due_row": row,
+            }
+            results.append(err)
+            record_decision(
+                "EXIT",
+                "worker_exit",
+                symbol,
+                action="due_first_exit_error",
+                reason=f"{reason}:{exc}",
+                meta={"p658_due_first_fast_drain": True, "p658_due_row": row},
+            )
+
+    attempted_symbols = _dedupe_keep_order(attempted_symbols)
+    closed_symbols = _dedupe_keep_order(closed_symbols)
+    pending_close_symbols = _dedupe_keep_order(pending_close_symbols)
+    blocked_symbols = _dedupe_keep_order(blocked_symbols)
+    error_symbols = _dedupe_keep_order(error_symbols)
+    not_terminal_symbols = [
+        sym for sym in attempted_symbols
+        if sym not in set(closed_symbols) | set(pending_close_symbols) | set(error_symbols)
+    ]
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "worker_exit_due_first_fast_drain",
+        "enabled": True,
+        "source": "exit_trigger_priority_queue_before_heavy_worker_sections",
+        "does_not_add_trade_gate": True,
+        "changes_entry_behavior": False,
+        "attempted_count": len(attempted_symbols),
+        "attempted_symbols": attempted_symbols,
+        "closed_count": len(closed_symbols),
+        "closed_symbols": closed_symbols,
+        "pending_close_count": len(pending_close_symbols),
+        "pending_close_symbols": pending_close_symbols,
+        "blocked_count": len(blocked_symbols),
+        "blocked_symbols": blocked_symbols,
+        "error_count": len(error_symbols),
+        "error_symbols": error_symbols,
+        "not_terminal_symbols": not_terminal_symbols,
+        "results": results,
+        "p607_worker_budget_truth": _p607_worker_budget_truth(worker_started_monotonic, stage="p658_due_first_fast_drain_done"),
+        "reconcile_count": len(list(reconcile_actions or [])),
+        "recommended_action": (
+            "verify_pending_close_orders"
+            if pending_close_symbols
+            else "inspect_due_first_exit_errors"
+            if error_symbols
+            else "rerun_worker_exit_for_remaining_due_symbols"
+            if blocked_symbols or not_terminal_symbols
+            else "monitor_active_positions"
+            if closed_symbols
+            else "continue_exit_cycle"
+        ),
+    }
+
+
 def _p634_worker_consume_ready_exit_retries(limit: int = 20) -> dict:
     readiness = _p390_exit_submit_retry_readiness(limit=limit)
     rows = [
@@ -53083,6 +53260,13 @@ def worker_exit(body: dict = Body(default_factory=dict)):
     p612_exit_trigger_queue = _p612_exit_trigger_priority_queue(
         fast_due_truth=p649_fast_actionable_exit_due_truth,
     )
+    p658_due_first_fast_drain = _p658_worker_drain_exit_trigger_queue(
+        p612_exit_trigger_queue,
+        worker_started_monotonic=worker_started_monotonic,
+        reconcile_actions=reconcile_actions,
+    )
+    if p658_due_first_fast_drain.get("results"):
+        results.extend(list(p658_due_first_fast_drain.get("results") or []))
     p634_ready_exit_retry_consumption = _p634_worker_consume_ready_exit_retries()
     if p634_ready_exit_retry_consumption.get("results"):
         results.extend(list(p634_ready_exit_retry_consumption.get("results") or []))
@@ -53179,6 +53363,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 p607_worker_budget_truth=p607_budget_truth,
                 p612_exit_trigger_queue=p612_exit_trigger_queue,
                 p649_fast_actionable_exit_due_truth=p649_fast_actionable_exit_due_truth,
+                p658_due_first_fast_drain=p658_due_first_fast_drain if "p658_due_first_fast_drain" in locals() else {},
                 p634_ready_exit_retry_consumption=p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             )
             return {
@@ -53191,6 +53376,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "p607_worker_budget_truth": p607_budget_truth,
                 "p612_exit_trigger_queue": p612_exit_trigger_queue,
                 "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth,
+                "p658_due_first_fast_drain": p658_due_first_fast_drain if "p658_due_first_fast_drain" in locals() else {},
                 "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             }
 
@@ -53645,6 +53831,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
                 "p607_worker_budget_truth": p607_final_budget_truth,
                 "p612_exit_trigger_queue": p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
                 "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth if "p649_fast_actionable_exit_due_truth" in locals() else {},
+                "p658_due_first_fast_drain": p658_due_first_fast_drain if "p658_due_first_fast_drain" in locals() else {},
                 "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
             },
         )
@@ -53659,6 +53846,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         p607_worker_budget_truth=p607_final_budget_truth,
         p612_exit_trigger_queue=p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
         p649_fast_actionable_exit_due_truth=p649_fast_actionable_exit_due_truth if "p649_fast_actionable_exit_due_truth" in locals() else {},
+        p658_due_first_fast_drain=p658_due_first_fast_drain if "p658_due_first_fast_drain" in locals() else {},
         p634_ready_exit_retry_consumption=p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
         snapshot_deferred_for_budget=bool(p607_final_budget_truth.get("budget_exceeded")),
     )
@@ -53671,6 +53859,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         "p607_worker_budget_truth": p607_final_budget_truth,
         "p612_exit_trigger_queue": p612_exit_trigger_queue if "p612_exit_trigger_queue" in locals() else {},
         "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth if "p649_fast_actionable_exit_due_truth" in locals() else {},
+        "p658_due_first_fast_drain": p658_due_first_fast_drain if "p658_due_first_fast_drain" in locals() else {},
         "p634_ready_exit_retry_consumption": p634_ready_exit_retry_consumption if "p634_ready_exit_retry_consumption" in locals() else {},
         "snapshot_deferred_for_budget": bool(p607_final_budget_truth.get("budget_exceeded")),
     }
@@ -68321,6 +68510,68 @@ def _p643_ready_exit_retry_consumption_status(heartbeat: dict | None) -> dict:
     }
 
 
+def _p658_worker_due_first_drain_status(heartbeat: dict | None) -> dict:
+    hb = dict(heartbeat or {})
+    queue = dict(hb.get("p612_exit_trigger_queue") or {})
+    drain = dict(hb.get("p658_due_first_fast_drain") or {})
+    due_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(queue.get("symbols") or [])
+        if str(sym or "").strip()
+    ])
+    attempted_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(drain.get("attempted_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    closed_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(drain.get("closed_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    pending_close_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(drain.get("pending_close_symbols") or [])
+        if str(sym or "").strip()
+    ])
+    unresolved_symbols = [
+        sym for sym in due_symbols
+        if sym not in set(closed_symbols) | set(pending_close_symbols)
+    ]
+    status = str(hb.get("status") or "").strip().lower()
+    budget_fast_close = status == "budget_fast_close"
+    attempted_all_due = bool(due_symbols and set(due_symbols).issubset(set(attempted_symbols)))
+    missing_attempt_symbols = [sym for sym in due_symbols if sym not in set(attempted_symbols)]
+    unhealthy = bool(budget_fast_close and due_symbols and missing_attempt_symbols)
+    return {
+        "enabled": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "worker_due_first_drain_status",
+        "heartbeat_status": status,
+        "budget_fast_close": budget_fast_close,
+        "queue_due_count": len(due_symbols),
+        "queue_due_symbols": due_symbols,
+        "attempted_count": len(attempted_symbols),
+        "attempted_symbols": attempted_symbols,
+        "attempted_all_due_symbols": attempted_all_due,
+        "missing_attempt_count": len(missing_attempt_symbols),
+        "missing_attempt_symbols": missing_attempt_symbols,
+        "closed_symbols": closed_symbols,
+        "pending_close_symbols": pending_close_symbols,
+        "unresolved_due_symbols": unresolved_symbols,
+        "status_unhealthy": unhealthy,
+        "recommended_action": (
+            "worker_exit_due_first_drain_missing_attempts"
+            if unhealthy
+            else "monitor_pending_close_orders"
+            if pending_close_symbols
+            else "monitor_active_positions"
+            if closed_symbols
+            else "none"
+        ),
+    }
+
+
 def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
     now_utc = datetime.now(timezone.utc)
     hb = dict(LAST_EXIT_HEARTBEAT or {})
@@ -68422,6 +68673,7 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
     p604_heartbeat_truth = _p604_worker_exit_effective_heartbeat_truth(hb, recent)
     display_hb = _p608_worker_display_heartbeat(hb, p604_heartbeat_truth)
     p643_ready_retry_consumption_status = _p643_ready_exit_retry_consumption_status(display_hb)
+    p658_due_first_drain_status = _p658_worker_due_first_drain_status(display_hb)
     display_status = str(display_hb.get("status") or "").lower()
     effective_terminal_status_seen = bool(p604_heartbeat_truth.get("effective_terminal_status_seen"))
     stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
@@ -68477,10 +68729,23 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
             active_exit_truth=active_exit_truth,
         )
     p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
-    healthy = bool(not heartbeat_error_fresh and not started_stale and sync_contract_ok and not error_like and not p612_exit_worker_gap_unhealthy)
+    p658_due_first_unhealthy = bool(p658_due_first_drain_status.get("status_unhealthy"))
+    healthy = bool(
+        not heartbeat_error_fresh
+        and not started_stale
+        and sync_contract_ok
+        and not error_like
+        and not p612_exit_worker_gap_unhealthy
+        and not p658_due_first_unhealthy
+    )
 
     if started_stale:
         recommended_action = "inspect_worker_exit_status_heavy"
+    elif p658_due_first_unhealthy:
+        recommended_action = str(
+            p658_due_first_drain_status.get("recommended_action")
+            or "worker_exit_due_first_drain_missing_attempts"
+        )
     elif p649_due_count > 0 and bool(p649_fast_actionable_exit_due_truth.get("market_open")):
         recommended_action = str(
             p649_fast_actionable_exit_due_truth.get("recommended_action")
@@ -68518,6 +68783,7 @@ def _p535_worker_exit_status_light_snapshot(limit: int = 10) -> dict:
         },
         "p604_worker_exit_effective_heartbeat_truth": p604_heartbeat_truth,
         "p643_ready_exit_retry_consumption_status": p643_ready_retry_consumption_status,
+        "p658_worker_due_first_drain_status": p658_due_first_drain_status,
         "started_stale": started_stale,
         "started_stale_sec": stale_threshold,
         "terminal_status_seen": terminal_status_seen,
@@ -68672,6 +68938,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     status = str(hb.get("status") or "").lower()
     p604_heartbeat_truth = _p604_worker_exit_effective_heartbeat_truth(hb, recent)
     display_hb = _p608_worker_display_heartbeat(hb, p604_heartbeat_truth)
+    p658_due_first_drain_status = _p658_worker_due_first_drain_status(display_hb)
     display_status = str(display_hb.get("status") or "").lower()
     effective_terminal_status_seen = bool(p604_heartbeat_truth.get("effective_terminal_status_seen"))
     stale_threshold = max(1, int(WORKER_EXIT_STARTED_STALE_SEC or 180))
@@ -68722,10 +68989,23 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
     )
     p612_exit_worker_gap_truth = _p612_active_exit_worker_gap_truth(display_status, active_exit_truth=active_exit_truth)
     p612_exit_worker_gap_unhealthy = bool(p612_exit_worker_gap_truth.get("status_unhealthy"))
-    final_healthy = bool(healthy_base and sync_contract_ok and risk_evidence_ok and exit_retry_clean and not p612_exit_worker_gap_unhealthy)
+    p658_due_first_unhealthy = bool(p658_due_first_drain_status.get("status_unhealthy"))
+    final_healthy = bool(
+        healthy_base
+        and sync_contract_ok
+        and risk_evidence_ok
+        and exit_retry_clean
+        and not p612_exit_worker_gap_unhealthy
+        and not p658_due_first_unhealthy
+    )
 
     if started_stale:
         recommended_action = "investigate_worker_exit_started_without_completion"
+    elif p658_due_first_unhealthy:
+        recommended_action = str(
+            p658_due_first_drain_status.get("recommended_action")
+            or "worker_exit_due_first_drain_missing_attempts"
+        )
     elif p612_exit_worker_gap_unhealthy:
         recommended_action = str(p612_exit_worker_gap_truth.get("recommended_action") or "inspect_active_exit_protection_truth")
     elif not sync_contract_ok:
@@ -68790,6 +69070,7 @@ def _worker_exit_status_snapshot(limit: int = 20) -> dict:
             "recommended_action": "use_canonical_fast_due_truth_for_worker_health",
         },
         "p634_ready_exit_retry_consumption": hb.get("p634_ready_exit_retry_consumption") or {},
+        "p658_worker_due_first_drain_status": p658_due_first_drain_status,
         "p635_exit_worker_health_recommendation_cleanup": {
             "enabled": True,
             "exit_retry_action": exit_retry_action,
