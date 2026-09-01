@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-654-broker-reconciled-attribution-report-extraction"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-655-broker-attribution-snapshot-cache-alignment-coverage-sync"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1127,6 +1127,7 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "fast_performance_alignment_brief_shape",
             "heavy_performance_alignment_deferral_shape",
             "broker_reconciled_strategy_attribution_report_shape",
+            "broker_reconciled_attribution_snapshot_cache_contract",
             "profit_path_truth_contract_shape",
         ],
         "next_extraction_target": "move_performance_report_row_collection_out_of_app",

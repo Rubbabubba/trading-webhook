@@ -1751,6 +1751,14 @@ STRATEGY_PERFORMANCE_STATE_PATH = getenv_any("STRATEGY_PERFORMANCE_STATE_PATH", 
 STRATEGY_PERFORMANCE_QUARANTINE_SOURCES = {"broker_truth_sync", "broker_truth_reconcile", "manual_exit_reconciled", "broker_rebuild", "broker_manual_exit", "manual_broker_exit"}
 STRATEGY_PERFORMANCE_QUARANTINE_PATH = getenv_any("STRATEGY_PERFORMANCE_QUARANTINE_PATH", default="/var/data/strategy_performance_state.quarantine.json")
 STRATEGY_PERFORMANCE_HISTORY_LIMIT = getenv_int_any("STRATEGY_PERFORMANCE_HISTORY_LIMIT", default=200)
+BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_PATH = getenv_any(
+    "BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_PATH",
+    default="/var/data/broker_reconciled_strategy_attribution_snapshot.json",
+)
+BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_TTL_SEC = getenv_int_any(
+    "BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_TTL_SEC",
+    default=900,
+)
 
 SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET = getenv_int_any("SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET", default=3)
 SWING_PERFORMANCE_PROMOTE_MIN_TRADES = getenv_int_any("SWING_PERFORMANCE_PROMOTE_MIN_TRADES", default=5)
@@ -2426,6 +2434,7 @@ SAME_DAY_EXIT_SUBMIT_LOCKS: dict = {}
 LAST_SWING_CANDIDATES: list[dict] = []
 P481_FAST_PAYLOAD_ADOPTION_IN_PROGRESS = False
 STRATEGY_PERFORMANCE_STATE: dict = {"closed_trades": [], "by_strategy": {}, "kill_switch": {}}
+BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_CACHE: dict = {}
 LAST_REGIME_SNAPSHOT: dict = {}
 SCAN_STATE_RESTORE: dict = {}
 REGIME_STATE_RESTORE: dict = {}
@@ -3103,7 +3112,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-654-broker-reconciled-attribution-report-extraction"
+PATCH_VERSION = "patch-655-broker-attribution-snapshot-cache-alignment-coverage-sync"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -20436,7 +20445,62 @@ def _p245_broker_preferred_performance_snapshot() -> dict:
         "recommended_action": "use_broker_only_daily_loss_truth_for_daily_pnl; use_this_endpoint_for_strategy_state_drift_only",
     }
 
-def _p442_broker_reconciled_strategy_attribution_report(limit: int = 20) -> dict:
+
+def _p655_broker_attribution_cache_age_sec(payload: dict | None = None) -> float | None:
+    payload = dict(payload or {})
+    ts = payload.get("generated_monotonic")
+    if ts is not None:
+        return max(0.0, _time.monotonic() - _safe_float(ts, 0.0))
+    generated = _safe_parse_iso_utc(payload.get("generated_utc")) if payload.get("generated_utc") else None
+    if generated:
+        return max(0.0, (datetime.now(timezone.utc) - generated).total_seconds())
+    return None
+
+
+def _p655_load_broker_attribution_snapshot_cache() -> dict:
+    cached = dict(BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_CACHE or {})
+    if cached.get("ok"):
+        cached["cache_source"] = cached.get("cache_source") or "memory"
+        return cached
+    persisted = _safe_json_read(BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_PATH)
+    if persisted.get("ok"):
+        persisted["cache_source"] = persisted.get("cache_source") or "disk"
+        BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_CACHE.clear()
+        BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_CACHE.update(persisted)
+        return dict(persisted)
+    return {}
+
+
+def _p655_store_broker_attribution_snapshot_cache(payload: dict | None, *, source: str) -> dict:
+    snap = dict(payload or {})
+    if not snap.get("ok"):
+        return {"stored": False, "reason": "payload_not_ok"}
+    snap["generated_utc"] = datetime.now(timezone.utc).isoformat()
+    snap["generated_monotonic"] = _time.monotonic()
+    snap["cache_source"] = source
+    snap["p655_broker_attribution_snapshot_cache"] = {
+        "enabled": True,
+        "snapshot_path": BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_PATH,
+        "ttl_sec": int(BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_TTL_SEC or 0),
+        "source": source,
+        "stored": True,
+    }
+    BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_CACHE.clear()
+    BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_CACHE.update(snap)
+    _safe_json_write(BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_PATH, snap)
+    return snap
+
+
+def _p655_in_memory_broker_reconciled_rows() -> list[dict]:
+    state = dict(STRATEGY_PERFORMANCE_STATE or {})
+    return [
+        dict(row or {})
+        for row in list(state.get("closed_trades") or [])
+        if isinstance(row, dict) and _p245_is_broker_reconciled_exit(row)
+    ]
+
+
+def _p442_broker_reconciled_strategy_attribution_report(limit: int = 20, refresh: bool = False) -> dict:
     preferred = _p245_broker_preferred_closed_rows()
     rows = [
         dict(r or {})
@@ -20452,6 +20516,66 @@ def _p442_broker_reconciled_strategy_attribution_report(limit: int = 20) -> dict
         breakout_dollar_risk_max_dollars=float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0),
         limit=limit,
     )
+    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+    return payload
+
+
+def _p655_broker_reconciled_strategy_attribution_snapshot(limit: int = 20, refresh: bool = False) -> dict:
+    lim = max(1, min(int(limit or 20), 100))
+    if refresh:
+        payload = _p442_broker_reconciled_strategy_attribution_report(limit=lim, refresh=True)
+        payload = _p655_store_broker_attribution_snapshot_cache(payload, source="explicit_refresh")
+        payload["p655_broker_attribution_snapshot_cache"]["cache_hit"] = False
+        payload["p655_broker_attribution_snapshot_cache"]["refresh_requested"] = True
+        return payload
+
+    cached = _p655_load_broker_attribution_snapshot_cache()
+    cache_age = _p655_broker_attribution_cache_age_sec(cached)
+    ttl = max(1, int(BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_TTL_SEC or 900))
+    if cached.get("ok"):
+        cached["patch_version"] = PATCH_VERSION
+        cached["cache_hit"] = True
+        cached["cache_age_sec"] = round(cache_age, 2) if cache_age is not None else None
+        cached["cache_stale"] = bool(cache_age is not None and cache_age > ttl)
+        cached.setdefault("p655_broker_attribution_snapshot_cache", {})
+        cached["p655_broker_attribution_snapshot_cache"].update({
+            "enabled": True,
+            "cache_hit": True,
+            "refresh_requested": False,
+            "cache_source": cached.get("cache_source") or "memory_or_disk",
+            "cache_age_sec": cached.get("cache_age_sec"),
+            "cache_stale": cached.get("cache_stale"),
+            "ttl_sec": ttl,
+            "snapshot_path": BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_PATH,
+            "explicit_refresh_endpoint": "/diagnostics/broker_reconciled_strategy_attribution?refresh=true&limit=20",
+        })
+        cached["recommended_action"] = cached.get("recommended_action") or "use_cached_broker_attribution_for_operator_review"
+        return cached
+
+    rows = _p655_in_memory_broker_reconciled_rows()
+    payload = swing_perf_build_broker_reconciled_strategy_attribution_report(
+        patch_version=PATCH_VERSION,
+        rows=rows,
+        shadowed_worker_count=0,
+        broker_fill_duplicate_count=0,
+        breakout_dollar_risk_containment_enabled=bool(SWING_BREAKOUT_DOLLAR_RISK_CONTAINMENT_ENABLED),
+        breakout_dollar_risk_max_dollars=float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0),
+        limit=lim,
+    )
+    payload["source"] = "in_memory_strategy_state_no_heavy_broker_rebuild"
+    payload["cache_hit"] = False
+    payload["p655_broker_attribution_snapshot_cache"] = {
+        "enabled": True,
+        "cache_hit": False,
+        "refresh_requested": False,
+        "fallback_source": "in_memory_strategy_state",
+        "snapshot_path": BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_PATH,
+        "explicit_refresh_endpoint": "/diagnostics/broker_reconciled_strategy_attribution?refresh=true&limit=20",
+        "adds_trade_gate": False,
+        "changes_submit_behavior": False,
+        "changes_exit_behavior": False,
+        "does_not_submit_orders": True,
+    }
     payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
     return payload
 
@@ -61274,10 +61398,49 @@ def _p418_swing_performance_alignment_brief_heavy(limit: int = 10) -> dict:
         "recommended_action": recommended_action,
     }
 
-def _p652_fast_swing_performance_alignment_brief(limit: int = 10) -> dict:
-    lim = max(1, min(int(limit or 10), 50))
+def _p655_latest_scan_summary_for_alignment() -> tuple[dict, dict, dict]:
     latest_scan, summary = _p298_latest_scan_summary_light()
     coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
+    raw_reason = str((latest_scan or {}).get("reason") or "").strip().lower()
+    sync = {
+        "enabled": True,
+        "raw_latest_reason": raw_reason,
+        "raw_matches_runtime": bool(coverage.get("matches_runtime")),
+        "replacement_source": None,
+        "replacement_matches_runtime": False,
+        "adds_trade_gate": False,
+        "changes_submit_behavior": False,
+        "changes_exit_behavior": False,
+    }
+    if (
+        not bool(coverage.get("matches_runtime"))
+        and raw_reason == "fast_payload_candidate_fallback"
+        and LAST_SUCCESSFUL_PRODUCTION_SCAN
+    ):
+        preserved = dict(LAST_SUCCESSFUL_PRODUCTION_SCAN or {})
+        preserved_summary = dict(preserved.get("summary") or {})
+        preserved_coverage = _p404_runtime_universe_coverage(
+            latest_scan=preserved,
+            summary=preserved_summary,
+        )
+        if bool(preserved_coverage.get("matches_runtime")):
+            preserved["_scan_source"] = preserved.get("_scan_source") or "last_successful_production_scan"
+            preserved["source"] = preserved.get("source") or "last_successful_production_scan"
+            sync.update({
+                "replacement_source": "last_successful_production_scan",
+                "replacement_matches_runtime": True,
+            })
+            preserved_summary["p655_alignment_coverage_source_sync"] = sync
+            return preserved, preserved_summary, preserved_coverage
+
+    summary = dict(summary or {})
+    summary["p655_alignment_coverage_source_sync"] = sync
+    return latest_scan, summary, coverage
+
+
+def _p652_fast_swing_performance_alignment_brief(limit: int = 10) -> dict:
+    lim = max(1, min(int(limit or 10), 50))
+    latest_scan, summary, coverage = _p655_latest_scan_summary_for_alignment()
     current_truth = _p277h_current_scan_suppression_truth(limit=lim)
     opportunity = _p644_daily_goal_opportunity_map(limit=max(lim, 10))
     rotation = _p637_capital_rotation_readiness_audit(limit=max(lim, 10))
@@ -61292,6 +61455,7 @@ def _p652_fast_swing_performance_alignment_brief(limit: int = 10) -> dict:
         limit=lim,
     )
     payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+    payload["p655_alignment_coverage_source_sync"] = dict(summary.get("p655_alignment_coverage_source_sync") or {})
     return payload
 
 @app.get("/diagnostics/swing_performance_attribution")
@@ -68715,10 +68879,27 @@ def diagnostics_broker_preferred_performance():
     return payload
 
 @app.get("/diagnostics/broker_reconciled_strategy_attribution")
-def diagnostics_broker_reconciled_strategy_attribution(limit: int = 20):
-    _ensure_runtime_state_loaded()
-    _recompute_strategy_performance_state()
-    return JSONResponse(content=_p442_broker_reconciled_strategy_attribution_report(limit=limit))
+def diagnostics_broker_reconciled_strategy_attribution(
+    request: Request,
+    limit: int = 20,
+    refresh: bool = False,
+    force_refresh: bool = False,
+):
+    require_admin_if_configured(request)
+    detail = str(request.query_params.get("detail") or "").strip().lower()
+    refresh_requested = bool(refresh or force_refresh) or detail in {
+        "refresh",
+        "heavy",
+        "full",
+        "recompute",
+    }
+    if refresh_requested:
+        _ensure_runtime_state_loaded()
+        _recompute_strategy_performance_state()
+    return JSONResponse(content=_p655_broker_reconciled_strategy_attribution_snapshot(
+        limit=limit,
+        refresh=refresh_requested,
+    ))
 
 @app.get("/diagnostics/breakout_dollar_risk_containment")
 def diagnostics_breakout_dollar_risk_containment(limit: int = 20):
