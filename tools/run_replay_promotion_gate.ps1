@@ -1,6 +1,7 @@
 param(
     [string]$InputDir = "",
     [string]$OutputDir = "$env:USERPROFILE\TradingDiagnostics\replay_promotion_gate",
+    [int]$MinWindows = 2,
     [int]$MinTrades = 10,
     [double]$MinTotalPnl = 0.0,
     [double]$MinAvgR = 0.05,
@@ -39,6 +40,7 @@ if ([string]::IsNullOrWhiteSpace($PythonExe) -or -not (Test-Path -LiteralPath $P
 $argsList = @(
     $scriptPath,
     "--output-dir", $OutputDir,
+    "--min-windows", $MinWindows,
     "--min-trades", $MinTrades,
     "--min-total-pnl", $MinTotalPnl,
     "--min-avg-r", $MinAvgR,

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-704-out-of-sample-replay-promotion-gate"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-704A-strict-replay-promotion-gate"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1649,7 +1649,7 @@ def _normalize_replay_summary(payload: dict | list | None) -> list[dict]:
     if isinstance(payload, list):
         return [dict(r or {}) for r in payload if isinstance(r, dict)]
     data = dict(payload or {})
-    rows = data.get("rows") or data.get("scenario_matrix") or data.get("top_scenarios")
+    rows = data.get("rows") or data.get("scenario_matrix") or data.get("scenario_rows") or data.get("top_scenarios")
     if isinstance(rows, list):
         return [dict(r or {}) for r in rows if isinstance(r, dict)]
     summary = data.get("summary") if isinstance(data.get("summary"), dict) else data
@@ -1702,6 +1702,7 @@ def build_replay_promotion_gate_report(
     *,
     patch_version: str,
     replay_inputs: list[dict] | None,
+    min_windows: int = 2,
     min_trades: int = 10,
     min_total_pnl: float = 0.0,
     min_avg_r: float = 0.05,
@@ -1738,6 +1739,8 @@ def build_replay_promotion_gate_report(
             "total_pnl": 0.0,
             "avg_r_values": [],
             "win_rate_values": [],
+            "window_pnls": [],
+            "max_drawdown": 0.0,
             "blockers": [],
         })
         bucket["windows"] += 1
@@ -1745,6 +1748,8 @@ def build_replay_promotion_gate_report(
         bucket["total_pnl"] += _safe_float(row.get("total_pnl"), 0.0)
         bucket["avg_r_values"].append(_safe_float(row.get("avg_r"), 0.0))
         bucket["win_rate_values"].append(_safe_float(row.get("win_rate"), 0.0))
+        bucket["window_pnls"].append(_safe_float(row.get("total_pnl"), 0.0))
+        bucket["max_drawdown"] = max(_safe_float(bucket.get("max_drawdown"), 0.0), _safe_float(row.get("max_drawdown"), 0.0))
         bucket["blockers"].extend(list(row.get("blockers") or []))
         if row.get("status") == "pass":
             bucket["pass_windows"] += 1
@@ -1758,20 +1763,38 @@ def build_replay_promotion_gate_report(
         windows = max(1, int(bucket.get("windows") or 0))
         pass_windows = int(bucket.get("pass_windows") or 0)
         fail_windows = int(bucket.get("fail_windows") or 0)
-        status = "pass" if pass_windows == windows else "fail" if fail_windows else "watch"
+        watch_windows = int(bucket.get("watch_windows") or 0)
+        scenario_blockers = _dedupe_text(bucket.pop("blockers", []))
+        if windows < int(min_windows or 1):
+            scenario_blockers.append("below_min_replay_windows")
+        if any(_safe_float(v, 0.0) < float(min_total_pnl or 0.0) for v in list(bucket.get("window_pnls") or [])):
+            scenario_blockers.append("window_pnl_below_min")
+        status = (
+            "pass"
+            if not scenario_blockers and pass_windows == windows and windows >= int(min_windows or 1)
+            else "fail"
+            if fail_windows
+            else "watch"
+        )
+        promotion_ready = status == "pass"
+        research_candidate = bool(not promotion_ready and fail_windows == 0 and pass_windows > 0)
         scenarios.append({
             "scenario": bucket.get("scenario"),
             "status": status,
-            "promotion_ready": status == "pass",
+            "promotion_ready": promotion_ready,
+            "research_candidate": research_candidate,
             "windows": windows,
             "pass_windows": pass_windows,
-            "watch_windows": int(bucket.get("watch_windows") or 0),
+            "watch_windows": watch_windows,
             "fail_windows": fail_windows,
             "total_trades": int(bucket.get("total_trades") or 0),
             "total_pnl": round(_safe_float(bucket.get("total_pnl"), 0.0), 4),
             "avg_r": _avg(bucket.pop("avg_r_values", [])),
             "avg_win_rate": _avg(bucket.pop("win_rate_values", [])),
-            "blockers": _dedupe_text(bucket.pop("blockers", [])),
+            "best_window_pnl": round(max(list(bucket.get("window_pnls") or [0.0])), 4),
+            "worst_window_pnl": round(min(list(bucket.get("window_pnls") or [0.0])), 4),
+            "max_drawdown": round(_safe_float(bucket.get("max_drawdown"), 0.0), 4),
+            "blockers": _dedupe_text(scenario_blockers),
         })
     scenarios.sort(key=lambda r: (
         1 if r.get("promotion_ready") else 0,
@@ -1780,13 +1803,14 @@ def build_replay_promotion_gate_report(
     ), reverse=True)
 
     ready = [r for r in scenarios if bool(r.get("promotion_ready"))]
+    research = [r for r in scenarios if bool(r.get("research_candidate"))]
     watch = [r for r in scenarios if str(r.get("status") or "") == "watch"]
     fail = [r for r in scenarios if str(r.get("status") or "") == "fail"]
     recommended_action = (
-        "promote_passed_strategy_only_at_validation_or_reduced_risk"
+        "promote_top_passed_strategy_only_at_validation_or_reduced_risk"
         if ready
         else "keep_validation_pause_and_collect_more_out_of_sample_replay"
-        if watch
+        if watch or research
         else "do_not_promote_current_config"
     )
     return {
@@ -1799,21 +1823,27 @@ def build_replay_promotion_gate_report(
         "does_not_submit_orders": True,
         "changes_trade_behavior": False,
         "promotion_contract": {
+            "min_windows": int(min_windows or 1),
             "min_trades": int(min_trades or 0),
             "min_total_pnl": float(min_total_pnl or 0.0),
             "min_avg_r": float(min_avg_r or 0.0),
             "min_win_rate": float(min_win_rate or 0.0),
             "max_drawdown": float(max_drawdown or 0.0),
             "requires_all_windows_to_pass": True,
+            "requires_each_window_pnl_at_or_above_min": True,
+            "one_window_winners_are_research_only": True,
             "live_risk_mode_should_remain_validation_until_pass": True,
         },
         "window_count": len(list(replay_inputs or [])),
         "window_result_count": len(window_results),
         "scenario_count": len(scenarios),
         "promotion_ready_count": len(ready),
+        "research_candidate_count": len(research),
         "watch_count": len(watch),
         "fail_count": len(fail),
+        "deployable_top_scenarios": ready[:3],
         "promotion_ready_scenarios": ready[:lim],
+        "research_candidate_scenarios": research[:lim],
         "watch_scenarios": watch[:lim],
         "failed_scenarios": fail[:lim],
         "scenario_rows": scenarios[:lim],

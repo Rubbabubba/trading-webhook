@@ -1768,6 +1768,7 @@ REPLAY_PROMOTION_GATE_SNAPSHOT_PATH = getenv_any(
     "REPLAY_PROMOTION_GATE_SNAPSHOT_PATH",
     default="/var/data/replay_promotion_gate_snapshot.json",
 )
+REPLAY_PROMOTION_GATE_MIN_WINDOWS = getenv_int_any("REPLAY_PROMOTION_GATE_MIN_WINDOWS", default=2)
 REPLAY_PROMOTION_GATE_MIN_TRADES = getenv_int_any("REPLAY_PROMOTION_GATE_MIN_TRADES", default=10)
 REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL = getenv_float_any("REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL", default=0.0)
 REPLAY_PROMOTION_GATE_MIN_AVG_R = getenv_float_any("REPLAY_PROMOTION_GATE_MIN_AVG_R", default=0.05)
@@ -3195,7 +3196,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-704-out-of-sample-replay-promotion-gate"
+PATCH_VERSION = "patch-704A-strict-replay-promotion-gate"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23966,7 +23967,11 @@ def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
     cached = _safe_json_read(REPLAY_PROMOTION_GATE_SNAPSHOT_PATH)
     module_status = swing_perf_module_status(patch_version=PATCH_VERSION)
-    if str(cached.get("mode") or "") == "out_of_sample_replay_promotion_gate":
+    cached_contract = dict(cached.get("promotion_contract") or {}) if isinstance(cached.get("promotion_contract"), dict) else {}
+    if (
+        str(cached.get("mode") or "") == "out_of_sample_replay_promotion_gate"
+        and bool(cached_contract.get("one_window_winners_are_research_only"))
+    ):
         payload = dict(cached)
         payload["patch_version"] = PATCH_VERSION
         payload["cache_hit"] = True
@@ -23979,6 +23984,7 @@ def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
     payload = swing_perf_build_replay_promotion_gate_report(
         patch_version=PATCH_VERSION,
         replay_inputs=replay_inputs,
+        min_windows=int(REPLAY_PROMOTION_GATE_MIN_WINDOWS or 1),
         min_trades=int(REPLAY_PROMOTION_GATE_MIN_TRADES or 0),
         min_total_pnl=float(REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL or 0.0),
         min_avg_r=float(REPLAY_PROMOTION_GATE_MIN_AVG_R or 0.0),

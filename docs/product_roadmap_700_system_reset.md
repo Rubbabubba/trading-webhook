@@ -303,13 +303,15 @@ Post-deploy endpoints:
 
 Goal: convert replay outputs into a pass/fail promotion report.
 
-Status: implemented as a read-only promotion contract.
+Status: implemented as a read-only promotion contract; Patch 704A tightened the gate so one-window winners are research candidates, not deployable candidates.
 
 Scope:
 
 - Replay current config across multiple windows.
 - Mark each strategy/profile as pass, watch, or fail.
 - Require positive out-of-sample expectancy before normal live allocation.
+- Require at least two replay windows before a scenario can be promotion-ready.
+- Require each represented window to meet the minimum P/L threshold.
 - Store scenario results under `tools`/diagnostics instead of adding route clutter to `app.py`.
 - Keep Render behavior passive: the production endpoint reports a snapshot and never fetches bars, runs replay, or submits orders.
 
@@ -317,6 +319,7 @@ Expected outcome:
 
 - Live capital is allocated only to variants with evidence.
 - Validation mode remains the default until a replay window passes the promotion contract.
+- Promotion output separates top deployable scenarios from research-only one-window winners.
 
 Smoke tests:
 

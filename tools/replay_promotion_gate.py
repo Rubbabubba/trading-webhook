@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from swing_performance_reports import build_replay_promotion_gate_report
 
-PATCH_VERSION = "patch-704-out-of-sample-replay-promotion-gate"
+PATCH_VERSION = "patch-704A-strict-replay-promotion-gate"
 
 
 def _env_float(name: str, default: float) -> float:
@@ -95,6 +95,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build a read-only replay promotion gate report from local replay artifacts.")
     parser.add_argument("--input-dir", action="append", default=None, help="Replay output directory. Can be passed multiple times or separated by semicolons.")
     parser.add_argument("--output-dir", default=str(Path.home() / "TradingDiagnostics" / "replay_promotion_gate"))
+    parser.add_argument("--min-windows", type=int, default=_env_int("REPLAY_PROMOTION_GATE_MIN_WINDOWS", 2))
     parser.add_argument("--min-trades", type=int, default=_env_int("REPLAY_PROMOTION_GATE_MIN_TRADES", 10))
     parser.add_argument("--min-total-pnl", type=float, default=_env_float("REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL", 0.0))
     parser.add_argument("--min-avg-r", type=float, default=_env_float("REPLAY_PROMOTION_GATE_MIN_AVG_R", 0.05))
@@ -108,6 +109,7 @@ def main() -> int:
     report = build_replay_promotion_gate_report(
         patch_version=PATCH_VERSION,
         replay_inputs=replay_inputs,
+        min_windows=args.min_windows,
         min_trades=args.min_trades,
         min_total_pnl=args.min_total_pnl,
         min_avg_r=args.min_avg_r,
@@ -143,6 +145,7 @@ def main() -> int:
         "output_csv": str(latest_csv),
         "scenario_count": report.get("scenario_count"),
         "promotion_ready_count": report.get("promotion_ready_count"),
+        "research_candidate_count": report.get("research_candidate_count"),
         "recommended_action": report.get("recommended_action"),
     }, indent=2))
     return 0
