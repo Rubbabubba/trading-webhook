@@ -376,6 +376,51 @@ The system should become a product with these stable layers:
 - Performance layer: broker-only truth, attribution, replay promotion.
 - Dashboard layer: fast cached operator view, heavy diagnostics only by opt-in.
 
+## Previously Locked Work That Still Applies
+
+The hard stop supersedes any work that tries to force more trades, increase risk, or add another entry gate to chase the daily goal. The following previously locked work still applies because it supports cleanup, validation, and product readiness.
+
+### System Cleanup Path
+
+- Keep moving ownership out of `app.py`.
+- Keep `broker_client.py` and `swing_broker_transport.py` focused on broker transport only.
+- Keep `market_clock.py` as the compatibility wrapper for market-hours truth.
+- Keep `swing_runtime_config.py` as the single place for swing runtime config shape.
+- Keep `swing_light_diagnostics.py` as the fast endpoint helper layer.
+- Keep `swing_scan_state.py` as the canonical scan state/cache owner.
+- Keep `swing_candidate_eval.py` moving toward pure candidate evaluation ownership.
+- Keep `swing_broker_submit.py` moving toward direct submit, retry, and buying-power ownership.
+- Keep `swing_exit_protection.py` moving toward all exit/protection/worker-exit ownership.
+- Keep `swing_performance_reports.py` moving toward broker-reconciled performance ownership.
+- Keep dashboard cleanup, but only as fast cached operator views plus explicit heavy opt-in routes.
+- Archive or delete unused files only after route/import references prove they are unused.
+
+### Testing And Replay Path
+
+- Keep the two-week and minute-bar replay harnesses.
+- Expand replay coverage across prior profitable windows, down-market windows, and mixed-regime windows.
+- Keep scenario matrices, but convert them into a pass/fail promotion gate instead of standalone research clutter.
+- Keep symbol/sleeve attribution outputs for deciding which variants deserve capital.
+- Keep local replay tooling outside `app.py`.
+- Use broker-fill audit results to calibrate replay assumptions.
+
+### Runtime Reliability Path
+
+- Keep scanner fast-response and terminal-publish guarantees, but move them into scanner ownership modules.
+- Keep worker exit fast-close/no-op guarantees, but move them into exit ownership modules.
+- Keep single-flight protection, atomic state writes, and stale-state recovery.
+- Keep light endpoints as the default operator/status surface.
+- Keep heavy endpoints available only by explicit opt-in and never in worker-critical paths.
+
+### Work No Longer In Scope Unless Re-Proven
+
+- Increasing live trade count to manufacture the $100-$200 daily goal.
+- Increasing risk before broker-fill expectancy is positive.
+- Adding more symbol-specific patches.
+- Adding new entry gates without deleting or consolidating old ones.
+- Treating daily breakout as the standalone income engine before out-of-sample proof.
+- Using strategy-state-only P/L as a decision source.
+
 ## Success Criteria
 
 The system is not considered ready for normal live sizing until:
