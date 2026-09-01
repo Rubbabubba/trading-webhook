@@ -143,7 +143,7 @@ Post-deploy endpoints:
 
 ### Patch 701C: Broker Fill Ledger Background Refresh + Slow Broker History Isolation
 
-Status: local implementation complete.
+Status: deployed; endpoint returned fast, but in-memory background state was not reliable across Render requests/processes.
 
 Goal: finish the 701 tangent by making broker-fill history refresh non-blocking.
 
@@ -165,6 +165,35 @@ Post-deploy endpoints:
 
 - `/diagnostics/broker_fills_only_trade_ledger?limit=200`
 - `/diagnostics/broker_fills_only_trade_ledger?refresh=true&limit=200`
+- `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
+- `/diagnostics/broker_fills_only_trade_ledger?limit=200`
+- `/diagnostics/broker_only_daily_loss_truth`
+
+### Patch 701D: Durable Broker Fill Ledger Refresh Pump + Disk Cursor State
+
+Status: local implementation complete.
+
+Goal: replace the fragile in-memory refresh worker with a durable broker-fill refresh pump.
+
+Scope:
+
+- Persist refresh cursor/status/request progress to `/var/data`.
+- Advance broker order-history refresh in small bounded chunks per request.
+- Let `refresh=true` and the refresh-status endpoint continue the pump without hanging.
+- Build and persist the broker-fills-only ledger when all chunks are processed, order limit is reached, or the configured request cap is reached.
+- Keep default broker-fill ledger and daily-loss endpoints cache-first and fast.
+
+Expected outcome:
+
+- Broker-fill refresh survives Render process churn.
+- Operator/status calls can finish the ledger through repeated bounded checks.
+- Slow Alpaca order history no longer blocks diagnostics or worker paths.
+
+Post-deploy endpoints:
+
+- `/diagnostics/broker_fills_only_trade_ledger?limit=200`
+- `/diagnostics/broker_fills_only_trade_ledger?refresh=true&limit=200`
+- `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
 - `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
 - `/diagnostics/broker_fills_only_trade_ledger?limit=200`
 - `/diagnostics/broker_only_daily_loss_truth`
