@@ -7,7 +7,7 @@ import random
 import uuid
 from datetime import datetime, timezone, timedelta
 
-SCANNER_WORKER_VERSION = "patch-551-deploy-warmup-log-cleanup-fast-trace-payload-slim"
+SCANNER_WORKER_VERSION = "patch-658-hotfix-worker-exit-scan-fast-handoff"
 
 def getenv_int(name: str, default: int) -> int:
     v = os.getenv(name)

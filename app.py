@@ -3112,7 +3112,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-658-worker-exit-due-first-fast-drain-worker-status-active-truth-sync"
+PATCH_VERSION = "patch-658-hotfix-worker-exit-scan-fast-handoff"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51237,24 +51237,28 @@ def _p607_worker_recovery_first_truth(reconcile_actions: list[dict], started_mon
     }
 
 
-def _p612_exit_trigger_priority_queue(limit: int = 50, fast_due_truth: dict | None = None) -> dict:
+def _p612_exit_trigger_priority_queue(limit: int = 50, fast_due_truth: dict | None = None, include_heavy: bool = True) -> dict:
     fast_due_truth = _p649_fast_actionable_exit_due_truth(limit=limit, active_exit_truth=None) if fast_due_truth is None else dict(fast_due_truth or {})
     fast_rows = [
         dict(row or {})
         for row in list(fast_due_truth.get("rows") or [])
         if isinstance(row, dict) and bool(row.get("exit_trigger_now"))
     ]
-    try:
-        protection_truth = _p364_active_exit_protection_truth()
-        heavy_rows = [
-            dict(row or {})
-            for row in list(protection_truth.get("actionable_exit_watch") or [])
-            if isinstance(row, dict) and bool(row.get("exit_trigger_now"))
-        ]
-    except Exception as exc:
-        heavy_rows = []
-        heavy_error = str(exc)
+    if include_heavy:
+        try:
+            protection_truth = _p364_active_exit_protection_truth()
+            heavy_rows = [
+                dict(row or {})
+                for row in list(protection_truth.get("actionable_exit_watch") or [])
+                if isinstance(row, dict) and bool(row.get("exit_trigger_now"))
+            ]
+        except Exception as exc:
+            heavy_rows = []
+            heavy_error = str(exc)
+        else:
+            heavy_error = None
     else:
+        heavy_rows = []
         heavy_error = None
 
     reason_rank = {
@@ -51294,6 +51298,8 @@ def _p612_exit_trigger_priority_queue(limit: int = 50, fast_due_truth: dict | No
         "patch_version": PATCH_VERSION,
         "mode": "exit_trigger_priority_queue",
         "source": "fast_actionable_exit_due_truth_plus_active_exit_protection_truth",
+        "include_heavy": bool(include_heavy),
+        "heavy_deferred": not bool(include_heavy),
         "heavy_error": heavy_error,
         "trigger_count": len(rows),
         "symbols": symbols,
@@ -53259,6 +53265,7 @@ def worker_exit(body: dict = Body(default_factory=dict)):
     p649_fast_actionable_exit_due_truth = _p649_fast_actionable_exit_due_truth(limit=50)
     p612_exit_trigger_queue = _p612_exit_trigger_priority_queue(
         fast_due_truth=p649_fast_actionable_exit_due_truth,
+        include_heavy=False,
     )
     p658_due_first_fast_drain = _p658_worker_drain_exit_trigger_queue(
         p612_exit_trigger_queue,
@@ -70000,22 +70007,9 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 pass
             return {"ok": True, "skipped": True, "reason": "outside_scanner_session", **LAST_SCAN}
 
-        p603_foreground_retry_micro_drain = _p603_foreground_retry_micro_drain(
-            effective_dry_run=effective_entry_dry_run("worker_scan"),
-            requested_reason=requested_reason or "scheduled",
-            source_meta=source_meta,
-            max_items=int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 2),
-        )
-        body["p603_foreground_retry_micro_drain"] = dict(p603_foreground_retry_micro_drain)
-        source_meta["p603_retry_micro_drain_attempted_count"] = int(
-            p603_foreground_retry_micro_drain.get("attempted_count") or 0
-        )
-        source_meta["p603_retry_micro_drain_side_effect_count"] = int(
-            p603_foreground_retry_micro_drain.get("side_effect_count") or 0
-        )
-
-# Fast-close worker-triggered swing scans so the scanner service does not time out.
-# Keep this before reconcile and before full release-gate dry-run evaluation.
+        # Fast-close worker-triggered swing scans so the scanner service does not
+        # time out. Keep this before retry drain, reconcile, and full release-gate
+        # dry-run evaluation; background completion owns those heavier steps.
         p474_background_flag = str(
             body.get("background") or body.get("background_completion") or "true"
         ).strip().lower()
@@ -70040,6 +70034,20 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
                 requested_reason=requested_reason,
                 set_last_scan_fn=_set_last_scan,
             )
+
+        p603_foreground_retry_micro_drain = _p603_foreground_retry_micro_drain(
+            effective_dry_run=effective_entry_dry_run("worker_scan"),
+            requested_reason=requested_reason or "scheduled",
+            source_meta=source_meta,
+            max_items=int(SWING_RATE_LIMIT_SELECTED_SUBMIT_RETRY_MAX_PER_SCAN or 2),
+        )
+        body["p603_foreground_retry_micro_drain"] = dict(p603_foreground_retry_micro_drain)
+        source_meta["p603_retry_micro_drain_attempted_count"] = int(
+            p603_foreground_retry_micro_drain.get("attempted_count") or 0
+        )
+        source_meta["p603_retry_micro_drain_side_effect_count"] = int(
+            p603_foreground_retry_micro_drain.get("side_effect_count") or 0
+        )
 
         p513_foreground_background_cleanup = {
             "applied": False,
