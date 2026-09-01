@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-656-capital-rotation-action-contract-cleanup"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-657-stall-loss-already-taken-terminal-cleanup-rotation-release-actionability-truth"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -41,6 +41,8 @@ def _rotation_release_priority(row: dict) -> float:
     score = max(0.0, -unrealized) + (risk * 0.35) + (market_value * 0.002)
     if bool(row.get("near_stop")):
         score += 30.0
+    if bool(row.get("stall_loss_already_taken_terminal_suppression")):
+        score += 40.0
     if bool(row.get("exit_actionable_now")):
         score += 100.0
     if not bool(row.get("protected")):
@@ -65,12 +67,15 @@ def build_capital_rotation_release_playbook(
         exit_actionable = bool(row.get("exit_actionable_now"))
         capital_drag = bool(row.get("capital_drag"))
         near_stop = bool(row.get("near_stop"))
-        release_review = bool(protected and not exit_actionable and (capital_drag or near_stop))
+        stale_stall_suppression = bool(row.get("stall_loss_already_taken_terminal_suppression"))
+        release_review = bool(protected and not exit_actionable and (capital_drag or near_stop or stale_stall_suppression))
         action_lane = (
             "worker_exit_due"
             if exit_actionable
             else "protection_repair_required"
             if not protected
+            else "stall_loss_terminal_suppression_release_review"
+            if stale_stall_suppression
             else "rotation_release_review"
             if release_review
             else "monitor"
@@ -85,6 +90,8 @@ def build_capital_rotation_release_playbook(
             "exit_actionable_now": exit_actionable,
             "near_stop": near_stop,
             "capital_drag": capital_drag,
+            "stall_loss_already_taken_terminal_suppression": stale_stall_suppression,
+            "rotation_release_review_required": bool(row.get("rotation_release_review_required") or stale_stall_suppression),
             "unrealized_pl": row.get("unrealized_pl"),
             "market_value": row.get("market_value"),
             "risk_to_stop_dollars": row.get("risk_to_stop_dollars"),
@@ -94,6 +101,8 @@ def build_capital_rotation_release_playbook(
                 if exit_actionable
                 else "repair_protection_truth_before_rotation"
                 if not protected
+                else "review_release_because_stall_loss_reduce_already_taken"
+                if stale_stall_suppression
                 else "review_reduce_or_close_to_release_capital_slot"
                 if release_review
                 else "monitor"
@@ -106,14 +115,24 @@ def build_capital_rotation_release_playbook(
     worker_rows = [r for r in rows if r.get("action_lane") == "worker_exit_due"]
     repair_rows = [r for r in rows if r.get("action_lane") == "protection_repair_required"]
     release_rows = [r for r in rows if r.get("action_lane") == "rotation_release_review"]
+    stale_release_rows = [r for r in rows if r.get("action_lane") == "stall_loss_terminal_suppression_release_review"]
+    all_release_rows = [
+        r for r in rows
+        if r.get("action_lane") in {
+            "rotation_release_review",
+            "stall_loss_terminal_suppression_release_review",
+        }
+    ]
     monitor_rows = [r for r in rows if r.get("action_lane") == "monitor"]
     recommended_action = (
         "let_worker_exit_clear_actionable_rotation_symbols"
         if worker_rows
         else "repair_rotation_candidate_protection_first"
         if repair_rows
+        else "review_stall_loss_terminal_suppression_release_candidates"
+        if stale_release_rows and plan.get("profit_improvement_focus") == "capital_rotation"
         else "review_top_rotation_release_candidates"
-        if release_rows and plan.get("profit_improvement_focus") == "capital_rotation"
+        if (release_rows or stale_release_rows) and plan.get("profit_improvement_focus") == "capital_rotation"
         else "monitor_no_rotation_release_needed"
     )
     return {
@@ -134,7 +153,12 @@ def build_capital_rotation_release_playbook(
         "protection_repair_required_symbols": [r.get("symbol") for r in repair_rows],
         "release_review_count": len(release_rows),
         "release_review_symbols": [r.get("symbol") for r in release_rows],
-        "top_release_review_symbols": [r.get("symbol") for r in release_rows[:3]],
+        "stall_loss_terminal_suppression_release_count": len(stale_release_rows),
+        "stall_loss_terminal_suppression_release_symbols": [r.get("symbol") for r in stale_release_rows],
+        "all_release_review_count": len(all_release_rows),
+        "all_release_review_symbols": [r.get("symbol") for r in all_release_rows],
+        "top_release_review_symbols": [r.get("symbol") for r in all_release_rows[:3]],
+        "top_stall_loss_terminal_suppression_release_symbols": [r.get("symbol") for r in stale_release_rows[:3]],
         "monitor_count": len(monitor_rows),
         "monitor_symbols": [r.get("symbol") for r in monitor_rows],
         "first_action_symbol": rows[0].get("symbol") if rows else None,
@@ -273,9 +297,12 @@ def build_capital_rotation_action_contract(
         protected = protection_status == "protected"
         near_stop = bool(row.get("near_stop"))
         capital_drag = bool(row.get("capital_drag"))
+        stale_stall_suppression = bool(row.get("stall_loss_already_taken_terminal_suppression"))
         action_status = (
             "worker_exit_actionable_first"
             if exit_actionable
+            else "stall_loss_terminal_suppression_rotation_review"
+            if protected and stale_stall_suppression
             else "protected_near_stop_rotation_watch"
             if protected and near_stop
             else "protected_drag_rotation_watch"
@@ -294,6 +321,8 @@ def build_capital_rotation_action_contract(
             "exit_trigger_now": exit_trigger,
             "near_stop": near_stop,
             "capital_drag": capital_drag,
+            "stall_loss_already_taken_terminal_suppression": stale_stall_suppression,
+            "rotation_release_review_required": bool(row.get("rotation_release_review_required") or stale_stall_suppression),
             "unrealized_pl": row.get("unrealized_pl"),
             "market_value": row.get("market_value"),
             "risk_to_stop_dollars": row.get("risk_to_stop_dollars"),
@@ -303,6 +332,8 @@ def build_capital_rotation_action_contract(
             "operator_note": (
                 "worker_exit_or_existing_stop_should_resolve_before_any_rotation_change"
                 if exit_actionable
+                else "review_rotation_release_for_terminal_stall_loss_suppression"
+                if protected and stale_stall_suppression
                 else "protected_position_review_for_rotation_slot_release"
                 if protected and (near_stop or capital_drag)
                 else "fix_protection_truth_before_rotation_review"
@@ -415,6 +446,13 @@ def build_capital_rotation_readiness_audit(
             "distance_to_stop_dollars": row.get("distance_to_stop_dollars"),
             "near_stop": near_stop,
             "capital_drag": capital_drag,
+            "stall_loss_already_taken_terminal_suppression": bool(
+                row.get("stall_loss_already_taken_terminal_suppression")
+            ),
+            "rotation_release_review_required": bool(row.get("rotation_release_review_required")),
+            "p657_stall_loss_already_taken_terminal_truth": dict(
+                row.get("p657_stall_loss_already_taken_terminal_truth") or {}
+            ),
             "exit_trigger_now": bool(row.get("exit_trigger_now")),
             "readiness_score": round(readiness_score, 4),
             "replacement_focus": best_goal_symbols[:5],
@@ -457,12 +495,19 @@ def build_capital_rotation_readiness_audit(
             "rotation_candidate_unrealized_pl": rotation_action_contract.get("candidate_unrealized_pl"),
             "rotation_release_review_count": release_playbook.get("release_review_count"),
             "rotation_release_review_symbols": release_playbook.get("release_review_symbols"),
+            "stall_loss_terminal_suppression_release_count": release_playbook.get("stall_loss_terminal_suppression_release_count"),
+            "stall_loss_terminal_suppression_release_symbols": release_playbook.get("stall_loss_terminal_suppression_release_symbols"),
+            "all_rotation_release_review_count": release_playbook.get("all_release_review_count"),
+            "all_rotation_release_review_symbols": release_playbook.get("all_release_review_symbols"),
             "first_rotation_action_symbol": release_playbook.get("first_action_symbol"),
             "first_rotation_action_lane": release_playbook.get("first_action_lane"),
         },
         "rotation_candidate_symbols": [r.get("symbol") for r in rotation_candidates],
-        "rotation_release_review_symbols": release_playbook.get("release_review_symbols") or [],
+        "rotation_release_review_symbols": release_playbook.get("all_release_review_symbols") or [],
         "top_rotation_release_review_symbols": release_playbook.get("top_release_review_symbols") or [],
+        "stall_loss_terminal_suppression_release_symbols": (
+            release_playbook.get("stall_loss_terminal_suppression_release_symbols") or []
+        ),
         "replacement_focus_symbols": best_goal_symbols[:5],
         "rows": rotation_rows[:max(1, min(int(limit or 25), 100))],
         "p646_goal_gap_rotation_operator_plan": rotation_plan or {},
@@ -1268,6 +1313,7 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "capital_rotation_readiness_report_shape",
             "capital_rotation_action_contract_shape",
             "capital_rotation_release_playbook_shape",
+            "stall_loss_terminal_suppression_rotation_lane",
             "fast_performance_alignment_brief_shape",
             "heavy_performance_alignment_deferral_shape",
             "broker_reconciled_strategy_attribution_report_shape",

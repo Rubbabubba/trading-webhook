@@ -3112,7 +3112,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-656-capital-rotation-action-contract-cleanup"
+PATCH_VERSION = "patch-657-stall-loss-already-taken-terminal-cleanup-rotation-release-actionability-truth"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -50428,6 +50428,80 @@ def _p364_snapshot_position_by_symbol() -> dict[str, dict]:
     return out
 
 
+def _p657_stall_loss_already_taken_terminal_truth(
+    symbol: str,
+    plan: dict | None,
+    unrealized_r: float,
+    unrealized_pl: float | None = None,
+    unrealized_plpc: float | None = None,
+) -> dict:
+    p = dict(plan or {})
+    sym = str(symbol or p.get("symbol") or "").strip().upper()
+    raw_strategy = str(
+        p.get("strategy_name")
+        or p.get("strategy")
+        or p.get("signal")
+        or p.get("entry_type")
+        or ""
+    ).strip().lower()
+    is_breakout = bool(
+        _p378_is_daily_breakout_plan(p)
+        or "breakout" in raw_strategy
+    )
+    guard_days = max(0, int(SWING_STALL_LOSS_GUARD_DAYS or 0))
+    hold_days = plan_days_held(p) if p else 0
+    max_loss_r = float(SWING_STALL_MAX_LOSS_R or 0.0)
+    loss_pct = _safe_float(unrealized_plpc, 0.0)
+    loss_dollars = _safe_float(unrealized_pl, 0.0)
+    material_loss = bool(loss_dollars < 0 and (loss_pct <= -0.01 or abs(loss_dollars) >= 10.0))
+    stall_loss_due = bool(
+        SWING_STALL_LOSS_GUARD_ENABLED
+        and guard_days > 0
+        and hold_days >= guard_days
+        and (
+            (
+                max_loss_r < 0.0
+                and _safe_float(unrealized_r, 0.0) <= max_loss_r
+            )
+            or material_loss
+        )
+    )
+    reduce_taken = bool(p.get("breakout_stall_loss_reduce_first_taken"))
+    terminal_suppressed = bool(
+        SWING_BREAKOUT_STALL_LOSS_REDUCE_FIRST_ENABLED
+        and is_breakout
+        and stall_loss_due
+        and reduce_taken
+    )
+    return {
+        "enabled": True,
+        "symbol": sym,
+        "is_daily_breakout": is_breakout,
+        "stall_loss_due": stall_loss_due,
+        "already_taken": reduce_taken,
+        "terminal_suppressed": terminal_suppressed,
+        "rotation_release_review_required": terminal_suppressed,
+        "hold_days": hold_days,
+        "guard_days": guard_days,
+        "unrealized_r": round(_safe_float(unrealized_r, 0.0), 4),
+        "unrealized_pl": round(loss_dollars, 4),
+        "unrealized_plpc": round(loss_pct, 6),
+        "material_loss": material_loss,
+        "max_loss_r": max_loss_r,
+        "source": "lightweight_plan_position_profit_rows",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "adds_trade_gate": False,
+        "changes_submit_behavior": False,
+        "changes_exit_behavior": False,
+        "recommended_action": (
+            "review_rotation_release_for_terminal_stall_loss_suppression"
+            if terminal_suppressed
+            else "none"
+        ),
+    }
+
+
 def _p606_partial_profit_readiness_truth(limit: int = 25) -> dict:
     positions_by_symbol = _p364_snapshot_position_by_symbol()
     rows = []
@@ -50628,6 +50702,13 @@ def _p636_position_profit_rows(limit: int = 25) -> list[dict]:
         distance_to_stop = ((current_price - stop_price) * qty) if qty > 0 and current_price > 0 and stop_price > 0 else None
         target_upside = ((target_price - current_price) * qty) if qty > 0 and current_price > 0 and target_price > 0 else None
         unrealized_r = _swing_unrealized_r(plan, current_price) if plan and current_price > 0 else 0.0
+        stall_suppression_truth = _p657_stall_loss_already_taken_terminal_truth(
+            symbol,
+            plan,
+            unrealized_r,
+            unrealized_pl=unrealized_pl,
+            unrealized_plpc=_safe_float(pos.get("unrealized_plpc") or 0.0),
+        )
         rows.append({
             "symbol": symbol,
             "qty": round(qty, 6),
@@ -50648,6 +50729,10 @@ def _p636_position_profit_rows(limit: int = 25) -> list[dict]:
             "protection_status": str(exit_row.get("protection_status") or "unknown"),
             "has_active_plan": bool(plan and plan.get("active")),
             "partial_profit_taken": bool(plan.get("partial_profit_taken")),
+            "breakout_stall_loss_reduce_first_taken": bool(plan.get("breakout_stall_loss_reduce_first_taken")),
+            "stall_loss_already_taken_terminal_suppression": bool(stall_suppression_truth.get("terminal_suppressed")),
+            "rotation_release_review_required": bool(stall_suppression_truth.get("rotation_release_review_required")),
+            "p657_stall_loss_already_taken_terminal_truth": stall_suppression_truth,
             "is_daily_breakout": bool(_p378_is_daily_breakout_plan(plan)),
         })
     rows.sort(key=lambda r: _safe_float(r.get("unrealized_pl"), 0.0), reverse=True)
@@ -50769,11 +50854,16 @@ def _p636_weak_position_capital_drag_audit(limit: int = 25) -> dict:
         distance_to_stop = row.get("distance_to_stop_dollars")
         near_stop = bool(distance_to_stop is not None and _safe_float(distance_to_stop, 0.0) <= max(2.0, risk_to_stop * 0.2))
         capital_drag = bool(unreal < 0 and (abs(unreal) >= 10.0 or _safe_float(row.get("unrealized_plpc"), 0.0) <= -0.01 or near_stop))
+        stale_stall_suppression = bool(row.get("stall_loss_already_taken_terminal_suppression"))
         if not capital_drag and unreal >= 0:
             continue
         drag_score = abs(unreal) + (risk_to_stop * 0.25) + (market_value * 0.005 if unreal < 0 else 0.0)
+        if stale_stall_suppression:
+            drag_score += 40.0
         status = (
-            "near_stop_drag"
+            "stall_loss_already_taken_terminal_suppression"
+            if stale_stall_suppression
+            else "near_stop_drag"
             if near_stop and unreal < 0
             else "capital_drag"
             if capital_drag
@@ -50783,9 +50873,14 @@ def _p636_weak_position_capital_drag_audit(limit: int = 25) -> dict:
             **row,
             "capital_drag": capital_drag,
             "near_stop": near_stop,
+            "stall_loss_already_taken_terminal_suppression": stale_stall_suppression,
+            "rotation_release_review_required": bool(row.get("rotation_release_review_required")),
             "drag_score": round(drag_score, 4),
             "drag_status": status,
             "recommended_operator_read": (
+                "review_rotation_release_for_terminal_stall_loss_suppression"
+                if stale_stall_suppression
+                else
                 "worker_exit_should_manage_if_exit_trigger_appears"
                 if bool(row.get("exit_trigger_now"))
                 else "monitor_or_review_sleeve_quality_not_manual_babysit"
@@ -50805,11 +50900,19 @@ def _p636_weak_position_capital_drag_audit(limit: int = 25) -> dict:
             "drag_row_count": len(drag_rows),
             "capital_drag_count": len([r for r in drag_rows if bool(r.get("capital_drag"))]),
             "near_stop_drag_count": len([r for r in drag_rows if bool(r.get("near_stop"))]),
+            "stall_loss_already_taken_terminal_suppression_count": len([
+                r for r in drag_rows
+                if bool(r.get("stall_loss_already_taken_terminal_suppression"))
+            ]),
             "total_drag_unrealized_pl": round(total_drag_pl, 4),
             "total_drag_market_value": round(total_drag_market_value, 4),
         },
         "capital_drag_symbols": [r.get("symbol") for r in drag_rows if bool(r.get("capital_drag"))],
         "near_stop_symbols": [r.get("symbol") for r in drag_rows if bool(r.get("near_stop"))],
+        "stall_loss_already_taken_terminal_suppression_symbols": [
+            r.get("symbol") for r in drag_rows
+            if bool(r.get("stall_loss_already_taken_terminal_suppression"))
+        ],
         "rows": drag_rows[:max(1, min(int(limit or 25), 100))],
         "recommended_action": (
             "review_top_capital_drag_symbols_for_cleanup_or_exit_policy"
@@ -51663,6 +51766,12 @@ def _p364_active_exit_protection_truth() -> dict:
             "daily_breakout_failed_followthrough": failed_followthrough_state,
             "breakout_partial_profit_bias": breakout_partial_profit_bias,
             "breakout_stall_loss_reduce_first": breakout_stall_loss_reduce_first,
+            "stall_loss_already_taken_terminal_suppression": bool(
+                breakout_stall_loss_reduce_first.get("terminal_suppressed")
+            ),
+            "rotation_release_review_required": bool(
+                breakout_stall_loss_reduce_first.get("rotation_release_review_required")
+            ),
             "dynamic_exit_preview": dynamic_preview,
             "forbidden_short_cleanup": forbidden_short_cleanup,
             "same_day_exit_blocked_for_closest_reason": bool(same_day_block),
@@ -51740,6 +51849,24 @@ def _p364_active_exit_protection_truth() -> dict:
                 for row in rows
                 if str(row.get("closest_exit_reason") or "") == "forbidden_short_position_cleanup"
             ],
+            "stall_loss_already_taken_terminal_suppression_count": len([
+                row for row in rows
+                if bool(row.get("stall_loss_already_taken_terminal_suppression"))
+            ]),
+            "stall_loss_already_taken_terminal_suppression_symbols": [
+                row.get("symbol")
+                for row in rows
+                if bool(row.get("stall_loss_already_taken_terminal_suppression"))
+            ],
+            "rotation_release_review_required_count": len([
+                row for row in rows
+                if bool(row.get("rotation_release_review_required"))
+            ]),
+            "rotation_release_review_required_symbols": [
+                row.get("symbol")
+                for row in rows
+                if bool(row.get("rotation_release_review_required"))
+            ],
             "all_active_positions_protected": len(missing_protection) == 0,
             "p605_broker_position_plan_recovery_needed_count": len(p605_recovery_needed_symbols),
             "p605_broker_position_plan_recovery_needed_symbols": p605_recovery_needed_symbols,
@@ -51778,6 +51905,29 @@ def _p364_active_exit_protection_truth() -> dict:
                 else "no_exit_watch_symbols"
             ),
         },
+        "p657_stall_loss_already_taken_terminal_cleanup": {
+            "enabled": True,
+            "suppression_symbols": [
+                row.get("symbol")
+                for row in rows
+                if bool(row.get("stall_loss_already_taken_terminal_suppression"))
+            ],
+            "rotation_release_review_required_symbols": [
+                row.get("symbol")
+                for row in rows
+                if bool(row.get("rotation_release_review_required"))
+            ],
+            "read_only": True,
+            "does_not_submit_orders": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "recommended_action": (
+                "review_rotation_release_for_terminal_stall_loss_suppression"
+                if any(bool(row.get("rotation_release_review_required")) for row in rows)
+                else "none"
+            ),
+        },
         "recommended_action": (
             "run_or_wait_for_worker_exit_reconcile"
             if p605_recovery_needed_symbols
@@ -51788,6 +51938,8 @@ def _p364_active_exit_protection_truth() -> dict:
             if pending_entry_protection_pending
             else "monitor_exit_worker"
             if actionable_exit_watch
+            else "review_rotation_release_for_terminal_stall_loss_suppression"
+            if any(bool(row.get("rotation_release_review_required")) for row in rows)
             else "none"
         ),
     }

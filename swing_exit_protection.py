@@ -16,7 +16,7 @@ from swing_execution import format_order_qty as _execution_format_order_qty
 from swing_execution import qty_source_from_plan as _execution_qty_source_from_plan
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-649-actionable-exit-watch-fast-drain-worker-due-truth-fix"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-657-stall-loss-already-taken-terminal-cleanup-rotation-release-actionability-truth"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -683,14 +683,36 @@ def build_breakout_stall_loss_reduce_first_state(
         and close_qty < available_qty
         and not already_taken
     )
+    terminal_suppressed = bool(
+        enabled
+        and is_daily_breakout
+        and stall_loss_due
+        and already_taken
+    )
+    reason = (
+        "breakout_stall_loss_reduce_first_ready"
+        if applies
+        else "stall_loss_reduce_first_already_taken_terminal_suppression"
+        if terminal_suppressed
+        else "not_ready"
+    )
 
     return {
         "enabled": bool(enabled),
         "symbol": sym,
         "is_daily_breakout": bool(is_daily_breakout),
         "applies": applies,
-        "reason": "breakout_stall_loss_reduce_first_ready" if applies else "not_ready",
+        "reason": reason,
         "stall_loss_due": bool(stall_loss_due),
+        "terminal_suppressed": terminal_suppressed,
+        "rotation_release_review_required": terminal_suppressed,
+        "operator_action": (
+            "review_rotation_release_or_manual_reduce_because_stall_loss_reduce_already_taken"
+            if terminal_suppressed
+            else "execute_reduce_first"
+            if applies
+            else "monitor"
+        ),
         "unrealized_r": round(_safe_float(unrealized_r), 4),
         "qty": round(available_qty, 4),
         "qty_source": str(qty_source or "unknown"),
@@ -698,6 +720,14 @@ def build_breakout_stall_loss_reduce_first_state(
         "fraction": round(_safe_float(fraction), 4),
         "already_taken": bool(already_taken),
         "module_contract": "breakout_stall_loss_reduce_first_state",
+        "p657_stall_loss_already_taken_terminal_cleanup": {
+            "enabled": True,
+            "terminal_suppression_visible": terminal_suppressed,
+            "rotation_release_review_required": terminal_suppressed,
+            "does_not_submit_orders": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+        },
     }
 
 
@@ -948,6 +978,7 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "dynamic_exit_preview_contract_status",
             "breakout_partial_profit_bias_state",
             "breakout_stall_loss_reduce_first_state",
+            "stall_loss_already_taken_terminal_suppression_truth",
             "exit_runtime_facts",
             "exit_runtime_facts_from_plan",
             "breakout_partial_profit_bias_runtime_state",
