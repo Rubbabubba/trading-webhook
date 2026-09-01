@@ -72,6 +72,8 @@ Post-deploy endpoints:
 
 ### Patch 701: Broker-Fills-Only Trade Ledger
 
+Status: in local implementation
+
 Goal: make broker fills the source of truth for performance review.
 
 Scope:
@@ -80,6 +82,7 @@ Scope:
 - Build a 200-trade audit report from broker fills only.
 - Remove reliance on duplicate worker shadow rows for P/L.
 - Report realized P/L, unrealized P/L, win rate, average winner, average loser, expectancy, R-multiple, strategy, regime, symbol, and holding period.
+- Add `/diagnostics/broker_fills_only_trade_ledger` as the canonical 200-trade audit starting point.
 
 Expected outcome:
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-657-stall-loss-already-taken-terminal-cleanup-rotation-release-actionability-truth"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-701-broker-fills-only-trade-ledger"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -32,6 +32,146 @@ def _dedupe_keep_order(values: list[Any]) -> list[Any]:
         seen.add(key)
         out.append(key)
     return out
+
+
+def _avg(values: list[float]) -> float:
+    clean = [_safe_float(v, 0.0) for v in list(values or [])]
+    return round(sum(clean) / max(1, len(clean)), 4) if clean else 0.0
+
+
+def _ledger_multi_bucket_key(row: dict, *names: str) -> str:
+    for name in names:
+        value = str(row.get(name) or "").strip().lower()
+        if value:
+            return value
+    return "unknown"
+
+
+def _ledger_bucket_rollup(rows: list[dict], *keys: str) -> dict:
+    buckets: dict[str, dict] = {}
+    for row in list(rows or []):
+        key = _ledger_multi_bucket_key(row, *keys)
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        pnl_r = _safe_float(row.get("pnl_r"), 0.0)
+        bucket = buckets.setdefault(key, {
+            "closed_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "flat": 0,
+            "gross_pnl": 0.0,
+            "pnl_r_total": 0.0,
+            "winner_pnls": [],
+            "loser_pnls": [],
+        })
+        bucket["closed_trades"] += 1
+        bucket["gross_pnl"] += pnl
+        bucket["pnl_r_total"] += pnl_r
+        if pnl > 0:
+            bucket["wins"] += 1
+            bucket["winner_pnls"].append(pnl)
+        elif pnl < 0:
+            bucket["losses"] += 1
+            bucket["loser_pnls"].append(pnl)
+        else:
+            bucket["flat"] += 1
+
+    out = {}
+    for key, bucket in buckets.items():
+        count = max(1, int(bucket.get("closed_trades") or 0))
+        wins = int(bucket.get("wins") or 0)
+        losses = int(bucket.get("losses") or 0)
+        avg_win = _avg(bucket.pop("winner_pnls", []))
+        avg_loss = _avg(bucket.pop("loser_pnls", []))
+        bucket["gross_pnl"] = round(_safe_float(bucket.get("gross_pnl"), 0.0), 4)
+        bucket["win_rate"] = round(wins / count, 4)
+        bucket["loss_rate"] = round(losses / count, 4)
+        bucket["avg_r"] = round(_safe_float(bucket.pop("pnl_r_total", 0.0), 0.0) / count, 4)
+        bucket["avg_winner"] = avg_win
+        bucket["avg_loser"] = avg_loss
+        bucket["payoff_ratio"] = round(avg_win / abs(avg_loss), 4) if avg_win > 0 and avg_loss < 0 else None
+        out[key] = bucket
+    return out
+
+
+def build_broker_fills_only_trade_ledger(
+    *,
+    patch_version: str,
+    rows: list[dict],
+    duplicate_count: int = 0,
+    skipped_count: int = 0,
+    order_count: int = 0,
+    fill_count: int = 0,
+    limit: int = 200,
+) -> dict:
+    clean_rows = [dict(row or {}) for row in list(rows or []) if isinstance(row, dict)]
+    clean_rows.sort(key=lambda r: str(r.get("exit_ts_utc") or r.get("ts_utc") or ""))
+    for idx, row in enumerate(clean_rows, start=1):
+        row["ledger_seq"] = idx
+        row["accounting_source"] = "broker_fills_only"
+        row["worker_shadow_included"] = False
+
+    wins = [r for r in clean_rows if _safe_float(r.get("gross_pnl"), 0.0) > 0]
+    losses = [r for r in clean_rows if _safe_float(r.get("gross_pnl"), 0.0) < 0]
+    flats = [r for r in clean_rows if abs(_safe_float(r.get("gross_pnl"), 0.0)) <= 1e-9]
+    winner_pnls = [_safe_float(r.get("gross_pnl"), 0.0) for r in wins]
+    loser_pnls = [_safe_float(r.get("gross_pnl"), 0.0) for r in losses]
+    avg_winner = _avg(winner_pnls)
+    avg_loser = _avg(loser_pnls)
+    gross = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in clean_rows), 4)
+    total_r = sum(_safe_float(r.get("pnl_r"), 0.0) for r in clean_rows)
+    count = len(clean_rows)
+    limited = clean_rows[-max(1, min(int(limit or 200), 500)):]
+    payoff_ratio = round(avg_winner / abs(avg_loser), 4) if avg_winner > 0 and avg_loser < 0 else None
+    expectancy = round(gross / max(1, count), 4) if count else 0.0
+    status = (
+        "broker_fills_positive_expectancy"
+        if count and expectancy > 0
+        else "broker_fills_negative_expectancy"
+        if count and expectancy < 0
+        else "broker_fills_empty_or_flat"
+    )
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "broker_fills_only_trade_ledger",
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "broker_fills_only": True,
+        "strategy_state_accounting_included": False,
+        "worker_shadow_rows_included": False,
+        "order_count": int(order_count or 0),
+        "fill_count": int(fill_count or 0),
+        "closed_trade_count": count,
+        "duplicate_trade_count": int(duplicate_count or 0),
+        "skipped_fill_count": int(skipped_count or 0),
+        "summary": {
+            "closed_trades": count,
+            "wins": len(wins),
+            "losses": len(losses),
+            "flat": len(flats),
+            "win_rate": round(len(wins) / max(1, count), 4) if count else 0.0,
+            "gross_pnl": gross,
+            "avg_winner": avg_winner,
+            "avg_loser": avg_loser,
+            "payoff_ratio": payoff_ratio,
+            "expectancy_per_trade": expectancy,
+            "avg_r": round(total_r / max(1, count), 4) if count else 0.0,
+            "sample_maturity": "ESTABLISHED" if count >= 100 else "BUILDING",
+            "status": status,
+        },
+        "by_strategy": _ledger_bucket_rollup(clean_rows, "strategy_name", "signal"),
+        "by_symbol": _ledger_bucket_rollup(clean_rows, "symbol"),
+        "by_regime": _ledger_bucket_rollup(clean_rows, "regime", "regime_mode"),
+        "by_holding_period": _ledger_bucket_rollup(clean_rows, "holding_period_bucket"),
+        "rows": limited,
+        "recommended_action": (
+            "proceed_to_strategy_isolation_and_payoff_repair"
+            if count
+            else "refresh_broker_order_history_or_wait_for_closed_broker_fills"
+        ),
+    }
 
 
 def _rotation_release_priority(row: dict) -> float:
@@ -1316,6 +1456,7 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "stall_loss_terminal_suppression_rotation_lane",
             "fast_performance_alignment_brief_shape",
             "heavy_performance_alignment_deferral_shape",
+            "broker_fills_only_trade_ledger_shape",
             "broker_reconciled_strategy_attribution_report_shape",
             "broker_reconciled_attribution_snapshot_cache_contract",
             "profit_path_truth_contract_shape",

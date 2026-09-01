@@ -211,6 +211,7 @@ from market_clock import (
 )
 from swing_performance_reports import (
     SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+    build_broker_fills_only_trade_ledger as swing_perf_build_broker_fills_only_trade_ledger,
     build_broker_reconciled_strategy_attribution_report as swing_perf_build_broker_reconciled_strategy_attribution_report,
     build_capital_rotation_readiness_audit as swing_perf_build_capital_rotation_readiness_audit,
     build_daily_goal_opportunity_map as swing_perf_build_daily_goal_opportunity_map,
@@ -3115,7 +3116,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-700-live-risk-hard-stop-validation-mode-contract"
+PATCH_VERSION = "patch-701-broker-fills-only-trade-ledger"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23000,6 +23001,140 @@ def _today_realized_pnl_from_broker_orders() -> dict:
         return {"ok": True, "source": "alpaca_orders", "broker_truth_sync_enabled": True, "today_realized_pnl": round(gross, 4), "closed_trades_today": len([r for r in rows if r.get("calc_ok")]), "broker_exit_fills_today": len(today_exits), "wins_today": wins, "losses_today": losses, "flat_today": flat, "rows": rows[-20:]}
     except Exception as exc:
         return {"ok": False, "source": "alpaca_orders", "broker_truth_sync_enabled": True, "error": str(exc), "today_realized_pnl": 0.0, "closed_trades_today": 0, "broker_exit_fills_today": 0, "rows": []}
+
+
+def _p701_holding_period_bucket(entry_ts: str, exit_ts: str) -> str:
+    entry_dt = _safe_parse_iso_utc(entry_ts) if entry_ts else None
+    exit_dt = _safe_parse_iso_utc(exit_ts) if exit_ts else None
+    if not entry_dt or not exit_dt:
+        return "unknown"
+    hours = max(0.0, (exit_dt - entry_dt).total_seconds() / 3600.0)
+    if hours <= 6.5:
+        return "same_day"
+    if hours <= 48:
+        return "one_to_two_days"
+    if hours <= 120:
+        return "three_to_five_days"
+    return "over_five_days"
+
+
+def _p701_fill_sort_ts(row: dict) -> str:
+    return str((row or {}).get("filled_at") or (row or {}).get("submitted_at") or "")
+
+
+def _p701_recent_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500) -> dict:
+    lim = max(1, min(int(limit or 200), 500))
+    order_lim = max(lim, min(max(1, int(order_limit or 500)), 500))
+    orders = _alpaca_get_orders_rest(status="all", limit=order_lim)
+    fills = []
+    for order in list(orders or []):
+        row = _filled_order_row(order)
+        if row:
+            fills.append(row)
+    fills.sort(key=_p701_fill_sort_ts)
+
+    lots_by_symbol: dict[str, list[dict]] = {}
+    trades = []
+    skipped = 0
+    seen_trade_keys = set()
+    duplicate_count = 0
+
+    for fill in fills:
+        sym = str(fill.get("symbol") or "").strip().upper()
+        side = str(fill.get("side") or "").strip().lower()
+        qty = abs(_safe_float(fill.get("filled_qty"), 0.0))
+        price = _safe_float(fill.get("filled_avg_price"), 0.0)
+        ts = _p701_fill_sort_ts(fill)
+        if not sym or side not in {"buy", "sell"} or qty <= 0 or price <= 0:
+            skipped += 1
+            continue
+        if side == "buy":
+            lots_by_symbol.setdefault(sym, []).append({
+                "qty_remaining": qty,
+                "entry_price": price,
+                "entry_ts_utc": ts,
+                "entry_order_id": str(fill.get("id") or ""),
+            })
+            continue
+
+        qty_to_close = qty
+        lots = lots_by_symbol.setdefault(sym, [])
+        while qty_to_close > 1e-9 and lots:
+            lot = lots[0]
+            lot_qty = max(0.0, _safe_float(lot.get("qty_remaining"), 0.0))
+            if lot_qty <= 1e-9:
+                lots.pop(0)
+                continue
+            close_qty = min(qty_to_close, lot_qty)
+            entry_px = _safe_float(lot.get("entry_price"), 0.0)
+            pnl = (price - entry_px) * close_qty
+            attribution = _infer_recovered_plan_attribution(sym, order_id=str(lot.get("entry_order_id") or ""))
+            exit_attr = _p443_infer_broker_exit_attribution({
+                "symbol": sym,
+                "exit_order_id": str(fill.get("id") or ""),
+                "entry_order_id": str(lot.get("entry_order_id") or ""),
+            })
+            if exit_attr:
+                attribution = {**attribution, **exit_attr}
+            row = {
+                "symbol": sym,
+                "qty": round(close_qty, 4),
+                "entry_price": round(entry_px, 4),
+                "exit_price": round(price, 4),
+                "gross_pnl": round(pnl, 4),
+                "return_pct": round(((price - entry_px) / entry_px * 100.0) if entry_px > 0 else 0.0, 4),
+                "entry_ts_utc": str(lot.get("entry_ts_utc") or ""),
+                "exit_ts_utc": ts,
+                "ts_utc": ts,
+                "entry_order_id": str(lot.get("entry_order_id") or ""),
+                "exit_order_id": str(fill.get("id") or ""),
+                "source": "broker_fills_only",
+                "broker_reconciled": True,
+                "strategy_name": _valid_strategy_identity(attribution.get("strategy_name") or attribution.get("signal")) or "unknown",
+                "signal": _valid_strategy_identity(attribution.get("signal") or attribution.get("strategy_name")) or "unknown",
+                "entry_type": str(attribution.get("entry_type") or "").strip().lower() or "unknown",
+                "regime": str(attribution.get("regime") or attribution.get("regime_mode") or "").strip().lower() or "unknown",
+                "rank_score": attribution.get("rank_score"),
+                "selection_quality_score": attribution.get("selection_quality_score"),
+                "attribution_source": attribution.get("attribution_source") or "broker_fill_ledger_unattributed",
+                "holding_period_bucket": _p701_holding_period_bucket(str(lot.get("entry_ts_utc") or ""), ts),
+            }
+            row = _p441_broker_reconciled_r_backfill(row, attribution=attribution)
+            trade_key = "|".join([
+                str(row.get("exit_order_id") or ""),
+                str(row.get("entry_order_id") or ""),
+                f"{_safe_float(row.get('qty'), 0.0):.4f}",
+                f"{_safe_float(row.get('entry_price'), 0.0):.4f}",
+                f"{_safe_float(row.get('exit_price'), 0.0):.4f}",
+            ])
+            if trade_key in seen_trade_keys:
+                duplicate_count += 1
+            else:
+                seen_trade_keys.add(trade_key)
+                trades.append(row)
+            qty_to_close -= close_qty
+            lot["qty_remaining"] = round(lot_qty - close_qty, 8)
+            if _safe_float(lot.get("qty_remaining"), 0.0) <= 1e-9:
+                lots.pop(0)
+        if qty_to_close > 1e-9:
+            skipped += 1
+
+    trades.sort(key=lambda r: str(r.get("exit_ts_utc") or ""))
+    payload = swing_perf_build_broker_fills_only_trade_ledger(
+        patch_version=PATCH_VERSION,
+        rows=trades[-lim:],
+        duplicate_count=duplicate_count,
+        skipped_count=skipped,
+        order_count=len(list(orders or [])),
+        fill_count=len(fills),
+        limit=lim,
+    )
+    payload["source"] = "alpaca_order_fills_fifo_long_realized_ledger"
+    payload["order_limit"] = order_lim
+    payload["ledger_window_note"] = "Uses recent Alpaca filled orders only; internal state is attribution-only and never changes P/L."
+    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+    return payload
+
 
 def _p246_live_unrealized_pnl_truth() -> dict:
     rows = []
@@ -69493,6 +69628,12 @@ def diagnostics_broker_preferred_loss_attribution_truth():
 @app.get("/diagnostics/fast_broker_trade_ledger")
 def diagnostics_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False, detail: str = "light"):
     return JSONResponse(content=_p614_fast_broker_trade_ledger(limit=limit, refresh=refresh, detail=detail))
+
+
+@app.get("/diagnostics/broker_fills_only_trade_ledger")
+def diagnostics_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500):
+    return JSONResponse(content=_p701_recent_broker_fills_only_trade_ledger(limit=limit, order_limit=order_limit))
+
 
 @app.get("/diagnostics/position_truth")
 def diagnostics_position_truth(request: Request):
