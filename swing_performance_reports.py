@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-701-broker-fills-only-trade-ledger"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-701A-broker-fill-ledger-snapshot-cache-bounded-async-refresh"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

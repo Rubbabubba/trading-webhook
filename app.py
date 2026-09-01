@@ -2281,6 +2281,18 @@ SWING_FAST_BROKER_TRADE_LEDGER_TIMEOUT_SEC = getenv_float_any(
     "SWING_FAST_BROKER_TRADE_LEDGER_TIMEOUT_SEC",
     default=6.0,
 )
+BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_PATH = getenv_any(
+    "BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_PATH",
+    default="/var/data/broker_fills_only_trade_ledger_snapshot.json",
+)
+BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_TTL_SEC = getenv_int_any(
+    "BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_TTL_SEC",
+    default=900,
+)
+BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC = getenv_float_any(
+    "BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC",
+    default=6.0,
+)
 BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT = getenv_float_any(
     "BREAKOUT_PROFIT_GIVEBACK_AUDIT_MIN_FAVORABLE_30M_PCT",
     default=0.75,
@@ -3116,7 +3128,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-701-broker-fills-only-trade-ledger"
+PATCH_VERSION = "patch-701A-broker-fill-ledger-snapshot-cache-bounded-async-refresh"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23022,7 +23034,7 @@ def _p701_fill_sort_ts(row: dict) -> str:
     return str((row or {}).get("filled_at") or (row or {}).get("submitted_at") or "")
 
 
-def _p701_recent_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500) -> dict:
+def _p701_build_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500) -> dict:
     lim = max(1, min(int(limit or 200), 500))
     order_lim = max(lim, min(max(1, int(order_limit or 500)), 500))
     orders = _alpaca_get_orders_rest(status="all", limit=order_lim)
@@ -23134,6 +23146,192 @@ def _p701_recent_broker_fills_only_trade_ledger(limit: int = 200, order_limit: i
     payload["ledger_window_note"] = "Uses recent Alpaca filled orders only; internal state is attribution-only and never changes P/L."
     payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
     return payload
+
+
+def _p701a_cache_age_sec(payload: dict | None) -> float | None:
+    try:
+        raw = str((payload or {}).get("generated_utc") or (payload or {}).get("cached_utc") or "")
+        if not raw:
+            return None
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        return None
+
+
+def _p701a_load_broker_fills_ledger_cache() -> dict:
+    cached = dict(globals().setdefault("P701A_BROKER_FILLS_ONLY_LEDGER_CACHE", {}) or {})
+    if cached.get("ok"):
+        cached["cache_source"] = cached.get("cache_source") or "memory"
+        return cached
+    persisted = _safe_json_read(BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_PATH)
+    if persisted.get("ok"):
+        persisted["cache_source"] = persisted.get("cache_source") or "disk"
+        globals()["P701A_BROKER_FILLS_ONLY_LEDGER_CACHE"] = dict(persisted)
+        return dict(persisted)
+    return {}
+
+
+def _p701a_store_broker_fills_ledger_cache(payload: dict | None, *, source: str) -> dict:
+    snap = dict(payload or {})
+    if not snap.get("ok"):
+        return {"stored": False, "reason": "payload_not_ok"}
+    snap["generated_utc"] = datetime.now(timezone.utc).isoformat()
+    snap["cache_source"] = source
+    snap["p701a_snapshot_cache"] = {
+        "enabled": True,
+        "stored": True,
+        "source": source,
+        "snapshot_path": BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_PATH,
+        "ttl_sec": int(BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_TTL_SEC or 0),
+    }
+    cache = globals().setdefault("P701A_BROKER_FILLS_ONLY_LEDGER_CACHE", {})
+    cache.clear()
+    cache.update(snap)
+    _safe_json_write(BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_PATH, snap)
+    return snap
+
+
+def _p701a_slice_broker_fills_ledger(payload: dict | None, limit: int, *, cache_hit: bool, cache_status: str, timed_out: bool = False) -> dict:
+    lim = max(1, min(int(limit or 200), 500))
+    out = dict(payload or {})
+    out["ok"] = bool(out.get("ok", True))
+    out["patch_version"] = PATCH_VERSION
+    out["mode"] = "broker_fills_only_trade_ledger"
+    out["cache_hit"] = bool(cache_hit)
+    out["cache_status"] = cache_status
+    out["timed_out"] = bool(timed_out)
+    out["cache_age_sec"] = round(_p701a_cache_age_sec(out), 3) if _p701a_cache_age_sec(out) is not None else None
+    out["heavy_endpoint"] = "/diagnostics/broker_fills_only_trade_ledger?refresh=true&limit=200"
+    out["refresh_endpoint"] = "/diagnostics/broker_fills_only_trade_ledger?refresh=true&limit=200"
+    out["rows"] = list(out.get("rows") or [])[-lim:]
+    out.setdefault("read_only", True)
+    out.setdefault("does_not_submit_orders", True)
+    out.setdefault("broker_fills_only", True)
+    out.setdefault("strategy_state_accounting_included", False)
+    out.setdefault("worker_shadow_rows_included", False)
+    out["p701a_snapshot_cache"] = {
+        "enabled": True,
+        "cache_hit": bool(cache_hit),
+        "cache_status": cache_status,
+        "cache_age_sec": out.get("cache_age_sec"),
+        "ttl_sec": int(BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_TTL_SEC or 0),
+        "snapshot_path": BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_PATH,
+        "refresh_timeout_sec": float(BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC or 0.0),
+        "default_endpoint_is_cache_first": True,
+    }
+    out["recommended_action"] = (
+        "use_cached_broker_fills_ledger_for_audit"
+        if cache_hit
+        else "run_refresh_when_broker_history_is_available"
+        if cache_status == "cache_missing_refresh_required"
+        else out.get("recommended_action") or "review_broker_fills_ledger"
+    )
+    return out
+
+
+def _p701a_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500, refresh: bool = False, detail: str = "light") -> dict:
+    lim = max(1, min(int(limit or 200), 500))
+    heavy_requested = bool(refresh) or str(detail or "").strip().lower() in {"heavy", "full", "refresh", "rebuild"}
+    cached = _p701a_load_broker_fills_ledger_cache()
+    cache_age = _p701a_cache_age_sec(cached)
+    ttl = max(1, int(BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_TTL_SEC or 900))
+    cache_fresh = bool(cached.get("ok") and cache_age is not None and cache_age <= ttl)
+
+    if not heavy_requested:
+        if cached.get("ok"):
+            return _p701a_slice_broker_fills_ledger(
+                cached,
+                lim,
+                cache_hit=True,
+                cache_status="fresh" if cache_fresh else "stale",
+            )
+        return _p701a_slice_broker_fills_ledger(
+            {
+                "ok": True,
+                "source": "cache_missing_no_broker_call_default",
+                "summary": {
+                    "closed_trades": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "flat": 0,
+                    "gross_pnl": 0.0,
+                    "expectancy_per_trade": 0.0,
+                    "status": "cache_missing",
+                },
+                "rows": [],
+            },
+            lim,
+            cache_hit=False,
+            cache_status="cache_missing_refresh_required",
+        )
+
+    timeout = max(1.0, float(BROKER_FILLS_ONLY_LEDGER_REFRESH_TIMEOUT_SEC or 6.0))
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="broker-fills-only-ledger")
+    try:
+        future = executor.submit(_p701_build_broker_fills_only_trade_ledger, lim, order_limit)
+        payload = dict(future.result(timeout=timeout))
+        payload = _p701a_store_broker_fills_ledger_cache(payload, source="explicit_refresh")
+        return _p701a_slice_broker_fills_ledger(
+            payload,
+            lim,
+            cache_hit=False,
+            cache_status="refreshed",
+        )
+    except FuturesTimeoutError:
+        if cached.get("ok"):
+            return _p701a_slice_broker_fills_ledger(
+                cached,
+                lim,
+                cache_hit=True,
+                cache_status="stale_after_refresh_timeout",
+                timed_out=True,
+            )
+        return _p701a_slice_broker_fills_ledger(
+            {
+                "ok": True,
+                "source": "refresh_timeout_no_cache",
+                "summary": {
+                    "closed_trades": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "flat": 0,
+                    "gross_pnl": 0.0,
+                    "expectancy_per_trade": 0.0,
+                    "status": "refresh_timeout_no_cache",
+                },
+                "rows": [],
+            },
+            lim,
+            cache_hit=False,
+            cache_status="refresh_timeout_no_cache",
+            timed_out=True,
+        )
+    except Exception as exc:
+        if cached.get("ok"):
+            out = _p701a_slice_broker_fills_ledger(cached, lim, cache_hit=True, cache_status="cached_after_refresh_error")
+            out["refresh_error"] = str(exc)
+            out["refresh_exception_type"] = type(exc).__name__
+            return out
+        return {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "broker_fills_only_trade_ledger",
+            "source": "refresh_exception_no_cache",
+            "read_only": True,
+            "does_not_submit_orders": True,
+            "broker_fills_only": True,
+            "strategy_state_accounting_included": False,
+            "worker_shadow_rows_included": False,
+            "error": str(exc),
+            "exception_type": type(exc).__name__,
+            "rows": [],
+            "recommended_action": "inspect_broker_fill_ledger_refresh_error",
+        }
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _p246_live_unrealized_pnl_truth() -> dict:
@@ -69631,8 +69829,13 @@ def diagnostics_fast_broker_trade_ledger(limit: int = 25, refresh: bool = False,
 
 
 @app.get("/diagnostics/broker_fills_only_trade_ledger")
-def diagnostics_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500):
-    return JSONResponse(content=_p701_recent_broker_fills_only_trade_ledger(limit=limit, order_limit=order_limit))
+def diagnostics_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500, refresh: bool = False, detail: str = "light"):
+    return JSONResponse(content=_p701a_broker_fills_only_trade_ledger(
+        limit=limit,
+        order_limit=order_limit,
+        refresh=refresh,
+        detail=detail,
+    ))
 
 
 @app.get("/diagnostics/position_truth")

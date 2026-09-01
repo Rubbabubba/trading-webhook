@@ -95,6 +95,25 @@ Smoke tests:
 - Worker-generated duplicate rows do not change P/L.
 - Missing strategy attribution is labeled unknown, not guessed.
 
+### Patch 701A: Broker Fill Ledger Snapshot Cache + Bounded Async Refresh
+
+Status: in local implementation
+
+Goal: keep Patch 701 broker-only accounting but make the endpoint safe when broker order history is slow.
+
+Scope:
+
+- Make `/diagnostics/broker_fills_only_trade_ledger` cache-first by default.
+- Require `refresh=true` or heavy detail for live broker order-history rebuild.
+- Bound refresh with a short timeout and return stale cache or explicit no-cache truth instead of hanging.
+- Persist the last successful broker-only ledger snapshot.
+
+Expected outcome:
+
+- The default broker-only ledger endpoint returns quickly.
+- Heavy refresh cannot strand the operator request for minutes.
+- Worker shadows remain excluded from accounting.
+
 Post-deploy endpoints:
 
 - `/diagnostics/broker_preferred_daily_pnl_dedup`
