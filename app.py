@@ -214,6 +214,7 @@ from swing_performance_reports import (
     build_capital_rotation_readiness_audit as swing_perf_build_capital_rotation_readiness_audit,
     build_daily_goal_opportunity_map as swing_perf_build_daily_goal_opportunity_map,
     build_daily_goal_path_truth as swing_perf_build_daily_goal_path_truth,
+    build_fast_performance_alignment_brief as swing_perf_build_fast_performance_alignment_brief,
     build_goal_gap_rotation_operator_plan as swing_perf_build_goal_gap_rotation_operator_plan,
     performance_reports_module_status as swing_perf_module_status,
 )
@@ -3100,7 +3101,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-651-capital-rotation-report-assembly-extraction"
+PATCH_VERSION = "patch-652-fast-performance-alignment-brief-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -61424,7 +61425,7 @@ def _p418_sleeve_rebalance_from_attribution(attribution: dict | None = None) -> 
         ),
     }
 
-def _p418_swing_performance_alignment_brief(limit: int = 10) -> dict:
+def _p418_swing_performance_alignment_brief_heavy(limit: int = 10) -> dict:
     lim = max(1, min(int(limit or 10), 50))
     attribution = _p418_broker_reconciled_attribution_for_alignment()
     latest_scan, summary = _p298_latest_scan_summary_light()
@@ -61494,15 +61495,50 @@ def _p418_swing_performance_alignment_brief(limit: int = 10) -> dict:
         "recommended_action": recommended_action,
     }
 
+def _p652_fast_swing_performance_alignment_brief(limit: int = 10) -> dict:
+    lim = max(1, min(int(limit or 10), 50))
+    latest_scan, summary = _p298_latest_scan_summary_light()
+    coverage = _p404_runtime_universe_coverage(latest_scan=latest_scan, summary=summary)
+    current_truth = _p277h_current_scan_suppression_truth(limit=lim)
+    opportunity = _p644_daily_goal_opportunity_map(limit=max(lim, 10))
+    rotation = _p637_capital_rotation_readiness_audit(limit=max(lim, 10))
+    payload = swing_perf_build_fast_performance_alignment_brief(
+        patch_version=PATCH_VERSION,
+        latest_scan=latest_scan,
+        latest_scan_summary=summary,
+        runtime_coverage=coverage,
+        current_selection_truth=current_truth,
+        daily_goal_opportunity=opportunity,
+        capital_rotation=rotation,
+        limit=lim,
+    )
+    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+    return payload
+
 @app.get("/diagnostics/swing_performance_attribution")
 def diagnostics_swing_performance_attribution(request: Request):
     require_admin_if_configured(request)
     return _swing_performance_attribution()
 
 @app.get("/diagnostics/swing_performance_alignment_brief")
-def diagnostics_swing_performance_alignment_brief(request: Request, limit: int = 10):
+def diagnostics_swing_performance_alignment_brief(request: Request, limit: int = 10, heavy: bool = False):
     require_admin_if_configured(request)
-    return _p418_swing_performance_alignment_brief(limit=limit)
+    heavy_requested = bool(heavy) or str(request.query_params.get("detail") or "").strip().lower() in {
+        "heavy",
+        "full",
+        "debug",
+        "attribution",
+    }
+    if heavy_requested:
+        payload = _p418_swing_performance_alignment_brief_heavy(limit=limit)
+        payload["requested_detail"] = "heavy"
+        payload["heavy_uses_legacy_attribution_path"] = True
+        payload["fast_default_endpoint"] = "/diagnostics/swing_performance_alignment_brief?limit=10"
+        return payload
+    return _p652_fast_swing_performance_alignment_brief(limit=limit)
+
+def _p418_swing_performance_alignment_brief(limit: int = 10) -> dict:
+    return _p652_fast_swing_performance_alignment_brief(limit=limit)
 
 @app.get("/diagnostics/swing_tuning_simulator")
 def diagnostics_swing_tuning_simulator(request: Request):

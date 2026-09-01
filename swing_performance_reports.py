@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-651-capital-rotation-report-assembly-extraction"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-652-fast-performance-alignment-brief-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -632,6 +632,150 @@ def build_daily_goal_opportunity_map(
     }
 
 
+def build_fast_performance_alignment_brief(
+    *,
+    patch_version: str,
+    latest_scan: dict | None,
+    latest_scan_summary: dict | None,
+    runtime_coverage: dict | None,
+    current_selection_truth: dict | None,
+    daily_goal_opportunity: dict | None,
+    capital_rotation: dict | None,
+    limit: int = 10,
+) -> dict:
+    latest_scan = dict(latest_scan or {})
+    latest_summary = dict(latest_scan_summary or {})
+    coverage = dict(runtime_coverage or {})
+    current_truth = dict(current_selection_truth or {})
+    opportunity = dict(daily_goal_opportunity or {})
+    rotation = dict(capital_rotation or {})
+    opportunity_summary = dict(opportunity.get("summary") or {})
+    rotation_summary = dict(rotation.get("summary") or {})
+    lim = max(1, min(int(limit or 10), 50))
+
+    selected_symbols = _dedupe_keep_order(
+        list(current_truth.get("selected_symbols") or [])
+        or list(latest_summary.get("selected_symbols") or [])
+        or list((latest_scan.get("summary") or {}).get("selected_symbols") or [])
+    )
+    eligible_symbols = _dedupe_keep_order(list(current_truth.get("eligible_symbols") or []))
+    goal_gap_symbols = _dedupe_keep_order(list(opportunity.get("goal_gap_closer_symbols") or []))
+    drag_symbols = _dedupe_keep_order(
+        list(rotation.get("rotation_candidate_symbols") or [])
+        or list(opportunity.get("capital_drag_symbols") or [])
+    )
+    retry_waiting_symbols = _dedupe_keep_order(
+        list(opportunity.get("retry_waiting_selected_candidate_symbols") or [])
+        or list((opportunity.get("selected_candidate_operator_truth") or {}).get("retry_waiting_symbols") or [])
+    )
+    actionable_selected_symbols = _dedupe_keep_order(
+        list(opportunity.get("actionable_selected_candidate_symbols") or [])
+        or list((opportunity.get("selected_candidate_operator_truth") or {}).get("submit_gap_symbols") or [])
+    )
+
+    below_goal = bool(
+        rotation_summary.get("below_daily_low_goal")
+        if "below_daily_low_goal" in rotation_summary
+        else opportunity.get("daily_goal_state") != "goal_low_hit"
+    )
+    profit_focus = (
+        rotation_summary.get("profit_improvement_focus")
+        or opportunity_summary.get("profit_improvement_focus")
+        or "unknown"
+    )
+    blockers = []
+    if not bool(coverage.get("matches_runtime")) and bool(coverage.get("current_env_wants_full_coverage")):
+        blockers.append("runtime_coverage_not_confirmed_after_env_change")
+    if actionable_selected_symbols:
+        blockers.append("selected_candidate_submit_gap")
+    if retry_waiting_symbols:
+        blockers.append("selected_candidate_retry_waiting")
+    if profit_focus == "capital_rotation" and drag_symbols:
+        blockers.append("drag_dependent_goal_path")
+    if not selected_symbols and not eligible_symbols and below_goal:
+        blockers.append("no_current_eligible_new_entry")
+
+    if "runtime_coverage_not_confirmed_after_env_change" in blockers:
+        status = "confirm_runtime_coverage"
+        recommended_action = "rerun_scanner_then_review_current_scan_suppression_truth"
+    elif "selected_candidate_submit_gap" in blockers:
+        status = "submit_gap"
+        recommended_action = "resolve_selected_submit_gap_before_new_cleanup"
+    elif "selected_candidate_retry_waiting" in blockers:
+        status = "retry_waiting"
+        recommended_action = "wait_for_submit_retry_or_next_scan"
+    elif "drag_dependent_goal_path" in blockers:
+        status = "capital_rotation_review"
+        recommended_action = rotation.get("recommended_action") or "review_drag_dependent_goal_path_for_rotation"
+    elif "no_current_eligible_new_entry" in blockers:
+        status = "quality_wait"
+        recommended_action = "wait_for_clean_setup_do_not_force_trade"
+    else:
+        status = "aligned"
+        recommended_action = opportunity.get("recommended_action") or "monitor_goal_path"
+
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "swing_performance_alignment_brief",
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "source": "fast_operator_snapshots_no_heavy_attribution",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "status": status,
+        "mantra": "cleanup_simplify_align_with_first_2k_sweet_spot",
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "source": latest_scan.get("source"),
+            "scanned": latest_scan.get("scanned"),
+            "duration_ms": latest_scan.get("duration_ms"),
+            "selected_total": int(latest_summary.get("selected_total") or latest_scan.get("selected_total") or 0),
+            "selected_symbols": selected_symbols,
+        },
+        "runtime_coverage_truth": coverage,
+        "current_selection_truth": {
+            "eligible_count": int(current_truth.get("eligible_count") or 0),
+            "eligible_symbols": eligible_symbols,
+            "selected_total": int(current_truth.get("selected_total") or len(selected_symbols)),
+            "selected_symbols": selected_symbols,
+            "reason_counts": dict(current_truth.get("reason_counts") or {}),
+            "top_candidates": list(current_truth.get("top_new_entry_candidates") or current_truth.get("top_candidates") or [])[:lim],
+        },
+        "profit_path_truth": {
+            "daily_goal_state": opportunity.get("daily_goal_state"),
+            "profit_path": opportunity.get("profit_path"),
+            "candidate_path": opportunity.get("candidate_path"),
+            "summary": opportunity_summary,
+            "goal_gap_closer_symbols": goal_gap_symbols,
+            "capital_drag_symbols": list(opportunity.get("capital_drag_symbols") or []),
+            "near_stop_symbols": list(opportunity.get("near_stop_symbols") or []),
+            "rows": list(opportunity.get("rows") or [])[:lim],
+        },
+        "capital_rotation_truth": {
+            "summary": rotation_summary,
+            "rotation_candidate_symbols": drag_symbols,
+            "replacement_focus_symbols": list(rotation.get("replacement_focus_symbols") or [])[:lim],
+            "recommended_action": rotation.get("recommended_action"),
+            "rows": list(rotation.get("rows") or [])[:lim],
+        },
+        "fast_alignment_contract": {
+            "enabled": True,
+            "module_owned_report_shape": True,
+            "uses_heavy_attribution_by_default": False,
+            "heavy_available": True,
+            "heavy_endpoint": "/diagnostics/swing_performance_alignment_brief?heavy=true&limit=10",
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "does_not_submit_orders": True,
+        },
+        "blockers": blockers,
+        "recommended_action": recommended_action,
+    }
+
+
 def performance_reports_module_status(*, patch_version: str) -> dict:
     return {
         "ok": True,
@@ -648,7 +792,8 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "daily_goal_opportunity_map_report_shape",
             "capital_rotation_readiness_report_shape",
             "capital_rotation_action_contract_shape",
+            "fast_performance_alignment_brief_shape",
             "profit_path_truth_contract_shape",
         ],
-        "next_extraction_target": "move_broker_reconciled_attribution_report_shapes",
+        "next_extraction_target": "move_broker_reconciled_attribution_report_shapes_heavy_only",
     }
