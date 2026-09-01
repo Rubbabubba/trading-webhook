@@ -37,7 +37,7 @@ Each roadmap patch should include:
 
 ### Patch 700: Live Risk Hard Stop + Validation Mode Contract
 
-Status: in local implementation
+Status: deployed and verified.
 
 Goal: prevent the bot from manufacturing trades while the edge is under review.
 
@@ -72,7 +72,7 @@ Post-deploy endpoints:
 
 ### Patch 701: Broker-Fills-Only Trade Ledger
 
-Status: in local implementation
+Status: deployed; endpoint shape was correct but broker-history refresh was too slow inline.
 
 Goal: make broker fills the source of truth for performance review.
 
@@ -97,7 +97,7 @@ Smoke tests:
 
 ### Patch 701A: Broker Fill Ledger Snapshot Cache + Bounded Async Refresh
 
-Status: in local implementation
+Status: deployed; default cache-first endpoint was fast, but refresh still timed out without cache.
 
 Goal: keep Patch 701 broker-only accounting but make the endpoint safe when broker order history is slow.
 
@@ -116,7 +116,7 @@ Expected outcome:
 
 ### Patch 701B: Broker Fill History Windowing + Incremental Ledger Refresh
 
-Status: in local implementation
+Status: deployed; refresh remained bounded but did not populate cache before timeout.
 
 Goal: make broker-only ledger refresh produce useful partial data even when full Alpaca order history is slow.
 
@@ -140,6 +140,34 @@ Post-deploy endpoints:
 - `/diagnostics/swing_performance_attribution`
 - `/diagnostics/broker_reconciled_strategy_attribution`
 - `/diagnostics/live_positions_light`
+
+### Patch 701C: Broker Fill Ledger Background Refresh + Slow Broker History Isolation
+
+Status: local implementation complete.
+
+Goal: finish the 701 tangent by making broker-fill history refresh non-blocking.
+
+Scope:
+
+- Start broker-fill ledger refresh in a daemon background thread when `refresh=true`.
+- Return cached or pending truth immediately instead of waiting inline on slow broker history.
+- Add `/diagnostics/broker_fills_only_trade_ledger_refresh_status` for running/completed/failed/lost refresh state.
+- Keep the default ledger endpoint cache-first and broker-call-free.
+- Let `/diagnostics/broker_only_daily_loss_truth` use the cached broker-fill ledger by default, with `?refresh=true` or `?detail=heavy` reserved for legacy heavy broker-order recompute.
+
+Expected outcome:
+
+- Broker-fill audit requests do not hang.
+- Broker order-history slowness is isolated behind background status truth.
+- Cached broker-only daily loss truth becomes fast enough for operator checks.
+
+Post-deploy endpoints:
+
+- `/diagnostics/broker_fills_only_trade_ledger?limit=200`
+- `/diagnostics/broker_fills_only_trade_ledger?refresh=true&limit=200`
+- `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
+- `/diagnostics/broker_fills_only_trade_ledger?limit=200`
+- `/diagnostics/broker_only_daily_loss_truth`
 
 ## Phase 2: Prove Or Reject Each Engine Separately
 
