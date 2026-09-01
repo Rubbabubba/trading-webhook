@@ -303,16 +303,20 @@ Post-deploy endpoints:
 
 Goal: convert replay outputs into a pass/fail promotion report.
 
+Status: implemented as a read-only promotion contract.
+
 Scope:
 
 - Replay current config across multiple windows.
 - Mark each strategy/profile as pass, watch, or fail.
 - Require positive out-of-sample expectancy before normal live allocation.
 - Store scenario results under `tools`/diagnostics instead of adding route clutter to `app.py`.
+- Keep Render behavior passive: the production endpoint reports a snapshot and never fetches bars, runs replay, or submits orders.
 
 Expected outcome:
 
 - Live capital is allocated only to variants with evidence.
+- Validation mode remains the default until a replay window passes the promotion contract.
 
 Smoke tests:
 
@@ -321,6 +325,8 @@ Smoke tests:
 - Prior profitable period replay.
 - Down-market day replay.
 - Mixed-regime replay.
+- Local promotion gate:
+  - `powershell -ExecutionPolicy Bypass -File .\tools\run_replay_promotion_gate.ps1`
 
 Post-run local artifacts:
 
@@ -328,6 +334,13 @@ Post-run local artifacts:
 - `C:/Users/matth/TradingDiagnostics/swing_minute_replay/latest_scenario_matrix.csv`
 - `C:/Users/matth/TradingDiagnostics/swing_minute_replay/latest_best_scenario_trades.csv`
 - `C:/Users/matth/TradingDiagnostics/swing_minute_replay/latest_scenario_symbol_attribution_matrix.csv`
+- `C:/Users/matth/TradingDiagnostics/replay_promotion_gate/latest_replay_promotion_gate.json`
+- `C:/Users/matth/TradingDiagnostics/replay_promotion_gate/latest_replay_promotion_gate.csv`
+
+Post-deploy endpoints:
+
+- `/diagnostics/replay_promotion_gate?limit=25`
+- `/diagnostics/swing_performance_reports_module_status`
 
 ## Phase 3: Rebuild Runtime Around Clean Ownership
 

@@ -156,6 +156,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/rejections
 https://trading-webhook-q4d5.onrender.com/diagnostics/release
 https://trading-webhook-q4d5.onrender.com/diagnostics/release_workflow
 https://trading-webhook-q4d5.onrender.com/diagnostics/repeatability
+https://trading-webhook-q4d5.onrender.com/diagnostics/replay_promotion_gate
 https://trading-webhook-q4d5.onrender.com/diagnostics/routes
 https://trading-webhook-q4d5.onrender.com/diagnostics/runtime
 https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_coverage_preview

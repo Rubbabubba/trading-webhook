@@ -222,6 +222,7 @@ from swing_performance_reports import (
     build_goal_gap_rotation_operator_plan as swing_perf_build_goal_gap_rotation_operator_plan,
     build_heavy_performance_alignment_deferral as swing_perf_build_heavy_performance_alignment_deferral,
     build_payoff_imbalance_repair_report as swing_perf_build_payoff_imbalance_repair_report,
+    build_replay_promotion_gate_report as swing_perf_build_replay_promotion_gate_report,
     performance_reports_module_status as swing_perf_module_status,
 )
 
@@ -1763,6 +1764,15 @@ BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_TTL_SEC = getenv_int_any(
     "BROKER_RECONCILED_ATTRIBUTION_SNAPSHOT_TTL_SEC",
     default=900,
 )
+REPLAY_PROMOTION_GATE_SNAPSHOT_PATH = getenv_any(
+    "REPLAY_PROMOTION_GATE_SNAPSHOT_PATH",
+    default="/var/data/replay_promotion_gate_snapshot.json",
+)
+REPLAY_PROMOTION_GATE_MIN_TRADES = getenv_int_any("REPLAY_PROMOTION_GATE_MIN_TRADES", default=10)
+REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL = getenv_float_any("REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL", default=0.0)
+REPLAY_PROMOTION_GATE_MIN_AVG_R = getenv_float_any("REPLAY_PROMOTION_GATE_MIN_AVG_R", default=0.05)
+REPLAY_PROMOTION_GATE_MIN_WIN_RATE = getenv_float_any("REPLAY_PROMOTION_GATE_MIN_WIN_RATE", default=0.5)
+REPLAY_PROMOTION_GATE_MAX_DRAWDOWN = getenv_float_any("REPLAY_PROMOTION_GATE_MAX_DRAWDOWN", default=0.0)
 
 SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET = getenv_int_any("SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET", default=3)
 SWING_PERFORMANCE_PROMOTE_MIN_TRADES = getenv_int_any("SWING_PERFORMANCE_PROMOTE_MIN_TRADES", default=5)
@@ -3185,7 +3195,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-703-payoff-imbalance-repair-report"
+PATCH_VERSION = "patch-704-out-of-sample-replay-promotion-gate"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23949,6 +23959,45 @@ def _p703_payoff_imbalance_repair_report(limit: int = 25, trade_limit: int = 200
                 if action != "run_broker_fills_only_trade_ledger_refresh_pump_then_recheck_payoff_report"
             ],
         ]
+    return payload
+
+
+def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    cached = _safe_json_read(REPLAY_PROMOTION_GATE_SNAPSHOT_PATH)
+    module_status = swing_perf_module_status(patch_version=PATCH_VERSION)
+    if str(cached.get("mode") or "") == "out_of_sample_replay_promotion_gate":
+        payload = dict(cached)
+        payload["patch_version"] = PATCH_VERSION
+        payload["cache_hit"] = True
+        payload["snapshot_path"] = REPLAY_PROMOTION_GATE_SNAPSHOT_PATH
+        payload["local_tool"] = "tools/run_replay_promotion_gate.ps1"
+        payload["swing_performance_reports_module_status"] = module_status
+        return payload
+
+    replay_inputs = [{"window": "snapshot", "payload": cached}] if cached.get("ok") else []
+    payload = swing_perf_build_replay_promotion_gate_report(
+        patch_version=PATCH_VERSION,
+        replay_inputs=replay_inputs,
+        min_trades=int(REPLAY_PROMOTION_GATE_MIN_TRADES or 0),
+        min_total_pnl=float(REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL or 0.0),
+        min_avg_r=float(REPLAY_PROMOTION_GATE_MIN_AVG_R or 0.0),
+        min_win_rate=float(REPLAY_PROMOTION_GATE_MIN_WIN_RATE or 0.0),
+        max_drawdown=float(REPLAY_PROMOTION_GATE_MAX_DRAWDOWN or 0.0),
+        limit=lim,
+    )
+    payload["cache_hit"] = bool(cached.get("ok"))
+    payload["snapshot_path"] = REPLAY_PROMOTION_GATE_SNAPSHOT_PATH
+    payload["local_tool"] = "tools/run_replay_promotion_gate.ps1"
+    payload["snapshot_contract"] = {
+        "render_endpoint_is_read_only": True,
+        "render_endpoint_does_not_fetch_market_data": True,
+        "render_endpoint_does_not_run_replay": True,
+        "local_replay_outputs_must_be_promoted_as_snapshot": True,
+    }
+    payload["swing_performance_reports_module_status"] = module_status
+    if not cached.get("ok"):
+        payload["recommended_action"] = "run_local_replay_promotion_gate_then_review_json_artifact"
     return payload
 
 
@@ -70713,6 +70762,11 @@ def diagnostics_broker_reconciled_strategy_attribution(
 def diagnostics_payoff_imbalance_repair_report(request: Request, limit: int = 25, trade_limit: int = 200):
     require_admin_if_configured(request)
     return JSONResponse(content=_p703_payoff_imbalance_repair_report(limit=limit, trade_limit=trade_limit))
+
+@app.get("/diagnostics/replay_promotion_gate")
+def diagnostics_replay_promotion_gate(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p704_replay_promotion_gate_snapshot(limit=limit))
 
 @app.get("/diagnostics/breakout_dollar_risk_containment")
 def diagnostics_breakout_dollar_risk_containment(limit: int = 20):

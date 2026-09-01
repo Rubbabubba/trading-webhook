@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-703-payoff-imbalance-repair-report"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-704-out-of-sample-replay-promotion-gate"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1614,6 +1614,214 @@ def build_payoff_imbalance_repair_report(
     }
 
 
+def _replay_metric(row: dict | None, *names: str, default: float = 0.0) -> float:
+    r = dict(row or {})
+    for name in names:
+        value = r.get(name)
+        if value is None or str(value).strip() == "":
+            continue
+        return _safe_float(value, default)
+    return default
+
+
+def _replay_name(row: dict | None, fallback: str = "current_config") -> str:
+    r = dict(row or {})
+    for key in ("scenario", "scenario_name", "name", "profile", "config_name"):
+        value = str(r.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
+
+
+def _dedupe_text(values: list | tuple | set | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in list(values or []):
+        text = str(value or "").strip()
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            out.append(text)
+    return out
+
+
+def _normalize_replay_summary(payload: dict | list | None) -> list[dict]:
+    if isinstance(payload, list):
+        return [dict(r or {}) for r in payload if isinstance(r, dict)]
+    data = dict(payload or {})
+    rows = data.get("rows") or data.get("scenario_matrix") or data.get("top_scenarios")
+    if isinstance(rows, list):
+        return [dict(r or {}) for r in rows if isinstance(r, dict)]
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else data
+    return [dict(summary or {})] if summary else []
+
+
+def _replay_window_result(
+    row: dict,
+    *,
+    window_name: str,
+    min_trades: int,
+    min_total_pnl: float,
+    min_avg_r: float,
+    min_win_rate: float,
+    max_drawdown: float,
+) -> dict:
+    name = _replay_name(row)
+    trade_count = int(_replay_metric(row, "trade_count", "closed_trades", "count", "accepted_count", default=0))
+    total_pnl = _replay_metric(row, "total_pnl", "gross_pnl", "pnl", "net_pnl", default=0.0)
+    avg_r = _replay_metric(row, "avg_r", "average_r", default=0.0)
+    win_rate = _replay_metric(row, "win_rate", default=0.0)
+    drawdown = abs(_replay_metric(row, "max_drawdown", "max_drawdown_dollars", "max_daily_drawdown", default=0.0))
+    blockers: list[str] = []
+    if trade_count < int(min_trades or 0):
+        blockers.append("sample_below_min_trades")
+    if total_pnl < float(min_total_pnl or 0.0):
+        blockers.append("total_pnl_below_min")
+    if avg_r < float(min_avg_r or 0.0):
+        blockers.append("avg_r_below_min")
+    if win_rate < float(min_win_rate or 0.0):
+        blockers.append("win_rate_below_min")
+    if max_drawdown > 0 and drawdown > float(max_drawdown):
+        blockers.append("drawdown_above_max")
+    status = "pass" if not blockers else "watch" if trade_count >= max(1, int(min_trades or 0)) and total_pnl >= 0 else "fail"
+    return {
+        "window": window_name,
+        "scenario": name,
+        "status": status,
+        "passes": status == "pass",
+        "blockers": blockers,
+        "trade_count": trade_count,
+        "total_pnl": round(total_pnl, 4),
+        "avg_r": round(avg_r, 4),
+        "win_rate": round(win_rate, 4),
+        "max_drawdown": round(drawdown, 4),
+    }
+
+
+def build_replay_promotion_gate_report(
+    *,
+    patch_version: str,
+    replay_inputs: list[dict] | None,
+    min_trades: int = 10,
+    min_total_pnl: float = 0.0,
+    min_avg_r: float = 0.05,
+    min_win_rate: float = 0.5,
+    max_drawdown: float = 0.0,
+    limit: int = 25,
+) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    window_results: list[dict] = []
+    for idx, raw in enumerate(list(replay_inputs or []), start=1):
+        item = dict(raw or {})
+        window_name = str(item.get("window") or item.get("name") or f"window_{idx}").strip() or f"window_{idx}"
+        for row in _normalize_replay_summary(item.get("payload") or item.get("rows") or item):
+            window_results.append(_replay_window_result(
+                row,
+                window_name=window_name,
+                min_trades=int(min_trades or 0),
+                min_total_pnl=float(min_total_pnl or 0.0),
+                min_avg_r=float(min_avg_r or 0.0),
+                min_win_rate=float(min_win_rate or 0.0),
+                max_drawdown=float(max_drawdown or 0.0),
+            ))
+
+    by_scenario: dict[str, dict] = {}
+    for row in window_results:
+        scenario = str(row.get("scenario") or "unknown")
+        bucket = by_scenario.setdefault(scenario, {
+            "scenario": scenario,
+            "windows": 0,
+            "pass_windows": 0,
+            "watch_windows": 0,
+            "fail_windows": 0,
+            "total_trades": 0,
+            "total_pnl": 0.0,
+            "avg_r_values": [],
+            "win_rate_values": [],
+            "blockers": [],
+        })
+        bucket["windows"] += 1
+        bucket["total_trades"] += int(row.get("trade_count") or 0)
+        bucket["total_pnl"] += _safe_float(row.get("total_pnl"), 0.0)
+        bucket["avg_r_values"].append(_safe_float(row.get("avg_r"), 0.0))
+        bucket["win_rate_values"].append(_safe_float(row.get("win_rate"), 0.0))
+        bucket["blockers"].extend(list(row.get("blockers") or []))
+        if row.get("status") == "pass":
+            bucket["pass_windows"] += 1
+        elif row.get("status") == "watch":
+            bucket["watch_windows"] += 1
+        else:
+            bucket["fail_windows"] += 1
+
+    scenarios: list[dict] = []
+    for bucket in by_scenario.values():
+        windows = max(1, int(bucket.get("windows") or 0))
+        pass_windows = int(bucket.get("pass_windows") or 0)
+        fail_windows = int(bucket.get("fail_windows") or 0)
+        status = "pass" if pass_windows == windows else "fail" if fail_windows else "watch"
+        scenarios.append({
+            "scenario": bucket.get("scenario"),
+            "status": status,
+            "promotion_ready": status == "pass",
+            "windows": windows,
+            "pass_windows": pass_windows,
+            "watch_windows": int(bucket.get("watch_windows") or 0),
+            "fail_windows": fail_windows,
+            "total_trades": int(bucket.get("total_trades") or 0),
+            "total_pnl": round(_safe_float(bucket.get("total_pnl"), 0.0), 4),
+            "avg_r": _avg(bucket.pop("avg_r_values", [])),
+            "avg_win_rate": _avg(bucket.pop("win_rate_values", [])),
+            "blockers": _dedupe_text(bucket.pop("blockers", [])),
+        })
+    scenarios.sort(key=lambda r: (
+        1 if r.get("promotion_ready") else 0,
+        _safe_float(r.get("total_pnl"), 0.0),
+        _safe_float(r.get("avg_r"), 0.0),
+    ), reverse=True)
+
+    ready = [r for r in scenarios if bool(r.get("promotion_ready"))]
+    watch = [r for r in scenarios if str(r.get("status") or "") == "watch"]
+    fail = [r for r in scenarios if str(r.get("status") or "") == "fail"]
+    recommended_action = (
+        "promote_passed_strategy_only_at_validation_or_reduced_risk"
+        if ready
+        else "keep_validation_pause_and_collect_more_out_of_sample_replay"
+        if watch
+        else "do_not_promote_current_config"
+    )
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "out_of_sample_replay_promotion_gate",
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "changes_trade_behavior": False,
+        "promotion_contract": {
+            "min_trades": int(min_trades or 0),
+            "min_total_pnl": float(min_total_pnl or 0.0),
+            "min_avg_r": float(min_avg_r or 0.0),
+            "min_win_rate": float(min_win_rate or 0.0),
+            "max_drawdown": float(max_drawdown or 0.0),
+            "requires_all_windows_to_pass": True,
+            "live_risk_mode_should_remain_validation_until_pass": True,
+        },
+        "window_count": len(list(replay_inputs or [])),
+        "window_result_count": len(window_results),
+        "scenario_count": len(scenarios),
+        "promotion_ready_count": len(ready),
+        "watch_count": len(watch),
+        "fail_count": len(fail),
+        "promotion_ready_scenarios": ready[:lim],
+        "watch_scenarios": watch[:lim],
+        "failed_scenarios": fail[:lim],
+        "scenario_rows": scenarios[:lim],
+        "window_results": window_results[:lim],
+        "recommended_action": recommended_action,
+    }
+
+
 def build_broker_reconciled_strategy_attribution_report(
     *,
     patch_version: str,
@@ -1720,6 +1928,7 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "broker_fills_only_trade_ledger_shape",
             "broker_reconciled_strategy_attribution_report_shape",
             "payoff_imbalance_repair_report_shape",
+            "out_of_sample_replay_promotion_gate_shape",
             "broker_reconciled_attribution_snapshot_cache_contract",
             "profit_path_truth_contract_shape",
         ],
