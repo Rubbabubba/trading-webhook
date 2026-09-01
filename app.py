@@ -3179,7 +3179,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-701D-durable-broker-fill-ledger-refresh-pump-disk-cursor-state"
+PATCH_VERSION = "patch-701E-read-only-refresh-status-explicit-pump-legacy-refresh-state-sanitizer"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23331,14 +23331,47 @@ def _p701a_cache_age_sec(payload: dict | None) -> float | None:
 def _p701a_load_broker_fills_ledger_cache() -> dict:
     cached = dict(globals().setdefault("P701A_BROKER_FILLS_ONLY_LEDGER_CACHE", {}) or {})
     if cached.get("ok"):
+        cached = _p701e_sanitize_legacy_refresh_cache(cached)
+        globals()["P701A_BROKER_FILLS_ONLY_LEDGER_CACHE"] = dict(cached)
         cached["cache_source"] = cached.get("cache_source") or "memory"
         return cached
     persisted = _safe_json_read(BROKER_FILLS_ONLY_LEDGER_SNAPSHOT_PATH)
     if persisted.get("ok"):
+        persisted = _p701e_sanitize_legacy_refresh_cache(persisted)
         persisted["cache_source"] = persisted.get("cache_source") or "disk"
         globals()["P701A_BROKER_FILLS_ONLY_LEDGER_CACHE"] = dict(persisted)
         return dict(persisted)
     return {}
+
+
+def _p701e_sanitize_legacy_refresh_cache(payload: dict | None) -> dict:
+    out = dict(payload or {})
+    cache_source = str(out.get("cache_source") or "")
+    legacy_markers = []
+    if cache_source == "background_refresh":
+        out["cache_source"] = "legacy_background_refresh_cache_sanitized"
+        legacy_markers.append("cache_source_background_refresh")
+    if isinstance(out.get("p701c_background_refresh"), dict):
+        out["p701c_background_refresh"] = {
+            "retired_by": PATCH_VERSION,
+            "reason": "in_memory_background_threads_do_not_survive_render_process_churn",
+        }
+        legacy_markers.append("p701c_background_refresh_metadata")
+    if legacy_markers:
+        out["p701e_legacy_refresh_sanitizer"] = {
+            "enabled": True,
+            "sanitized": True,
+            "markers": legacy_markers,
+            "patch_version": PATCH_VERSION,
+        }
+    else:
+        out.setdefault("p701e_legacy_refresh_sanitizer", {
+            "enabled": True,
+            "sanitized": False,
+            "markers": [],
+            "patch_version": PATCH_VERSION,
+        })
+    return out
 
 
 def _p701a_store_broker_fills_ledger_cache(payload: dict | None, *, source: str) -> dict:
@@ -23479,8 +23512,11 @@ def _p701d_finalize_refresh_state(state: dict, *, status: str, elapsed_sec: floa
 
 def _p701d_public_refresh_state(state: dict | None = None) -> dict:
     s = dict(state or _p701d_load_refresh_state() or {})
+    cached = _p701e_sanitize_legacy_refresh_cache(_p701a_load_broker_fills_ledger_cache())
+    cache_available = bool(cached.get("ok"))
     age = _p701d_state_age_sec(s)
     status = str(s.get("status") or "idle")
+    terminal_without_cache = bool(status in {"completed", "partial_completed"} and not cache_available)
     return {
         "patch_version": PATCH_VERSION,
         "mode": "broker_fills_only_ledger_refresh_status",
@@ -23488,6 +23524,7 @@ def _p701d_public_refresh_state(state: dict | None = None) -> dict:
         "background_refresh_enabled": False,
         "state_path": BROKER_FILLS_ONLY_LEDGER_REFRESH_STATE_PATH,
         "status": status,
+        "terminal_state_without_cache": terminal_without_cache,
         "started_utc": s.get("started_utc"),
         "updated_utc": s.get("updated_utc"),
         "completed_utc": s.get("completed_utc"),
@@ -23502,8 +23539,11 @@ def _p701d_public_refresh_state(state: dict | None = None) -> dict:
         "request_count": int(s.get("request_count") or 0),
         "max_requests": int(s.get("max_requests") or 0),
         "order_count": int(s.get("order_count") or len(s.get("orders") or [])),
+        "cache_available": cache_available,
+        "cache_age_sec": round(_p701a_cache_age_sec(cached), 3) if _p701a_cache_age_sec(cached) is not None else None,
+        "cached_closed_trades": int((cached.get("summary") or {}).get("closed_trades") or cached.get("closed_trade_count") or 0) if cache_available else 0,
         "cache_status": s.get("cache_status") or "",
-        "cache_source": s.get("cache_source") or "",
+        "cache_source": cached.get("cache_source") or s.get("cache_source") or "",
         "last_error": str(s.get("last_error") or ""),
         "last_exception_type": str(s.get("last_exception_type") or ""),
         "last_summary": dict(s.get("last_summary") or {}),
@@ -23511,13 +23551,44 @@ def _p701d_public_refresh_state(state: dict | None = None) -> dict:
         "errors": list(s.get("errors") or [])[-10:],
         "requests": list(s.get("requests") or [])[-10:],
         "recommended_action": (
-            "use_cached_broker_fills_ledger"
-            if status in {"completed", "partial_completed"}
-            else "continue_refresh_pump"
+            "run_explicit_pump_to_rebuild_missing_cache"
+            if terminal_without_cache
+            else "use_cached_broker_fills_ledger"
+            if status in {"completed", "partial_completed"} and cache_available
+            else "continue_explicit_refresh_pump"
             if status == "running"
-            else "run_refresh_true_to_start_durable_pump"
+            else "run_refresh_true_or_explicit_pump_to_start_durable_pump"
         ),
+        "status_endpoint_contract": "read_only_observe_only_no_broker_calls",
+        "pump_endpoint": "/diagnostics/broker_fills_only_trade_ledger_refresh_pump",
     }
+
+
+def _p701e_read_only_refresh_status() -> dict:
+    state = _p701d_public_refresh_state()
+    state.update({
+        "ok": True,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "broker_fills_only": True,
+        "pump_default_enabled": False,
+        "pump_requested": False,
+    })
+    return state
+
+
+def _p701e_explicit_refresh_pump(limit: int = 200, order_limit: int = 500, reset: bool = False) -> dict:
+    out = _p701d_pump_broker_fills_ledger(limit=limit, order_limit=order_limit, reset=reset)
+    out.update({
+        "ok": True,
+        "read_only": False,
+        "does_not_submit_orders": True,
+        "broker_fills_only": True,
+        "explicit_pump": True,
+        "pump_requested": True,
+        "status_endpoint": "/diagnostics/broker_fills_only_trade_ledger_refresh_status",
+    })
+    return out
 
 
 def _p701d_pump_broker_fills_ledger(limit: int = 200, order_limit: int = 500, *, reset: bool = False) -> dict:
@@ -70441,8 +70512,13 @@ def diagnostics_broker_fills_only_trade_ledger(limit: int = 200, order_limit: in
 
 
 @app.get("/diagnostics/broker_fills_only_trade_ledger_refresh_status")
-def diagnostics_broker_fills_only_trade_ledger_refresh_status(limit: int = 200, order_limit: int = 500, pump: bool = True, reset: bool = False):
-    pump_state = _p701d_pump_broker_fills_ledger(limit=limit, order_limit=order_limit, reset=reset) if bool(pump) else _p701d_public_refresh_state()
+def diagnostics_broker_fills_only_trade_ledger_refresh_status():
+    return JSONResponse(content=_p701e_read_only_refresh_status())
+
+
+@app.get("/diagnostics/broker_fills_only_trade_ledger_refresh_pump")
+def diagnostics_broker_fills_only_trade_ledger_refresh_pump(limit: int = 200, order_limit: int = 500, reset: bool = False):
+    pump_state = _p701e_explicit_refresh_pump(limit=limit, order_limit=order_limit, reset=reset)
     cached = _p701a_load_broker_fills_ledger_cache()
     cache_age = _p701a_cache_age_sec(cached)
     out = dict(pump_state or {})
@@ -70454,9 +70530,10 @@ def diagnostics_broker_fills_only_trade_ledger_refresh_status(limit: int = 200, 
         "cached_closed_trades": int((cached.get("summary") or {}).get("closed_trades") or cached.get("closed_trade_count") or 0) if isinstance(cached, dict) else 0,
         "broker_fills_only": True,
         "does_not_submit_orders": True,
-        "read_only": True,
+        "read_only": False,
+        "changes_refresh_state": True,
         "pump_default_enabled": True,
-        "pump_requested": bool(pump),
+        "pump_requested": True,
     })
     return JSONResponse(content=out)
 

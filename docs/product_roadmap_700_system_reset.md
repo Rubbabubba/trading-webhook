@@ -171,7 +171,7 @@ Post-deploy endpoints:
 
 ### Patch 701D: Durable Broker Fill Ledger Refresh Pump + Disk Cursor State
 
-Status: local implementation complete.
+Status: deployed; durable cache worked, but status endpoint still did pump work and could be slow.
 
 Goal: replace the fragile in-memory refresh worker with a durable broker-fill refresh pump.
 
@@ -194,6 +194,34 @@ Post-deploy endpoints:
 - `/diagnostics/broker_fills_only_trade_ledger?limit=200`
 - `/diagnostics/broker_fills_only_trade_ledger?refresh=true&limit=200`
 - `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
+- `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
+- `/diagnostics/broker_fills_only_trade_ledger?limit=200`
+- `/diagnostics/broker_only_daily_loss_truth`
+
+### Patch 701E: Read-Only Refresh Status + Explicit Pump Endpoint + Legacy Refresh State Sanitizer
+
+Status: local implementation complete.
+
+Goal: keep the durable broker-fill ledger, but make the operational contract clean and fast.
+
+Scope:
+
+- Make `/diagnostics/broker_fills_only_trade_ledger_refresh_status` observe-only with no broker calls.
+- Add `/diagnostics/broker_fills_only_trade_ledger_refresh_pump` as the explicit state-mutating refresh step.
+- Keep `/diagnostics/broker_fills_only_trade_ledger?refresh=true` as a bounded pump convenience.
+- Sanitize old `background_refresh` cache/source markers so stale 701C state cannot confuse current truth.
+- Preserve cache-first broker-only daily loss truth.
+
+Expected outcome:
+
+- Status endpoint is always fast.
+- Refresh work is explicit and bounded.
+- Broker-fill cache/state truth is durable and no longer mixed with retired in-memory refresh metadata.
+
+Post-deploy endpoints:
+
+- `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
+- `/diagnostics/broker_fills_only_trade_ledger_refresh_pump?limit=200`
 - `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
 - `/diagnostics/broker_fills_only_trade_ledger?limit=200`
 - `/diagnostics/broker_only_daily_loss_truth`

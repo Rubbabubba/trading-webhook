@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-701D-durable-broker-fill-ledger-refresh-pump-disk-cursor-state"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-701E-read-only-refresh-status-explicit-pump-legacy-refresh-state-sanitizer"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
