@@ -3112,7 +3112,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-658-hotfix-worker-exit-scan-fast-handoff"
+PATCH_VERSION = "patch-659-worker-exit-fast-noop-scan-manual-fast-handoff"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -53111,6 +53111,61 @@ def worker_exit(body: dict = Body(default_factory=dict)):
         out = flatten_all("kill_switch")
         update_exit_heartbeat(status="kill_switch", results=len(out))
         return {"ok": True, "mode": "kill_switch", "ts_ny": now_ny().isoformat(), "results": out}
+
+    p659_fast_exit_truth = _p620_active_exit_protection_truth_fast(limit=50)
+    p659_fast_exit_summary = dict(p659_fast_exit_truth.get("summary") or {})
+    p649_fast_actionable_exit_due_truth = _p649_fast_actionable_exit_due_truth(
+        limit=50,
+        active_exit_truth=p659_fast_exit_truth,
+    )
+    p612_exit_trigger_queue = _p612_exit_trigger_priority_queue(
+        fast_due_truth=p649_fast_actionable_exit_due_truth,
+        include_heavy=False,
+    )
+    p659_full_cycle_requested = str(
+        body.get("full_cycle") or body.get("force_full_cycle") or body.get("heavy") or ""
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+    p659_no_due_exit = not list(p612_exit_trigger_queue.get("symbols") or [])
+    p659_no_missing_protection = int(p659_fast_exit_summary.get("missing_protection_count") or 0) <= 0
+    if p659_no_due_exit and p659_no_missing_protection and not p659_full_cycle_requested:
+        p607_worker_budget_truth = _p607_worker_budget_truth(worker_started_monotonic, stage="p659_fast_noop")
+        update_exit_heartbeat(
+            status="fast_noop",
+            results=0,
+            reconcile=0,
+            p607_worker_budget_truth=p607_worker_budget_truth,
+            p649_fast_actionable_exit_due_truth=p649_fast_actionable_exit_due_truth,
+            p612_exit_trigger_queue=p612_exit_trigger_queue,
+            p659_worker_exit_fast_noop={
+                "enabled": True,
+                "applied": True,
+                "reason": "no_due_exits_and_no_missing_protection",
+                "full_cycle_requested": False,
+                "does_not_fetch_broker": True,
+                "does_not_submit_orders": True,
+                "changes_entry_behavior": False,
+            },
+        )
+        return {
+            "ok": True,
+            "mode": "worker_exit_fast_noop",
+            "reason": "no_due_exits_and_no_missing_protection",
+            "ts_ny": now_ny().isoformat(),
+            "results": [],
+            "reconcile": [],
+            "p607_worker_budget_truth": p607_worker_budget_truth,
+            "p649_fast_actionable_exit_due_truth": p649_fast_actionable_exit_due_truth,
+            "p612_exit_trigger_queue": p612_exit_trigger_queue,
+            "p659_worker_exit_fast_noop": {
+                "enabled": True,
+                "applied": True,
+                "full_cycle_requested": False,
+                "does_not_fetch_broker": True,
+                "does_not_submit_orders": True,
+                "changes_entry_behavior": False,
+                "recommended_action": "monitor_active_positions",
+            },
+        }
     
     # Reconcile internal plans from Alpaca positions before loss-control decisions so
     # stale snapshot plans are not treated as live broker truth after a liquidation.
@@ -53262,11 +53317,6 @@ def worker_exit(body: dict = Body(default_factory=dict)):
             "reconcile": reconcile_actions,
         }
 
-    p649_fast_actionable_exit_due_truth = _p649_fast_actionable_exit_due_truth(limit=50)
-    p612_exit_trigger_queue = _p612_exit_trigger_priority_queue(
-        fast_due_truth=p649_fast_actionable_exit_due_truth,
-        include_heavy=False,
-    )
     p658_due_first_fast_drain = _p658_worker_drain_exit_trigger_queue(
         p612_exit_trigger_queue,
         worker_started_monotonic=worker_started_monotonic,
@@ -69796,6 +69846,8 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
         if not worker_fast_swing_dispatch:
             body["background"] = False
     fast_response = _p273_should_fast_response(source_kind, body)
+    explicit_fast_response = str(body.get("fast_response") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    explicit_full_response = str(body.get("full_response") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
     def _set_last_scan(**kwargs):
         LAST_SCAN.clear()
@@ -70018,7 +70070,10 @@ def worker_scan_entries(req: Request, body: dict = Body(default_factory=dict)):
             str(STRATEGY_MODE or "").strip().lower() == "swing"
             and bool(fast_response)
             and bool(SCAN_FAST_RESPONSE_ENABLED)
-            and str(source_kind or "").strip().lower() == "worker"
+            and (
+                str(source_kind or "").strip().lower() == "worker"
+                or (explicit_fast_response and not explicit_full_response)
+            )
             and p474_background_flag not in {"0", "false", "no", "n", "off"}
         )
 
