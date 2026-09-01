@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-701E-read-only-refresh-status-explicit-pump-legacy-refresh-state-sanitizer"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-703-payoff-imbalance-repair-report"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -37,6 +37,16 @@ def _dedupe_keep_order(values: list[Any]) -> list[Any]:
 def _avg(values: list[float]) -> float:
     clean = [_safe_float(v, 0.0) for v in list(values or [])]
     return round(sum(clean) / max(1, len(clean)), 4) if clean else 0.0
+
+
+def _median(values: list[float]) -> float:
+    clean = sorted(_safe_float(v, 0.0) for v in list(values or []))
+    if not clean:
+        return 0.0
+    mid = len(clean) // 2
+    if len(clean) % 2:
+        return round(clean[mid], 4)
+    return round((clean[mid - 1] + clean[mid]) / 2.0, 4)
 
 
 def _ledger_multi_bucket_key(row: dict, *names: str) -> str:
@@ -1353,6 +1363,257 @@ def _trade_preview(row: dict | None) -> dict:
     }
 
 
+def _trade_strategy(row: dict | None) -> str:
+    r = dict(row or {})
+    blob = " ".join([
+        str(r.get("strategy_name") or ""),
+        str(r.get("strategy") or ""),
+        str(r.get("signal") or ""),
+        str(r.get("entry_type") or ""),
+    ]).strip().lower()
+    if "mean_reversion" in blob:
+        return "daily_mean_reversion"
+    if "intraday" in blob or "vwap" in blob or "momentum" in blob:
+        return "intraday_momentum"
+    if "breakout" in blob or "first_2k" in blob or "production_contract" in blob:
+        return "daily_breakout"
+    return blob or "unknown"
+
+
+def _trade_exit_reason(row: dict | None) -> str:
+    r = dict(row or {})
+    return str(r.get("attributed_exit_reason") or r.get("exit_reason") or r.get("reason") or "unknown").strip().lower() or "unknown"
+
+
+def _holding_period_name(row: dict | None) -> str:
+    r = dict(row or {})
+    bucket = str(r.get("holding_period_bucket") or "").strip().lower()
+    if bucket:
+        return bucket
+    hours = _safe_float(r.get("holding_hours"), -1.0)
+    days = _safe_float(r.get("holding_days"), -1.0)
+    if hours >= 0:
+        if hours <= 1:
+            return "under_1h"
+        if hours <= 6.5:
+            return "same_session"
+        if hours <= 24:
+            return "under_1d"
+        if hours <= 72:
+            return "1_to_3d"
+        return "over_3d"
+    if days >= 0:
+        if days <= 1:
+            return "under_1d"
+        if days <= 3:
+            return "1_to_3d"
+        return "over_3d"
+    return "unknown"
+
+
+def _trade_stop_distance(row: dict | None) -> float:
+    r = dict(row or {})
+    entry = _safe_float(r.get("entry_price"), 0.0)
+    stop = _safe_float(r.get("initial_stop_price") or r.get("stop_price"), 0.0)
+    if entry <= 0 or stop <= 0:
+        risk = _safe_float(r.get("risk_per_share"), 0.0)
+        return round(abs(risk), 4) if risk > 0 else 0.0
+    return round(abs(entry - stop), 4)
+
+
+def _trade_target_distance(row: dict | None) -> float:
+    r = dict(row or {})
+    entry = _safe_float(r.get("entry_price"), 0.0)
+    target = _safe_float(r.get("initial_take_price") or r.get("take_price") or r.get("target_price"), 0.0)
+    if entry <= 0 or target <= 0:
+        return 0.0
+    return round(abs(target - entry), 4)
+
+
+def _loss_repair_cause(row: dict | None) -> str:
+    r = dict(row or {})
+    reason = _trade_exit_reason(r)
+    strategy = _trade_strategy(r)
+    pnl_r = _safe_float(r.get("pnl_r"), 0.0)
+    dollar_risk = _trade_dollar_risk(r)
+    hold = _holding_period_name(r)
+    if "failed_followthrough" in reason or "opening_damage" in reason:
+        return "entry_quality_failed_followthrough"
+    if "stop" in reason or pnl_r <= -0.9:
+        return "stop_or_full_r_loss"
+    if dollar_risk > 75:
+        return "oversized_loss"
+    if strategy == "daily_breakout" and ("stall" in reason or hold in {"over_3d", "1_to_3d"}):
+        return "breakout_hold_or_stall_loss"
+    if "giveback" in reason or "profit" in reason:
+        return "profit_capture_giveback"
+    if strategy == "unknown":
+        return "missing_strategy_attribution"
+    return "ordinary_negative_trade"
+
+
+def _payoff_bucket(rows: list[dict], key_fn, *, limit: int = 20) -> list[dict]:
+    buckets: dict[str, dict] = {}
+    for raw in rows:
+        row = dict(raw or {})
+        name = str(key_fn(row) or "unknown").strip().lower() or "unknown"
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        pnl_r = _safe_float(row.get("pnl_r"), 0.0)
+        bucket = buckets.setdefault(name, {
+            "name": name,
+            "closed_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "gross_pnl": 0.0,
+            "r_total": 0.0,
+            "winner_pnls": [],
+            "loser_pnls": [],
+            "dollar_risk": [],
+            "stop_distance": [],
+            "target_distance": [],
+        })
+        bucket["closed_trades"] += 1
+        bucket["gross_pnl"] += pnl
+        bucket["r_total"] += pnl_r
+        bucket["dollar_risk"].append(_trade_dollar_risk(row))
+        bucket["stop_distance"].append(_trade_stop_distance(row))
+        bucket["target_distance"].append(_trade_target_distance(row))
+        if pnl > 0:
+            bucket["wins"] += 1
+            bucket["winner_pnls"].append(pnl)
+        elif pnl < 0:
+            bucket["losses"] += 1
+            bucket["loser_pnls"].append(pnl)
+
+    out: list[dict] = []
+    for bucket in buckets.values():
+        count = max(1, int(bucket.get("closed_trades") or 0))
+        wins = int(bucket.get("wins") or 0)
+        losses = int(bucket.get("losses") or 0)
+        avg_win = _avg(bucket.pop("winner_pnls", []))
+        avg_loss = _avg(bucket.pop("loser_pnls", []))
+        avg_target = _avg(bucket.pop("target_distance", []))
+        avg_stop = _avg(bucket.pop("stop_distance", []))
+        out.append({
+            "name": bucket.get("name"),
+            "closed_trades": count,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / count, 4),
+            "gross_pnl": round(_safe_float(bucket.get("gross_pnl"), 0.0), 4),
+            "avg_pnl": round(_safe_float(bucket.get("gross_pnl"), 0.0) / count, 4),
+            "avg_r": round(_safe_float(bucket.get("r_total"), 0.0) / count, 4),
+            "avg_winner": avg_win,
+            "avg_loser": avg_loss,
+            "payoff_ratio": round(avg_win / abs(avg_loss), 4) if avg_win > 0 and avg_loss < 0 else None,
+            "avg_dollar_risk": _avg(bucket.pop("dollar_risk", [])),
+            "avg_stop_distance": avg_stop,
+            "avg_target_distance": avg_target,
+            "target_to_stop_ratio": round(avg_target / avg_stop, 4) if avg_target > 0 and avg_stop > 0 else None,
+        })
+    out.sort(key=lambda r: (_safe_float(r.get("gross_pnl"), 0.0), _safe_float(r.get("avg_r"), 0.0)))
+    return out[: max(1, int(limit or 20))]
+
+
+def build_payoff_imbalance_repair_report(
+    *,
+    patch_version: str,
+    ledger_payload: dict | None,
+    limit: int = 25,
+) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    ledger = dict(ledger_payload or {})
+    rows = [dict(r or {}) for r in list(ledger.get("rows") or []) if isinstance(r, dict)]
+    rows.sort(key=_trade_ts_utc, reverse=True)
+    wins = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) > 0]
+    losses = [r for r in rows if _safe_float(r.get("gross_pnl"), 0.0) < 0]
+    winner_pnls = [_safe_float(r.get("gross_pnl"), 0.0) for r in wins]
+    loser_pnls = [_safe_float(r.get("gross_pnl"), 0.0) for r in losses]
+    avg_winner = _avg(winner_pnls)
+    avg_loser = _avg(loser_pnls)
+    payoff_ratio = round(avg_winner / abs(avg_loser), 4) if avg_winner > 0 and avg_loser < 0 else None
+    win_rate = round(len(wins) / max(1, len(rows)), 4) if rows else 0.0
+    gross = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in rows), 4)
+    avg_r = round(sum(_safe_float(r.get("pnl_r"), 0.0) for r in rows) / max(1, len(rows)), 4) if rows else 0.0
+    required_win_rate = (
+        round(abs(avg_loser) / (avg_winner + abs(avg_loser)), 4)
+        if avg_winner > 0 and avg_loser < 0
+        else None
+    )
+    win_rate_gap = round(win_rate - required_win_rate, 4) if required_win_rate is not None else None
+    avg_stop = _avg([_trade_stop_distance(r) for r in rows])
+    avg_target = _avg([_trade_target_distance(r) for r in rows])
+    causes = _payoff_bucket(losses, _loss_repair_cause, limit=lim)
+    worst_causes = [c for c in causes if _safe_float(c.get("gross_pnl"), 0.0) < 0]
+    worst_trades = sorted(losses, key=lambda r: (_safe_float(r.get("pnl_r"), 0.0), _safe_float(r.get("gross_pnl"), 0.0)))[:lim]
+
+    actions: list[str] = []
+    if required_win_rate is not None and win_rate < required_win_rate:
+        actions.append("repair_payoff_before_increasing_trade_count_or_risk")
+    if payoff_ratio is not None and payoff_ratio < 1.0:
+        actions.append("raise_average_winner_or_cut_average_loser")
+    if worst_causes:
+        actions.append(f"focus_first_on_{worst_causes[0].get('name')}")
+    if any(c.get("name") == "missing_strategy_attribution" for c in worst_causes):
+        actions.append("backfill_missing_strategy_and_exit_reason_before_promotion")
+    if not actions:
+        actions.append("payoff_structure_not_current_primary_blocker")
+
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "payoff_imbalance_repair_report",
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "changes_trade_behavior": False,
+        "broker_fills_only": True,
+        "ledger_cache_hit": bool(ledger.get("cache_hit")),
+        "ledger_cache_status": ledger.get("cache_status"),
+        "ledger_source": ledger.get("source") or ledger.get("cache_source"),
+        "sample": {
+            "closed_trades": len(rows),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": win_rate,
+            "gross_pnl": gross,
+            "avg_r": avg_r,
+            "avg_winner": avg_winner,
+            "median_winner": _median(winner_pnls),
+            "avg_loser": avg_loser,
+            "median_loser": _median(loser_pnls),
+            "payoff_ratio": payoff_ratio,
+            "required_win_rate_for_breakeven": required_win_rate,
+            "win_rate_minus_required": win_rate_gap,
+            "expectancy_per_trade": round(gross / max(1, len(rows)), 4) if rows else 0.0,
+        },
+        "planned_vs_realized_shape": {
+            "avg_planned_or_inferred_dollar_risk": _avg([_trade_dollar_risk(r) for r in rows]),
+            "avg_winner_dollar_risk": _avg([_trade_dollar_risk(r) for r in wins]),
+            "avg_loser_dollar_risk": _avg([_trade_dollar_risk(r) for r in losses]),
+            "avg_stop_distance": avg_stop,
+            "avg_target_distance": avg_target,
+            "target_to_stop_ratio": round(avg_target / avg_stop, 4) if avg_target > 0 and avg_stop > 0 else None,
+        },
+        "loss_cause_rank": worst_causes,
+        "by_strategy": _payoff_bucket(rows, _trade_strategy, limit=lim),
+        "by_exit_reason": _payoff_bucket(rows, _trade_exit_reason, limit=lim),
+        "by_symbol": _payoff_bucket(rows, lambda r: str(r.get("symbol") or "unknown"), limit=lim),
+        "by_holding_period": _payoff_bucket(rows, _holding_period_name, limit=lim),
+        "worst_trades": [_trade_preview(r) for r in worst_trades],
+        "repair_contract": {
+            "adds_entry_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "blocks_risk_increase_until_expectancy_positive": True,
+            "source_of_truth": "broker_fills_only_trade_ledger_cache_first",
+        },
+        "recommended_actions": actions,
+        "recommended_action": actions[0],
+    }
+
+
 def build_broker_reconciled_strategy_attribution_report(
     *,
     patch_version: str,
@@ -1458,6 +1719,7 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "heavy_performance_alignment_deferral_shape",
             "broker_fills_only_trade_ledger_shape",
             "broker_reconciled_strategy_attribution_report_shape",
+            "payoff_imbalance_repair_report_shape",
             "broker_reconciled_attribution_snapshot_cache_contract",
             "profit_path_truth_contract_shape",
         ],

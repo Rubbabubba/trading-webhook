@@ -266,17 +266,22 @@ Post-deploy endpoints:
 
 ### Patch 703: Payoff Imbalance Repair Report
 
+Status: local implementation complete.
+
 Goal: identify why losers are overpowering winners.
 
 Scope:
 
-- Report average planned risk, realized loss, realized win, stop distance, target distance, and actual exit reason.
+- Add `/diagnostics/payoff_imbalance_repair_report` as a cache-first broker-fills-only diagnostic.
+- Report average planned/inferred risk, realized loss, realized win, stop distance, target distance, and actual exit reason.
 - Separate losses caused by entry quality, sizing, stop placement, late exit, failed exit submit, and market regime.
 - Promote the report into an operator brief.
+- Keep this report read-only: no entry gate, submit path, or exit behavior changes.
 
 Expected outcome:
 
 - A specific list of what must change before risk is increased.
+- Risk/trade count stays paused or reduced until broker-fill expectancy and payoff shape improve.
 
 Smoke tests:
 
@@ -286,6 +291,9 @@ Smoke tests:
 
 Post-deploy endpoints:
 
+- `/diagnostics/payoff_imbalance_repair_report?limit=25&trade_limit=200`
+- `/diagnostics/broker_fills_only_trade_ledger?limit=200`
+- `/diagnostics/broker_fills_only_trade_ledger_refresh_status`
 - `/diagnostics/broker_reconciled_strategy_attribution`
 - `/diagnostics/broker_exit_reason_attribution`
 - `/diagnostics/active_exit_protection_truth?detail=heavy&limit=20`

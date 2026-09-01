@@ -132,6 +132,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/paper_execution_proof
 https://trading-webhook-q4d5.onrender.com/diagnostics/paper_lifecycle
 https://trading-webhook-q4d5.onrender.com/diagnostics/pending_plan_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/partial_profit_readiness_truth
+https://trading-webhook-q4d5.onrender.com/diagnostics/payoff_imbalance_repair_report
 https://trading-webhook-q4d5.onrender.com/diagnostics/pipeline_guardrails
 https://trading-webhook-q4d5.onrender.com/diagnostics/policy_shadow
 https://trading-webhook-q4d5.onrender.com/diagnostics/position_truth

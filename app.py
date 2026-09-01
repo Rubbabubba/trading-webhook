@@ -221,6 +221,7 @@ from swing_performance_reports import (
     build_fast_performance_alignment_brief as swing_perf_build_fast_performance_alignment_brief,
     build_goal_gap_rotation_operator_plan as swing_perf_build_goal_gap_rotation_operator_plan,
     build_heavy_performance_alignment_deferral as swing_perf_build_heavy_performance_alignment_deferral,
+    build_payoff_imbalance_repair_report as swing_perf_build_payoff_imbalance_repair_report,
     performance_reports_module_status as swing_perf_module_status,
 )
 
@@ -3184,7 +3185,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-702-strategy-isolation-switch"
+PATCH_VERSION = "patch-703-payoff-imbalance-repair-report"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -23920,6 +23921,35 @@ def _p701a_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 5
             else "durable_refresh_pump_running_no_cache"
         ),
     )
+
+
+def _p703_payoff_imbalance_repair_report(limit: int = 25, trade_limit: int = 200) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    ledger_limit = max(lim, min(max(1, int(trade_limit or 200)), 500))
+    ledger = _p701a_broker_fills_only_trade_ledger(
+        limit=ledger_limit,
+        order_limit=max(ledger_limit, int(BROKER_FILLS_ONLY_LEDGER_PER_REQUEST_LIMIT or 50)),
+        refresh=False,
+        detail="light",
+    )
+    payload = swing_perf_build_payoff_imbalance_repair_report(
+        patch_version=PATCH_VERSION,
+        ledger_payload=ledger,
+        limit=lim,
+    )
+    payload["ledger_endpoint"] = "/diagnostics/broker_fills_only_trade_ledger?limit=200"
+    payload["ledger_refresh_endpoint"] = "/diagnostics/broker_fills_only_trade_ledger_refresh_pump?limit=200"
+    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+    if not bool(ledger.get("cache_hit")) and not list(ledger.get("rows") or []):
+        payload["recommended_action"] = "run_broker_fills_only_trade_ledger_refresh_pump_then_recheck_payoff_report"
+        payload["recommended_actions"] = [
+            "run_broker_fills_only_trade_ledger_refresh_pump_then_recheck_payoff_report",
+            *[
+                action for action in list(payload.get("recommended_actions") or [])
+                if action != "run_broker_fills_only_trade_ledger_refresh_pump_then_recheck_payoff_report"
+            ],
+        ]
+    return payload
 
 
 def _p701c_cached_broker_only_daily_loss_truth() -> dict:
@@ -70678,6 +70708,11 @@ def diagnostics_broker_reconciled_strategy_attribution(
         limit=limit,
         refresh=refresh_requested,
     ))
+
+@app.get("/diagnostics/payoff_imbalance_repair_report")
+def diagnostics_payoff_imbalance_repair_report(request: Request, limit: int = 25, trade_limit: int = 200):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p703_payoff_imbalance_repair_report(limit=limit, trade_limit=trade_limit))
 
 @app.get("/diagnostics/breakout_dollar_risk_containment")
 def diagnostics_breakout_dollar_risk_containment(limit: int = 20):
