@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-655-broker-attribution-snapshot-cache-alignment-coverage-sync"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-656-capital-rotation-action-contract-cleanup"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -32,6 +32,120 @@ def _dedupe_keep_order(values: list[Any]) -> list[Any]:
         seen.add(key)
         out.append(key)
     return out
+
+
+def _rotation_release_priority(row: dict) -> float:
+    unrealized = _safe_float(row.get("unrealized_pl"), 0.0)
+    risk = max(0.0, _safe_float(row.get("risk_to_stop_dollars"), 0.0))
+    market_value = max(0.0, _safe_float(row.get("market_value"), 0.0))
+    score = max(0.0, -unrealized) + (risk * 0.35) + (market_value * 0.002)
+    if bool(row.get("near_stop")):
+        score += 30.0
+    if bool(row.get("exit_actionable_now")):
+        score += 100.0
+    if not bool(row.get("protected")):
+        score -= 50.0
+    return round(score, 4)
+
+
+def build_capital_rotation_release_playbook(
+    *,
+    patch_version: str,
+    action_rows: list,
+    rotation_plan: dict | None,
+) -> dict:
+    plan = dict(rotation_plan or {})
+    rows = []
+    for raw in list(action_rows or []):
+        row = dict(raw or {})
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        protected = bool(row.get("protected"))
+        exit_actionable = bool(row.get("exit_actionable_now"))
+        capital_drag = bool(row.get("capital_drag"))
+        near_stop = bool(row.get("near_stop"))
+        release_review = bool(protected and not exit_actionable and (capital_drag or near_stop))
+        action_lane = (
+            "worker_exit_due"
+            if exit_actionable
+            else "protection_repair_required"
+            if not protected
+            else "rotation_release_review"
+            if release_review
+            else "monitor"
+        )
+        rows.append({
+            "symbol": sym,
+            "action_lane": action_lane,
+            "release_review_candidate": release_review,
+            "release_priority_score": _rotation_release_priority(row),
+            "protected": protected,
+            "protection_status": row.get("protection_status"),
+            "exit_actionable_now": exit_actionable,
+            "near_stop": near_stop,
+            "capital_drag": capital_drag,
+            "unrealized_pl": row.get("unrealized_pl"),
+            "market_value": row.get("market_value"),
+            "risk_to_stop_dollars": row.get("risk_to_stop_dollars"),
+            "replacement_focus": list(row.get("replacement_focus") or []),
+            "operator_action": (
+                "let_worker_exit_handle_before_rotation_review"
+                if exit_actionable
+                else "repair_protection_truth_before_rotation"
+                if not protected
+                else "review_reduce_or_close_to_release_capital_slot"
+                if release_review
+                else "monitor"
+            ),
+        })
+    rows.sort(key=lambda r: _safe_float(r.get("release_priority_score"), 0.0), reverse=True)
+    for idx, row in enumerate(rows, start=1):
+        row["release_priority_rank"] = idx
+
+    worker_rows = [r for r in rows if r.get("action_lane") == "worker_exit_due"]
+    repair_rows = [r for r in rows if r.get("action_lane") == "protection_repair_required"]
+    release_rows = [r for r in rows if r.get("action_lane") == "rotation_release_review"]
+    monitor_rows = [r for r in rows if r.get("action_lane") == "monitor"]
+    recommended_action = (
+        "let_worker_exit_clear_actionable_rotation_symbols"
+        if worker_rows
+        else "repair_rotation_candidate_protection_first"
+        if repair_rows
+        else "review_top_rotation_release_candidates"
+        if release_rows and plan.get("profit_improvement_focus") == "capital_rotation"
+        else "monitor_no_rotation_release_needed"
+    )
+    return {
+        "enabled": True,
+        "patch_version": patch_version,
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "source": "capital_rotation_action_rows_pure_report_contract",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "adds_trade_gate": False,
+        "changes_submit_behavior": False,
+        "changes_exit_behavior": False,
+        "candidate_count": len(rows),
+        "worker_exit_due_count": len(worker_rows),
+        "worker_exit_due_symbols": [r.get("symbol") for r in worker_rows],
+        "protection_repair_required_count": len(repair_rows),
+        "protection_repair_required_symbols": [r.get("symbol") for r in repair_rows],
+        "release_review_count": len(release_rows),
+        "release_review_symbols": [r.get("symbol") for r in release_rows],
+        "top_release_review_symbols": [r.get("symbol") for r in release_rows[:3]],
+        "monitor_count": len(monitor_rows),
+        "monitor_symbols": [r.get("symbol") for r in monitor_rows],
+        "first_action_symbol": rows[0].get("symbol") if rows else None,
+        "first_action_lane": rows[0].get("action_lane") if rows else None,
+        "rotation_review_dollars": round(sum(_safe_float(r.get("market_value"), 0.0) for r in release_rows), 4),
+        "rotation_review_unrealized_pl": round(sum(_safe_float(r.get("unrealized_pl"), 0.0) for r in release_rows), 4),
+        "drag_dependency_dollars": plan.get("drag_dependency_dollars"),
+        "profit_improvement_focus": plan.get("profit_improvement_focus"),
+        "rows": rows,
+        "recommended_action": recommended_action,
+    }
 
 
 def build_goal_gap_rotation_operator_plan(
@@ -200,13 +314,18 @@ def build_capital_rotation_action_contract(
     actionable_exit_rows = [row for row in action_rows if bool(row.get("exit_actionable_now"))]
     near_stop_rows = [row for row in action_rows if bool(row.get("near_stop"))]
     missing_protection_rows = [row for row in action_rows if not bool(row.get("protected"))]
+    release_playbook = build_capital_rotation_release_playbook(
+        patch_version=patch_version,
+        action_rows=action_rows,
+        rotation_plan=rotation_plan,
+    )
     recommended_action = (
         "wait_for_worker_exit_before_rotation"
         if actionable_exit_rows
         else "fix_rotation_candidate_protection_before_action"
         if missing_protection_rows
-        else "prepare_rotation_slot_release_review"
-        if protected_candidates and plan.get("profit_improvement_focus") == "capital_rotation"
+        else release_playbook.get("recommended_action")
+        if protected_candidates
         else "no_rotation_action_needed"
     )
     return {
@@ -227,9 +346,15 @@ def build_capital_rotation_action_contract(
         "missing_protection_candidate_symbols": [row.get("symbol") for row in missing_protection_rows],
         "candidate_market_value": round(sum(_safe_float(row.get("market_value"), 0.0) for row in action_rows), 4),
         "candidate_unrealized_pl": round(sum(_safe_float(row.get("unrealized_pl"), 0.0) for row in action_rows), 4),
+        "release_review_count": release_playbook.get("release_review_count"),
+        "release_review_symbols": release_playbook.get("release_review_symbols"),
+        "top_release_review_symbols": release_playbook.get("top_release_review_symbols"),
+        "first_action_symbol": release_playbook.get("first_action_symbol"),
+        "first_action_lane": release_playbook.get("first_action_lane"),
         "profit_improvement_focus": plan.get("profit_improvement_focus"),
         "drag_dependency_dollars": plan.get("drag_dependency_dollars"),
         "rows": action_rows,
+        "p656_capital_rotation_release_playbook": release_playbook,
         "recommended_action": recommended_action,
         "read_only": True,
         "does_not_submit_orders": True,
@@ -303,6 +428,7 @@ def build_capital_rotation_readiness_audit(
         active_exit_truth=active_exit_truth,
         rotation_plan=rotation_plan,
     )
+    release_playbook = dict(rotation_action_contract.get("p656_capital_rotation_release_playbook") or {})
     return {
         "ok": True,
         "patch_version": patch_version,
@@ -329,12 +455,29 @@ def build_capital_rotation_readiness_audit(
             "exit_actionable_rotation_candidate_count": rotation_action_contract.get("exit_actionable_candidate_count"),
             "rotation_candidate_market_value": rotation_action_contract.get("candidate_market_value"),
             "rotation_candidate_unrealized_pl": rotation_action_contract.get("candidate_unrealized_pl"),
+            "rotation_release_review_count": release_playbook.get("release_review_count"),
+            "rotation_release_review_symbols": release_playbook.get("release_review_symbols"),
+            "first_rotation_action_symbol": release_playbook.get("first_action_symbol"),
+            "first_rotation_action_lane": release_playbook.get("first_action_lane"),
         },
         "rotation_candidate_symbols": [r.get("symbol") for r in rotation_candidates],
+        "rotation_release_review_symbols": release_playbook.get("release_review_symbols") or [],
+        "top_rotation_release_review_symbols": release_playbook.get("top_release_review_symbols") or [],
         "replacement_focus_symbols": best_goal_symbols[:5],
         "rows": rotation_rows[:max(1, min(int(limit or 25), 100))],
         "p646_goal_gap_rotation_operator_plan": rotation_plan or {},
         "p647_capital_rotation_action_contract": rotation_action_contract,
+        "p656_capital_rotation_release_playbook": release_playbook,
+        "p656_capital_rotation_contract_cleanup": {
+            "enabled": True,
+            "module_owned_report_shape": True,
+            "read_only": True,
+            "does_not_submit_orders": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "cleanup_goal": "rank_rotation_candidates_without_adding_trade_gates",
+        },
         "p651_capital_rotation_report_contract": {
             "enabled": True,
             "module_owned_report_shape": True,
@@ -1124,6 +1267,7 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "daily_goal_opportunity_map_report_shape",
             "capital_rotation_readiness_report_shape",
             "capital_rotation_action_contract_shape",
+            "capital_rotation_release_playbook_shape",
             "fast_performance_alignment_brief_shape",
             "heavy_performance_alignment_deferral_shape",
             "broker_reconciled_strategy_attribution_report_shape",
