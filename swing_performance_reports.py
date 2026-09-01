@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-653-heavy-alignment-brief-safe-deferral"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-654-broker-reconciled-attribution-report-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -810,6 +810,304 @@ def build_heavy_performance_alignment_deferral(
     }
 
 
+def _trade_ts_utc(row: dict | None) -> str:
+    r = dict(row or {})
+    return str(r.get("ts_utc") or r.get("closed_at") or r.get("exit_ts_utc") or r.get("exit_ts") or "")
+
+
+def _trade_dollar_risk(row: dict | None) -> float:
+    r = dict(row or {})
+    qty = abs(_safe_float(r.get("qty"), 0.0))
+    risk_per_share = _safe_float(r.get("risk_per_share"), 0.0)
+    if risk_per_share <= 0:
+        entry = _safe_float(r.get("entry_price"), 0.0)
+        stop = _safe_float(r.get("stop_price") or r.get("initial_stop_price"), 0.0)
+        if entry > 0 and stop > 0:
+            risk_per_share = abs(entry - stop)
+    return max(0.0, qty * risk_per_share)
+
+
+def _trade_notional(row: dict | None) -> float:
+    r = dict(row or {})
+    qty = abs(_safe_float(r.get("qty"), 0.0))
+    entry = _safe_float(r.get("entry_price"), 0.0)
+    return max(0.0, qty * entry)
+
+
+def _performance_rollup(rows: list[dict] | None) -> dict:
+    rows = [dict(r or {}) for r in list(rows or []) if isinstance(r, dict)]
+    wins = losses = flat = 0
+    gross = 0.0
+    r_total = 0.0
+    by_strategy: dict[str, dict] = {}
+    for row in rows:
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        pnl_r = _safe_float(row.get("pnl_r"), 0.0)
+        gross += pnl
+        r_total += pnl_r
+        if pnl > 0:
+            wins += 1
+        elif pnl < 0:
+            losses += 1
+        else:
+            flat += 1
+        strategy = str(row.get("strategy_name") or row.get("signal") or "unknown").strip().lower() or "unknown"
+        bucket = by_strategy.setdefault(strategy, {
+            "closed_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "flat": 0,
+            "gross_pnl": 0.0,
+            "avg_r_total": 0.0,
+        })
+        bucket["closed_trades"] += 1
+        bucket["gross_pnl"] += pnl
+        bucket["avg_r_total"] += pnl_r
+        if pnl > 0:
+            bucket["wins"] += 1
+        elif pnl < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
+    for bucket in by_strategy.values():
+        count = max(1, int(bucket.get("closed_trades") or 0))
+        bucket["gross_pnl"] = round(float(bucket.get("gross_pnl") or 0.0), 4)
+        bucket["avg_r"] = round(float(bucket.pop("avg_r_total") or 0.0) / count, 4)
+        bucket["win_rate"] = round(float(bucket.get("wins") or 0) / count, 4)
+    count = len(rows)
+    return {
+        "closed_trades": count,
+        "wins": wins,
+        "losses": losses,
+        "flat": flat,
+        "win_rate": round(wins / max(1, count), 4) if count else 0.0,
+        "gross_pnl": round(gross, 4),
+        "avg_r": round(r_total / max(1, count), 4) if count else 0.0,
+        "sample_maturity": "ESTABLISHED" if count >= 100 else "BUILDING",
+        "by_strategy": by_strategy,
+    }
+
+
+def _bucket_key(row: dict, key: str) -> str:
+    if key == "strategy":
+        return str(row.get("strategy_name") or row.get("signal") or "unknown")
+    if key == "exit_reason":
+        return str(row.get("attributed_exit_reason") or row.get("exit_reason") or row.get("reason") or "unknown")
+    if key == "risk_tier":
+        risk = _trade_dollar_risk(row)
+        if risk <= 0:
+            return "unknown"
+        if risk <= 15:
+            return "risk_0_15"
+        if risk <= 30:
+            return "risk_15_30"
+        if risk <= 50:
+            return "risk_30_50"
+        return "risk_over_50"
+    if key == "size_tier":
+        notional = _trade_notional(row)
+        if notional <= 0:
+            return "unknown"
+        if notional <= 1200:
+            return "notional_0_1200"
+        if notional <= 2500:
+            return "notional_1200_2500"
+        if notional <= 5000:
+            return "notional_2500_5000"
+        return "notional_over_5000"
+    return str(row.get(key) or "unknown")
+
+
+def _bucket_summary(rows: list[dict] | None, key: str, *, limit: int = 20) -> list[dict]:
+    buckets: dict[str, dict] = {}
+    for raw in list(rows or []):
+        row = dict(raw or {})
+        name = str(_bucket_key(row, key) or "unknown").strip().lower() or "unknown"
+        pnl = _safe_float(row.get("gross_pnl"), 0.0)
+        pnl_r = _safe_float(row.get("pnl_r"), 0.0)
+        dollar_risk = _trade_dollar_risk(row)
+        notional = _trade_notional(row)
+        qty = abs(_safe_float(row.get("qty"), 0.0))
+        risk_per_share = _safe_float(row.get("risk_per_share"), 0.0)
+        hold_hours = _safe_float(row.get("holding_hours"), 0.0)
+        bucket = buckets.setdefault(name, {
+            "name": name,
+            "closed_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "flat": 0,
+            "gross_pnl": 0.0,
+            "r_total": 0.0,
+            "dollar_risk_total": 0.0,
+            "position_notional_total": 0.0,
+            "qty_total": 0.0,
+            "risk_per_share_total": 0.0,
+            "holding_hours_total": 0.0,
+            "largest_win": None,
+            "largest_loss": None,
+            "worst_r": None,
+            "best_r": None,
+        })
+        bucket["closed_trades"] += 1
+        bucket["gross_pnl"] += pnl
+        bucket["r_total"] += pnl_r
+        bucket["dollar_risk_total"] += dollar_risk
+        bucket["position_notional_total"] += notional
+        bucket["qty_total"] += qty
+        bucket["risk_per_share_total"] += risk_per_share
+        bucket["holding_hours_total"] += hold_hours
+        if pnl > 0:
+            bucket["wins"] += 1
+        elif pnl < 0:
+            bucket["losses"] += 1
+        else:
+            bucket["flat"] += 1
+        bucket["largest_win"] = pnl if bucket["largest_win"] is None else max(float(bucket["largest_win"]), pnl)
+        bucket["largest_loss"] = pnl if bucket["largest_loss"] is None else min(float(bucket["largest_loss"]), pnl)
+        bucket["worst_r"] = pnl_r if bucket["worst_r"] is None else min(float(bucket["worst_r"]), pnl_r)
+        bucket["best_r"] = pnl_r if bucket["best_r"] is None else max(float(bucket["best_r"]), pnl_r)
+    out = []
+    for bucket in buckets.values():
+        count = max(1, int(bucket.get("closed_trades") or 0))
+        out.append({
+            "name": bucket.get("name"),
+            "closed_trades": int(bucket.get("closed_trades") or 0),
+            "wins": int(bucket.get("wins") or 0),
+            "losses": int(bucket.get("losses") or 0),
+            "flat": int(bucket.get("flat") or 0),
+            "win_rate": round(float(bucket.get("wins") or 0) / count, 4),
+            "gross_pnl": round(float(bucket.get("gross_pnl") or 0.0), 4),
+            "avg_pnl": round(float(bucket.get("gross_pnl") or 0.0) / count, 4),
+            "avg_r": round(float(bucket.get("r_total") or 0.0) / count, 4),
+            "avg_dollar_risk": round(float(bucket.get("dollar_risk_total") or 0.0) / count, 4),
+            "avg_position_notional": round(float(bucket.get("position_notional_total") or 0.0) / count, 4),
+            "avg_qty": round(float(bucket.get("qty_total") or 0.0) / count, 4),
+            "avg_risk_per_share": round(float(bucket.get("risk_per_share_total") or 0.0) / count, 4),
+            "avg_holding_hours": round(float(bucket.get("holding_hours_total") or 0.0) / count, 4),
+            "largest_win": round(float(bucket.get("largest_win") or 0.0), 4),
+            "largest_loss": round(float(bucket.get("largest_loss") or 0.0), 4),
+            "best_r": round(float(bucket.get("best_r") or 0.0), 4),
+            "worst_r": round(float(bucket.get("worst_r") or 0.0), 4),
+        })
+    out.sort(key=lambda x: (_safe_float(x.get("gross_pnl"), 0.0), _safe_float(x.get("avg_r"), 0.0)), reverse=True)
+    return out[: max(1, int(limit or 20))]
+
+
+def _is_breakout_row(row: dict | None) -> bool:
+    r = dict(row or {})
+    blob = " ".join([
+        str(r.get("strategy_name") or ""),
+        str(r.get("signal") or ""),
+        str(r.get("entry_type") or ""),
+    ]).strip().lower()
+    return "breakout" in blob
+
+
+def _trade_preview(row: dict | None) -> dict:
+    r = dict(row or {})
+    return {
+        "symbol": r.get("symbol"),
+        "ts_utc": _trade_ts_utc(r),
+        "strategy_name": r.get("strategy_name"),
+        "entry_type": r.get("entry_type"),
+        "exit_reason": r.get("attributed_exit_reason") or r.get("exit_reason") or r.get("reason"),
+        "gross_pnl": r.get("gross_pnl"),
+        "pnl_r": r.get("pnl_r"),
+        "qty": r.get("qty"),
+        "entry_price": r.get("entry_price"),
+        "exit_price": r.get("exit_price"),
+        "risk_per_share": r.get("risk_per_share"),
+        "dollar_risk": round(_trade_dollar_risk(r), 4),
+        "position_notional": round(_trade_notional(r), 4),
+        "rank_score": r.get("rank_score"),
+        "selection_quality_score": r.get("selection_quality_score"),
+        "holding_hours": r.get("holding_hours"),
+    }
+
+
+def build_broker_reconciled_strategy_attribution_report(
+    *,
+    patch_version: str,
+    rows: list[dict] | None,
+    shadowed_worker_count: int | None = None,
+    broker_fill_duplicate_count: int | None = None,
+    breakout_dollar_risk_containment_enabled: bool = True,
+    breakout_dollar_risk_max_dollars: float = 50.0,
+    limit: int = 20,
+) -> dict:
+    lim = max(1, min(int(limit or 20), 100))
+    rows = [dict(r or {}) for r in list(rows or []) if isinstance(r, dict)]
+    rows.sort(key=_trade_ts_utc, reverse=True)
+    breakout_rows = [r for r in rows if _is_breakout_row(r)]
+    non_breakout_rows = [r for r in rows if not _is_breakout_row(r)]
+    rollup = _performance_rollup(rows)
+    breakout_rollup = _performance_rollup(breakout_rows)
+    non_breakout_rollup = _performance_rollup(non_breakout_rows)
+    breakout_gross = _safe_float(breakout_rollup.get("gross_pnl"), 0.0)
+    breakout_avg_r = _safe_float(breakout_rollup.get("avg_r"), 0.0)
+    mean_reversion = dict((rollup.get("by_strategy") or {}).get("daily_mean_reversion") or {})
+    recommendations = []
+    if breakout_rows and (breakout_gross < 0 or breakout_avg_r < 0.05):
+        recommendations.append("reduce_or_segment_breakout_before_any_risk_scale")
+    if mean_reversion and _safe_float(mean_reversion.get("avg_r"), 0.0) > breakout_avg_r:
+        recommendations.append("preserve_mean_reversion_sleeve")
+    worst_breakout = sorted(breakout_rows, key=lambda r: _safe_float(r.get("pnl_r"), 0.0))[:5]
+    if worst_breakout and _safe_float(worst_breakout[0].get("pnl_r"), 0.0) <= -1.0:
+        recommendations.append("audit_breakout_tail_loss_by_exit_reason_and_entry_type")
+    if not recommendations:
+        recommendations.append("monitor_broker_reconciled_strategy_mix")
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "broker_reconciled_strategy_attribution_report",
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "source": "broker_reconciled_kept_rows_only",
+        "behavior_changed": False,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "p443_breakout_dollar_risk_containment": {
+            "enabled": bool(breakout_dollar_risk_containment_enabled),
+            "max_dollar_risk": float(breakout_dollar_risk_max_dollars or 0.0),
+            "basis": "patch_442_broker_reconciled_risk_over_50_underperformed",
+        },
+        "row_counts": {
+            "broker_reconciled_rows": len(rows),
+            "breakout_rows": len(breakout_rows),
+            "non_breakout_rows": len(non_breakout_rows),
+            "shadowed_worker_rows_excluded": int(shadowed_worker_count or 0),
+            "broker_duplicate_rows_excluded": int(broker_fill_duplicate_count or 0),
+        },
+        "rollup": rollup,
+        "breakout_rollup": breakout_rollup,
+        "non_breakout_rollup": non_breakout_rollup,
+        "by_strategy": _bucket_summary(rows, "strategy", limit=lim),
+        "by_entry_type": _bucket_summary(rows, "entry_type", limit=lim),
+        "by_exit_reason": _bucket_summary(rows, "exit_reason", limit=lim),
+        "by_symbol": _bucket_summary(rows, "symbol", limit=lim),
+        "breakout_by_entry_type": _bucket_summary(breakout_rows, "entry_type", limit=lim),
+        "breakout_by_exit_reason": _bucket_summary(breakout_rows, "exit_reason", limit=lim),
+        "breakout_by_risk_tier": _bucket_summary(breakout_rows, "risk_tier", limit=lim),
+        "breakout_by_size_tier": _bucket_summary(breakout_rows, "size_tier", limit=lim),
+        "worst_breakout_trades": [_trade_preview(r) for r in worst_breakout],
+        "best_breakout_trades": [
+            _trade_preview(r)
+            for r in sorted(breakout_rows, key=lambda r: _safe_float(r.get("pnl_r"), 0.0), reverse=True)[:5]
+        ],
+        "p654_broker_reconciled_attribution_contract": {
+            "enabled": True,
+            "module_owned_report_shape": True,
+            "app_collects_rows_only": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "does_not_submit_orders": True,
+        },
+        "recommended_actions": recommendations,
+        "recommended_action": recommendations[0],
+    }
+
+
 def performance_reports_module_status(*, patch_version: str) -> dict:
     return {
         "ok": True,
@@ -828,7 +1126,8 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "capital_rotation_action_contract_shape",
             "fast_performance_alignment_brief_shape",
             "heavy_performance_alignment_deferral_shape",
+            "broker_reconciled_strategy_attribution_report_shape",
             "profit_path_truth_contract_shape",
         ],
-        "next_extraction_target": "move_broker_reconciled_attribution_report_shapes_to_offline_or_cached_report",
+        "next_extraction_target": "move_performance_report_row_collection_out_of_app",
     }
