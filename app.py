@@ -211,7 +211,7 @@ from market_clock import (
 )
 from swing_performance_reports import (
     SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
-    build_capital_rotation_action_contract as swing_perf_build_capital_rotation_action_contract,
+    build_capital_rotation_readiness_audit as swing_perf_build_capital_rotation_readiness_audit,
     build_daily_goal_opportunity_map as swing_perf_build_daily_goal_opportunity_map,
     build_daily_goal_path_truth as swing_perf_build_daily_goal_path_truth,
     build_goal_gap_rotation_operator_plan as swing_perf_build_goal_gap_rotation_operator_plan,
@@ -3100,7 +3100,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-650-performance-report-daily-goal-assembly-extraction"
+PATCH_VERSION = "patch-651-capital-rotation-report-assembly-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51050,20 +51050,6 @@ def _p646_goal_gap_rotation_operator_plan(
     )
 
 
-def _p647_capital_rotation_action_contract(
-    *,
-    rotation_rows: list,
-    active_exit_truth: dict | None,
-    rotation_plan: dict | None,
-) -> dict:
-    return swing_perf_build_capital_rotation_action_contract(
-        patch_version=PATCH_VERSION,
-        rotation_rows=rotation_rows,
-        active_exit_truth=active_exit_truth,
-        rotation_plan=rotation_plan,
-    )
-
-
 def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
     goal_payload = _p569_fast_broker_daily_goal_truth()
     profit = _p636_profit_capture_readiness_truth(limit=max(25, int(limit or 25)), goal_payload=goal_payload)
@@ -51128,45 +51114,11 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
     goal = dict(path.get("daily_goal_progress") or {})
     primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
     target_low = max(0.01, _safe_float(goal.get("target_low"), 100.0))
-    below_goal = primary < target_low
-    goal_rows = list(path.get("rows") or [])
-    drag_rows = list(drag.get("rows") or [])
     best_goal_symbols = [
         r.get("symbol")
-        for r in goal_rows
-        if str(r.get("role") or "") == "goal_gap_closer"
+        for r in list(path.get("rows") or [])
+        if isinstance(r, dict) and str(r.get("role") or "") == "goal_gap_closer"
     ]
-    rotation_rows = []
-    for row in drag_rows:
-        unreal = _safe_float(row.get("unrealized_pl"), 0.0)
-        risk = _safe_float(row.get("risk_to_stop_dollars"), 0.0)
-        market_value = _safe_float(row.get("market_value"), 0.0)
-        near_stop = bool(row.get("near_stop"))
-        capital_drag = bool(row.get("capital_drag"))
-        readiness_score = abs(unreal) + (20.0 if near_stop else 0.0) + (risk * 0.25)
-        rotation_rows.append({
-            "symbol": row.get("symbol"),
-            "rotation_candidate": bool(below_goal and (capital_drag or near_stop)),
-            "rotation_reason": (
-                "near_stop_capital_drag_below_daily_goal"
-                if below_goal and near_stop
-                else "capital_drag_below_daily_goal"
-                if below_goal and capital_drag
-                else "monitor"
-            ),
-            "unrealized_pl": round(unreal, 4),
-            "market_value": round(market_value, 4),
-            "risk_to_stop_dollars": round(risk, 4),
-            "distance_to_stop_dollars": row.get("distance_to_stop_dollars"),
-            "near_stop": near_stop,
-            "capital_drag": capital_drag,
-            "exit_trigger_now": bool(row.get("exit_trigger_now")),
-            "readiness_score": round(readiness_score, 4),
-            "replacement_focus": best_goal_symbols[:5],
-            "operator_note": "diagnostic_only_no_rotation_order_submitted",
-        })
-    rotation_rows.sort(key=lambda r: _safe_float(r.get("readiness_score"), 0.0), reverse=True)
-    rotation_candidates = [r for r in rotation_rows if bool(r.get("rotation_candidate"))]
     path_summary = dict(path.get("summary") or {})
     active_exit_truth = _p620_active_exit_protection_truth_fast(limit=max(25, int(limit or 25)))
     rotation_plan = _p646_goal_gap_rotation_operator_plan(
@@ -51183,48 +51135,18 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
         retry_waiting_selected_symbols=[],
         non_actionable_selected_symbols=[],
     )
-    rotation_action_contract = _p647_capital_rotation_action_contract(
-        rotation_rows=rotation_rows,
+    payload = swing_perf_build_capital_rotation_readiness_audit(
+        patch_version=PATCH_VERSION,
+        goal_payload=goal_payload,
+        drag_payload=drag,
+        profit_payload=profit,
+        path=path,
         active_exit_truth=active_exit_truth,
         rotation_plan=rotation_plan,
+        limit=limit,
     )
-    return {
-        "ok": True,
-        "patch_version": PATCH_VERSION,
-        "mode": "capital_rotation_readiness_audit",
-        "source": "daily_goal_path_truth_and_weak_position_capital_drag_audit",
-        "swing_performance_reports_module_status": swing_perf_module_status(patch_version=PATCH_VERSION),
-        "read_only": True,
-        "does_not_submit_orders": True,
-        "daily_goal_progress": goal,
-        "p639_broker_daily_goal_snapshot_consistency": goal_payload.get("p639_broker_daily_goal_snapshot_consistency") or {},
-        "summary": {
-            "below_daily_low_goal": below_goal,
-            "broker_daily_pnl": round(primary, 4),
-            "target_low": round(target_low, 4),
-            "rotation_candidate_count": len(rotation_candidates),
-            "capital_drag_count": int((drag.get("summary") or {}).get("capital_drag_count") or 0),
-            "near_stop_drag_count": int((drag.get("summary") or {}).get("near_stop_drag_count") or 0),
-            "goal_gap_closer_count": len(best_goal_symbols),
-            "ready_partial_profit_count": int((profit.get("summary") or {}).get("ready_partial_profit_count") or 0),
-            "drag_dependency_dollars": rotation_plan.get("drag_dependency_dollars"),
-            "profit_improvement_focus": rotation_plan.get("profit_improvement_focus"),
-            "protected_rotation_candidate_count": rotation_action_contract.get("protected_candidate_count"),
-            "exit_actionable_rotation_candidate_count": rotation_action_contract.get("exit_actionable_candidate_count"),
-            "rotation_candidate_market_value": rotation_action_contract.get("candidate_market_value"),
-            "rotation_candidate_unrealized_pl": rotation_action_contract.get("candidate_unrealized_pl"),
-        },
-        "rotation_candidate_symbols": [r.get("symbol") for r in rotation_candidates],
-        "replacement_focus_symbols": best_goal_symbols[:5],
-        "rows": rotation_rows[:max(1, min(int(limit or 25), 100))],
-        "p646_goal_gap_rotation_operator_plan": rotation_plan,
-        "p647_capital_rotation_action_contract": rotation_action_contract,
-        "recommended_action": (
-            rotation_action_contract.get("recommended_action")
-            if rotation_candidates and rotation_plan.get("profit_improvement_focus") == "capital_rotation"
-            else "no_capital_rotation_candidate_detected"
-        ),
-    }
+    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+    return payload
 
 
 P607_WORKER_EXIT_FAST_CLOSE_BUDGET_SEC = max(

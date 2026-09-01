@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-650-performance-report-daily-goal-assembly-extraction"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-651-capital-rotation-report-assembly-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -236,6 +236,118 @@ def build_capital_rotation_action_contract(
         "adds_trade_gate": False,
         "changes_submit_behavior": False,
         "changes_exit_behavior": False,
+    }
+
+
+def build_capital_rotation_readiness_audit(
+    *,
+    patch_version: str,
+    goal_payload: dict | None,
+    drag_payload: dict | None,
+    profit_payload: dict | None,
+    path: dict | None,
+    active_exit_truth: dict | None,
+    rotation_plan: dict | None,
+    limit: int = 25,
+) -> dict:
+    goal_payload = dict(goal_payload or {})
+    drag = dict(drag_payload or {})
+    profit = dict(profit_payload or {})
+    path = dict(path or {})
+    goal = dict(path.get("daily_goal_progress") or {})
+    primary = _safe_float(goal.get("primary_daily_pnl"), 0.0)
+    target_low = max(0.01, _safe_float(goal.get("target_low"), 100.0))
+    below_goal = primary < target_low
+    goal_rows = list(path.get("rows") or [])
+    drag_rows = list(drag.get("rows") or [])
+    best_goal_symbols = [
+        r.get("symbol")
+        for r in goal_rows
+        if isinstance(r, dict) and str(r.get("role") or "") == "goal_gap_closer"
+    ]
+    rotation_rows = []
+    for row in drag_rows:
+        row = dict(row or {})
+        unreal = _safe_float(row.get("unrealized_pl"), 0.0)
+        risk = _safe_float(row.get("risk_to_stop_dollars"), 0.0)
+        market_value = _safe_float(row.get("market_value"), 0.0)
+        near_stop = bool(row.get("near_stop"))
+        capital_drag = bool(row.get("capital_drag"))
+        readiness_score = abs(unreal) + (20.0 if near_stop else 0.0) + (risk * 0.25)
+        rotation_rows.append({
+            "symbol": row.get("symbol"),
+            "rotation_candidate": bool(below_goal and (capital_drag or near_stop)),
+            "rotation_reason": (
+                "near_stop_capital_drag_below_daily_goal"
+                if below_goal and near_stop
+                else "capital_drag_below_daily_goal"
+                if below_goal and capital_drag
+                else "monitor"
+            ),
+            "unrealized_pl": round(unreal, 4),
+            "market_value": round(market_value, 4),
+            "risk_to_stop_dollars": round(risk, 4),
+            "distance_to_stop_dollars": row.get("distance_to_stop_dollars"),
+            "near_stop": near_stop,
+            "capital_drag": capital_drag,
+            "exit_trigger_now": bool(row.get("exit_trigger_now")),
+            "readiness_score": round(readiness_score, 4),
+            "replacement_focus": best_goal_symbols[:5],
+            "operator_note": "diagnostic_only_no_rotation_order_submitted",
+        })
+    rotation_rows.sort(key=lambda r: _safe_float(r.get("readiness_score"), 0.0), reverse=True)
+    rotation_candidates = [r for r in rotation_rows if bool(r.get("rotation_candidate"))]
+    rotation_action_contract = build_capital_rotation_action_contract(
+        patch_version=patch_version,
+        rotation_rows=rotation_rows,
+        active_exit_truth=active_exit_truth,
+        rotation_plan=rotation_plan,
+    )
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "mode": "capital_rotation_readiness_audit",
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "source": "daily_goal_path_truth_and_weak_position_capital_drag_audit",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "daily_goal_progress": goal,
+        "p639_broker_daily_goal_snapshot_consistency": goal_payload.get("p639_broker_daily_goal_snapshot_consistency") or {},
+        "summary": {
+            "below_daily_low_goal": below_goal,
+            "broker_daily_pnl": round(primary, 4),
+            "target_low": round(target_low, 4),
+            "rotation_candidate_count": len(rotation_candidates),
+            "capital_drag_count": int((drag.get("summary") or {}).get("capital_drag_count") or 0),
+            "near_stop_drag_count": int((drag.get("summary") or {}).get("near_stop_drag_count") or 0),
+            "goal_gap_closer_count": len(best_goal_symbols),
+            "ready_partial_profit_count": int((profit.get("summary") or {}).get("ready_partial_profit_count") or 0),
+            "drag_dependency_dollars": (rotation_plan or {}).get("drag_dependency_dollars"),
+            "profit_improvement_focus": (rotation_plan or {}).get("profit_improvement_focus"),
+            "protected_rotation_candidate_count": rotation_action_contract.get("protected_candidate_count"),
+            "exit_actionable_rotation_candidate_count": rotation_action_contract.get("exit_actionable_candidate_count"),
+            "rotation_candidate_market_value": rotation_action_contract.get("candidate_market_value"),
+            "rotation_candidate_unrealized_pl": rotation_action_contract.get("candidate_unrealized_pl"),
+        },
+        "rotation_candidate_symbols": [r.get("symbol") for r in rotation_candidates],
+        "replacement_focus_symbols": best_goal_symbols[:5],
+        "rows": rotation_rows[:max(1, min(int(limit or 25), 100))],
+        "p646_goal_gap_rotation_operator_plan": rotation_plan or {},
+        "p647_capital_rotation_action_contract": rotation_action_contract,
+        "p651_capital_rotation_report_contract": {
+            "enabled": True,
+            "module_owned_report_shape": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "does_not_submit_orders": True,
+        },
+        "recommended_action": (
+            rotation_action_contract.get("recommended_action")
+            if rotation_candidates and (rotation_plan or {}).get("profit_improvement_focus") == "capital_rotation"
+            else "no_capital_rotation_candidate_detected"
+        ),
     }
 
 
@@ -534,8 +646,9 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "daily_goal_operator_plan_shape",
             "daily_goal_path_truth_report_shape",
             "daily_goal_opportunity_map_report_shape",
+            "capital_rotation_readiness_report_shape",
             "capital_rotation_action_contract_shape",
             "profit_path_truth_contract_shape",
         ],
-        "next_extraction_target": "move_capital_rotation_readiness_report_assembly",
+        "next_extraction_target": "move_broker_reconciled_attribution_report_shapes",
     }
