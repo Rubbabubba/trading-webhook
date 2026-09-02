@@ -50,7 +50,7 @@ def main() -> None:
     if not secret:
         raise RuntimeError("WORKER_SECRET is required")
 
-    interval = max(30, _env_int("REGIME_INTRADAY_SCAN_INTERVAL_SEC", 300))
+    interval = max(30, _env_int("REGIME_INTRADAY_SCAN_INTERVAL_SEC", 60))
     timeout = max(10, _env_int("REGIME_INTRADAY_WORKER_TIMEOUT_SEC", 60))
     scan_url = (os.getenv("REGIME_INTRADAY_SCAN_URL") or f"{base_url}/worker/regime_intraday_scan").strip()
     reconcile_url = (os.getenv("REGIME_INTRADAY_RECONCILE_URL") or f"{base_url}/worker/regime_intraday_paper_reconcile").strip()

@@ -1,9 +1,12 @@
 from datetime import date
 
+import regime_intraday_runtime as runtime_module
 from regime_intraday_ledger import empty_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, update_ledger
+from regime_intraday_ledger import load_ledger, save_ledger
 from regime_intraday_options import parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_executor import build_mleg_close_order, build_mleg_limit_order, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot
+from regime_intraday_runtime import RegimeIntradayRuntime
 
 
 def test_close_order_reverses_both_legs_and_uses_credit_price():
@@ -110,6 +113,10 @@ def test_paper_lifecycle_locks_active_order_daily_limit_and_loss_streak():
     losses["closed"] = [{"session": "2026-09-02", "realized_dollars": -10}, {"session": "2026-09-02", "realized_dollars": -5}]
     assert paper_submission_decision(losses, "sig-4", session="2026-09-02", max_consecutive_losses=2)["reason"] == "consecutive_loss_lock"
 
+    daily_loss = empty_ledger()
+    daily_loss["closed"] = [{"session": "2026-09-02", "realized_dollars": -200}]
+    assert paper_submission_decision(daily_loss, "sig-5", session="2026-09-02", max_daily_loss_dollars=200)["reason"] == "daily_loss_lock"
+
 
 def test_live_readiness_requires_opra_and_closed_paper_roundtrip():
     snapshot = readiness_snapshot(config={"paper_submit_enabled": True, "option_feed": "indicative", "max_scan_age_sec": 10**9, "min_shadow_closed": 1}, ledger=empty_ledger(), last_scan={"ts_utc": "2026-09-02T18:00:00+00:00", "option_plans": []}, paper_credentials_present=True)
@@ -126,3 +133,58 @@ def test_pending_candidate_survives_scan_but_expires_closed():
     update_ledger(ledger, {"ts_utc": "2026-09-02T15:01:00+00:00", "signals": [], "features": {}})
     assert pending_candidate(ledger, "sig-queued", now_utc="2026-09-02T15:09:59+00:00") is not None
     assert pending_candidate(ledger, "sig-queued", now_utc="2026-09-02T15:10:00+00:00") is None
+
+
+def test_scan_worker_auto_submits_one_selected_paper_plan(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKER_SECRET", "worker")
+    monkeypatch.setenv("REGIME_INTRADAY_PAPER_AUTO_SUBMIT", "true")
+    runtime = RegimeIntradayRuntime()
+    monkeypatch.setattr(runtime, "scan", lambda: {
+        "status": "completed",
+        "option_plans": [
+            {"signal": {"signal_id": "sig-1"}, "plan": {"status": "selected"}},
+            {"signal": {"signal_id": "sig-2"}, "plan": {"status": "selected"}},
+        ],
+    })
+    submitted = []
+    monkeypatch.setattr(runtime, "paper_roundtrip", lambda body: submitted.append(body["signal_id"]) or {"ok": True, "signal_id": body["signal_id"]})
+
+    result = runtime.scan_worker({"worker_secret": "worker"})
+
+    assert submitted == ["sig-1"]
+    assert result["auto_submission"]["signal_id"] == "sig-1"
+    assert result["paper_auto_submit_enabled"] is True
+
+
+def test_reconcile_auto_closes_and_records_filled_paper_roundtrip(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "ledger.json"
+    monkeypatch.setenv("WORKER_SECRET", "worker")
+    monkeypatch.setenv("ALPACA_PAPER_API_KEY_ID", "key")
+    monkeypatch.setenv("ALPACA_PAPER_API_SECRET_KEY", "secret")
+    monkeypatch.setenv("REGIME_INTRADAY_LEDGER_PATH", str(ledger_path))
+    monkeypatch.setenv("REGIME_INTRADAY_PAPER_AUTO_EXIT", "true")
+    ledger = empty_ledger()
+    ledger["orders"] = {"sig-1": {
+        "order_id": "entry-1",
+        "status": "filled",
+        "session": "2026-09-02",
+        "plan": {"underlying": "SPY", "limit_debit": 0.30, "legs": [{"symbol": "LONG"}, {"symbol": "SHORT"}]},
+    }}
+    save_ledger(str(ledger_path), ledger)
+    monkeypatch.setattr(runtime_module, "get_order", lambda *_args, **_kwargs: {"status": "filled", "filled_at": "2026-09-02T20:00:00+00:00"})
+    monkeypatch.setattr(runtime_module, "fetch_option_chain", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(runtime_module, "value_debit_spread", lambda *_args, **_kwargs: {"status": "valued", "liquidation_credit": 0.50})
+    monkeypatch.setattr(runtime_module, "spread_exit_decision", lambda *_args, **_kwargs: {"exit": True, "reason": "profit_target"})
+    monkeypatch.setattr(runtime_module, "send_exit_email", lambda **_kwargs: {"sent": True, "message_id": "email-1"})
+    monkeypatch.setattr(runtime_module, "submit_mleg_close_order", lambda *_args, **_kwargs: {"submitted": True, "paper": True, "order_id": "close-1", "status": "new"})
+    runtime = RegimeIntradayRuntime()
+
+    first = runtime.paper_reconcile({"worker_secret": "worker"})
+    assert first["automatic_exit_submission"] is True
+    assert load_ledger(str(ledger_path))["orders"]["sig-1"]["status"] == "close_submitted"
+
+    runtime.paper_reconcile({"worker_secret": "worker"})
+    saved = load_ledger(str(ledger_path))
+    assert saved["orders"]["sig-1"]["status"] == "filled_closed"
+    assert saved["closed"][-1]["paper_signal_id"] == "sig-1"
+    assert saved["closed"][-1]["realized_dollars"] == 20.0

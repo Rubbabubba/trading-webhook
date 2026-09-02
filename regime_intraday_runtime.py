@@ -151,7 +151,22 @@ class RegimeIntradayRuntime:
 
     def scan_worker(self, body: dict) -> dict:
         self._worker_authorize(body)
-        return self.scan()
+        payload = self.scan()
+        auto_submission = None
+        if payload.get("status") == "completed" and _bool("REGIME_INTRADAY_PAPER_AUTO_SUBMIT", True):
+            for row in list(payload.get("option_plans") or []):
+                plan = dict(row.get("plan") or {})
+                signal_id = str(dict(row.get("signal") or {}).get("signal_id") or "")
+                if plan.get("status") != "selected" or not signal_id:
+                    continue
+                try:
+                    auto_submission = self.paper_roundtrip({**body, "signal_id": signal_id})
+                except HTTPException as exc:
+                    auto_submission = {"ok": False, "status_code": exc.status_code, "detail": exc.detail, "signal_id": signal_id}
+                break
+        payload["paper_auto_submit_enabled"] = _bool("REGIME_INTRADAY_PAPER_AUTO_SUBMIT", True)
+        payload["auto_submission"] = auto_submission
+        return payload
 
     def ledger_payload(self) -> dict:
         ledger = load_ledger(self.ledger_path)
@@ -223,7 +238,8 @@ class RegimeIntradayRuntime:
         if not durable:
             raise HTTPException(status_code=409, detail="no fresh selected option spread is available")
         decision = paper_submission_decision(ledger, signal_id, session=now_ny().date().isoformat(), max_trades_per_day=max(1, _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 2)),
-                                             max_consecutive_losses=max(1, _int("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", 2)))
+                                             max_consecutive_losses=max(1, _int("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", 2)),
+                                             max_daily_loss_dollars=_float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200))
         if not decision.get("allowed"):
             raise HTTPException(status_code=409, detail=decision)
         key, secret = self._paper_credentials()
@@ -255,6 +271,18 @@ class RegimeIntradayRuntime:
                     record["status"] = "filled_closed" if status == "filled" else "close_submitted"
                     if status == "filled":
                         record["closed_at"] = broker.get("filled_at") or datetime.now(timezone.utc).isoformat()
+                        closed = list(ledger.get("closed") or [])
+                        if not any(str(row.get("paper_signal_id") or "") == signal_id for row in closed):
+                            closed.append({
+                                "paper_signal_id": signal_id,
+                                "session": record.get("session"),
+                                "exit_ts_utc": record["closed_at"],
+                                "exit_reason": dict(record.get("close_order") or {}).get("reason"),
+                                "realized_dollars": record.get("estimated_realized_dollars"),
+                                "status": "filled_closed",
+                            })
+                            ledger["closed"] = closed[-500:]
+                            ledger.setdefault("events", []).append({"event": "paper_roundtrip_closed", "signal_id": signal_id, "order_id": close_id, "realized_dollars": record.get("estimated_realized_dollars"), "ts_utc": record["closed_at"]})
                     refreshed.append({"signal_id": signal_id, "order_id": close_id, "status": record["status"], "action": "close"})
                     continue
                 record.update({"status": status, "broker": broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
@@ -276,11 +304,19 @@ class RegimeIntradayRuntime:
                                                  from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"), signal_id=signal_id, record=record)
                         if result.get("sent"):
                             ledger.setdefault("events", []).append({"event": "paper_exit_email_sent", "signal_id": signal_id, "message_id": result.get("message_id"), "ts_utc": datetime.now(timezone.utc).isoformat()})
+                    if decision.get("exit") and _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True) and not record.get("close_order"):
+                        credit = float(valuation.get("liquidation_credit") or 0)
+                        if credit > 0:
+                            close = submit_mleg_close_order(key, secret, plan, credit, paper=True, live_enabled=False)
+                            record["close_order"] = {**close, "reason": decision.get("reason"), "requested_at": datetime.now(timezone.utc).isoformat()}
+                            record["estimated_realized_dollars"] = round((credit - float(plan.get("limit_debit") or 0)) * 100, 2)
+                            record["status"] = "close_submitted"
+                            ledger.setdefault("events", []).append({"event": "paper_auto_close_recorded", "signal_id": signal_id, "order_id": close.get("order_id"), "reason": decision.get("reason"), "ts_utc": datetime.now(timezone.utc).isoformat()})
                 refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": record.get("status")})
             except Exception as exc:
                 refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": "reconcile_error", "detail": str(exc)[:200]})
         save_ledger(self.ledger_path, ledger)
-        return {"ok": True, "refreshed": refreshed, "live_submission": False, "automatic_exit_submission": False}
+        return {"ok": True, "refreshed": refreshed, "live_submission": False, "automatic_exit_submission": _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True)}
 
     def paper_close(self, body: dict) -> dict:
         self._worker_authorize(body)

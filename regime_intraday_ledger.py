@@ -43,7 +43,15 @@ def pending_candidate(ledger: dict[str, Any], signal_id: str, *, now_utc: str) -
     return row
 
 
-def paper_submission_decision(ledger: dict[str, Any], signal_id: str, *, session: str, max_trades_per_day: int = 2, max_consecutive_losses: int = 2) -> dict[str, Any]:
+def paper_submission_decision(
+    ledger: dict[str, Any],
+    signal_id: str,
+    *,
+    session: str,
+    max_trades_per_day: int = 2,
+    max_consecutive_losses: int = 2,
+    max_daily_loss_dollars: float = 200.0,
+) -> dict[str, Any]:
     orders = dict(ledger.get("orders") or {})
     closed = list(ledger.get("closed") or [])
     if not signal_id:
@@ -54,6 +62,9 @@ def paper_submission_decision(ledger: dict[str, Any], signal_id: str, *, session
     if len(today_orders) >= max(1, int(max_trades_per_day)):
         return {"allowed": False, "reason": "daily_trade_limit"}
     today_closed = [row for row in closed if str(row.get("session") or _session(str(row.get("exit_ts_utc") or ""))) == session]
+    realized_dollars = sum(float(row.get("realized_dollars") or 0.0) for row in today_closed)
+    if realized_dollars <= -abs(float(max_daily_loss_dollars)):
+        return {"allowed": False, "reason": "daily_loss_lock", "realized_dollars": round(realized_dollars, 2)}
     loss_streak = 0
     for row in reversed(today_closed):
         if float(row.get("realized_dollars") or row.get("realized_r") or 0.0) < 0:
