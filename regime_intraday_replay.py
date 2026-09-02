@@ -6,7 +6,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 from itertools import product
 from statistics import fmean
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from regime_intraday import RegimeIntradayConfig, evaluate_regime_intraday
 
@@ -73,6 +73,7 @@ def replay_sessions(
     config: RegimeIntradayConfig | None = None,
     *,
     max_trades_per_day: int = 2,
+    evaluator: Callable[[dict[str, list[dict]], RegimeIntradayConfig], dict[str, Any]] = evaluate_regime_intraday,
 ) -> dict[str, Any]:
     """Replay completed one-minute bars, allowing only one position at a time."""
     cfg = config or RegimeIntradayConfig()
@@ -99,7 +100,7 @@ def replay_sessions(
                 continue
             if any(len(prefix[symbol]) < cfg.min_bars for symbol in cfg.symbols):
                 continue
-            scan = evaluate_regime_intraday(prefix, cfg)
+            scan = evaluator(prefix, cfg)
             name = str((scan.get("regime") or {}).get("name") or "unknown")
             regime_counts[name] = regime_counts.get(name, 0) + 1
             candidates = [s for s in scan.get("signals", []) if str(s.get("signal_id")) not in seen]

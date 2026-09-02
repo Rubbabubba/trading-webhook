@@ -34,11 +34,13 @@ def test_validation_lab_never_auto_promotes_settings():
         for _ in range(8)
     ]
     walk = {"out_of_sample_positive": True, "test": {"trade_count": 24}, "candidates": candidates}
-    lab = validation_lab(baseline=report, walk_forward=walk, instrument_reports={"spy_only": report, "qqq_only": report})
+    lab = validation_lab(baseline=report, walk_forward=walk, instrument_reports={"spy_only": report, "qqq_only": report}, candidate_reports={"trend_pullback": report})
     assert parameter_stability(walk)["stable"] is True
     assert lab["gate"]["paper_validation_pass"] is True
     assert lab["gate"]["promotion_locked"] is True
     assert lab["historical_option_fill_model"] is False
+    assert lab["candidate_sleeves"]["trend_pullback"]["research_pass"] is True
+    assert lab["candidate_sleeves"]["trend_pullback"]["execution_enabled"] is False
 
 
 def test_paper_fill_reconciliation_measures_actual_slippage_and_stays_locked():

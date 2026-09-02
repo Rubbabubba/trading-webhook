@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from intraday_market_data import fetch_minute_bars, fetch_recent_minute_bars
 from market_clock import is_regular_market_time, now_ny, parse_hhmm
 from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evaluate_regime_intraday
+from regime_intraday_candidates import failed_breakout_fade_candidate, relative_strength_divergence_candidate, trend_pullback_candidate
 from regime_intraday_email import send_exit_email, send_signal_email
 from regime_intraday_executor import cancel_order, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, save_ledger, update_ledger
@@ -204,9 +205,9 @@ class RegimeIntradayRuntime:
 
     def after_hours_replay(self, body: dict) -> dict:
         self._worker_authorize(body)
-        days = max(30, min(60, int(body.get("calendar_days") or 60)))
+        days = max(30, min(252, int(body.get("calendar_days") or 180)))
         end = datetime.now(timezone.utc)
-        bars, fetch = fetch_minute_bars(["SPY", "QQQ"], start=end - timedelta(days=days), end=end)
+        bars, fetch = fetch_minute_bars(["SPY", "QQQ"], start=end - timedelta(days=days), end=end, max_pages=30)
         regular = {symbol: [row for row in rows if is_regular_market_time(row["ts_ny"])] for symbol, rows in bars.items()}
         if fetch.get("error") or not all(regular.get(symbol) for symbol in ("SPY", "QQQ")):
             raise HTTPException(status_code=502, detail={"message": "historical bars unavailable", "fetch": fetch})
@@ -227,10 +228,15 @@ class RegimeIntradayRuntime:
             "qqq_only": replay_sessions(regular, replace(cfg, trade_symbols=("QQQ",), momentum_enabled=False, mean_reversion_enabled=True)),
             "spy_qqq_shared_limits": replay_sessions(regular, replace(cfg, trade_symbols=("SPY", "QQQ"), momentum_enabled=False, mean_reversion_enabled=True)),
         }
+        candidate_reports = {
+            "trend_pullback": replay_sessions(regular, replace(cfg, trade_symbols=("SPY",), momentum_enabled=False, mean_reversion_enabled=False), evaluator=trend_pullback_candidate),
+            "failed_breakout_fade": replay_sessions(regular, replace(cfg, trade_symbols=("SPY",), momentum_enabled=False, mean_reversion_enabled=False), evaluator=failed_breakout_fade_candidate),
+            "relative_strength_divergence": replay_sessions(regular, replace(cfg, trade_symbols=("SPY",), momentum_enabled=False, mean_reversion_enabled=False), evaluator=relative_strength_divergence_candidate),
+        }
         output = {"ok": True, "generated_utc": datetime.now(timezone.utc).isoformat(), "calendar_days": days, "paper_only": True, "live_submission": False,
                   "cost_model": {"risk_dollars": risk, "round_trip_cost_r": cost_r}, "ranking": ranking, "variants": summaries,
                   "mean_reversion_walk_forward": walk,
-                  "validation_lab": validation_lab(baseline=variants["configured"], walk_forward=walk, instrument_reports=instruments, risk_dollars=risk)}
+                  "validation_lab": validation_lab(baseline=variants["configured"], walk_forward=walk, instrument_reports=instruments, candidate_reports=candidate_reports, risk_dollars=risk)}
         save_ledger(_env("REGIME_INTRADAY_AFTER_HOURS_REPORT_PATH", "/var/data/regime_intraday_after_hours_report.json"), output)
         return output
 

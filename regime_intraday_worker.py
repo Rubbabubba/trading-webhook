@@ -65,7 +65,8 @@ def main() -> None:
         ny_now = datetime.now(ZoneInfo("America/New_York"))
         if ny_now.weekday() < 5 and ny_now.time() >= clock_time(16, 5) and replay_date != ny_now.date():
             try:
-                status, response = _post(replay_url, {**payload, "calendar_days": 60}, max(timeout, 240))
+                validation_days = max(60, min(252, _env_int("REGIME_INTRADAY_VALIDATION_DAYS", 180)))
+                status, response = _post(replay_url, {**payload, "calendar_days": validation_days}, max(timeout, 900))
                 ranking = list(response.get("ranking") or [])
                 _log(f"after_hours_replay_ok http={status} leader={ranking[0] if ranking else 'none'} variants={len(response.get('variants') or {})} live_submission={response.get('live_submission', False)}")
                 for name in ranking:
@@ -89,10 +90,13 @@ def main() -> None:
                 gate = dict(lab.get("gate") or {})
                 instruments = dict(lab.get("instrument_comparison") or {})
                 instrument_net = {name: dict(report.get("cost_adjusted") or {}).get("net_average_r") for name, report in instruments.items()}
+                candidates = dict(lab.get("candidate_sleeves") or {})
+                candidate_net = {name: dict(report.get("ordinary_cost") or {}).get("net_average_r") for name, report in candidates.items()}
                 _log(
                     f"after_hours_validation paper_pass={gate.get('paper_validation_pass')} promotion_locked={gate.get('promotion_locked')} "
                     f"blockers={json.dumps(gate.get('blockers') or [], separators=(',', ':'))} "
                     f"instrument_net_avg_r={json.dumps(instrument_net, separators=(',', ':'))} "
+                    f"candidate_net_avg_r={json.dumps(candidate_net, separators=(',', ':'))} "
                     f"cost_050_net_avg_r={dict((lab.get('cost_stress') or [{}])[-1]).get('net_average_r')} "
                     f"monte_loss_probability={dict(lab.get('monte_carlo') or {}).get('probability_negative_total')}"
                 )

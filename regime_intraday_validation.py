@@ -193,7 +193,7 @@ def paper_promotion_gate(
     }
 
 
-def validation_lab(*, baseline: dict[str, Any], walk_forward: dict[str, Any], instrument_reports: dict[str, dict[str, Any]], risk_dollars: float = 100.0) -> dict[str, Any]:
+def validation_lab(*, baseline: dict[str, Any], walk_forward: dict[str, Any], instrument_reports: dict[str, dict[str, Any]], candidate_reports: dict[str, dict[str, Any]] | None = None, risk_dollars: float = 100.0) -> dict[str, Any]:
     costs = cost_stress(baseline, risk_dollars=risk_dollars)
     latency = latency_stress(baseline, risk_dollars=risk_dollars)
     stability = parameter_stability(walk_forward)
@@ -202,6 +202,24 @@ def validation_lab(*, baseline: dict[str, Any], walk_forward: dict[str, Any], in
         name: {key: value for key, value in report.items() if key != "trades"} | {"cost_adjusted": cost_adjusted_report(report, risk_dollars=risk_dollars)}
         for name, report in instrument_reports.items()
     }
+    candidates = {}
+    for name, report in dict(candidate_reports or {}).items():
+        ordinary = cost_adjusted_report(report, risk_dollars=risk_dollars, round_trip_cost_r=0.12)
+        stressed = cost_adjusted_report(report, risk_dollars=risk_dollars, round_trip_cost_r=0.30)
+        blockers = []
+        if int(report.get("trade_count") or 0) < 20:
+            blockers.append("trade_count_below_20")
+        if float(ordinary.get("net_average_r") or 0) <= 0:
+            blockers.append("ordinary_cost_edge_not_positive")
+        if float(stressed.get("net_average_r") or 0) <= 0:
+            blockers.append("fails_0_30r_cost_stress")
+        candidates[name] = {key: value for key, value in report.items() if key != "trades"} | {
+            "ordinary_cost": ordinary,
+            "stressed_cost": stressed,
+            "research_pass": not blockers,
+            "blockers": blockers,
+            "execution_enabled": False,
+        }
     return {
         "paper_only": True,
         "historical_option_fill_model": False,
@@ -211,6 +229,7 @@ def validation_lab(*, baseline: dict[str, Any], walk_forward: dict[str, Any], in
             "the previously reviewed holdout is no longer pristine future evidence",
         ],
         "instrument_comparison": instruments,
+        "candidate_sleeves": candidates,
         "cost_stress": costs,
         "latency_stress": latency,
         "parameter_stability": stability,
