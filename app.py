@@ -3198,7 +3198,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-709-performance-reporting-ownership-extraction"
+PATCH_VERSION = "patch-710-legacy-route-and-compatibility-tombstone-removal"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -53966,7 +53966,7 @@ def _p298_market_open_selection_audit_light(limit: int = 10) -> dict:
     }
 
 def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_paths", apply: bool = False) -> dict:
-    compatibility_routes = [
+    removed_routes = [
         "/diagnostics/selected_entry_intent_queue",
         "/diagnostics/stale_selected_entry_intent_reconcile",
         "/diagnostics/selected_entry_intent_backfill",
@@ -53996,11 +53996,23 @@ def _p334_retired_queue_finalizer_status(mode: str = "retired_queue_finalizer_pa
         "dead_env_reads_removed": True,
         "dead_global_queue_removed": True,
         "route_tombstones_consolidated": True,
-        "compatibility_routes_retained": True,
-        "compatibility_routes": compatibility_routes,
+        "compatibility_routes_retained": False,
+        "route_tombstones_removed": True,
+        "compatibility_routes_removed": True,
+        "removed_routes": removed_routes,
+        "p710_legacy_route_removal": {
+            "enabled": True,
+            "removed_from_fastapi_surface": True,
+            "removed_from_system_endpoint_manifest": True,
+            "internal_helper_retained_for_legacy_callsite_audit": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "submits_orders": False,
+        },
         "canonical_operator_endpoint": "/diagnostics/swing_cleanup_status",
         "operator_endpoint": "/diagnostics/swing_cleanup_status",
-        "legacy_access_note": "Selected intent queue/finalizer runtime is removed. These routes are compatibility tombstones only and are not part of the swing operator flow.",
+        "legacy_access_note": "Selected intent queue/finalizer runtime is removed. Public compatibility tombstone routes were removed in Patch 710; use swing cleanup and selected submission truth instead.",
         "processed": 0,
         "finalized_symbols": [],
         "rows": [],
@@ -65268,74 +65280,10 @@ def diagnostics_reconcile_light(request: Request, apply_cleanup: bool = False):
     require_admin_if_configured(request)
     return _p298_reconcile_light(apply_cleanup=apply_cleanup)
 
-# Compatibility tombstone only. Selected intent queue runtime is retired; direct submit is authoritative.
-@app.get("/diagnostics/selected_entry_intent_queue")
-def diagnostics_selected_entry_intent_queue(request: Request, include_legacy: bool = False):
-    require_admin_if_configured(request)
-    return _p334_retired_queue_finalizer_status(mode="selected_entry_intent_queue")
-
-# Compatibility tombstone only. Stale selected intent reconcile is retired.
-@app.get("/diagnostics/stale_selected_entry_intent_reconcile")
-def diagnostics_stale_selected_entry_intent_reconcile(
-    request: Request,
-    apply: bool = False,
-    include_legacy: bool = False,
-):
-    require_admin_if_configured(request)
-    return _p334_retired_queue_finalizer_status(
-        mode="stale_selected_entry_intent_reconcile",
-        apply=bool(apply),
-    )
-
 @app.get("/diagnostics/executable_sizing_truth")
 def diagnostics_executable_sizing_truth(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return _p300_executable_sizing_audit(limit=limit)
-
-# Compatibility tombstone only. Selected intent backfill is retired.
-@app.get("/diagnostics/selected_entry_intent_backfill")
-def diagnostics_selected_entry_intent_backfill(
-    request: Request,
-    apply: bool = False,
-    include_legacy: bool = False,
-):
-    require_admin_if_configured(request)
-    return _p334_retired_queue_finalizer_status(
-        mode="selected_entry_intent_backfill",
-        apply=bool(apply),
-    )
-
-# Compatibility tombstone only. Selected entry finalizer is retired.
-@app.get("/diagnostics/selected_entry_finalizer")
-def diagnostics_selected_entry_finalizer(
-    request: Request,
-    apply: bool = False,
-    max_items: int = 1,
-    include_legacy: bool = False,
-):
-    require_admin_if_configured(request)
-    return _p334_retired_queue_finalizer_status(
-        mode="selected_entry_finalizer",
-        apply=bool(apply),
-    )
-
-# Compatibility tombstone only. Worker selected entry finalizer is retired.
-@app.post("/worker/selected_entry_finalizer")
-async def worker_selected_entry_finalizer(req: Request):
-    body = {}
-    try:
-        body = await req.json()
-    except Exception:
-        body = {}
-
-    if WORKER_SECRET:
-        if str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
-            raise HTTPException(status_code=401, detail="Invalid worker secret")
-
-    return _p334_retired_queue_finalizer_status(
-        mode="selected_entry_finalizer_worker",
-        apply=False,
-    )
 
 @app.get("/diagnostics/daily_goal_preservation_exit")
 def diagnostics_daily_goal_preservation_exit(request: Request):
@@ -68495,6 +68443,11 @@ def _p361_swing_light_endpoint_manifest() -> dict:
     retired_or_replaced = {
         f"{base}/near_miss_production_decision_truth": f"{base}/swing_submit_path_trace",
         f"{base}/broker_preferred_performance": f"{base}/strategy_state_broker_reconciled_estimate",
+        f"{base}/selected_entry_intent_queue": f"{base}/selected_submission_truth_light",
+        f"{base}/stale_selected_entry_intent_reconcile": f"{base}/selected_submission_truth_light",
+        f"{base}/selected_entry_intent_backfill": f"{base}/selected_submission_truth_light",
+        f"{base}/selected_entry_finalizer": f"{base}/swing_submit_path_trace",
+        "/worker/selected_entry_finalizer": f"{base}/swing_submit_path_trace",
     }
 
     return {
@@ -68604,6 +68557,8 @@ def diagnostics_swing_core_status():
             "dead_selected_intent_global_queue_removed",
             "retired_selected_intent_endpoints_consolidated",
             "retired_selected_intent_route_tombstones_cleaned",
+            "retired_selected_intent_public_routes_removed",
+            "retired_selected_intent_system_endpoint_manifest_removed",
             "swing_light_diagnostics_version_synced",
             "intraday_runtime_isolation_status_added",
             "swing_operator_surface_marked_swing_only",
@@ -68660,6 +68615,21 @@ def diagnostics_swing_core_status():
                 "submit_fill_proof_check",
                 "position_exit_check",
                 "after_hours_cleanup_check",
+            ],
+        },
+        "p710_legacy_route_cleanup": {
+            "enabled": True,
+            "public_selected_intent_tombstone_routes_removed": True,
+            "system_endpoint_manifest_scrubbed": True,
+            "internal_audit_helpers_retained": True,
+            "adds_trade_gate": False,
+            "changes_submit_behavior": False,
+            "changes_exit_behavior": False,
+            "submits_orders": False,
+            "replacement_operator_endpoints": [
+                "/diagnostics/swing_cleanup_status",
+                "/diagnostics/selected_submission_truth_light",
+                "/diagnostics/swing_submit_path_trace",
             ],
         },
         "next_split_candidate": "swing_execution_submit_helpers_after_limit_path_is_live_proven",
@@ -68736,12 +68706,35 @@ def diagnostics_swing_cleanup_status():
         and not DRY_RUN
         and not SCANNER_DRY_RUN
     )
-    return swing_diag_cleanup_status_snapshot(
+    payload = swing_diag_cleanup_status_snapshot(
         patch_version=PATCH_VERSION,
         strategy_mode=STRATEGY_MODE,
         live_swing_runtime=live_swing_runtime,
         retired_paths=retired_paths,
     )
+    payload["p710_legacy_route_cleanup"] = {
+        "enabled": True,
+        "public_selected_intent_tombstone_routes_removed": True,
+        "system_endpoint_manifest_scrubbed": True,
+        "internal_audit_helpers_retained": True,
+        "adds_trade_gate": False,
+        "changes_submit_behavior": False,
+        "changes_exit_behavior": False,
+        "submits_orders": False,
+        "removed_routes": [
+            "/diagnostics/selected_entry_intent_queue",
+            "/diagnostics/stale_selected_entry_intent_reconcile",
+            "/diagnostics/selected_entry_intent_backfill",
+            "/diagnostics/selected_entry_finalizer",
+            "/worker/selected_entry_finalizer",
+        ],
+        "replacement_operator_endpoints": [
+            "/diagnostics/swing_cleanup_status",
+            "/diagnostics/selected_submission_truth_light",
+            "/diagnostics/swing_submit_path_trace",
+        ],
+    }
+    return payload
 
 @app.get("/diagnostics/protective_limit_submit_evidence")
 def diagnostics_protective_limit_submit_evidence(limit: int = 20):

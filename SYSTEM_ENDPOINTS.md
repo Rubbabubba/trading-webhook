@@ -167,13 +167,9 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/scanner
 https://trading-webhook-q4d5.onrender.com/diagnostics/scanner_light
 https://trading-webhook-q4d5.onrender.com/diagnostics/scans
 https://trading-webhook-q4d5.onrender.com/diagnostics/scans/latest
-https://trading-webhook-q4d5.onrender.com/diagnostics/selected_entry_finalizer
-https://trading-webhook-q4d5.onrender.com/diagnostics/selected_entry_intent_backfill
-https://trading-webhook-q4d5.onrender.com/diagnostics/selected_entry_intent_queue
 https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth_light
 https://trading-webhook-q4d5.onrender.com/diagnostics/spread_blocked_submission_retry
-https://trading-webhook-q4d5.onrender.com/diagnostics/stale_selected_entry_intent_reconcile
 https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_containment
 https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_profit_leak_drilldown
 https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_tuning_monitor
@@ -245,5 +241,4 @@ https://trading-webhook-q4d5.onrender.com/webhook
 https://trading-webhook-q4d5.onrender.com/worker/exit
 https://trading-webhook-q4d5.onrender.com/worker/scan_entries
 https://trading-webhook-q4d5.onrender.com/worker/scanner_heartbeat
-https://trading-webhook-q4d5.onrender.com/worker/selected_entry_finalizer
 https://trading-webhook-q4d5.onrender.com/worker/swing_fast_scan
