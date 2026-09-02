@@ -3220,7 +3220,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-712A-fast-validation-contract-submit-truth-timeout-guard"
+PATCH_VERSION = "patch-712B-promotion-contract-fast-short-circuit-submit-trace-no-blocking-fallback"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -22586,6 +22586,31 @@ def _p712_reduced_risk_promotion_contract(
     reduced_risk = round(base_risk * multiplier, 4)
     effective_risk = round(min(reduced_risk, max_risk) if max_risk > 0 else reduced_risk, 4)
     daily_limit = max(0, int(SWING_VALIDATION_PROMOTED_LIVE_DAILY_ENTRY_LIMIT or 0))
+    if not bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED):
+        return {
+            "enabled": False,
+            "source": str(source or "").strip() or "unknown",
+            "promoted_live_reduced_risk": False,
+            "entry_orders_permitted_now": False,
+            "dry_run_override_allowed": False,
+            "p711_contract": p711,
+            "base_risk_dollars": round(base_risk, 4),
+            "validation_risk_multiplier": multiplier,
+            "reduced_risk_dollars_before_cap": reduced_risk,
+            "max_risk_dollars": round(max_risk, 4),
+            "effective_risk_dollars": effective_risk,
+            "max_position_dollars": round(max(0.0, float(SWING_VALIDATION_PROMOTED_LIVE_MAX_POSITION_DOLLARS or 0.0)), 4),
+            "daily_entry_limit": daily_limit,
+            "daily_entry_count": 0,
+            "daily_slot_available": True,
+            "runtime_controls_ok": False,
+            "release_gate_ok": None,
+            "blockers": ["promoted_live_disabled"],
+            "classification": "promoted_live_disabled_fast_short_circuit",
+            "trade_submission_behavior_changed": False,
+            "p712b_fast_short_circuit": True,
+            "recommended_action": "keep_validation_pause_until_promoted_reduced_risk_contract_is_enabled",
+        }
     daily_used = _p712_today_promoted_live_entry_count()
     daily_slot_available = bool(daily_limit <= 0 or daily_used < daily_limit)
     source_norm = str(source or "").strip()
@@ -23653,6 +23678,133 @@ def _p701b_fetch_broker_orders_windowed(order_limit: int, deadline_sec: float) -
             "partial": bool(deadline_hit or len(request_rows) < len(chunks)),
             "requests": request_rows,
         },
+    }
+
+
+def _p712b_swing_submit_path_trace_fast(symbols: str | None = None, limit: int | None = None) -> dict:
+    started = _time.perf_counter()
+    try:
+        latest_scan, summary = _p298_latest_scan_summary_light()
+    except Exception as exc:
+        latest_scan, summary = {}, {}
+        scan_error = str(exc)
+    else:
+        scan_error = ""
+    selected_truth = _p298_selected_submission_truth_light(limit=max(1, min(int(limit or 12), 50)))
+    requested_symbols = {
+        str(sym or "").strip().upper()
+        for sym in str(symbols or "").replace(",", " ").split()
+        if str(sym or "").strip()
+    }
+    rows = [
+        dict(row or {})
+        for row in list(selected_truth.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    if requested_symbols:
+        rows = [
+            row for row in rows
+            if str(row.get("symbol") or "").strip().upper() in requested_symbols
+        ]
+    lim = max(1, min(int(limit or 12), 50))
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(selected_truth.get("selected_symbols") or [])
+        if str(sym or "").strip()
+        and (not requested_symbols or str(sym or "").strip().upper() in requested_symbols)
+    ])
+    submit_gap_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool(row.get("submit_gap")) and str(row.get("symbol") or "").strip()
+    ])
+    timeout_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool(row.get("selected_submit_timeout")) and str(row.get("symbol") or "").strip()
+    ])
+    validation_paused_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool(row.get("validation_paused_selected_hold")) and str(row.get("symbol") or "").strip()
+    ])
+    p712_allowed_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool((row.get("p712_reduced_risk_promotion_contract") or {}).get("entry_orders_permitted_now"))
+        and str(row.get("symbol") or "").strip()
+    ])
+    actual_submit_side_effect_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool(row.get("actual_submit_side_effect")) and str(row.get("symbol") or "").strip()
+    ])
+    if timeout_symbols:
+        path_status = "selected_submit_timeout_requires_reconcile"
+        recommended_action = "check_orders_and_reconcile_before_retrying_selected_symbols"
+    elif validation_paused_symbols and not p712_allowed_symbols:
+        path_status = "validation_paused_selected_candidates_intentionally_held"
+        recommended_action = "configure_replay_promoted_reduced_risk_sleeve_or_keep_validation_pause"
+    elif p712_allowed_symbols:
+        path_status = "promoted_reduced_risk_selected"
+        recommended_action = "promoted_reduced_risk_symbols_can_submit_when_scanner_selects"
+    elif submit_gap_symbols:
+        path_status = "selected_submit_gap_detected"
+        recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
+    elif actual_submit_side_effect_symbols:
+        path_status = "selected_symbols_have_actual_submit_side_effect"
+        recommended_action = "monitor_active_positions"
+    elif selected_symbols:
+        path_status = "selected_candidate_needs_submit_truth"
+        recommended_action = "inspect_heavy_trace"
+    else:
+        path_status = "no_selected_candidate"
+        recommended_action = "monitor_next_scan"
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "swing_submit_path_trace",
+        "trace_mode": "light",
+        "p712b_no_blocking_fallback": {
+            "enabled": True,
+            "fast_snapshot_only": True,
+            "legacy_light_trace_retired_from_default": True,
+            "heavy_available": True,
+            "heavy_url_hint": "/diagnostics/swing_submit_path_trace?heavy=true",
+            "does_not_recompute_candidate_payload": True,
+            "does_not_revalidate_selection": True,
+            "does_not_call_broker": True,
+            "elapsed_ms": int(max(0.0, (_time.perf_counter() - started) * 1000.0)),
+            "scan_context_error": scan_error,
+        },
+        "read_only": True,
+        "source": str(latest_scan.get("_scan_source") or selected_truth.get("source") or "last_scan_runtime_snapshot"),
+        "path_status": path_status,
+        "recommended_action": recommended_action,
+        "selected_symbols": selected_symbols,
+        "selected_count": len(selected_symbols),
+        "submit_gap_symbols": submit_gap_symbols,
+        "submit_gap_count": len(submit_gap_symbols),
+        "selected_submit_timeout_symbols": timeout_symbols,
+        "selected_submit_timeout_count": len(timeout_symbols),
+        "validation_paused_symbols": validation_paused_symbols,
+        "validation_paused_count": len(validation_paused_symbols),
+        "actual_submit_side_effect_symbols": actual_submit_side_effect_symbols,
+        "actual_submit_side_effect_count": len(actual_submit_side_effect_symbols),
+        "p712_reduced_risk_promotion_contract": dict(
+            selected_truth.get("p712_reduced_risk_promotion_contract") or {}
+        ),
+        "p712a_fast_validation_submit_truth": dict(
+            selected_truth.get("p712a_fast_validation_submit_truth") or {}
+        ),
+        "latest_scan": {
+            "ts_utc": latest_scan.get("ts_utc"),
+            "reason": latest_scan.get("reason"),
+            "source": latest_scan.get("_scan_source"),
+            "duration_ms": latest_scan.get("duration_ms"),
+            "selected_symbols": selected_symbols,
+        },
+        "rows": rows[:lim],
     }
 
 
@@ -46808,7 +46960,7 @@ def diagnostics_swing_submit_path_trace(symbols: str = "", limit: int = 12, heav
             payload["light_url_hint"] = "/diagnostics/swing_submit_path_trace"
         return JSONResponse(content=payload)
 
-    return JSONResponse(content=_p400_swing_submit_path_trace_light(
+    return JSONResponse(content=_p712b_swing_submit_path_trace_fast(
         symbols=symbols,
         limit=limit,
     ))

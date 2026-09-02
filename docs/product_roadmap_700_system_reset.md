@@ -601,7 +601,7 @@ Post-deploy endpoints:
 
 ### Patch 712A: Fast Validation Contract + Submit Truth Timeout Guard
 
-Status: applied locally; pending deploy verification.
+Status: deployed; improved endpoint completion but exposed remaining promotion/release-gate blocking in default diagnostics.
 
 Goal: keep the reduced-risk promotion truth visible during market hours without blocking on heavy candidate or submit-trace rebuilds.
 
@@ -635,6 +635,42 @@ Post-deploy endpoints:
 - `/diagnostics/selected_submission_truth_light?heavy=true`
 - `/diagnostics/swing_submit_path_trace?limit=10`
 - `/diagnostics/scanner_light`
+
+### Patch 712B: Promotion Contract Fast Short-Circuit + Submit Trace No-Blocking Fallback
+
+Status: applied locally; pending deploy verification.
+
+Goal: make validation and submit-truth diagnostics return immediately when reduced-risk promotion is disabled.
+
+Scope:
+
+- Short-circuit the Patch 712 promotion contract before daily-entry counting or release-gate checks when promotion is disabled.
+- Replace the default submit path trace with a compact no-blocking snapshot.
+- Keep the legacy/deep trace behind `heavy=true`.
+- Preserve scanner, submit, risk, and broker behavior unchanged.
+
+Expected outcome:
+
+- `/diagnostics/live_risk_validation_contract` is fast when promotion is disabled.
+- `/diagnostics/selected_submission_truth_light` remains fast and read-only.
+- `/diagnostics/executable_sizing_truth` remains fast and snapshot-first.
+- `/diagnostics/swing_submit_path_trace` cannot hang the operator checklist.
+
+Smoke tests:
+
+- Disabled promotion returns `promoted_live_disabled_fast_short_circuit`.
+- Fast submit trace reports `legacy_light_trace_retired_from_default`.
+- Fast endpoints avoid broker calls and candidate recomputation.
+- Heavy trace remains opt-in through `heavy=true`.
+
+Post-deploy endpoints:
+
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/executable_sizing_truth?limit=10`
+- `/diagnostics/selected_submission_truth_light`
+- `/diagnostics/swing_submit_path_trace?limit=10`
+- `/diagnostics/scanner_light`
+- `/diagnostics/live_positions_light`
 
 ### Patch 713: Replay-Passed Variant Registry + Strategy Capital Eligibility
 
