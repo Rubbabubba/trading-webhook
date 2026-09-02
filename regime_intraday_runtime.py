@@ -207,7 +207,8 @@ class RegimeIntradayRuntime:
         self._worker_authorize(body)
         days = max(30, min(252, int(body.get("calendar_days") or 180)))
         end = datetime.now(timezone.utc)
-        bars, fetch = fetch_minute_bars(["SPY", "QQQ"], start=end - timedelta(days=days), end=end, max_pages=30)
+        research_symbols = ["SPY", "QQQ", "IWM", "DIA"]
+        bars, fetch = fetch_minute_bars(research_symbols, start=end - timedelta(days=days), end=end, max_pages=40)
         regular = {symbol: [row for row in rows if is_regular_market_time(row["ts_ny"])] for symbol, rows in bars.items()}
         if fetch.get("error") or not all(regular.get(symbol) for symbol in ("SPY", "QQQ")):
             raise HTTPException(status_code=502, detail={"message": "historical bars unavailable", "fetch": fetch})
@@ -227,6 +228,8 @@ class RegimeIntradayRuntime:
             "spy_only": replay_sessions(regular, replace(cfg, trade_symbols=("SPY",), momentum_enabled=False, mean_reversion_enabled=True)),
             "qqq_only": replay_sessions(regular, replace(cfg, trade_symbols=("QQQ",), momentum_enabled=False, mean_reversion_enabled=True)),
             "spy_qqq_shared_limits": replay_sessions(regular, replace(cfg, trade_symbols=("SPY", "QQQ"), momentum_enabled=False, mean_reversion_enabled=True)),
+            "iwm_with_spy_confirmation": replay_sessions(regular, replace(cfg, symbols=("SPY", "IWM"), trade_symbols=("IWM",), momentum_enabled=False, mean_reversion_enabled=True)),
+            "dia_with_spy_confirmation": replay_sessions(regular, replace(cfg, symbols=("SPY", "DIA"), trade_symbols=("DIA",), momentum_enabled=False, mean_reversion_enabled=True)),
         }
         candidate_reports = {
             "trend_pullback": replay_sessions(regular, replace(cfg, trade_symbols=("SPY",), momentum_enabled=False, mean_reversion_enabled=False), evaluator=trend_pullback_candidate),

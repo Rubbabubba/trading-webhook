@@ -193,6 +193,23 @@ def paper_promotion_gate(
     }
 
 
+def daily_goal_feasibility(report: dict[str, Any], *, risk_dollars: float = 100.0, goals: tuple[float, ...] = (100.0, 200.0)) -> dict[str, Any]:
+    net = cost_adjusted_report(report, risk_dollars=risk_dollars, round_trip_cost_r=0.12)
+    average = float(net.get("average_daily_dollars") or 0)
+    drawdown_r = float(report.get("max_drawdown_r") or 0)
+    rows = []
+    for goal in goals:
+        scale = goal / average if average > 0 else None
+        required_risk = risk_dollars * scale if scale is not None else None
+        rows.append({
+            "daily_goal_dollars": goal,
+            "required_risk_per_trade_dollars": round(required_risk, 2) if required_risk is not None else None,
+            "projected_historical_drawdown_dollars": round(drawdown_r * required_risk, 2) if required_risk is not None else None,
+            "fits_current_100_dollar_trade_cap": bool(required_risk is not None and required_risk <= 100.0),
+        })
+    return {"current_risk_dollars": risk_dollars, "modeled_average_daily_dollars": net.get("average_daily_dollars"), "goals": rows}
+
+
 def validation_lab(*, baseline: dict[str, Any], walk_forward: dict[str, Any], instrument_reports: dict[str, dict[str, Any]], candidate_reports: dict[str, dict[str, Any]] | None = None, risk_dollars: float = 100.0) -> dict[str, Any]:
     costs = cost_stress(baseline, risk_dollars=risk_dollars)
     latency = latency_stress(baseline, risk_dollars=risk_dollars)
@@ -234,5 +251,6 @@ def validation_lab(*, baseline: dict[str, Any], walk_forward: dict[str, Any], in
         "latency_stress": latency,
         "parameter_stability": stability,
         "monte_carlo": monte,
+        "daily_goal_feasibility": daily_goal_feasibility(baseline, risk_dollars=risk_dollars),
         "gate": paper_promotion_gate(walk_forward=walk_forward, baseline=baseline, stability=stability, costs=costs, monte_carlo=monte),
     }

@@ -1,4 +1,4 @@
-from regime_intraday_validation import cost_stress, latency_stress, monte_carlo_daily, paper_fill_reconciliation, parameter_stability, validation_lab
+from regime_intraday_validation import cost_stress, daily_goal_feasibility, latency_stress, monte_carlo_daily, paper_fill_reconciliation, parameter_stability, validation_lab
 
 
 def _report(values):
@@ -61,3 +61,12 @@ def test_paper_fill_reconciliation_measures_actual_slippage_and_stays_locked():
     assert result["average_adverse_slippage_dollars"] == 4.0
     assert result["rows"][0]["actual_realized_dollars"] == 26.0
     assert result["rows"][0]["signal_to_submit_seconds"] == 30.0
+
+
+def test_daily_goal_feasibility_exposes_required_risk_instead_of_promising_income():
+    report = _report([0.5] * 10)
+    report["max_drawdown_r"] = 2.0
+    result = daily_goal_feasibility(report, risk_dollars=100)
+    assert result["modeled_average_daily_dollars"] == 38.0
+    assert result["goals"][0]["required_risk_per_trade_dollars"] == 263.16
+    assert result["goals"][0]["fits_current_100_dollar_trade_cap"] is False
