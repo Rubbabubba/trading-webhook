@@ -225,3 +225,31 @@ def test_paper_submit_recovers_order_after_transport_timeout(monkeypatch, tmp_pa
     assert result["result"]["recovered_after_transport_error"] is True
     saved = load_ledger(str(ledger_path))
     assert saved["orders"]["sig-timeout"]["order_id"] == "accepted-1"
+
+
+def test_live_market_scan_combines_spy_and_dia_paper_sleeves(monkeypatch, tmp_path):
+    now = datetime(2026, 9, 3, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+    monkeypatch.setenv("REGIME_INTRADAY_LEDGER_PATH", str(tmp_path / "ledger.json"))
+    monkeypatch.setenv("REGIME_INTRADAY_DIA_PAPER_ENABLED", "true")
+    monkeypatch.setenv("REGIME_INTRADAY_OPTION_CHAIN_ENABLED", "false")
+    monkeypatch.setattr(runtime_module, "now_ny", lambda: now)
+    monkeypatch.setattr(runtime_module, "is_regular_market_time", lambda *_args: True)
+    monkeypatch.setattr(runtime_module, "fetch_recent_minute_bars", lambda symbols: ({symbol: [{"ts_ny": now}] for symbol in symbols}, {"count": len(symbols)}))
+
+    def fake_evaluate(_bars, config):
+        symbol = config.trade_symbols[0]
+        return {
+            "ok": True,
+            "regime": {"name": "range"},
+            "signals": [{"signal_id": f"signal-{symbol}", "symbol": symbol, "strategy": "vwap_mean_reversion", "entry_price": 100, "stop_price": 99, "target_price": 102}],
+            "features": {item: {"price": 100} for item in config.symbols},
+            "config": {},
+        }
+
+    monkeypatch.setattr(runtime_module, "evaluate_regime_intraday", fake_evaluate)
+    result = RegimeIntradayRuntime().scan()
+
+    assert {row["symbol"] for row in result["signals"]} == {"SPY", "DIA"}
+    assert result["sleeves"]["spy_mean_reversion"]["execution"] == "paper"
+    assert result["sleeves"]["dia_mean_reversion"]["execution"] == "paper"
+    assert result["live_submission"] is False

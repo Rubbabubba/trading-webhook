@@ -66,6 +66,9 @@ class RegimeIntradayRuntime:
             option_target_delta_high=_float("REGIME_INTRADAY_OPTION_DELTA_HIGH", 0.70), option_max_spread_pct=_float("REGIME_INTRADAY_OPTION_MAX_SPREAD_PCT", 0.08),
         )
 
+    def dia_config(self) -> RegimeIntradayConfig:
+        return replace(self.config(), symbols=("SPY", "DIA"), trade_symbols=("DIA",), momentum_enabled=False, mean_reversion_enabled=True)
+
     @staticmethod
     def _paper_credentials() -> tuple[str, str]:
         return _env("ALPACA_PAPER_API_KEY_ID"), _env("ALPACA_PAPER_API_SECRET_KEY")
@@ -92,16 +95,31 @@ class RegimeIntradayRuntime:
     def scan(self) -> dict:
         timestamp = datetime.now(timezone.utc).isoformat()
         cfg = self.config()
+        dia_enabled = _bool("REGIME_INTRADAY_DIA_PAPER_ENABLED", True)
+        dia_cfg = self.dia_config()
         if _bool("ONLY_MARKET_HOURS", True) and not is_regular_market_time():
             self.last_scan = {"ok": True, "version": REGIME_INTRADAY_VERSION, "status": "skipped_outside_market_hours", "ts_utc": timestamp,
                               "paper_only": True, "live_submission": False, "symbols": list(cfg.symbols)}
             return self.last_scan
-        bars, fetch = fetch_recent_minute_bars(list(cfg.symbols))
+        requested_symbols = list(dict.fromkeys([*cfg.symbols, *(dia_cfg.symbols if dia_enabled else ())]))
+        bars, fetch = fetch_recent_minute_bars(requested_symbols)
         today = now_ny().date()
-        regular = {symbol: [row for row in bars.get(symbol, []) if row["ts_ny"].date() == today and is_regular_market_time(row["ts_ny"])] for symbol in cfg.symbols}
+        regular = {symbol: [row for row in bars.get(symbol, []) if row["ts_ny"].date() == today and is_regular_market_time(row["ts_ny"])] for symbol in requested_symbols}
         if fetch.get("error"):
             raise HTTPException(status_code=502, detail={"message": "market data unavailable", "fetch": fetch})
         payload = evaluate_regime_intraday(regular, cfg)
+        primary = payload
+        dia_scan = evaluate_regime_intraday(regular, dia_cfg) if dia_enabled else {"signals": [], "features": {}, "regime": {"name": "disabled"}}
+        payload = {
+            **primary,
+            "signals": [*list(primary.get("signals") or []), *list(dia_scan.get("signals") or [])],
+            "signal_count": len(list(primary.get("signals") or [])) + len(list(dia_scan.get("signals") or [])),
+            "features": {**dict(primary.get("features") or {}), "DIA": dict(dict(dia_scan.get("features") or {}).get("DIA") or {})},
+            "sleeves": {
+                "spy_mean_reversion": {"execution": "paper", "regime": primary.get("regime"), "signal_count": len(list(primary.get("signals") or []))},
+                "dia_mean_reversion": {"execution": "paper" if dia_enabled else "disabled", "regime": dia_scan.get("regime"), "signal_count": len(list(dia_scan.get("signals") or []))},
+            },
+        }
         payload.update({"status": "completed", "ts_utc": timestamp, "paper_only": True, "live_submission": False, "market_data": fetch})
         plans = []
         key = _env("APCA_API_KEY_ID") or self._paper_credentials()[0]

@@ -71,6 +71,7 @@ def health() -> dict:
         "paper_only": True, "live_trading_enabled": False, "live_submission": False,
         "systems": {"regime_intraday": {"status": "paper_validation", "broker_mode": "paper", "live_entries_enabled": False,
                     "regime_inputs": list(cfg.symbols), "trade_symbols": list(cfg.trade_symbols),
+                    "paper_sleeves": ["SPY", "DIA"] if os.getenv("REGIME_INTRADAY_DIA_PAPER_ENABLED", "true").lower() in {"1", "true", "yes", "on"} else ["SPY"],
                     "latest_regime": dict(runtime.last_scan.get("regime") or {}).get("name"),
                     "paper_order_count": dict(ledger.get("summary") or {}).get("paper_order_count", 0), "dashboard": "/dashboard/intraday"}},
     }
