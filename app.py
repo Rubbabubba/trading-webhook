@@ -3196,7 +3196,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-705-scanner-ownership-extraction"
+PATCH_VERSION = "patch-706-candidate-evaluation-ownership"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -44076,9 +44076,6 @@ def _p277h_current_scan_suppression_truth(limit: int = 50) -> dict:
     payload["non_actionable_candidate_cache_rejected"] = bool(payload.get("non_actionable_candidate_cache_rejected"))
     payload["effective_candidate_count"] = 0 if payload["non_actionable_candidate_cache_rejected"] else int(payload.get("candidate_count") or 0)
     payload["effective_eligible_count"] = 0 if payload["non_actionable_candidate_cache_rejected"] else int(payload.get("eligible_count") or 0)
-    payload["p484_candidate_eval_module"] = swing_candidate_eval_module_status(
-        patch_version=PATCH_VERSION
-    )
     payload = swing_candidate_eval_attach_status(payload, patch_version=PATCH_VERSION)
 
     if bool(payload["non_actionable_candidate_cache_rejected"]):
@@ -51109,6 +51106,10 @@ def _p298_scanner_light() -> dict:
         scan_summary=summary,
         in_flight_grace_sec=int(SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC),
         scan_runtime_budget_sec=int(SCAN_RUNTIME_BUDGET_SEC),
+    )
+    scanner_light_payload = swing_candidate_eval_attach_status(
+        scanner_light_payload,
+        patch_version=PATCH_VERSION,
     )
     return swing_scan_state_attach_scanner_light_contracts(
         patch_version=PATCH_VERSION,

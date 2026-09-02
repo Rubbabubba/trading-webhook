@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any, Callable
 
 
-SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-512-candidate-eval-hard-bypass-full-universe-terminal-publish"
+SWING_CANDIDATE_EVAL_MODULE_VERSION = "patch-706-candidate-evaluation-ownership"
 
 
 def _dedupe_keep_order(values: list[Any]) -> list[Any]:
@@ -1232,10 +1232,12 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
         "module": "swing_candidate_eval",
         "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
         "owns_runtime_state": False,
+        "owns_candidate_eval_contract": True,
+        "owns_candidate_eval_status_attachment": True,
         "broker_calls": False,
         "submits_orders": False,
         "app_globals_required": False,
-        "extraction_phase": "prep",
+        "extraction_phase": "candidate_evaluation_ownership",
         "responsibilities": [
             "candidate_eval_truth_shape",
             "candidate_eval_progress_publish_shape",
@@ -1264,15 +1266,71 @@ def candidate_eval_module_status(*, patch_version: str) -> dict:
             "candidate_eval_runner_boundary_shape",
             "candidate_eval_runner_scaffold_shape",
             "candidate_eval_runner_submission_loop_shape",
+            "candidate_eval_module_status_attachment",
+            "candidate_eval_ownership_contract_shape",
         ],
-        "next_extraction_target": "candidate_eval_runner_wait_loop_boundary_extraction",
+        "next_extraction_target": "move_candidate_row_evaluation_pipeline_behind_module_api",
+    }
+
+
+def build_candidate_eval_ownership_contract(*, patch_version: str, payload: dict | None) -> dict:
+    row = dict(payload or {})
+    latest_scan = dict(row.get("latest_scan") or {})
+    incremental = dict(row.get("incremental_scan") or latest_scan.get("incremental_scan") or {})
+    evaluation = dict(incremental.get("evaluation") or {})
+    candidate_count = (
+        row.get("candidate_count")
+        or row.get("candidates_total")
+        or latest_scan.get("candidate_count")
+        or latest_scan.get("candidates_total")
+        or 0
+    )
+    selected_symbols = list(
+        row.get("selected_symbols")
+        or latest_scan.get("selected_symbols")
+        or []
+    )
+    evaluated_count = (
+        row.get("symbols_eval_total")
+        or latest_scan.get("symbols_eval_total")
+        or evaluation.get("evaluated_count")
+        or 0
+    )
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "module": "swing_candidate_eval",
+        "module_version": SWING_CANDIDATE_EVAL_MODULE_VERSION,
+        "candidate_eval_owner": "swing_candidate_eval",
+        "scanner_route_owner": "app.py",
+        "scanner_runtime_owner": "app.py",
+        "broker_calls": False,
+        "submits_orders": False,
+        "fetches_market_data": False,
+        "route_adapter_only": True,
+        "evaluated_count": int(evaluated_count or 0),
+        "candidate_count": int(candidate_count or 0),
+        "selected_count": len(selected_symbols),
+        "selected_symbols": [
+            str(symbol or "").strip().upper()
+            for symbol in selected_symbols
+            if str(symbol or "").strip()
+        ],
+        "candidate_truth_phase": row.get("scan_truth_phase") or latest_scan.get("scan_truth_phase"),
+        "trade_judgable": bool(row.get("trade_judgable") or latest_scan.get("trade_judgable")),
+        "extraction_phase": "candidate_eval_contract_owned_by_swing_candidate_eval",
+        "next_extraction_target": "move_candidate_row_evaluation_pipeline_behind_module_api",
     }
 
 
 def attach_candidate_eval_module_status(payload: dict | None, *, patch_version: str) -> dict:
     out = dict(payload or {})
     out["swing_candidate_eval_module_version"] = SWING_CANDIDATE_EVAL_MODULE_VERSION
-    out["swing_candidate_eval_module_status"] = candidate_eval_module_status(
-        patch_version=patch_version
+    module_status = candidate_eval_module_status(patch_version=patch_version)
+    out["swing_candidate_eval_module_status"] = module_status
+    out["p484_candidate_eval_module"] = dict(module_status)
+    out["p706_candidate_eval_ownership_contract"] = build_candidate_eval_ownership_contract(
+        patch_version=patch_version,
+        payload=out,
     )
     return out
