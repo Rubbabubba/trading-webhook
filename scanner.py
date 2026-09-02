@@ -38,6 +38,11 @@ def resolve_regime_intraday_url(base_url: str) -> str:
     explicit = (os.getenv("REGIME_INTRADAY_SCAN_URL") or "").strip()
     return explicit or f"{base_url.rstrip('/')}/worker/regime_intraday_scan"
 
+
+def resolve_regime_intraday_reconcile_url(base_url: str) -> str:
+    explicit = (os.getenv("REGIME_INTRADAY_RECONCILE_URL") or "").strip()
+    return explicit or f"{base_url.rstrip('/')}/worker/regime_intraday_paper_reconcile"
+
 def post_json(url: str, payload: dict, timeout: int, user_agent: str = "equities-scanner/1.0") -> tuple[int, str]:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json", "User-Agent": user_agent, "X-Scanner-Source": "worker"})
@@ -191,6 +196,7 @@ def main() -> None:
     base_url = resolve_base_url(url)
     heartbeat_url = f"{base_url}/worker/scanner_heartbeat"
     regime_intraday_url = resolve_regime_intraday_url(base_url)
+    regime_intraday_reconcile_url = resolve_regime_intraday_reconcile_url(base_url)
     health_url = f"{base_url}/"
     interval = getenv_int("SCAN_INTERVAL_SEC", getenv_int("SWING_SCAN_INTERVAL_SEC", 3600))
     timeout = getenv_int("SCAN_TIMEOUT_SEC", 60)
@@ -305,6 +311,17 @@ def main() -> None:
                             # The isolated sleeve must never break the production
                             # swing scanner while it is proving itself.
                             log(f"regime_intraday_dispatch_error err={regime_error!r}")
+                        try:
+                            reconcile_status, reconcile_body = post_json(
+                                regime_intraday_reconcile_url,
+                                {"worker_secret": worker_secret} if worker_secret else {},
+                                timeout=min(timeout, getenv_int("REGIME_INTRADAY_RECONCILE_TIMEOUT_SEC", 45)),
+                                user_agent="equities-scanner/regime-intraday-reconcile",
+                            )
+                            reconcile_payload = json.loads(reconcile_body or "{}")
+                            log(f"regime_intraday_reconcile_ok status={reconcile_status} refreshed={len(reconcile_payload.get('refreshed') or [])}")
+                        except Exception as reconcile_error:
+                            log(f"regime_intraday_reconcile_error err={reconcile_error!r}")
                     body_prefix = brief_body(body, 1000)
                     catchup_sleep_sec = market_open_catchup_sleep_sec(body, interval)
                     fast_recheck_sleep_sec = fast_no_trade_recheck_sleep_sec(body, interval)

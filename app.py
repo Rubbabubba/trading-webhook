@@ -115,7 +115,7 @@ from regime_intraday_options import fetch_option_chain, select_debit_spread, spr
 from regime_intraday_executor import cancel_order as cancel_regime_intraday_order, get_order as get_regime_intraday_order, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot as regime_intraday_readiness_snapshot
 from regime_intraday_replay import replay_sessions as replay_regime_intraday_sessions, threshold_sensitivity as regime_intraday_threshold_sensitivity, walk_forward as regime_intraday_walk_forward
-from regime_intraday_email import send_signal_email as send_regime_intraday_signal_email
+from regime_intraday_email import send_exit_email as send_regime_intraday_exit_email, send_signal_email as send_regime_intraday_signal_email
 from swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
     initial_eval_truth as swing_candidate_eval_initial_truth,
@@ -60723,12 +60723,25 @@ def worker_regime_intraday_paper_reconcile(body: dict = Body(default={})):
     paper_key = getenv_any("ALPACA_PAPER_API_KEY_ID", default="").strip()
     paper_secret = getenv_any("ALPACA_PAPER_API_SECRET_KEY", default="").strip()
     ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+    exit_alerted = {str(event.get("signal_id") or "") for event in list(ledger.get("events") or []) if event.get("event") == "paper_exit_email_sent"}
     refreshed = []
     for signal_id, record in dict(ledger.get("orders") or {}).items():
         order_id = str(record.get("order_id") or "")
         if not order_id:
             continue
         try:
+            close_order_id = str(dict(record.get("close_order") or {}).get("order_id") or "")
+            if close_order_id:
+                close_broker = get_regime_intraday_order(paper_key, paper_secret, close_order_id, paper=True)
+                close_status = str(close_broker.get("status") or "").lower()
+                record.setdefault("close_order", {}).update({"status": close_status, "broker": close_broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
+                if close_status == "filled":
+                    record["status"] = "filled_closed"
+                    record["closed_at"] = close_broker.get("filled_at") or datetime.now(timezone.utc).isoformat()
+                else:
+                    record["status"] = "close_submitted"
+                refreshed.append({"signal_id": signal_id, "order_id": close_order_id, "status": record["status"], "action": "close"})
+                continue
             broker = get_regime_intraday_order(paper_key, paper_secret, order_id, paper=True)
             record.update({"status": broker.get("status"), "broker": broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
             status = str(broker.get("status") or "").lower()
@@ -60758,6 +60771,21 @@ def worker_regime_intraday_paper_reconcile(body: dict = Body(default={})):
                         take_profit_fraction=getenv_float_any("REGIME_INTRADAY_TAKE_PROFIT_FRACTION", default=0.50),
                         stop_loss_fraction=getenv_float_any("REGIME_INTRADAY_STOP_LOSS_FRACTION", default=0.50),
                     )
+                    if record["exit_decision"].get("exit") and signal_id not in exit_alerted:
+                        try:
+                            alert = send_regime_intraday_exit_email(
+                                api_key=getenv_any("RESEND_API_KEY", default="").strip() if env_bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", "true") else "",
+                                to_email=getenv_any("REGIME_INTRADAY_ALERT_EMAIL_TO", default="").strip(),
+                                from_email=getenv_any("REGIME_INTRADAY_ALERT_EMAIL_FROM", default="Trading System <onboarding@resend.dev>").strip(),
+                                signal_id=signal_id,
+                                record=record,
+                            )
+                            record["exit_email"] = alert
+                            if alert.get("sent"):
+                                ledger.setdefault("events", []).append({"event": "paper_exit_email_sent", "signal_id": signal_id, "message_id": alert.get("message_id"), "reason": record["exit_decision"].get("reason"), "ts_utc": datetime.now(timezone.utc).isoformat()})
+                                exit_alerted.add(signal_id)
+                        except Exception as alert_error:
+                            record["exit_email"] = {"sent": False, "reason": "provider_error", "detail": str(alert_error)[:200]}
             refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": broker.get("status")})
         except Exception as exc:
             refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": "reconcile_error", "detail": str(exc)[:200]})

@@ -1,4 +1,4 @@
-from regime_intraday_email import build_signal_email, send_signal_email
+from regime_intraday_email import build_exit_email, build_signal_email, send_signal_email
 
 
 def test_email_contains_actionable_risk_and_never_claims_submission():
@@ -12,3 +12,11 @@ def test_email_contains_actionable_risk_and_never_claims_submission():
 
 def test_missing_email_configuration_is_safe_noop():
     assert send_signal_email(api_key="", to_email="", from_email="", signal={}, plan={}) == {"sent": False, "reason": "email_not_configured"}
+
+
+def test_exit_email_is_actionable_and_does_not_claim_a_close():
+    record = {"plan": {"underlying": "SPY", "limit_debit": 0.40}, "valuation": {"liquidation_credit": 0.61, "unrealized_dollars": 21}, "exit_decision": {"exit": True, "reason": "take_profit"}}
+    message = build_exit_email("sig-1", record)
+    assert "take_profit" in message["subject"]
+    assert "$21.00" in message["text"]
+    assert "No close order has been sent" in message["text"]
