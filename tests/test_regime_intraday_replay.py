@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import regime_intraday_replay as replay_module
-from regime_intraday_replay import _outcome, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, rolling_mean_reversion_walk_forward, split_sessions, walk_forward
+from regime_intraday_replay import _outcome, chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, rolling_mean_reversion_walk_forward, split_sessions, walk_forward
 from regime_intraday import RegimeIntradayConfig
 
 
@@ -117,3 +117,21 @@ def test_rolling_walk_forward_uses_non_overlapping_test_windows(monkeypatch):
     assert result["fold_count"] == 2
     assert result["positive_fold_fraction"] == 1.0
     assert observed[0][-3:] != observed[1][-3:]
+
+
+def test_chronological_holdout_freezes_parameters_and_stresses_test_costs(monkeypatch):
+    first = datetime(2026, 7, 1, 14, 30, tzinfo=timezone.utc)
+    bars = {symbol: [_row(first + timedelta(days=day), 100, 101, 99, 100) for day in range(10)] for symbol in ("SPY", "DIA")}
+
+    def fake_replay(candidate_bars, config, **_kwargs):
+        count = len(candidate_bars["SPY"])
+        return {"accepted_session_count": count, "trade_count": count, "max_drawdown_r": 1.0, "trades": [{"session": str(index), "realized_r": 0.5} for index in range(count)]}
+
+    monkeypatch.setattr(replay_module, "replay_sessions", fake_replay)
+    config = RegimeIntradayConfig(symbols=("SPY", "DIA"), trade_symbols=("DIA",))
+    result = chronological_holdout(bars, config)
+    assert result["train_sessions"] == 7
+    assert result["test_sessions"] == 3
+    assert result["parameters_frozen"] is True
+    assert result["test"]["cost_012"]["net_average_r"] == 0.38
+    assert result["test"]["cost_030"]["net_average_r"] == 0.2

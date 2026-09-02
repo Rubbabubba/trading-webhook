@@ -282,3 +282,31 @@ def rolling_mean_reversion_walk_forward(
         "positive_fold_fraction": round(len(positive) / len(ready_folds), 4) if ready_folds else None,
         "folds": folds,
     }
+
+
+def chronological_holdout(
+    bars_by_symbol: dict[str, list[dict]],
+    config: RegimeIntradayConfig,
+    *,
+    train_fraction: float = 0.7,
+    risk_dollars: float = 100.0,
+) -> dict[str, Any]:
+    """Evaluate frozen parameters on an untouched chronological final segment."""
+    dates = sorted(split_sessions(bars_by_symbol, config.symbols))
+    cut = max(1, min(len(dates) - 1, int(len(dates) * train_fraction))) if len(dates) > 1 else len(dates)
+
+    def run(chosen: set[str]) -> dict[str, Any]:
+        subset = {symbol: [row for row in bars_by_symbol.get(symbol, []) if _dt(row).date().isoformat() in chosen] for symbol in config.symbols}
+        raw = replay_sessions(subset, config)
+        return {key: value for key, value in raw.items() if key != "trades"} | {
+            "cost_012": cost_adjusted_report(raw, risk_dollars=risk_dollars, round_trip_cost_r=0.12),
+            "cost_030": cost_adjusted_report(raw, risk_dollars=risk_dollars, round_trip_cost_r=0.30),
+        }
+
+    return {
+        "train_sessions": cut,
+        "test_sessions": len(dates) - cut,
+        "parameters_frozen": True,
+        "train": run(set(dates[:cut])),
+        "test": run(set(dates[cut:])),
+    }

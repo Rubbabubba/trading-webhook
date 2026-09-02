@@ -94,12 +94,14 @@ def main() -> None:
                 candidate_net = {name: dict(report.get("ordinary_cost") or {}).get("net_average_r") for name, report in candidates.items()}
                 feasibility = dict(lab.get("daily_goal_feasibility") or {})
                 goal_risk = {str(row.get("daily_goal_dollars")): row.get("required_risk_per_trade_dollars") for row in list(feasibility.get("goals") or [])}
+                dia_test = dict(dict(lab.get("dia_fixed_holdout") or {}).get("test") or {})
                 _log(
                     f"after_hours_validation paper_pass={gate.get('paper_validation_pass')} promotion_locked={gate.get('promotion_locked')} "
                     f"blockers={json.dumps(gate.get('blockers') or [], separators=(',', ':'))} "
                     f"instrument_net_avg_r={json.dumps(instrument_net, separators=(',', ':'))} "
                     f"candidate_net_avg_r={json.dumps(candidate_net, separators=(',', ':'))} "
                     f"goal_required_risk={json.dumps(goal_risk, separators=(',', ':'))} "
+                    f"dia_test_trades={dia_test.get('trade_count')} dia_test_net_012={dict(dia_test.get('cost_012') or {}).get('net_average_r')} dia_test_net_030={dict(dia_test.get('cost_030') or {}).get('net_average_r')} "
                     f"cost_050_net_avg_r={dict((lab.get('cost_stress') or [{}])[-1]).get('net_average_r')} "
                     f"monte_loss_probability={dict(lab.get('monte_carlo') or {}).get('probability_negative_total')}"
                 )
