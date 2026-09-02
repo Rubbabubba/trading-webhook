@@ -112,8 +112,9 @@ from regime_intraday import (
 )
 from regime_intraday_ledger import load_ledger as load_regime_intraday_ledger, paper_submission_decision, record_broker_order, save_ledger as save_regime_intraday_ledger, update_ledger as update_regime_intraday_ledger
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
-from regime_intraday_executor import cancel_order as cancel_regime_intraday_order, get_order as get_regime_intraday_order, submit_mleg_limit_order
+from regime_intraday_executor import cancel_order as cancel_regime_intraday_order, get_order as get_regime_intraday_order, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot as regime_intraday_readiness_snapshot
+from regime_intraday_replay import replay_sessions as replay_regime_intraday_sessions, threshold_sensitivity as regime_intraday_threshold_sensitivity, walk_forward as regime_intraday_walk_forward
 from swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
     initial_eval_truth as swing_candidate_eval_initial_truth,
@@ -412,6 +413,37 @@ def _fetch_bars_via_rest(symbols: list[str], start: datetime, end: datetime, fee
         debug["count"] = sum(len(v) for v in out.values())
     except Exception as e:
         debug["error"] = str(e)
+    return out, debug
+
+
+def _fetch_bars_via_rest_paginated(symbols: list[str], start: datetime, end: datetime, feed_override=None, max_pages: int = 12) -> tuple[dict[str, list[dict]], dict]:
+    """Fetch enough one-minute history for replay without silently truncating at one page."""
+    symbols = [s.strip().upper() for s in (symbols or []) if s and s.strip()]
+    out: dict[str, list[dict]] = {s: [] for s in symbols}
+    debug = {"method": "rest_paginated", "feed": str(feed_override or DATA_FEED), "start": _iso_utc(start), "end": _iso_utc(end), "pages": 0, "count": 0}
+    token = None
+    try:
+        for _ in range(max(1, min(50, int(max_pages)))):
+            params = {"symbols": ",".join(symbols), "timeframe": "1Min", "start": _iso_utc(start), "end": _iso_utc(end), "limit": "10000", "adjustment": str(DATA_ADJUSTMENT_RAW), "feed": str(feed_override or _DATA_FEED_RAW), "sort": "asc"}
+            if token:
+                params["page_token"] = token
+            req = UrlRequest(f"{_alpaca_data_base_url()}/v2/stocks/bars?{urlencode(params)}", headers={"APCA-API-KEY-ID": APCA_KEY, "APCA-API-SECRET-KEY": APCA_SECRET, "accept": "application/json", "user-agent": "trading-webhook/regime-replay"})
+            with urlopen(req, timeout=30) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            for sym, seq in dict(payload.get("bars") or {}).items():
+                for bar in seq or []:
+                    ts_utc = _parse_bar_ts((bar or {}).get("t"))
+                    row = _normalize_bar_row(ts_utc, {"open": bar.get("o"), "high": bar.get("h"), "low": bar.get("l"), "close": bar.get("c"), "volume": bar.get("v"), "vwap": bar.get("vw")}) if ts_utc else None
+                    if row:
+                        out.setdefault(str(sym).upper(), []).append(row)
+            debug["pages"] += 1
+            token = payload.get("next_page_token")
+            if not token:
+                break
+        debug["truncated"] = bool(token)
+        debug["count"] = sum(len(rows) for rows in out.values())
+    except Exception as exc:
+        debug["error"] = str(exc)[:300]
     return out, debug
 
 def _fetch_latest_quotes_via_rest(symbols: list[str]) -> tuple[dict[str, dict], dict]:
@@ -60556,6 +60588,29 @@ def diagnostics_regime_intraday_readiness(request: Request):
     }
 
 
+@app.post("/diagnostics/regime_intraday_replay")
+def diagnostics_regime_intraday_replay(request: Request, body: dict = Body(default={})):
+    """Run an exact-signal, no-lookahead underlying replay; never sends an order."""
+    require_admin_if_configured(request)
+    calendar_days = max(7, min(60, int(body.get("calendar_days") or 28)))
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=calendar_days)
+    bars, fetch = _fetch_bars_via_rest_paginated(["SPY", "QQQ"], start, end, feed_override=body.get("feed") or None)
+    regular = {}
+    for symbol, rows in bars.items():
+        regular[symbol] = [row for row in rows if (lambda stamp: bool(stamp and MARKET_OPEN <= stamp.time() <= MARKET_CLOSE))(_coerce_dt_ny(row.get("ts_ny")))]
+    if fetch.get("error") or not all(regular.get(symbol) for symbol in ("SPY", "QQQ")):
+        raise HTTPException(status_code=502, detail={"message": "historical bars unavailable", "fetch": fetch})
+    cfg = _regime_intraday_config()
+    baseline = replay_regime_intraday_sessions(regular, cfg, max_trades_per_day=max(1, getenv_int_any("REGIME_INTRADAY_MAX_TRADES_PER_DAY", default=2)))
+    result = {"ok": True, "mode": "historical_underlying_no_order_transport", "fetch": fetch, "baseline": baseline}
+    if bool(body.get("sensitivity")):
+        result["sensitivity"] = regime_intraday_threshold_sensitivity(regular, cfg)[:20]
+    if bool(body.get("walk_forward")):
+        result["walk_forward"] = regime_intraday_walk_forward(regular, cfg)
+    return result
+
+
 @app.post("/worker/regime_intraday_scan")
 def worker_regime_intraday_scan(body: dict = Body(default={})):
     if WORKER_SECRET:
@@ -60657,6 +60712,41 @@ def worker_regime_intraday_paper_reconcile(body: dict = Body(default={})):
             refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": "reconcile_error", "detail": str(exc)[:200]})
     save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
     return {"ok": True, "refreshed": refreshed, "live_submission": False, "automatic_exit_submission": False}
+
+
+@app.post("/worker/regime_intraday_paper_close")
+def worker_regime_intraday_paper_close(body: dict = Body(default={})):
+    """Close one filled paper spread only after a fresh exit decision and explicit confirmation."""
+    if WORKER_SECRET and str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
+        raise HTTPException(status_code=401, detail="invalid worker secret")
+    if str(body.get("confirm") or "") != "SUBMIT_PAPER_CLOSE":
+        raise HTTPException(status_code=409, detail="explicit paper-close confirmation is required")
+    signal_id = str(body.get("signal_id") or "").strip()
+    ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+    record = dict(dict(ledger.get("orders") or {}).get(signal_id) or {})
+    if str(record.get("status") or "").lower() != "filled" or not isinstance(record.get("plan"), dict):
+        raise HTTPException(status_code=409, detail="a filled recorded paper spread is required")
+    decision = dict(record.get("exit_decision") or {})
+    valuation = dict(record.get("valuation") or {})
+    if not decision.get("exit"):
+        raise HTTPException(status_code=409, detail="latest reconciliation does not require an exit")
+    if record.get("close_order"):
+        raise HTTPException(status_code=409, detail="a close order is already recorded")
+    credit = float(valuation.get("liquidation_credit") or 0.0)
+    if credit <= 0:
+        raise HTTPException(status_code=409, detail="no positive executable closing credit is available")
+    paper_key = getenv_any("ALPACA_PAPER_API_KEY_ID", default="").strip()
+    paper_secret = getenv_any("ALPACA_PAPER_API_SECRET_KEY", default="").strip()
+    try:
+        close = submit_mleg_close_order(paper_key, paper_secret, dict(record["plan"]), credit, paper=True, live_enabled=False)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"paper close rejected: {str(exc)[:300]}") from exc
+    record["close_order"] = {**close, "reason": decision.get("reason"), "requested_at": datetime.now(timezone.utc).isoformat()}
+    record["status"] = "close_submitted"
+    ledger.setdefault("orders", {})[signal_id] = record
+    ledger.setdefault("events", []).append({"event": "paper_close_recorded", "signal_id": signal_id, "order_id": close.get("order_id"), "ts_utc": datetime.now(timezone.utc).isoformat()})
+    save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
+    return {"ok": True, "mode": "alpaca_paper_close", "signal_id": signal_id, "result": close, "live_submission": False}
 
 
 @app.get("/diagnostics/intraday_shadow")

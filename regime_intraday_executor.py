@@ -82,6 +82,33 @@ def submit_mleg_limit_order(
     return {"submitted": True, "paper": bool(paper), "order_id": result.get("id"), "status": result.get("status"), "symbol": result.get("symbol"), "order_class": result.get("order_class")}
 
 
+def submit_mleg_close_order(
+    api_key: str,
+    api_secret: str,
+    plan: dict[str, Any],
+    limit_credit: float,
+    *,
+    paper: bool,
+    live_enabled: bool = False,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    if not api_key or not api_secret:
+        raise ValueError("Alpaca credentials are required")
+    if not paper and not live_enabled:
+        raise PermissionError("live regime-intraday close gate is closed")
+    payload = build_mleg_close_order(plan, limit_credit)
+    base = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
+    request = Request(
+        f"{base}/v2/orders",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+    )
+    with urlopen(request, timeout=timeout) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    return {"submitted": True, "paper": bool(paper), "order_id": result.get("id"), "status": result.get("status"), "order_class": result.get("order_class"), "action": "close"}
+
+
 def get_order(api_key: str, api_secret: str, order_id: str, *, paper: bool = True, timeout: int = 20) -> dict[str, Any]:
     base = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
     request = Request(f"{base}/v2/orders/{order_id}?nested=true", headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret})

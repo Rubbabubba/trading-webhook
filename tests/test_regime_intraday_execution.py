@@ -2,8 +2,16 @@ from datetime import date
 
 from regime_intraday_ledger import empty_ledger, paper_submission_decision, record_broker_order, update_ledger
 from regime_intraday_options import parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
-from regime_intraday_executor import build_mleg_limit_order, submit_mleg_limit_order
+from regime_intraday_executor import build_mleg_close_order, build_mleg_limit_order, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot
+
+
+def test_close_order_reverses_both_legs_and_uses_credit_price():
+    plan = {"legs": [{"symbol": "SPY260918C00500000", "side": "buy"}, {"symbol": "SPY260918C00501000", "side": "sell"}]}
+    payload = build_mleg_close_order(plan, 0.42)
+    assert payload["limit_price"] == "-0.42"
+    assert [leg["side"] for leg in payload["legs"]] == ["sell", "buy"]
+    assert [leg["position_intent"] for leg in payload["legs"]] == ["sell_to_close", "buy_to_close"]
 
 
 def _snapshot(bid, ask, delta):
@@ -87,6 +95,20 @@ def test_durable_signal_order_deduplication():
     decision = paper_submission_decision(ledger, "sig-1", session="2026-09-02")
     assert decision["allowed"] is False
     assert decision["reason"] == "duplicate_signal_order"
+
+
+def test_paper_lifecycle_locks_active_order_daily_limit_and_loss_streak():
+    active = empty_ledger()
+    record_broker_order(active, "sig-1", {"order_id": "order-1", "status": "partially_filled"}, ts_utc="2026-09-02T15:00:00+00:00")
+    assert paper_submission_decision(active, "sig-2", session="2026-09-02")["reason"] == "active_paper_order_or_position"
+
+    daily = empty_ledger()
+    daily["orders"] = {"a": {"session": "2026-09-02", "status": "canceled"}, "b": {"session": "2026-09-02", "status": "rejected"}}
+    assert paper_submission_decision(daily, "sig-3", session="2026-09-02", max_trades_per_day=2)["reason"] == "daily_trade_limit"
+
+    losses = empty_ledger()
+    losses["closed"] = [{"session": "2026-09-02", "realized_dollars": -10}, {"session": "2026-09-02", "realized_dollars": -5}]
+    assert paper_submission_decision(losses, "sig-4", session="2026-09-02", max_consecutive_losses=2)["reason"] == "consecutive_loss_lock"
 
 
 def test_live_readiness_requires_opra_and_closed_paper_roundtrip():

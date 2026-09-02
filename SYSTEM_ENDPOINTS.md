@@ -251,5 +251,7 @@ https://trading-webhook-q4d5.onrender.com/worker/scan_entries
 https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_scan
 https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_roundtrip
 https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_reconcile
+https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_close
+https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_replay
 https://trading-webhook-q4d5.onrender.com/worker/scanner_heartbeat
 https://trading-webhook-q4d5.onrender.com/worker/swing_fast_scan
