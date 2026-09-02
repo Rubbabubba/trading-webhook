@@ -38,7 +38,9 @@ Keep its seven service-specific values:
 ## Scanner worker: `equities-scanner`
 
 Keep its existing worker variables until the scanner-only defaults are moved
-into `scanner.py`. Do not remove `MAIN_SERVICE_URL` or `WORKER_SECRET`.
+into the applicable isolated worker. Do not remove `MAIN_SERVICE_URL` or `WORKER_SECRET`.
+
+The new regime-intraday scheduler must run `python regime_intraday_worker.py`. The legacy swing scanner may temporarily run `python scanner.py`, and the legacy exit manager may temporarily run `python worker.py`. Do not use the legacy scanner as the scheduler for regime-intraday scans.
 
 ## Safe migration order
 

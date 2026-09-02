@@ -5,8 +5,9 @@ This project is being cleaned up from a single-file prototype into two clearly s
 ## Runtime Entry Points
 
 - `app.py` - FastAPI application shell, routes, compatibility wrappers, and legacy runtime glue.
-- `scanner.py` - scanner service entry point.
-- `worker.py` - background worker entry point.
+- `regime_intraday_worker.py` - dedicated scheduler for new-system scans and paper reconciliation only.
+- `scanner.py` - temporary compatibility entry point for `legacy_swing/scanner.py` while the Render swing scanner is retired.
+- `worker.py` - temporary compatibility entry point for `legacy_swing/worker.py` while existing swing positions still require exit management.
 
 ## Swing Modules
 

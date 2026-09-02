@@ -26,3 +26,17 @@ def test_regime_intraday_modules_do_not_import_legacy_swing_or_app():
 def test_legacy_swing_is_confined_to_package():
     assert not list(ROOT.glob("swing_*.py"))
     assert (ROOT / "legacy_swing" / "__init__.py").exists()
+
+
+def test_legacy_swing_workers_do_not_dispatch_regime_intraday():
+    scanner = (ROOT / "legacy_swing" / "scanner.py").read_text(encoding="utf-8")
+    worker = (ROOT / "legacy_swing" / "worker.py").read_text(encoding="utf-8")
+    assert "regime_intraday" not in scanner
+    assert "regime_intraday" not in worker
+
+
+def test_regime_worker_cannot_call_swing_routes():
+    worker = (ROOT / "regime_intraday_worker.py").read_text(encoding="utf-8")
+    assert "/worker/scan_entries" not in worker
+    assert "/worker/exit" not in worker
+    assert "/worker/regime_intraday_scan" in worker
