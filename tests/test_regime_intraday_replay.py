@@ -4,11 +4,12 @@ from regime_intraday_replay import _outcome, cost_adjusted_report, replay_sessio
 
 
 def test_cost_adjusted_report_tracks_daily_goal_rates():
-    report = {"trades": [{"session": "2026-01-02", "realized_r": 2.0}, {"session": "2026-01-03", "realized_r": -1.0}]}
+    report = {"accepted_session_count": 4, "trades": [{"session": "2026-01-02", "realized_r": 2.0}, {"session": "2026-01-03", "realized_r": -1.0}]}
     result = cost_adjusted_report(report, risk_dollars=100, round_trip_cost_r=0.1)
     assert result["net_total_dollars"] == 80.0
     assert result["days_at_or_above_100"] == 1
-    assert result["daily_goal_100_rate"] == 0.5
+    assert result["daily_goal_100_rate"] == 0.25
+    assert result["average_daily_dollars"] == 20.0
 
 
 def _row(ts, o, h, low, close, volume=1000):

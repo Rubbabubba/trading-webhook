@@ -157,14 +157,17 @@ def cost_adjusted_report(report: dict[str, Any], *, risk_dollars: float = 100.0,
     for row, value in zip(trades, net_r):
         session = str(row.get("session") or "unknown")
         daily[session] = daily.get(session, 0.0) + value * float(risk_dollars)
+    observed_sessions = max(int(report.get("accepted_session_count") or report.get("session_count") or 0), len(daily))
     values = list(daily.values())
     return {
         "trade_count": len(trades), "risk_dollars": float(risk_dollars), "round_trip_cost_r": float(round_trip_cost_r),
         "net_total_r": round(sum(net_r), 4), "net_average_r": round(fmean(net_r), 4) if net_r else None,
-        "net_total_dollars": round(sum(net_r) * float(risk_dollars), 2), "average_daily_dollars": round(fmean(values), 2) if values else None,
+        "net_total_dollars": round(sum(net_r) * float(risk_dollars), 2),
+        "average_daily_dollars": round(sum(values) / observed_sessions, 2) if observed_sessions else None,
         "days_at_or_above_100": sum(value >= 100 for value in values), "days_at_or_above_200": sum(value >= 200 for value in values),
-        "trading_days": len(values), "daily_goal_100_rate": round(sum(value >= 100 for value in values) / len(values), 4) if values else None,
-        "daily_goal_200_rate": round(sum(value >= 200 for value in values) / len(values), 4) if values else None,
+        "observed_sessions": observed_sessions, "days_with_trades": len(values),
+        "daily_goal_100_rate": round(sum(value >= 100 for value in values) / observed_sessions, 4) if observed_sessions else None,
+        "daily_goal_200_rate": round(sum(value >= 200 for value in values) / observed_sessions, 4) if observed_sessions else None,
         "daily_net_dollars": daily,
     }
 
