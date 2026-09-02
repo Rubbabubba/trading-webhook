@@ -214,6 +214,7 @@ from market_clock import (
 )
 from swing_performance_reports import (
     SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+    attach_performance_reporting_contracts as swing_perf_attach_contracts,
     build_broker_fills_only_trade_ledger as swing_perf_build_broker_fills_only_trade_ledger,
     build_broker_reconciled_strategy_attribution_report as swing_perf_build_broker_reconciled_strategy_attribution_report,
     build_capital_rotation_readiness_audit as swing_perf_build_capital_rotation_readiness_audit,
@@ -3197,7 +3198,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-708-exit-protection-ownership-extraction"
+PATCH_VERSION = "patch-709-performance-reporting-ownership-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -20602,8 +20603,12 @@ def _p442_broker_reconciled_strategy_attribution_report(limit: int = 20, refresh
         breakout_dollar_risk_max_dollars=float(SWING_BREAKOUT_DOLLAR_RISK_MAX_DOLLARS or 0.0),
         limit=limit,
     )
-    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
-    return payload
+    return swing_perf_attach_contracts(
+        payload,
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/broker_reconciled_strategy_attribution",
+        report_kind="broker_reconciled_strategy_attribution_report",
+    )
 
 
 def _p655_broker_reconciled_strategy_attribution_snapshot(limit: int = 20, refresh: bool = False) -> dict:
@@ -20636,7 +20641,12 @@ def _p655_broker_reconciled_strategy_attribution_snapshot(limit: int = 20, refre
             "explicit_refresh_endpoint": "/diagnostics/broker_reconciled_strategy_attribution?refresh=true&limit=20",
         })
         cached["recommended_action"] = cached.get("recommended_action") or "use_cached_broker_attribution_for_operator_review"
-        return cached
+        return swing_perf_attach_contracts(
+            cached,
+            patch_version=PATCH_VERSION,
+            source_endpoint="/diagnostics/broker_reconciled_strategy_attribution",
+            report_kind="broker_reconciled_strategy_attribution_cached_snapshot",
+        )
 
     rows = _p655_in_memory_broker_reconciled_rows()
     payload = swing_perf_build_broker_reconciled_strategy_attribution_report(
@@ -20662,8 +20672,12 @@ def _p655_broker_reconciled_strategy_attribution_snapshot(limit: int = 20, refre
         "changes_exit_behavior": False,
         "does_not_submit_orders": True,
     }
-    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
-    return payload
+    return swing_perf_attach_contracts(
+        payload,
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/broker_reconciled_strategy_attribution",
+        report_kind="broker_reconciled_strategy_attribution_snapshot",
+    )
 
 def _sync_broker_realized_rows_to_strategy_performance(broker_realized: dict | None) -> dict:
     payload = dict(broker_realized or {})
@@ -23317,8 +23331,12 @@ def _p701_build_broker_fills_only_trade_ledger_from_orders(
     payload["p701b_windowed_refresh"] = dict(windowing or {})
     payload["partial_refresh"] = bool((windowing or {}).get("partial"))
     payload["ledger_window_note"] = "Uses recent Alpaca filled orders only; internal state is attribution-only and never changes P/L."
-    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
-    return payload
+    return swing_perf_attach_contracts(
+        payload,
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/broker_fills_only_trade_ledger",
+        report_kind="broker_fills_only_trade_ledger",
+    )
 
 
 def _p701_build_broker_fills_only_trade_ledger(limit: int = 200, order_limit: int = 500, deadline_sec: float | None = None) -> dict:
@@ -23951,7 +23969,12 @@ def _p703_payoff_imbalance_repair_report(limit: int = 25, trade_limit: int = 200
     )
     payload["ledger_endpoint"] = "/diagnostics/broker_fills_only_trade_ledger?limit=200"
     payload["ledger_refresh_endpoint"] = "/diagnostics/broker_fills_only_trade_ledger_refresh_pump?limit=200"
-    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+    payload = swing_perf_attach_contracts(
+        payload,
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/payoff_imbalance_repair_report",
+        report_kind="payoff_imbalance_repair_report",
+    )
     if not bool(ledger.get("cache_hit")) and not list(ledger.get("rows") or []):
         payload["recommended_action"] = "run_broker_fills_only_trade_ledger_refresh_pump_then_recheck_payoff_report"
         payload["recommended_actions"] = [
@@ -23967,7 +23990,6 @@ def _p703_payoff_imbalance_repair_report(limit: int = 25, trade_limit: int = 200
 def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
     cached = _safe_json_read(REPLAY_PROMOTION_GATE_SNAPSHOT_PATH)
-    module_status = swing_perf_module_status(patch_version=PATCH_VERSION)
     cached_contract = dict(cached.get("promotion_contract") or {}) if isinstance(cached.get("promotion_contract"), dict) else {}
     if (
         str(cached.get("mode") or "") == "out_of_sample_replay_promotion_gate"
@@ -23978,8 +24000,12 @@ def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
         payload["cache_hit"] = True
         payload["snapshot_path"] = REPLAY_PROMOTION_GATE_SNAPSHOT_PATH
         payload["local_tool"] = "tools/run_replay_promotion_gate.ps1"
-        payload["swing_performance_reports_module_status"] = module_status
-        return payload
+        return swing_perf_attach_contracts(
+            payload,
+            patch_version=PATCH_VERSION,
+            source_endpoint="/diagnostics/replay_promotion_gate",
+            report_kind="out_of_sample_replay_promotion_gate_cached_snapshot",
+        )
 
     replay_inputs = [{"window": "snapshot", "payload": cached}] if cached.get("ok") else []
     payload = swing_perf_build_replay_promotion_gate_report(
@@ -24002,7 +24028,12 @@ def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
         "render_endpoint_does_not_run_replay": True,
         "local_replay_outputs_must_be_promoted_as_snapshot": True,
     }
-    payload["swing_performance_reports_module_status"] = module_status
+    payload = swing_perf_attach_contracts(
+        payload,
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/replay_promotion_gate",
+        report_kind="out_of_sample_replay_promotion_gate",
+    )
     if not cached.get("ok"):
         payload["recommended_action"] = "run_local_replay_promotion_gate_then_review_json_artifact"
     return payload
@@ -52408,8 +52439,12 @@ def _p644_daily_goal_opportunity_map(limit: int = 25) -> dict:
         operator_plan=p646_operator_plan,
         limit=limit,
     )
-    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
-    return payload
+    return swing_perf_attach_contracts(
+        payload,
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/daily_goal_opportunity_map",
+        report_kind="daily_goal_opportunity_map",
+    )
 
 
 def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
@@ -52456,8 +52491,12 @@ def _p637_capital_rotation_readiness_audit(limit: int = 25) -> dict:
         rotation_plan=rotation_plan,
         limit=limit,
     )
-    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
-    return payload
+    return swing_perf_attach_contracts(
+        payload,
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/capital_rotation_readiness_audit",
+        report_kind="capital_rotation_readiness_audit",
+    )
 
 
 P607_WORKER_EXIT_FAST_CLOSE_BUDGET_SEC = max(
@@ -63156,7 +63195,12 @@ def _p652_fast_swing_performance_alignment_brief(limit: int = 10) -> dict:
         capital_rotation=rotation,
         limit=lim,
     )
-    payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
+    payload = swing_perf_attach_contracts(
+        payload,
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/swing_performance_alignment_brief",
+        report_kind="fast_performance_alignment_brief",
+    )
     payload["p655_alignment_coverage_source_sync"] = dict(summary.get("p655_alignment_coverage_source_sync") or {})
     return payload
 
@@ -63188,8 +63232,12 @@ def diagnostics_swing_performance_alignment_brief(request: Request, limit: int =
                 fast_payload=fast_payload,
                 requested_detail="heavy",
             )
-            payload["swing_performance_reports_module_status"] = swing_perf_module_status(patch_version=PATCH_VERSION)
-            return payload
+            return swing_perf_attach_contracts(
+                payload,
+                patch_version=PATCH_VERSION,
+                source_endpoint="/diagnostics/swing_performance_alignment_brief",
+                report_kind="heavy_performance_alignment_deferral",
+            )
         payload = _p418_swing_performance_alignment_brief_heavy(limit=limit)
         payload["requested_detail"] = "heavy"
         payload["heavy_uses_legacy_attribution_path"] = True
@@ -70625,7 +70673,12 @@ def diagnostics_daily_goal_opportunity_map(request: Request, limit: int = 25):
 @app.get("/diagnostics/swing_performance_reports_module_status")
 def diagnostics_swing_performance_reports_module_status(request: Request):
     require_admin_if_configured(request)
-    return JSONResponse(content=swing_perf_module_status(patch_version=PATCH_VERSION))
+    return JSONResponse(content=swing_perf_attach_contracts(
+        swing_perf_module_status(patch_version=PATCH_VERSION),
+        patch_version=PATCH_VERSION,
+        source_endpoint="/diagnostics/swing_performance_reports_module_status",
+        report_kind="performance_reports_module_status",
+    ))
 
 @app.get("/diagnostics/strategy_isolation_contract")
 def diagnostics_strategy_isolation_contract(request: Request, limit: int = 25):

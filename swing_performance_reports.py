@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-704A-strict-replay-promotion-gate"
+SWING_PERFORMANCE_REPORTS_MODULE_VERSION = "patch-709-performance-reporting-ownership-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1944,7 +1944,12 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
         "owns_live_broker_calls": False,
         "submits_orders": False,
         "changes_trade_behavior": False,
-        "extraction_phase": "prep",
+        "extraction_phase": "performance_reporting_ownership_extraction",
+        "owns_performance_reporting_contract": True,
+        "owns_broker_fills_ledger_contract": True,
+        "owns_strategy_attribution_contract": True,
+        "owns_payoff_imbalance_contract": True,
+        "owns_replay_promotion_gate_contract": True,
         "responsibilities": [
             "daily_goal_operator_plan_shape",
             "daily_goal_path_truth_report_shape",
@@ -1962,5 +1967,58 @@ def performance_reports_module_status(*, patch_version: str) -> dict:
             "broker_reconciled_attribution_snapshot_cache_contract",
             "profit_path_truth_contract_shape",
         ],
-        "next_extraction_target": "move_performance_report_row_collection_out_of_app",
+        "next_extraction_target": "centralize_performance_report_row_collection_out_of_app",
     }
+
+
+def build_performance_reporting_ownership_contract(
+    *,
+    patch_version: str,
+    payload: dict | None = None,
+    source_endpoint: str = "",
+    report_kind: str = "",
+) -> dict:
+    report = dict(payload or {})
+    mode = str(report_kind or report.get("mode") or "").strip() or "performance_report"
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "module": "swing_performance_reports",
+        "module_version": SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
+        "performance_report_owner": "swing_performance_reports",
+        "app_py_role": "collect_runtime_rows_and_delegate_report_shape",
+        "source_endpoint": source_endpoint,
+        "report_kind": mode,
+        "read_only": True,
+        "owns_report_shape": True,
+        "owns_report_status_contract": True,
+        "owns_live_broker_calls": False,
+        "submits_orders": False,
+        "changes_trade_behavior": False,
+        "adds_trade_gate": False,
+        "changes_submit_behavior": False,
+        "changes_exit_behavior": False,
+        "roadmap_step": "Patch 709",
+        "roadmap_focus": "performance_reporting_ownership_extraction",
+        "cleanup_alignment": "centralize_reporting_contracts_before_app_py_legacy_route_removal",
+    }
+
+
+def attach_performance_reporting_contracts(
+    payload: dict | None,
+    *,
+    patch_version: str,
+    source_endpoint: str = "",
+    report_kind: str = "",
+) -> dict:
+    out = dict(payload or {})
+    out["swing_performance_reports_module_status"] = performance_reports_module_status(
+        patch_version=patch_version
+    )
+    out["p709_performance_reporting_ownership_contract"] = build_performance_reporting_ownership_contract(
+        patch_version=patch_version,
+        payload=out,
+        source_endpoint=source_endpoint,
+        report_kind=report_kind,
+    )
+    return out
