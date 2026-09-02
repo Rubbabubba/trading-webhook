@@ -3250,7 +3250,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-714B-replay-promotion-registry-seed-live-restore-bridge"
+PATCH_VERSION = "patch-714C-reduced-risk-render-env-readiness-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -22481,6 +22481,114 @@ def _p714_full_live_promotion_gate_snapshot(limit: int = 25) -> dict:
         "/diagnostics/scanner_light",
     ]
     return payload
+
+
+def _p714c_reduced_risk_env_readiness_snapshot(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    gate = _p714_full_live_promotion_gate_snapshot(limit=lim)
+    live_risk = _p700_live_risk_validation_contract("worker_scan")
+    expected_required = {
+        "SWING_LIVE_RISK_MODE": "reduced_risk",
+        "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": "true",
+        "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS": "true",
+    }
+    expected_recommended = {
+        "FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE": "false",
+        "REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH": "config/replay_promotion_gate_seed.json",
+    }
+
+    def _env_row(name: str, expected: str, *, required: bool) -> dict:
+        raw = os.getenv(name)
+        value = str(raw if raw is not None else "").strip()
+        expected_text = str(expected or "").strip()
+        expected_bool = expected_text.lower() in {"1", "true", "yes", "y", "on"}
+        if expected_text.lower() in {"true", "false"}:
+            matches = env_bool_any(name, default=not expected_bool) == expected_bool if raw is not None else False
+        else:
+            matches = value.lower() == expected_text.lower()
+        return {
+            "name": name,
+            "present_in_render_env": raw is not None,
+            "current_value": value if raw is not None else None,
+            "expected_value": expected_text,
+            "matches_expected": bool(matches),
+            "required": bool(required),
+        }
+
+    required_rows = [
+        _env_row(name, value, required=True)
+        for name, value in expected_required.items()
+    ]
+    recommended_rows = [
+        _env_row(name, value, required=False)
+        for name, value in expected_recommended.items()
+    ]
+    missing_required = [row["name"] for row in required_rows if not row["present_in_render_env"]]
+    mismatched_required = [
+        row["name"]
+        for row in required_rows
+        if row["present_in_render_env"] and not row["matches_expected"]
+    ]
+    mismatched_recommended = [
+        row["name"]
+        for row in recommended_rows
+        if row["present_in_render_env"] and not row["matches_expected"]
+    ]
+    env_config_ready = bool(not missing_required and not mismatched_required)
+    blockers = []
+    if not env_config_ready and missing_required:
+        blockers.append("missing_required_reduced_risk_envs")
+    if not env_config_ready and mismatched_required:
+        blockers.append("required_reduced_risk_envs_not_set_to_expected_values")
+    if not bool(gate.get("reduced_risk_ready")):
+        blockers.append("full_live_gate_not_reduced_risk_ready")
+    if str(live_risk.get("canonical_mode") or "") != "reduced_risk":
+        blockers.append("live_risk_mode_not_reduced_risk")
+    if not bool(live_risk.get("entry_orders_permitted")):
+        blockers.append("entry_orders_not_permitted_by_live_risk_contract")
+
+    activation_ready = bool(env_config_ready and not blockers)
+    return {
+        "ok": True,
+        "patch_version": PATCH_VERSION,
+        "mode": "reduced_risk_render_env_readiness",
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "does_not_fetch_bars": True,
+        "changes_trade_behavior": False,
+        "target_render_service": "trading-webhook",
+        "scanner_worker_env_changes_required": False,
+        "required_envs": required_rows,
+        "recommended_envs": recommended_rows,
+        "missing_required_envs": missing_required,
+        "mismatched_required_envs": mismatched_required,
+        "mismatched_recommended_envs": mismatched_recommended,
+        "reduced_risk_env_config_ready": env_config_ready,
+        "reduced_risk_activation_ready": activation_ready,
+        "reduced_risk_env_ready": activation_ready,
+        "gate_reduced_risk_ready": bool(gate.get("reduced_risk_ready")),
+        "gate_full_live_ready": bool(gate.get("full_live_ready")),
+        "current_live_risk_mode": live_risk.get("canonical_mode"),
+        "entry_orders_permitted": bool(live_risk.get("entry_orders_permitted")),
+        "full_live_gate_recommended_action": gate.get("recommended_action"),
+        "blockers": blockers,
+        "render_env_values_to_add": expected_required,
+        "render_env_values_to_keep_or_add": expected_recommended,
+        "post_update_expected": {
+            "current_live_risk_mode": "reduced_risk",
+            "entry_orders_permitted": True,
+            "reduced_risk_ready": True,
+            "full_live_ready": False,
+            "full_live_blocker": "current_mode_is_reduced_risk_not_normal",
+        },
+        "recommended_action": (
+            "reduced_risk_live_envs_ready_continue_patch_715_cleanup"
+            if activation_ready
+            else "add_required_envs_to_trading_webhook_service_then_redeploy"
+            if not env_config_ready
+            else "reduced_risk_envs_set_wait_for_full_live_gate_reduced_risk_ready"
+        ),
+    }
 
 
 def _p711_validation_promoted_live_sleeve_contract(
@@ -72331,6 +72439,12 @@ def diagnostics_replay_variant_registry(request: Request, limit: int = 25):
 def diagnostics_full_live_promotion_gate(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p714_full_live_promotion_gate_snapshot(limit=limit))
+
+
+@app.get("/diagnostics/reduced_risk_env_readiness")
+def diagnostics_reduced_risk_env_readiness(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p714c_reduced_risk_env_readiness_snapshot(limit=limit))
 
 @app.get("/diagnostics/breakout_dollar_risk_containment")
 def diagnostics_breakout_dollar_risk_containment(limit: int = 20):

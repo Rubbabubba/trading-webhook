@@ -87,6 +87,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/first_2k_regime_profile
 https://trading-webhook-q4d5.onrender.com/diagnostics/first_profit_window_comparison
 https://trading-webhook-q4d5.onrender.com/diagnostics/freshness
 https://trading-webhook-q4d5.onrender.com/diagnostics/full_live_promotion_gate
+https://trading-webhook-q4d5.onrender.com/diagnostics/reduced_risk_env_readiness
 https://trading-webhook-q4d5.onrender.com/diagnostics/gatekeeper
 https://trading-webhook-q4d5.onrender.com/diagnostics/hybrid_proof
 https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_filter_simulation

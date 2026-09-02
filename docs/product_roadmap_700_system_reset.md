@@ -815,6 +815,40 @@ Post-deploy endpoints:
 - `/diagnostics/scanner_light`
 - `/diagnostics/worker_exit_status`
 
+### Patch 714C: Reduced-Risk Render Env Readiness Contract
+
+Status: applied locally; pending deploy verification.
+
+Goal: make the Render env changes required for reduced-risk live explicit and endpoint-visible before Patch 715 cleanup resumes.
+
+Scope:
+
+- Add `/diagnostics/reduced_risk_env_readiness`.
+- Show whether required reduced-risk envs are present and set to expected values on the main `trading-webhook` service.
+- Confirm the scanner worker does not need these env changes.
+- Keep the endpoint read-only; it does not submit orders, fetch bars, mutate state, or change live risk mode.
+
+Expected outcome:
+
+- Operator can see exactly which env vars to add in Render.
+- Reduced-risk readiness is not confused with full-live readiness.
+- Patch 715 can proceed after env readiness is confirmed.
+
+Required main-service envs:
+
+- `SWING_LIVE_RISK_MODE=reduced_risk`
+- `SWING_VALIDATION_PROMOTED_LIVE_ENABLED=true`
+- `SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS=true`
+
+Post-deploy endpoints:
+
+- `/diagnostics/reduced_risk_env_readiness`
+- `/diagnostics/full_live_promotion_gate`
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/replay_variant_registry?limit=25`
+- `/diagnostics/scanner_light`
+- `/diagnostics/worker_exit_status`
+
 ### Patch 715: Scanner Ownership Extraction Phase 2
 
 Status: planned after live restoration path is endpoint-visible.
