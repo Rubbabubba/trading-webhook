@@ -14,8 +14,6 @@ from runtime_defaults import apply_production_defaults
 apply_production_defaults()
 
 import logging
-import base64
-import secrets
 import hashlib
 import traceback
 import html
@@ -121,6 +119,7 @@ from regime_intraday_email import send_exit_email as send_regime_intraday_exit_e
 from regime_intraday_dashboard import render_intraday_dashboard
 from regime_intraday_api import build_regime_intraday_router
 from route_catalog import build_route_catalog, classify_path, is_sensitive_path
+from operator_auth import operator_authorized
 from legacy_swing.swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
     initial_eval_truth as swing_candidate_eval_initial_truth,
@@ -3094,15 +3093,7 @@ ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()  # protect /kill endpoints
 async def protect_sensitive_operator_surfaces(request: Request, call_next):
     """Require the operator secret for account/order detail; keep safe health summaries public."""
     if is_sensitive_path(request.url.path):
-        supplied = request.headers.get("x-admin-secret", "").strip()
-        auth = request.headers.get("authorization", "")
-        if not supplied and auth.lower().startswith("basic "):
-            try:
-                decoded = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8")
-                supplied = decoded.split(":", 1)[1] if ":" in decoded else ""
-            except Exception:
-                supplied = ""
-        if not ADMIN_SECRET or not secrets.compare_digest(supplied, ADMIN_SECRET):
+        if not operator_authorized(request.headers, ADMIN_SECRET):
             return JSONResponse(status_code=401, content={"detail": "operator authentication required"}, headers={"WWW-Authenticate": 'Basic realm="Trading Operator"'})
     response = await call_next(request)
     classification = classify_path(request.url.path, {request.method})
