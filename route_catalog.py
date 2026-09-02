@@ -41,7 +41,7 @@ def classify_path(path: str, methods: list[str] | set[str]) -> dict:
     return {"path": path, "methods": method_set, "owner": owner, "lifecycle": lifecycle, "mutating": mutating, "sensitive": is_sensitive_path(path) or mutating}
 
 
-def build_route_catalog(routes) -> dict:
+def build_route_catalog(routes, archived_routes=None) -> dict:
     rows = []
     for route in routes:
         path = str(getattr(route, "path", "") or "")
@@ -53,4 +53,5 @@ def build_route_catalog(routes) -> dict:
     for row in rows:
         key = f"{row['owner']}:{row['lifecycle']}"
         counts[key] = counts.get(key, 0) + 1
-    return {"ok": True, "route_count": len(rows), "counts": counts, "routes": rows}
+    archived = sorted((dict(row) for row in (archived_routes or [])), key=lambda row: row.get("path", ""))
+    return {"ok": True, "route_count": len(rows), "archived_route_count": len(archived), "counts": counts, "routes": rows, "archived_routes": archived}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse
 
 from regime_intraday_dashboard import render_intraday_dashboard
@@ -18,6 +18,11 @@ def build_regime_intraday_router(
     get_readiness_payload: Callable[[], dict],
     get_dashboard_payload: Callable[[], dict],
     html_response: Callable[[str], HTMLResponse],
+    replay: Callable[[dict], dict],
+    scan_worker: Callable[[dict], dict],
+    paper_roundtrip: Callable[[dict], dict],
+    paper_reconcile: Callable[[dict], dict],
+    paper_close: Callable[[dict], dict],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -43,5 +48,26 @@ def build_regime_intraday_router(
     def diagnostics_regime_intraday_readiness(request: Request):
         del request
         return get_readiness_payload()
+
+    @router.post("/diagnostics/regime_intraday_replay")
+    def diagnostics_regime_intraday_replay(request: Request, body: dict = Body(default={})):
+        del request
+        return replay(body)
+
+    @router.post("/worker/regime_intraday_scan")
+    def worker_regime_intraday_scan(body: dict = Body(default={})):
+        return scan_worker(body)
+
+    @router.post("/worker/regime_intraday_paper_roundtrip")
+    def worker_regime_intraday_paper_roundtrip(body: dict = Body(default={})):
+        return paper_roundtrip(body)
+
+    @router.post("/worker/regime_intraday_paper_reconcile")
+    def worker_regime_intraday_paper_reconcile(body: dict = Body(default={})):
+        return paper_reconcile(body)
+
+    @router.post("/worker/regime_intraday_paper_close")
+    def worker_regime_intraday_paper_close(body: dict = Body(default={})):
+        return paper_close(body)
 
     return router

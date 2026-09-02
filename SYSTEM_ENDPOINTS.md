@@ -2,7 +2,7 @@
 
 Generated from `app.py` by `tools/generate_endpoint_manifest.py`. Do not edit endpoint rows manually.
 
-Total application routes: **277**.
+Total application routes: **243**.
 
 Routes marked `GET` may still require operator authentication when they expose account, order, journal, or approval detail.
 
@@ -94,40 +94,6 @@ Routes marked `GET` may still require operator authentication when they expose a
 
 | Method | Endpoint |
 |---|---|
-| `GET` | [/diagnostics/breakout_distance_relaxation_replay](https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_distance_relaxation_replay) |
-| `GET` | [/diagnostics/candidate_coverage_opportunity_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/candidate_coverage_opportunity_audit) |
-| `GET` | [/diagnostics/capital_rotation_readiness_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/capital_rotation_readiness_audit) |
-| `GET` | [/diagnostics/daily_breakout_attribution_recovery_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_attribution_recovery_lab) |
-| `GET` | [/diagnostics/daily_breakout_rollback_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_rollback_lab) |
-| `GET` | [/diagnostics/defensive_near_miss_simulation](https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_near_miss_simulation) |
-| `GET` | [/diagnostics/defensive_unlock_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_unlock_lab) |
-| `GET` | [/diagnostics/duplicate_realized_exit_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/duplicate_realized_exit_audit) |
-| `GET` | [/diagnostics/entry_quality_kill_zone_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/entry_quality_kill_zone_audit) |
-| `GET` | [/diagnostics/executed_entry_eligibility_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/executed_entry_eligibility_audit) |
-| `GET` | [/diagnostics/first_2k_rank_relaxation_replay](https://trading-webhook-q4d5.onrender.com/diagnostics/first_2k_rank_relaxation_replay) |
-| `GET` | [/diagnostics/intraday_filter_simulation](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_filter_simulation) |
-| `GET` | [/diagnostics/intraday_profit_engine_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_profit_engine_lab) |
-| `GET` | [/diagnostics/intraday_replay_backtest](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_replay_backtest) |
-| `GET` | [/diagnostics/intraday_replay_scenario_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_replay_scenario_lab) |
-| `GET` | [/diagnostics/intraday_small_sample_expansion_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_small_sample_expansion_lab) |
-| `GET` | [/diagnostics/intraday_symbol_discovery_replay_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_symbol_discovery_replay_lab) |
-| `GET` | [/diagnostics/market_open_selection_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/market_open_selection_audit) |
-| `GET` | [/diagnostics/market_open_selection_audit_light](https://trading-webhook-q4d5.onrender.com/diagnostics/market_open_selection_audit_light) |
-| `GET` | [/diagnostics/missed_opportunity_replay_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/missed_opportunity_replay_lab) |
-| `GET` | [/diagnostics/pltr_profit_giveback_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/pltr_profit_giveback_audit) |
-| `GET` | [/diagnostics/post_tuning_exit_validation](https://trading-webhook-q4d5.onrender.com/diagnostics/post_tuning_exit_validation) |
-| `GET` | [/diagnostics/replay_promotion_gate](https://trading-webhook-q4d5.onrender.com/diagnostics/replay_promotion_gate) |
-| `GET` | [/diagnostics/replay_variant_registry](https://trading-webhook-q4d5.onrender.com/diagnostics/replay_variant_registry) |
-| `GET` | [/diagnostics/same_day_breakout_loss_forensics](https://trading-webhook-q4d5.onrender.com/diagnostics/same_day_breakout_loss_forensics) |
-| `GET` | [/diagnostics/same_day_stall_exit_churn_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/same_day_stall_exit_churn_audit) |
-| `GET` | [/diagnostics/stall_exit_tuning_monitor](https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_tuning_monitor) |
-| `GET` | [/diagnostics/swing_core_dead_path_removal_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_core_dead_path_removal_audit) |
-| `GET` | [/diagnostics/swing_profit_regression_forensics](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_regression_forensics) |
-| `GET` | [/diagnostics/swing_replay_backtest_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_replay_backtest_lab) |
-| `GET` | [/diagnostics/swing_simplification_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_simplification_audit) |
-| `GET` | [/diagnostics/swing_tuning_simulator](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_tuning_simulator) |
-| `GET` | [/diagnostics/target_path_opportunity_expansion_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_opportunity_expansion_lab) |
-| `GET` | [/diagnostics/weak_position_capital_drag_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/weak_position_capital_drag_audit) |
 
 ## Shared and other
 

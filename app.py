@@ -259,6 +259,7 @@ from legacy_swing.swing_live_promotion_gate import (
     build_full_live_promotion_gate as swing_live_build_full_live_promotion_gate,
     live_promotion_gate_module_status as swing_live_promotion_gate_module_status,
 )
+from legacy_swing.archived_routes import ARCHIVED_SWING_RESEARCH_ROUTES, archived_swing_research_route
 
 @dataclass(frozen=True)
 class Bar:
@@ -47131,7 +47132,7 @@ def diagnostics_intraday_signal_debug(request: Request):
     require_admin_if_configured(request)
     return _intraday_signal_debug_from_scan(_latest_scan_item())
 
-@app.get("/diagnostics/swing_profit_regression_forensics")
+@archived_swing_research_route("/diagnostics/swing_profit_regression_forensics")
 def diagnostics_swing_profit_regression_forensics(request: Request):
     require_admin_if_configured(request)
     return _p280_swing_profit_regression_forensics()
@@ -47435,7 +47436,7 @@ def diagnostics_swing_profit_model_reset(request: Request, limit: int = 25):
         "recommended_action": "use_profit_model_reset_to_compare_risk_budget_and_revival_sleeve_before_raising_live_risk",
     })
 
-@app.get("/diagnostics/defensive_near_miss_simulation")
+@archived_swing_research_route("/diagnostics/defensive_near_miss_simulation")
 def diagnostics_defensive_near_miss_simulation(
     request: Request,
     limit: int = 20,
@@ -47464,7 +47465,7 @@ def diagnostics_expanded_swing_universe_discovery(
     ))
 
 
-@app.get("/diagnostics/missed_opportunity_replay_lab")
+@archived_swing_research_route("/diagnostics/missed_opportunity_replay_lab")
 def diagnostics_missed_opportunity_replay_lab(
     request: Request,
     limit: int = 15,
@@ -47492,7 +47493,7 @@ def diagnostics_missed_opportunity_replay_lab(
         "recommended_action": lab.get("recommended_action"),
     })
 
-@app.get("/diagnostics/target_path_opportunity_expansion_lab")
+@archived_swing_research_route("/diagnostics/target_path_opportunity_expansion_lab")
 def diagnostics_target_path_opportunity_expansion_lab(request: Request, limit: int = 15):
     require_admin_if_configured(request)
     active_scan = _p285_saved_truth_scan(limit=max(25, min(int(limit or 15), 100)))
@@ -47533,7 +47534,7 @@ def diagnostics_swing_watchlist_trade_status(request: Request, symbols: str = ""
         limit=limit,
     ))
 
-@app.get("/diagnostics/swing_core_dead_path_removal_audit")
+@archived_swing_research_route("/diagnostics/swing_core_dead_path_removal_audit")
 def diagnostics_swing_core_dead_path_removal_audit(request: Request):
     require_admin_if_configured(request)
     return JSONResponse(content=_p319_dead_path_removal_audit())
@@ -60628,7 +60629,7 @@ def _regime_intraday_dashboard_payload() -> dict:
 
 @app.get("/diagnostics/route_catalog")
 def diagnostics_route_catalog(request: Request):
-    return build_route_catalog(app.routes)
+    return build_route_catalog(app.routes, archived_routes=ARCHIVED_SWING_RESEARCH_ROUTES)
 
 
 def _regime_intraday_ledger_payload() -> dict:
@@ -60680,20 +60681,8 @@ def _regime_intraday_readiness_payload() -> dict:
     }
 
 
-app.include_router(build_regime_intraday_router(
-    get_scan=lambda: dict(REGIME_INTRADAY_LAST_SCAN),
-    refresh_scan=_run_regime_intraday_scan,
-    get_ledger_payload=_regime_intraday_ledger_payload,
-    get_readiness_payload=_regime_intraday_readiness_payload,
-    get_dashboard_payload=_regime_intraday_dashboard_payload,
-    html_response=_dashboard_html_response,
-))
-
-
-@app.post("/diagnostics/regime_intraday_replay")
-def diagnostics_regime_intraday_replay(request: Request, body: dict = Body(default={})):
+def _regime_intraday_replay(body: dict) -> dict:
     """Run an exact-signal, no-lookahead underlying replay; never sends an order."""
-    require_admin_if_configured(request)
     calendar_days = max(7, min(60, int(body.get("calendar_days") or 28)))
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=calendar_days)
@@ -60713,16 +60702,14 @@ def diagnostics_regime_intraday_replay(request: Request, body: dict = Body(defau
     return result
 
 
-@app.post("/worker/regime_intraday_scan")
-def worker_regime_intraday_scan(body: dict = Body(default={})):
+def _regime_intraday_scan_worker(body: dict) -> dict:
     if WORKER_SECRET:
         if str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="invalid worker secret")
     return _run_regime_intraday_scan()
 
 
-@app.post("/worker/regime_intraday_paper_roundtrip")
-def worker_regime_intraday_paper_roundtrip(body: dict = Body(default={})):
+def _regime_intraday_paper_roundtrip(body: dict) -> dict:
     """Submit one selected spread to Alpaca paper only; live is impossible here."""
     if WORKER_SECRET and str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
         raise HTTPException(status_code=401, detail="invalid worker secret")
@@ -60774,8 +60761,7 @@ def worker_regime_intraday_paper_roundtrip(body: dict = Body(default={})):
     return {"ok": True, "mode": "alpaca_paper_roundtrip", "risk_decision": decision, "result": result, "signal_id": signal_id, "live_submission": False}
 
 
-@app.post("/worker/regime_intraday_paper_reconcile")
-def worker_regime_intraday_paper_reconcile(body: dict = Body(default={})):
+def _regime_intraday_paper_reconcile(body: dict) -> dict:
     """Refresh recorded paper-order states without submitting or canceling."""
     if WORKER_SECRET and str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
         raise HTTPException(status_code=401, detail="invalid worker secret")
@@ -60852,8 +60838,7 @@ def worker_regime_intraday_paper_reconcile(body: dict = Body(default={})):
     return {"ok": True, "refreshed": refreshed, "live_submission": False, "automatic_exit_submission": False}
 
 
-@app.post("/worker/regime_intraday_paper_close")
-def worker_regime_intraday_paper_close(body: dict = Body(default={})):
+def _regime_intraday_paper_close(body: dict) -> dict:
     """Close one filled paper spread only after a fresh exit decision and explicit confirmation."""
     if WORKER_SECRET and str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
         raise HTTPException(status_code=401, detail="invalid worker secret")
@@ -60885,6 +60870,21 @@ def worker_regime_intraday_paper_close(body: dict = Body(default={})):
     ledger.setdefault("events", []).append({"event": "paper_close_recorded", "signal_id": signal_id, "order_id": close.get("order_id"), "ts_utc": datetime.now(timezone.utc).isoformat()})
     save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
     return {"ok": True, "mode": "alpaca_paper_close", "signal_id": signal_id, "result": close, "live_submission": False}
+
+
+app.include_router(build_regime_intraday_router(
+    get_scan=lambda: dict(REGIME_INTRADAY_LAST_SCAN),
+    refresh_scan=_run_regime_intraday_scan,
+    get_ledger_payload=_regime_intraday_ledger_payload,
+    get_readiness_payload=_regime_intraday_readiness_payload,
+    get_dashboard_payload=_regime_intraday_dashboard_payload,
+    html_response=_dashboard_html_response,
+    replay=_regime_intraday_replay,
+    scan_worker=_regime_intraday_scan_worker,
+    paper_roundtrip=_regime_intraday_paper_roundtrip,
+    paper_reconcile=_regime_intraday_paper_reconcile,
+    paper_close=_regime_intraday_paper_close,
+))
 
 
 @app.get("/diagnostics/intraday_shadow")
@@ -60995,7 +60995,7 @@ def diagnostics_intraday_shadow_settlement_backfill(
         "intraday_live_preflight": live_preflight,
     }
 
-@app.get("/diagnostics/intraday_filter_simulation")
+@archived_swing_research_route("/diagnostics/intraday_filter_simulation")
 def diagnostics_intraday_filter_simulation(request: Request, limit: int = 1000):
     require_admin_if_configured(request)
     _ensure_runtime_state_loaded()
@@ -61206,7 +61206,7 @@ def diagnostics_intraday_live_brief(request: Request):
         ),
     }
 
-@app.get("/diagnostics/intraday_replay_backtest")
+@archived_swing_research_route("/diagnostics/intraday_replay_backtest")
 def diagnostics_intraday_replay_backtest(
     request: Request,
     symbols: str = "",
@@ -61224,7 +61224,7 @@ def diagnostics_intraday_replay_backtest(
         max_trades_per_symbol_session=int(max_trades_per_symbol_session or 1),
     )
 
-@app.get("/diagnostics/intraday_replay_scenario_lab")
+@archived_swing_research_route("/diagnostics/intraday_replay_scenario_lab")
 def diagnostics_intraday_replay_scenario_lab(
     request: Request,
     symbols: str = "",
@@ -61256,7 +61256,7 @@ def diagnostics_intraday_replay_scenario_lab(
         "results": lab.get("results") or [],
     }
 
-@app.get("/diagnostics/intraday_symbol_discovery_replay_lab")
+@archived_swing_research_route("/diagnostics/intraday_symbol_discovery_replay_lab")
 def diagnostics_intraday_symbol_discovery_replay_lab(
     request: Request,
     symbols: str = "",
@@ -65373,7 +65373,7 @@ def diagnostics_swing_performance_alignment_brief(request: Request, limit: int =
 def _p418_swing_performance_alignment_brief(limit: int = 10) -> dict:
     return _p652_fast_swing_performance_alignment_brief(limit=limit)
 
-@app.get("/diagnostics/swing_tuning_simulator")
+@archived_swing_research_route("/diagnostics/swing_tuning_simulator")
 def diagnostics_swing_tuning_simulator(request: Request):
     require_admin_if_configured(request)
     return _swing_profit_acceleration_simulator()
@@ -65455,7 +65455,7 @@ def diagnostics_target_path_recovery_mode(request: Request, limit: int = 25):
         ),
     })
 
-@app.get("/diagnostics/market_open_selection_audit")
+@archived_swing_research_route("/diagnostics/market_open_selection_audit")
 def diagnostics_market_open_selection_audit(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     lim = max(5, min(int(limit or 25), 100))
@@ -65554,7 +65554,7 @@ def diagnostics_market_open_selection_audit(request: Request, limit: int = 25):
         "recommended_action": recommended_action,
     })
 
-@app.get("/diagnostics/stall_exit_tuning_monitor")
+@archived_swing_research_route("/diagnostics/stall_exit_tuning_monitor")
 def diagnostics_stall_exit_tuning_monitor(request: Request):
     require_admin_if_configured(request)
     payload = _stall_exit_tuning_monitor()
@@ -65567,13 +65567,13 @@ def diagnostics_swing_post_change_drawdown():
     perf_state = _recompute_strategy_performance_state()
     return _p261_post_change_drawdown_snapshot(perf_state=perf_state)
 
-@app.get("/diagnostics/daily_breakout_rollback_lab")
+@archived_swing_research_route("/diagnostics/daily_breakout_rollback_lab")
 def diagnostics_daily_breakout_rollback_lab():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
     return _p262_daily_breakout_rollback_lab()
 
-@app.get("/diagnostics/daily_breakout_attribution_recovery_lab")
+@archived_swing_research_route("/diagnostics/daily_breakout_attribution_recovery_lab")
 def diagnostics_daily_breakout_attribution_recovery_lab():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
@@ -65600,7 +65600,7 @@ def diagnostics_stall_loss_guard_live_validation(request: Request):
     return _p257_stall_loss_guard_live_validation()
 
 
-@app.get("/diagnostics/post_tuning_exit_validation")
+@archived_swing_research_route("/diagnostics/post_tuning_exit_validation")
 def diagnostics_post_tuning_exit_validation(request: Request):
     require_admin_if_configured(request)
     payload = _post_tuning_exit_validation()
@@ -67377,7 +67377,7 @@ def diagnostics_production_contract_miss_reasons(request: Request, limit: int = 
     require_admin_if_configured(request)
     return _p325_production_contract_miss_reason_rows(limit=limit)
 
-@app.get("/diagnostics/market_open_selection_audit_light")
+@archived_swing_research_route("/diagnostics/market_open_selection_audit_light")
 def diagnostics_market_open_selection_audit_light(request: Request, limit: int = 10):
     require_admin_if_configured(request)
     return _p298_market_open_selection_audit_light(limit=limit)
@@ -68761,7 +68761,7 @@ def diagnostics_intraday_scenario_promotion_reconciliation(
     })
 
 
-@app.get("/diagnostics/intraday_small_sample_expansion_lab")
+@archived_swing_research_route("/diagnostics/intraday_small_sample_expansion_lab")
 def diagnostics_intraday_small_sample_expansion_lab(
     request: Request,
     symbols: str = "",
@@ -68785,7 +68785,7 @@ def diagnostics_intraday_small_sample_expansion_lab(
         "recommended_env_for_next_paper_run": lab.get("recommended_env_for_next_paper_run") or {},
     })
 
-@app.get("/diagnostics/intraday_profit_engine_lab")
+@archived_swing_research_route("/diagnostics/intraday_profit_engine_lab")
 def diagnostics_intraday_profit_engine_lab(
     request: Request,
     symbols: str = "",
@@ -70034,7 +70034,7 @@ def diagnostics_candidates(limit: int = 25):
     payload["mode"] = "candidates_compact"
     return payload
 
-@app.get("/diagnostics/candidate_coverage_opportunity_audit")
+@archived_swing_research_route("/diagnostics/candidate_coverage_opportunity_audit")
 def diagnostics_candidate_coverage_opportunity_audit(limit: int = 25):
     return _p407_candidate_coverage_opportunity_audit(limit=limit)
 
@@ -70043,11 +70043,11 @@ def diagnostics_runtime_coverage_preview(request: Request, limit: int = 100):
     require_admin_if_configured(request)
     return _p419_runtime_coverage_preview_without_scan(limit=limit)
 
-@app.get("/diagnostics/first_2k_rank_relaxation_replay")
+@archived_swing_research_route("/diagnostics/first_2k_rank_relaxation_replay")
 def diagnostics_first_2k_rank_relaxation_replay(limit: int = 25):
     return _p409_rank_relaxation_replay(limit=limit)
 
-@app.get("/diagnostics/breakout_distance_relaxation_replay")
+@archived_swing_research_route("/diagnostics/breakout_distance_relaxation_replay")
 def diagnostics_breakout_distance_relaxation_replay(limit: int = 25):
     return _p410_current_geometry_replay(limit=limit)
 
@@ -71649,7 +71649,7 @@ def diagnostics_promotion_selection(limit: int = 10):
 def diagnostics_filter_pressure(limit: int = 10):
     return _filter_pressure_snapshot(limit=limit)
 
-@app.get("/diagnostics/defensive_unlock_lab")
+@archived_swing_research_route("/diagnostics/defensive_unlock_lab")
 def diagnostics_defensive_unlock_lab(limit: int = 10):
     _ensure_runtime_state_loaded()
     _refresh_regime_snapshot_if_needed()
@@ -72760,7 +72760,7 @@ def diagnostics_profit_capture_readiness_truth(request: Request, limit: int = 25
     require_admin_if_configured(request)
     return JSONResponse(content=_p636_profit_capture_readiness_truth(limit=limit))
 
-@app.get("/diagnostics/weak_position_capital_drag_audit")
+@archived_swing_research_route("/diagnostics/weak_position_capital_drag_audit")
 def diagnostics_weak_position_capital_drag_audit(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p636_weak_position_capital_drag_audit(limit=limit))
@@ -72797,7 +72797,7 @@ def diagnostics_strategy_isolation_contract(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p702_strategy_isolation_contract_snapshot(limit=limit))
 
-@app.get("/diagnostics/capital_rotation_readiness_audit")
+@archived_swing_research_route("/diagnostics/capital_rotation_readiness_audit")
 def diagnostics_capital_rotation_readiness_audit(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p637_capital_rotation_readiness_audit(limit=limit))
@@ -72850,7 +72850,7 @@ def diagnostics_broker_native_position_risk_truth():
 def diagnostics_oversized_position_remediation_advisory():
     return JSONResponse(content=_p384_oversized_position_remediation_advisory())
 
-@app.get("/diagnostics/same_day_stall_exit_churn_audit")
+@archived_swing_research_route("/diagnostics/same_day_stall_exit_churn_audit")
 def diagnostics_same_day_stall_exit_churn_audit(limit: int = 25):
     return JSONResponse(content=_p364_same_day_stall_exit_churn_audit(limit=limit))
 
@@ -72916,7 +72916,7 @@ def diagnostics_position_truth(request: Request):
         "reconcile_snapshot": reconcile_snapshot,
     }
 
-@app.get("/diagnostics/duplicate_realized_exit_audit")
+@archived_swing_research_route("/diagnostics/duplicate_realized_exit_audit")
 def diagnostics_duplicate_realized_exit_audit():
     _ensure_runtime_state_loaded()
     return _p244_duplicate_realized_exit_audit()
@@ -72959,12 +72959,12 @@ def diagnostics_payoff_imbalance_repair_report(request: Request, limit: int = 25
     require_admin_if_configured(request)
     return JSONResponse(content=_p703_payoff_imbalance_repair_report(limit=limit, trade_limit=trade_limit))
 
-@app.get("/diagnostics/replay_promotion_gate")
+@archived_swing_research_route("/diagnostics/replay_promotion_gate")
 def diagnostics_replay_promotion_gate(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p704_replay_promotion_gate_snapshot(limit=limit))
 
-@app.get("/diagnostics/replay_variant_registry")
+@archived_swing_research_route("/diagnostics/replay_variant_registry")
 def diagnostics_replay_variant_registry(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p713_replay_variant_registry_snapshot(limit=limit))
@@ -73146,11 +73146,11 @@ def diagnostics_broker_only_daily_loss_truth(refresh: bool = False, detail: str 
         return JSONResponse(content=_p374_broker_only_daily_loss_truth())
     return JSONResponse(content=_p701c_cached_broker_only_daily_loss_truth())
 
-@app.get("/diagnostics/same_day_breakout_loss_forensics")
+@archived_swing_research_route("/diagnostics/same_day_breakout_loss_forensics")
 def diagnostics_same_day_breakout_loss_forensics(limit: int = 20):
     return JSONResponse(content=_p376_same_day_breakout_loss_forensics(limit=limit))
 
-@app.get("/diagnostics/entry_quality_kill_zone_audit")
+@archived_swing_research_route("/diagnostics/entry_quality_kill_zone_audit")
 def diagnostics_entry_quality_kill_zone_audit(limit: int = 20):
     return JSONResponse(content=_p376_same_day_breakout_loss_forensics(limit=limit))
 
@@ -73158,7 +73158,7 @@ def diagnostics_entry_quality_kill_zone_audit(limit: int = 20):
 def diagnostics_breakout_early_follow_through_gate(limit: int = 20):
     return JSONResponse(content=_p377_breakout_early_follow_through_gate_snapshot(limit=limit))
 
-@app.get("/diagnostics/pltr_profit_giveback_audit")
+@archived_swing_research_route("/diagnostics/pltr_profit_giveback_audit")
 def diagnostics_pltr_profit_giveback_audit(limit: int = 20):
     return JSONResponse(content=_p377_pltr_profit_giveback_audit(limit=limit))
 
@@ -73208,13 +73208,13 @@ def diagnostics_broker_backed_exposure_truth():
     _ensure_runtime_state_loaded()
     return _p253_broker_backed_exposure_truth_snapshot()
 
-@app.get("/diagnostics/swing_simplification_audit")
+@archived_swing_research_route("/diagnostics/swing_simplification_audit")
 def diagnostics_swing_simplification_audit():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
     return _p253_swing_simplification_audit_snapshot()
 
-@app.get("/diagnostics/executed_entry_eligibility_audit")
+@archived_swing_research_route("/diagnostics/executed_entry_eligibility_audit")
 def diagnostics_executed_entry_eligibility_audit(limit: int = 25):
     _ensure_runtime_state_loaded()
     return _p275_executed_entry_eligibility_audit(limit=limit)
@@ -73261,7 +73261,7 @@ def diagnostics_entry_snapshot_guard():
     _ensure_runtime_state_loaded()
     return _p251_entry_snapshot_guard_snapshot()
 
-@app.get("/diagnostics/swing_replay_backtest_lab")
+@archived_swing_research_route("/diagnostics/swing_replay_backtest_lab")
 def diagnostics_swing_replay_backtest_lab():
     _ensure_runtime_state_loaded()
     _recompute_strategy_performance_state()
