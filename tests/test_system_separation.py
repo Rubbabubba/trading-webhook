@@ -40,6 +40,7 @@ def test_regime_worker_cannot_call_swing_routes():
     assert "/worker/scan_entries" not in worker
     assert "/worker/exit" not in worker
     assert "/worker/regime_intraday_scan" in worker
+    assert "REGIME_INTRADAY_FAILURE_RETRY_SEC" in worker
 
 
 def test_legacy_swing_entries_are_hard_retired_in_application_source():

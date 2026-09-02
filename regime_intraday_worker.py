@@ -58,16 +58,20 @@ def main() -> None:
     _log(f"boot version={WORKER_VERSION} interval_sec={interval} timeout_sec={timeout}")
     while True:
         started = time.monotonic()
+        cycle_failed = False
         for action, url in (("scan", scan_url), ("reconcile", reconcile_url)):
             try:
                 status, response = _post(url, payload, timeout)
                 _log(f"{action}_ok http={status} status={response.get('status', 'ok')} live_submission={response.get('live_submission', False)}")
             except urllib.error.HTTPError as error:
+                cycle_failed = True
                 detail = error.read().decode("utf-8", errors="replace")[:300]
                 _log(f"{action}_http_error http={error.code} detail={detail}")
             except Exception as error:
+                cycle_failed = True
                 _log(f"{action}_error kind={type(error).__name__} detail={str(error)[:300]}")
-        time.sleep(max(0.0, interval - (time.monotonic() - started)))
+        next_interval = min(interval, max(10, _env_int("REGIME_INTRADAY_FAILURE_RETRY_SEC", 30))) if cycle_failed else interval
+        time.sleep(max(0.0, next_interval - (time.monotonic() - started)))
 
 
 if __name__ == "__main__":
