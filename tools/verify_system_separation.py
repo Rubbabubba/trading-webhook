@@ -38,7 +38,6 @@ def main() -> int:
 
     catalog_status, catalog, _ = _request("/diagnostics/route_catalog")
     archived = {str(row.get("path")) for row in list(catalog.get("archived_routes") or [])}
-    auth_header = next((value for key, value in dashboard_headers.items() if key.lower() == "www-authenticate"), "")
     checks.extend([
         ("catalog_200", catalog_status == 200, catalog_status),
         ("active_route_count_243", catalog.get("route_count") == 243, catalog.get("route_count")),
@@ -48,6 +47,7 @@ def main() -> int:
 
     retired_status, _, _ = _request(RETIRED_ROUTE)
     dashboard_status, _, dashboard_headers = _request("/dashboard/intraday")
+    auth_header = next((value for key, value in dashboard_headers.items() if key.lower() == "www-authenticate"), "")
     checks.extend([
         ("retired_route_not_served", retired_status == 404, retired_status),
         ("dashboard_requires_auth", dashboard_status == 401 and "Basic" in str(auth_header), {"status": dashboard_status, "header": auth_header}),
