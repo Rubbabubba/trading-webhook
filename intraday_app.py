@@ -23,11 +23,19 @@ runtime = RegimeIntradayRuntime()
 app = FastAPI(title="Regime Intraday Trading System", docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["*"])
 
+PROTECTED_OPERATOR_PATHS = {
+    "/dashboard/intraday",
+    "/diagnostics/regime_intraday",
+    "/diagnostics/regime_intraday_ledger",
+    "/diagnostics/regime_intraday_readiness",
+    "/diagnostics/regime_intraday_replay",
+}
+
 
 @app.middleware("http")
 async def protect_operator_surfaces(request: Request, call_next):
     path = request.url.path
-    protected = (path.startswith("/diagnostics/") and path != "/diagnostics/route_catalog") or path.startswith("/dashboard/")
+    protected = path in PROTECTED_OPERATOR_PATHS
     if protected and not operator_authorized(request.headers, os.getenv("ADMIN_SECRET", "")):
         return JSONResponse(status_code=401, content={"detail": "operator authentication required"}, headers={"WWW-Authenticate": 'Basic realm="Trading Operator"'})
     response = await call_next(request)

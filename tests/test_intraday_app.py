@@ -36,6 +36,7 @@ def test_operator_routes_require_auth(monkeypatch, tmp_path):
     client = TestClient(module.app)
     assert client.get("/diagnostics/regime_intraday_ledger").status_code == 401
     assert client.get("/diagnostics/regime_intraday_ledger", headers={"x-admin-secret": "test-admin"}).status_code == 200
+    assert client.get("/diagnostics/swing_tuning_simulator").status_code == 404
 
 
 def test_worker_requires_worker_secret(monkeypatch, tmp_path):
