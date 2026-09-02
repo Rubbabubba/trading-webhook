@@ -194,3 +194,50 @@ def walk_forward(bars_by_symbol: dict[str, list[dict]], base: RegimeIntradayConf
     best = ranked[0] if ranked else None
     selected = replace(cfg, **dict((best or {}).get("parameters") or {}))
     return {"train_sessions": sorted(train_dates), "test_sessions": sorted(test_dates), "selected_parameters": dict((best or {}).get("parameters") or {}), "train": replay_sessions(subset(train_dates), selected), "test": replay_sessions(subset(test_dates), selected), "top_train_candidates": ranked[:10]}
+
+
+def mean_reversion_walk_forward(
+    bars_by_symbol: dict[str, list[dict]],
+    base: RegimeIntradayConfig | None = None,
+    *,
+    train_fraction: float = 0.7,
+    risk_dollars: float = 100.0,
+    round_trip_cost_r: float = 0.12,
+) -> dict[str, Any]:
+    """Tune a bounded mean-reversion grid on train data and freeze it for test."""
+    cfg = replace(base or RegimeIntradayConfig(), momentum_enabled=False, mean_reversion_enabled=True)
+    sessions = split_sessions(bars_by_symbol, cfg.symbols)
+    dates = sorted(sessions)
+    cut = max(1, min(len(dates) - 1, int(len(dates) * train_fraction))) if len(dates) > 1 else len(dates)
+    train_dates, test_dates = set(dates[:cut]), set(dates[cut:])
+
+    def subset(chosen: set[str]) -> dict[str, list[dict]]:
+        return {symbol: [row for row in bars_by_symbol.get(symbol, []) if _dt(row).date().isoformat() in chosen] for symbol in cfg.symbols}
+
+    candidates = []
+    for range_efficiency, min_stretch in product((0.20, 0.24, 0.27, 0.30), (1.0, 1.25)):
+        candidate_cfg = replace(cfg, range_efficiency_max=range_efficiency, mean_reversion_min_vwap_atr=min_stretch)
+        raw = replay_sessions(subset(train_dates), candidate_cfg)
+        net = cost_adjusted_report(raw, risk_dollars=risk_dollars, round_trip_cost_r=round_trip_cost_r)
+        count = int(raw.get("trade_count") or 0)
+        score = float(net.get("net_average_r") or -999) - 0.02 * float(raw.get("max_drawdown_r") or 0)
+        candidates.append({
+            "parameters": {"range_efficiency_max": range_efficiency, "mean_reversion_min_vwap_atr": min_stretch},
+            "eligible": count >= 8 and float(net.get("net_average_r") or 0) > 0,
+            "selection_score": round(score, 4), "trade_count": count, "raw_average_r": raw.get("average_r"),
+            "max_drawdown_r": raw.get("max_drawdown_r"), "cost_adjusted": net,
+        })
+    candidates.sort(key=lambda row: (bool(row["eligible"]), float(row["selection_score"]), int(row["trade_count"])), reverse=True)
+    selected_row = next((row for row in candidates if row["eligible"]), None)
+    if not selected_row:
+        return {"ready": False, "reason": "no_positive_train_candidate_with_minimum_sample", "train_sessions": len(train_dates), "test_sessions": len(test_dates), "candidates": candidates}
+    selected_cfg = replace(cfg, **selected_row["parameters"])
+    train_raw = replay_sessions(subset(train_dates), selected_cfg)
+    test_raw = replay_sessions(subset(test_dates), selected_cfg)
+    test_net = cost_adjusted_report(test_raw, risk_dollars=risk_dollars, round_trip_cost_r=round_trip_cost_r)
+    return {
+        "ready": True, "train_sessions": len(train_dates), "test_sessions": len(test_dates), "selected_parameters": selected_row["parameters"],
+        "train": {key: value for key, value in train_raw.items() if key != "trades"} | {"cost_adjusted": cost_adjusted_report(train_raw, risk_dollars=risk_dollars, round_trip_cost_r=round_trip_cost_r)},
+        "test": {key: value for key, value in test_raw.items() if key != "trades"} | {"cost_adjusted": test_net},
+        "out_of_sample_positive": bool((test_net.get("net_average_r") or 0) > 0), "candidates": candidates,
+    }

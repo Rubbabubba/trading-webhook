@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
-from regime_intraday_replay import _outcome, cost_adjusted_report, replay_sessions, split_sessions, walk_forward
+import regime_intraday_replay as replay_module
+from regime_intraday_replay import _outcome, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, split_sessions, walk_forward
 
 
 def test_cost_adjusted_report_tracks_daily_goal_rates():
@@ -48,3 +49,46 @@ def test_replay_and_walk_forward_return_auditable_empty_results():
     result = walk_forward(bars)
     assert len(result["train_sessions"]) == 1
     assert len(result["test_sessions"]) == 1
+
+
+def test_mean_reversion_walk_forward_selects_on_train_and_freezes_for_test(monkeypatch):
+    first = datetime(2026, 8, 3, 14, 30, tzinfo=timezone.utc)
+    bars = {
+        symbol: [_row(first + timedelta(days=day), 100, 101, 99, 100) for day in range(10)]
+        for symbol in ("SPY", "QQQ")
+    }
+    calls = []
+
+    def fake_replay(candidate_bars, config, **_kwargs):
+        session_count = len({_row["ts_ny"].date() for _row in candidate_bars["SPY"]})
+        parameters = (config.range_efficiency_max, config.mean_reversion_min_vwap_atr)
+        calls.append((session_count, parameters))
+        realized_r = 0.6 if parameters == (0.24, 1.25) else 0.2
+        trade_count = 10 if session_count == 7 else 3
+        trades = [
+            {"session": f"session-{index}", "realized_r": realized_r}
+            for index in range(trade_count)
+        ]
+        return {
+            "session_count": session_count,
+            "accepted_session_count": session_count,
+            "trade_count": trade_count,
+            "average_r": realized_r,
+            "max_drawdown_r": 0.5,
+            "trades": trades,
+        }
+
+    monkeypatch.setattr(replay_module, "replay_sessions", fake_replay)
+    result = mean_reversion_walk_forward(bars, train_fraction=0.7)
+
+    assert result["ready"] is True
+    assert result["train_sessions"] == 7
+    assert result["test_sessions"] == 3
+    assert result["selected_parameters"] == {
+        "range_efficiency_max": 0.24,
+        "mean_reversion_min_vwap_atr": 1.25,
+    }
+    assert result["test"]["trade_count"] == 3
+    assert result["test"]["cost_adjusted"]["net_average_r"] == 0.48
+    assert result["out_of_sample_positive"] is True
+    assert calls[-1] == (3, (0.24, 1.25))

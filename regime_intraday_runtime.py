@@ -17,7 +17,7 @@ from regime_intraday_executor import cancel_order, get_order, submit_mleg_close_
 from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, save_ledger, update_ledger
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_readiness import readiness_snapshot
-from regime_intraday_replay import cost_adjusted_report, replay_sessions, threshold_sensitivity, walk_forward
+from regime_intraday_replay import cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
 
 
 def _env(name: str, default: str = "") -> str:
@@ -206,7 +206,8 @@ class RegimeIntradayRuntime:
         summaries = {name: {key: value for key, value in report.items() if key != "trades"} | {"cost_adjusted": cost_adjusted_report(report, risk_dollars=risk, round_trip_cost_r=cost_r)} for name, report in variants.items()}
         ranking = sorted(summaries, key=lambda name: float(dict(summaries[name].get("cost_adjusted") or {}).get("net_average_r") or -999), reverse=True)
         output = {"ok": True, "generated_utc": datetime.now(timezone.utc).isoformat(), "calendar_days": days, "paper_only": True, "live_submission": False,
-                  "cost_model": {"risk_dollars": risk, "round_trip_cost_r": cost_r}, "ranking": ranking, "variants": summaries}
+                  "cost_model": {"risk_dollars": risk, "round_trip_cost_r": cost_r}, "ranking": ranking, "variants": summaries,
+                  "mean_reversion_walk_forward": mean_reversion_walk_forward(regular, cfg, risk_dollars=risk, round_trip_cost_r=cost_r)}
         save_ledger(_env("REGIME_INTRADAY_AFTER_HOURS_REPORT_PATH", "/var/data/regime_intraday_after_hours_report.json"), output)
         return output
 

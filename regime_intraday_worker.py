@@ -76,6 +76,15 @@ def main() -> None:
                         f"net_avg_r={net.get('net_average_r')} net_dollars={net.get('net_total_dollars')} "
                         f"max_drawdown_r={variant.get('max_drawdown_r')} goal100_rate={net.get('daily_goal_100_rate')} goal200_rate={net.get('daily_goal_200_rate')}"
                     )
+                walk = dict(response.get("mean_reversion_walk_forward") or {})
+                test = dict(walk.get("test") or {})
+                test_net = dict(test.get("cost_adjusted") or {})
+                _log(
+                    f"after_hours_walk_forward ready={walk.get('ready')} parameters={json.dumps(walk.get('selected_parameters') or {}, separators=(',', ':'))} "
+                    f"train_sessions={walk.get('train_sessions')} test_sessions={walk.get('test_sessions')} test_trades={test.get('trade_count')} "
+                    f"test_net_avg_r={test_net.get('net_average_r')} test_net_dollars={test_net.get('net_total_dollars')} "
+                    f"test_drawdown_r={test.get('max_drawdown_r')} out_of_sample_positive={walk.get('out_of_sample_positive')}"
+                )
                 replay_date = ny_now.date()
             except Exception as error:
                 cycle_failed = True
