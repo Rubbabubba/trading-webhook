@@ -188,6 +188,7 @@ from dashboard_rendering import (
 from swing_broker_submit import (
     SWING_BROKER_SUBMIT_MODULE_VERSION,
     alpaca_order_error_text as swing_broker_alpaca_order_error_text,
+    build_submit_ownership_contract as swing_broker_build_submit_ownership_contract,
     build_client_order_id as swing_broker_build_client_order_id,
     is_nonretryable_alpaca_order_error as swing_broker_is_nonretryable_order_error,
     order_id_from_submit_response as swing_broker_order_id_from_submit_response,
@@ -3196,7 +3197,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-706-candidate-evaluation-ownership"
+PATCH_VERSION = "patch-707-submit-ownership-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -68753,6 +68754,7 @@ def diagnostics_protective_limit_submit_evidence(limit: int = 20):
 def diagnostics_swing_submit_split_readiness():
     execution_status = diagnostics_swing_execution_module_status()
     limit_evidence = _p336_recent_limit_entry_evidence(limit=10)
+    submit_ownership = dict(execution_status.get("p707_submit_ownership_contract") or {})
 
     helper_mismatch_count = int(execution_status.get("mismatch_count") or 0)
     execution_checks = dict(execution_status.get("checks") or {})
@@ -68801,6 +68803,7 @@ def diagnostics_swing_submit_split_readiness():
         "execution_submit_moved": False,
         "broker_submit_still_in_app_py": True,
         "pure_helpers_moved": True,
+        "p707_submit_ownership_contract": submit_ownership,
         "helper_mismatch_count": helper_mismatch_count,
         "submit_decision_helper_ready": submit_decision_helper_ready,
         "limit_path_proven": limit_path_proven,
@@ -68876,6 +68879,19 @@ def diagnostics_swing_execution_module_status():
         "broker_transport_dry_run_probe_ok": bool(transport_probe.get("ok")),
         "broker_transport_shadow_hook_ok": bool(shadow_probe.get("ok")),
     }
+    submit_module_status = swing_execution_submit_module_status()
+    broker_submit_status = swing_broker_submit_module_status(actual_broker_submit_moved=False)
+    broker_transport_status = swing_broker_transport_module_status(production_submit_uses_transport=False)
+    submit_ownership = swing_broker_build_submit_ownership_contract(
+        patch_version=PATCH_VERSION,
+        execution_status=submit_module_status,
+        broker_submit_status=broker_submit_status,
+        broker_transport_status=broker_transport_status,
+        transport_probe=transport_probe,
+        shadow_probe=shadow_probe,
+        production_submit_uses_transport=False,
+        actual_broker_submit_moved=False,
+    )
 
     return {
         "ok": True,
@@ -68894,6 +68910,7 @@ def diagnostics_swing_execution_module_status():
         "broker_transport_dry_run_probe_ok": bool(transport_probe.get("ok")),
         "broker_transport_shadow_hook_ok": bool(shadow_probe.get("ok")),
         "broker_transport_shadow_hook_last": dict(BROKER_TRANSPORT_SHADOW_HOOK_LAST or {}),
+        "p707_submit_ownership_contract": submit_ownership,
         "pure_helpers_moved": [
             "format_order_qty",
             "build_market_order_payload",
@@ -68901,9 +68918,9 @@ def diagnostics_swing_execution_module_status():
             "build_submit_decision",
             "limit_entry_preview",
         ],
-        "submit_module_status": swing_execution_submit_module_status(),
-        "broker_submit_module_status": swing_broker_submit_module_status(actual_broker_submit_moved=False),
-        "broker_transport_module_status": swing_broker_transport_module_status(production_submit_uses_transport=False),
+        "submit_module_status": submit_module_status,
+        "broker_submit_module_status": broker_submit_status,
+        "broker_transport_module_status": broker_transport_status,
         "broker_transport_dry_run_probe": transport_probe,
         "broker_transport_shadow_probe": shadow_probe,
         "checks": checks,

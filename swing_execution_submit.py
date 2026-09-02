@@ -21,7 +21,7 @@ from swing_execution import (
 )
 
 
-SWING_EXECUTION_SUBMIT_MODULE_VERSION = "patch-420-swing-execution-submit-compatibility-module-split"
+SWING_EXECUTION_SUBMIT_MODULE_VERSION = "patch-707-submit-ownership-extraction"
 
 
 def swing_execution_submit_module_status() -> dict:
@@ -32,7 +32,10 @@ def swing_execution_submit_module_status() -> dict:
         "source_module": "swing_execution",
         "source_module_version": SWING_EXECUTION_MODULE_VERSION,
         "broker_free": True,
+        "owns_submit_decision_contract": True,
+        "owns_submit_payload_shapes": True,
         "actual_broker_submit_moved": False,
+        "extraction_phase": "submit_ownership_extraction",
         "exports": [
             "SwingLimitEntryConfig",
             "available_qty_from_plan",
@@ -44,5 +47,5 @@ def swing_execution_submit_module_status() -> dict:
             "build_submit_decision",
             "limit_entry_preview",
         ],
-        "recommended_action": "compatibility_module_ready_keep_broker_submit_in_app_py",
+        "recommended_action": "submit_decision_owned_keep_actual_broker_submit_in_app_py_until_transport_promotion",
     }

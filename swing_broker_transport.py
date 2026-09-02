@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-SWING_BROKER_TRANSPORT_MODULE_VERSION = "patch-424-broker-submit-transport-shadow-parity-hook"
+SWING_BROKER_TRANSPORT_MODULE_VERSION = "patch-707-submit-ownership-extraction"
 
 
 @dataclass(frozen=True)
@@ -245,8 +245,11 @@ def swing_broker_transport_module_status(*, production_submit_uses_transport: bo
         "module": "swing_broker_transport",
         "module_version": SWING_BROKER_TRANSPORT_MODULE_VERSION,
         "broker_free": True,
+        "owns_transport_contract": True,
+        "owns_submit_transport_probe": True,
         "production_submit_uses_transport": bool(production_submit_uses_transport),
         "app_py_still_owns_alpaca_client": not bool(production_submit_uses_transport),
+        "extraction_phase": "submit_ownership_extraction",
         "exports": [
             "BrokerSubmitTransportConfig",
             "classify_transport_result",
@@ -258,6 +261,6 @@ def swing_broker_transport_module_status(*, production_submit_uses_transport: bo
         "recommended_action": (
             "transport_wrapper_live_in_production_verify_submit"
             if production_submit_uses_transport
-            else "transport_wrapper_ready_keep_production_submit_in_app_py"
+            else "transport_contract_owned_keep_production_submit_in_app_py_until_explicit_promotion"
         ),
     }
