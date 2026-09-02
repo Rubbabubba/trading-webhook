@@ -1905,6 +1905,14 @@ PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true"
 SWING_LIVE_RISK_MODE = getenv_any("SWING_LIVE_RISK_MODE", "LIVE_RISK_MODE", default="validation_pause_entries")
 SWING_VALIDATION_RISK_MULTIPLIER = getenv_float_any("SWING_VALIDATION_RISK_MULTIPLIER", default=0.25)
 SWING_VALIDATION_ALLOW_PAPER_ENTRIES = env_bool_any("SWING_VALIDATION_ALLOW_PAPER_ENTRIES", default=False)
+SWING_VALIDATION_PROMOTED_LIVE_ENABLED = env_bool_any("SWING_VALIDATION_PROMOTED_LIVE_ENABLED", default=False)
+SWING_VALIDATION_PROMOTED_LIVE_SLEEVES = getenv_any("SWING_VALIDATION_PROMOTED_LIVE_SLEEVES", default="").strip()
+SWING_VALIDATION_PROMOTED_LIVE_STRATEGIES = getenv_any("SWING_VALIDATION_PROMOTED_LIVE_STRATEGIES", default="").strip()
+SWING_VALIDATION_PROMOTED_LIVE_SYMBOLS = getenv_any("SWING_VALIDATION_PROMOTED_LIVE_SYMBOLS", default="").strip()
+SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS = env_bool_any(
+    "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS",
+    default=True,
+)
 
 SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED = env_bool_any(
     "SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED",
@@ -3198,7 +3206,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-710-legacy-route-and-compatibility-tombstone-removal"
+PATCH_VERSION = "patch-711-validation-promoted-live-sleeve-contract-submit-gap-classification-cleanup"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17806,6 +17814,18 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         for sym in p641_consumer_non_actionable_source_symbols
         if str(sym or "").strip()
     ]))
+    p711_validation_paused_symbols = set(_dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(p540_selected_consumer_truth.get("validation_paused_symbols") or [])
+        if str(sym or "").strip()
+    ] + [
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in list(p540_selected_consumer_truth.get("rows") or [])
+        if isinstance(row, dict)
+        and bool(row.get("validation_paused_selected_hold"))
+        and str((row or {}).get("symbol") or "").strip()
+    ]))
+    p641_consumer_non_actionable_symbols.update(p711_validation_paused_symbols)
     if requested_symbols:
         p540_consumer_selected_symbols = [
             sym for sym in p540_consumer_selected_symbols
@@ -18106,6 +18126,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
         + list(p595_consumer_retry_waiting_symbols)
         + list(p569_stale_selected_submit_timeout_symbols)
         + list(resolved_submit_timeout_symbols)
+        + list(p711_validation_paused_symbols)
     )
     p524_selection_revalidation = _p524_revalidate_current_selected_symbols(
         production_selected_symbols,
@@ -18190,6 +18211,14 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     elif resolved_submit_timeout_symbols and set(selected_symbols).issubset(set(active_symbols) | set(pending_symbols) | set(actual_submit_side_effect_symbols)):
         path_status = "selected_timeout_resolved_by_active_plan"
         recommended_action = "monitor_active_positions"
+    elif p711_validation_paused_symbols and set(production_selected_symbols).issubset(
+        set(p711_validation_paused_symbols)
+        | set(active_symbols)
+        | set(pending_symbols)
+        | set(actual_submit_side_effect_symbols)
+    ):
+        path_status = "validation_paused_selected_candidates_intentionally_held"
+        recommended_action = "configure_replay_promoted_reduced_risk_sleeve_or_keep_validation_pause"
     elif missing_submit_symbols or submit_gap_symbols:
         path_status = "selected_submit_gap_detected"
         recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
@@ -18399,6 +18428,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
                 "consumer_selected_symbols": p540_consumer_selected_symbols,
                 "trace_selected_symbols": production_selected_symbols,
                 "consumer_non_actionable_symbols": sorted(p641_consumer_non_actionable_symbols),
+                "validation_paused_symbols": sorted(p711_validation_paused_symbols),
                 "adopted_consumer_symbols": bool(
                     p540_consumer_selected_symbols
                     and p540_consumer_selected_symbols == production_selected_symbols
@@ -18446,10 +18476,16 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "submit_phase_pending": bool(p554_submit_pending),
             "submit_gap_symbols": submit_gap_symbols,
             "missing_submit_symbols": missing_submit_symbols,
+            "validation_paused_symbols": sorted(p711_validation_paused_symbols),
+            "validation_paused_count": len(p711_validation_paused_symbols),
+            "p711_validation_promoted_live_sleeve_contract": dict(
+                p540_selected_consumer_truth.get("p711_validation_promoted_live_sleeve_contract") or {}
+            ),
             "p641_selected_submit_gap_actionability_sync": {
                 "enabled": True,
                 "consumer_non_actionable_symbols": sorted(p641_consumer_non_actionable_symbols),
                 "submit_gap_symbols_are_actionable_only": True,
+                "validation_pause_entries_is_intentional_hold_not_submit_gap": True,
                 "read_only": True,
                 "does_not_submit_orders": True,
             },
@@ -22240,6 +22276,204 @@ def _p700_validation_risk_multiplier() -> float:
         return 0.25
 
 
+def _p711_csv_tokens(raw: str | None = None, *, upper: bool = False) -> list[str]:
+    out = []
+    for item in str(raw or "").replace(";", ",").replace("|", ",").split(","):
+        token = item.strip()
+        if not token:
+            continue
+        out.append(token.upper() if upper else token.lower())
+    return _dedupe_keep_order(out)
+
+
+def _p711_first_text(*values) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _p711_mapping_truthy(row: dict | None, keys: list[str]) -> bool:
+    item = dict(row or {})
+    for key in keys:
+        if bool(item.get(key)):
+            return True
+    promotion = item.get("promotion_contract")
+    if isinstance(promotion, dict):
+        for key in keys:
+            if bool(promotion.get(key)):
+                return True
+    replay = item.get("replay_promotion_gate")
+    if isinstance(replay, dict):
+        for key in keys:
+            if bool(replay.get(key)):
+                return True
+    return False
+
+
+def _p711_validation_promoted_live_sleeve_contract(
+    source: str = "",
+    *,
+    meta: dict | None = None,
+    candidate: dict | None = None,
+    validation_contract: dict | None = None,
+) -> dict:
+    meta = dict(meta or {})
+    candidate = dict(candidate or {})
+    validation = dict(validation_contract or {})
+    canonical_mode = str(
+        validation.get("canonical_mode")
+        or _p700_normalize_live_risk_mode()
+    ).strip()
+    validation_paused = canonical_mode == "validation_pause_entries"
+    symbol = _p711_first_text(candidate.get("symbol"), meta.get("symbol")).upper()
+    strategy = _p711_first_text(
+        candidate.get("strategy"),
+        candidate.get("strategy_name"),
+        candidate.get("signal"),
+        meta.get("strategy"),
+        meta.get("strategy_name"),
+        meta.get("signal"),
+    ).lower() or "unknown"
+    sleeve = _p711_first_text(
+        candidate.get("sleeve"),
+        candidate.get("strategy_sleeve"),
+        candidate.get("entry_type"),
+        candidate.get("selection_source"),
+        meta.get("sleeve"),
+        meta.get("strategy_sleeve"),
+        meta.get("entry_type"),
+        meta.get("selection_source"),
+    ).lower() or strategy
+    allowed_sleeves = _p711_csv_tokens(SWING_VALIDATION_PROMOTED_LIVE_SLEEVES)
+    allowed_strategies = _p711_csv_tokens(SWING_VALIDATION_PROMOTED_LIVE_STRATEGIES)
+    allowed_symbols = _p711_csv_tokens(SWING_VALIDATION_PROMOTED_LIVE_SYMBOLS, upper=True)
+    has_allowlist = bool(allowed_sleeves or allowed_strategies or allowed_symbols)
+    allowlist_match = bool(
+        has_allowlist
+        and (not allowed_sleeves or sleeve in allowed_sleeves)
+        and (not allowed_strategies or strategy in allowed_strategies)
+        and (not allowed_symbols or symbol in allowed_symbols)
+    )
+    replay_passed = bool(
+        _p711_mapping_truthy(candidate, [
+            "replay_promotion_passed",
+            "replay_promotion_ready",
+            "promotion_ready",
+            "oos_passed",
+            "ready",
+        ])
+        or _p711_mapping_truthy(meta, [
+            "replay_promotion_passed",
+            "replay_promotion_ready",
+            "promotion_ready",
+            "oos_passed",
+            "ready",
+        ])
+    )
+    replay_required = bool(SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS)
+    enabled = bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED)
+    blockers = []
+    if validation_paused:
+        if not enabled:
+            blockers.append("promoted_live_disabled")
+        if not has_allowlist:
+            blockers.append("promoted_live_allowlist_empty")
+        elif not allowlist_match:
+            blockers.append("candidate_not_in_promoted_live_allowlist")
+        if replay_required and not replay_passed:
+            blockers.append("replay_promotion_evidence_missing")
+    promoted_allowed = bool(validation_paused and enabled and allowlist_match and (replay_passed or not replay_required))
+    entry_orders_permitted_now = bool(
+        promoted_allowed
+        or (not validation_paused and bool(validation.get("entry_orders_permitted")))
+    )
+    classification = (
+        "validation_promoted_live_allowed"
+        if promoted_allowed
+        else "validation_promoted_live_blocked"
+        if validation_paused and enabled
+        else "validation_paused"
+        if validation_paused
+        else "validation_not_paused"
+    )
+    return {
+        "enabled": enabled,
+        "source": str(source or "").strip() or "unknown",
+        "validation_paused": bool(validation_paused),
+        "classification": classification,
+        "validation_promoted_live_allowed": bool(promoted_allowed),
+        "validation_promoted_live_blocked": bool(validation_paused and not promoted_allowed),
+        "entry_orders_permitted_now": bool(entry_orders_permitted_now),
+        "reduced_risk_required": bool(promoted_allowed),
+        "risk_multiplier": float(_p700_validation_risk_multiplier()),
+        "symbol": symbol,
+        "strategy": strategy,
+        "sleeve": sleeve,
+        "allowlist_configured": bool(has_allowlist),
+        "allowlist_match": bool(allowlist_match),
+        "replay_required": bool(replay_required),
+        "replay_promotion_passed": bool(replay_passed),
+        "blockers": blockers,
+        "env": {
+            "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+            "SWING_VALIDATION_PROMOTED_LIVE_SLEEVES": SWING_VALIDATION_PROMOTED_LIVE_SLEEVES,
+            "SWING_VALIDATION_PROMOTED_LIVE_STRATEGIES": SWING_VALIDATION_PROMOTED_LIVE_STRATEGIES,
+            "SWING_VALIDATION_PROMOTED_LIVE_SYMBOLS": SWING_VALIDATION_PROMOTED_LIVE_SYMBOLS,
+            "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS": bool(
+                SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS
+            ),
+        },
+        "recommended_action": (
+            "submit_reduced_risk_promoted_variant"
+            if promoted_allowed
+            else "stay_paused_until_replay_promoted_sleeve_is_configured"
+            if validation_paused
+            else "use_current_live_risk_mode"
+        ),
+    }
+
+
+def _p711_validation_pause_submit_truth(
+    submit_state: str = "",
+    submit_reason: str = "",
+    submit_row: dict | None = None,
+) -> dict:
+    row = dict(submit_row or {})
+    state_norm = str(submit_state or row.get("submit_state") or row.get("state") or "").strip().lower()
+    reason_norm = str(submit_reason or row.get("submit_reason") or row.get("reason") or "").strip().lower()
+    contract = row.get("p700_live_risk_validation_contract")
+    contract = dict(contract) if isinstance(contract, dict) else {}
+    validation_paused = bool(
+        reason_norm == "validation_pause_entries"
+        or state_norm == "validation_pause_entries"
+        or (
+            state_norm in {"ignored", "skipped", "blocked"}
+            and reason_norm in {
+                "validation_pause_entries",
+                "validation_hard_stop_active_audit_broker_fills_only",
+            }
+        )
+        or bool(contract.get("validation_pause_entries"))
+    )
+    return {
+        "enabled": True,
+        "validation_paused": bool(validation_paused),
+        "classification": "validation_paused_intentional_hold" if validation_paused else "not_validation_pause",
+        "submit_state": state_norm,
+        "submit_reason": reason_norm,
+        "submit_gap_allowed": not validation_paused,
+        "read_only": True,
+        "does_not_submit_orders": True,
+        "recommended_action": (
+            "stay_paused_or_promote_reduced_risk_sleeve_after_replay_gate"
+            if validation_paused
+            else "use_existing_submit_gap_classification"
+        ),
+    }
+
+
 def _p700_live_risk_validation_contract(source: str = "", mode: str | None = None, base_risk_dollars: float | None = None) -> dict:
     source = str(source or "").strip() or "unknown"
     raw_mode = str(SWING_LIVE_RISK_MODE if mode is None else mode or "").strip()
@@ -22251,6 +22485,13 @@ def _p700_live_risk_validation_contract(source: str = "", mode: str | None = Non
     effective_risk = round(max(0.0, base_risk * multiplier), 2)
     entry_orders_permitted = bool(canonical_mode == "normal" or reduced_risk)
     paper_entries_permitted = bool(entry_orders_permitted or SWING_VALIDATION_ALLOW_PAPER_ENTRIES)
+    promoted_contract = _p711_validation_promoted_live_sleeve_contract(
+        source=source,
+        validation_contract={
+            "canonical_mode": canonical_mode,
+            "entry_orders_permitted": entry_orders_permitted,
+        },
+    )
     return {
         "ok": True,
         "patch_version": PATCH_VERSION,
@@ -22273,6 +22514,7 @@ def _p700_live_risk_validation_contract(source: str = "", mode: str | None = Non
             "SWING_VALIDATION_RISK_MULTIPLIER": float(_p700_validation_risk_multiplier()),
             "SWING_VALIDATION_ALLOW_PAPER_ENTRIES": bool(SWING_VALIDATION_ALLOW_PAPER_ENTRIES),
         },
+        "p711_validation_promoted_live_sleeve_contract": promoted_contract,
         "source": source,
         "recommended_action": (
             "validation_hard_stop_active_audit_broker_fills_only"
@@ -22288,6 +22530,12 @@ def _p700_live_risk_validation_contract(source: str = "", mode: str | None = Non
 
 def _p700_entry_admission_block(source: str = "", meta: dict | None = None) -> dict:
     contract = _p700_live_risk_validation_contract(source)
+    promoted_contract = _p711_validation_promoted_live_sleeve_contract(
+        source=source,
+        meta=meta,
+        validation_contract=contract,
+    )
+    contract["p711_validation_promoted_live_sleeve_contract"] = promoted_contract
     blocked = bool(contract.get("validation_pause_entries"))
     return {
         "blocked": blocked,
@@ -32759,10 +33007,29 @@ def _p550_selected_submission_truth_snapshot_light(
             submit_reason,
         )
         candidate_row = dict(candidate_by_symbol_for_selected_truth.get(sym) or {})
+        p711_validation_pause_truth = _p711_validation_pause_submit_truth(
+            submit_state,
+            submit_reason,
+            submit_row,
+        )
+        p711_promoted_live_contract = _p711_validation_promoted_live_sleeve_contract(
+            source="selected_submission_truth_light",
+            meta={
+                "symbol": sym,
+                "strategy": submit_row.get("signal") or submit_row.get("strategy") or candidate_row.get("strategy"),
+                "sleeve": candidate_row.get("sleeve") or candidate_row.get("entry_type") or candidate_row.get("selection_source"),
+            },
+            candidate=candidate_row,
+        )
         candidate_would_trade = candidate_row.get("would_trade")
         selected_not_submit_capable = bool(
             candidate_row
             and candidate_would_trade is False
+            and not actual_submit_side_effect
+            and not pending_order_only_plan
+        )
+        validation_paused_selected_hold = bool(
+            p711_validation_pause_truth.get("validation_paused")
             and not actual_submit_side_effect
             and not pending_order_only_plan
         )
@@ -32831,6 +33098,7 @@ def _p550_selected_submission_truth_snapshot_light(
             and not rate_limited_retryable
             and not execution_quality_blocked
             and not selected_not_submit_capable
+            and not validation_paused_selected_hold
             and not symbol_lock_cooldown
             and not selected_timeout_retry_consumable
             and not effective_selected_submit_timeout
@@ -32866,6 +33134,8 @@ def _p550_selected_submission_truth_snapshot_light(
                 if execution_quality_blocked
                 else "selected_not_submit_capable"
                 if selected_not_submit_capable
+                else "validation_paused_intentional_hold"
+                if validation_paused_selected_hold
                 else "non_actionable_symbol_lock_cooldown"
                 if symbol_lock_cooldown
                 else "selected_submit_timeout"
@@ -32895,6 +33165,8 @@ def _p550_selected_submission_truth_snapshot_light(
                 if execution_quality_blocked
                 else "selected_not_submit_capable"
                 if selected_not_submit_capable
+                else "validation_paused_intentional_hold"
+                if validation_paused_selected_hold
                 else "non_actionable_symbol_lock_cooldown"
                 if symbol_lock_cooldown
                 else "selected_submit_timeout_requires_reconcile"
@@ -32910,6 +33182,9 @@ def _p550_selected_submission_truth_snapshot_light(
             "rate_limited_retryable": bool(rate_limited_retryable),
             "execution_quality_blocked": bool(execution_quality_blocked),
             "selected_not_submit_capable": bool(selected_not_submit_capable),
+            "validation_paused_selected_hold": bool(validation_paused_selected_hold),
+            "p711_validation_pause_submit_truth": dict(p711_validation_pause_truth),
+            "p711_validation_promoted_live_sleeve_contract": dict(p711_promoted_live_contract),
             "candidate_would_trade": candidate_would_trade,
             "candidate_rejection_reasons": list(candidate_row.get("rejection_reasons") or []),
             "symbol_lock_cooldown": bool(symbol_lock_cooldown),
@@ -32935,12 +33210,15 @@ def _p550_selected_submission_truth_snapshot_light(
                 "enabled": True,
                 "submit_gap_is_actionable": bool(submit_gap and p578_market_submit_truth.get("market_hours_submit_possible")),
                 "selected_not_submit_capable": bool(selected_not_submit_capable),
+                "validation_paused_selected_hold": bool(validation_paused_selected_hold),
                 "symbol_lock_cooldown": bool(symbol_lock_cooldown),
                 "queued_timeout_retry_owned": bool(selected_timeout_retry_consumable),
                 "candidate_would_trade": candidate_would_trade,
                 "reason": (
                     "selected_candidate_would_trade_false"
                     if selected_not_submit_capable
+                    else "validation_pause_entries_intentional_hold_not_submit_gap"
+                    if validation_paused_selected_hold
                     else "symbol_lock_cooldown_not_submit_gap"
                     if symbol_lock_cooldown
                     else "queued_timeout_retry_waiting_not_submit_gap"
@@ -33037,9 +33315,31 @@ def _p550_selected_submission_truth_snapshot_light(
         and bool((row or {}).get("symbol_lock_cooldown"))
         and str((row or {}).get("symbol") or "").strip()
     ])
+    p711_validation_paused_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict)
+        and bool((row or {}).get("validation_paused_selected_hold"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    p711_promoted_live_allowed_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict)
+        and bool(((row or {}).get("p711_validation_promoted_live_sleeve_contract") or {}).get("validation_promoted_live_allowed"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
+    p711_promoted_live_blocked_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict)
+        and bool(((row or {}).get("p711_validation_promoted_live_sleeve_contract") or {}).get("validation_promoted_live_blocked"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
     p641_non_actionable_selected_symbols = _dedupe_keep_order(
         list(p641_selected_not_submit_capable_symbols)
         + list(p641_symbol_lock_cooldown_symbols)
+        + list(p711_validation_paused_symbols)
     )
     p642_queued_timeout_retry_symbols = _dedupe_keep_order([
         str((row or {}).get("symbol") or "").strip().upper()
@@ -33053,7 +33353,7 @@ def _p550_selected_submission_truth_snapshot_light(
         + list(p642_queued_timeout_retry_symbols)
     )
     if (
-        p641_non_actionable_selected_symbols
+        p642_non_actionable_selected_symbols
         and not out.get("submit_gap_symbols")
         and not out.get("submit_pending_symbols")
         and not out.get("selected_submit_timeout_symbols")
@@ -33062,7 +33362,14 @@ def _p550_selected_submission_truth_snapshot_light(
         and not out.get("retryable_spread_block_symbols")
         and not out.get("execution_quality_block_symbols")
     ):
-        out["recommended_action"] = "selected_candidate_non_actionable_monitor_next_scan"
+        out["recommended_action"] = (
+            "validation_pause_entries_intentionally_holding_selected_candidates"
+            if p711_validation_paused_symbols
+            and not p641_selected_not_submit_capable_symbols
+            and not p641_symbol_lock_cooldown_symbols
+            and not p642_queued_timeout_retry_symbols
+            else "selected_candidate_non_actionable_monitor_next_scan"
+        )
         out["selected_without_side_effect"] = False
     p564_unresolved_timeout_symbols = [
         row.get("symbol") for row in rows
@@ -33095,10 +33402,12 @@ def _p550_selected_submission_truth_snapshot_light(
             "enabled": True,
             "selected_not_submit_capable_symbols": p641_selected_not_submit_capable_symbols,
             "symbol_lock_cooldown_symbols": p641_symbol_lock_cooldown_symbols,
+            "validation_paused_symbols": p711_validation_paused_symbols,
             "non_actionable_symbols": p642_non_actionable_selected_symbols,
             "submit_gap_symbols_are_actionable_only": True,
             "symbol_locked_is_cooldown_not_terminal_failure": True,
             "would_trade_false_is_evidence_not_submit_gap": True,
+            "validation_pause_entries_is_intentional_hold_not_submit_gap": True,
             "read_only": True,
             "does_not_submit_orders": True,
         },
@@ -33111,6 +33420,29 @@ def _p550_selected_submission_truth_snapshot_light(
             "read_only": True,
             "does_not_submit_orders": True,
         },
+        "p711_validation_promoted_live_sleeve_contract": {
+            "enabled": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+            "validation_paused_symbols": p711_validation_paused_symbols,
+            "validation_paused_count": len(p711_validation_paused_symbols),
+            "validation_promoted_live_allowed_symbols": p711_promoted_live_allowed_symbols,
+            "validation_promoted_live_allowed_count": len(p711_promoted_live_allowed_symbols),
+            "validation_promoted_live_blocked_symbols": p711_promoted_live_blocked_symbols,
+            "validation_promoted_live_blocked_count": len(p711_promoted_live_blocked_symbols),
+            "validation_pause_entries_is_intentional_hold_not_submit_gap": True,
+            "trade_submission_behavior_changed": False,
+            "read_only": True,
+            "does_not_submit_orders": True,
+            "recommended_action": (
+                "configure_replay_promoted_reduced_risk_sleeve_before_unpausing_entries"
+                if p711_validation_paused_symbols and not p711_promoted_live_allowed_symbols
+                else "monitor_promoted_reduced_risk_entries"
+                if p711_promoted_live_allowed_symbols
+                else "no_validation_paused_selected_candidates"
+            ),
+        },
+        "validation_paused_symbols": p711_validation_paused_symbols,
+        "validation_paused_count": len(p711_validation_paused_symbols),
+        "non_actionable_submit_gap_symbols": p642_non_actionable_selected_symbols,
         "p590_effective_scan_source_unification": dict(p590_context.get("truth") or {}),
         "p591_effective_selected_symbol_authority": {
             "enabled": True,

@@ -530,29 +530,29 @@ Phase 5 is the bridge from hard-stop validation back to normal live operation. T
 
 ### Patch 711: Validation-Promoted Live Sleeve Contract + Submit Gap Classification Cleanup
 
-Status: next.
+Status: applied locally in Patch 711; pending deploy verification.
 
-Goal: allow only replay-promoted strategy sleeves to pass through validation mode while making intentionally paused candidates stop looking like broken submit gaps.
+Goal: define the replay-promoted strategy sleeve contract while making intentionally paused candidates stop looking like broken submit gaps.
 
 Scope:
 
 - Add a single promoted-live-sleeve contract with `validation_paused`, `validation_promoted_live_allowed`, and `validation_promoted_live_blocked` classifications.
 - Keep Patch 700 validation mode active for broad/new entries.
 - Treat `validation_pause_entries` as intentional hold truth, not submit failure truth.
-- Require promoted sleeve identity, current config alignment, and replay/OOS evidence before any candidate can leave validation pause.
+- Require promoted sleeve identity, current config alignment, and replay/OOS evidence before any candidate can leave validation pause in the next operational patch.
 - Keep all 50 symbols visible in scanner and diagnostics.
 - Add no symbol-specific exceptions.
 
 Expected outcome:
 
 - Selected candidates that are paused show as intentionally held.
-- Only promoted variants can submit at reduced risk.
+- Promoted variants are classified cleanly for the reduced-risk submit wiring in Patch 712.
 - Submit-gap diagnostics become cleaner and less alarming.
 
 Smoke tests:
 
 - Paused non-promoted candidates do not submit and do not report as broken submit gaps.
-- Promoted candidates become eligible for reduced-risk submit.
+- Promoted candidates show the required contract evidence for reduced-risk submit.
 - Existing scanner, live positions, and exit endpoints remain unchanged.
 - Route import/compile checks pass.
 
