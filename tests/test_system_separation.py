@@ -40,3 +40,9 @@ def test_regime_worker_cannot_call_swing_routes():
     assert "/worker/scan_entries" not in worker
     assert "/worker/exit" not in worker
     assert "/worker/regime_intraday_scan" in worker
+
+
+def test_legacy_swing_entries_are_hard_retired_in_application_source():
+    source = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert "LEGACY_SWING_NEW_ENTRIES_RETIRED = True" in source
+    assert "if LEGACY_SWING_NEW_ENTRIES_RETIRED:\n    NEW_ENTRIES_ENABLED = False" in source

@@ -1994,6 +1994,11 @@ SCANNER_ENABLED = env_bool_any("SCANNER_ENABLED", "SWING_SCANNER_ENABLED", defau
 SCANNER_DRY_RUN = env_bool_any("SCANNER_DRY_RUN", default="true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
 NEW_ENTRIES_ENABLED = env_bool_any("NEW_ENTRIES_ENABLED", "ENTRIES_ENABLED", default="true")
+LEGACY_SWING_NEW_ENTRIES_RETIRED = True
+# Separation cutover: preserve swing exit management, but make every legacy
+# entry path fail closed regardless of stale Render environment values.
+if LEGACY_SWING_NEW_ENTRIES_RETIRED:
+    NEW_ENTRIES_ENABLED = False
 PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
 SWING_LIVE_RISK_MODE = getenv_any(
     "SWING_LIVE_RISK_MODE",
@@ -44824,7 +44829,7 @@ def health():
         "kill_switch": KILL_SWITCH,
         "active_plans": {k: v.get("active") for k, v in TRADE_PLAN.items()},
         "systems": {
-            "swing": {"status": "legacy_active", "broker_mode": "paper" if APCA_PAPER else "live", "live_entries_enabled": bool(LIVE_TRADING_ENABLED), "strategy_mode": STRATEGY_MODE, "dashboard": "/dashboard/live"},
+            "swing": {"status": "isolated_exit_management", "broker_mode": "paper" if APCA_PAPER else "live", "live_entries_enabled": bool(LIVE_TRADING_ENABLED and NEW_ENTRIES_ENABLED and not LEGACY_SWING_NEW_ENTRIES_RETIRED), "strategy_mode": STRATEGY_MODE, "dashboard": "/dashboard/live"},
             "regime_intraday": {"status": "paper_validation", "broker_mode": "paper", "live_entries_enabled": False, "regime_inputs": list(intraday_cfg.symbols), "trade_symbols": list(intraday_cfg.trade_symbols), "momentum_enabled": bool(intraday_cfg.momentum_enabled), "mean_reversion_enabled": bool(intraday_cfg.mean_reversion_enabled), "latest_regime": dict(intraday_scan.get("regime") or {}).get("name"), "paper_order_count": intraday_summary.get("paper_order_count", 0), "dashboard": "/dashboard/intraday"},
         },
     }

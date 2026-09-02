@@ -33,11 +33,12 @@ def main() -> int:
     checks.extend([
         ("health_200", health_status == 200, health_status),
         ("intraday_paper_only", intraday.get("status") == "paper_validation" and intraday.get("live_entries_enabled") is False, intraday),
-        ("legacy_swing_identified", swing.get("status") == "legacy_active", swing),
+        ("legacy_swing_exit_only", swing.get("status") == "isolated_exit_management" and swing.get("live_entries_enabled") is False, swing),
     ])
 
     catalog_status, catalog, _ = _request("/diagnostics/route_catalog")
     archived = {str(row.get("path")) for row in list(catalog.get("archived_routes") or [])}
+    auth_header = next((value for key, value in dashboard_headers.items() if key.lower() == "www-authenticate"), "")
     checks.extend([
         ("catalog_200", catalog_status == 200, catalog_status),
         ("active_route_count_243", catalog.get("route_count") == 243, catalog.get("route_count")),
@@ -49,7 +50,7 @@ def main() -> int:
     dashboard_status, _, dashboard_headers = _request("/dashboard/intraday")
     checks.extend([
         ("retired_route_not_served", retired_status == 404, retired_status),
-        ("dashboard_requires_auth", dashboard_status == 401 and "Basic" in str(dashboard_headers.get("WWW-Authenticate", "")), dashboard_status),
+        ("dashboard_requires_auth", dashboard_status == 401 and "Basic" in str(auth_header), {"status": dashboard_status, "header": auth_header}),
     ])
 
     for name, passed, evidence in checks:
