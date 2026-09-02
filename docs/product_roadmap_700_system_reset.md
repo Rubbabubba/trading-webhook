@@ -566,7 +566,7 @@ Post-deploy endpoints:
 
 ### Patch 712: Reduced-Risk Promotion Config + Broker-Fill Outcome Watch
 
-Status: planned.
+Status: applied locally in Patch 712; pending deploy verification.
 
 Goal: make reduced-risk live operation explicit, measurable, and reversible before full live restore.
 

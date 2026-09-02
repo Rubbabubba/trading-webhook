@@ -1913,6 +1913,18 @@ SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS = env_bool_any(
     "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS",
     default=True,
 )
+SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS = getenv_float_any(
+    "SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS",
+    default=10.0,
+)
+SWING_VALIDATION_PROMOTED_LIVE_MAX_POSITION_DOLLARS = getenv_float_any(
+    "SWING_VALIDATION_PROMOTED_LIVE_MAX_POSITION_DOLLARS",
+    default=2000.0,
+)
+SWING_VALIDATION_PROMOTED_LIVE_DAILY_ENTRY_LIMIT = int(getenv_any(
+    "SWING_VALIDATION_PROMOTED_LIVE_DAILY_ENTRY_LIMIT",
+    default="1",
+) or 1)
 
 SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED = env_bool_any(
     "SWING_DAILY_GOAL_PRESERVATION_EXIT_ENABLED",
@@ -3206,7 +3218,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-711-validation-promoted-live-sleeve-contract-submit-gap-classification-cleanup"
+PATCH_VERSION = "patch-712-reduced-risk-promotion-config-broker-fill-outcome-watch"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -8111,7 +8123,11 @@ def compute_qty(price: float, side: str = "buy", meta: dict | None = None) -> fl
     if bool(downshift.get("applies")):
         multiplier = max(0.05, min(1.0, float(_safe_float(downshift.get("risk_multiplier"), 1.0))))
         effective_risk_dollars = float(effective_risk_dollars or 0.0) * multiplier
-    effective_risk_dollars = _p700_apply_validation_risk_dollars(effective_risk_dollars, source=str(meta.get("source") or "worker_scan"))
+    effective_risk_dollars = _p700_apply_validation_risk_dollars(
+        effective_risk_dollars,
+        source=str(meta.get("source") or "worker_scan"),
+        meta=meta,
+    )
     qty = float(effective_risk_dollars or 0.0) / risk_per_share
 
     if bool(SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED):
@@ -8497,6 +8513,8 @@ def _candidate_attribution_meta(row: dict | None, source: str = "") -> dict:
         "target_price": row.get("target_price") or row.get("take_price"),
         "risk_per_share": row.get("risk_per_share"),
         "scan_ts": row.get("scan_ts_utc") or row.get("ts_utc"),
+        "p712_promoted_live": bool(row.get("p712_promoted_live")),
+        "p712_reduced_risk_promotion_contract": dict(row.get("p712_reduced_risk_promotion_contract") or {}),
         "attribution_source": source,
     }
 
@@ -18481,6 +18499,9 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
             "p711_validation_promoted_live_sleeve_contract": dict(
                 p540_selected_consumer_truth.get("p711_validation_promoted_live_sleeve_contract") or {}
             ),
+            "p712_reduced_risk_promotion_contract": dict(
+                p540_selected_consumer_truth.get("p712_reduced_risk_promotion_contract") or {}
+            ),
             "p641_selected_submit_gap_actionability_sync": {
                 "enabled": True,
                 "consumer_non_actionable_symbols": sorted(p641_consumer_non_actionable_symbols),
@@ -19783,6 +19804,8 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
         "target_path_recovery_mode": bool(meta.get("target_path_recovery_mode")),
         "weak_tape_target_override": bool(meta.get("weak_tape_target_override")),
         "true_dollar_risk_sizing": dict(meta.get("p388_true_dollar_risk_sizing") or {}),
+        "p712_promoted_live": bool(meta.get("p712_promoted_live")),
+        "p712_reduced_risk_promotion_contract": dict(meta.get("p712_reduced_risk_promotion_contract") or {}),
         "sizing_contract": "true_dollar_risk_from_active_stop",
     }
     plan["thesis"] = {
@@ -19817,6 +19840,8 @@ def build_trade_plan(symbol: str, side: str, qty: float, entry_price: float, sig
             "defensive_max_20d_return_pct": meta.get("defensive_max_20d_return_pct"),
             "defensive_max_risk_per_share_pct": meta.get("defensive_max_risk_per_share_pct"),
             "rejection_reasons_at_entry": list(meta.get("rejection_reasons") or []),
+            "p712_promoted_live": bool(meta.get("p712_promoted_live")),
+            "p712_reduced_risk_promotion_contract": dict(meta.get("p712_reduced_risk_promotion_contract") or {}),
         },
     }
     return plan
@@ -22278,12 +22303,17 @@ def _p700_validation_risk_multiplier() -> float:
 
 def _p711_csv_tokens(raw: str | None = None, *, upper: bool = False) -> list[str]:
     out = []
+    seen = set()
     for item in str(raw or "").replace(";", ",").replace("|", ",").split(","):
         token = item.strip()
         if not token:
             continue
-        out.append(token.upper() if upper else token.lower())
-    return _dedupe_keep_order(out)
+        token = token.upper() if upper else token.lower()
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
 
 
 def _p711_first_text(*values) -> str:
@@ -22474,6 +22504,126 @@ def _p711_validation_pause_submit_truth(
     }
 
 
+def _p712_today_promoted_live_entry_count() -> int:
+    today_ny = now_ny().date()
+    count = 0
+    for row in list(DECISIONS or []):
+        try:
+            if str((row or {}).get("event") or "").upper() != "ENTRY":
+                continue
+            if str((row or {}).get("action") or "").lower() != "order_submitted":
+                continue
+            ts_raw = str((row or {}).get("ts_ny") or (row or {}).get("ts_utc") or "").strip()
+            if ts_raw:
+                dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt.astimezone(NY_TZ).date() != today_ny:
+                    continue
+            details = dict((row or {}).get("details") or {})
+            meta = dict(details.get("meta") or {}) if isinstance(details.get("meta"), dict) else {}
+            p712 = meta.get("p712_reduced_risk_promotion_contract")
+            p711 = meta.get("p711_validation_promoted_live_sleeve_contract")
+            if isinstance(p712, dict) and bool(p712.get("promoted_live_reduced_risk")):
+                count += 1
+            elif isinstance(p711, dict) and bool(p711.get("validation_promoted_live_allowed")):
+                count += 1
+        except Exception:
+            continue
+    return count
+
+
+def _p712_reduced_risk_promotion_contract(
+    source: str = "",
+    *,
+    meta: dict | None = None,
+    base_risk_dollars: float | None = None,
+    validation_contract: dict | None = None,
+) -> dict:
+    meta = dict(meta or {})
+    validation = dict(validation_contract or _p700_live_risk_validation_contract(source))
+    p711_meta_contract = meta.get("p711_validation_promoted_live_sleeve_contract")
+    p711_meta_contract = dict(p711_meta_contract) if isinstance(p711_meta_contract, dict) else {}
+    has_candidate_identity = bool(
+        _p711_first_text(
+            meta.get("symbol"),
+            meta.get("strategy"),
+            meta.get("strategy_name"),
+            meta.get("signal"),
+            meta.get("sleeve"),
+            meta.get("entry_type"),
+        )
+    )
+    p711 = (
+        p711_meta_contract
+        if p711_meta_contract and not has_candidate_identity
+        else _p711_validation_promoted_live_sleeve_contract(
+            source=source,
+            meta=meta,
+            validation_contract=validation,
+        )
+    )
+    base_risk = max(0.0, float(base_risk_dollars if base_risk_dollars is not None else RISK_DOLLARS or 0.0))
+    multiplier = float(_p700_validation_risk_multiplier())
+    max_risk = max(0.0, float(SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS or 0.0))
+    reduced_risk = round(base_risk * multiplier, 4)
+    effective_risk = round(min(reduced_risk, max_risk) if max_risk > 0 else reduced_risk, 4)
+    daily_limit = max(0, int(SWING_VALIDATION_PROMOTED_LIVE_DAILY_ENTRY_LIMIT or 0))
+    daily_used = _p712_today_promoted_live_entry_count()
+    daily_slot_available = bool(daily_limit <= 0 or daily_used < daily_limit)
+    source_norm = str(source or "").strip()
+    release_gate_ok = True
+    if RELEASE_GATE_ENFORCED:
+        try:
+            gate = _p469_release_gate_snapshot_cached() if source_norm == "worker_scan" else release_gate_status()
+            release_gate_ok = bool(gate.get("live_orders_permitted"))
+        except Exception:
+            release_gate_ok = False
+    controls_ok = bool(
+        not DRY_RUN
+        and LIVE_TRADING_ENABLED
+        and (source_norm != "worker_scan" or (SCANNER_ALLOW_LIVE and not SCANNER_DRY_RUN and NEW_ENTRIES_ENABLED))
+        and release_gate_ok
+    )
+    blockers = []
+    if not bool(p711.get("validation_promoted_live_allowed")):
+        blockers.append("p711_promoted_live_contract_not_allowed")
+    if not controls_ok:
+        blockers.append("live_runtime_controls_not_permitting_submit")
+    if not daily_slot_available:
+        blockers.append("promoted_live_daily_entry_limit_reached")
+    if effective_risk <= 0:
+        blockers.append("promoted_live_effective_risk_zero")
+    allowed = bool(not blockers)
+    return {
+        "enabled": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+        "source": source_norm or "unknown",
+        "promoted_live_reduced_risk": bool(allowed),
+        "entry_orders_permitted_now": bool(allowed),
+        "dry_run_override_allowed": bool(allowed),
+        "p711_contract": p711,
+        "base_risk_dollars": round(base_risk, 4),
+        "validation_risk_multiplier": multiplier,
+        "reduced_risk_dollars_before_cap": reduced_risk,
+        "max_risk_dollars": round(max_risk, 4),
+        "effective_risk_dollars": effective_risk,
+        "max_position_dollars": round(max(0.0, float(SWING_VALIDATION_PROMOTED_LIVE_MAX_POSITION_DOLLARS or 0.0)), 4),
+        "daily_entry_limit": daily_limit,
+        "daily_entry_count": daily_used,
+        "daily_slot_available": daily_slot_available,
+        "runtime_controls_ok": controls_ok,
+        "release_gate_ok": release_gate_ok,
+        "blockers": blockers,
+        "classification": "promoted_live_reduced_risk_allowed" if allowed else "promoted_live_reduced_risk_blocked",
+        "trade_submission_behavior_changed": bool(allowed),
+        "recommended_action": (
+            "submit_promoted_variant_at_reduced_risk_and_watch_broker_fills"
+            if allowed
+            else "keep_validation_pause_until_promoted_reduced_risk_contract_is_complete"
+        ),
+    }
+
+
 def _p700_live_risk_validation_contract(source: str = "", mode: str | None = None, base_risk_dollars: float | None = None) -> dict:
     source = str(source or "").strip() or "unknown"
     raw_mode = str(SWING_LIVE_RISK_MODE if mode is None else mode or "").strip()
@@ -22490,6 +22640,15 @@ def _p700_live_risk_validation_contract(source: str = "", mode: str | None = Non
         validation_contract={
             "canonical_mode": canonical_mode,
             "entry_orders_permitted": entry_orders_permitted,
+        },
+    )
+    p712_contract = _p712_reduced_risk_promotion_contract(
+        source=source,
+        base_risk_dollars=base_risk,
+        validation_contract={
+            "canonical_mode": canonical_mode,
+            "entry_orders_permitted": entry_orders_permitted,
+            "p711_validation_promoted_live_sleeve_contract": promoted_contract,
         },
     )
     return {
@@ -22513,8 +22672,18 @@ def _p700_live_risk_validation_contract(source: str = "", mode: str | None = Non
             "SWING_LIVE_RISK_MODE": raw_mode,
             "SWING_VALIDATION_RISK_MULTIPLIER": float(_p700_validation_risk_multiplier()),
             "SWING_VALIDATION_ALLOW_PAPER_ENTRIES": bool(SWING_VALIDATION_ALLOW_PAPER_ENTRIES),
+            "SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS": float(
+                SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS
+            ),
+            "SWING_VALIDATION_PROMOTED_LIVE_MAX_POSITION_DOLLARS": float(
+                SWING_VALIDATION_PROMOTED_LIVE_MAX_POSITION_DOLLARS
+            ),
+            "SWING_VALIDATION_PROMOTED_LIVE_DAILY_ENTRY_LIMIT": int(
+                SWING_VALIDATION_PROMOTED_LIVE_DAILY_ENTRY_LIMIT
+            ),
         },
         "p711_validation_promoted_live_sleeve_contract": promoted_contract,
+        "p712_reduced_risk_promotion_contract": p712_contract,
         "source": source,
         "recommended_action": (
             "validation_hard_stop_active_audit_broker_fills_only"
@@ -22536,17 +22705,38 @@ def _p700_entry_admission_block(source: str = "", meta: dict | None = None) -> d
         validation_contract=contract,
     )
     contract["p711_validation_promoted_live_sleeve_contract"] = promoted_contract
-    blocked = bool(contract.get("validation_pause_entries"))
+    p712_contract = _p712_reduced_risk_promotion_contract(
+        source=source,
+        meta={**dict(meta or {}), "p711_validation_promoted_live_sleeve_contract": promoted_contract},
+        base_risk_dollars=float(contract.get("base_risk_dollars") or RISK_DOLLARS or 0.0),
+        validation_contract=contract,
+    )
+    contract["p712_reduced_risk_promotion_contract"] = p712_contract
+    blocked = bool(contract.get("validation_pause_entries") and not p712_contract.get("entry_orders_permitted_now"))
     return {
         "blocked": blocked,
-        "reason": "validation_pause_entries" if blocked else "",
+        "reason": (
+            "validation_promoted_live_reduced_risk_blocked"
+            if blocked and p712_contract.get("blockers")
+            else "validation_pause_entries"
+            if blocked
+            else ""
+        ),
         "contract": contract,
         "strategy": str((meta or {}).get("strategy") or (meta or {}).get("strategy_name") or "").strip(),
     }
 
 
-def _p700_apply_validation_risk_dollars(risk_dollars: float, source: str = "worker_scan") -> float:
+def _p700_apply_validation_risk_dollars(risk_dollars: float, source: str = "worker_scan", meta: dict | None = None) -> float:
     contract = _p700_live_risk_validation_contract(source)
+    p712_contract = _p712_reduced_risk_promotion_contract(
+        source=source,
+        meta=meta,
+        base_risk_dollars=float(risk_dollars or 0.0),
+        validation_contract=contract,
+    )
+    if bool(p712_contract.get("entry_orders_permitted_now")):
+        return float(p712_contract.get("effective_risk_dollars") or 0.0)
     if not bool(contract.get("reduced_risk")):
         return float(risk_dollars or 0.0)
     return float(risk_dollars or 0.0) * float(contract.get("effective_risk_multiplier") or 1.0)
@@ -23542,6 +23732,10 @@ def _p701_build_broker_fills_only_trade_ledger_from_orders(
                 "rank_score": attribution.get("rank_score"),
                 "selection_quality_score": attribution.get("selection_quality_score"),
                 "attribution_source": attribution.get("attribution_source") or "broker_fill_ledger_unattributed",
+                "p712_promoted_live": bool(attribution.get("p712_promoted_live")),
+                "p712_reduced_risk_promotion_contract": dict(
+                    attribution.get("p712_reduced_risk_promotion_contract") or {}
+                ),
                 "holding_period_bucket": _p701_holding_period_bucket(str(lot.get("entry_ts_utc") or ""), ts),
             }
             row = _p441_broker_reconciled_r_backfill(row, attribution=attribution)
@@ -27929,6 +28123,13 @@ def _p300_executable_sizing_audit(limit: int = 25) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     rows = list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
     checked = [_p300_apply_executable_selection_contract(dict(r or {})) for r in rows if isinstance(r, dict)]
+    selected_truth = _p298_selected_submission_truth_light()
+    selected_truth_by_symbol = {
+        str((r or {}).get("symbol") or "").strip().upper(): dict(r or {})
+        for r in list(selected_truth.get("rows") or [])
+        if isinstance(r, dict) and str((r or {}).get("symbol") or "").strip()
+    }
+    p712_contract = dict(selected_truth.get("p712_reduced_risk_promotion_contract") or {})
     selected_symbols = [
         str(s or "").strip().upper()
         for s in list(summary.get("selected_symbols") or [])
@@ -27946,6 +28147,8 @@ def _p300_executable_sizing_audit(limit: int = 25) -> dict:
         "mode": "executable_sizing_truth_audit",
         "latest_scan_ts_utc": latest_scan.get("ts_utc"),
         "latest_scan_reason": latest_scan.get("reason"),
+        "live_risk_validation_contract": _p700_live_risk_validation_contract("worker_scan"),
+        "p712_reduced_risk_promotion_contract": p712_contract,
         "selected_symbols": selected_symbols,
         "broken_selected_symbols": [r.get("symbol") for r in broken_selected],
         "broken_selected_count": len(broken_selected),
@@ -27970,6 +28173,18 @@ def _p300_executable_sizing_audit(limit: int = 25) -> dict:
                 "requested_qty": r.get("requested_qty"),
                 "rejection_reasons": list(r.get("rejection_reasons") or []),
                 "executable_sizing_truth": r.get("executable_sizing_truth"),
+                "p711_validation_promoted_live_sleeve_contract": dict(
+                    selected_truth_by_symbol.get(str(r.get("symbol") or "").strip().upper(), {}).get(
+                        "p711_validation_promoted_live_sleeve_contract"
+                    )
+                    or {}
+                ),
+                "p712_reduced_risk_promotion_contract": dict(
+                    selected_truth_by_symbol.get(str(r.get("symbol") or "").strip().upper(), {}).get(
+                        "p712_reduced_risk_promotion_contract"
+                    )
+                    or {}
+                ),
             }
             for r in checked[: max(1, min(int(limit or 25), 50))]
         ],
@@ -33021,6 +33236,20 @@ def _p550_selected_submission_truth_snapshot_light(
             },
             candidate=candidate_row,
         )
+        p712_reduced_risk_contract = _p712_reduced_risk_promotion_contract(
+            source="selected_submission_truth_light",
+            meta={
+                "symbol": sym,
+                "strategy": submit_row.get("signal") or submit_row.get("strategy") or candidate_row.get("strategy"),
+                "sleeve": candidate_row.get("sleeve") or candidate_row.get("entry_type") or candidate_row.get("selection_source"),
+                "p711_validation_promoted_live_sleeve_contract": p711_promoted_live_contract,
+            },
+            validation_contract={
+                "canonical_mode": _p700_normalize_live_risk_mode(),
+                "entry_orders_permitted": False,
+                "p711_validation_promoted_live_sleeve_contract": p711_promoted_live_contract,
+            },
+        )
         candidate_would_trade = candidate_row.get("would_trade")
         selected_not_submit_capable = bool(
             candidate_row
@@ -33185,6 +33414,7 @@ def _p550_selected_submission_truth_snapshot_light(
             "validation_paused_selected_hold": bool(validation_paused_selected_hold),
             "p711_validation_pause_submit_truth": dict(p711_validation_pause_truth),
             "p711_validation_promoted_live_sleeve_contract": dict(p711_promoted_live_contract),
+            "p712_reduced_risk_promotion_contract": dict(p712_reduced_risk_contract),
             "candidate_would_trade": candidate_would_trade,
             "candidate_rejection_reasons": list(candidate_row.get("rejection_reasons") or []),
             "symbol_lock_cooldown": bool(symbol_lock_cooldown),
@@ -33336,6 +33566,13 @@ def _p550_selected_submission_truth_snapshot_light(
         and bool(((row or {}).get("p711_validation_promoted_live_sleeve_contract") or {}).get("validation_promoted_live_blocked"))
         and str((row or {}).get("symbol") or "").strip()
     ])
+    p712_reduced_risk_allowed_symbols = _dedupe_keep_order([
+        str((row or {}).get("symbol") or "").strip().upper()
+        for row in rows
+        if isinstance(row, dict)
+        and bool(((row or {}).get("p712_reduced_risk_promotion_contract") or {}).get("entry_orders_permitted_now"))
+        and str((row or {}).get("symbol") or "").strip()
+    ])
     p641_non_actionable_selected_symbols = _dedupe_keep_order(
         list(p641_selected_not_submit_capable_symbols)
         + list(p641_symbol_lock_cooldown_symbols)
@@ -33438,6 +33675,23 @@ def _p550_selected_submission_truth_snapshot_light(
                 else "monitor_promoted_reduced_risk_entries"
                 if p711_promoted_live_allowed_symbols
                 else "no_validation_paused_selected_candidates"
+            ),
+        },
+        "p712_reduced_risk_promotion_contract": {
+            "enabled": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+            "allowed_symbols": p712_reduced_risk_allowed_symbols,
+            "allowed_count": len(p712_reduced_risk_allowed_symbols),
+            "max_risk_dollars": float(SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS),
+            "max_position_dollars": float(SWING_VALIDATION_PROMOTED_LIVE_MAX_POSITION_DOLLARS),
+            "daily_entry_limit": int(SWING_VALIDATION_PROMOTED_LIVE_DAILY_ENTRY_LIMIT),
+            "daily_entry_count": _p712_today_promoted_live_entry_count(),
+            "trade_submission_behavior_changed": bool(p712_reduced_risk_allowed_symbols),
+            "read_only": True,
+            "does_not_submit_orders": True,
+            "recommended_action": (
+                "promoted_reduced_risk_symbols_can_submit_when_scanner_selects"
+                if p712_reduced_risk_allowed_symbols
+                else "no_promoted_reduced_risk_selected_candidates"
             ),
         },
         "validation_paused_symbols": p711_validation_paused_symbols,
@@ -47719,6 +47973,15 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             "p700_live_risk_validation_contract": contract,
         }
     meta["p700_live_risk_validation_contract"] = dict(p700_entry_block.get("contract") or {})
+    meta["p711_validation_promoted_live_sleeve_contract"] = dict(
+        meta["p700_live_risk_validation_contract"].get("p711_validation_promoted_live_sleeve_contract") or {}
+    )
+    meta["p712_reduced_risk_promotion_contract"] = dict(
+        meta["p700_live_risk_validation_contract"].get("p712_reduced_risk_promotion_contract") or {}
+    )
+    if bool(meta["p712_reduced_risk_promotion_contract"].get("entry_orders_permitted_now")):
+        meta["p712_promoted_live"] = True
+        meta["live_risk_mode_at_entry"] = "validation_promoted_reduced_risk"
     strategy_name = str(
         meta.get("strategy_name")
         or meta.get("strategy")
@@ -47857,7 +48120,10 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         return {"ok": True, "ignored": True, "reason": "symbol_locked", "symbol": symbol, "signal": signal}
     _p599_trace("symbol_lock_acquired")
 
+    p712_entry_contract = dict(meta.get("p712_reduced_risk_promotion_contract") or {})
     effective_dry_run = effective_entry_dry_run(source)
+    if bool(p712_entry_contract.get("dry_run_override_allowed")):
+        effective_dry_run = False
     payload = None
 
     try:
@@ -48067,6 +48333,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             "enabled": bool(SWING_TRUE_DOLLAR_RISK_SIZING_ENABLED),
             "configured_risk_dollars": float(RISK_DOLLARS or 0.0),
             "p614_breakout_risk_downshift": dict(meta.get("p614_breakout_risk_downshift") or {}),
+            "p712_reduced_risk_promotion_contract": dict(meta.get("p712_reduced_risk_promotion_contract") or {}),
             **entry_level_preview,
         }
 
@@ -48081,6 +48348,25 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         affordability = None
         entry_capacity_truth = {}
         if side == "buy":
+            p712_position_cap = {
+                "enabled": bool(p712_entry_contract.get("entry_orders_permitted_now")),
+                "applied": False,
+                "max_position_dollars": p712_entry_contract.get("max_position_dollars"),
+                "pre_cap_qty": float(qty),
+                "post_cap_qty": float(qty),
+            }
+            max_position_dollars = float(p712_entry_contract.get("max_position_dollars") or 0.0)
+            if bool(p712_entry_contract.get("entry_orders_permitted_now")) and max_position_dollars > 0:
+                cap_qty = round(max_position_dollars / max(float(base_price), 1e-9), 2)
+                if cap_qty < float(qty):
+                    qty = max(0.0, cap_qty)
+                    risk_qty = qty
+                    p712_position_cap.update({
+                        "applied": True,
+                        "post_cap_qty": float(qty),
+                        "reason": "validation_promoted_live_position_notional_cap",
+                    })
+            meta["p712_promoted_live_position_cap"] = p712_position_cap
             _p599_trace("affordability_clip_start", base_price=base_price, risk_qty=risk_qty)
             affordability = clip_qty_for_affordability(float(base_price), float(risk_qty))
             qty = float(affordability.get("submitted_qty") or 0.0)
@@ -48120,6 +48406,7 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             "snapshot": snapshot,
             "limit_entry_preview": p328_limit_entry or {},
             "p600_entry_capacity_truth": entry_capacity_truth,
+            "p712_reduced_risk_promotion_contract": p712_entry_contract,
         }
 
         if effective_dry_run:
@@ -48139,6 +48426,8 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
             plan["filled_qty"] = float(qty)
             plan["avg_fill_price"] = float(base_price)
             plan["affordability"] = affordability or {}
+            plan["p712_promoted_live"] = bool(meta.get("p712_promoted_live"))
+            plan["p712_reduced_risk_promotion_contract"] = p712_entry_contract
             TRADE_PLAN[symbol] = plan
             _ensure_execution_lifecycle_plan(symbol, plan)
             _transition_execution_lifecycle(plan, symbol, "planned", reason="entry_dry_run_plan", details={"source": source, "signal": signal, "qty": qty}, allow_illegal=True)
@@ -48250,6 +48539,8 @@ def execute_entry_signal(symbol: str, side: str, signal: str, source: str, meta:
         plan["limit_price"] = submit_price if submit_order_type == "limit" else None
         plan["limit_entry"] = p328_limit_entry or {}
         plan["affordability"] = affordability or {}
+        plan["p712_promoted_live"] = bool(meta.get("p712_promoted_live"))
+        plan["p712_reduced_risk_promotion_contract"] = p712_entry_contract
         p337_limit_submit_evidence = {}
         if submit_order_type == "limit":
             p337_limit_submit_evidence = _p337_record_limit_submit_evidence(

@@ -43,6 +43,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/corrected_swing_capacity_t
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_open_stall_risk_preview
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_execution_proof
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_preview
+https://trading-webhook-q4d5.onrender.com/diagnostics/executable_sizing_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth?detail=expanded
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth?heavy=true
@@ -66,7 +67,6 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/entry_quality_memory_guard
 https://trading-webhook-q4d5.onrender.com/diagnostics/entry_snapshot_guard
 https://trading-webhook-q4d5.onrender.com/diagnostics/eod_flatten_status
 https://trading-webhook-q4d5.onrender.com/diagnostics/executable_near_miss_entry_sleeve
-https://trading-webhook-q4d5.onrender.com/diagnostics/executable_sizing_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/executed_entry_eligibility_audit
 https://trading-webhook-q4d5.onrender.com/diagnostics/execution
 https://trading-webhook-q4d5.onrender.com/diagnostics/execution_lifecycle

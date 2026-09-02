@@ -123,6 +123,12 @@ def build_broker_fills_only_trade_ledger(
     wins = [r for r in clean_rows if _safe_float(r.get("gross_pnl"), 0.0) > 0]
     losses = [r for r in clean_rows if _safe_float(r.get("gross_pnl"), 0.0) < 0]
     flats = [r for r in clean_rows if abs(_safe_float(r.get("gross_pnl"), 0.0)) <= 1e-9]
+    promoted_rows = [r for r in clean_rows if bool(r.get("p712_promoted_live"))]
+    promoted_wins = [r for r in promoted_rows if _safe_float(r.get("gross_pnl"), 0.0) > 0]
+    promoted_losses = [r for r in promoted_rows if _safe_float(r.get("gross_pnl"), 0.0) < 0]
+    promoted_gross = round(sum(_safe_float(r.get("gross_pnl"), 0.0) for r in promoted_rows), 4)
+    promoted_total_r = sum(_safe_float(r.get("pnl_r"), 0.0) for r in promoted_rows)
+    promoted_expectancy = round(promoted_gross / max(1, len(promoted_rows)), 4) if promoted_rows else 0.0
     winner_pnls = [_safe_float(r.get("gross_pnl"), 0.0) for r in wins]
     loser_pnls = [_safe_float(r.get("gross_pnl"), 0.0) for r in losses]
     avg_winner = _avg(winner_pnls)
@@ -175,6 +181,35 @@ def build_broker_fills_only_trade_ledger(
         "by_symbol": _ledger_bucket_rollup(clean_rows, "symbol"),
         "by_regime": _ledger_bucket_rollup(clean_rows, "regime", "regime_mode"),
         "by_holding_period": _ledger_bucket_rollup(clean_rows, "holding_period_bucket"),
+        "p712_promoted_live_outcome_watch": {
+            "enabled": True,
+            "broker_fills_only": True,
+            "row_count": len(promoted_rows),
+            "symbols": sorted({
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in promoted_rows
+                if str((row or {}).get("symbol") or "").strip()
+            }),
+            "wins": len(promoted_wins),
+            "losses": len(promoted_losses),
+            "gross_pnl": promoted_gross,
+            "expectancy_per_trade": promoted_expectancy,
+            "avg_r": round(promoted_total_r / max(1, len(promoted_rows)), 4) if promoted_rows else 0.0,
+            "status": (
+                "promoted_live_positive_expectancy"
+                if promoted_rows and promoted_expectancy > 0
+                else "promoted_live_negative_expectancy"
+                if promoted_rows and promoted_expectancy < 0
+                else "promoted_live_no_closed_fills_yet"
+            ),
+            "recommended_action": (
+                "continue_reduced_risk_promotion_watch"
+                if promoted_rows and promoted_expectancy > 0
+                else "keep_reduced_risk_and_review_before_scaling"
+                if promoted_rows
+                else "wait_for_promoted_live_closed_broker_fills"
+            ),
+        },
         "rows": limited,
         "recommended_action": (
             "proceed_to_strategy_isolation_and_payoff_repair"
