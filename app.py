@@ -233,6 +233,10 @@ from swing_replay_registry import (
     match_replay_variant_registry as swing_replay_match_variant_registry,
     replay_registry_module_status as swing_replay_registry_module_status,
 )
+from swing_live_promotion_gate import (
+    build_full_live_promotion_gate as swing_live_build_full_live_promotion_gate,
+    live_promotion_gate_module_status as swing_live_promotion_gate_module_status,
+)
 
 @dataclass(frozen=True)
 class Bar:
@@ -1782,6 +1786,22 @@ REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL = getenv_float_any("REPLAY_PROMOTION_GATE_MI
 REPLAY_PROMOTION_GATE_MIN_AVG_R = getenv_float_any("REPLAY_PROMOTION_GATE_MIN_AVG_R", default=0.05)
 REPLAY_PROMOTION_GATE_MIN_WIN_RATE = getenv_float_any("REPLAY_PROMOTION_GATE_MIN_WIN_RATE", default=0.5)
 REPLAY_PROMOTION_GATE_MAX_DRAWDOWN = getenv_float_any("REPLAY_PROMOTION_GATE_MAX_DRAWDOWN", default=0.0)
+FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MAX_AGE_SEC = getenv_int_any(
+    "FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MAX_AGE_SEC",
+    default=86400,
+)
+FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MIN_TRADES = getenv_int_any(
+    "FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MIN_TRADES",
+    default=25,
+)
+FULL_LIVE_PROMOTION_GATE_MIN_REGISTRY_VARIANTS = getenv_int_any(
+    "FULL_LIVE_PROMOTION_GATE_MIN_REGISTRY_VARIANTS",
+    default=1,
+)
+FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE = env_bool_any(
+    "FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE",
+    default=False,
+)
 
 SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET = getenv_int_any("SWING_PERFORMANCE_MIN_TRADES_PER_BUCKET", default=3)
 SWING_PERFORMANCE_PROMOTE_MIN_TRADES = getenv_int_any("SWING_PERFORMANCE_PROMOTE_MIN_TRADES", default=5)
@@ -3226,7 +3246,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-713-replay-passed-variant-registry-strategy-capital-eligibility"
+PATCH_VERSION = "patch-714-full-live-promotion-gate-operator-go-no-go-contract"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -22399,6 +22419,56 @@ def _p713_attach_compact_replay_variant_registry(payload: dict, limit: int = 25)
         "membership_required_for_validation_promoted_live": True,
     }
     return out
+
+
+def _p714_full_live_promotion_gate_snapshot(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    live_risk = _p700_live_risk_validation_contract("worker_scan")
+    broker_ledger = _p701a_broker_fills_only_trade_ledger(limit=lim, refresh=False, detail="light")
+    scanner = _p298_scanner_light()
+    worker_exit = _p535_worker_exit_status_light_snapshot(limit=min(lim, 20))
+    active_exit = _p620_active_exit_protection_truth_fast(limit=min(lim, 50))
+    replay_registry = _p713_replay_variant_registry_snapshot(limit=lim)
+    payload = swing_live_build_full_live_promotion_gate(
+        patch_version=PATCH_VERSION,
+        live_risk=live_risk,
+        broker_ledger=broker_ledger,
+        scanner=scanner,
+        worker_exit=worker_exit,
+        active_exit=active_exit,
+        replay_registry=replay_registry,
+        config={
+            "broker_ledger_max_age_sec": int(FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MAX_AGE_SEC or 86400),
+            "broker_ledger_min_trades": int(FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MIN_TRADES or 0),
+            "min_registry_variants": int(FULL_LIVE_PROMOTION_GATE_MIN_REGISTRY_VARIANTS or 1),
+            "operator_override_enabled": bool(FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE),
+        },
+    )
+    payload["module_status"] = swing_live_promotion_gate_module_status(patch_version=PATCH_VERSION)
+    payload["env"] = {
+        "FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MAX_AGE_SEC": int(
+            FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MAX_AGE_SEC or 86400
+        ),
+        "FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MIN_TRADES": int(
+            FULL_LIVE_PROMOTION_GATE_BROKER_LEDGER_MIN_TRADES or 0
+        ),
+        "FULL_LIVE_PROMOTION_GATE_MIN_REGISTRY_VARIANTS": int(
+            FULL_LIVE_PROMOTION_GATE_MIN_REGISTRY_VARIANTS or 1
+        ),
+        "FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE": bool(FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE),
+        "SWING_LIVE_RISK_MODE": SWING_LIVE_RISK_MODE,
+        "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+    }
+    payload["post_deploy_endpoint_order"] = [
+        "/diagnostics/full_live_promotion_gate",
+        "/diagnostics/live_risk_validation_contract",
+        "/diagnostics/replay_variant_registry?limit=25",
+        "/diagnostics/broker_fills_only_trade_ledger?limit=25",
+        "/diagnostics/worker_exit_status",
+        "/diagnostics/active_exit_protection_truth?limit=20",
+        "/diagnostics/scanner_light",
+    ]
+    return payload
 
 
 def _p711_validation_promoted_live_sleeve_contract(
@@ -71997,6 +72067,9 @@ def diagnostics_swing_performance_reports_module_status(request: Request):
     payload["p713_replay_registry_module_status"] = swing_replay_registry_module_status(
         patch_version=PATCH_VERSION
     )
+    payload["p714_live_promotion_gate_module_status"] = swing_live_promotion_gate_module_status(
+        patch_version=PATCH_VERSION
+    )
     return JSONResponse(content=swing_perf_attach_contracts(
         payload,
         patch_version=PATCH_VERSION,
@@ -72180,6 +72253,11 @@ def diagnostics_replay_promotion_gate(request: Request, limit: int = 25):
 def diagnostics_replay_variant_registry(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p713_replay_variant_registry_snapshot(limit=limit))
+
+@app.get("/diagnostics/full_live_promotion_gate")
+def diagnostics_full_live_promotion_gate(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p714_full_live_promotion_gate_snapshot(limit=limit))
 
 @app.get("/diagnostics/breakout_dollar_risk_containment")
 def diagnostics_breakout_dollar_risk_containment(limit: int = 20):

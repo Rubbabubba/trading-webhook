@@ -709,7 +709,7 @@ Post-deploy endpoints:
 
 ### Patch 714: Full-Live Promotion Gate + Operator Go/No-Go Contract
 
-Status: planned.
+Status: applied locally; pending deploy verification.
 
 Goal: define the exact conditions for restoring full live mode and make the operator decision obvious.
 
@@ -737,7 +737,9 @@ Smoke tests:
 
 Post-deploy endpoints:
 
+- `/diagnostics/full_live_promotion_gate`
 - `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/replay_variant_registry?limit=25`
 - `/diagnostics/broker_fills_only_trade_ledger?limit=25`
 - `/diagnostics/broker_reconciled_strategy_attribution?limit=25`
 - `/diagnostics/payoff_imbalance_repair_report?limit=25`
