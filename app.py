@@ -1780,6 +1780,10 @@ REPLAY_PROMOTION_GATE_SNAPSHOT_PATH = getenv_any(
     "REPLAY_PROMOTION_GATE_SNAPSHOT_PATH",
     default="/var/data/replay_promotion_gate_snapshot.json",
 )
+REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH = getenv_any(
+    "REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH",
+    default="config/replay_promotion_gate_seed.json",
+)
 REPLAY_PROMOTION_GATE_MIN_WINDOWS = getenv_int_any("REPLAY_PROMOTION_GATE_MIN_WINDOWS", default=2)
 REPLAY_PROMOTION_GATE_MIN_TRADES = getenv_int_any("REPLAY_PROMOTION_GATE_MIN_TRADES", default=10)
 REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL = getenv_float_any("REPLAY_PROMOTION_GATE_MIN_TOTAL_PNL", default=0.0)
@@ -3246,7 +3250,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-714A-full-live-gate-canonical-scanner-truth-sync"
+PATCH_VERSION = "patch-714B-replay-promotion-registry-seed-live-restore-bridge"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -22397,6 +22401,12 @@ def _p713_replay_variant_registry_snapshot(limit: int = 25, promotion_payload: d
             "recommended_action": "keep_validation_pause_until_replay_registry_snapshot_is_readable",
         }
     registry["snapshot_path"] = REPLAY_PROMOTION_GATE_SNAPSHOT_PATH
+    registry["repo_fallback_snapshot_path"] = REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH
+    if isinstance(promotion, dict):
+        registry["snapshot_source_truth"] = promotion.get("snapshot_source_truth") or {
+            "chosen_source": promotion.get("cache_source") or "unknown",
+            "chosen_path": promotion.get("snapshot_path"),
+        }
     registry["source_endpoint"] = "/diagnostics/replay_variant_registry"
     return registry
 
@@ -22458,6 +22468,8 @@ def _p714_full_live_promotion_gate_snapshot(limit: int = 25) -> dict:
         "FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE": bool(FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE),
         "SWING_LIVE_RISK_MODE": SWING_LIVE_RISK_MODE,
         "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+        "REPLAY_PROMOTION_GATE_SNAPSHOT_PATH": REPLAY_PROMOTION_GATE_SNAPSHOT_PATH,
+        "REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH": REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH,
     }
     payload["post_deploy_endpoint_order"] = [
         "/diagnostics/full_live_promotion_gate",
@@ -24757,16 +24769,62 @@ def _p703_payoff_imbalance_repair_report(limit: int = 25, trade_limit: int = 200
 
 def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
-    cached = _safe_json_read(REPLAY_PROMOTION_GATE_SNAPSHOT_PATH)
+    def _read_replay_snapshot_candidate(path_value: str, source: str) -> dict:
+        raw_path = str(path_value or "").strip()
+        if not raw_path:
+            return {"ok": False, "source": source, "path": raw_path, "reason": "snapshot_path_empty"}
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent / path
+        payload = _safe_json_read(str(path))
+        return {
+            "ok": bool(payload.get("ok")),
+            "source": source,
+            "path": str(path),
+            "payload": payload,
+            "reason": "snapshot_loaded" if payload.get("ok") else "snapshot_missing_or_invalid",
+        }
+
+    snapshot_candidates = [
+        _read_replay_snapshot_candidate(REPLAY_PROMOTION_GATE_SNAPSHOT_PATH, "persistent_snapshot"),
+        _read_replay_snapshot_candidate(REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH, "repo_seed_snapshot"),
+    ]
+    chosen_snapshot = next((row for row in snapshot_candidates if bool(row.get("ok"))), snapshot_candidates[0])
+    cached = dict(chosen_snapshot.get("payload") or {})
     cached_contract = dict(cached.get("promotion_contract") or {}) if isinstance(cached.get("promotion_contract"), dict) else {}
+    cached_rows = list(cached.get("scenario_rows") or []) if isinstance(cached.get("scenario_rows"), list) else []
+    cached_is_replay_promotion_snapshot = bool(
+        cached.get("ok")
+        and str(cached.get("mode") or "") == "out_of_sample_replay_promotion_gate"
+        and cached_rows
+        and isinstance(cached_contract, dict)
+    )
     if (
-        str(cached.get("mode") or "") == "out_of_sample_replay_promotion_gate"
-        and bool(cached_contract.get("one_window_winners_are_research_only"))
+        cached_is_replay_promotion_snapshot
+        and (
+            bool(cached_contract.get("one_window_winners_are_research_only"))
+            or bool(cached_contract.get("requires_all_windows_to_pass"))
+            or bool(cached.get("seed_artifact"))
+        )
     ):
         payload = dict(cached)
         payload["patch_version"] = PATCH_VERSION
         payload["cache_hit"] = True
+        payload["cache_source"] = chosen_snapshot.get("source")
         payload["snapshot_path"] = REPLAY_PROMOTION_GATE_SNAPSHOT_PATH
+        payload["repo_fallback_snapshot_path"] = REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH
+        payload["snapshot_source_truth"] = {
+            "chosen_source": chosen_snapshot.get("source"),
+            "chosen_path": chosen_snapshot.get("path"),
+            "persistent_snapshot_ok": bool(snapshot_candidates[0].get("ok")),
+            "repo_seed_snapshot_ok": bool(snapshot_candidates[1].get("ok")),
+            "candidates": [
+                {key: row.get(key) for key in ("source", "path", "ok", "reason")}
+                for row in snapshot_candidates
+            ],
+            "render_endpoint_is_read_only": True,
+            "does_not_copy_or_mutate_snapshot": True,
+        }
         payload["local_tool"] = "tools/run_replay_promotion_gate.ps1"
         payload = _p713_attach_compact_replay_variant_registry(payload, limit=lim)
         return swing_perf_attach_contracts(
@@ -24789,13 +24847,28 @@ def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
         limit=lim,
     )
     payload["cache_hit"] = bool(cached.get("ok"))
+    payload["cache_source"] = chosen_snapshot.get("source") if cached.get("ok") else "none"
     payload["snapshot_path"] = REPLAY_PROMOTION_GATE_SNAPSHOT_PATH
+    payload["repo_fallback_snapshot_path"] = REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH
     payload["local_tool"] = "tools/run_replay_promotion_gate.ps1"
     payload["snapshot_contract"] = {
         "render_endpoint_is_read_only": True,
         "render_endpoint_does_not_fetch_market_data": True,
         "render_endpoint_does_not_run_replay": True,
         "local_replay_outputs_must_be_promoted_as_snapshot": True,
+        "repo_seed_snapshot_is_fallback_only": True,
+    }
+    payload["snapshot_source_truth"] = {
+        "chosen_source": chosen_snapshot.get("source") if cached.get("ok") else "none",
+        "chosen_path": chosen_snapshot.get("path") if cached.get("ok") else None,
+        "persistent_snapshot_ok": bool(snapshot_candidates[0].get("ok")),
+        "repo_seed_snapshot_ok": bool(snapshot_candidates[1].get("ok")),
+        "candidates": [
+            {key: row.get(key) for key in ("source", "path", "ok", "reason")}
+            for row in snapshot_candidates
+        ],
+        "render_endpoint_is_read_only": True,
+        "does_not_copy_or_mutate_snapshot": True,
     }
     payload = _p713_attach_compact_replay_variant_registry(payload, limit=lim)
     payload = swing_perf_attach_contracts(

@@ -779,6 +779,42 @@ Post-deploy endpoints:
 - `/diagnostics/live_risk_validation_contract`
 - `/diagnostics/worker_exit_status`
 
+### Patch 714B: Replay Promotion Registry Seed + Live Restore Bridge
+
+Status: applied locally; pending deploy verification.
+
+Goal: populate the replay variant registry from replay-passed evidence before Patch 715 cleanup continues, without enabling broad live trading.
+
+Scope:
+
+- Add a repo-bundled replay promotion seed as a fallback when Render has no `/var/data` replay promotion snapshot.
+- Keep `/var/data/replay_promotion_gate_snapshot.json` as the preferred source when present.
+- Normalize replay scenario names such as `risk_60_daily_3...` into the `daily_breakout` strategy identity.
+- Surface snapshot source truth in replay promotion and replay registry diagnostics.
+- Preserve validation pause until the operator explicitly enables promoted reduced-risk live.
+
+Expected outcome:
+
+- `/diagnostics/replay_variant_registry?limit=25` should show capital-eligible replay variants after deploy.
+- `/diagnostics/full_live_promotion_gate` should move from a replay-registry blocker to reduced-risk readiness, while full live remains blocked by `validation_pause_entries`.
+- Patch 715 can proceed with scanner ownership cleanup after live restoration readiness is endpoint-visible.
+
+Smoke tests:
+
+- Registry builds capital-eligible variants from the repo seed.
+- Persistent `/var/data` snapshot wins over repo seed when available.
+- Invalid or missing snapshot evidence still fails closed.
+- Full-live gate remains read-only and does not submit orders, fetch bars, or mutate scanner state.
+
+Post-deploy endpoints:
+
+- `/diagnostics/replay_promotion_gate?limit=25`
+- `/diagnostics/replay_variant_registry?limit=25`
+- `/diagnostics/full_live_promotion_gate`
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/scanner_light`
+- `/diagnostics/worker_exit_status`
+
 ### Patch 715: Scanner Ownership Extraction Phase 2
 
 Status: planned after live restoration path is endpoint-visible.

@@ -11,7 +11,7 @@ from typing import Any
 
 
 SWING_REPLAY_REGISTRY_MODULE_VERSION = (
-    "patch-713-replay-passed-variant-registry-strategy-capital-eligibility"
+    "patch-714B-replay-promotion-registry-seed-live-restore-bridge"
 )
 
 
@@ -95,7 +95,7 @@ def normalize_strategy(value: Any = "", scenario: Any = "") -> str:
         return "intraday_mean_reversion"
     if "momentum" in raw or raw in {"intraday_momo", "momo"}:
         return "intraday_momentum"
-    if "daily_breakout" in raw or "breakout" in raw:
+    if "daily_breakout" in raw or "breakout" in raw or "_daily_" in f"_{raw}_":
         return "daily_breakout"
     if raw in {"daily_breakout", "intraday_momentum", "intraday_mean_reversion"}:
         return raw
@@ -403,5 +403,7 @@ def replay_registry_module_status(*, patch_version: str = "") -> dict[str, Any]:
         "owns_replay_variant_registry_contract": True,
         "roadmap_step": "Patch 713",
         "roadmap_focus": "replay_passed_variant_registry_strategy_capital_eligibility",
-        "next_extraction_target": "full_live_go_no_go_contract_before_broad_live_restore",
+        "tangent_patch": "Patch 714B",
+        "tangent_focus": "replay_promotion_registry_seed_live_restore_bridge",
+        "next_extraction_target": "scanner_ownership_extraction_phase_2",
     }
