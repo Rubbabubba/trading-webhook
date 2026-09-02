@@ -849,6 +849,36 @@ Post-deploy endpoints:
 - `/diagnostics/scanner_light`
 - `/diagnostics/worker_exit_status`
 
+### Patch 714D: Repo-Backed Reduced-Risk Activation, No New Render Envs
+
+Status: applied locally; pending deploy verification.
+
+Goal: allow promoted reduced-risk live mode when Render env capacity is exhausted, without enabling normal/full live.
+
+Scope:
+
+- Add `config/live_risk_mode.json` as a versioned repo fallback for reduced-risk live controls.
+- Let Render envs override repo config when present.
+- Keep the scanner worker unchanged; the main `trading-webhook` service owns entry permission.
+- Update reduced-risk env readiness diagnostics to report whether each value came from Render env, repo config, or is missing.
+- Keep full-live operator override disabled in repo config.
+
+Expected outcome:
+
+- Reduced-risk live can be activated by deploy alone when Render cannot accept new env vars.
+- `/diagnostics/live_risk_validation_contract` should show `SWING_LIVE_RISK_MODE_SOURCE=repo_config`.
+- `/diagnostics/reduced_risk_env_readiness` should show repo config satisfying the required reduced-risk values.
+- Full live remains blocked until explicitly promoted by evidence and operator decision.
+
+Post-deploy endpoints:
+
+- `/diagnostics/reduced_risk_env_readiness`
+- `/diagnostics/full_live_promotion_gate`
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/replay_variant_registry?limit=25`
+- `/diagnostics/scanner_light`
+- `/diagnostics/worker_exit_status`
+
 ### Patch 715: Scanner Ownership Extraction Phase 2
 
 Status: planned after live restoration path is endpoint-visible.

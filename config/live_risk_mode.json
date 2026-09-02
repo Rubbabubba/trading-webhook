@@ -1,0 +1,14 @@
+{
+  "mode": "repo_backed_live_risk_config",
+  "patch_version": "patch-714D-repo-backed-reduced-risk-activation-no-new-render-envs",
+  "SWING_LIVE_RISK_MODE": "reduced_risk",
+  "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": true,
+  "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS": true,
+  "FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE": false,
+  "contract": {
+    "render_env_values_take_precedence": true,
+    "scanner_worker_env_changes_required": false,
+    "normal_full_live_not_enabled": true,
+    "reduced_risk_requires_replay_registry_pass": true
+  }
+}

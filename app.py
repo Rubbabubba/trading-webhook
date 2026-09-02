@@ -1927,21 +1927,38 @@ ALERT_INCLUDE_DETAILS = env_bool("ALERT_INCLUDE_DETAILS", True)
 # =============================
 # Scanner (Phase 1C - shadow mode default)
 # =============================
+def _repo_live_risk_config() -> dict:
+    path = Path(__file__).resolve().parent / "config" / "live_risk_mode.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+REPO_LIVE_RISK_CONFIG = _repo_live_risk_config()
 SCANNER_ENABLED = env_bool_any("SCANNER_ENABLED", "SWING_SCANNER_ENABLED", default="false")
 SCANNER_DRY_RUN = env_bool_any("SCANNER_DRY_RUN", default="true")
 SCANNER_ALLOW_LIVE = env_bool("SCANNER_ALLOW_LIVE", "false")  # hard gate: must be true to ever place scanner orders
 NEW_ENTRIES_ENABLED = env_bool_any("NEW_ENTRIES_ENABLED", "ENTRIES_ENABLED", default="true")
 PAPER_EXECUTION_ENABLED = env_bool_any("PAPER_EXECUTION_ENABLED", default="true")
-SWING_LIVE_RISK_MODE = getenv_any("SWING_LIVE_RISK_MODE", "LIVE_RISK_MODE", default="validation_pause_entries")
+SWING_LIVE_RISK_MODE = getenv_any(
+    "SWING_LIVE_RISK_MODE",
+    "LIVE_RISK_MODE",
+    default=str(REPO_LIVE_RISK_CONFIG.get("SWING_LIVE_RISK_MODE") or "validation_pause_entries"),
+)
 SWING_VALIDATION_RISK_MULTIPLIER = getenv_float_any("SWING_VALIDATION_RISK_MULTIPLIER", default=0.25)
 SWING_VALIDATION_ALLOW_PAPER_ENTRIES = env_bool_any("SWING_VALIDATION_ALLOW_PAPER_ENTRIES", default=False)
-SWING_VALIDATION_PROMOTED_LIVE_ENABLED = env_bool_any("SWING_VALIDATION_PROMOTED_LIVE_ENABLED", default=False)
+SWING_VALIDATION_PROMOTED_LIVE_ENABLED = env_bool_any(
+    "SWING_VALIDATION_PROMOTED_LIVE_ENABLED",
+    default=bool(REPO_LIVE_RISK_CONFIG.get("SWING_VALIDATION_PROMOTED_LIVE_ENABLED", False)),
+)
 SWING_VALIDATION_PROMOTED_LIVE_SLEEVES = getenv_any("SWING_VALIDATION_PROMOTED_LIVE_SLEEVES", default="").strip()
 SWING_VALIDATION_PROMOTED_LIVE_STRATEGIES = getenv_any("SWING_VALIDATION_PROMOTED_LIVE_STRATEGIES", default="").strip()
 SWING_VALIDATION_PROMOTED_LIVE_SYMBOLS = getenv_any("SWING_VALIDATION_PROMOTED_LIVE_SYMBOLS", default="").strip()
 SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS = env_bool_any(
     "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS",
-    default=True,
+    default=bool(REPO_LIVE_RISK_CONFIG.get("SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS", True)),
 )
 SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS = getenv_float_any(
     "SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS",
@@ -3250,7 +3267,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-714C-reduced-risk-render-env-readiness-contract"
+PATCH_VERSION = "patch-714D-repo-backed-reduced-risk-activation-no-new-render-envs"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -22467,9 +22484,13 @@ def _p714_full_live_promotion_gate_snapshot(limit: int = 25) -> dict:
         ),
         "FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE": bool(FULL_LIVE_PROMOTION_GATE_OPERATOR_OVERRIDE),
         "SWING_LIVE_RISK_MODE": SWING_LIVE_RISK_MODE,
+        "SWING_LIVE_RISK_MODE_SOURCE": "render_env" if os.getenv("SWING_LIVE_RISK_MODE") or os.getenv("LIVE_RISK_MODE") else "repo_config" if REPO_LIVE_RISK_CONFIG.get("SWING_LIVE_RISK_MODE") else "default",
         "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+        "SWING_VALIDATION_PROMOTED_LIVE_ENABLED_SOURCE": "render_env" if os.getenv("SWING_VALIDATION_PROMOTED_LIVE_ENABLED") is not None else "repo_config" if "SWING_VALIDATION_PROMOTED_LIVE_ENABLED" in REPO_LIVE_RISK_CONFIG else "default",
         "REPLAY_PROMOTION_GATE_SNAPSHOT_PATH": REPLAY_PROMOTION_GATE_SNAPSHOT_PATH,
         "REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH": REPLAY_PROMOTION_GATE_REPO_FALLBACK_PATH,
+        "REPO_LIVE_RISK_CONFIG_PATH": "config/live_risk_mode.json",
+        "REPO_LIVE_RISK_CONFIG_ACTIVE": bool(REPO_LIVE_RISK_CONFIG),
     }
     payload["post_deploy_endpoint_order"] = [
         "/diagnostics/full_live_promotion_gate",
@@ -22487,6 +22508,7 @@ def _p714c_reduced_risk_env_readiness_snapshot(limit: int = 25) -> dict:
     lim = max(1, min(int(limit or 25), 100))
     gate = _p714_full_live_promotion_gate_snapshot(limit=lim)
     live_risk = _p700_live_risk_validation_contract("worker_scan")
+    repo_config = dict(REPO_LIVE_RISK_CONFIG or {})
     expected_required = {
         "SWING_LIVE_RISK_MODE": "reduced_risk",
         "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": "true",
@@ -22499,17 +22521,26 @@ def _p714c_reduced_risk_env_readiness_snapshot(limit: int = 25) -> dict:
 
     def _env_row(name: str, expected: str, *, required: bool) -> dict:
         raw = os.getenv(name)
-        value = str(raw if raw is not None else "").strip()
+        repo_value = repo_config.get(name)
+        effective_raw = raw if raw is not None else repo_value
+        value = str(effective_raw if effective_raw is not None else "").strip()
         expected_text = str(expected or "").strip()
         expected_bool = expected_text.lower() in {"1", "true", "yes", "y", "on"}
         if expected_text.lower() in {"true", "false"}:
-            matches = env_bool_any(name, default=not expected_bool) == expected_bool if raw is not None else False
+            if raw is not None:
+                matches = env_bool_any(name, default=not expected_bool) == expected_bool
+            elif repo_value is not None:
+                matches = str(repo_value).strip().lower() in {"1", "true", "yes", "y", "on"} if expected_bool else str(repo_value).strip().lower() in {"0", "false", "no", "n", "off"}
+            else:
+                matches = False
         else:
             matches = value.lower() == expected_text.lower()
         return {
             "name": name,
             "present_in_render_env": raw is not None,
-            "current_value": value if raw is not None else None,
+            "present_in_repo_config": repo_value is not None,
+            "value_source": "render_env" if raw is not None else "repo_config" if repo_value is not None else "missing",
+            "current_value": value if effective_raw is not None else None,
             "expected_value": expected_text,
             "matches_expected": bool(matches),
             "required": bool(required),
@@ -22523,11 +22554,15 @@ def _p714c_reduced_risk_env_readiness_snapshot(limit: int = 25) -> dict:
         _env_row(name, value, required=False)
         for name, value in expected_recommended.items()
     ]
-    missing_required = [row["name"] for row in required_rows if not row["present_in_render_env"]]
+    missing_required = [
+        row["name"]
+        for row in required_rows
+        if row["value_source"] == "missing"
+    ]
     mismatched_required = [
         row["name"]
         for row in required_rows
-        if row["present_in_render_env"] and not row["matches_expected"]
+        if row["value_source"] != "missing" and not row["matches_expected"]
     ]
     mismatched_recommended = [
         row["name"]
@@ -22558,6 +22593,10 @@ def _p714c_reduced_risk_env_readiness_snapshot(limit: int = 25) -> dict:
         "changes_trade_behavior": False,
         "target_render_service": "trading-webhook",
         "scanner_worker_env_changes_required": False,
+        "repo_config_path": "config/live_risk_mode.json",
+        "repo_config_active": bool(repo_config),
+        "repo_config_mode": repo_config.get("mode"),
+        "render_env_precedence": True,
         "required_envs": required_rows,
         "recommended_envs": recommended_rows,
         "missing_required_envs": missing_required,
@@ -22572,7 +22611,11 @@ def _p714c_reduced_risk_env_readiness_snapshot(limit: int = 25) -> dict:
         "entry_orders_permitted": bool(live_risk.get("entry_orders_permitted")),
         "full_live_gate_recommended_action": gate.get("recommended_action"),
         "blockers": blockers,
-        "render_env_values_to_add": expected_required,
+        "render_env_values_to_add_if_capacity_allows": expected_required,
+        "repo_config_values_used_when_render_env_missing": {
+            name: repo_config.get(name)
+            for name in expected_required
+        },
         "render_env_values_to_keep_or_add": expected_recommended,
         "post_update_expected": {
             "current_live_risk_mode": "reduced_risk",
@@ -22989,8 +23032,13 @@ def _p700_live_risk_validation_contract(source: str = "", mode: str | None = Non
         "effective_risk_dollars": effective_risk,
         "env": {
             "SWING_LIVE_RISK_MODE": raw_mode,
+            "SWING_LIVE_RISK_MODE_SOURCE": "render_env" if os.getenv("SWING_LIVE_RISK_MODE") or os.getenv("LIVE_RISK_MODE") else "repo_config" if REPO_LIVE_RISK_CONFIG.get("SWING_LIVE_RISK_MODE") else "default",
             "SWING_VALIDATION_RISK_MULTIPLIER": float(_p700_validation_risk_multiplier()),
             "SWING_VALIDATION_ALLOW_PAPER_ENTRIES": bool(SWING_VALIDATION_ALLOW_PAPER_ENTRIES),
+            "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+            "SWING_VALIDATION_PROMOTED_LIVE_ENABLED_SOURCE": "render_env" if os.getenv("SWING_VALIDATION_PROMOTED_LIVE_ENABLED") is not None else "repo_config" if "SWING_VALIDATION_PROMOTED_LIVE_ENABLED" in REPO_LIVE_RISK_CONFIG else "default",
+            "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS": bool(SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS),
+            "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS_SOURCE": "render_env" if os.getenv("SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS") is not None else "repo_config" if "SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS" in REPO_LIVE_RISK_CONFIG else "default",
             "SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS": float(
                 SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS
             ),
