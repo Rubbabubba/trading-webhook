@@ -68,6 +68,14 @@ def main() -> None:
                 status, response = _post(replay_url, {**payload, "calendar_days": 60}, max(timeout, 240))
                 ranking = list(response.get("ranking") or [])
                 _log(f"after_hours_replay_ok http={status} leader={ranking[0] if ranking else 'none'} variants={len(response.get('variants') or {})} live_submission={response.get('live_submission', False)}")
+                for name in ranking:
+                    variant = dict(dict(response.get("variants") or {}).get(name) or {})
+                    net = dict(variant.get("cost_adjusted") or {})
+                    _log(
+                        f"after_hours_variant name={name} trades={variant.get('trade_count')} raw_avg_r={variant.get('average_r')} "
+                        f"net_avg_r={net.get('net_average_r')} net_dollars={net.get('net_total_dollars')} "
+                        f"max_drawdown_r={variant.get('max_drawdown_r')} goal100_rate={net.get('daily_goal_100_rate')} goal200_rate={net.get('daily_goal_200_rate')}"
+                    )
                 replay_date = ny_now.date()
             except Exception as error:
                 cycle_failed = True
