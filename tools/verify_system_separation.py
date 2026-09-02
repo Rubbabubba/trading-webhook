@@ -1,4 +1,4 @@
-"""Read-only production verifier for the swing/intraday separation cutover."""
+"""Read-only production verifier for the intraday-only production cutover."""
 
 from __future__ import annotations
 
@@ -29,28 +29,29 @@ def main() -> int:
     health_status, health, _ = _request("/health")
     systems = dict(health.get("systems") or {})
     intraday = dict(systems.get("regime_intraday") or {})
-    swing = dict(systems.get("swing") or {})
     checks.extend([
         ("health_200", health_status == 200, health_status),
-        ("intraday_paper_only", intraday.get("status") == "paper_validation" and intraday.get("live_entries_enabled") is False, intraday),
-        ("legacy_swing_exit_only", swing.get("status") == "isolated_exit_management" and swing.get("live_entries_enabled") is False, swing),
+        ("intraday_only", set(systems) == {"regime_intraday"}, sorted(systems)),
+        ("intraday_paper_only", health.get("paper_only") is True and health.get("live_trading_enabled") is False and intraday.get("live_entries_enabled") is False, intraday),
     ])
 
     catalog_status, catalog, _ = _request("/diagnostics/route_catalog")
-    archived = {str(row.get("path")) for row in list(catalog.get("archived_routes") or [])}
+    active = {str(row.get("path")) for row in list(catalog.get("routes") or [])}
     checks.extend([
         ("catalog_200", catalog_status == 200, catalog_status),
-        ("active_route_count_243", catalog.get("route_count") == 243, catalog.get("route_count")),
-        ("archived_route_count_34", catalog.get("archived_route_count") == 34, catalog.get("archived_route_count")),
-        ("retired_route_cataloged", RETIRED_ROUTE in archived, len(archived)),
+        ("active_route_count_12", catalog.get("route_count") == 12, catalog.get("route_count")),
+        ("no_swing_routes", not any("swing" in path for path in active), sorted(path for path in active if "swing" in path)),
+        ("no_legacy_workers", not ({"/worker/exit", "/worker/scan_entries", "/worker/swing_fast_scan"} & active), sorted(active)),
     ])
 
     retired_status, _, _ = _request(RETIRED_ROUTE)
     dashboard_status, _, dashboard_headers = _request("/dashboard/intraday")
+    worker_status, _, _ = _request("/worker/regime_intraday_scan")
     auth_header = next((value for key, value in dashboard_headers.items() if key.lower() == "www-authenticate"), "")
     checks.extend([
         ("retired_route_not_served", retired_status == 404, retired_status),
         ("dashboard_requires_auth", dashboard_status == 401 and "Basic" in str(auth_header), {"status": dashboard_status, "header": auth_header}),
+        ("worker_rejects_get", worker_status == 405, worker_status),
     ])
 
     for name, passed, evidence in checks:

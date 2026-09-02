@@ -6,7 +6,8 @@ def test_intraday_dashboard_has_unambiguous_paper_identity():
     page = render_intraday_dashboard(scan={"config": {"symbols": ["SPY", "QQQ"], "trade_symbols": ["SPY"]}, "regime": {"name": "range"}, "signals": []}, ledger={}, readiness={"paper_ready": True, "live_ready": False}, scanner={})
     assert "PAPER ONLY" in page
     assert "LIVE INTRADAY CLOSED" in page
-    assert "Legacy live swing account" in page
+    assert "Legacy live swing account" not in page
+    assert "System health" in page
 
 
 def test_route_catalog_separates_active_intraday_from_legacy_research():

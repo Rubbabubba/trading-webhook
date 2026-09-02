@@ -11,7 +11,7 @@ BASE = "https://trading-webhook-q4d5.onrender.com"
 
 
 def main() -> None:
-    sources = [ROOT / "app.py", *sorted(ROOT.glob("*_api.py"))]
+    sources = [ROOT / "intraday_app.py", ROOT / "regime_intraday_api.py"]
     found = []
     for source in sources:
         text = source.read_text(encoding="utf-8")
@@ -32,7 +32,7 @@ def main() -> None:
         else:
             group = "Shared and other"
         groups[group].append((method.upper(), path))
-    lines = ["# System endpoint manifest", "", "Generated from `app.py` by `tools/generate_endpoint_manifest.py`. Do not edit endpoint rows manually.", "", f"Total application routes: **{len(set(found))}**.", "", "Routes marked `GET` may still require operator authentication when they expose account, order, journal, or approval detail.", ""]
+    lines = ["# System endpoint manifest", "", "Generated from the intraday-only application by `tools/generate_endpoint_manifest.py`. Do not edit endpoint rows manually.", "", f"Total application routes: **{len(set(found))}**.", "", "Dashboard and diagnostic detail require operator authentication. Worker routes require the worker secret.", ""]
     for heading, rows in groups.items():
         lines += [f"## {heading}", "", "| Method | Endpoint |", "|---|---|"]
         lines += [f"| `{method}` | [{path}]({BASE}{path}) |" for method, path in rows]
