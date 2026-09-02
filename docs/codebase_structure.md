@@ -19,6 +19,7 @@ Additional offline swing replay and research material remains under `archive/leg
 - `regime_intraday_options.py` - defined-risk option contract selection and order planning.
 - `regime_intraday_paper.py` - paper execution, reconciliation, lifecycle, and performance proof.
 - `regime_intraday_notifications.py` - one-time candidate email notification logic.
+- `regime_intraday_validation.py` - locked cost, latency, parameter, instrument, Monte Carlo, and paper-fill validation gates.
 - `regime_intraday_dashboard.py` - dedicated paper-system operator console renderer.
 - `regime_intraday_api.py` - isolated FastAPI router for the new system's read and dashboard endpoints.
 - `route_catalog.py` - route ownership, lifecycle, mutation, and sensitivity classification.

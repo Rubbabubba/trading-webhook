@@ -1,20 +1,29 @@
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import regime_intraday_runtime as runtime_module
 from regime_intraday_ledger import empty_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, update_ledger
 from regime_intraday_ledger import load_ledger, save_ledger
 from regime_intraday_options import parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
-from regime_intraday_executor import build_mleg_close_order, build_mleg_limit_order, submit_mleg_limit_order
+from regime_intraday_executor import build_mleg_close_order, build_mleg_limit_order, paper_client_order_id, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_runtime import RegimeIntradayRuntime
 
 
 def test_close_order_reverses_both_legs_and_uses_credit_price():
     plan = {"legs": [{"symbol": "SPY260918C00500000", "side": "buy"}, {"symbol": "SPY260918C00501000", "side": "sell"}]}
-    payload = build_mleg_close_order(plan, 0.42)
+    payload = build_mleg_close_order(plan, 0.42, client_order_id="close-key")
     assert payload["limit_price"] == "-0.42"
+    assert payload["client_order_id"] == "close-key"
     assert [leg["side"] for leg in payload["legs"]] == ["sell", "buy"]
     assert [leg["position_intent"] for leg in payload["legs"]] == ["sell_to_close", "buy_to_close"]
+
+
+def test_signal_generates_stable_broker_idempotency_key():
+    first = paper_client_order_id("SPY:mean-reversion:2026-09-03T10:15")
+    assert first == paper_client_order_id("SPY:mean-reversion:2026-09-03T10:15")
+    assert first != paper_client_order_id("SPY:mean-reversion:2026-09-03T10:16")
+    assert len(first) <= 48
 
 
 def _snapshot(bid, ask, delta):
@@ -188,3 +197,31 @@ def test_reconcile_auto_closes_and_records_filled_paper_roundtrip(monkeypatch, t
     assert saved["orders"]["sig-1"]["status"] == "filled_closed"
     assert saved["closed"][-1]["paper_signal_id"] == "sig-1"
     assert saved["closed"][-1]["realized_dollars"] == 20.0
+
+
+def test_paper_submit_recovers_order_after_transport_timeout(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "ledger.json"
+    monkeypatch.setenv("WORKER_SECRET", "worker")
+    monkeypatch.setenv("ALPACA_PAPER_API_KEY_ID", "key")
+    monkeypatch.setenv("ALPACA_PAPER_API_SECRET_KEY", "secret")
+    monkeypatch.setenv("REGIME_INTRADAY_LEDGER_PATH", str(ledger_path))
+    monkeypatch.setenv("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED", "true")
+    ledger = empty_ledger()
+    record_pending_candidate(
+        ledger,
+        {"signal_id": "sig-timeout", "symbol": "SPY"},
+        {"status": "selected", "order_class": "mleg", "quantity": 1, "limit_debit": 0.40, "max_loss_dollars": 40, "legs": []},
+        ts_utc="2026-09-03T15:00:00+00:00",
+        expires_at="2026-09-03T15:10:00+00:00",
+    )
+    save_ledger(str(ledger_path), ledger)
+    monkeypatch.setattr(runtime_module, "now_ny", lambda: datetime(2026, 9, 3, 10, 1, tzinfo=ZoneInfo("America/New_York")))
+    monkeypatch.setattr(runtime_module, "submit_mleg_limit_order", lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("response lost")))
+    monkeypatch.setattr(runtime_module, "get_order_by_client_id", lambda *_args, **_kwargs: {"id": "accepted-1", "status": "new", "order_class": "mleg"})
+    runtime = RegimeIntradayRuntime()
+
+    result = runtime.paper_roundtrip({"worker_secret": "worker", "signal_id": "sig-timeout"})
+
+    assert result["result"]["recovered_after_transport_error"] is True
+    saved = load_ledger(str(ledger_path))
+    assert saved["orders"]["sig-timeout"]["order_id"] == "accepted-1"

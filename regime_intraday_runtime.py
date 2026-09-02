@@ -13,11 +13,12 @@ from intraday_market_data import fetch_minute_bars, fetch_recent_minute_bars
 from market_clock import is_regular_market_time, now_ny, parse_hhmm
 from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evaluate_regime_intraday
 from regime_intraday_email import send_exit_email, send_signal_email
-from regime_intraday_executor import cancel_order, get_order, submit_mleg_close_order, submit_mleg_limit_order
+from regime_intraday_executor import cancel_order, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, save_ledger, update_ledger
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_replay import cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
+from regime_intraday_validation import paper_fill_reconciliation, validation_lab
 
 
 def _env(name: str, default: str = "") -> str:
@@ -172,7 +173,7 @@ class RegimeIntradayRuntime:
         ledger = load_ledger(self.ledger_path)
         return {"ok": True, "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
                 "events": list(ledger.get("events") or [])[-100:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}),
-                "last_scan": dict(self.last_scan), "live_submission": False}
+                "execution_quality": paper_fill_reconciliation(ledger), "last_scan": dict(self.last_scan), "live_submission": False}
 
     def readiness_payload(self) -> dict:
         return {"ok": True, **self._readiness(), "hard_controls": {"max_open_positions": _int("REGIME_INTRADAY_MAX_OPEN_POSITIONS", 1),
@@ -220,9 +221,16 @@ class RegimeIntradayRuntime:
         cost_r = _float("REGIME_INTRADAY_REPLAY_ROUND_TRIP_COST_R", 0.12)
         summaries = {name: {key: value for key, value in report.items() if key != "trades"} | {"cost_adjusted": cost_adjusted_report(report, risk_dollars=risk, round_trip_cost_r=cost_r)} for name, report in variants.items()}
         ranking = sorted(summaries, key=lambda name: float(dict(summaries[name].get("cost_adjusted") or {}).get("net_average_r") or -999), reverse=True)
+        walk = mean_reversion_walk_forward(regular, cfg, risk_dollars=risk, round_trip_cost_r=cost_r)
+        instruments = {
+            "spy_only": replay_sessions(regular, replace(cfg, trade_symbols=("SPY",), momentum_enabled=False, mean_reversion_enabled=True)),
+            "qqq_only": replay_sessions(regular, replace(cfg, trade_symbols=("QQQ",), momentum_enabled=False, mean_reversion_enabled=True)),
+            "spy_qqq_shared_limits": replay_sessions(regular, replace(cfg, trade_symbols=("SPY", "QQQ"), momentum_enabled=False, mean_reversion_enabled=True)),
+        }
         output = {"ok": True, "generated_utc": datetime.now(timezone.utc).isoformat(), "calendar_days": days, "paper_only": True, "live_submission": False,
                   "cost_model": {"risk_dollars": risk, "round_trip_cost_r": cost_r}, "ranking": ranking, "variants": summaries,
-                  "mean_reversion_walk_forward": mean_reversion_walk_forward(regular, cfg, risk_dollars=risk, round_trip_cost_r=cost_r)}
+                  "mean_reversion_walk_forward": walk,
+                  "validation_lab": validation_lab(baseline=variants["configured"], walk_forward=walk, instrument_reports=instruments, risk_dollars=risk)}
         save_ledger(_env("REGIME_INTRADAY_AFTER_HOURS_REPORT_PATH", "/var/data/regime_intraday_after_hours_report.json"), output)
         return output
 
@@ -243,10 +251,17 @@ class RegimeIntradayRuntime:
         if not decision.get("allowed"):
             raise HTTPException(status_code=409, detail=decision)
         key, secret = self._paper_credentials()
+        client_order_id = paper_client_order_id(signal_id)
         try:
-            result = submit_mleg_limit_order(key, secret, dict(durable.get("plan") or {}), paper=True, live_enabled=False)
+            result = submit_mleg_limit_order(key, secret, dict(durable.get("plan") or {}), paper=True, live_enabled=False, client_order_id=client_order_id)
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"paper order rejected: {str(exc)[:300]}") from exc
+            try:
+                recovered = get_order_by_client_id(key, secret, client_order_id, paper=True)
+                if not recovered.get("id"):
+                    raise ValueError("accepted order not found")
+                result = {"submitted": True, "recovered_after_transport_error": True, "paper": True, "order_id": recovered.get("id"), "client_order_id": client_order_id, "status": recovered.get("status"), "order_class": recovered.get("order_class")}
+            except Exception:
+                raise HTTPException(status_code=502, detail=f"paper order rejected or unrecoverable: {str(exc)[:300]}") from exc
         record_broker_order(ledger, signal_id, {**result, "plan": dict(durable.get("plan") or {})})
         ledger["pending_candidates"][signal_id]["status"] = "paper_order_submitted"
         save_ledger(self.ledger_path, ledger)
@@ -271,6 +286,10 @@ class RegimeIntradayRuntime:
                     record["status"] = "filled_closed" if status == "filled" else "close_submitted"
                     if status == "filled":
                         record["closed_at"] = broker.get("filled_at") or datetime.now(timezone.utc).isoformat()
+                        entry_fill = abs(float(dict(record.get("broker") or {}).get("filled_avg_price") or dict(record.get("plan") or {}).get("limit_debit") or 0))
+                        close_fill = abs(float(broker.get("filled_avg_price") or dict(record.get("valuation") or {}).get("liquidation_credit") or 0))
+                        actual_realized = round((close_fill - entry_fill) * 100, 2) if entry_fill and close_fill else record.get("estimated_realized_dollars")
+                        record["actual_realized_dollars"] = actual_realized
                         closed = list(ledger.get("closed") or [])
                         if not any(str(row.get("paper_signal_id") or "") == signal_id for row in closed):
                             closed.append({
@@ -278,11 +297,11 @@ class RegimeIntradayRuntime:
                                 "session": record.get("session"),
                                 "exit_ts_utc": record["closed_at"],
                                 "exit_reason": dict(record.get("close_order") or {}).get("reason"),
-                                "realized_dollars": record.get("estimated_realized_dollars"),
+                                "realized_dollars": actual_realized,
                                 "status": "filled_closed",
                             })
                             ledger["closed"] = closed[-500:]
-                            ledger.setdefault("events", []).append({"event": "paper_roundtrip_closed", "signal_id": signal_id, "order_id": close_id, "realized_dollars": record.get("estimated_realized_dollars"), "ts_utc": record["closed_at"]})
+                            ledger.setdefault("events", []).append({"event": "paper_roundtrip_closed", "signal_id": signal_id, "order_id": close_id, "realized_dollars": actual_realized, "ts_utc": record["closed_at"]})
                     refreshed.append({"signal_id": signal_id, "order_id": close_id, "status": record["status"], "action": "close"})
                     continue
                 record.update({"status": status, "broker": broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
@@ -307,7 +326,14 @@ class RegimeIntradayRuntime:
                     if decision.get("exit") and _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True) and not record.get("close_order"):
                         credit = float(valuation.get("liquidation_credit") or 0)
                         if credit > 0:
-                            close = submit_mleg_close_order(key, secret, plan, credit, paper=True, live_enabled=False)
+                            close_client_id = paper_client_order_id(f"close:{signal_id}")
+                            try:
+                                close = submit_mleg_close_order(key, secret, plan, credit, paper=True, live_enabled=False, client_order_id=close_client_id)
+                            except Exception as close_error:
+                                recovered = get_order_by_client_id(key, secret, close_client_id, paper=True)
+                                if not recovered.get("id"):
+                                    raise close_error
+                                close = {"submitted": True, "recovered_after_transport_error": True, "paper": True, "order_id": recovered.get("id"), "client_order_id": close_client_id, "status": recovered.get("status"), "order_class": recovered.get("order_class"), "action": "close"}
                             record["close_order"] = {**close, "reason": decision.get("reason"), "requested_at": datetime.now(timezone.utc).isoformat()}
                             record["estimated_realized_dollars"] = round((credit - float(plan.get("limit_debit") or 0)) * 100, 2)
                             record["status"] = "close_submitted"
@@ -334,9 +360,16 @@ class RegimeIntradayRuntime:
             raise HTTPException(status_code=409, detail="no positive executable closing credit is available")
         key, secret = self._paper_credentials()
         try:
-            close = submit_mleg_close_order(key, secret, dict(record["plan"]), credit, paper=True, live_enabled=False)
+            close_client_id = paper_client_order_id(f"close:{signal_id}")
+            close = submit_mleg_close_order(key, secret, dict(record["plan"]), credit, paper=True, live_enabled=False, client_order_id=close_client_id)
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"paper close rejected: {str(exc)[:300]}") from exc
+            try:
+                recovered = get_order_by_client_id(key, secret, close_client_id, paper=True)
+                if not recovered.get("id"):
+                    raise ValueError("accepted close not found")
+                close = {"submitted": True, "recovered_after_transport_error": True, "paper": True, "order_id": recovered.get("id"), "client_order_id": close_client_id, "status": recovered.get("status"), "order_class": recovered.get("order_class"), "action": "close"}
+            except Exception:
+                raise HTTPException(status_code=502, detail=f"paper close rejected or unrecoverable: {str(exc)[:300]}") from exc
         record["close_order"] = {**close, "reason": record["exit_decision"].get("reason"), "requested_at": datetime.now(timezone.utc).isoformat()}
         record["status"] = "close_submitted"
         ledger.setdefault("orders", {})[signal_id] = record

@@ -241,3 +241,43 @@ def mean_reversion_walk_forward(
         "test": {key: value for key, value in test_raw.items() if key != "trades"} | {"cost_adjusted": test_net},
         "out_of_sample_positive": bool((test_net.get("net_average_r") or 0) > 0), "candidates": candidates,
     }
+
+
+def rolling_mean_reversion_walk_forward(
+    bars_by_symbol: dict[str, list[dict]],
+    base: RegimeIntradayConfig | None = None,
+    *,
+    train_sessions: int = 20,
+    test_sessions: int = 5,
+    risk_dollars: float = 100.0,
+    round_trip_cost_r: float = 0.12,
+) -> dict[str, Any]:
+    """Repeat bounded tuning across chronological, non-overlapping test windows."""
+    cfg = base or RegimeIntradayConfig()
+    dates = sorted(split_sessions(bars_by_symbol, cfg.symbols))
+    train_size, test_size = max(5, int(train_sessions)), max(1, int(test_sessions))
+    folds = []
+    for test_start in range(train_size, len(dates), test_size):
+        test_end = min(len(dates), test_start + test_size)
+        if test_end <= test_start:
+            continue
+        chosen = set(dates[test_start - train_size:test_end])
+        window = {symbol: [row for row in bars_by_symbol.get(symbol, []) if _dt(row).date().isoformat() in chosen] for symbol in cfg.symbols}
+        result = mean_reversion_walk_forward(
+            window,
+            cfg,
+            train_fraction=train_size / (train_size + (test_end - test_start)),
+            risk_dollars=risk_dollars,
+            round_trip_cost_r=round_trip_cost_r,
+        )
+        folds.append({"train_start": dates[test_start - train_size], "train_end": dates[test_start - 1], "test_start": dates[test_start], "test_end": dates[test_end - 1], **result})
+    ready_folds = [fold for fold in folds if fold.get("ready")]
+    positive = [fold for fold in ready_folds if fold.get("out_of_sample_positive")]
+    return {
+        "ready": bool(ready_folds),
+        "fold_count": len(folds),
+        "ready_fold_count": len(ready_folds),
+        "positive_fold_count": len(positive),
+        "positive_fold_fraction": round(len(positive) / len(ready_folds), 4) if ready_folds else None,
+        "folds": folds,
+    }

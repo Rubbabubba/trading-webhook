@@ -85,6 +85,17 @@ def main() -> None:
                     f"test_net_avg_r={test_net.get('net_average_r')} test_net_dollars={test_net.get('net_total_dollars')} "
                     f"test_drawdown_r={test.get('max_drawdown_r')} out_of_sample_positive={walk.get('out_of_sample_positive')}"
                 )
+                lab = dict(response.get("validation_lab") or {})
+                gate = dict(lab.get("gate") or {})
+                instruments = dict(lab.get("instrument_comparison") or {})
+                instrument_net = {name: dict(report.get("cost_adjusted") or {}).get("net_average_r") for name, report in instruments.items()}
+                _log(
+                    f"after_hours_validation paper_pass={gate.get('paper_validation_pass')} promotion_locked={gate.get('promotion_locked')} "
+                    f"blockers={json.dumps(gate.get('blockers') or [], separators=(',', ':'))} "
+                    f"instrument_net_avg_r={json.dumps(instrument_net, separators=(',', ':'))} "
+                    f"cost_050_net_avg_r={dict((lab.get('cost_stress') or [{}])[-1]).get('net_average_r')} "
+                    f"monte_loss_probability={dict(lab.get('monte_carlo') or {}).get('probability_negative_total')}"
+                )
                 replay_date = ny_now.date()
             except Exception as error:
                 cycle_failed = True
