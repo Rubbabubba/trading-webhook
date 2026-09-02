@@ -21,6 +21,7 @@ REGIME_INTRADAY_VERSION = "v1-spy-qqq-orb-vwap-router"
 @dataclass(frozen=True)
 class RegimeIntradayConfig:
     symbols: tuple[str, ...] = ("SPY", "QQQ")
+    trade_symbols: tuple[str, ...] = ("SPY", "QQQ")
     opening_range_minutes: int = 30
     min_bars: int = 40
     momentum_volume_ratio: float = 1.20
@@ -202,7 +203,7 @@ def evaluate_regime_intraday(bars_by_symbol: dict[str, list[dict]], config: Regi
     if regime["name"] == "trend":
         direction = regime["direction"]
         for symbol, feature in features.items():
-            if not feature["ready"]:
+            if symbol not in cfg.trade_symbols or not feature["ready"]:
                 continue
             bullish = direction == "bullish"
             level = feature["opening_high"] * (1.0 + cfg.momentum_break_buffer_pct) if bullish else feature["opening_low"] * (1.0 - cfg.momentum_break_buffer_pct)
@@ -218,6 +219,8 @@ def evaluate_regime_intraday(bars_by_symbol: dict[str, list[dict]], config: Regi
                 signals.append(_trade_plan(symbol, "opening_range_momentum", "buy" if bullish else "sell", feature, cfg))
     elif regime["name"] == "range":
         for symbol, feature in features.items():
+            if symbol not in cfg.trade_symbols:
+                continue
             distance = float(feature["vwap_distance_atr"])
             stretched = cfg.mean_reversion_min_vwap_atr <= abs(distance) <= cfg.mean_reversion_max_vwap_atr
             bullish_reversal = distance < 0 and feature["price"] > feature["last_open"] and feature["price"] > feature["prior_close"]

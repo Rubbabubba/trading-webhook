@@ -44,3 +44,10 @@ def test_transition_regime_never_forces_trade():
     assert out["regime"]["name"] in {"range", "transition"}
     if out["regime"]["name"] == "transition":
         assert out["signals"] == []
+
+
+def test_trade_symbol_filter_keeps_qqq_as_confirmation_only():
+    cfg = RegimeIntradayConfig(trade_symbols=("SPY",), momentum_volume_ratio=0.5, momentum_max_vwap_extension_pct=0.10)
+    out = evaluate_regime_intraday({"SPY": _bars(rising=True, final_break=True), "QQQ": _bars(rising=True, final_break=True)}, cfg)
+    assert out["regime"]["name"] == "trend"
+    assert {row["symbol"] for row in out["signals"]} == {"SPY"}

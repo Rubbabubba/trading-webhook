@@ -44353,7 +44353,9 @@ REGIME_INTRADAY_LEDGER_PATH = getenv_any("REGIME_INTRADAY_LEDGER_PATH", default=
 
 
 def _regime_intraday_config() -> RegimeIntradayConfig:
+    trade_symbols = tuple(symbol.strip().upper() for symbol in getenv_any("REGIME_INTRADAY_TRADE_SYMBOLS", default="SPY").split(",") if symbol.strip())
     return RegimeIntradayConfig(
+        trade_symbols=trade_symbols or ("SPY",),
         opening_range_minutes=max(5, getenv_int_any("REGIME_INTRADAY_OPENING_RANGE_MINUTES", default=30)),
         min_bars=max(10, getenv_int_any("REGIME_INTRADAY_MIN_BARS", default=40)),
         momentum_volume_ratio=getenv_float_any("REGIME_INTRADAY_MOMENTUM_VOLUME_RATIO", default=1.20),
