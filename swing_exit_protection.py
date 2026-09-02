@@ -16,7 +16,7 @@ from swing_execution import format_order_qty as _execution_format_order_qty
 from swing_execution import qty_source_from_plan as _execution_qty_source_from_plan
 
 
-SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-657-stall-loss-already-taken-terminal-cleanup-rotation-release-actionability-truth"
+SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-708-exit-protection-ownership-extraction"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -961,10 +961,15 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
         "module": "swing_exit_protection",
         "module_version": SWING_EXIT_PROTECTION_MODULE_VERSION,
         "owns_runtime_state": False,
+        "owns_exit_protection_contract": True,
+        "owns_active_exit_snapshot_contract": True,
+        "owns_dynamic_exit_preview_contract": True,
+        "owns_partial_profit_contract": True,
+        "owns_broker_qty_clamp_contract": True,
         "broker_calls": False,
         "submits_orders": False,
         "app_globals_required": False,
-        "extraction_phase": "prep",
+        "extraction_phase": "exit_protection_ownership_extraction",
         "responsibilities": [
             "active_exit_fast_snapshot_shape",
             "exit_reason_core_classifier",
@@ -985,6 +990,8 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
             "breakout_stall_loss_reduce_first_runtime_state",
             "breakout_dynamic_evidence_report_shape",
             "breakout_stall_loss_fast_snapshot_shape",
+            "exit_protection_ownership_contract_shape",
+            "exit_protection_contract_attachment",
             "exit_protection_module_status",
         ],
         "compatibility_wrappers_remaining": [],
@@ -993,5 +1000,108 @@ def exit_protection_module_status(*, patch_version: str) -> dict:
         "runtime_input_collection_owner": "swing_exit_protection",
         "runtime_qty_source_owner": "swing_exit_protection",
         "runtime_input_owner": "app_strategy_callbacks_only",
-        "next_extraction_target": "move_exit_strategy_callback_sources_to_module_boundary",
+        "next_extraction_target": "move_protective_exit_worker_orchestration_behind_module_api",
     }
+
+
+def build_exit_protection_ownership_contract(
+    *,
+    patch_version: str,
+    payload: dict | None,
+    heavy_requested: bool = False,
+    source_endpoint: str = "",
+) -> dict:
+    row = dict(payload or {})
+    summary = dict(row.get("summary") or row.get("active_exit_summary") or {})
+    module_status = dict(
+        row.get("swing_exit_protection_module_status")
+        or row.get("module_status")
+        or exit_protection_module_status(patch_version=patch_version)
+    )
+    dynamic_contract = dict(
+        row.get("dynamic_exit_preview_contract")
+        or dynamic_exit_preview_contract_status(heavy_requested=heavy_requested)
+    )
+    exit_watch_count = _safe_float(
+        row.get("exit_watch_count")
+        if row.get("exit_watch_count") is not None
+        else summary.get("exit_watch_count"),
+        0.0,
+    )
+    missing_protection_count = _safe_float(
+        row.get("missing_protection_count")
+        if row.get("missing_protection_count") is not None
+        else summary.get("missing_protection_count"),
+        0.0,
+    )
+    pending_entry_count = _safe_float(
+        summary.get("pending_entry_protection_pending_count"),
+        0.0,
+    )
+    due_symbols = _dedupe_keep_order(
+        list(summary.get("giveback_exit_due_symbols") or [])
+        + list(summary.get("failed_followthrough_exit_due_symbols") or [])
+        + list(summary.get("forbidden_short_cleanup_due_symbols") or [])
+    )
+    checks = {
+        "module_contract_owned": bool(module_status.get("owns_exit_protection_contract")),
+        "active_exit_snapshot_owned": bool(module_status.get("owns_active_exit_snapshot_contract")),
+        "dynamic_exit_preview_owned": bool(dynamic_contract.get("dynamic_exit_preview_base_owner") == "swing_exit_protection"),
+        "broker_qty_clamp_owned": bool(module_status.get("owns_broker_qty_clamp_contract")),
+        "no_broker_calls": not bool(module_status.get("broker_calls")),
+        "does_not_submit_orders": not bool(module_status.get("submits_orders")),
+    }
+
+    return {
+        "ok": all(checks.values()),
+        "patch_version": patch_version,
+        "module": "swing_exit_protection",
+        "module_version": SWING_EXIT_PROTECTION_MODULE_VERSION,
+        "exit_protection_owner": "swing_exit_protection",
+        "active_exit_snapshot_owner": "swing_exit_protection",
+        "dynamic_exit_preview_owner": "swing_exit_protection",
+        "partial_profit_owner": "swing_exit_protection",
+        "broker_qty_clamp_owner": "swing_execution",
+        "worker_exit_route_owner": "app.py",
+        "actual_broker_exit_submit_owner": "app.py",
+        "broker_calls": False,
+        "submits_orders": False,
+        "heavy_requested": bool(heavy_requested),
+        "source_endpoint": str(source_endpoint or ""),
+        "exit_watch_count": int(exit_watch_count),
+        "missing_protection_count": int(missing_protection_count),
+        "pending_entry_protection_pending_count": int(pending_entry_count),
+        "due_exit_symbols": due_symbols,
+        "checks": checks,
+        "mismatch_count": len([name for name, passed in checks.items() if not passed]),
+        "extraction_phase": "exit_protection_ownership_extraction",
+        "next_extraction_target": "move_protective_exit_worker_orchestration_behind_module_api",
+        "recommended_action": (
+            "exit_protection_ownership_contract_clean_continue_to_worker_orchestration_extraction"
+            if all(checks.values())
+            else "fix_exit_protection_ownership_contract_before_worker_orchestration_extraction"
+        ),
+    }
+
+
+def attach_exit_protection_contracts(
+    payload: dict | None,
+    *,
+    patch_version: str,
+    heavy_requested: bool = False,
+    source_endpoint: str = "",
+) -> dict:
+    out = dict(payload or {})
+    out["swing_exit_protection_module_status"] = exit_protection_module_status(
+        patch_version=patch_version
+    )
+    out["dynamic_exit_preview_contract"] = dynamic_exit_preview_contract_status(
+        heavy_requested=heavy_requested
+    )
+    out["p708_exit_protection_ownership_contract"] = build_exit_protection_ownership_contract(
+        patch_version=patch_version,
+        payload=out,
+        heavy_requested=heavy_requested,
+        source_endpoint=source_endpoint,
+    )
+    return out

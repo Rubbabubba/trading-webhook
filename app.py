@@ -148,6 +148,7 @@ from swing_exit_protection import (
     apply_stall_loss_reduce_first_state as swing_exit_apply_stall_loss_reduce_first_state,
     apply_time_exit_grace_state as swing_exit_apply_time_exit_grace_state,
     apply_triggered_qty_state as swing_exit_apply_triggered_qty_state,
+    attach_exit_protection_contracts as swing_exit_attach_protection_contracts,
     build_breakout_partial_profit_bias_runtime_state as swing_exit_build_breakout_partial_profit_bias_runtime_state,
     build_breakout_stall_loss_reduce_first_runtime_state as swing_exit_build_breakout_stall_loss_reduce_first_runtime_state,
     build_breakout_stall_loss_fast_snapshot as swing_exit_build_breakout_stall_loss_fast_snapshot,
@@ -157,7 +158,6 @@ from swing_exit_protection import (
     build_fast_active_exit_snapshot as swing_exit_build_fast_active_exit_snapshot,
     build_partial_profit_state as swing_exit_build_partial_profit_state,
     build_time_exit_grace_state as swing_exit_build_time_exit_grace_state,
-    dynamic_exit_preview_contract_status as swing_exit_dynamic_preview_contract_status,
     exit_protection_module_status as swing_exit_protection_module_status,
 )
 from swing_execution_submit import (
@@ -3197,7 +3197,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-707-submit-ownership-extraction"
+PATCH_VERSION = "patch-708-exit-protection-ownership-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -70539,6 +70539,12 @@ def diagnostics_worker_exit_status(request: Request, limit: int = 20, detail: st
             "isolated": bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
             "status": "isolated_from_worker_exit" if bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED) else "inactive_or_explicitly_enabled",
         }
+        payload = swing_exit_attach_protection_contracts(
+            payload,
+            patch_version=PATCH_VERSION,
+            heavy_requested=heavy_requested,
+            source_endpoint="/diagnostics/worker_exit_status",
+        )
     return JSONResponse(content=payload)
 
 @app.get("/diagnostics/worker_exit_status_heavy")
@@ -70555,6 +70561,12 @@ def diagnostics_worker_exit_status_heavy(request: Request, limit: int = 20):
             "isolated": bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED),
             "status": "isolated_from_worker_exit" if bool(TRADES_TODAY_ENABLE and not TRADES_TODAY_WORKER_EXIT_FORCING_ENABLED) else "inactive_or_explicitly_enabled",
         }
+        payload = swing_exit_attach_protection_contracts(
+            payload,
+            patch_version=PATCH_VERSION,
+            heavy_requested=True,
+            source_endpoint="/diagnostics/worker_exit_status_heavy",
+        )
     return JSONResponse(content=payload)
 
 @app.get("/diagnostics/exit_guard_evidence_light")
@@ -70574,11 +70586,11 @@ def diagnostics_active_exit_protection_truth(limit: int = 20, detail: str = "lig
             payload = _p640_apply_terminal_exit_actionability(payload)
         payload["default_detail"] = "light"
         payload["requested_detail"] = "heavy" if heavy_requested else "light"
-        payload["swing_exit_protection_module_status"] = swing_exit_protection_module_status(
-            patch_version=PATCH_VERSION
-        )
-        payload["dynamic_exit_preview_contract"] = swing_exit_dynamic_preview_contract_status(
-            heavy_requested=heavy_requested
+        payload = swing_exit_attach_protection_contracts(
+            payload,
+            patch_version=PATCH_VERSION,
+            heavy_requested=heavy_requested,
+            source_endpoint="/diagnostics/active_exit_protection_truth",
         )
     return JSONResponse(content=payload)
 
