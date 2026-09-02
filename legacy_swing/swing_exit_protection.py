@@ -10,10 +10,10 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from swing_execution import available_qty_from_plan as _execution_available_qty_from_plan
-from swing_execution import clamp_exit_qty as _execution_clamp_exit_qty
-from swing_execution import format_order_qty as _execution_format_order_qty
-from swing_execution import qty_source_from_plan as _execution_qty_source_from_plan
+from legacy_swing.swing_execution import available_qty_from_plan as _execution_available_qty_from_plan
+from legacy_swing.swing_execution import clamp_exit_qty as _execution_clamp_exit_qty
+from legacy_swing.swing_execution import format_order_qty as _execution_format_order_qty
+from legacy_swing.swing_execution import qty_source_from_plan as _execution_qty_source_from_plan
 
 
 SWING_EXIT_PROTECTION_MODULE_VERSION = "patch-708-exit-protection-ownership-extraction"

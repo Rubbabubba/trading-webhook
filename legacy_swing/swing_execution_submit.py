@@ -7,7 +7,7 @@ actual Alpaca submit call until broker submit movement is explicitly proven.
 
 from __future__ import annotations
 
-from swing_execution import (
+from legacy_swing.swing_execution import (
     SWING_EXECUTION_MODULE_VERSION,
     SwingLimitEntryConfig,
     available_qty_from_plan,

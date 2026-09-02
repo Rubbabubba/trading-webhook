@@ -6,14 +6,17 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "app.py"
 OUTPUT = ROOT / "SYSTEM_ENDPOINTS.md"
 BASE = "https://trading-webhook-q4d5.onrender.com"
 
 
 def main() -> None:
-    text = APP.read_text(encoding="utf-8")
-    found = re.findall(r'@app\.(get|post|put|patch|delete)\(\s*["\']([^"\']+)', text)
+    sources = [ROOT / "app.py", *sorted(ROOT.glob("*_api.py"))]
+    found = []
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        found.extend(re.findall(r'@(app|router)\.(get|post|put|patch|delete)\(\s*["\']([^"\']+)', text))
+    found = [(method, path) for _owner, method, path in found]
     groups: dict[str, list[tuple[str, str]]] = {"Operator dashboards": [], "Regime intraday": [], "Runtime workers and controls": [], "Swing active diagnostics": [], "Research and deprecation candidates": [], "Shared and other": []}
     for method, path in sorted(set(found), key=lambda row: row[1]):
         if path.startswith("/dashboard"):

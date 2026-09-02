@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from swing_performance_reports import build_replay_promotion_gate_report
+from legacy_swing.swing_performance_reports import build_replay_promotion_gate_report
 
 PATCH_VERSION = "patch-704A-strict-replay-promotion-gate"
 

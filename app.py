@@ -82,22 +82,22 @@ from urllib.request import Request as UrlRequest, urlopen
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 
-from swing_core import (
+from legacy_swing.swing_core import (
     SWING_CORE_MODULE_VERSION,
     control_row as swing_control_row,
     swing_control_surface_snapshot as swing_core_control_surface_snapshot,
 )
-from swing_light_diagnostics import (
+from legacy_swing.swing_light_diagnostics import (
     SWING_LIGHT_DIAGNOSTICS_MODULE_VERSION,
     scanner_light_snapshot as swing_diag_scanner_light_snapshot,
     selected_submission_truth_light_snapshot as swing_diag_selected_submission_truth_light_snapshot,
     swing_cleanup_status_snapshot as swing_diag_cleanup_status_snapshot,
 )
-from swing_runtime_config import (
+from legacy_swing.swing_runtime_config import (
     SWING_RUNTIME_CONFIG_MODULE_VERSION,
     build_swing_runtime_config_snapshot,
 )
-from swing_scan_state import (
+from legacy_swing.swing_scan_state import (
     SWING_SCAN_STATE_MODULE_VERSION,
     attach_scanner_light_contracts as swing_scan_state_attach_scanner_light_contracts,
     build_scan_brief as swing_scan_state_build_scan_brief,
@@ -119,8 +119,9 @@ from regime_intraday_readiness import readiness_snapshot as regime_intraday_read
 from regime_intraday_replay import replay_sessions as replay_regime_intraday_sessions, threshold_sensitivity as regime_intraday_threshold_sensitivity, walk_forward as regime_intraday_walk_forward
 from regime_intraday_email import send_exit_email as send_regime_intraday_exit_email, send_signal_email as send_regime_intraday_signal_email
 from regime_intraday_dashboard import render_intraday_dashboard
+from regime_intraday_api import build_regime_intraday_router
 from route_catalog import build_route_catalog, classify_path, is_sensitive_path
-from swing_candidate_eval import (
+from legacy_swing.swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
     initial_eval_truth as swing_candidate_eval_initial_truth,
     initial_progress_publish as swing_candidate_eval_initial_progress_publish,
@@ -143,7 +144,7 @@ from swing_candidate_eval import (
     submit_symbol_futures as swing_candidate_eval_submit_symbol_futures,
     prune_timed_out_pending_futures as swing_candidate_eval_prune_timed_out_pending_futures,
 )
-from swing_selection_contract import (
+from legacy_swing.swing_selection_contract import (
     SWING_SELECTION_CONTRACT_MODULE_VERSION,
     SwingProductionContractConfig,
     normalize_strategy_identity as swing_contract_normalize_strategy,
@@ -155,13 +156,13 @@ from swing_selection_contract import (
     approved_production_contract_rows as swing_contract_approved_rows,
     finalize_production_contract_selection as swing_contract_finalize,
 )
-from swing_execution import (
+from legacy_swing.swing_execution import (
     SWING_EXECUTION_MODULE_VERSION,
     available_qty_from_plan as swing_exec_available_qty_from_plan,
     clamp_exit_qty as swing_exec_clamp_exit_qty,
     qty_source_from_plan as swing_exec_qty_source_from_plan,
 )
-from swing_exit_protection import (
+from legacy_swing.swing_exit_protection import (
     SWING_EXIT_PROTECTION_MODULE_VERSION,
     apply_daily_breakout_giveback_state as swing_exit_apply_daily_breakout_giveback_state,
     apply_failed_followthrough_state as swing_exit_apply_failed_followthrough_state,
@@ -181,7 +182,7 @@ from swing_exit_protection import (
     build_time_exit_grace_state as swing_exit_build_time_exit_grace_state,
     exit_protection_module_status as swing_exit_protection_module_status,
 )
-from swing_execution_submit import (
+from legacy_swing.swing_execution_submit import (
     SWING_EXECUTION_SUBMIT_MODULE_VERSION,
     SwingLimitEntryConfig,
     format_order_qty as swing_exec_format_order_qty,
@@ -206,7 +207,7 @@ from dashboard_rendering import (
     dashboard_safe_list as dashboard_render_safe_list,
     render_fast_dashboard_html,
 )
-from swing_broker_submit import (
+from legacy_swing.swing_broker_submit import (
     SWING_BROKER_SUBMIT_MODULE_VERSION,
     alpaca_order_error_text as swing_broker_alpaca_order_error_text,
     build_submit_ownership_contract as swing_broker_build_submit_ownership_contract,
@@ -215,7 +216,7 @@ from swing_broker_submit import (
     order_id_from_submit_response as swing_broker_order_id_from_submit_response,
     swing_broker_submit_module_status,
 )
-from swing_broker_transport import (
+from legacy_swing.swing_broker_transport import (
     SWING_BROKER_TRANSPORT_MODULE_VERSION,
     broker_transport_dry_run_parity_probe,
     broker_transport_shadow_parity_hook,
@@ -233,7 +234,7 @@ from market_clock import (
     parse_hhmm as market_clock_parse_hhmm,
     parse_session_window as market_clock_parse_session_window,
 )
-from swing_performance_reports import (
+from legacy_swing.swing_performance_reports import (
     SWING_PERFORMANCE_REPORTS_MODULE_VERSION,
     attach_performance_reporting_contracts as swing_perf_attach_contracts,
     build_broker_fills_only_trade_ledger as swing_perf_build_broker_fills_only_trade_ledger,
@@ -248,13 +249,13 @@ from swing_performance_reports import (
     build_replay_promotion_gate_report as swing_perf_build_replay_promotion_gate_report,
     performance_reports_module_status as swing_perf_module_status,
 )
-from swing_replay_registry import (
+from legacy_swing.swing_replay_registry import (
     SWING_REPLAY_REGISTRY_MODULE_VERSION,
     build_replay_variant_registry as swing_replay_build_variant_registry,
     match_replay_variant_registry as swing_replay_match_variant_registry,
     replay_registry_module_status as swing_replay_registry_module_status,
 )
-from swing_live_promotion_gate import (
+from legacy_swing.swing_live_promotion_gate import (
     build_full_live_promotion_gate as swing_live_build_full_live_promotion_gate,
     live_promotion_gate_module_status as swing_live_promotion_gate_module_status,
 )
@@ -3554,18 +3555,19 @@ EXPECTED_ARTIFACT_FILES = [
     "scanner.py",
     "broker_client.py",
     "market_clock.py",
-    "swing_core.py",
-    "swing_execution.py",
-    "swing_execution_submit.py",
-    "swing_broker_submit.py",
-    "swing_broker_transport.py",
-    "swing_light_diagnostics.py",
-    "swing_runtime_config.py",
-    "swing_selection_contract.py",
+    "legacy_swing/swing_core.py",
+    "legacy_swing/swing_execution.py",
+    "legacy_swing/swing_execution_submit.py",
+    "legacy_swing/swing_broker_submit.py",
+    "legacy_swing/swing_broker_transport.py",
+    "legacy_swing/swing_light_diagnostics.py",
+    "legacy_swing/swing_runtime_config.py",
+    "legacy_swing/swing_selection_contract.py",
     "regime_intraday.py",
     "regime_intraday_options.py",
     "regime_intraday_paper.py",
     "regime_intraday_dashboard.py",
+    "regime_intraday_api.py",
     "route_catalog.py",
     "requirements.txt",
 ]
@@ -60610,16 +60612,7 @@ def diagnostics_scanner(history_limit: int = DIAGNOSTIC_SCANNER_HISTORY_LIMIT):
     }
 
 
-@app.get("/diagnostics/regime_intraday")
-def diagnostics_regime_intraday(request: Request, refresh: bool = False):
-    require_admin_if_configured(request)
-    if refresh or not REGIME_INTRADAY_LAST_SCAN:
-        return _run_regime_intraday_scan()
-    return dict(REGIME_INTRADAY_LAST_SCAN)
-
-
-@app.get("/dashboard/intraday", response_class=HTMLResponse)
-def dashboard_regime_intraday(request: Request):
+def _regime_intraday_dashboard_payload() -> dict:
     ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
     readiness = regime_intraday_readiness_snapshot(
         config={"paper_submit_enabled": env_bool("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED", "false"), "live_enabled": False, "option_feed": getenv_any("REGIME_INTRADAY_OPTION_FEED", default="indicative"), "max_scan_age_sec": getenv_int_any("REGIME_INTRADAY_MAX_SCAN_AGE_SEC", default=600), "min_shadow_closed": getenv_int_any("REGIME_INTRADAY_MIN_SHADOW_CLOSED_FOR_LIVE", default=10)},
@@ -60630,7 +60623,7 @@ def dashboard_regime_intraday(request: Request):
     readiness["notifications"] = {"email_enabled": env_bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", "true"), "email_configured": bool(getenv_any("RESEND_API_KEY", default="").strip() and getenv_any("REGIME_INTRADAY_ALERT_EMAIL_TO", default="").strip())}
     worker = dict(_worker_status_snapshot() or {})
     worker = {**dict(worker.get("summary") or {}), **worker}
-    return _dashboard_html_response(render_intraday_dashboard(scan=dict(REGIME_INTRADAY_LAST_SCAN), ledger=ledger, readiness=readiness, scanner=worker))
+    return {"scan": dict(REGIME_INTRADAY_LAST_SCAN), "ledger": ledger, "readiness": readiness, "scanner": worker}
 
 
 @app.get("/diagnostics/route_catalog")
@@ -60638,9 +60631,7 @@ def diagnostics_route_catalog(request: Request):
     return build_route_catalog(app.routes)
 
 
-@app.get("/diagnostics/regime_intraday_ledger")
-def diagnostics_regime_intraday_ledger(request: Request):
-    require_admin_if_configured(request)
+def _regime_intraday_ledger_payload() -> dict:
     ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
     return {
         "ok": True,
@@ -60656,9 +60647,7 @@ def diagnostics_regime_intraday_ledger(request: Request):
     }
 
 
-@app.get("/diagnostics/regime_intraday_readiness")
-def diagnostics_regime_intraday_readiness(request: Request):
-    require_admin_if_configured(request)
+def _regime_intraday_readiness_payload() -> dict:
     ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
     return {
         "ok": True,
@@ -60689,6 +60678,16 @@ def diagnostics_regime_intraday_readiness(request: Request):
             "provider": "resend",
         },
     }
+
+
+app.include_router(build_regime_intraday_router(
+    get_scan=lambda: dict(REGIME_INTRADAY_LAST_SCAN),
+    refresh_scan=_run_regime_intraday_scan,
+    get_ledger_payload=_regime_intraday_ledger_payload,
+    get_readiness_payload=_regime_intraday_readiness_payload,
+    get_dashboard_payload=_regime_intraday_dashboard_payload,
+    html_response=_dashboard_html_response,
+))
 
 
 @app.post("/diagnostics/regime_intraday_replay")

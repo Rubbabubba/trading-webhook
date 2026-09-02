@@ -10,11 +10,9 @@ This project is being cleaned up from a single-file prototype into two clearly s
 
 ## Swing Modules
 
-- `swing_core.py` - swing control/status helpers.
-- `swing_execution.py` - swing execution module status and submit-split prep helpers.
-- `swing_light_diagnostics.py` - lightweight diagnostics used by operator workflows.
-- `swing_runtime_config.py` - runtime config snapshots.
-- `swing_selection_contract.py` - production selection contract helpers.
+All executable swing modules now live under `legacy_swing/`. They remain runtime-loadable only while the live swing account and its positions require management. New intraday code must not import this package.
+
+Patch-era swing tests live under `legacy_swing/tests/`. Offline swing replay and research utilities are preserved under `archive/legacy_swing_research/` and are not part of Render runtime.
 
 ## Regime Intraday Modules
 
@@ -23,6 +21,7 @@ This project is being cleaned up from a single-file prototype into two clearly s
 - `regime_intraday_paper.py` - paper execution, reconciliation, lifecycle, and performance proof.
 - `regime_intraday_notifications.py` - one-time candidate email notification logic.
 - `regime_intraday_dashboard.py` - dedicated paper-system operator console renderer.
+- `regime_intraday_api.py` - isolated FastAPI router for the new system's read and dashboard endpoints.
 - `route_catalog.py` - route ownership, lifecycle, mutation, and sensitivity classification.
 
 ## Cleanup Prep Modules
