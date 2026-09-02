@@ -747,6 +747,38 @@ Post-deploy endpoints:
 - `/diagnostics/active_exit_protection_truth?limit=20`
 - `/diagnostics/scanner_light`
 
+### Patch 714A: Full-Live Gate Canonical Scanner Truth Sync
+
+Status: applied locally; pending deploy verification.
+
+Goal: fix the Patch 714 gate so it reads the canonical scanner truth contract instead of sparse legacy top-level scanner fields.
+
+Scope:
+
+- Treat `p579_canonical_light_consumer_truth`, `p585_scanner_runtime_contract`, `p611_scanner_state_contract`, and `p705_scanner_ownership_contract` as valid scanner readiness evidence.
+- Preserve the replay registry blocker when no capital-eligible replay variant exists.
+- Keep the gate read-only; do not fetch broker history, fetch bars, submit orders, or mutate scanner state.
+- Keep the live system in validation pause until replay registry evidence exists.
+
+Expected outcome:
+
+- A healthy 50-symbol terminal scan no longer fails the full-live gate because of a legacy field mismatch.
+- The remaining blocker should be the replay registry, not scanner readiness, when scanner light is healthy and trade-judgable.
+
+Smoke tests:
+
+- Gate passes scanner readiness from canonical `p579` truth even when top-level `latest_scan.trade_judgable` is absent.
+- Gate still fails reduced-risk/full-live when the replay registry has no capital-eligible variants.
+- Gate still fails when canonical scanner truth is absent and no actionable scan exists.
+
+Post-deploy endpoints:
+
+- `/diagnostics/full_live_promotion_gate`
+- `/diagnostics/scanner_light`
+- `/diagnostics/replay_variant_registry?limit=25`
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/worker_exit_status`
+
 ### Patch 715: Scanner Ownership Extraction Phase 2
 
 Status: planned after live restoration path is endpoint-visible.

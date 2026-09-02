@@ -10,7 +10,7 @@ from typing import Any
 
 
 SWING_LIVE_PROMOTION_GATE_MODULE_VERSION = (
-    "patch-714-full-live-promotion-gate-operator-go-no-go-contract"
+    "patch-714A-full-live-gate-canonical-scanner-truth-sync"
 )
 
 
@@ -39,6 +39,10 @@ def _text(value: Any, default: str = "") -> str:
 
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _summary(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -82,7 +86,13 @@ def _ledger_status(ledger: dict[str, Any] | None, *, max_age_sec: int, min_trade
 
 def _scanner_status(scanner: dict[str, Any] | None) -> dict[str, Any]:
     data = dict(scanner or {})
-    latest_scan = dict(data.get("latest_scan") or {})
+    latest_scan = _dict(data.get("latest_scan"))
+    canonical_truth = _dict(data.get("p579_canonical_light_consumer_truth"))
+    canonical_chosen = _dict(canonical_truth.get("chosen"))
+    runtime_contract = _dict(data.get("p585_scanner_runtime_contract"))
+    last_candidate_scan = _dict(runtime_contract.get("last_candidate_bearing_scan"))
+    scanner_state_contract = _dict(data.get("p611_scanner_state_contract"))
+    scanner_ownership_contract = _dict(data.get("p705_scanner_ownership_contract"))
     warning_codes = _list(data.get("active_warning_codes"))
     background = dict(latest_scan.get("scan_background_completion_truth") or {})
     in_flight = bool(data.get("in_flight_run") or background.get("in_flight_run"))
@@ -91,10 +101,49 @@ def _scanner_status(scanner: dict[str, Any] | None) -> dict[str, Any]:
         "scan_running",
         "started",
     }
-    trade_judgable = bool(
-        latest_scan.get("trade_judgable")
-        or data.get("trade_judgable")
-        or latest_scan.get("candidate_bearing_scan")
+    trade_truth_candidates = [
+        ("latest_scan.trade_judgable", latest_scan.get("trade_judgable")),
+        (
+            "p579_canonical_light_consumer_truth.chosen.trade_judgable",
+            canonical_chosen.get("trade_judgable"),
+        ),
+        ("p579_canonical_light_consumer_truth.trade_judgable", canonical_truth.get("trade_judgable")),
+        (
+            "p585_scanner_runtime_contract.last_candidate_bearing_scan.trade_judgable",
+            last_candidate_scan.get("trade_judgable"),
+        ),
+        (
+            "p611_scanner_state_contract.actionable_scan_available",
+            scanner_state_contract.get("actionable_scan_available"),
+        ),
+        (
+            "p705_scanner_ownership_contract.actionable_scan_available",
+            scanner_ownership_contract.get("actionable_scan_available"),
+        ),
+        ("top_level.trade_judgable", data.get("trade_judgable")),
+        ("latest_scan.candidate_bearing_scan", latest_scan.get("candidate_bearing_scan")),
+    ]
+    trade_judgable_source = ""
+    trade_judgable = False
+    for source, value in trade_truth_candidates:
+        if bool(value):
+            trade_judgable = True
+            trade_judgable_source = source
+            break
+    latest_reason = (
+        latest_scan.get("reason")
+        or canonical_chosen.get("reason")
+        or data.get("latest_scan_reason")
+    )
+    latest_ts = (
+        latest_scan.get("ts_utc")
+        or canonical_chosen.get("ts_utc")
+        or data.get("latest_scan_ts_utc")
+    )
+    selected_symbols = _list(
+        latest_scan.get("selected_symbols")
+        or canonical_chosen.get("selected_symbols")
+        or last_candidate_scan.get("selected_symbols")
     )
     blockers = []
     if not data.get("ok"):
@@ -108,9 +157,17 @@ def _scanner_status(scanner: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "ok": bool(data.get("ok")),
         "healthy": bool(data.get("ok") and not blockers),
-        "latest_scan_ts_utc": latest_scan.get("ts_utc") or data.get("latest_scan_ts_utc"),
-        "latest_scan_reason": latest_scan.get("reason") or data.get("latest_scan_reason"),
+        "latest_scan_ts_utc": latest_ts,
+        "latest_scan_reason": latest_reason,
         "trade_judgable": trade_judgable,
+        "trade_judgable_source": trade_judgable_source or "none",
+        "candidate_bearing": bool(
+            latest_scan.get("candidate_bearing")
+            or canonical_chosen.get("candidate_bearing")
+            or last_candidate_scan.get("candidate_bearing")
+        ),
+        "selected_symbols": selected_symbols,
+        "canonical_scan_source": data.get("canonical_scan_source") or canonical_truth.get("chosen_source"),
         "in_flight": in_flight,
         "active_warning_codes": warning_codes,
         "blockers": blockers,
@@ -302,4 +359,6 @@ def live_promotion_gate_module_status(*, patch_version: str) -> dict[str, Any]:
         "owns_full_live_promotion_gate_contract": True,
         "roadmap_step": "Patch 714",
         "roadmap_focus": "full_live_promotion_gate_operator_go_no_go_contract",
+        "tangent_patch": "Patch 714A",
+        "tangent_focus": "canonical_scanner_truth_sync",
     }
