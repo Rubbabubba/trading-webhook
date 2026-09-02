@@ -566,7 +566,7 @@ Post-deploy endpoints:
 
 ### Patch 712: Reduced-Risk Promotion Config + Broker-Fill Outcome Watch
 
-Status: applied locally in Patch 712; pending deploy verification.
+Status: deployed; reduced-risk contract verified, but validation/submit diagnostics needed Patch 712A latency cleanup.
 
 Goal: make reduced-risk live operation explicit, measurable, and reversible before full live restore.
 
@@ -598,6 +598,43 @@ Post-deploy endpoints:
 - `/diagnostics/selected_submission_truth_light`
 - `/diagnostics/protective_limit_submit_evidence`
 - `/diagnostics/broker_fills_only_trade_ledger?limit=25`
+
+### Patch 712A: Fast Validation Contract + Submit Truth Timeout Guard
+
+Status: applied locally; pending deploy verification.
+
+Goal: keep the reduced-risk promotion truth visible during market hours without blocking on heavy candidate or submit-trace rebuilds.
+
+Scope:
+
+- Make selected submission truth use a cached memory snapshot by default.
+- Keep heavy submit truth available only with `heavy=true`.
+- Reuse the same fast snapshot in submit path trace and executable sizing truth.
+- Cache the promoted-live daily entry count briefly so live-risk validation does not scan decision history on every request.
+- Preserve read-only/no-broker/no-submit semantics for all operator checks.
+
+Expected outcome:
+
+- Validation and submit truth endpoints return quickly enough for live operator checks.
+- Heavy diagnostics remain available when intentionally requested.
+- Patch 712 promotion status is visible without changing scanner, submit, or risk behavior.
+
+Smoke tests:
+
+- Fast selected submission truth returns without broker calls.
+- Submit trace consumes the fast truth path.
+- Executable sizing truth includes Patch 712 evidence.
+- Heavy selected truth remains opt-in.
+
+Post-deploy endpoints:
+
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/executable_sizing_truth?limit=10`
+- `/diagnostics/executable_sizing_truth?heavy=true&limit=10`
+- `/diagnostics/selected_submission_truth_light`
+- `/diagnostics/selected_submission_truth_light?heavy=true`
+- `/diagnostics/swing_submit_path_trace?limit=10`
+- `/diagnostics/scanner_light`
 
 ### Patch 713: Replay-Passed Variant Registry + Strategy Capital Eligibility
 

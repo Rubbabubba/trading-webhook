@@ -3011,6 +3011,8 @@ P598_SUBMIT_TIMEOUT_TRACE: dict[str, dict] = {}
 P570_STALE_SUBMIT_RETRY_PRUNE_LAST: dict = {}
 P603_FOREGROUND_RETRY_MICRO_DRAIN_LOCK = threading.RLock()
 P603_FOREGROUND_RETRY_MICRO_DRAIN_LAST: dict = {}
+P712A_PROMOTED_ENTRY_COUNT_CACHE: dict = {}
+P712A_SELECTED_SUBMISSION_TRUTH_CACHE: dict = {}
 DEDUP_CACHE: dict[str, int] = {}          # dedup_key -> last_seen_utc_ts
 SYMBOL_LOCKS: dict[str, int] = {}         # symbol -> lock_expiry_utc_ts
 
@@ -3218,7 +3220,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-712-reduced-risk-promotion-config-broker-fill-outcome-watch"
+PATCH_VERSION = "patch-712A-fast-validation-contract-submit-truth-timeout-guard"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -17786,7 +17788,7 @@ def _p400_swing_submit_path_trace_light(symbols: str | None = None, limit: int |
     ])
     p540_selected_consumer_truth = {}
     try:
-        p540_selected_consumer_truth = dict(_p550_selected_submission_truth_snapshot_light(
+        p540_selected_consumer_truth = dict(_p712a_fast_selected_submission_truth_snapshot(
             latest_scan,
             summary,
             limit=max(1, min(int(limit or 12), 50)),
@@ -22505,6 +22507,14 @@ def _p711_validation_pause_submit_truth(
 
 
 def _p712_today_promoted_live_entry_count() -> int:
+    cache = dict(P712A_PROMOTED_ENTRY_COUNT_CACHE or {})
+    today_key = str(now_ny().date())
+    now_mono = _time.monotonic()
+    if (
+        cache.get("date") == today_key
+        and (now_mono - float(cache.get("cached_monotonic") or 0.0)) <= 30.0
+    ):
+        return int(cache.get("count") or 0)
     today_ny = now_ny().date()
     count = 0
     for row in list(DECISIONS or []):
@@ -22530,6 +22540,13 @@ def _p712_today_promoted_live_entry_count() -> int:
                 count += 1
         except Exception:
             continue
+    P712A_PROMOTED_ENTRY_COUNT_CACHE.clear()
+    P712A_PROMOTED_ENTRY_COUNT_CACHE.update({
+        "date": today_key,
+        "count": int(count),
+        "cached_monotonic": now_mono,
+        "cached_utc": datetime.now(timezone.utc).isoformat(),
+    })
     return count
 
 
@@ -28119,11 +28136,61 @@ def _p344_sync_selected_from_approved_finalizer(
     out["selected_count"] = len(selected_final)
     return out
 
-def _p300_executable_sizing_audit(limit: int = 25) -> dict:
+def _p712a_existing_executable_sizing_truth(candidate: dict | None) -> dict:
+    c = dict(candidate or {})
+    existing = c.get("executable_sizing_truth")
+    if isinstance(existing, dict) and existing:
+        out = dict(existing)
+        out.setdefault("source", "candidate_cached_executable_sizing_truth")
+        out.setdefault("p712a_snapshot_only", True)
+        return out
+    close = float(_safe_float(c.get("close") or c.get("price") or 0.0))
+    estimated_qty = float(_safe_float(c.get("estimated_qty") or c.get("effective_estimated_qty") or 0.0))
+    requested_qty = float(_safe_float(c.get("requested_qty") or estimated_qty or 0.0))
+    min_qty = max(float(SWING_EXECUTABLE_SELECTION_MIN_QTY or 1.0), float(MIN_AFFORDABLE_QTY), float(MIN_QTY))
+    executable = bool(estimated_qty >= min_qty and close > 0)
+    return {
+        "enabled": bool(SWING_EXECUTABLE_SELECTION_TRUTH_ENABLED),
+        "source": "p712a_snapshot_fields_no_broker_refresh",
+        "p712a_snapshot_only": True,
+        "executable": bool(executable),
+        "sizing_block_reason": (
+            "none"
+            if executable
+            else "missing_price"
+            if close <= 0
+            else "internal_sizing_qty_zero"
+        ),
+        "broker_buying_power_label_valid": False,
+        "broker_snapshot_refresh_skipped": True,
+        "min_executable_qty": round(min_qty, 4),
+        "close": round(close, 4),
+        "requested_qty": round(requested_qty, 4),
+        "raw_estimated_qty": round(estimated_qty, 4),
+        "effective_estimated_qty": round(estimated_qty, 4),
+        "raw_projected_notional": round(requested_qty * close, 4) if close > 0 else None,
+        "effective_projected_notional": round(estimated_qty * close, 4) if close > 0 else None,
+        "risk_per_share": c.get("risk_per_share"),
+        "risk_per_share_pct": c.get("risk_per_share_pct"),
+        "affordability_reason": (c.get("affordability") or {}).get("reason") if isinstance(c.get("affordability"), dict) else None,
+    }
+
+
+def _p300_executable_sizing_audit(limit: int = 25, *, heavy: bool = False) -> dict:
+    started = _time.perf_counter()
     latest_scan, summary = _p298_latest_scan_summary_light()
     rows = list(summary.get("top_candidates") or summary.get("items") or LAST_SWING_CANDIDATES or [])
-    checked = [_p300_apply_executable_selection_contract(dict(r or {})) for r in rows if isinstance(r, dict)]
-    selected_truth = _p298_selected_submission_truth_light()
+    if bool(heavy):
+        checked = [_p300_apply_executable_selection_contract(dict(r or {})) for r in rows if isinstance(r, dict)]
+    else:
+        checked = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row or {})
+            item["executable_sizing_truth"] = _p712a_existing_executable_sizing_truth(item)
+            checked.append(item)
+    selected_truth = _p298_selected_submission_truth_light(limit=limit)
     selected_truth_by_symbol = {
         str((r or {}).get("symbol") or "").strip().upper(): dict(r or {})
         for r in list(selected_truth.get("rows") or [])
@@ -28145,6 +28212,15 @@ def _p300_executable_sizing_audit(limit: int = 25) -> dict:
         "ok": True,
         "patch_version": PATCH_VERSION,
         "mode": "executable_sizing_truth_audit",
+        "p712a_fast_validation_submit_truth": {
+            "enabled": True,
+            "fast_snapshot_only": not bool(heavy),
+            "heavy_path_opted_in": bool(heavy),
+            "heavy_url_hint": "/diagnostics/executable_sizing_truth?heavy=true",
+            "does_not_call_broker": not bool(heavy),
+            "does_not_recompute_candidate_payload": not bool(heavy),
+            "elapsed_ms": int(max(0.0, (_time.perf_counter() - started) * 1000.0)),
+        },
         "latest_scan_ts_utc": latest_scan.get("ts_utc"),
         "latest_scan_reason": latest_scan.get("reason"),
         "live_risk_validation_contract": _p700_live_risk_validation_contract("worker_scan"),
@@ -51147,15 +51223,402 @@ def _p549_current_scan_or_today_event(row: dict | None, latest_scan: dict | None
             continue
     return False
 
-def _p298_selected_submission_truth_light() -> dict:
+def _p712a_fast_selected_submission_truth_snapshot(
+    latest_scan: dict | None = None,
+    summary: dict | None = None,
+    *,
+    limit: int = 50,
+) -> dict:
+    started = _time.perf_counter()
+    latest_scan = dict(latest_scan or LAST_SCAN or {})
+    summary = dict(summary or (latest_scan.get("summary") if isinstance(latest_scan.get("summary"), dict) else {}) or {})
+    latest_scan, summary, p330_after_hours_truth = _p330_preserved_selected_submission_summary(latest_scan, summary)
+    selected_source_truth = dict(
+        latest_scan.get("_p590_effective_scan_source_unification")
+        or summary.get("p590_effective_scan_source_unification")
+        or latest_scan.get("_p579_canonical_light_consumer_truth")
+        or summary.get("p579_canonical_light_consumer_truth")
+        or {}
+    )
+    lim = max(1, min(int(limit or 50), 100))
+    p547_selection_snapshot = dict(summary.get("p547_selection_submit_snapshot") or {})
+    selected_symbols = _dedupe_keep_order([
+        str(sym or "").strip().upper()
+        for sym in list(
+            p547_selection_snapshot.get("selected_symbols")
+            or summary.get("selected_symbols")
+            or latest_scan.get("selected_symbols")
+            or []
+        )
+        if str(sym or "").strip()
+    ])
+    p589_submit_row_adoption = _p589_adopt_selected_submit_rows_for_light(
+        summary,
+        latest_scan,
+        p547_selection_snapshot,
+    )
+    submit_rows_all = [
+        dict(row or {})
+        for row in list(p589_submit_row_adoption.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    submit_by_symbol = {
+        str((row or {}).get("symbol") or "").strip().upper(): dict(row or {})
+        for row in submit_rows_all
+        if str((row or {}).get("symbol") or "").strip()
+    }
+    p554_submit_phase_truth = dict(summary.get("p554_submit_phase_truth") or {})
+    p554_status = str(p554_submit_phase_truth.get("status") or "").strip().lower()
+    submit_pending = bool(
+        selected_symbols
+        and p554_status in {"selection_complete_submit_pending", "submit_started", "submit_phase_started"}
+        and not bool(p554_submit_phase_truth.get("submit_terminal"))
+    )
+    active_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip() and isinstance(plan, dict) and bool(plan.get("active"))
+    }
+    pending_symbols = {
+        str(sym or "").strip().upper()
+        for sym, plan in dict(TRADE_PLAN or {}).items()
+        if str(sym or "").strip() and isinstance(plan, dict) and _plan_is_pending_entry(plan)
+    }
+    snapshot_position_symbols = set(_p575_snapshot_position_symbols_light())
+    latest_reason_norm = str(latest_scan.get("reason") or summary.get("scan_reason") or "").strip().lower()
+    market_submit_possible = bool(
+        in_market_hours()
+        and latest_reason_norm not in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+    )
+    rows: list[dict] = []
+    for sym in selected_symbols[:lim]:
+        submit_row = dict(submit_by_symbol.get(sym) or {})
+        plan = dict((TRADE_PLAN or {}).get(sym) or {})
+        submit_state = str(submit_row.get("submit_state") or submit_row.get("state") or "").strip()
+        submit_reason = str(submit_row.get("submit_reason") or submit_row.get("reason") or "").strip()
+        reason_norm = submit_reason.lower()
+        state_norm = submit_state.lower()
+        active_plan = bool(plan.get("active"))
+        pending_entry_plan = bool(_plan_is_pending_entry(plan))
+        broker_position_open = bool(sym in snapshot_position_symbols)
+        active_position_plan = bool(active_plan and broker_position_open)
+        pending_order_only_plan = bool(pending_entry_plan and not broker_position_open)
+        actual_submit_side_effect = bool(
+            submit_row.get("actual_submit_side_effect")
+            or submit_row.get("order_id")
+            or submit_row.get("submit_order_id")
+            or broker_position_open
+            or active_position_plan
+        )
+        after_hours_selected_not_submitted = bool(
+            reason_norm in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+            or (
+                state_norm in {"ignored", "skipped"}
+                and reason_norm in {"outside_market_hours", "outside_scanner_session", "market_closed"}
+            )
+            or (
+                not market_submit_possible
+                and not submit_row
+                and not actual_submit_side_effect
+                and not pending_order_only_plan
+            )
+        )
+        rate_limited_retryable = bool(_p398_submit_row_rate_limited(submit_row))
+        execution_quality_blocked = bool(_p366_submit_execution_quality_blocked(submit_state, submit_reason))
+        p711_pause = _p711_validation_pause_submit_truth(submit_state, submit_reason, submit_row)
+        p711_contract = _p711_validation_promoted_live_sleeve_contract(
+            source="selected_submission_truth_light_fast",
+            meta={
+                "symbol": sym,
+                "strategy": submit_row.get("signal") or submit_row.get("strategy"),
+                "sleeve": submit_row.get("sleeve") or submit_row.get("entry_type"),
+            },
+        )
+        p712_contract = _p712_reduced_risk_promotion_contract(
+            source="selected_submission_truth_light_fast",
+            meta={
+                "symbol": sym,
+                "strategy": submit_row.get("signal") or submit_row.get("strategy"),
+                "sleeve": submit_row.get("sleeve") or submit_row.get("entry_type"),
+                "p711_validation_promoted_live_sleeve_contract": p711_contract,
+            },
+            validation_contract={
+                "canonical_mode": _p700_normalize_live_risk_mode(),
+                "entry_orders_permitted": False,
+                "p711_validation_promoted_live_sleeve_contract": p711_contract,
+            },
+        )
+        validation_paused_selected_hold = bool(
+            p711_pause.get("validation_paused")
+            and not actual_submit_side_effect
+            and not pending_order_only_plan
+        )
+        selected_submit_timeout = bool(
+            submit_row.get("p559_selected_submit_timeout")
+            or reason_norm == "selected_submit_timeout"
+            or str(submit_row.get("exception_type") or "").strip() == "SelectedSubmitTimeout"
+        )
+        submit_attempted = bool(
+            submit_row.get("submit_attempted")
+            or submit_state
+            or submit_reason
+            or submit_row.get("order_id")
+            or submit_row.get("submit_order_id")
+        )
+        submit_gap = bool(
+            not actual_submit_side_effect
+            and not pending_order_only_plan
+            and not submit_pending
+            and not after_hours_selected_not_submitted
+            and not rate_limited_retryable
+            and not execution_quality_blocked
+            and not validation_paused_selected_hold
+            and not selected_submit_timeout
+        )
+        rows.append({
+            "symbol": sym,
+            "snapshot_only": True,
+            "p712a_fast_snapshot": True,
+            "submit_attempted": bool(submit_attempted),
+            "actual_submit_side_effect": bool(actual_submit_side_effect),
+            "active_plan": bool(active_plan),
+            "broker_position_open": bool(broker_position_open),
+            "active_position_plan": bool(active_position_plan),
+            "pending_entry_plan": bool(pending_entry_plan),
+            "pending_order_only_plan": bool(pending_order_only_plan),
+            "submit_pending": bool(submit_pending and sym in set(selected_symbols)),
+            "submit_gap": bool(submit_gap),
+            "submit_gap_type": (
+                "none"
+                if actual_submit_side_effect
+                else "pending_entry_order_needs_broker_status_sync"
+                if pending_order_only_plan
+                else "submit_pending"
+                if submit_pending
+                else "after_hours_selected_not_submitted"
+                if after_hours_selected_not_submitted
+                else "rate_limited_retryable"
+                if rate_limited_retryable
+                else "execution_quality_blocked"
+                if execution_quality_blocked
+                else "validation_paused_intentional_hold"
+                if validation_paused_selected_hold
+                else "selected_submit_timeout"
+                if selected_submit_timeout
+                else "unattempted"
+                if not submit_attempted
+                else "terminal_failed"
+            ),
+            "retry_evidence_status": (
+                "resolved_by_active_plan_or_submit_side_effect"
+                if actual_submit_side_effect
+                else "validation_paused_intentional_hold"
+                if validation_paused_selected_hold
+                else "submit_gap_unattempted"
+                if submit_gap and not submit_attempted
+                else "snapshot_fast_path"
+            ),
+            "validation_paused_selected_hold": bool(validation_paused_selected_hold),
+            "p711_validation_pause_submit_truth": dict(p711_pause),
+            "p711_validation_promoted_live_sleeve_contract": dict(p711_contract),
+            "p712_reduced_risk_promotion_contract": dict(p712_contract),
+            "rate_limited_retryable": bool(rate_limited_retryable),
+            "execution_quality_blocked": bool(execution_quality_blocked),
+            "selected_submit_timeout": bool(selected_submit_timeout),
+            "after_hours_selected_not_submitted": bool(after_hours_selected_not_submitted),
+            "market_hours_submit_possible": bool(market_submit_possible),
+            "submit_state": submit_state,
+            "submit_reason": submit_reason,
+            "submit_order_id": submit_row.get("submit_order_id") or submit_row.get("order_id"),
+            "plan_order_id": plan.get("order_id"),
+            "plan_order_status": plan.get("order_status"),
+            "scan_submit_row": submit_row or None,
+        })
+
+    validation_paused_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool(row.get("validation_paused_selected_hold")) and str(row.get("symbol") or "").strip()
+    ])
+    p712_allowed_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool((row.get("p712_reduced_risk_promotion_contract") or {}).get("entry_orders_permitted_now"))
+        and str(row.get("symbol") or "").strip()
+    ])
+    submit_gap_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool(row.get("submit_gap")) and str(row.get("symbol") or "").strip()
+    ])
+    actual_submit_side_effect_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool(row.get("actual_submit_side_effect")) and str(row.get("symbol") or "").strip()
+    ])
+    timeout_symbols = _dedupe_keep_order([
+        str(row.get("symbol") or "").strip().upper()
+        for row in rows
+        if bool(row.get("selected_submit_timeout")) and str(row.get("symbol") or "").strip()
+    ])
+    if validation_paused_symbols and not p712_allowed_symbols:
+        recommended_action = "configure_replay_promoted_reduced_risk_sleeve_or_keep_validation_pause"
+    elif p712_allowed_symbols:
+        recommended_action = "promoted_reduced_risk_symbols_can_submit_when_scanner_selects"
+    elif submit_gap_symbols:
+        recommended_action = "inspect_heavy_trace_or_submit_gap_rows"
+    elif timeout_symbols:
+        recommended_action = "check_orders_and_reconcile_before_retrying_selected_symbols"
+    elif actual_submit_side_effect_symbols:
+        recommended_action = "monitor_active_positions"
+    else:
+        recommended_action = "monitor_next_scan"
+    out = swing_diag_selected_submission_truth_light_snapshot(
+        patch_version=PATCH_VERSION,
+        latest_scan=latest_scan,
+        selected_symbols=selected_symbols,
+        rows=rows,
+    )
+    out.update({
+        "patch_version": PATCH_VERSION,
+        "mode": "selected_submission_truth_light",
+        "p712a_fast_validation_submit_truth": {
+            "enabled": True,
+            "fast_snapshot_only": True,
+            "heavy_available": True,
+            "heavy_url_hint": "/diagnostics/selected_submission_truth_light?heavy=true",
+            "does_not_recompute_candidate_payload": True,
+            "does_not_revalidate_selection": True,
+            "does_not_call_broker": True,
+            "elapsed_ms": int(max(0.0, (_time.perf_counter() - started) * 1000.0)),
+            "cacheable": True,
+        },
+        "p330_after_hours_truth": p330_after_hours_truth,
+        "p387_rate_limit_retry_queue_count": len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE),
+        "p563_selected_submit_retry_queue_symbols": _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+            if str((row or {}).get("symbol") or "").strip()
+        ]),
+        "p563_selected_submit_timeout_retry_queue_symbols": _dedupe_keep_order([
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE.values()
+            if str((row or {}).get("symbol") or "").strip()
+            and str((row or {}).get("retry_kind") or "").strip().lower() == "selected_submit_timeout"
+        ]),
+        "p550_heavy_truth_replaced_by_snapshot": True,
+        "p711_validation_promoted_live_sleeve_contract": {
+            "enabled": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+            "validation_paused_symbols": validation_paused_symbols,
+            "validation_paused_count": len(validation_paused_symbols),
+            "validation_promoted_live_allowed_symbols": _dedupe_keep_order([
+                str(row.get("symbol") or "").strip().upper()
+                for row in rows
+                if bool((row.get("p711_validation_promoted_live_sleeve_contract") or {}).get("validation_promoted_live_allowed"))
+                and str(row.get("symbol") or "").strip()
+            ]),
+            "validation_pause_entries_is_intentional_hold_not_submit_gap": True,
+            "read_only": True,
+            "does_not_submit_orders": True,
+        },
+        "p712_reduced_risk_promotion_contract": {
+            "enabled": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
+            "allowed_symbols": p712_allowed_symbols,
+            "allowed_count": len(p712_allowed_symbols),
+            "max_risk_dollars": float(SWING_VALIDATION_PROMOTED_LIVE_MAX_RISK_DOLLARS),
+            "max_position_dollars": float(SWING_VALIDATION_PROMOTED_LIVE_MAX_POSITION_DOLLARS),
+            "daily_entry_limit": int(SWING_VALIDATION_PROMOTED_LIVE_DAILY_ENTRY_LIMIT),
+            "daily_entry_count": _p712_today_promoted_live_entry_count(),
+            "trade_submission_behavior_changed": bool(p712_allowed_symbols),
+            "read_only": True,
+            "does_not_submit_orders": True,
+            "recommended_action": (
+                "promoted_reduced_risk_symbols_can_submit_when_scanner_selects"
+                if p712_allowed_symbols
+                else "no_promoted_reduced_risk_selected_candidates"
+            ),
+        },
+        "validation_paused_symbols": validation_paused_symbols,
+        "validation_paused_count": len(validation_paused_symbols),
+        "selected_submit_timeout_symbols": timeout_symbols,
+        "selected_submit_timeout_count": len(timeout_symbols),
+        "market_hours_submit_possible": bool(market_submit_possible),
+        "p589_selected_timeout_submit_row_adoption": dict(p589_submit_row_adoption),
+        "p590_effective_scan_source_unification": dict(selected_source_truth),
+        "p547_selection_submit_snapshot": {
+            "source_stage": p547_selection_snapshot.get("source_stage"),
+            "selected_count": len(selected_symbols),
+            "selected_symbols": list(selected_symbols),
+            "submit_row_count": int(p547_selection_snapshot.get("submit_row_count") or len(submit_rows_all)),
+            "submit_truth_synced": bool(p547_selection_snapshot.get("submit_truth_synced") or submit_rows_all),
+        },
+        "p554_submit_phase_truth": p554_submit_phase_truth,
+        "does_not_read_lifecycle": True,
+        "does_not_revalidate_selection": True,
+        "does_not_recompute_selection": True,
+        "does_not_call_broker": True,
+        "does_not_recompute_candidate_payload": True,
+        "recommended_action": recommended_action,
+    })
+    P712A_SELECTED_SUBMISSION_TRUTH_CACHE.clear()
+    P712A_SELECTED_SUBMISSION_TRUTH_CACHE.update({
+        "cached_monotonic": _time.monotonic(),
+        "cached_utc": datetime.now(timezone.utc).isoformat(),
+        "payload": dict(out),
+    })
+    return out
+
+
+def _p298_selected_submission_truth_light(*, heavy: bool = False, limit: int = 50) -> dict:
     latest_scan, summary = _p298_latest_scan_summary_light()
     latest_scan, summary, p330_after_hours_truth = _p330_preserved_selected_submission_summary(latest_scan, summary)
+    if not bool(heavy):
+        try:
+            return _p712a_fast_selected_submission_truth_snapshot(
+                latest_scan,
+                summary,
+                limit=limit,
+            )
+        except Exception as exc:
+            cached = dict(P712A_SELECTED_SUBMISSION_TRUTH_CACHE or {})
+            payload = dict(cached.get("payload") or {})
+            if payload:
+                payload["ok"] = True
+                payload["p712a_fast_validation_submit_truth"] = {
+                    **dict(payload.get("p712a_fast_validation_submit_truth") or {}),
+                    "fallback_used": True,
+                    "fallback_reason": "fast_selected_submission_truth_exception",
+                    "error": str(exc),
+                    "cached_utc": cached.get("cached_utc"),
+                    "recommended_action": "use_cached_submit_truth_and_inspect_heavy_only_if_needed",
+                }
+                return payload
+            return {
+                "ok": False,
+                "patch_version": PATCH_VERSION,
+                "mode": "selected_submission_truth_light",
+                "p712a_fast_validation_submit_truth": {
+                    "enabled": True,
+                    "fallback_used": True,
+                    "fallback_reason": "fast_selected_submission_truth_exception_no_cache",
+                    "error": str(exc),
+                },
+                "selected_symbols": [],
+                "rows": [],
+                "recommended_action": "inspect_selected_submission_truth_heavy",
+            }
     p570_retry_prune = _p387_prune_rate_limit_selected_submit_retry_queue()
     snapshot_out = _p550_selected_submission_truth_snapshot_light(
         latest_scan,
         summary,
-        limit=50,
+        limit=limit,
     )
+    snapshot_out["p712a_fast_validation_submit_truth"] = {
+        "enabled": True,
+        "fast_snapshot_only": False,
+        "heavy_path_opted_in": True,
+        "heavy_url_hint": "/diagnostics/selected_submission_truth_light?heavy=true",
+    }
     snapshot_out["p330_after_hours_truth"] = p330_after_hours_truth
     snapshot_out["p387_rate_limit_retry_queue_count"] = len(P387_RATE_LIMIT_SELECTED_SUBMIT_RETRY_QUEUE)
     snapshot_out["p563_selected_submit_retry_queue_symbols"] = _dedupe_keep_order([
@@ -65817,9 +66280,9 @@ def diagnostics_last_successful_production_scan(request: Request):
     }
 
 @app.get("/diagnostics/selected_submission_truth_light")
-def diagnostics_selected_submission_truth_light(request: Request):
+def diagnostics_selected_submission_truth_light(request: Request, heavy: bool = False, limit: int = 50):
     require_admin_if_configured(request)
-    return _p298_selected_submission_truth_light()
+    return _p298_selected_submission_truth_light(heavy=bool(heavy), limit=limit)
 
 @app.get("/diagnostics/spread_blocked_submission_retry")
 def diagnostics_spread_blocked_submission_retry(request: Request, apply: bool = False, limit: int = 10):
@@ -65904,9 +66367,9 @@ def diagnostics_reconcile_light(request: Request, apply_cleanup: bool = False):
     return _p298_reconcile_light(apply_cleanup=apply_cleanup)
 
 @app.get("/diagnostics/executable_sizing_truth")
-def diagnostics_executable_sizing_truth(request: Request, limit: int = 25):
+def diagnostics_executable_sizing_truth(request: Request, limit: int = 25, heavy: bool = False):
     require_admin_if_configured(request)
-    return _p300_executable_sizing_audit(limit=limit)
+    return _p300_executable_sizing_audit(limit=limit, heavy=bool(heavy))
 
 @app.get("/diagnostics/daily_goal_preservation_exit")
 def diagnostics_daily_goal_preservation_exit(request: Request):

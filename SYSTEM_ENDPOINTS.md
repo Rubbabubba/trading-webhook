@@ -44,6 +44,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/current_open_stall_risk_pr
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_execution_proof
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_preview
 https://trading-webhook-q4d5.onrender.com/diagnostics/executable_sizing_truth
+https://trading-webhook-q4d5.onrender.com/diagnostics/executable_sizing_truth?heavy=true
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth?detail=expanded
 https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth?heavy=true
@@ -169,6 +170,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/scans
 https://trading-webhook-q4d5.onrender.com/diagnostics/scans/latest
 https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth
 https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth_light
+https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth_light?heavy=true
 https://trading-webhook-q4d5.onrender.com/diagnostics/spread_blocked_submission_retry
 https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_containment
 https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_profit_leak_drilldown
