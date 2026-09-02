@@ -57,3 +57,14 @@ def test_live_transport_is_closed_without_gate():
         pass
     else:
         raise AssertionError("live transport opened without its gate")
+
+
+def test_indicative_feed_can_select_paper_plan_without_greeks():
+    chain = {"snapshots": {
+        "SPY260911C00600000": _snapshot(0.48, 0.50, 0.0),
+        "SPY260911C00601000": _snapshot(0.18, 0.20, 0.0),
+    }}
+    plan = select_debit_spread(chain, {"underlying": "SPY", "underlying_price": 600.5, "option_type": "call", "min_dte": 7, "max_dte": 21, "target_delta_range": [0.55, 0.70], "max_bid_ask_spread_pct": 0.12}, as_of=date(2026, 9, 2))
+    assert plan["status"] == "selected"
+    assert plan["quote_basis"]["selection_source"] == "near_money_fallback"
+    assert plan["live_eligible"] is False

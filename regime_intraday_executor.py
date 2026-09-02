@@ -50,6 +50,8 @@ def submit_mleg_limit_order(
         raise ValueError("Alpaca credentials are required")
     if not paper and not live_enabled:
         raise PermissionError("live regime-intraday submission gate is closed")
+    if not paper and not bool(plan.get("live_eligible")):
+        raise PermissionError("live options require a verified Greeks-based contract selection")
     payload = build_mleg_limit_order(plan)
     base = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
     request = Request(

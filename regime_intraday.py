@@ -175,6 +175,7 @@ def _trade_plan(symbol: str, strategy: str, side: str, feature: dict, config: Re
         "target_r": config.target_r,
         "option_intent": {
             "underlying": symbol,
+            "underlying_price": round(entry, 4),
             "option_type": option_type,
             "position": "defined_risk_debit",
             "min_dte": config.option_min_dte,

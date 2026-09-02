@@ -64,6 +64,7 @@ def select_debit_spread(
     dte_high = int(intent.get("max_dte") or 21)
     delta_low, delta_high = [float(v) for v in (intent.get("target_delta_range") or [0.55, 0.70])]
     max_spread = float(intent.get("max_bid_ask_spread_pct") or 0.08)
+    underlying_price = float(intent.get("underlying_price") or 0.0)
     candidates = []
     for symbol, snapshot in snapshots.items():
         parsed = parse_occ(symbol)
@@ -74,9 +75,18 @@ def select_debit_spread(
         bid, ask = _quote(dict(snapshot or {}))
         mid = (bid + ask) / 2.0
         spread_pct = (ask - bid) / mid if mid > 0 else 999.0
-        if dte_low <= dte <= dte_high and delta_low <= delta <= delta_high and bid > 0 and ask > bid and spread_pct <= max_spread:
-            candidates.append({**parsed, "dte": dte, "delta": delta, "bid": bid, "ask": ask, "spread_pct": spread_pct})
-    candidates.sort(key=lambda row: (abs(row["delta"] - ((delta_low + delta_high) / 2.0)), row["spread_pct"], row["dte"]))
+        delta_eligible = delta_low <= delta <= delta_high
+        moneyness_eligible = (
+            delta == 0
+            and underlying_price > 0
+            and (
+                (option_type == "call" and underlying_price * 0.99 <= parsed["strike"] <= underlying_price)
+                or (option_type == "put" and underlying_price <= parsed["strike"] <= underlying_price * 1.01)
+            )
+        )
+        if dte_low <= dte <= dte_high and (delta_eligible or moneyness_eligible) and bid > 0 and ask > bid and spread_pct <= max_spread:
+            candidates.append({**parsed, "dte": dte, "delta": delta, "delta_source": "greeks" if delta else "near_money_fallback", "bid": bid, "ask": ask, "spread_pct": spread_pct})
+    candidates.sort(key=lambda row: (0 if row["delta_source"] == "greeks" else 1, abs(row["delta"] - ((delta_low + delta_high) / 2.0)) if row["delta"] else abs(row["strike"] - underlying_price), row["spread_pct"], row["dte"]))
     for long_leg in candidates:
         target_strike = long_leg["strike"] + width if option_type == "call" else long_leg["strike"] - width
         shorts = []
@@ -111,7 +121,8 @@ def select_debit_spread(
                 {"symbol": long_leg["symbol"], "side": "buy", "ratio_qty": 1, "position_intent": "buy_to_open"},
                 {"symbol": short_leg["symbol"], "side": "sell", "ratio_qty": 1, "position_intent": "sell_to_open"},
             ],
-            "quote_basis": {"long_ask": long_leg["ask"], "short_bid": short_leg["bid"], "long_delta": long_leg["delta"], "feed": "indicative_or_configured"},
+            "quote_basis": {"long_ask": long_leg["ask"], "short_bid": short_leg["bid"], "long_delta": long_leg["delta"] or None, "selection_source": long_leg["delta_source"], "feed": "indicative_or_configured"},
+            "live_eligible": long_leg["delta_source"] == "greeks",
             "live_submission": False,
         }
     return {"status": "no_eligible_defined_risk_spread", "live_submission": False, "candidate_count": len(candidates)}
