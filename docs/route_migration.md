@@ -1,6 +1,6 @@
 # Route Migration Policy
 
-The application currently exposes both the live swing system and the paper-only regime intraday system. Route cleanup must preserve that distinction.
+The production application exposes only the paper-only regime intraday system. The former mixed route surface is archived.
 
 ## Ownership
 

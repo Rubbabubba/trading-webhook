@@ -1,19 +1,17 @@
 # Codebase Structure
 
-This project is being cleaned up from a single-file prototype into two clearly separated systems: the currently live swing system and a paper-validation regime-routed SPY intraday system.
+This project runs one production system: a paper-validation, regime-routed SPY intraday system. The retired swing implementation is preserved only under `archive/legacy_swing_runtime/`.
 
 ## Runtime Entry Points
 
-- `app.py` - FastAPI application shell, routes, compatibility wrappers, and legacy runtime glue.
+- `intraday_app.py` - intraday-only FastAPI application.
 - `regime_intraday_worker.py` - dedicated scheduler for new-system scans and paper reconciliation only.
-- `scanner.py` - temporary compatibility entry point for `legacy_swing/scanner.py` while the Render swing scanner is retired.
-- `worker.py` - temporary compatibility entry point for `legacy_swing/worker.py` while existing swing positions still require exit management.
 
 ## Swing Modules
 
-All executable swing modules now live under `legacy_swing/`. They remain runtime-loadable only while the live swing account and its positions require management. New intraday code must not import this package.
+The full retired application, workers, modules, tests, requirements, and operational tools live under `archive/legacy_swing_runtime/`. Production code must not import this archive.
 
-Patch-era swing tests live under `legacy_swing/tests/`. Offline swing replay and research utilities are preserved under `archive/legacy_swing_research/` and are not part of Render runtime.
+Additional offline swing replay and research material remains under `archive/legacy_swing_research/` and is not part of Render runtime.
 
 ## Regime Intraday Modules
 

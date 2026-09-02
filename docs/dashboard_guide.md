@@ -2,10 +2,7 @@
 
 ## System Identity
 
-Two systems remain visible during migration:
-
-- The regime-routed SPY intraday system is the new system. It is paper-only until every live-readiness gate passes.
-- The swing system is isolated legacy runtime. It remains available only to supervise the existing live account and safely manage any open swing positions.
+Only the regime-routed SPY intraday system is served in production. It is paper-only until every live-readiness gate passes.
 
 An intraday email, signal, candidate, or paper order is never evidence that a live order was submitted.
 
@@ -14,8 +11,6 @@ An intraday email, signal, candidate, or paper order is never evidence that a li
 | Dashboard | Purpose |
 |---|---|
 | `/dashboard/intraday` | Primary console for regime, signal, candidate, paper order, exit, performance, and readiness state. |
-| `/dashboard/live` | Temporary legacy swing account and broker supervision during migration. |
-| `/dashboard` | Temporary legacy swing summary. It is not the new intraday console. |
 
 All dashboards require operator authentication. In a browser, use any username and the Render `ADMIN_SECRET` as the password. API clients may send the same value in `x-admin-secret`.
 

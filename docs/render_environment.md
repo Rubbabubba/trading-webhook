@@ -1,6 +1,6 @@
 # Render environment ownership
 
-Ordinary production tuning belongs in `runtime_defaults.py`. Render variables
+Ordinary production tuning belongs in `intraday_defaults.py`. Render variables
 are reserved for secrets, service-specific addresses, and controls that an
 operator may need to change without waiting for a deploy.
 
