@@ -22,6 +22,8 @@ REGIME_INTRADAY_VERSION = "v1-spy-qqq-orb-vwap-router"
 class RegimeIntradayConfig:
     symbols: tuple[str, ...] = ("SPY", "QQQ")
     trade_symbols: tuple[str, ...] = ("SPY", "QQQ")
+    momentum_enabled: bool = True
+    mean_reversion_enabled: bool = True
     opening_range_minutes: int = 30
     min_bars: int = 40
     momentum_volume_ratio: float = 1.20
@@ -200,7 +202,7 @@ def evaluate_regime_intraday(bars_by_symbol: dict[str, list[dict]], config: Regi
     features = {symbol: _market_features(symbol, list(bars_by_symbol.get(symbol) or []), cfg) for symbol in cfg.symbols}
     regime = classify_regime(features, cfg)
     signals: list[dict] = []
-    if regime["name"] == "trend":
+    if regime["name"] == "trend" and cfg.momentum_enabled:
         direction = regime["direction"]
         for symbol, feature in features.items():
             if symbol not in cfg.trade_symbols or not feature["ready"]:
@@ -217,7 +219,7 @@ def evaluate_regime_intraday(bars_by_symbol: dict[str, list[dict]], config: Regi
             extension_ok = abs(feature["vwap_distance_pct"]) <= cfg.momentum_max_vwap_extension_pct
             if crossed and extension_ok and feature["volume_ratio"] >= cfg.momentum_volume_ratio:
                 signals.append(_trade_plan(symbol, "opening_range_momentum", "buy" if bullish else "sell", feature, cfg))
-    elif regime["name"] == "range":
+    elif regime["name"] == "range" and cfg.mean_reversion_enabled:
         for symbol, feature in features.items():
             if symbol not in cfg.trade_symbols:
                 continue

@@ -51,3 +51,10 @@ def test_trade_symbol_filter_keeps_qqq_as_confirmation_only():
     out = evaluate_regime_intraday({"SPY": _bars(rising=True, final_break=True), "QQQ": _bars(rising=True, final_break=True)}, cfg)
     assert out["regime"]["name"] == "trend"
     assert {row["symbol"] for row in out["signals"]} == {"SPY"}
+
+
+def test_disabled_momentum_sleeve_emits_no_trend_trade():
+    cfg = RegimeIntradayConfig(momentum_enabled=False, momentum_volume_ratio=0.5, momentum_max_vwap_extension_pct=0.10)
+    out = evaluate_regime_intraday({"SPY": _bars(rising=True, final_break=True), "QQQ": _bars(rising=True, final_break=True)}, cfg)
+    assert out["regime"]["name"] == "trend"
+    assert out["signals"] == []

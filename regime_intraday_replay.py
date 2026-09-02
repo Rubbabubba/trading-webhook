@@ -152,7 +152,8 @@ def _report(trades: list[dict], session_count: int, accepted_sessions: int, regi
 def threshold_sensitivity(bars_by_symbol: dict[str, list[dict]], base: RegimeIntradayConfig | None = None) -> list[dict]:
     cfg = base or RegimeIntradayConfig()
     rows = []
-    for trend, volume, range_eff, stretch in product((0.28, 0.34, 0.40), (1.0, 1.2, 1.4), (0.22, 0.27, 0.32), (1.0, 1.25, 1.5)):
+    # Keep this intentionally bounded: it runs inside diagnostics on production.
+    for trend, volume, range_eff, stretch in product((0.34, 0.40), (1.2, 1.4), (0.22, 0.27), (1.0, 1.25)):
         candidate = replace(cfg, trend_efficiency_min=trend, momentum_volume_ratio=volume, range_efficiency_max=range_eff, mean_reversion_min_vwap_atr=stretch)
         result = replay_sessions(bars_by_symbol, candidate)
         rows.append({"parameters": {"trend_efficiency_min": trend, "momentum_volume_ratio": volume, "range_efficiency_max": range_eff, "mean_reversion_min_vwap_atr": stretch}, **{k: result[k] for k in ("trade_count", "win_rate", "average_r", "total_r", "max_drawdown_r")}})

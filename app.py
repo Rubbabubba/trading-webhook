@@ -44356,6 +44356,8 @@ def _regime_intraday_config() -> RegimeIntradayConfig:
     trade_symbols = tuple(symbol.strip().upper() for symbol in getenv_any("REGIME_INTRADAY_TRADE_SYMBOLS", default="SPY").split(",") if symbol.strip())
     return RegimeIntradayConfig(
         trade_symbols=trade_symbols or ("SPY",),
+        momentum_enabled=env_bool("REGIME_INTRADAY_MOMENTUM_ENABLED", "false"),
+        mean_reversion_enabled=env_bool("REGIME_INTRADAY_MEAN_REVERSION_ENABLED", "true"),
         opening_range_minutes=max(5, getenv_int_any("REGIME_INTRADAY_OPENING_RANGE_MINUTES", default=30)),
         min_bars=max(10, getenv_int_any("REGIME_INTRADAY_MIN_BARS", default=40)),
         momentum_volume_ratio=getenv_float_any("REGIME_INTRADAY_MOMENTUM_VOLUME_RATIO", default=1.20),
