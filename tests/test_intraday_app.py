@@ -16,6 +16,7 @@ def test_intraday_app_has_no_swing_routes(monkeypatch, tmp_path):
     paths = {route.path for route in module.app.routes}
     assert "/dashboard/intraday" in paths
     assert "/worker/regime_intraday_scan" in paths
+    assert "/worker/regime_intraday_after_hours_replay" in paths
     assert not any("swing" in path for path in paths)
     assert "/worker/exit" not in paths
     assert "/worker/scan_entries" not in paths

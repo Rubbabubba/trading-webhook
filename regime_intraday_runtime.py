@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -16,7 +17,7 @@ from regime_intraday_executor import cancel_order, get_order, submit_mleg_close_
 from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, save_ledger, update_ledger
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_readiness import readiness_snapshot
-from regime_intraday_replay import replay_sessions, threshold_sensitivity, walk_forward
+from regime_intraday_replay import cost_adjusted_report, replay_sessions, threshold_sensitivity, walk_forward
 
 
 def _env(name: str, default: str = "") -> str:
@@ -184,6 +185,30 @@ class RegimeIntradayRuntime:
         if body.get("walk_forward"):
             result["walk_forward"] = walk_forward(regular, cfg)
         return result
+
+    def after_hours_replay(self, body: dict) -> dict:
+        self._worker_authorize(body)
+        days = max(30, min(60, int(body.get("calendar_days") or 60)))
+        end = datetime.now(timezone.utc)
+        bars, fetch = fetch_minute_bars(["SPY", "QQQ"], start=end - timedelta(days=days), end=end)
+        regular = {symbol: [row for row in rows if is_regular_market_time(row["ts_ny"])] for symbol, rows in bars.items()}
+        if fetch.get("error") or not all(regular.get(symbol) for symbol in ("SPY", "QQQ")):
+            raise HTTPException(status_code=502, detail={"message": "historical bars unavailable", "fetch": fetch})
+        cfg = self.config()
+        variants = {
+            "configured": replay_sessions(regular, cfg),
+            "regime_routed_both": replay_sessions(regular, replace(cfg, momentum_enabled=True, mean_reversion_enabled=True)),
+            "opening_range_momentum_only": replay_sessions(regular, replace(cfg, momentum_enabled=True, mean_reversion_enabled=False)),
+            "vwap_mean_reversion_only": replay_sessions(regular, replace(cfg, momentum_enabled=False, mean_reversion_enabled=True)),
+        }
+        risk = _float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100)
+        cost_r = _float("REGIME_INTRADAY_REPLAY_ROUND_TRIP_COST_R", 0.12)
+        summaries = {name: {key: value for key, value in report.items() if key != "trades"} | {"cost_adjusted": cost_adjusted_report(report, risk_dollars=risk, round_trip_cost_r=cost_r)} for name, report in variants.items()}
+        ranking = sorted(summaries, key=lambda name: float(dict(summaries[name].get("cost_adjusted") or {}).get("net_average_r") or -999), reverse=True)
+        output = {"ok": True, "generated_utc": datetime.now(timezone.utc).isoformat(), "calendar_days": days, "paper_only": True, "live_submission": False,
+                  "cost_model": {"risk_dollars": risk, "round_trip_cost_r": cost_r}, "ranking": ranking, "variants": summaries}
+        save_ledger(_env("REGIME_INTRADAY_AFTER_HOURS_REPORT_PATH", "/var/data/regime_intraday_after_hours_report.json"), output)
+        return output
 
     def paper_roundtrip(self, body: dict) -> dict:
         self._worker_authorize(body)

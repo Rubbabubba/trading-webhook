@@ -39,7 +39,7 @@ def main() -> int:
     active = {str(row.get("path")) for row in list(catalog.get("routes") or [])}
     checks.extend([
         ("catalog_200", catalog_status == 200, catalog_status),
-        ("active_route_count_12", catalog.get("route_count") == 12, catalog.get("route_count")),
+        ("active_route_count_13", catalog.get("route_count") == 13, catalog.get("route_count")),
         ("no_swing_routes", not any("swing" in path for path in active), sorted(path for path in active if "swing" in path)),
         ("no_legacy_workers", not ({"/worker/exit", "/worker/scan_entries", "/worker/swing_fast_scan"} & active), sorted(active)),
     ])

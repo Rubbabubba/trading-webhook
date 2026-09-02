@@ -11,7 +11,8 @@ import os
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, time as clock_time, timezone
+from zoneinfo import ZoneInfo
 
 
 WORKER_VERSION = "regime-intraday-worker-v1"
@@ -53,12 +54,24 @@ def main() -> None:
     timeout = max(10, _env_int("REGIME_INTRADAY_WORKER_TIMEOUT_SEC", 60))
     scan_url = (os.getenv("REGIME_INTRADAY_SCAN_URL") or f"{base_url}/worker/regime_intraday_scan").strip()
     reconcile_url = (os.getenv("REGIME_INTRADAY_RECONCILE_URL") or f"{base_url}/worker/regime_intraday_paper_reconcile").strip()
+    replay_url = (os.getenv("REGIME_INTRADAY_REPLAY_URL") or f"{base_url}/worker/regime_intraday_after_hours_replay").strip()
     payload = {"worker_secret": secret}
+    replay_date = None
 
     _log(f"boot version={WORKER_VERSION} interval_sec={interval} timeout_sec={timeout}")
     while True:
         started = time.monotonic()
         cycle_failed = False
+        ny_now = datetime.now(ZoneInfo("America/New_York"))
+        if ny_now.weekday() < 5 and ny_now.time() >= clock_time(16, 5) and replay_date != ny_now.date():
+            try:
+                status, response = _post(replay_url, {**payload, "calendar_days": 60}, max(timeout, 240))
+                ranking = list(response.get("ranking") or [])
+                _log(f"after_hours_replay_ok http={status} leader={ranking[0] if ranking else 'none'} variants={len(response.get('variants') or {})} live_submission={response.get('live_submission', False)}")
+                replay_date = ny_now.date()
+            except Exception as error:
+                cycle_failed = True
+                _log(f"after_hours_replay_error kind={type(error).__name__} detail={str(error)[:300]}")
         for action, url in (("scan", scan_url), ("reconcile", reconcile_url)):
             try:
                 status, response = _post(url, payload, timeout)
