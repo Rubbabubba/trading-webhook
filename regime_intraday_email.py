@@ -24,6 +24,7 @@ def build_signal_email(signal: dict[str, Any], plan: dict[str, Any]) -> dict[str
         f"Maximum loss: ${float(plan.get('max_loss_dollars') or 0):.2f}\n"
         f"Maximum profit: ${float(plan.get('max_profit_dollars') or 0):.2f}\n"
         f"Selection source: {dict(plan.get('quote_basis') or {}).get('selection_source')}\n"
+        f"Approval expires: {signal.get('approval_expires_at')}\n"
         f"Legs:\n{leg_text}\n\n"
         "No order has been sent. Return to the Codex trading task to review and explicitly authorize the paper order."
     )

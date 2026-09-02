@@ -1,6 +1,6 @@
 from datetime import date
 
-from regime_intraday_ledger import empty_ledger, paper_submission_decision, record_broker_order, update_ledger
+from regime_intraday_ledger import empty_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, update_ledger
 from regime_intraday_options import parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_executor import build_mleg_close_order, build_mleg_limit_order, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot
@@ -116,3 +116,13 @@ def test_live_readiness_requires_opra_and_closed_paper_roundtrip():
     assert snapshot["live_ready"] is False
     assert "opra_feed_required" in snapshot["live_blockers"]
     assert "paper_order_roundtrip_required" in snapshot["live_blockers"]
+
+
+def test_pending_candidate_survives_scan_but_expires_closed():
+    ledger = empty_ledger()
+    signal = {"signal_id": "sig-queued", "symbol": "SPY"}
+    plan = {"status": "selected", "limit_debit": 0.42}
+    record_pending_candidate(ledger, signal, plan, ts_utc="2026-09-02T15:00:00+00:00", expires_at="2026-09-02T15:10:00+00:00")
+    update_ledger(ledger, {"ts_utc": "2026-09-02T15:01:00+00:00", "signals": [], "features": {}})
+    assert pending_candidate(ledger, "sig-queued", now_utc="2026-09-02T15:09:59+00:00") is not None
+    assert pending_candidate(ledger, "sig-queued", now_utc="2026-09-02T15:10:00+00:00") is None

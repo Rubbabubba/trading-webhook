@@ -110,7 +110,7 @@ from regime_intraday import (
     RegimeIntradayConfig,
     evaluate_regime_intraday,
 )
-from regime_intraday_ledger import load_ledger as load_regime_intraday_ledger, paper_submission_decision, record_broker_order, save_ledger as save_regime_intraday_ledger, update_ledger as update_regime_intraday_ledger
+from regime_intraday_ledger import load_ledger as load_regime_intraday_ledger, paper_submission_decision, pending_candidate as get_regime_intraday_pending_candidate, record_broker_order, record_pending_candidate as record_regime_intraday_pending_candidate, save_ledger as save_regime_intraday_ledger, update_ledger as update_regime_intraday_ledger
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_executor import cancel_order as cancel_regime_intraday_order, get_order as get_regime_intraday_order, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot as regime_intraday_readiness_snapshot
@@ -44430,6 +44430,14 @@ def _run_regime_intraday_scan() -> dict:
                 max_daily_loss_r=getenv_float_any("REGIME_INTRADAY_MAX_DAILY_LOSS_R", default=2.0),
                 ts_utc=ts_utc,
             )
+            candidate_ttl = max(60, getenv_int_any("REGIME_INTRADAY_CANDIDATE_TTL_SEC", default=600))
+            expires_at = (datetime.fromisoformat(ts_utc.replace("Z", "+00:00")) + timedelta(seconds=candidate_ttl)).isoformat()
+            for row in option_plans:
+                plan = dict(row.get("plan") or {})
+                signal_id = str(dict(row.get("signal") or {}).get("signal_id") or "")
+                signal = next((dict(item) for item in list(payload.get("signals") or []) if str(item.get("signal_id") or "") == signal_id), {})
+                row["approval_expires_at"] = expires_at
+                record_regime_intraday_pending_candidate(ledger, signal, plan, ts_utc=ts_utc, expires_at=expires_at)
             save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
             payload["paper_ledger"] = dict(ledger.get("summary") or {})
             sent_ids = {str(event.get("signal_id") or "") for event in list(ledger.get("events") or []) if event.get("event") == "signal_email_sent"}
@@ -44438,6 +44446,7 @@ def _run_regime_intraday_scan() -> dict:
                 signal_id = str(dict(row.get("signal") or {}).get("signal_id") or "")
                 plan = dict(row.get("plan") or {})
                 signal = next((dict(item) for item in list(payload.get("signals") or []) if str(item.get("signal_id") or "") == signal_id), {})
+                signal["approval_expires_at"] = row.get("approval_expires_at")
                 if plan.get("status") != "selected" or not signal_id or signal_id in sent_ids:
                     continue
                 try:
@@ -60581,6 +60590,7 @@ def diagnostics_regime_intraday_ledger(request: Request):
         "closed": list(ledger.get("closed") or [])[-50:],
         "events": list(ledger.get("events") or [])[-100:],
         "orders": dict(ledger.get("orders") or {}),
+        "pending_candidates": dict(ledger.get("pending_candidates") or {}),
         "last_scan": dict(REGIME_INTRADAY_LAST_SCAN),
         "live_submission": False,
     }
@@ -60666,19 +60676,25 @@ def worker_regime_intraday_paper_roundtrip(body: dict = Body(default={})):
         scan_age_sec = max(0.0, (datetime.now(timezone.utc) - datetime.fromisoformat(str(REGIME_INTRADAY_LAST_SCAN.get("ts_utc") or "").replace("Z", "+00:00"))).total_seconds())
     except Exception:
         scan_age_sec = 10**9
-    if scan_age_sec > max(30, getenv_int_any("REGIME_INTRADAY_MAX_SCAN_AGE_SEC", default=600)):
-        raise HTTPException(status_code=409, detail="latest regime-intraday scan is stale")
     paper_key = getenv_any("ALPACA_PAPER_API_KEY_ID", default="").strip()
     paper_secret = getenv_any("ALPACA_PAPER_API_SECRET_KEY", default="").strip()
     selected_row = next(
         (dict(row) for row in list(REGIME_INTRADAY_LAST_SCAN.get("option_plans") or []) if dict(row.get("plan") or {}).get("status") == "selected"),
         None,
     )
-    if not selected_row:
-        raise HTTPException(status_code=409, detail="no selected option spread in the latest scan")
-    selected = dict(selected_row.get("plan") or {})
-    signal_id = str(dict(selected_row.get("signal") or {}).get("signal_id") or "")
     ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+    requested_signal_id = str(body.get("signal_id") or "").strip()
+    durable = get_regime_intraday_pending_candidate(ledger, requested_signal_id, now_utc=datetime.now(timezone.utc).isoformat()) if requested_signal_id else None
+    if durable:
+        selected = dict(durable.get("plan") or {})
+        signal_id = requested_signal_id
+    elif selected_row:
+        if scan_age_sec > max(30, getenv_int_any("REGIME_INTRADAY_MAX_SCAN_AGE_SEC", default=600)):
+            raise HTTPException(status_code=409, detail="latest regime-intraday scan is stale")
+        selected = dict(selected_row.get("plan") or {})
+        signal_id = str(dict(selected_row.get("signal") or {}).get("signal_id") or "")
+    else:
+        raise HTTPException(status_code=409, detail="no fresh selected option spread is available")
     decision = paper_submission_decision(
         ledger,
         signal_id,
@@ -60693,6 +60709,8 @@ def worker_regime_intraday_paper_roundtrip(body: dict = Body(default={})):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"paper order rejected: {str(exc)[:300]}") from exc
     record_broker_order(ledger, signal_id, {**result, "plan": selected})
+    if signal_id in dict(ledger.get("pending_candidates") or {}):
+        ledger["pending_candidates"][signal_id]["status"] = "paper_order_submitted"
     save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
     return {"ok": True, "mode": "alpaca_paper_roundtrip", "risk_decision": decision, "result": result, "signal_id": signal_id, "live_submission": False}
 

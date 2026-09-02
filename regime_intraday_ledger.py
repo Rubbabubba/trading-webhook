@@ -14,7 +14,33 @@ LEDGER_VERSION = "v2-durable-signal-order-ledger"
 
 
 def empty_ledger() -> dict[str, Any]:
-    return {"version": LEDGER_VERSION, "open": {}, "closed": [], "orders": {}, "events": []}
+    return {"version": LEDGER_VERSION, "open": {}, "closed": [], "orders": {}, "pending_candidates": {}, "events": []}
+
+
+def record_pending_candidate(ledger: dict[str, Any], signal: dict[str, Any], plan: dict[str, Any], *, ts_utc: str, expires_at: str) -> dict[str, Any]:
+    signal_id = str(signal.get("signal_id") or "")
+    if not signal_id or plan.get("status") != "selected":
+        return ledger
+    pending = dict(ledger.get("pending_candidates") or {})
+    if signal_id not in pending:
+        pending[signal_id] = {"signal": dict(signal), "plan": dict(plan), "created_at": ts_utc, "expires_at": expires_at, "status": "awaiting_paper_approval"}
+        events = list(ledger.get("events") or [])
+        events.append({"event": "paper_candidate_queued", "signal_id": signal_id, "ts_utc": ts_utc, "expires_at": expires_at})
+        ledger["events"] = events[-1000:]
+    ledger["pending_candidates"] = pending
+    return ledger
+
+
+def pending_candidate(ledger: dict[str, Any], signal_id: str, *, now_utc: str) -> dict[str, Any] | None:
+    row = dict(dict(ledger.get("pending_candidates") or {}).get(signal_id) or {})
+    if not row or row.get("status") != "awaiting_paper_approval":
+        return None
+    try:
+        if datetime.fromisoformat(str(now_utc).replace("Z", "+00:00")) >= datetime.fromisoformat(str(row.get("expires_at") or "").replace("Z", "+00:00")):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return row
 
 
 def paper_submission_decision(ledger: dict[str, Any], signal_id: str, *, session: str, max_trades_per_day: int = 2, max_consecutive_losses: int = 2) -> dict[str, Any]:
@@ -129,7 +155,7 @@ def update_ledger(
         opened[symbol] = position
         events.append({"event": "shadow_entry", "ts_utc": now, "symbol": symbol, "strategy": signal.get("strategy")})
 
-    ledger.update({"version": LEDGER_VERSION, "open": opened, "closed": closed[-500:], "orders": dict(ledger.get("orders") or {}), "events": events[-1000:], "updated_at": now})
+    ledger.update({"version": LEDGER_VERSION, "open": opened, "closed": closed[-500:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}), "events": events[-1000:], "updated_at": now})
     ledger["summary"] = {
         "open_count": len(opened),
         "closed_count": len(closed),
