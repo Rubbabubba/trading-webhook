@@ -115,6 +115,7 @@ from regime_intraday_options import fetch_option_chain, select_debit_spread, spr
 from regime_intraday_executor import cancel_order as cancel_regime_intraday_order, get_order as get_regime_intraday_order, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot as regime_intraday_readiness_snapshot
 from regime_intraday_replay import replay_sessions as replay_regime_intraday_sessions, threshold_sensitivity as regime_intraday_threshold_sensitivity, walk_forward as regime_intraday_walk_forward
+from regime_intraday_email import send_signal_email as send_regime_intraday_signal_email
 from swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
     initial_eval_truth as swing_candidate_eval_initial_truth,
@@ -44431,6 +44432,29 @@ def _run_regime_intraday_scan() -> dict:
             )
             save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
             payload["paper_ledger"] = dict(ledger.get("summary") or {})
+            sent_ids = {str(event.get("signal_id") or "") for event in list(ledger.get("events") or []) if event.get("event") == "signal_email_sent"}
+            alert_results = []
+            for row in option_plans:
+                signal_id = str(dict(row.get("signal") or {}).get("signal_id") or "")
+                plan = dict(row.get("plan") or {})
+                signal = next((dict(item) for item in list(payload.get("signals") or []) if str(item.get("signal_id") or "") == signal_id), {})
+                if plan.get("status") != "selected" or not signal_id or signal_id in sent_ids:
+                    continue
+                try:
+                    result = send_regime_intraday_signal_email(
+                        api_key=getenv_any("RESEND_API_KEY", default="").strip() if env_bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", "true") else "",
+                        to_email=getenv_any("REGIME_INTRADAY_ALERT_EMAIL_TO", default="").strip(),
+                        from_email=getenv_any("REGIME_INTRADAY_ALERT_EMAIL_FROM", default="Trading System <onboarding@resend.dev>").strip(),
+                        signal=signal,
+                        plan=plan,
+                    )
+                    alert_results.append({"signal_id": signal_id, **result})
+                    if result.get("sent"):
+                        ledger.setdefault("events", []).append({"event": "signal_email_sent", "signal_id": signal_id, "message_id": result.get("message_id"), "ts_utc": ts_utc})
+                        save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
+                except Exception as alert_error:
+                    alert_results.append({"signal_id": signal_id, "sent": False, "reason": "provider_error", "detail": str(alert_error)[:200]})
+            payload["email_alerts"] = alert_results
         except Exception as ledger_error:
             payload["paper_ledger"] = {"status": "persistence_error", "detail": str(ledger_error)[:300]}
     REGIME_INTRADAY_LAST_SCAN = payload
@@ -60588,6 +60612,11 @@ def diagnostics_regime_intraday_readiness(request: Request):
             "max_daily_loss_dollars": getenv_float_any("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", default=200.0),
             "latest_entry_time_ny": getenv_any("REGIME_INTRADAY_LATEST_ENTRY_TIME_NY", default="15:30"),
             "forced_exit_time_ny": getenv_any("REGIME_INTRADAY_FORCED_EXIT_TIME_NY", default="15:45"),
+        },
+        "notifications": {
+            "email_enabled": env_bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", "true"),
+            "email_configured": bool(getenv_any("RESEND_API_KEY", default="").strip() and getenv_any("REGIME_INTRADAY_ALERT_EMAIL_TO", default="").strip()),
+            "provider": "resend",
         },
     }
 
