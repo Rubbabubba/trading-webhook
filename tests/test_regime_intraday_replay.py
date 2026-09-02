@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import regime_intraday_replay as replay_module
 from regime_intraday_replay import _outcome, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, split_sessions, walk_forward
+from regime_intraday import RegimeIntradayConfig
 
 
 def test_cost_adjusted_report_tracks_daily_goal_rates():
@@ -11,6 +12,12 @@ def test_cost_adjusted_report_tracks_daily_goal_rates():
     assert result["days_at_or_above_100"] == 1
     assert result["daily_goal_100_rate"] == 0.25
     assert result["average_daily_dollars"] == 20.0
+
+
+def test_paper_defaults_match_validated_mean_reversion_thresholds():
+    config = RegimeIntradayConfig()
+    assert config.range_efficiency_max == 0.24
+    assert config.mean_reversion_min_vwap_atr == 1.0
 
 
 def _row(ts, o, h, low, close, volume=1000):

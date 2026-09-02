@@ -30,8 +30,8 @@ class RegimeIntradayConfig:
     momentum_break_buffer_pct: float = 0.0003
     momentum_max_vwap_extension_pct: float = 0.008
     trend_efficiency_min: float = 0.34
-    range_efficiency_max: float = 0.27
-    mean_reversion_min_vwap_atr: float = 1.25
+    range_efficiency_max: float = 0.24
+    mean_reversion_min_vwap_atr: float = 1.0
     mean_reversion_max_vwap_atr: float = 2.75
     stop_atr: float = 0.75
     target_r: float = 2.0

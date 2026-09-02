@@ -57,7 +57,7 @@ class RegimeIntradayRuntime:
             opening_range_minutes=max(5, _int("REGIME_INTRADAY_OPENING_RANGE_MINUTES", 30)), min_bars=max(10, _int("REGIME_INTRADAY_MIN_BARS", 40)),
             momentum_volume_ratio=_float("REGIME_INTRADAY_MOMENTUM_VOLUME_RATIO", 1.20), momentum_break_buffer_pct=_float("REGIME_INTRADAY_BREAK_BUFFER_PCT", 0.0003),
             momentum_max_vwap_extension_pct=_float("REGIME_INTRADAY_MAX_VWAP_EXTENSION_PCT", 0.008), trend_efficiency_min=_float("REGIME_INTRADAY_TREND_EFFICIENCY_MIN", 0.34),
-            range_efficiency_max=_float("REGIME_INTRADAY_RANGE_EFFICIENCY_MAX", 0.27), mean_reversion_min_vwap_atr=_float("REGIME_INTRADAY_MR_MIN_VWAP_ATR", 1.25),
+            range_efficiency_max=_float("REGIME_INTRADAY_RANGE_EFFICIENCY_MAX", 0.24), mean_reversion_min_vwap_atr=_float("REGIME_INTRADAY_MR_MIN_VWAP_ATR", 1.0),
             mean_reversion_max_vwap_atr=_float("REGIME_INTRADAY_MR_MAX_VWAP_ATR", 2.75), stop_atr=_float("REGIME_INTRADAY_STOP_ATR", 0.75),
             target_r=_float("REGIME_INTRADAY_TARGET_R", 2.0), option_min_dte=max(1, _int("REGIME_INTRADAY_OPTION_MIN_DTE", 7)),
             option_max_dte=max(1, _int("REGIME_INTRADAY_OPTION_MAX_DTE", 21)), option_target_delta_low=_float("REGIME_INTRADAY_OPTION_DELTA_LOW", 0.55),
