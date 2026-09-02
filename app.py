@@ -14,6 +14,8 @@ from runtime_defaults import apply_production_defaults
 apply_production_defaults()
 
 import logging
+import base64
+import secrets
 import hashlib
 import traceback
 import html
@@ -116,6 +118,8 @@ from regime_intraday_executor import cancel_order as cancel_regime_intraday_orde
 from regime_intraday_readiness import readiness_snapshot as regime_intraday_readiness_snapshot
 from regime_intraday_replay import replay_sessions as replay_regime_intraday_sessions, threshold_sensitivity as regime_intraday_threshold_sensitivity, walk_forward as regime_intraday_walk_forward
 from regime_intraday_email import send_exit_email as send_regime_intraday_exit_email, send_signal_email as send_regime_intraday_signal_email
+from regime_intraday_dashboard import render_intraday_dashboard
+from route_catalog import build_route_catalog, classify_path, is_sensitive_path
 from swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
     initial_eval_truth as swing_candidate_eval_initial_truth,
@@ -3083,6 +3087,27 @@ DAILY_STOP_DOLLARS = float(os.getenv("DAILY_STOP_DOLLARS", "0"))  # e.g. 50 mean
 KILL_SWITCH = env_bool("KILL_SWITCH", "false")  # can flip by env or /kill
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()  # protect /kill endpoints
 
+
+@app.middleware("http")
+async def protect_sensitive_operator_surfaces(request: Request, call_next):
+    """Require the operator secret for account/order detail; keep safe health summaries public."""
+    if is_sensitive_path(request.url.path):
+        supplied = request.headers.get("x-admin-secret", "").strip()
+        auth = request.headers.get("authorization", "")
+        if not supplied and auth.lower().startswith("basic "):
+            try:
+                decoded = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8")
+                supplied = decoded.split(":", 1)[1] if ":" in decoded else ""
+            except Exception:
+                supplied = ""
+        if not ADMIN_SECRET or not secrets.compare_digest(supplied, ADMIN_SECRET):
+            return JSONResponse(status_code=401, content={"detail": "operator authentication required"}, headers={"WWW-Authenticate": 'Basic realm="Trading Operator"'})
+    response = await call_next(request)
+    classification = classify_path(request.url.path, {request.method})
+    if classification["lifecycle"] == "deprecation_candidate":
+        response.headers["Deprecation"] = "true"
+    return response
+
 # Optional allowed signals
 ALLOWED_SIGNALS = set(
     s.strip() for s in os.getenv("ALLOWED_SIGNALS", "").split(",") if s.strip()
@@ -3537,8 +3562,12 @@ EXPECTED_ARTIFACT_FILES = [
     "swing_light_diagnostics.py",
     "swing_runtime_config.py",
     "swing_selection_contract.py",
+    "regime_intraday.py",
+    "regime_intraday_options.py",
+    "regime_intraday_paper.py",
+    "regime_intraday_dashboard.py",
+    "route_catalog.py",
     "requirements.txt",
-    "DEPLOYMENT_NOTES.md",
 ]
 BROKER_TRUTH_SYNC_LAST_TS = 0.0
 BROKER_TRUTH_SYNC_MIN_INTERVAL_SEC = 60.0
@@ -44773,6 +44802,13 @@ def root():
 
 @app.get("/health")
 def health():
+    try:
+        intraday_cfg = _regime_intraday_config()
+        intraday_ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+        intraday_summary = dict(intraday_ledger.get("summary") or {})
+        intraday_scan = dict(REGIME_INTRADAY_LAST_SCAN or {})
+    except Exception:
+        intraday_cfg, intraday_summary, intraday_scan = RegimeIntradayConfig(trade_symbols=("SPY",)), {}, {}
     return {
         "ok": True,
         "paper": APCA_PAPER,
@@ -44793,6 +44829,10 @@ def health():
         "daily_stop_dollars": DAILY_STOP_DOLLARS,
         "kill_switch": KILL_SWITCH,
         "active_plans": {k: v.get("active") for k, v in TRADE_PLAN.items()},
+        "systems": {
+            "swing": {"status": "legacy_active", "broker_mode": "paper" if APCA_PAPER else "live", "live_entries_enabled": bool(LIVE_TRADING_ENABLED), "strategy_mode": STRATEGY_MODE, "dashboard": "/dashboard/live"},
+            "regime_intraday": {"status": "paper_validation", "broker_mode": "paper", "live_entries_enabled": False, "regime_inputs": list(intraday_cfg.symbols), "trade_symbols": list(intraday_cfg.trade_symbols), "momentum_enabled": bool(intraday_cfg.momentum_enabled), "mean_reversion_enabled": bool(intraday_cfg.mean_reversion_enabled), "latest_regime": dict(intraday_scan.get("regime") or {}).get("name"), "paper_order_count": intraday_summary.get("paper_order_count", 0), "dashboard": "/dashboard/intraday"},
+        },
     }
 @app.get("/scanner/status")
 def scanner_status():
@@ -60576,6 +60616,26 @@ def diagnostics_regime_intraday(request: Request, refresh: bool = False):
     if refresh or not REGIME_INTRADAY_LAST_SCAN:
         return _run_regime_intraday_scan()
     return dict(REGIME_INTRADAY_LAST_SCAN)
+
+
+@app.get("/dashboard/intraday", response_class=HTMLResponse)
+def dashboard_regime_intraday(request: Request):
+    ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+    readiness = regime_intraday_readiness_snapshot(
+        config={"paper_submit_enabled": env_bool("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED", "false"), "live_enabled": False, "option_feed": getenv_any("REGIME_INTRADAY_OPTION_FEED", default="indicative"), "max_scan_age_sec": getenv_int_any("REGIME_INTRADAY_MAX_SCAN_AGE_SEC", default=600), "min_shadow_closed": getenv_int_any("REGIME_INTRADAY_MIN_SHADOW_CLOSED_FOR_LIVE", default=10)},
+        ledger=ledger,
+        last_scan=REGIME_INTRADAY_LAST_SCAN,
+        paper_credentials_present=bool(getenv_any("ALPACA_PAPER_API_KEY_ID", default="").strip() and getenv_any("ALPACA_PAPER_API_SECRET_KEY", default="").strip()),
+    )
+    readiness["notifications"] = {"email_enabled": env_bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", "true"), "email_configured": bool(getenv_any("RESEND_API_KEY", default="").strip() and getenv_any("REGIME_INTRADAY_ALERT_EMAIL_TO", default="").strip())}
+    worker = dict(_worker_status_snapshot() or {})
+    worker = {**dict(worker.get("summary") or {}), **worker}
+    return _dashboard_html_response(render_intraday_dashboard(scan=dict(REGIME_INTRADAY_LAST_SCAN), ledger=ledger, readiness=readiness, scanner=worker))
+
+
+@app.get("/diagnostics/route_catalog")
+def diagnostics_route_catalog(request: Request):
+    return build_route_catalog(app.routes)
 
 
 @app.get("/diagnostics/regime_intraday_ledger")

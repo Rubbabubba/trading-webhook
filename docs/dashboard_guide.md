@@ -1,5 +1,7 @@
 # Trading Dashboard Guide
 
+> **Two systems are currently visible.** The existing swing system is the live production system. The regime-routed SPY intraday system is paper-only and cannot place live orders. Do not interpret an intraday candidate, email, or paper position as a live trade.
+
 > Notion-ready operator guide for the trading-webhook dashboard.
 >
 > Copy this Markdown page into Notion as a single page. Notion will preserve headings, tables, bullets, and code blocks.
@@ -25,11 +27,15 @@ The dashboard is intentionally **snapshot-only**. It reads persisted state, snap
 | View | URL | Purpose | When to Use |
 |---|---|---|---|
 | Summary / fast path | `/dashboard` | Fast operator snapshot with core health, positions, risk, readiness, tuning, and proof panels. | Default view for daily monitoring. |
+| Intraday paper console | `/dashboard/intraday` | Regime, signal, approval queue, paper-order lifecycle, performance, and live-readiness blockers for the new SPY system. | Use for all new intraday monitoring and paper validation. |
+| Live swing broker view | `/dashboard/live` | Broker-backed positions and orders for the currently live legacy swing system. | Use for live account supervision. |
 | Full diagnostic view | `/dashboard?detail=full` | Adds heavier rank, symbol, holding-period, exit attribution, rejection totals, correlation, and follow-through tables. | Use when investigating scanner behavior, performance attribution, or rejection patterns. |
 
 ### Operator rule
 
 Use `/dashboard` for normal refreshes. Use `/dashboard?detail=full` only when you need deeper diagnostics.
+
+Use `/dashboard/intraday` for the new strategy. It is deliberately labeled paper-only until OPRA data, contract selection, paper entry/exit round trips, and a sufficient outcome sample have passed their gates.
 
 ---
 

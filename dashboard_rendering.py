@@ -17,6 +17,7 @@ DASHBOARD_ROUTE_CONFIG = {
     "fast": {"path": "/dashboard", "heavy": False, "guarded": False},
     "fast_alias": {"path": "/dashboard/fast", "heavy": False, "guarded": False},
     "live": {"path": "/dashboard/live", "heavy": False, "guarded": False},
+    "intraday": {"path": "/dashboard/intraday", "heavy": False, "guarded": False},
     "full": {"path": "/dashboard/full", "heavy": True, "guarded": True},
     "research": {"path": "/dashboard/research", "heavy": True, "guarded": True},
 }
@@ -96,6 +97,7 @@ th {{ color:#c4b5fd; font-weight:700; }}
   <div class="actions">
     <a href="/dashboard/fast">Refresh</a>
     <a href="/dashboard/live">Live Broker View</a>
+    <a href="/dashboard/intraday">Intraday Paper</a>
     <a href="/dashboard/full">Full Swing</a>
     <a href="/dashboard/research">Research</a>
   </div>

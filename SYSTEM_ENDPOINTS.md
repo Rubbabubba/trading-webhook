@@ -1,257 +1,314 @@
-> Patch 353 note: swing production scanner entries require protective limit-entry formation by default. `/diagnostics/swing_submit_path_trace` now treats only the current scan selected symbols as selected submit opportunities; eligible-but-not-selected names are reported separately.
+# System endpoint manifest
 
-https://trading-webhook-q4d5.onrender.com/
-https://trading-webhook-q4d5.onrender.com/admin/release/promote/{target_stage}
-https://trading-webhook-q4d5.onrender.com/dashboard
-https://trading-webhook-q4d5.onrender.com/dashboard/fast
-https://trading-webhook-q4d5.onrender.com/dashboard/full
-https://trading-webhook-q4d5.onrender.com/dashboard/live
-https://trading-webhook-q4d5.onrender.com/dashboard/research
-https://trading-webhook-q4d5.onrender.com/diagnostics/actionable_watchlist
-https://trading-webhook-q4d5.onrender.com/diagnostics/active_exit_protection_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/active_exit_protection_truth?detail=heavy
-https://trading-webhook-q4d5.onrender.com/diagnostics/alerts
-https://trading-webhook-q4d5.onrender.com/diagnostics/alternate_entry_shadow
-https://trading-webhook-q4d5.onrender.com/diagnostics/bars_5m
-https://trading-webhook-q4d5.onrender.com/diagnostics/bars_debug
-https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_stall_loss_containment
-https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_stall_loss_containment?detail=heavy
-https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_distance_relaxation_replay
-https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_quality_risk_downshift
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_backed_exposure_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_daily_goal_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger_refresh_pump
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger_refresh_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_daily_pnl_dedup
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_performance
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_submit_transport_dry_run_probe
-https://trading-webhook-q4d5.onrender.com/diagnostics/broker_submit_transport_shadow_hook
-https://trading-webhook-q4d5.onrender.com/diagnostics/build
-https://trading-webhook-q4d5.onrender.com/diagnostics/bundle/{scope}
-https://trading-webhook-q4d5.onrender.com/diagnostics/canceled_entry_plan_cleanup
-https://trading-webhook-q4d5.onrender.com/diagnostics/candidate_coverage_opportunity_audit
-https://trading-webhook-q4d5.onrender.com/diagnostics/candidate_gate_crossing_alert
-https://trading-webhook-q4d5.onrender.com/diagnostics/candidates
-https://trading-webhook-q4d5.onrender.com/diagnostics/candidates_full
-https://trading-webhook-q4d5.onrender.com/diagnostics/cohort_evidence
-https://trading-webhook-q4d5.onrender.com/diagnostics/cohort_scorecard
-https://trading-webhook-q4d5.onrender.com/diagnostics/concurrent_intraday_live_readiness
-https://trading-webhook-q4d5.onrender.com/diagnostics/config_integrity
-https://trading-webhook-q4d5.onrender.com/diagnostics/continuity
-https://trading-webhook-q4d5.onrender.com/diagnostics/corrected_swing_capacity_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/current_open_stall_risk_preview
-https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_execution_proof
-https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_preview
-https://trading-webhook-q4d5.onrender.com/diagnostics/executable_sizing_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/executable_sizing_truth?heavy=true
-https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth?detail=expanded
-https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth?heavy=true
-https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_attribution_recovery_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_circuit_release_criteria
-https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_rollback_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/daily_goal_preservation_exit
-https://trading-webhook-q4d5.onrender.com/diagnostics/dashboard_rendering_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/decisions
-https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_near_miss_simulation
-https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_policy
-https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_tier_evidence_report
-https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_tier_near_miss_report
-https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_unlock_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/duplicate_realized_exit_audit
-https://trading-webhook-q4d5.onrender.com/diagnostics/entry_decomp
-https://trading-webhook-q4d5.onrender.com/diagnostics/entry_memory_backfill_apply
-https://trading-webhook-q4d5.onrender.com/diagnostics/entry_memory_backfill_probe
-https://trading-webhook-q4d5.onrender.com/diagnostics/entry_quality_exit_advisory
-https://trading-webhook-q4d5.onrender.com/diagnostics/entry_quality_memory_guard
-https://trading-webhook-q4d5.onrender.com/diagnostics/entry_snapshot_guard
-https://trading-webhook-q4d5.onrender.com/diagnostics/eod_flatten_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/executable_near_miss_entry_sleeve
-https://trading-webhook-q4d5.onrender.com/diagnostics/executed_entry_eligibility_audit
-https://trading-webhook-q4d5.onrender.com/diagnostics/execution
-https://trading-webhook-q4d5.onrender.com/diagnostics/execution_lifecycle
-https://trading-webhook-q4d5.onrender.com/diagnostics/execution_proof
-https://trading-webhook-q4d5.onrender.com/diagnostics/execution_spread_policy
-https://trading-webhook-q4d5.onrender.com/diagnostics/execution_visibility
-https://trading-webhook-q4d5.onrender.com/diagnostics/exits
-https://trading-webhook-q4d5.onrender.com/diagnostics/exit_guard_evidence_light
-https://trading-webhook-q4d5.onrender.com/diagnostics/expanded_swing_universe_discovery
-https://trading-webhook-q4d5.onrender.com/diagnostics/fast_broker_trade_ledger
-https://trading-webhook-q4d5.onrender.com/diagnostics/fast_broker_trade_ledger?detail=heavy
-https://trading-webhook-q4d5.onrender.com/diagnostics/fast_broker_trade_ledger?refresh=true
-https://trading-webhook-q4d5.onrender.com/diagnostics/failure_decomp
-https://trading-webhook-q4d5.onrender.com/diagnostics/filter_pressure
-https://trading-webhook-q4d5.onrender.com/diagnostics/first_2k_rank_relaxation_replay
-https://trading-webhook-q4d5.onrender.com/diagnostics/first_2k_regime_profile
-https://trading-webhook-q4d5.onrender.com/diagnostics/first_profit_window_comparison
-https://trading-webhook-q4d5.onrender.com/diagnostics/freshness
-https://trading-webhook-q4d5.onrender.com/diagnostics/full_live_promotion_gate
-https://trading-webhook-q4d5.onrender.com/diagnostics/reduced_risk_env_readiness
-https://trading-webhook-q4d5.onrender.com/diagnostics/gatekeeper
-https://trading-webhook-q4d5.onrender.com/diagnostics/hybrid_proof
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_filter_simulation
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_launch_readiness
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_live_brief
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_paper_gate_tournament
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_paper_pilot_evidence_accelerator
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_paper_pilot_readiness
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_profit_engine_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_quality_scoped_live_promotion
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_replay_backtest
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_replay_scenario_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_scenario_promotion_reconciliation
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_shadow
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_shadow_config_freshness
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_shadow_settlement_backfill
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_signal_debug
-https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday
-https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_ledger
-https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_readiness
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_small_sample_expansion_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_symbol_discovery_replay_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/journal
-https://trading-webhook-q4d5.onrender.com/diagnostics/last_scan
-https://trading-webhook-q4d5.onrender.com/diagnostics/last_successful_production_scan
-https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions
-https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions_heavy
-https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions_light
-https://trading-webhook-q4d5.onrender.com/diagnostics/live_readiness_gate
-https://trading-webhook-q4d5.onrender.com/diagnostics/live_unrealized_pnl_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/loss_cluster_report
-https://trading-webhook-q4d5.onrender.com/diagnostics/loss_control_incident
-https://trading-webhook-q4d5.onrender.com/diagnostics/market_clock
-https://trading-webhook-q4d5.onrender.com/diagnostics/market_clock_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/market_open_selection_audit
-https://trading-webhook-q4d5.onrender.com/diagnostics/market_open_selection_audit_light
-https://trading-webhook-q4d5.onrender.com/diagnostics/mean_reversion_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/missed_opportunity_replay_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/model_scorecard
-https://trading-webhook-q4d5.onrender.com/diagnostics/near_miss_drift_tracker
-https://trading-webhook-q4d5.onrender.com/diagnostics/nearest_pass
-https://trading-webhook-q4d5.onrender.com/diagnostics/no_trade_brief
-https://trading-webhook-q4d5.onrender.com/diagnostics/no_trade_brief_full
-https://trading-webhook-q4d5.onrender.com/diagnostics/operator_bundle
-https://trading-webhook-q4d5.onrender.com/diagnostics/operator_bundle_intraday_light
-https://trading-webhook-q4d5.onrender.com/diagnostics/orders
-https://trading-webhook-q4d5.onrender.com/diagnostics/paper_execution_proof
-https://trading-webhook-q4d5.onrender.com/diagnostics/paper_lifecycle
-https://trading-webhook-q4d5.onrender.com/diagnostics/pending_plan_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/partial_profit_readiness_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/payoff_imbalance_repair_report
-https://trading-webhook-q4d5.onrender.com/diagnostics/pipeline_guardrails
-https://trading-webhook-q4d5.onrender.com/diagnostics/policy_shadow
-https://trading-webhook-q4d5.onrender.com/diagnostics/position_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/positions
-https://trading-webhook-q4d5.onrender.com/diagnostics/post_fill_risk_recheck_evidence
-https://trading-webhook-q4d5.onrender.com/diagnostics/post_tuning_exit_validation
-https://trading-webhook-q4d5.onrender.com/diagnostics/production_contract_miss_reasons
-https://trading-webhook-q4d5.onrender.com/diagnostics/promotion_failures
-https://trading-webhook-q4d5.onrender.com/diagnostics/promotion_selection
-https://trading-webhook-q4d5.onrender.com/diagnostics/promotion_watchlist
-https://trading-webhook-q4d5.onrender.com/diagnostics/proof_capture_plan
-https://trading-webhook-q4d5.onrender.com/diagnostics/protective_limit_submit_evidence
-https://trading-webhook-q4d5.onrender.com/diagnostics/ranking
-https://trading-webhook-q4d5.onrender.com/diagnostics/readiness
-https://trading-webhook-q4d5.onrender.com/diagnostics/reconcile
-https://trading-webhook-q4d5.onrender.com/diagnostics/reconcile_light
-https://trading-webhook-q4d5.onrender.com/diagnostics/regime
-https://trading-webhook-q4d5.onrender.com/diagnostics/regime_b
-https://trading-webhook-q4d5.onrender.com/diagnostics/regime_mode
-https://trading-webhook-q4d5.onrender.com/diagnostics/rejections
-https://trading-webhook-q4d5.onrender.com/diagnostics/release
-https://trading-webhook-q4d5.onrender.com/diagnostics/release_workflow
-https://trading-webhook-q4d5.onrender.com/diagnostics/repeatability
-https://trading-webhook-q4d5.onrender.com/diagnostics/replay_promotion_gate
-https://trading-webhook-q4d5.onrender.com/diagnostics/replay_variant_registry
-https://trading-webhook-q4d5.onrender.com/diagnostics/routes
-https://trading-webhook-q4d5.onrender.com/diagnostics/runtime
-https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_coverage_preview
-https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_preview
-https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/same_day_symbol_loss_cooldown
-https://trading-webhook-q4d5.onrender.com/diagnostics/scanner
-https://trading-webhook-q4d5.onrender.com/diagnostics/scanner_light
-https://trading-webhook-q4d5.onrender.com/diagnostics/scans
-https://trading-webhook-q4d5.onrender.com/diagnostics/scans/latest
-https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth_light
-https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth_light?heavy=true
-https://trading-webhook-q4d5.onrender.com/diagnostics/spread_blocked_submission_retry
-https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_containment
-https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_profit_leak_drilldown
-https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_tuning_monitor
-https://trading-webhook-q4d5.onrender.com/diagnostics/stall_loss_entry_feedback
-https://trading-webhook-q4d5.onrender.com/diagnostics/stall_loss_guard_live_validation
-https://trading-webhook-q4d5.onrender.com/diagnostics/state
-https://trading-webhook-q4d5.onrender.com/diagnostics/strategy
-https://trading-webhook-q4d5.onrender.com/diagnostics/strategy_isolation_contract
-https://trading-webhook-q4d5.onrender.com/diagnostics/strategy_performance
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_auto_suppression_evidence
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_away_mode_brief
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_away_mode_profit_monitor
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_cleanup_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_control_surface
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_core_dead_path_removal_audit
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_core_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_current_profit_truth
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_daily_health_brief
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_damage_guard
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_exit_protection_module_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_execution_module_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_fast_scan_trigger
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_full
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_loss_day_entry_throttle
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_performance_alignment_brief
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_performance_attribution
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_post_change_drawdown
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_pre_post_change_performance
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_production_contract
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_model_reset
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_opportunity
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_opportunity_backtest
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_regression_forensics
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_restoration_control
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_replay_backtest_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_runtime_config
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_selection_contract_module_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_simplification_audit
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_stall_exit_drilldown
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_submit_path_trace
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_submit_split_readiness
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_thrive_brief
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_trade_readiness_morning_brief
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_tuning_simulator
-https://trading-webhook-q4d5.onrender.com/diagnostics/swing_watchlist_trade_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/system_state
-https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_gate_calibration
-https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_opportunity_expansion_lab
-https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_profit_engine
-https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_recovery_mode
-https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_restoration
-https://trading-webhook-q4d5.onrender.com/diagnostics/target_profile_breakout_gate
-https://trading-webhook-q4d5.onrender.com/diagnostics/threshold_ladder
-https://trading-webhook-q4d5.onrender.com/diagnostics/trade_path
-https://trading-webhook-q4d5.onrender.com/diagnostics/trade_quality
-https://trading-webhook-q4d5.onrender.com/diagnostics/universe_recommendation
-https://trading-webhook-q4d5.onrender.com/diagnostics/universe_shadow
-https://trading-webhook-q4d5.onrender.com/diagnostics/universe_validation
-https://trading-webhook-q4d5.onrender.com/diagnostics/worker_exit_status
-https://trading-webhook-q4d5.onrender.com/diagnostics/worker_exit_status_heavy
-https://trading-webhook-q4d5.onrender.com/health
-https://trading-webhook-q4d5.onrender.com/kill
-https://trading-webhook-q4d5.onrender.com/scanner/status
-https://trading-webhook-q4d5.onrender.com/state
-https://trading-webhook-q4d5.onrender.com/test/alert
-https://trading-webhook-q4d5.onrender.com/unkill
-https://trading-webhook-q4d5.onrender.com/webhook
-https://trading-webhook-q4d5.onrender.com/worker/exit
-https://trading-webhook-q4d5.onrender.com/worker/scan_entries
-https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_scan
-https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_roundtrip
-https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_reconcile
-https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_close
-https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_replay
-https://trading-webhook-q4d5.onrender.com/worker/scanner_heartbeat
-https://trading-webhook-q4d5.onrender.com/worker/swing_fast_scan
+Generated from `app.py` by `tools/generate_endpoint_manifest.py`. Do not edit endpoint rows manually.
+
+Total application routes: **277**.
+
+Routes marked `GET` may still require operator authentication when they expose account, order, journal, or approval detail.
+
+## Operator dashboards
+
+| Method | Endpoint |
+|---|---|
+| `GET` | [/dashboard](https://trading-webhook-q4d5.onrender.com/dashboard) |
+| `GET` | [/dashboard/fast](https://trading-webhook-q4d5.onrender.com/dashboard/fast) |
+| `GET` | [/dashboard/full](https://trading-webhook-q4d5.onrender.com/dashboard/full) |
+| `GET` | [/dashboard/intraday](https://trading-webhook-q4d5.onrender.com/dashboard/intraday) |
+| `GET` | [/dashboard/live](https://trading-webhook-q4d5.onrender.com/dashboard/live) |
+| `GET` | [/dashboard/research](https://trading-webhook-q4d5.onrender.com/dashboard/research) |
+
+## Regime intraday
+
+| Method | Endpoint |
+|---|---|
+| `GET` | [/diagnostics/regime_intraday](https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday) |
+| `GET` | [/diagnostics/regime_intraday_ledger](https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_ledger) |
+| `GET` | [/diagnostics/regime_intraday_readiness](https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_readiness) |
+| `POST` | [/diagnostics/regime_intraday_replay](https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_replay) |
+| `POST` | [/worker/regime_intraday_paper_close](https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_close) |
+| `POST` | [/worker/regime_intraday_paper_reconcile](https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_reconcile) |
+| `POST` | [/worker/regime_intraday_paper_roundtrip](https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_roundtrip) |
+| `POST` | [/worker/regime_intraday_scan](https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_scan) |
+
+## Runtime workers and controls
+
+| Method | Endpoint |
+|---|---|
+| `POST` | [/admin/release/promote/{target_stage}](https://trading-webhook-q4d5.onrender.com/admin/release/promote/{target_stage}) |
+| `POST` | [/kill](https://trading-webhook-q4d5.onrender.com/kill) |
+| `POST` | [/unkill](https://trading-webhook-q4d5.onrender.com/unkill) |
+| `POST` | [/webhook](https://trading-webhook-q4d5.onrender.com/webhook) |
+| `POST` | [/worker/exit](https://trading-webhook-q4d5.onrender.com/worker/exit) |
+| `POST` | [/worker/scan_entries](https://trading-webhook-q4d5.onrender.com/worker/scan_entries) |
+| `POST` | [/worker/scanner_heartbeat](https://trading-webhook-q4d5.onrender.com/worker/scanner_heartbeat) |
+| `POST` | [/worker/swing_fast_scan](https://trading-webhook-q4d5.onrender.com/worker/swing_fast_scan) |
+
+## Swing active diagnostics
+
+| Method | Endpoint |
+|---|---|
+| `GET` | [/diagnostics/live_positions](https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions) |
+| `GET` | [/diagnostics/live_positions_heavy](https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions_heavy) |
+| `GET` | [/diagnostics/live_positions_light](https://trading-webhook-q4d5.onrender.com/diagnostics/live_positions_light) |
+| `GET` | [/diagnostics/live_readiness_gate](https://trading-webhook-q4d5.onrender.com/diagnostics/live_readiness_gate) |
+| `GET` | [/diagnostics/live_risk_validation_contract](https://trading-webhook-q4d5.onrender.com/diagnostics/live_risk_validation_contract) |
+| `GET` | [/diagnostics/live_unrealized_pnl_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/live_unrealized_pnl_truth) |
+| `GET` | [/diagnostics/position_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/position_truth) |
+| `GET` | [/diagnostics/positions](https://trading-webhook-q4d5.onrender.com/diagnostics/positions) |
+| `GET` | [/diagnostics/swing](https://trading-webhook-q4d5.onrender.com/diagnostics/swing) |
+| `GET` | [/diagnostics/swing_auto_suppression_evidence](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_auto_suppression_evidence) |
+| `GET` | [/diagnostics/swing_away_mode_brief](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_away_mode_brief) |
+| `GET` | [/diagnostics/swing_away_mode_profit_monitor](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_away_mode_profit_monitor) |
+| `GET` | [/diagnostics/swing_cleanup_status](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_cleanup_status) |
+| `GET` | [/diagnostics/swing_control_surface](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_control_surface) |
+| `GET` | [/diagnostics/swing_core_status](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_core_status) |
+| `GET` | [/diagnostics/swing_current_profit_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_current_profit_truth) |
+| `GET` | [/diagnostics/swing_daily_health_brief](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_daily_health_brief) |
+| `GET` | [/diagnostics/swing_damage_guard](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_damage_guard) |
+| `GET` | [/diagnostics/swing_execution_module_status](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_execution_module_status) |
+| `GET` | [/diagnostics/swing_exit_protection_module_status](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_exit_protection_module_status) |
+| `GET` | [/diagnostics/swing_fast_scan_trigger](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_fast_scan_trigger) |
+| `GET` | [/diagnostics/swing_full](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_full) |
+| `GET` | [/diagnostics/swing_light_endpoint_manifest](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_light_endpoint_manifest) |
+| `GET` | [/diagnostics/swing_loss_day_entry_throttle](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_loss_day_entry_throttle) |
+| `GET` | [/diagnostics/swing_performance_alignment_brief](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_performance_alignment_brief) |
+| `GET` | [/diagnostics/swing_performance_attribution](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_performance_attribution) |
+| `GET` | [/diagnostics/swing_performance_reports_module_status](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_performance_reports_module_status) |
+| `GET` | [/diagnostics/swing_post_change_drawdown](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_post_change_drawdown) |
+| `GET` | [/diagnostics/swing_pre_post_change_performance](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_pre_post_change_performance) |
+| `GET` | [/diagnostics/swing_production_contract](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_production_contract) |
+| `GET` | [/diagnostics/swing_profit_model_reset](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_model_reset) |
+| `GET` | [/diagnostics/swing_profit_opportunity](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_opportunity) |
+| `GET` | [/diagnostics/swing_profit_opportunity_backtest](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_opportunity_backtest) |
+| `GET` | [/diagnostics/swing_profit_restoration_control](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_restoration_control) |
+| `GET` | [/diagnostics/swing_runtime_config](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_runtime_config) |
+| `GET` | [/diagnostics/swing_selection_contract_module_status](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_selection_contract_module_status) |
+| `GET` | [/diagnostics/swing_stall_exit_drilldown](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_stall_exit_drilldown) |
+| `GET` | [/diagnostics/swing_submit_path_trace](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_submit_path_trace) |
+| `GET` | [/diagnostics/swing_submit_split_readiness](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_submit_split_readiness) |
+| `GET` | [/diagnostics/swing_thrive_brief](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_thrive_brief) |
+| `GET` | [/diagnostics/swing_trade_readiness_morning_brief](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_trade_readiness_morning_brief) |
+| `GET` | [/diagnostics/swing_watchlist_trade_status](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_watchlist_trade_status) |
+
+## Research and deprecation candidates
+
+| Method | Endpoint |
+|---|---|
+| `GET` | [/diagnostics/breakout_distance_relaxation_replay](https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_distance_relaxation_replay) |
+| `GET` | [/diagnostics/candidate_coverage_opportunity_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/candidate_coverage_opportunity_audit) |
+| `GET` | [/diagnostics/capital_rotation_readiness_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/capital_rotation_readiness_audit) |
+| `GET` | [/diagnostics/daily_breakout_attribution_recovery_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_attribution_recovery_lab) |
+| `GET` | [/diagnostics/daily_breakout_rollback_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_rollback_lab) |
+| `GET` | [/diagnostics/defensive_near_miss_simulation](https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_near_miss_simulation) |
+| `GET` | [/diagnostics/defensive_unlock_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_unlock_lab) |
+| `GET` | [/diagnostics/duplicate_realized_exit_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/duplicate_realized_exit_audit) |
+| `GET` | [/diagnostics/entry_quality_kill_zone_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/entry_quality_kill_zone_audit) |
+| `GET` | [/diagnostics/executed_entry_eligibility_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/executed_entry_eligibility_audit) |
+| `GET` | [/diagnostics/first_2k_rank_relaxation_replay](https://trading-webhook-q4d5.onrender.com/diagnostics/first_2k_rank_relaxation_replay) |
+| `GET` | [/diagnostics/intraday_filter_simulation](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_filter_simulation) |
+| `GET` | [/diagnostics/intraday_profit_engine_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_profit_engine_lab) |
+| `GET` | [/diagnostics/intraday_replay_backtest](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_replay_backtest) |
+| `GET` | [/diagnostics/intraday_replay_scenario_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_replay_scenario_lab) |
+| `GET` | [/diagnostics/intraday_small_sample_expansion_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_small_sample_expansion_lab) |
+| `GET` | [/diagnostics/intraday_symbol_discovery_replay_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_symbol_discovery_replay_lab) |
+| `GET` | [/diagnostics/market_open_selection_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/market_open_selection_audit) |
+| `GET` | [/diagnostics/market_open_selection_audit_light](https://trading-webhook-q4d5.onrender.com/diagnostics/market_open_selection_audit_light) |
+| `GET` | [/diagnostics/missed_opportunity_replay_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/missed_opportunity_replay_lab) |
+| `GET` | [/diagnostics/pltr_profit_giveback_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/pltr_profit_giveback_audit) |
+| `GET` | [/diagnostics/post_tuning_exit_validation](https://trading-webhook-q4d5.onrender.com/diagnostics/post_tuning_exit_validation) |
+| `GET` | [/diagnostics/replay_promotion_gate](https://trading-webhook-q4d5.onrender.com/diagnostics/replay_promotion_gate) |
+| `GET` | [/diagnostics/replay_variant_registry](https://trading-webhook-q4d5.onrender.com/diagnostics/replay_variant_registry) |
+| `GET` | [/diagnostics/same_day_breakout_loss_forensics](https://trading-webhook-q4d5.onrender.com/diagnostics/same_day_breakout_loss_forensics) |
+| `GET` | [/diagnostics/same_day_stall_exit_churn_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/same_day_stall_exit_churn_audit) |
+| `GET` | [/diagnostics/stall_exit_tuning_monitor](https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_tuning_monitor) |
+| `GET` | [/diagnostics/swing_core_dead_path_removal_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_core_dead_path_removal_audit) |
+| `GET` | [/diagnostics/swing_profit_regression_forensics](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_profit_regression_forensics) |
+| `GET` | [/diagnostics/swing_replay_backtest_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_replay_backtest_lab) |
+| `GET` | [/diagnostics/swing_simplification_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_simplification_audit) |
+| `GET` | [/diagnostics/swing_tuning_simulator](https://trading-webhook-q4d5.onrender.com/diagnostics/swing_tuning_simulator) |
+| `GET` | [/diagnostics/target_path_opportunity_expansion_lab](https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_opportunity_expansion_lab) |
+| `GET` | [/diagnostics/weak_position_capital_drag_audit](https://trading-webhook-q4d5.onrender.com/diagnostics/weak_position_capital_drag_audit) |
+
+## Shared and other
+
+| Method | Endpoint |
+|---|---|
+| `GET` | [/](https://trading-webhook-q4d5.onrender.com/) |
+| `GET` | [/diagnostics/actionable_watchlist](https://trading-webhook-q4d5.onrender.com/diagnostics/actionable_watchlist) |
+| `GET` | [/diagnostics/active_exit_protection_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/active_exit_protection_truth) |
+| `GET` | [/diagnostics/alerts](https://trading-webhook-q4d5.onrender.com/diagnostics/alerts) |
+| `GET` | [/diagnostics/alternate_entry_shadow](https://trading-webhook-q4d5.onrender.com/diagnostics/alternate_entry_shadow) |
+| `GET` | [/diagnostics/bars_5m](https://trading-webhook-q4d5.onrender.com/diagnostics/bars_5m) |
+| `GET` | [/diagnostics/bars_debug](https://trading-webhook-q4d5.onrender.com/diagnostics/bars_debug) |
+| `GET` | [/diagnostics/breakout_dollar_risk_containment](https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_dollar_risk_containment) |
+| `GET` | [/diagnostics/breakout_early_follow_through_gate](https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_early_follow_through_gate) |
+| `GET` | [/diagnostics/breakout_quality_risk_downshift](https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_quality_risk_downshift) |
+| `GET` | [/diagnostics/breakout_stall_loss_containment](https://trading-webhook-q4d5.onrender.com/diagnostics/breakout_stall_loss_containment) |
+| `GET` | [/diagnostics/broker_backed_exposure_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_backed_exposure_truth) |
+| `GET` | [/diagnostics/broker_daily_goal_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_daily_goal_truth) |
+| `GET` | [/diagnostics/broker_fills_only_trade_ledger](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger) |
+| `GET` | [/diagnostics/broker_fills_only_trade_ledger_refresh_pump](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger_refresh_pump) |
+| `GET` | [/diagnostics/broker_fills_only_trade_ledger_refresh_status](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_fills_only_trade_ledger_refresh_status) |
+| `GET` | [/diagnostics/broker_native_position_risk_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_native_position_risk_truth) |
+| `GET` | [/diagnostics/broker_only_daily_loss_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_only_daily_loss_truth) |
+| `GET` | [/diagnostics/broker_preferred_daily_pnl_dedup](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_daily_pnl_dedup) |
+| `GET` | [/diagnostics/broker_preferred_loss_attribution_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_loss_attribution_truth) |
+| `GET` | [/diagnostics/broker_preferred_performance](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_preferred_performance) |
+| `GET` | [/diagnostics/broker_reconciled_performance_cleanup](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_reconciled_performance_cleanup) |
+| `GET` | [/diagnostics/broker_reconciled_strategy_attribution](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_reconciled_strategy_attribution) |
+| `GET` | [/diagnostics/broker_submit_transport_dry_run_probe](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_submit_transport_dry_run_probe) |
+| `GET` | [/diagnostics/broker_submit_transport_shadow_hook](https://trading-webhook-q4d5.onrender.com/diagnostics/broker_submit_transport_shadow_hook) |
+| `GET` | [/diagnostics/build](https://trading-webhook-q4d5.onrender.com/diagnostics/build) |
+| `GET` | [/diagnostics/bundle/{scope}](https://trading-webhook-q4d5.onrender.com/diagnostics/bundle/{scope}) |
+| `GET` | [/diagnostics/canceled_entry_plan_cleanup](https://trading-webhook-q4d5.onrender.com/diagnostics/canceled_entry_plan_cleanup) |
+| `GET` | [/diagnostics/candidate_gate_crossing_alert](https://trading-webhook-q4d5.onrender.com/diagnostics/candidate_gate_crossing_alert) |
+| `GET` | [/diagnostics/candidates](https://trading-webhook-q4d5.onrender.com/diagnostics/candidates) |
+| `GET` | [/diagnostics/candidates_full](https://trading-webhook-q4d5.onrender.com/diagnostics/candidates_full) |
+| `GET` | [/diagnostics/cohort_evidence](https://trading-webhook-q4d5.onrender.com/diagnostics/cohort_evidence) |
+| `GET` | [/diagnostics/cohort_scorecard](https://trading-webhook-q4d5.onrender.com/diagnostics/cohort_scorecard) |
+| `GET` | [/diagnostics/concurrent_intraday_live_readiness](https://trading-webhook-q4d5.onrender.com/diagnostics/concurrent_intraday_live_readiness) |
+| `GET` | [/diagnostics/config_integrity](https://trading-webhook-q4d5.onrender.com/diagnostics/config_integrity) |
+| `GET` | [/diagnostics/continuity](https://trading-webhook-q4d5.onrender.com/diagnostics/continuity) |
+| `GET` | [/diagnostics/corrected_swing_capacity_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/corrected_swing_capacity_truth) |
+| `GET` | [/diagnostics/current_open_stall_risk_preview](https://trading-webhook-q4d5.onrender.com/diagnostics/current_open_stall_risk_preview) |
+| `GET` | [/diagnostics/current_runtime_execution_proof](https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_execution_proof) |
+| `GET` | [/diagnostics/current_runtime_preview](https://trading-webhook-q4d5.onrender.com/diagnostics/current_runtime_preview) |
+| `GET` | [/diagnostics/current_scan_suppression_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/current_scan_suppression_truth) |
+| `GET` | [/diagnostics/daily_breakout_circuit_release_criteria](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_circuit_release_criteria) |
+| `GET` | [/diagnostics/daily_breakout_profit_giveback_preservation_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_breakout_profit_giveback_preservation_truth) |
+| `GET` | [/diagnostics/daily_goal_opportunity_map](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_goal_opportunity_map) |
+| `GET` | [/diagnostics/daily_goal_path_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_goal_path_truth) |
+| `GET` | [/diagnostics/daily_goal_preservation_exit](https://trading-webhook-q4d5.onrender.com/diagnostics/daily_goal_preservation_exit) |
+| `GET` | [/diagnostics/dashboard_rendering_status](https://trading-webhook-q4d5.onrender.com/diagnostics/dashboard_rendering_status) |
+| `GET` | [/diagnostics/decisions](https://trading-webhook-q4d5.onrender.com/diagnostics/decisions) |
+| `GET` | [/diagnostics/defensive_policy](https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_policy) |
+| `GET` | [/diagnostics/defensive_tier_evidence_report](https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_tier_evidence_report) |
+| `GET` | [/diagnostics/defensive_tier_near_miss_report](https://trading-webhook-q4d5.onrender.com/diagnostics/defensive_tier_near_miss_report) |
+| `GET` | [/diagnostics/entry_decomp](https://trading-webhook-q4d5.onrender.com/diagnostics/entry_decomp) |
+| `GET` | [/diagnostics/entry_memory_backfill_apply](https://trading-webhook-q4d5.onrender.com/diagnostics/entry_memory_backfill_apply) |
+| `GET` | [/diagnostics/entry_memory_backfill_probe](https://trading-webhook-q4d5.onrender.com/diagnostics/entry_memory_backfill_probe) |
+| `GET` | [/diagnostics/entry_quality_exit_advisory](https://trading-webhook-q4d5.onrender.com/diagnostics/entry_quality_exit_advisory) |
+| `GET` | [/diagnostics/entry_quality_memory_guard](https://trading-webhook-q4d5.onrender.com/diagnostics/entry_quality_memory_guard) |
+| `GET` | [/diagnostics/entry_snapshot_guard](https://trading-webhook-q4d5.onrender.com/diagnostics/entry_snapshot_guard) |
+| `GET` | [/diagnostics/eod_flatten_status](https://trading-webhook-q4d5.onrender.com/diagnostics/eod_flatten_status) |
+| `GET` | [/diagnostics/executable_near_miss_entry_sleeve](https://trading-webhook-q4d5.onrender.com/diagnostics/executable_near_miss_entry_sleeve) |
+| `GET` | [/diagnostics/executable_sizing_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/executable_sizing_truth) |
+| `GET` | [/diagnostics/execution](https://trading-webhook-q4d5.onrender.com/diagnostics/execution) |
+| `GET` | [/diagnostics/execution_lifecycle](https://trading-webhook-q4d5.onrender.com/diagnostics/execution_lifecycle) |
+| `GET` | [/diagnostics/execution_proof](https://trading-webhook-q4d5.onrender.com/diagnostics/execution_proof) |
+| `GET` | [/diagnostics/execution_spread_policy](https://trading-webhook-q4d5.onrender.com/diagnostics/execution_spread_policy) |
+| `GET` | [/diagnostics/execution_visibility](https://trading-webhook-q4d5.onrender.com/diagnostics/execution_visibility) |
+| `GET` | [/diagnostics/exit_guard_evidence_light](https://trading-webhook-q4d5.onrender.com/diagnostics/exit_guard_evidence_light) |
+| `GET` | [/diagnostics/exit_submit_retry_readiness](https://trading-webhook-q4d5.onrender.com/diagnostics/exit_submit_retry_readiness) |
+| `GET` | [/diagnostics/exits](https://trading-webhook-q4d5.onrender.com/diagnostics/exits) |
+| `GET` | [/diagnostics/expanded_swing_universe_discovery](https://trading-webhook-q4d5.onrender.com/diagnostics/expanded_swing_universe_discovery) |
+| `GET` | [/diagnostics/failure_decomp](https://trading-webhook-q4d5.onrender.com/diagnostics/failure_decomp) |
+| `GET` | [/diagnostics/fast_broker_trade_ledger](https://trading-webhook-q4d5.onrender.com/diagnostics/fast_broker_trade_ledger) |
+| `GET` | [/diagnostics/filter_pressure](https://trading-webhook-q4d5.onrender.com/diagnostics/filter_pressure) |
+| `GET` | [/diagnostics/first_2k_regime_profile](https://trading-webhook-q4d5.onrender.com/diagnostics/first_2k_regime_profile) |
+| `GET` | [/diagnostics/first_profit_window_comparison](https://trading-webhook-q4d5.onrender.com/diagnostics/first_profit_window_comparison) |
+| `GET` | [/diagnostics/forbidden_short_cleanup_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/forbidden_short_cleanup_truth) |
+| `GET` | [/diagnostics/freshness](https://trading-webhook-q4d5.onrender.com/diagnostics/freshness) |
+| `GET` | [/diagnostics/full_live_promotion_gate](https://trading-webhook-q4d5.onrender.com/diagnostics/full_live_promotion_gate) |
+| `GET` | [/diagnostics/gatekeeper](https://trading-webhook-q4d5.onrender.com/diagnostics/gatekeeper) |
+| `GET` | [/diagnostics/giveback_exit_due_snapshot](https://trading-webhook-q4d5.onrender.com/diagnostics/giveback_exit_due_snapshot) |
+| `GET` | [/diagnostics/hybrid_proof](https://trading-webhook-q4d5.onrender.com/diagnostics/hybrid_proof) |
+| `GET` | [/diagnostics/intraday_launch_readiness](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_launch_readiness) |
+| `GET` | [/diagnostics/intraday_live_brief](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_live_brief) |
+| `GET` | [/diagnostics/intraday_paper_gate_tournament](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_paper_gate_tournament) |
+| `GET` | [/diagnostics/intraday_paper_pilot_evidence_accelerator](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_paper_pilot_evidence_accelerator) |
+| `GET` | [/diagnostics/intraday_paper_pilot_readiness](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_paper_pilot_readiness) |
+| `GET` | [/diagnostics/intraday_quality_scoped_live_promotion](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_quality_scoped_live_promotion) |
+| `GET` | [/diagnostics/intraday_runtime_isolation_status](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_runtime_isolation_status) |
+| `GET` | [/diagnostics/intraday_scenario_promotion_reconciliation](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_scenario_promotion_reconciliation) |
+| `GET` | [/diagnostics/intraday_shadow](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_shadow) |
+| `GET` | [/diagnostics/intraday_shadow_config_freshness](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_shadow_config_freshness) |
+| `GET` | [/diagnostics/intraday_shadow_settlement_backfill](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_shadow_settlement_backfill) |
+| `GET` | [/diagnostics/intraday_signal_debug](https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_signal_debug) |
+| `GET` | [/diagnostics/journal](https://trading-webhook-q4d5.onrender.com/diagnostics/journal) |
+| `GET` | [/diagnostics/last_scan](https://trading-webhook-q4d5.onrender.com/diagnostics/last_scan) |
+| `GET` | [/diagnostics/last_successful_production_scan](https://trading-webhook-q4d5.onrender.com/diagnostics/last_successful_production_scan) |
+| `GET` | [/diagnostics/late_day_first_2k_near_miss_calibration](https://trading-webhook-q4d5.onrender.com/diagnostics/late_day_first_2k_near_miss_calibration) |
+| `GET` | [/diagnostics/loss_cluster_report](https://trading-webhook-q4d5.onrender.com/diagnostics/loss_cluster_report) |
+| `GET` | [/diagnostics/loss_control_incident](https://trading-webhook-q4d5.onrender.com/diagnostics/loss_control_incident) |
+| `GET` | [/diagnostics/market_clock](https://trading-webhook-q4d5.onrender.com/diagnostics/market_clock) |
+| `GET` | [/diagnostics/market_clock_status](https://trading-webhook-q4d5.onrender.com/diagnostics/market_clock_status) |
+| `GET` | [/diagnostics/mean_reversion_status](https://trading-webhook-q4d5.onrender.com/diagnostics/mean_reversion_status) |
+| `GET` | [/diagnostics/model_scorecard](https://trading-webhook-q4d5.onrender.com/diagnostics/model_scorecard) |
+| `GET` | [/diagnostics/near_miss_drift_tracker](https://trading-webhook-q4d5.onrender.com/diagnostics/near_miss_drift_tracker) |
+| `GET` | [/diagnostics/nearest_pass](https://trading-webhook-q4d5.onrender.com/diagnostics/nearest_pass) |
+| `GET` | [/diagnostics/no_trade_brief](https://trading-webhook-q4d5.onrender.com/diagnostics/no_trade_brief) |
+| `GET` | [/diagnostics/no_trade_brief_full](https://trading-webhook-q4d5.onrender.com/diagnostics/no_trade_brief_full) |
+| `GET` | [/diagnostics/operator_bundle](https://trading-webhook-q4d5.onrender.com/diagnostics/operator_bundle) |
+| `GET` | [/diagnostics/operator_bundle_intraday_light](https://trading-webhook-q4d5.onrender.com/diagnostics/operator_bundle_intraday_light) |
+| `GET` | [/diagnostics/orders](https://trading-webhook-q4d5.onrender.com/diagnostics/orders) |
+| `GET` | [/diagnostics/oversized_position_remediation_advisory](https://trading-webhook-q4d5.onrender.com/diagnostics/oversized_position_remediation_advisory) |
+| `GET` | [/diagnostics/paper_execution_proof](https://trading-webhook-q4d5.onrender.com/diagnostics/paper_execution_proof) |
+| `GET` | [/diagnostics/paper_lifecycle](https://trading-webhook-q4d5.onrender.com/diagnostics/paper_lifecycle) |
+| `GET` | [/diagnostics/partial_profit_readiness_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/partial_profit_readiness_truth) |
+| `GET` | [/diagnostics/payoff_imbalance_repair_report](https://trading-webhook-q4d5.onrender.com/diagnostics/payoff_imbalance_repair_report) |
+| `GET` | [/diagnostics/pending_plan_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/pending_plan_truth) |
+| `GET` | [/diagnostics/pipeline_guardrails](https://trading-webhook-q4d5.onrender.com/diagnostics/pipeline_guardrails) |
+| `GET` | [/diagnostics/policy_shadow](https://trading-webhook-q4d5.onrender.com/diagnostics/policy_shadow) |
+| `GET` | [/diagnostics/post_fill_risk_recheck_evidence](https://trading-webhook-q4d5.onrender.com/diagnostics/post_fill_risk_recheck_evidence) |
+| `GET` | [/diagnostics/production_contract_miss_reasons](https://trading-webhook-q4d5.onrender.com/diagnostics/production_contract_miss_reasons) |
+| `GET` | [/diagnostics/profit_capture_readiness_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/profit_capture_readiness_truth) |
+| `GET` | [/diagnostics/promotion_failures](https://trading-webhook-q4d5.onrender.com/diagnostics/promotion_failures) |
+| `GET` | [/diagnostics/promotion_selection](https://trading-webhook-q4d5.onrender.com/diagnostics/promotion_selection) |
+| `GET` | [/diagnostics/promotion_watchlist](https://trading-webhook-q4d5.onrender.com/diagnostics/promotion_watchlist) |
+| `GET` | [/diagnostics/proof_capture_plan](https://trading-webhook-q4d5.onrender.com/diagnostics/proof_capture_plan) |
+| `GET` | [/diagnostics/protective_limit_submit_evidence](https://trading-webhook-q4d5.onrender.com/diagnostics/protective_limit_submit_evidence) |
+| `GET` | [/diagnostics/ranking](https://trading-webhook-q4d5.onrender.com/diagnostics/ranking) |
+| `GET` | [/diagnostics/readiness](https://trading-webhook-q4d5.onrender.com/diagnostics/readiness) |
+| `GET` | [/diagnostics/reconcile](https://trading-webhook-q4d5.onrender.com/diagnostics/reconcile) |
+| `GET` | [/diagnostics/reconcile_light](https://trading-webhook-q4d5.onrender.com/diagnostics/reconcile_light) |
+| `GET` | [/diagnostics/reduced_risk_env_readiness](https://trading-webhook-q4d5.onrender.com/diagnostics/reduced_risk_env_readiness) |
+| `GET` | [/diagnostics/regime](https://trading-webhook-q4d5.onrender.com/diagnostics/regime) |
+| `GET` | [/diagnostics/regime_b](https://trading-webhook-q4d5.onrender.com/diagnostics/regime_b) |
+| `GET` | [/diagnostics/regime_mode](https://trading-webhook-q4d5.onrender.com/diagnostics/regime_mode) |
+| `GET` | [/diagnostics/rejections](https://trading-webhook-q4d5.onrender.com/diagnostics/rejections) |
+| `GET` | [/diagnostics/release](https://trading-webhook-q4d5.onrender.com/diagnostics/release) |
+| `GET` | [/diagnostics/release_workflow](https://trading-webhook-q4d5.onrender.com/diagnostics/release_workflow) |
+| `GET` | [/diagnostics/repeatability](https://trading-webhook-q4d5.onrender.com/diagnostics/repeatability) |
+| `GET` | [/diagnostics/route_catalog](https://trading-webhook-q4d5.onrender.com/diagnostics/route_catalog) |
+| `GET` | [/diagnostics/routes](https://trading-webhook-q4d5.onrender.com/diagnostics/routes) |
+| `GET` | [/diagnostics/runtime](https://trading-webhook-q4d5.onrender.com/diagnostics/runtime) |
+| `GET` | [/diagnostics/runtime_coverage_preview](https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_coverage_preview) |
+| `GET` | [/diagnostics/runtime_preview](https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_preview) |
+| `GET` | [/diagnostics/runtime_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/runtime_truth) |
+| `GET` | [/diagnostics/same_day_exit_submit_lock_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/same_day_exit_submit_lock_truth) |
+| `GET` | [/diagnostics/same_day_symbol_loss_cooldown](https://trading-webhook-q4d5.onrender.com/diagnostics/same_day_symbol_loss_cooldown) |
+| `GET` | [/diagnostics/scanner](https://trading-webhook-q4d5.onrender.com/diagnostics/scanner) |
+| `GET` | [/diagnostics/scanner_light](https://trading-webhook-q4d5.onrender.com/diagnostics/scanner_light) |
+| `GET` | [/diagnostics/scans](https://trading-webhook-q4d5.onrender.com/diagnostics/scans) |
+| `GET` | [/diagnostics/scans/latest](https://trading-webhook-q4d5.onrender.com/diagnostics/scans/latest) |
+| `GET` | [/diagnostics/selected_submission_truth](https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth) |
+| `GET` | [/diagnostics/selected_submission_truth_light](https://trading-webhook-q4d5.onrender.com/diagnostics/selected_submission_truth_light) |
+| `GET` | [/diagnostics/spread_blocked_submission_retry](https://trading-webhook-q4d5.onrender.com/diagnostics/spread_blocked_submission_retry) |
+| `GET` | [/diagnostics/stall_exit_containment](https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_containment) |
+| `GET` | [/diagnostics/stall_exit_profit_leak_drilldown](https://trading-webhook-q4d5.onrender.com/diagnostics/stall_exit_profit_leak_drilldown) |
+| `GET` | [/diagnostics/stall_loss_entry_feedback](https://trading-webhook-q4d5.onrender.com/diagnostics/stall_loss_entry_feedback) |
+| `GET` | [/diagnostics/stall_loss_guard_live_validation](https://trading-webhook-q4d5.onrender.com/diagnostics/stall_loss_guard_live_validation) |
+| `GET` | [/diagnostics/state](https://trading-webhook-q4d5.onrender.com/diagnostics/state) |
+| `GET` | [/diagnostics/strategy](https://trading-webhook-q4d5.onrender.com/diagnostics/strategy) |
+| `GET` | [/diagnostics/strategy_isolation_contract](https://trading-webhook-q4d5.onrender.com/diagnostics/strategy_isolation_contract) |
+| `GET` | [/diagnostics/strategy_performance](https://trading-webhook-q4d5.onrender.com/diagnostics/strategy_performance) |
+| `GET` | [/diagnostics/strategy_state_broker_reconciled_estimate](https://trading-webhook-q4d5.onrender.com/diagnostics/strategy_state_broker_reconciled_estimate) |
+| `GET` | [/diagnostics/system_state](https://trading-webhook-q4d5.onrender.com/diagnostics/system_state) |
+| `GET` | [/diagnostics/target_path_gate_calibration](https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_gate_calibration) |
+| `GET` | [/diagnostics/target_path_profit_engine](https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_profit_engine) |
+| `GET` | [/diagnostics/target_path_recovery_mode](https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_recovery_mode) |
+| `GET` | [/diagnostics/target_path_restoration](https://trading-webhook-q4d5.onrender.com/diagnostics/target_path_restoration) |
+| `GET` | [/diagnostics/target_profile_breakout_gate](https://trading-webhook-q4d5.onrender.com/diagnostics/target_profile_breakout_gate) |
+| `GET` | [/diagnostics/threshold_ladder](https://trading-webhook-q4d5.onrender.com/diagnostics/threshold_ladder) |
+| `GET` | [/diagnostics/trade_path](https://trading-webhook-q4d5.onrender.com/diagnostics/trade_path) |
+| `GET` | [/diagnostics/trade_quality](https://trading-webhook-q4d5.onrender.com/diagnostics/trade_quality) |
+| `GET` | [/diagnostics/universe_recommendation](https://trading-webhook-q4d5.onrender.com/diagnostics/universe_recommendation) |
+| `GET` | [/diagnostics/universe_shadow](https://trading-webhook-q4d5.onrender.com/diagnostics/universe_shadow) |
+| `GET` | [/diagnostics/universe_validation](https://trading-webhook-q4d5.onrender.com/diagnostics/universe_validation) |
+| `GET` | [/diagnostics/worker_exit_status](https://trading-webhook-q4d5.onrender.com/diagnostics/worker_exit_status) |
+| `GET` | [/diagnostics/worker_exit_status_heavy](https://trading-webhook-q4d5.onrender.com/diagnostics/worker_exit_status_heavy) |
+| `GET` | [/health](https://trading-webhook-q4d5.onrender.com/health) |
+| `GET` | [/scanner/status](https://trading-webhook-q4d5.onrender.com/scanner/status) |
+| `GET` | [/state](https://trading-webhook-q4d5.onrender.com/state) |
+| `POST` | [/test/alert](https://trading-webhook-q4d5.onrender.com/test/alert) |
