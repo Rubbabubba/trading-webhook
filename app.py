@@ -7,6 +7,12 @@
 #
 
 import os
+from runtime_defaults import apply_production_defaults
+
+# Render should contain only secrets, service addresses, and fast operational
+# controls. All ordinary production tuning lives in runtime_defaults.py.
+apply_production_defaults()
+
 import logging
 import hashlib
 import traceback
@@ -98,6 +104,11 @@ from swing_scan_state import (
     normalize_scan_truth_contract as swing_scan_state_normalize_scan_truth_contract,
     tombstone_historical_background_failure as swing_scan_state_tombstone_background_failure,
     scan_state_module_status as swing_scan_state_module_status,
+)
+from regime_intraday import (
+    REGIME_INTRADAY_VERSION,
+    RegimeIntradayConfig,
+    evaluate_regime_intraday,
 )
 from swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
@@ -44301,6 +44312,46 @@ def _intraday_shadow_config() -> dict:
     }
 
 
+REGIME_INTRADAY_LAST_SCAN: dict = {}
+
+
+def _regime_intraday_config() -> RegimeIntradayConfig:
+    return RegimeIntradayConfig(
+        opening_range_minutes=max(5, getenv_int_any("REGIME_INTRADAY_OPENING_RANGE_MINUTES", default=30)),
+        min_bars=max(10, getenv_int_any("REGIME_INTRADAY_MIN_BARS", default=40)),
+        momentum_volume_ratio=getenv_float_any("REGIME_INTRADAY_MOMENTUM_VOLUME_RATIO", default=1.20),
+        momentum_break_buffer_pct=getenv_float_any("REGIME_INTRADAY_BREAK_BUFFER_PCT", default=0.0003),
+        momentum_max_vwap_extension_pct=getenv_float_any("REGIME_INTRADAY_MAX_VWAP_EXTENSION_PCT", default=0.008),
+        trend_efficiency_min=getenv_float_any("REGIME_INTRADAY_TREND_EFFICIENCY_MIN", default=0.34),
+        range_efficiency_max=getenv_float_any("REGIME_INTRADAY_RANGE_EFFICIENCY_MAX", default=0.27),
+        mean_reversion_min_vwap_atr=getenv_float_any("REGIME_INTRADAY_MR_MIN_VWAP_ATR", default=1.25),
+        mean_reversion_max_vwap_atr=getenv_float_any("REGIME_INTRADAY_MR_MAX_VWAP_ATR", default=2.75),
+        stop_atr=getenv_float_any("REGIME_INTRADAY_STOP_ATR", default=0.75),
+        target_r=getenv_float_any("REGIME_INTRADAY_TARGET_R", default=2.0),
+        option_min_dte=max(1, getenv_int_any("REGIME_INTRADAY_OPTION_MIN_DTE", default=7)),
+        option_max_dte=max(1, getenv_int_any("REGIME_INTRADAY_OPTION_MAX_DTE", default=21)),
+        option_target_delta_low=getenv_float_any("REGIME_INTRADAY_OPTION_DELTA_LOW", default=0.55),
+        option_target_delta_high=getenv_float_any("REGIME_INTRADAY_OPTION_DELTA_HIGH", default=0.70),
+        option_max_spread_pct=getenv_float_any("REGIME_INTRADAY_OPTION_MAX_SPREAD_PCT", default=0.08),
+    )
+
+
+def _run_regime_intraday_scan() -> dict:
+    """Evaluate only SPY/QQQ. This path cannot submit an order."""
+    global REGIME_INTRADAY_LAST_SCAN
+    ts_utc = datetime.now(timezone.utc).isoformat()
+    cfg = _regime_intraday_config()
+    if ONLY_MARKET_HOURS and not in_market_hours():
+        payload = {"ok": True, "version": REGIME_INTRADAY_VERSION, "status": "skipped_outside_market_hours", "ts_utc": ts_utc, "live_submission": False, "symbols": list(cfg.symbols)}
+    else:
+        bars_map = fetch_1m_bars_multi_guarded(list(cfg.symbols), lookback_days=1)
+        session_map = {symbol: _bars_for_today_session(bars_map.get(symbol) or []) for symbol in cfg.symbols}
+        payload = evaluate_regime_intraday(session_map, cfg)
+        payload.update({"status": "completed", "ts_utc": ts_utc, "paper_only": True})
+    REGIME_INTRADAY_LAST_SCAN = payload
+    return payload
+
+
 def _evaluate_intraday_shadow_symbol(symbol: str, bars_today: list[dict]) -> dict:
     """Evaluate intraday paths without creating plans or submitting orders."""
     sym = str(symbol or "").strip().upper()
@@ -60399,6 +60450,22 @@ def diagnostics_scanner(history_limit: int = DIAGNOSTIC_SCANNER_HISTORY_LIMIT):
         "latest_intraday_shadow": dict((_scan_summary_payload(_latest_scan_item()).get("intraday_shadow") or {})) if isinstance(_scan_summary_payload(_latest_scan_item()).get("intraday_shadow"), dict) else {},
         "worker": _worker_status_snapshot(),
     }
+
+
+@app.get("/diagnostics/regime_intraday")
+def diagnostics_regime_intraday(request: Request, refresh: bool = False):
+    require_admin_if_configured(request)
+    if refresh or not REGIME_INTRADAY_LAST_SCAN:
+        return _run_regime_intraday_scan()
+    return dict(REGIME_INTRADAY_LAST_SCAN)
+
+
+@app.post("/worker/regime_intraday_scan")
+def worker_regime_intraday_scan(body: dict = Body(default={})):
+    if WORKER_SECRET:
+        if str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
+            raise HTTPException(status_code=401, detail="invalid worker secret")
+    return _run_regime_intraday_scan()
 
 
 @app.get("/diagnostics/intraday_shadow")
