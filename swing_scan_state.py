@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SWING_SCAN_STATE_MODULE_VERSION = "patch-611-scanner-state-contract-extraction-prep"
+SWING_SCAN_STATE_MODULE_VERSION = "patch-705-scanner-ownership-extraction"
 
 
 def candidate_bearing_truth(scan: dict | None) -> dict:
@@ -286,8 +286,55 @@ def build_scanner_state_contract(
         },
         "active_warning_codes": warnings,
         "recommended_action": next_action,
-        "extraction_phase": "scanner_state_contract_prep",
+        "extraction_phase": "scanner_ownership_extraction",
     }
+
+
+def build_scanner_ownership_contract(*, patch_version: str, scanner_light_payload: dict | None) -> dict:
+    payload = dict(scanner_light_payload or {})
+    latest_scan = dict(payload.get("latest_scan") or {})
+    background_truth = dict(payload.get("scan_background_completion_truth") or {})
+    state_contract = dict(payload.get("p611_scanner_state_contract") or {})
+    return {
+        "ok": True,
+        "patch_version": patch_version,
+        "module": "swing_scan_state",
+        "module_version": SWING_SCAN_STATE_MODULE_VERSION,
+        "scanner_state_owner": "swing_scan_state",
+        "scanner_route_owner": "app.py",
+        "scanner_runtime_owner": "app.py",
+        "broker_calls": False,
+        "submits_orders": False,
+        "fetches_market_data": False,
+        "route_adapter_only": True,
+        "latest_scan_reason": latest_scan.get("reason"),
+        "latest_scan_source": latest_scan.get("source") or latest_scan.get("_scan_source"),
+        "latest_scan_scanned": latest_scan.get("scanned"),
+        "scanner_status": payload.get("scanner_status"),
+        "background_status": background_truth.get("status"),
+        "background_active": bool(background_truth.get("active")),
+        "actionable_scan_available": bool(state_contract.get("actionable_scan_available")),
+        "recommended_action": state_contract.get("recommended_action") or payload.get("recommended_action"),
+        "extraction_phase": "scanner_light_contract_owned_by_swing_scan_state",
+        "next_extraction_target": "move_scanner_publish_state_mutation_behind_module_api",
+    }
+
+
+def attach_scanner_light_contracts(*, patch_version: str, scanner_light_payload: dict | None) -> dict:
+    payload = dict(scanner_light_payload or {})
+    payload["p611_scanner_state_contract"] = build_scanner_state_contract(
+        scanner_status=payload.get("scanner_status"),
+        latest_scan=payload.get("latest_scan"),
+        background_truth=payload.get("scan_background_completion_truth"),
+        active_warning_codes=list(payload.get("active_warning_codes") or []),
+        recommended_action=payload.get("recommended_action"),
+    )
+    payload["p705_scanner_ownership_contract"] = build_scanner_ownership_contract(
+        patch_version=patch_version,
+        scanner_light_payload=payload,
+    )
+    payload["swing_scan_state_module_status"] = scan_state_module_status(patch_version=patch_version)
+    return payload
 
 
 def scan_state_module_status(*, patch_version: str) -> dict:
@@ -297,9 +344,11 @@ def scan_state_module_status(*, patch_version: str) -> dict:
         "module": "swing_scan_state",
         "module_version": SWING_SCAN_STATE_MODULE_VERSION,
         "owns_runtime_state": False,
+        "owns_scanner_light_contract": True,
+        "owns_scanner_ownership_contract": True,
         "broker_calls": False,
         "app_globals_required": False,
-        "extraction_phase": "prep",
+        "extraction_phase": "scanner_ownership_extraction",
         "responsibilities": [
             "scan_brief_shape",
             "candidate_bearing_truth",
@@ -307,6 +356,8 @@ def scan_state_module_status(*, patch_version: str) -> dict:
             "canonical_scan_contract_shape",
             "historical_background_failure_tombstone_shape",
             "scanner_state_contract_shape",
+            "scanner_light_contract_attachment",
+            "scanner_ownership_contract_shape",
         ],
-        "next_extraction_target": "move_scanner_light_state_assembly_out_of_app_py",
+        "next_extraction_target": "move_scanner_publish_state_mutation_behind_module_api",
     }

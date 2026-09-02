@@ -91,9 +91,9 @@ from swing_runtime_config import (
 )
 from swing_scan_state import (
     SWING_SCAN_STATE_MODULE_VERSION,
+    attach_scanner_light_contracts as swing_scan_state_attach_scanner_light_contracts,
     build_scan_brief as swing_scan_state_build_scan_brief,
     build_canonical_scan_contract as swing_scan_state_build_canonical_scan_contract,
-    build_scanner_state_contract as swing_scan_state_build_scanner_state_contract,
     candidate_bearing_truth as swing_scan_state_candidate_bearing_truth,
     normalize_scan_truth_contract as swing_scan_state_normalize_scan_truth_contract,
     tombstone_historical_background_failure as swing_scan_state_tombstone_background_failure,
@@ -3196,7 +3196,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-704A-strict-replay-promotion-gate"
+PATCH_VERSION = "patch-705-scanner-ownership-extraction"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -51110,15 +51110,10 @@ def _p298_scanner_light() -> dict:
         in_flight_grace_sec=int(SCANNER_LIGHT_IN_FLIGHT_GRACE_SEC),
         scan_runtime_budget_sec=int(SCAN_RUNTIME_BUDGET_SEC),
     )
-    scanner_light_payload["p611_scanner_state_contract"] = swing_scan_state_build_scanner_state_contract(
-        scanner_status=scanner_light_payload.get("scanner_status"),
-        latest_scan=scanner_light_payload.get("latest_scan"),
-        background_truth=scanner_light_payload.get("scan_background_completion_truth"),
-        active_warning_codes=list(scanner_light_payload.get("active_warning_codes") or []),
-        recommended_action=scanner_light_payload.get("recommended_action"),
+    return swing_scan_state_attach_scanner_light_contracts(
+        patch_version=PATCH_VERSION,
+        scanner_light_payload=scanner_light_payload,
     )
-    scanner_light_payload["swing_scan_state_module_status"] = swing_scan_state_module_status(patch_version=PATCH_VERSION)
-    return scanner_light_payload
 
 
 def _p604_pending_entry_alignment_row(symbol: str, plan: dict | None, snapshot_symbols: set[str] | None = None) -> dict:
