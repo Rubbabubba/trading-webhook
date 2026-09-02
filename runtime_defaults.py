@@ -14,10 +14,14 @@ RENDER_MANAGED_KEYS = frozenset({
     "APCA_API_KEY_ID",
     "APCA_API_SECRET_KEY",
     "APCA_PAPER",
+    "ALPACA_PAPER_API_KEY_ID",
+    "ALPACA_PAPER_API_SECRET_KEY",
     "DRY_RUN",
     "KILL_SWITCH",
     "LIVE_TRADING_ENABLED",
     "NEW_ENTRIES_ENABLED",
+    "REGIME_INTRADAY_LIVE_ENABLED",
+    "REGIME_INTRADAY_PAPER_SUBMIT_ENABLED",
     "SYSTEM_RELEASE_STAGE",
     "WEBHOOK_SECRET",
     "WORKER_SECRET",
@@ -98,6 +102,14 @@ PRODUCTION_DEFAULTS: dict[str, str] = {
     "REGIME_MIN_SYMBOLS_FOR_BREADTH": "5",
     "REGIME_REQUIRE_COMPLETE_DATA": "true",
     "REGIME_STATE_PATH": "/var/data/regime_state.json",
+    "REGIME_INTRADAY_LEDGER_PATH": "/var/data/regime_intraday_ledger.json",
+    "REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS": "200",
+    "REGIME_INTRADAY_MAX_DAILY_LOSS_R": "2.0",
+    "REGIME_INTRADAY_MAX_OPEN_POSITIONS": "1",
+    "REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS": "100",
+    "REGIME_INTRADAY_OPTION_CHAIN_ENABLED": "true",
+    "REGIME_INTRADAY_OPTION_FEED": "indicative",
+    "REGIME_INTRADAY_SCHEDULED_ENABLED": "true",
     "REJECTION_HISTORY_LIMIT": "200",
     "RELEASE_ALLOWED_LIVE_STAGES": "live,live_guarded",
     "RELEASE_GATE_ENFORCED": "true",
@@ -319,4 +331,3 @@ def apply_production_defaults() -> None:
     """Populate missing process variables without overriding deployment values."""
     for key, value in PRODUCTION_DEFAULTS.items():
         os.environ.setdefault(key, value)
-

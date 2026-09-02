@@ -110,6 +110,9 @@ from regime_intraday import (
     RegimeIntradayConfig,
     evaluate_regime_intraday,
 )
+from regime_intraday_ledger import load_ledger as load_regime_intraday_ledger, save_ledger as save_regime_intraday_ledger, update_ledger as update_regime_intraday_ledger
+from regime_intraday_options import fetch_option_chain, select_debit_spread
+from regime_intraday_executor import submit_mleg_limit_order
 from swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
     initial_eval_truth as swing_candidate_eval_initial_truth,
@@ -44313,6 +44316,7 @@ def _intraday_shadow_config() -> dict:
 
 
 REGIME_INTRADAY_LAST_SCAN: dict = {}
+REGIME_INTRADAY_LEDGER_PATH = getenv_any("REGIME_INTRADAY_LEDGER_PATH", default="/var/data/regime_intraday_ledger.json")
 
 
 def _regime_intraday_config() -> RegimeIntradayConfig:
@@ -44348,6 +44352,50 @@ def _run_regime_intraday_scan() -> dict:
         session_map = {symbol: _bars_for_today_session(bars_map.get(symbol) or []) for symbol in cfg.symbols}
         payload = evaluate_regime_intraday(session_map, cfg)
         payload.update({"status": "completed", "ts_utc": ts_utc, "paper_only": True})
+        option_plans = []
+        if env_bool("REGIME_INTRADAY_OPTION_CHAIN_ENABLED", "true"):
+            chain_cache = {}
+            for signal in list(payload.get("signals") or []):
+                symbol = str(signal.get("symbol") or "").upper()
+                try:
+                    if symbol not in chain_cache:
+                        chain_cache[symbol] = fetch_option_chain(
+                            APCA_KEY,
+                            APCA_SECRET,
+                            symbol,
+                            feed=getenv_any("REGIME_INTRADAY_OPTION_FEED", default="indicative"),
+                            timeout=max(5, getenv_int_any("REGIME_INTRADAY_OPTION_CHAIN_TIMEOUT_SEC", default=20)),
+                        )
+                    plan = select_debit_spread(
+                        chain_cache[symbol],
+                        dict(signal.get("option_intent") or {}),
+                        max_loss_dollars=getenv_float_any("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", default=100.0),
+                        width=getenv_float_any("REGIME_INTRADAY_SPREAD_WIDTH", default=1.0),
+                    )
+                    option_plans.append({"signal": {"symbol": symbol, "strategy": signal.get("strategy")}, "plan": plan})
+                except Exception as option_error:
+                    option_plans.append({"signal": {"symbol": symbol, "strategy": signal.get("strategy")}, "plan": {"status": "chain_error", "detail": str(option_error)[:300], "live_submission": False}})
+        payload["option_plans"] = option_plans
+        payload["execution_gate"] = {
+            "paper_enabled": env_bool("REGIME_INTRADAY_PAPER_ENABLED", "true"),
+            "live_enabled": env_bool("REGIME_INTRADAY_LIVE_ENABLED", "false"),
+            "live_submission_implemented": False,
+            "live_submission": False,
+            "max_trade_loss_dollars": getenv_float_any("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", default=100.0),
+            "max_daily_loss_dollars": getenv_float_any("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", default=200.0),
+        }
+        try:
+            ledger = update_regime_intraday_ledger(
+                load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH),
+                payload,
+                max_open_positions=max(1, getenv_int_any("REGIME_INTRADAY_MAX_OPEN_POSITIONS", default=1)),
+                max_daily_loss_r=getenv_float_any("REGIME_INTRADAY_MAX_DAILY_LOSS_R", default=2.0),
+                ts_utc=ts_utc,
+            )
+            save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
+            payload["paper_ledger"] = dict(ledger.get("summary") or {})
+        except Exception as ledger_error:
+            payload["paper_ledger"] = {"status": "persistence_error", "detail": str(ledger_error)[:300]}
     REGIME_INTRADAY_LAST_SCAN = payload
     return payload
 
@@ -60460,12 +60508,50 @@ def diagnostics_regime_intraday(request: Request, refresh: bool = False):
     return dict(REGIME_INTRADAY_LAST_SCAN)
 
 
+@app.get("/diagnostics/regime_intraday_ledger")
+def diagnostics_regime_intraday_ledger(request: Request):
+    require_admin_if_configured(request)
+    ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+    return {
+        "ok": True,
+        "path": REGIME_INTRADAY_LEDGER_PATH,
+        "summary": dict(ledger.get("summary") or {}),
+        "open": dict(ledger.get("open") or {}),
+        "closed": list(ledger.get("closed") or [])[-50:],
+        "events": list(ledger.get("events") or [])[-100:],
+        "last_scan": dict(REGIME_INTRADAY_LAST_SCAN),
+        "live_submission": False,
+    }
+
+
 @app.post("/worker/regime_intraday_scan")
 def worker_regime_intraday_scan(body: dict = Body(default={})):
     if WORKER_SECRET:
         if str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
             raise HTTPException(status_code=401, detail="invalid worker secret")
     return _run_regime_intraday_scan()
+
+
+@app.post("/worker/regime_intraday_paper_roundtrip")
+def worker_regime_intraday_paper_roundtrip(body: dict = Body(default={})):
+    """Submit one selected spread to Alpaca paper only; live is impossible here."""
+    if WORKER_SECRET and str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
+        raise HTTPException(status_code=401, detail="invalid worker secret")
+    if not env_bool("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED", "false"):
+        raise HTTPException(status_code=409, detail="paper submission gate is closed")
+    paper_key = getenv_any("ALPACA_PAPER_API_KEY_ID", default="").strip()
+    paper_secret = getenv_any("ALPACA_PAPER_API_SECRET_KEY", default="").strip()
+    selected = next(
+        (dict(row.get("plan") or {}) for row in list(REGIME_INTRADAY_LAST_SCAN.get("option_plans") or []) if dict(row.get("plan") or {}).get("status") == "selected"),
+        None,
+    )
+    if not selected:
+        raise HTTPException(status_code=409, detail="no selected option spread in the latest scan")
+    try:
+        result = submit_mleg_limit_order(paper_key, paper_secret, selected, paper=True, live_enabled=False)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"paper order rejected: {str(exc)[:300]}") from exc
+    return {"ok": True, "mode": "alpaca_paper_roundtrip", "result": result, "live_submission": False}
 
 
 @app.get("/diagnostics/intraday_shadow")

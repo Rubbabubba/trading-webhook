@@ -5,6 +5,7 @@ import runtime_defaults
 
 def test_runtime_defaults_never_contain_render_managed_values():
     assert runtime_defaults.RENDER_MANAGED_KEYS.isdisjoint(runtime_defaults.PRODUCTION_DEFAULTS)
+    assert "REGIME_INTRADAY_LIVE_ENABLED" in runtime_defaults.RENDER_MANAGED_KEYS
 
 
 def test_runtime_defaults_do_not_override_real_environment(monkeypatch):
