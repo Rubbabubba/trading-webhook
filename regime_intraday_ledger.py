@@ -10,11 +10,46 @@ from pathlib import Path
 from typing import Any
 
 
-LEDGER_VERSION = "v1-underlying-r-shadow-ledger"
+LEDGER_VERSION = "v2-durable-signal-order-ledger"
 
 
 def empty_ledger() -> dict[str, Any]:
-    return {"version": LEDGER_VERSION, "open": {}, "closed": [], "events": []}
+    return {"version": LEDGER_VERSION, "open": {}, "closed": [], "orders": {}, "events": []}
+
+
+def paper_submission_decision(ledger: dict[str, Any], signal_id: str, *, session: str, max_trades_per_day: int = 2, max_consecutive_losses: int = 2) -> dict[str, Any]:
+    orders = dict(ledger.get("orders") or {})
+    closed = list(ledger.get("closed") or [])
+    if not signal_id:
+        return {"allowed": False, "reason": "missing_signal_id"}
+    if signal_id in orders:
+        return {"allowed": False, "reason": "duplicate_signal_order", "existing_order": orders[signal_id]}
+    today_orders = [row for row in orders.values() if str(row.get("session") or "") == session]
+    if len(today_orders) >= max(1, int(max_trades_per_day)):
+        return {"allowed": False, "reason": "daily_trade_limit"}
+    today_closed = [row for row in closed if str(row.get("session") or _session(str(row.get("exit_ts_utc") or ""))) == session]
+    loss_streak = 0
+    for row in reversed(today_closed):
+        if float(row.get("realized_dollars") or row.get("realized_r") or 0.0) < 0:
+            loss_streak += 1
+        else:
+            break
+    if loss_streak >= max(1, int(max_consecutive_losses)):
+        return {"allowed": False, "reason": "consecutive_loss_lock", "loss_streak": loss_streak}
+    active = [row for row in orders.values() if str(row.get("status") or "").lower() not in {"canceled", "cancelled", "expired", "filled_closed", "rejected"}]
+    if active:
+        return {"allowed": False, "reason": "active_paper_order_or_position", "active_count": len(active)}
+    return {"allowed": True, "reason": "risk_checks_passed", "today_order_count": len(today_orders), "loss_streak": loss_streak}
+
+
+def record_broker_order(ledger: dict[str, Any], signal_id: str, record: dict[str, Any], *, ts_utc: str | None = None) -> dict[str, Any]:
+    now = _now(ts_utc)
+    orders = dict(ledger.get("orders") or {})
+    orders[signal_id] = {**dict(record), "signal_id": signal_id, "recorded_at": now, "session": _session(now)}
+    events = list(ledger.get("events") or [])
+    events.append({"event": "paper_order_recorded", "ts_utc": now, "signal_id": signal_id, "order_id": record.get("order_id"), "status": record.get("status")})
+    ledger.update({"orders": orders, "events": events[-1000:], "updated_at": now})
+    return ledger
 
 
 def load_ledger(path: str) -> dict[str, Any]:
@@ -94,7 +129,7 @@ def update_ledger(
         opened[symbol] = position
         events.append({"event": "shadow_entry", "ts_utc": now, "symbol": symbol, "strategy": signal.get("strategy")})
 
-    ledger.update({"version": LEDGER_VERSION, "open": opened, "closed": closed[-500:], "events": events[-1000:], "updated_at": now})
+    ledger.update({"version": LEDGER_VERSION, "open": opened, "closed": closed[-500:], "orders": dict(ledger.get("orders") or {}), "events": events[-1000:], "updated_at": now})
     ledger["summary"] = {
         "open_count": len(opened),
         "closed_count": len(closed),
@@ -102,5 +137,6 @@ def update_ledger(
         "daily_loss_blocked": blocked,
         "win_rate": round(sum(1 for row in closed if float(row.get("realized_r") or 0) > 0) / len(closed), 4) if closed else None,
         "average_r": round(sum(float(row.get("realized_r") or 0) for row in closed) / len(closed), 4) if closed else None,
+        "paper_order_count": len(dict(ledger.get("orders") or {})),
     }
     return ledger

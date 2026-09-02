@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import hashlib
 from math import sqrt
 from statistics import fmean, pstdev
 from typing import Any
@@ -130,6 +131,7 @@ def _market_features(symbol: str, bars: list[dict], config: RegimeIntradayConfig
         "last_open": _num(ordered[-1], "open", "o") if ordered else 0.0,
         "last_high": _num(ordered[-1], "high", "h") if ordered else 0.0,
         "last_low": _num(ordered[-1], "low", "l") if ordered else 0.0,
+        "last_ts": _time_key(ordered[-1]).isoformat() if ordered else None,
         "ready": len(ordered) >= config.min_bars and price > 0 and vwap > 0 and atr > 0,
     }
 
@@ -165,7 +167,11 @@ def _trade_plan(symbol: str, strategy: str, side: str, feature: dict, config: Re
         stop = entry + config.stop_atr * atr
         target = entry - config.target_r * (stop - entry)
         option_type = "put"
+    session = str(feature.get("last_ts") or "")[:10]
+    identity = "|".join([session, symbol, strategy, side, f"{float(feature.get('opening_high') or 0):.4f}", f"{float(feature.get('opening_low') or 0):.4f}"])
+    signal_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
     return {
+        "signal_id": signal_id,
         "symbol": symbol,
         "strategy": strategy,
         "underlying_side": side,

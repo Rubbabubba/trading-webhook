@@ -34,6 +34,7 @@ def test_trend_router_emits_only_momentum_strategy():
     assert out["signal_count"] == 2
     assert all(row["strategy"] == "opening_range_momentum" for row in out["signals"])
     assert all(row["option_intent"]["live_submission"] is False for row in out["signals"])
+    assert all(row["signal_id"] for row in out["signals"])
 
 
 def test_transition_regime_never_forces_trade():

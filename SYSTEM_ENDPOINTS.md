@@ -107,6 +107,7 @@ https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_shadow_settlement
 https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_signal_debug
 https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday
 https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_ledger
+https://trading-webhook-q4d5.onrender.com/diagnostics/regime_intraday_readiness
 https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_small_sample_expansion_lab
 https://trading-webhook-q4d5.onrender.com/diagnostics/intraday_symbol_discovery_replay_lab
 https://trading-webhook-q4d5.onrender.com/diagnostics/journal
@@ -249,5 +250,6 @@ https://trading-webhook-q4d5.onrender.com/worker/exit
 https://trading-webhook-q4d5.onrender.com/worker/scan_entries
 https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_scan
 https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_roundtrip
+https://trading-webhook-q4d5.onrender.com/worker/regime_intraday_paper_reconcile
 https://trading-webhook-q4d5.onrender.com/worker/scanner_heartbeat
 https://trading-webhook-q4d5.onrender.com/worker/swing_fast_scan

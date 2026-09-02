@@ -126,3 +126,44 @@ def select_debit_spread(
             "live_submission": False,
         }
     return {"status": "no_eligible_defined_risk_spread", "live_submission": False, "candidate_count": len(candidates)}
+
+
+def value_debit_spread(chain: dict, plan: dict) -> dict[str, Any]:
+    """Conservative liquidation value: sell long at bid, buy short at ask."""
+    snapshots = dict(chain.get("snapshots") or chain)
+    legs = list(plan.get("legs") or [])
+    if len(legs) != 2:
+        return {"status": "invalid_plan"}
+    long_snapshot = dict(snapshots.get(str(legs[0].get("symbol") or "")) or {})
+    short_snapshot = dict(snapshots.get(str(legs[1].get("symbol") or "")) or {})
+    long_bid, long_ask = _quote(long_snapshot)
+    short_bid, short_ask = _quote(short_snapshot)
+    if min(long_bid, long_ask, short_bid, short_ask) <= 0:
+        return {"status": "missing_leg_quote"}
+    credit = round(max(0.01, long_bid - short_ask), 2)
+    debit = float(plan.get("limit_debit") or 0.0)
+    return {
+        "status": "valued",
+        "liquidation_credit": credit,
+        "entry_debit": debit,
+        "unrealized_dollars": round((credit - debit) * 100, 2),
+        "unrealized_return_pct": round((credit / debit) - 1.0, 4) if debit > 0 else None,
+        "quote_basis": {"long_bid": long_bid, "short_ask": short_ask},
+    }
+
+
+def spread_exit_decision(plan: dict, valuation: dict, *, minutes_to_close: int, take_profit_fraction: float = 0.50, stop_loss_fraction: float = 0.50) -> dict[str, Any]:
+    if valuation.get("status") != "valued":
+        return {"exit": False, "reason": "spread_not_valued"}
+    debit = float(plan.get("limit_debit") or 0.0)
+    credit = float(valuation.get("liquidation_credit") or 0.0)
+    max_profit = float(plan.get("max_profit_dollars") or 0.0)
+    pnl = float(valuation.get("unrealized_dollars") or 0.0)
+    reason = None
+    if minutes_to_close <= 15:
+        reason = "end_of_day"
+    elif pnl >= max_profit * take_profit_fraction:
+        reason = "profit_target"
+    elif credit <= debit * (1.0 - stop_loss_fraction):
+        reason = "option_stop"
+    return {"exit": bool(reason), "reason": reason or "hold", "limit_credit": credit, "unrealized_dollars": pnl}

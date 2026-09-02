@@ -37,6 +37,23 @@ def build_mleg_limit_order(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_mleg_close_order(plan: dict[str, Any], limit_credit: float) -> dict[str, Any]:
+    legs = list(plan.get("legs") or [])
+    if len(legs) != 2 or float(limit_credit or 0.0) <= 0:
+        raise ValueError("valid two-leg plan and positive closing credit required")
+    return {
+        "order_class": "mleg",
+        "qty": "1",
+        "type": "limit",
+        "time_in_force": "day",
+        "limit_price": f"{-abs(float(limit_credit)):.2f}",
+        "legs": [
+            {"symbol": str(legs[0]["symbol"]), "ratio_qty": "1", "side": "sell", "position_intent": "sell_to_close"},
+            {"symbol": str(legs[1]["symbol"]), "ratio_qty": "1", "side": "buy", "position_intent": "buy_to_close"},
+        ],
+    }
+
+
 def submit_mleg_limit_order(
     api_key: str,
     api_secret: str,
@@ -63,3 +80,18 @@ def submit_mleg_limit_order(
     with urlopen(request, timeout=timeout) as response:
         result = json.loads(response.read().decode("utf-8"))
     return {"submitted": True, "paper": bool(paper), "order_id": result.get("id"), "status": result.get("status"), "symbol": result.get("symbol"), "order_class": result.get("order_class")}
+
+
+def get_order(api_key: str, api_secret: str, order_id: str, *, paper: bool = True, timeout: int = 20) -> dict[str, Any]:
+    base = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
+    request = Request(f"{base}/v2/orders/{order_id}?nested=true", headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret})
+    with urlopen(request, timeout=timeout) as response:
+        row = json.loads(response.read().decode("utf-8"))
+    return {key: row.get(key) for key in ("id", "status", "created_at", "submitted_at", "filled_at", "canceled_at", "expired_at", "filled_qty", "filled_avg_price", "limit_price", "order_class", "legs")}
+
+
+def cancel_order(api_key: str, api_secret: str, order_id: str, *, paper: bool = True, timeout: int = 20) -> None:
+    base = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
+    request = Request(f"{base}/v2/orders/{order_id}", method="DELETE", headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret})
+    with urlopen(request, timeout=timeout):
+        return None

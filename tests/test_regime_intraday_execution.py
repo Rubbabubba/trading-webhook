@@ -1,8 +1,9 @@
 from datetime import date
 
-from regime_intraday_ledger import empty_ledger, update_ledger
-from regime_intraday_options import parse_occ, select_debit_spread
+from regime_intraday_ledger import empty_ledger, paper_submission_decision, record_broker_order, update_ledger
+from regime_intraday_options import parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_executor import build_mleg_limit_order, submit_mleg_limit_order
+from regime_intraday_readiness import readiness_snapshot
 
 
 def _snapshot(bid, ask, delta):
@@ -68,3 +69,28 @@ def test_indicative_feed_can_select_paper_plan_without_greeks():
     assert plan["status"] == "selected"
     assert plan["quote_basis"]["selection_source"] == "near_money_fallback"
     assert plan["live_eligible"] is False
+
+
+def test_conservative_spread_valuation_and_exit():
+    plan = {"limit_debit": 0.30, "max_profit_dollars": 70.0, "legs": [{"symbol": "LONG"}, {"symbol": "SHORT"}]}
+    chain = {"snapshots": {"LONG": _snapshot(0.65, 0.67, 0.6), "SHORT": _snapshot(0.19, 0.20, 0.4)}}
+    valuation = value_debit_spread(chain, plan)
+    assert valuation["liquidation_credit"] == 0.45
+    assert valuation["unrealized_dollars"] == 15.0
+    assert spread_exit_decision(plan, valuation, minutes_to_close=10)["reason"] == "end_of_day"
+
+
+def test_durable_signal_order_deduplication():
+    ledger = empty_ledger()
+    assert paper_submission_decision(ledger, "sig-1", session="2026-09-02")["allowed"] is True
+    record_broker_order(ledger, "sig-1", {"order_id": "order-1", "status": "new"}, ts_utc="2026-09-02T15:00:00+00:00")
+    decision = paper_submission_decision(ledger, "sig-1", session="2026-09-02")
+    assert decision["allowed"] is False
+    assert decision["reason"] == "duplicate_signal_order"
+
+
+def test_live_readiness_requires_opra_and_closed_paper_roundtrip():
+    snapshot = readiness_snapshot(config={"paper_submit_enabled": True, "option_feed": "indicative", "max_scan_age_sec": 10**9, "min_shadow_closed": 1}, ledger=empty_ledger(), last_scan={"ts_utc": "2026-09-02T18:00:00+00:00", "option_plans": []}, paper_credentials_present=True)
+    assert snapshot["live_ready"] is False
+    assert "opra_feed_required" in snapshot["live_blockers"]
+    assert "paper_order_roundtrip_required" in snapshot["live_blockers"]

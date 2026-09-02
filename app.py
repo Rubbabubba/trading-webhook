@@ -110,9 +110,10 @@ from regime_intraday import (
     RegimeIntradayConfig,
     evaluate_regime_intraday,
 )
-from regime_intraday_ledger import load_ledger as load_regime_intraday_ledger, save_ledger as save_regime_intraday_ledger, update_ledger as update_regime_intraday_ledger
-from regime_intraday_options import fetch_option_chain, select_debit_spread
-from regime_intraday_executor import submit_mleg_limit_order
+from regime_intraday_ledger import load_ledger as load_regime_intraday_ledger, paper_submission_decision, record_broker_order, save_ledger as save_regime_intraday_ledger, update_ledger as update_regime_intraday_ledger
+from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
+from regime_intraday_executor import cancel_order as cancel_regime_intraday_order, get_order as get_regime_intraday_order, submit_mleg_limit_order
+from regime_intraday_readiness import readiness_snapshot as regime_intraday_readiness_snapshot
 from swing_candidate_eval import (
     SWING_CANDIDATE_EVAL_MODULE_VERSION,
     initial_eval_truth as swing_candidate_eval_initial_truth,
@@ -44372,7 +44373,7 @@ def _run_regime_intraday_scan() -> dict:
                         max_loss_dollars=getenv_float_any("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", default=100.0),
                         width=getenv_float_any("REGIME_INTRADAY_SPREAD_WIDTH", default=1.0),
                     )
-                    option_plans.append({"signal": {"symbol": symbol, "strategy": signal.get("strategy")}, "plan": plan})
+                    option_plans.append({"signal": {"signal_id": signal.get("signal_id"), "symbol": symbol, "strategy": signal.get("strategy")}, "plan": plan})
                 except Exception as option_error:
                     option_plans.append({"signal": {"symbol": symbol, "strategy": signal.get("strategy")}, "plan": {"status": "chain_error", "detail": str(option_error)[:300], "live_submission": False}})
         payload["option_plans"] = option_plans
@@ -60519,8 +60520,39 @@ def diagnostics_regime_intraday_ledger(request: Request):
         "open": dict(ledger.get("open") or {}),
         "closed": list(ledger.get("closed") or [])[-50:],
         "events": list(ledger.get("events") or [])[-100:],
+        "orders": dict(ledger.get("orders") or {}),
         "last_scan": dict(REGIME_INTRADAY_LAST_SCAN),
         "live_submission": False,
+    }
+
+
+@app.get("/diagnostics/regime_intraday_readiness")
+def diagnostics_regime_intraday_readiness(request: Request):
+    require_admin_if_configured(request)
+    ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+    return {
+        "ok": True,
+        **regime_intraday_readiness_snapshot(
+            config={
+                "paper_submit_enabled": env_bool("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED", "false"),
+                "live_enabled": env_bool("REGIME_INTRADAY_LIVE_ENABLED", "false"),
+                "option_feed": getenv_any("REGIME_INTRADAY_OPTION_FEED", default="indicative"),
+                "max_scan_age_sec": getenv_int_any("REGIME_INTRADAY_MAX_SCAN_AGE_SEC", default=600),
+                "min_shadow_closed": getenv_int_any("REGIME_INTRADAY_MIN_SHADOW_CLOSED_FOR_LIVE", default=10),
+            },
+            ledger=ledger,
+            last_scan=REGIME_INTRADAY_LAST_SCAN,
+            paper_credentials_present=bool(getenv_any("ALPACA_PAPER_API_KEY_ID", default="").strip() and getenv_any("ALPACA_PAPER_API_SECRET_KEY", default="").strip()),
+        ),
+        "hard_controls": {
+            "max_open_positions": getenv_int_any("REGIME_INTRADAY_MAX_OPEN_POSITIONS", default=1),
+            "max_trades_per_day": getenv_int_any("REGIME_INTRADAY_MAX_TRADES_PER_DAY", default=2),
+            "max_consecutive_losses": getenv_int_any("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", default=2),
+            "max_trade_loss_dollars": getenv_float_any("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", default=100.0),
+            "max_daily_loss_dollars": getenv_float_any("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", default=200.0),
+            "latest_entry_time_ny": getenv_any("REGIME_INTRADAY_LATEST_ENTRY_TIME_NY", default="15:30"),
+            "forced_exit_time_ny": getenv_any("REGIME_INTRADAY_FORCED_EXIT_TIME_NY", default="15:45"),
+        },
     }
 
 
@@ -60539,19 +60571,92 @@ def worker_regime_intraday_paper_roundtrip(body: dict = Body(default={})):
         raise HTTPException(status_code=401, detail="invalid worker secret")
     if not env_bool("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED", "false"):
         raise HTTPException(status_code=409, detail="paper submission gate is closed")
+    latest_entry_time = parse_hhmm(getenv_any("REGIME_INTRADAY_LATEST_ENTRY_TIME_NY", default="15:30"))
+    if now_ny().time() >= latest_entry_time:
+        raise HTTPException(status_code=409, detail="paper entry window is closed for the session")
+    try:
+        scan_age_sec = max(0.0, (datetime.now(timezone.utc) - datetime.fromisoformat(str(REGIME_INTRADAY_LAST_SCAN.get("ts_utc") or "").replace("Z", "+00:00"))).total_seconds())
+    except Exception:
+        scan_age_sec = 10**9
+    if scan_age_sec > max(30, getenv_int_any("REGIME_INTRADAY_MAX_SCAN_AGE_SEC", default=600)):
+        raise HTTPException(status_code=409, detail="latest regime-intraday scan is stale")
     paper_key = getenv_any("ALPACA_PAPER_API_KEY_ID", default="").strip()
     paper_secret = getenv_any("ALPACA_PAPER_API_SECRET_KEY", default="").strip()
-    selected = next(
-        (dict(row.get("plan") or {}) for row in list(REGIME_INTRADAY_LAST_SCAN.get("option_plans") or []) if dict(row.get("plan") or {}).get("status") == "selected"),
+    selected_row = next(
+        (dict(row) for row in list(REGIME_INTRADAY_LAST_SCAN.get("option_plans") or []) if dict(row.get("plan") or {}).get("status") == "selected"),
         None,
     )
-    if not selected:
+    if not selected_row:
         raise HTTPException(status_code=409, detail="no selected option spread in the latest scan")
+    selected = dict(selected_row.get("plan") or {})
+    signal_id = str(dict(selected_row.get("signal") or {}).get("signal_id") or "")
+    ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+    decision = paper_submission_decision(
+        ledger,
+        signal_id,
+        session=datetime.now(timezone.utc).date().isoformat(),
+        max_trades_per_day=max(1, getenv_int_any("REGIME_INTRADAY_MAX_TRADES_PER_DAY", default=2)),
+        max_consecutive_losses=max(1, getenv_int_any("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", default=2)),
+    )
+    if not decision.get("allowed"):
+        raise HTTPException(status_code=409, detail=decision)
     try:
         result = submit_mleg_limit_order(paper_key, paper_secret, selected, paper=True, live_enabled=False)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"paper order rejected: {str(exc)[:300]}") from exc
-    return {"ok": True, "mode": "alpaca_paper_roundtrip", "result": result, "live_submission": False}
+    record_broker_order(ledger, signal_id, {**result, "plan": selected})
+    save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
+    return {"ok": True, "mode": "alpaca_paper_roundtrip", "risk_decision": decision, "result": result, "signal_id": signal_id, "live_submission": False}
+
+
+@app.post("/worker/regime_intraday_paper_reconcile")
+def worker_regime_intraday_paper_reconcile(body: dict = Body(default={})):
+    """Refresh recorded paper-order states without submitting or canceling."""
+    if WORKER_SECRET and str(body.get("worker_secret") or "").strip() != WORKER_SECRET:
+        raise HTTPException(status_code=401, detail="invalid worker secret")
+    paper_key = getenv_any("ALPACA_PAPER_API_KEY_ID", default="").strip()
+    paper_secret = getenv_any("ALPACA_PAPER_API_SECRET_KEY", default="").strip()
+    ledger = load_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH)
+    refreshed = []
+    for signal_id, record in dict(ledger.get("orders") or {}).items():
+        order_id = str(record.get("order_id") or "")
+        if not order_id:
+            continue
+        try:
+            broker = get_regime_intraday_order(paper_key, paper_secret, order_id, paper=True)
+            record.update({"status": broker.get("status"), "broker": broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
+            status = str(broker.get("status") or "").lower()
+            if status in {"new", "accepted", "pending_new", "partially_filled"}:
+                try:
+                    submitted = datetime.fromisoformat(str(broker.get("submitted_at") or broker.get("created_at") or "").replace("Z", "+00:00"))
+                    age_sec = max(0.0, (datetime.now(timezone.utc) - submitted).total_seconds())
+                except Exception:
+                    age_sec = 0.0
+                record["stale_entry"] = age_sec >= max(30, getenv_int_any("REGIME_INTRADAY_STALE_ENTRY_SEC", default=120))
+                if record["stale_entry"] and env_bool("REGIME_INTRADAY_PAPER_AUTO_CANCEL_STALE", "false"):
+                    cancel_regime_intraday_order(paper_key, paper_secret, order_id, paper=True)
+                    record.update({"status": "cancel_requested", "cancel_requested_at": datetime.now(timezone.utc).isoformat()})
+            if status == "filled" and isinstance(record.get("plan"), dict):
+                plan = dict(record.get("plan") or {})
+                underlying = str(plan.get("underlying") or "").upper()
+                if underlying:
+                    chain = fetch_option_chain(paper_key, paper_secret, underlying, feed=getenv_any("REGIME_INTRADAY_OPTION_FEED", default="indicative"))
+                    valuation = value_debit_spread(chain, plan)
+                    ny = now_ny()
+                    minutes_to_close = max(0, (16 * 60) - (ny.hour * 60 + ny.minute))
+                    record["valuation"] = valuation
+                    record["exit_decision"] = spread_exit_decision(
+                        plan,
+                        valuation,
+                        minutes_to_close=minutes_to_close,
+                        take_profit_fraction=getenv_float_any("REGIME_INTRADAY_TAKE_PROFIT_FRACTION", default=0.50),
+                        stop_loss_fraction=getenv_float_any("REGIME_INTRADAY_STOP_LOSS_FRACTION", default=0.50),
+                    )
+            refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": broker.get("status")})
+        except Exception as exc:
+            refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": "reconcile_error", "detail": str(exc)[:200]})
+    save_regime_intraday_ledger(REGIME_INTRADAY_LEDGER_PATH, ledger)
+    return {"ok": True, "refreshed": refreshed, "live_submission": False, "automatic_exit_submission": False}
 
 
 @app.get("/diagnostics/intraday_shadow")
