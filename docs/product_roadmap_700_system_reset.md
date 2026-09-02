@@ -492,6 +492,8 @@ Post-deploy endpoints:
 
 ### Patch 710: Legacy Route And Compatibility Tombstone Removal
 
+Status: deployed and verified.
+
 Goal: delete retired compatibility code after ownership modules are stable.
 
 Scope:
@@ -521,6 +523,258 @@ Post-deploy endpoints:
 - `/diagnostics/worker_exit_status`
 - `/diagnostics/swing_submit_path_trace?limit=10`
 - `/diagnostics/live_positions_light`
+
+## Phase 5: Controlled Return To Fully Live
+
+Phase 5 is the bridge from hard-stop validation back to normal live operation. The goal is not to flip the whole bot back on because it scanned a candidate. The goal is to prove which variants deserve capital, run them at reduced risk, measure broker-fill outcomes, then graduate to normal live mode only when the evidence is positive.
+
+### Patch 711: Validation-Promoted Live Sleeve Contract + Submit Gap Classification Cleanup
+
+Status: next.
+
+Goal: allow only replay-promoted strategy sleeves to pass through validation mode while making intentionally paused candidates stop looking like broken submit gaps.
+
+Scope:
+
+- Add a single promoted-live-sleeve contract with `validation_paused`, `validation_promoted_live_allowed`, and `validation_promoted_live_blocked` classifications.
+- Keep Patch 700 validation mode active for broad/new entries.
+- Treat `validation_pause_entries` as intentional hold truth, not submit failure truth.
+- Require promoted sleeve identity, current config alignment, and replay/OOS evidence before any candidate can leave validation pause.
+- Keep all 50 symbols visible in scanner and diagnostics.
+- Add no symbol-specific exceptions.
+
+Expected outcome:
+
+- Selected candidates that are paused show as intentionally held.
+- Only promoted variants can submit at reduced risk.
+- Submit-gap diagnostics become cleaner and less alarming.
+
+Smoke tests:
+
+- Paused non-promoted candidates do not submit and do not report as broken submit gaps.
+- Promoted candidates become eligible for reduced-risk submit.
+- Existing scanner, live positions, and exit endpoints remain unchanged.
+- Route import/compile checks pass.
+
+Post-deploy endpoints:
+
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/selected_submission_truth_light`
+- `/diagnostics/swing_submit_path_trace?limit=10`
+- `/diagnostics/scanner_light`
+- `/diagnostics/live_positions_light`
+
+### Patch 712: Reduced-Risk Promotion Config + Broker-Fill Outcome Watch
+
+Status: planned.
+
+Goal: make reduced-risk live operation explicit, measurable, and reversible before full live restore.
+
+Scope:
+
+- Add one reduced-risk promotion config surface for promoted sleeves only.
+- Cap dollar risk, position size, and daily new-entry exposure through the existing validation contract.
+- Add broker-fill outcome watch for promoted-live trades.
+- Separate promoted-live outcomes from historical negative daily-breakout evidence.
+- Keep exits and protection active for all positions.
+
+Expected outcome:
+
+- The system can take tightly controlled real trades again without globally unpausing the old engine.
+- Broker fills prove whether promoted variants behave in live conditions.
+- Risk remains bounded while the engine earns trust back.
+
+Smoke tests:
+
+- Reduced-risk sizing is lower than normal sizing.
+- Non-promoted entries remain blocked.
+- Promoted-live trades are labeled and reportable from broker fills.
+- Exit protection still attaches to all live positions.
+
+Post-deploy endpoints:
+
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/executable_sizing_truth?limit=10`
+- `/diagnostics/selected_submission_truth_light`
+- `/diagnostics/protective_limit_submit_evidence`
+- `/diagnostics/broker_fills_only_trade_ledger?limit=25`
+
+### Patch 713: Replay-Passed Variant Registry + Strategy Capital Eligibility
+
+Status: planned.
+
+Goal: replace scattered replay references with one registry of strategy/profile variants that are eligible for live capital.
+
+Scope:
+
+- Create a canonical replay-passed variant registry.
+- Store sleeve, strategy, regime profile, symbol universe, risk profile, replay windows, and pass/fail evidence.
+- Require registry membership before a variant can use the reduced-risk live sleeve.
+- Report why a candidate is not registry-eligible without adding another entry gate.
+- Keep registry tooling outside `app.py` as much as practical.
+
+Expected outcome:
+
+- Live eligibility becomes explainable and product-grade.
+- Daily breakout, intraday momentum, and intraday mean-reversion can be evaluated independently.
+- The system stops treating one broad strategy bucket as if every component has the same edge.
+
+Smoke tests:
+
+- Registry loads without broker calls.
+- Missing registry blocks promotion but not scanner visibility.
+- Registered replay-passed variants classify correctly.
+- Unknown strategy/regime/symbol combinations are labeled unknown, not guessed.
+
+Post-deploy endpoints:
+
+- `/diagnostics/replay_promotion_gate?limit=25`
+- `/diagnostics/strategy_isolation_contract?limit=25`
+- `/diagnostics/selected_submission_truth_light`
+- `/diagnostics/swing_submit_path_trace?limit=10`
+- `/diagnostics/swing_performance_reports_module_status`
+
+### Patch 714: Full-Live Promotion Gate + Operator Go/No-Go Contract
+
+Status: planned.
+
+Goal: define the exact conditions for restoring full live mode and make the operator decision obvious.
+
+Scope:
+
+- Add a go/no-go contract for `validation_pause_entries`, `reduced_risk`, and `normal`.
+- Require fresh broker-fill ledger, clean live protection, healthy scanner, clean worker exit, and positive promoted-live evidence before full live mode.
+- Separate "ready for reduced-risk live" from "ready for fully live."
+- Add rollback criteria if promoted-live trades underperform.
+- Keep daily $100-$200 as an average outcome target, not a forced daily quota.
+
+Expected outcome:
+
+- Before Patch 715 cleanup continues, the system has a documented and endpoint-visible route back to fully live.
+- Full live restore becomes an evidence decision instead of a mood decision.
+- If the evidence is not good enough, the system remains reduced-risk or paused without ambiguity.
+
+Smoke tests:
+
+- Full-live gate fails closed when broker-fill ledger is stale.
+- Full-live gate fails closed when any open position lacks protection.
+- Full-live gate fails closed when scanner or worker exit is unhealthy.
+- Reduced-risk gate can pass independently of full-live gate.
+- Normal mode cannot be enabled without the go/no-go contract passing or an explicit operator override.
+
+Post-deploy endpoints:
+
+- `/diagnostics/live_risk_validation_contract`
+- `/diagnostics/broker_fills_only_trade_ledger?limit=25`
+- `/diagnostics/broker_reconciled_strategy_attribution?limit=25`
+- `/diagnostics/payoff_imbalance_repair_report?limit=25`
+- `/diagnostics/worker_exit_status`
+- `/diagnostics/active_exit_protection_truth?limit=20`
+- `/diagnostics/scanner_light`
+
+### Patch 715: Scanner Ownership Extraction Phase 2
+
+Status: planned after live restoration path is endpoint-visible.
+
+Goal: continue moving scanner orchestration, state, and candidate publish ownership out of `app.py` once live promotion rules are clear.
+
+Scope:
+
+- Move scanner state reads/writes and terminal publish helpers behind `scanner.py` / `swing_scan_state.py`.
+- Keep route handlers thin.
+- Preserve the 50-symbol runtime coverage contract.
+- Keep all worker-critical paths bounded and terminal.
+
+Expected outcome:
+
+- Scanner behavior is easier to reason about and harder to break during future patches.
+- `app.py` becomes route wiring instead of scan orchestration.
+
+### Patch 716: Candidate Evaluation Ownership Phase 2
+
+Status: planned.
+
+Goal: make `swing_candidate_eval.py` own the candidate evaluation pipeline instead of only status and shape helpers.
+
+Scope:
+
+- Move candidate row evaluation, batch budget handling, partial publish decisions, and terminal summaries into the module.
+- Keep broker calls and submissions outside candidate evaluation.
+- Preserve current scan outcomes.
+
+Expected outcome:
+
+- Candidate evaluation becomes testable without running the full app.
+- Future strategy changes are less likely to break scanner runtime.
+
+### Patch 717: Submit Ownership Extraction Phase 2
+
+Status: planned.
+
+Goal: move direct submit, retry consumption, buying-power truth, and limit-order finalization into `swing_broker_submit.py` and `swing_broker_transport.py`.
+
+Scope:
+
+- Keep validation/reduced-risk/full-live contract checks centralized.
+- Move submit transport calls behind a module boundary.
+- Preserve idempotency, retry classification, and protective-limit behavior.
+
+Expected outcome:
+
+- Submit path becomes product-grade and testable.
+- Operator diagnostics report submit reasons without duplicating submit logic.
+
+### Patch 718: Exit Protection Ownership Phase 2
+
+Status: planned.
+
+Goal: move protective exits, stale plan recovery, giveback exits, partial profits, and broker-qty clamps into `swing_exit_protection.py`.
+
+Scope:
+
+- Keep worker exit fast-close guarantees.
+- Keep all broker-qty clamps broker-native.
+- Keep protection recovery active even while entries are paused.
+
+Expected outcome:
+
+- Exit safety is owned by one module.
+- `app.py` no longer carries most exit business logic.
+
+### Patch 719: Performance Reporting Ownership Phase 2
+
+Status: planned.
+
+Goal: move broker-reconciled P/L row collection and attribution assembly into `swing_performance_reports.py`.
+
+Scope:
+
+- Keep broker-fill ledger as source of truth.
+- Move strategy, regime, symbol, holding-period, R-multiple, and payoff attribution assembly out of `app.py`.
+- Keep heavy refresh explicit and cache-first reports fast.
+
+Expected outcome:
+
+- Performance truth becomes easier to audit.
+- Replay and live broker-fill promotion evidence can share one reporting contract.
+
+### Patch 720: Replay Promotion Gate Phase 2 + Legacy Patch Path Deletion
+
+Status: planned.
+
+Goal: turn replay outputs into a clean current-config pass/fail promotion report and delete legacy patch paths made obsolete by module ownership.
+
+Scope:
+
+- Consolidate replay scenario outputs into a single promotion result.
+- Remove old compatibility helpers and route tombstones only after route/import tests prove they are unused.
+- Update `SYSTEM_ENDPOINTS.md` whenever endpoints are removed or renamed.
+
+Expected outcome:
+
+- The system has a product-grade validation loop.
+- Legacy code shrinks instead of growing.
+- Full-live decisions rely on broker-fill and replay evidence, not patch-era fragments.
 
 ## Future Product Direction
 
@@ -594,4 +848,4 @@ The system is not considered ready for normal live sizing until:
 
 ## Immediate Recommendation
 
-Proceed with Patch 700 next. Do not attempt to restore the daily profit quota by increasing risk or trade count. Stabilize live behavior first, audit broker truth second, then promote only proven strategy variants.
+Proceed with Patch 711 next. The next phase should restore live trading in controlled steps: promoted reduced-risk sleeve first, broker-fill outcome watch second, variant registry third, and full-live go/no-go gate fourth. Do not resume broad normal live entries until Patch 714 proves the system is ready or records an explicit operator override.
