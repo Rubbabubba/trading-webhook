@@ -674,7 +674,7 @@ Post-deploy endpoints:
 
 ### Patch 713: Replay-Passed Variant Registry + Strategy Capital Eligibility
 
-Status: planned.
+Status: applied locally; pending deploy verification.
 
 Goal: replace scattered replay references with one registry of strategy/profile variants that are eligible for live capital.
 

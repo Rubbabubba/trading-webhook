@@ -227,6 +227,12 @@ from swing_performance_reports import (
     build_replay_promotion_gate_report as swing_perf_build_replay_promotion_gate_report,
     performance_reports_module_status as swing_perf_module_status,
 )
+from swing_replay_registry import (
+    SWING_REPLAY_REGISTRY_MODULE_VERSION,
+    build_replay_variant_registry as swing_replay_build_variant_registry,
+    match_replay_variant_registry as swing_replay_match_variant_registry,
+    replay_registry_module_status as swing_replay_registry_module_status,
+)
 
 @dataclass(frozen=True)
 class Bar:
@@ -3220,7 +3226,7 @@ _scan_rotation = {"ny_date": None, "idx": 0}
 # =============================================================================
 # Build / Patch Metadata
 # =============================================================================
-PATCH_VERSION = "patch-712B-promotion-contract-fast-short-circuit-submit-trace-no-blocking-fallback"
+PATCH_VERSION = "patch-713-replay-passed-variant-registry-strategy-capital-eligibility"
 LIVE_DASHBOARD_CACHE_SEC = int(os.getenv("LIVE_DASHBOARD_CACHE_SEC", "10") or 10)
 DASHBOARD_FAST_DEFAULT = env_bool_any("DASHBOARD_FAST_DEFAULT", default=True)
 DASHBOARD_FULL_HEAVY_ENABLED = env_bool_any("DASHBOARD_FULL_HEAVY_ENABLED", default=False)
@@ -22344,6 +22350,57 @@ def _p711_mapping_truthy(row: dict | None, keys: list[str]) -> bool:
     return False
 
 
+def _p713_replay_variant_registry_snapshot(limit: int = 25, promotion_payload: dict | None = None) -> dict:
+    lim = max(1, min(int(limit or 25), 100))
+    try:
+        promotion = dict(promotion_payload or _p704_replay_promotion_gate_snapshot(limit=max(lim, 25)))
+        registry = swing_replay_build_variant_registry(
+            promotion,
+            patch_version=PATCH_VERSION,
+            limit=lim,
+        )
+    except Exception as exc:
+        registry = {
+            "ok": False,
+            "patch_version": PATCH_VERSION,
+            "mode": "replay_passed_variant_registry",
+            "module": "swing_replay_registry",
+            "module_version": SWING_REPLAY_REGISTRY_MODULE_VERSION,
+            "read_only": True,
+            "does_not_submit_orders": True,
+            "does_not_fetch_bars": True,
+            "registry_entry_count": 0,
+            "capital_eligible_count": 0,
+            "entries": [],
+            "capital_eligible_variants": [],
+            "error": str(exc),
+            "recommended_action": "keep_validation_pause_until_replay_registry_snapshot_is_readable",
+        }
+    registry["snapshot_path"] = REPLAY_PROMOTION_GATE_SNAPSHOT_PATH
+    registry["source_endpoint"] = "/diagnostics/replay_variant_registry"
+    return registry
+
+
+def _p713_attach_compact_replay_variant_registry(payload: dict, limit: int = 25) -> dict:
+    out = dict(payload or {})
+    replay_registry = swing_replay_build_variant_registry(
+        out,
+        patch_version=PATCH_VERSION,
+        limit=max(1, min(int(limit or 25), 25)),
+    )
+    out["p713_replay_variant_registry"] = {
+        "module": replay_registry.get("module"),
+        "module_version": replay_registry.get("module_version"),
+        "registry_entry_count": replay_registry.get("registry_entry_count"),
+        "capital_eligible_count": replay_registry.get("capital_eligible_count"),
+        "capital_eligible_strategies": replay_registry.get("capital_eligible_strategies"),
+        "capital_eligible_symbols": replay_registry.get("capital_eligible_symbols"),
+        "endpoint": "/diagnostics/replay_variant_registry?limit=25",
+        "membership_required_for_validation_promoted_live": True,
+    }
+    return out
+
+
 def _p711_validation_promoted_live_sleeve_contract(
     source: str = "",
     *,
@@ -22406,6 +22463,31 @@ def _p711_validation_promoted_live_sleeve_contract(
     )
     replay_required = bool(SWING_VALIDATION_PROMOTED_LIVE_REQUIRE_REPLAY_PASS)
     enabled = bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED)
+    replay_registry_match = {
+        "enabled": bool(enabled and replay_required),
+        "skipped": not bool(enabled and replay_required),
+        "reason": "promotion_disabled_or_replay_not_required",
+        "capital_eligible": False,
+        "blockers": [],
+    }
+    if enabled and replay_required:
+        try:
+            replay_registry = _p713_replay_variant_registry_snapshot(limit=25)
+            replay_registry_match = swing_replay_match_variant_registry(
+                replay_registry,
+                meta=meta,
+                candidate=candidate,
+            )
+            replay_passed = bool(replay_passed or replay_registry_match.get("capital_eligible"))
+        except Exception as exc:
+            replay_registry_match = {
+                "ok": False,
+                "enabled": True,
+                "capital_eligible": False,
+                "blockers": ["replay_registry_match_error"],
+                "error": str(exc),
+                "recommended_action": "keep_validation_pause_until_replay_registry_match_is_healthy",
+            }
     blockers = []
     if validation_paused:
         if not enabled:
@@ -22415,7 +22497,11 @@ def _p711_validation_promoted_live_sleeve_contract(
         elif not allowlist_match:
             blockers.append("candidate_not_in_promoted_live_allowlist")
         if replay_required and not replay_passed:
-            blockers.append("replay_promotion_evidence_missing")
+            registry_blockers = list(replay_registry_match.get("blockers") or [])
+            if registry_blockers:
+                blockers.append("replay_registry_variant_not_eligible")
+            else:
+                blockers.append("replay_promotion_evidence_missing")
     promoted_allowed = bool(validation_paused and enabled and allowlist_match and (replay_passed or not replay_required))
     entry_orders_permitted_now = bool(
         promoted_allowed
@@ -22447,6 +22533,7 @@ def _p711_validation_promoted_live_sleeve_contract(
         "allowlist_match": bool(allowlist_match),
         "replay_required": bool(replay_required),
         "replay_promotion_passed": bool(replay_passed),
+        "p713_replay_variant_registry_match": replay_registry_match,
         "blockers": blockers,
         "env": {
             "SWING_VALIDATION_PROMOTED_LIVE_ENABLED": bool(SWING_VALIDATION_PROMOTED_LIVE_ENABLED),
@@ -24611,6 +24698,7 @@ def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
         payload["cache_hit"] = True
         payload["snapshot_path"] = REPLAY_PROMOTION_GATE_SNAPSHOT_PATH
         payload["local_tool"] = "tools/run_replay_promotion_gate.ps1"
+        payload = _p713_attach_compact_replay_variant_registry(payload, limit=lim)
         return swing_perf_attach_contracts(
             payload,
             patch_version=PATCH_VERSION,
@@ -24639,6 +24727,7 @@ def _p704_replay_promotion_gate_snapshot(limit: int = 25) -> dict:
         "render_endpoint_does_not_run_replay": True,
         "local_replay_outputs_must_be_promoted_as_snapshot": True,
     }
+    payload = _p713_attach_compact_replay_variant_registry(payload, limit=lim)
     payload = swing_perf_attach_contracts(
         payload,
         patch_version=PATCH_VERSION,
@@ -71904,8 +71993,12 @@ def diagnostics_daily_goal_opportunity_map(request: Request, limit: int = 25):
 @app.get("/diagnostics/swing_performance_reports_module_status")
 def diagnostics_swing_performance_reports_module_status(request: Request):
     require_admin_if_configured(request)
+    payload = swing_perf_module_status(patch_version=PATCH_VERSION)
+    payload["p713_replay_registry_module_status"] = swing_replay_registry_module_status(
+        patch_version=PATCH_VERSION
+    )
     return JSONResponse(content=swing_perf_attach_contracts(
-        swing_perf_module_status(patch_version=PATCH_VERSION),
+        payload,
         patch_version=PATCH_VERSION,
         source_endpoint="/diagnostics/swing_performance_reports_module_status",
         report_kind="performance_reports_module_status",
@@ -72082,6 +72175,11 @@ def diagnostics_payoff_imbalance_repair_report(request: Request, limit: int = 25
 def diagnostics_replay_promotion_gate(request: Request, limit: int = 25):
     require_admin_if_configured(request)
     return JSONResponse(content=_p704_replay_promotion_gate_snapshot(limit=limit))
+
+@app.get("/diagnostics/replay_variant_registry")
+def diagnostics_replay_variant_registry(request: Request, limit: int = 25):
+    require_admin_if_configured(request)
+    return JSONResponse(content=_p713_replay_variant_registry_snapshot(limit=limit))
 
 @app.get("/diagnostics/breakout_dollar_risk_containment")
 def diagnostics_breakout_dollar_risk_containment(limit: int = 20):
