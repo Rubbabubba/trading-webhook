@@ -12,6 +12,7 @@ def test_positive_premium_pays_short_and_covers_basis_convergence():
     assert result["basis_capture_bps"] == 0
     assert result["profitable"] is True
     assert result["official_history"] is False
+    assert result["max_carry_curve_drawdown_bps"] >= 0
 
 
 def test_requires_aligned_history():
@@ -35,3 +36,11 @@ def test_annualization_uses_elapsed_time_not_observation_count():
     assert result["observation_density"] < 1
     expected = result["return_on_fully_collateralized_capital_pct"] * 8760 / 47
     assert abs(result["annualized_return_on_fully_collateralized_capital_pct"] - expected) < .001
+
+
+def test_rolling_holds_charge_cost_on_each_entry():
+    result = reconstruct_hourly_funding(_candles(101, 24 * 40), _candles(100, 24 * 40), total_cost_bps=1000)
+    seven_day = result["rolling_holding_periods"]["7"]
+    assert seven_day["sample_count"] > 0
+    assert seven_day["profitable_fraction"] == 0
+    assert seven_day["maximum_net_pnl_bps"] < 0
