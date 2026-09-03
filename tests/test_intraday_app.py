@@ -49,6 +49,17 @@ def test_worker_requires_worker_secret(monkeypatch, tmp_path):
     assert response.json()["live_submission"] is False
 
 
+def test_dashboard_views_share_auth(monkeypatch, tmp_path):
+    module = _load(monkeypatch, tmp_path)
+    client = TestClient(module.app)
+    for query, title in (("", "Intraday overview"), ("?view=detailed", "Operating overview"), ("?view=unknown", "Intraday overview")):
+        url = "/dashboard/intraday" + query
+        assert client.get(url).status_code == 401
+        result = client.get(url, headers={"x-admin-secret": "test-admin"})
+        assert result.status_code == 200
+        assert title in result.text
+
+
 def test_paper_submit_gate_defaults_closed(monkeypatch, tmp_path):
     monkeypatch.setenv("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED", "false")
     module = _load(monkeypatch, tmp_path)

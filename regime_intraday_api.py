@@ -35,10 +35,10 @@ def build_regime_intraday_router(
         return dict(get_scan())
 
     @router.get("/dashboard/intraday", response_class=HTMLResponse)
-    def dashboard_regime_intraday(request: Request):
+    def dashboard_regime_intraday(request: Request, view: str = "overview"):
         del request
         payload = get_dashboard_payload()
-        return html_response(render_intraday_dashboard(**payload))
+        return html_response(render_intraday_dashboard(**payload, view=view))
 
     @router.get("/diagnostics/regime_intraday_ledger")
     def diagnostics_regime_intraday_ledger(request: Request):

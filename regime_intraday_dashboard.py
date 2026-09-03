@@ -17,7 +17,15 @@ def _rows(items: list[tuple[str, Any]]) -> str:
     return "".join(f"<tr><th>{_esc(key)}</th><td>{_esc(value)}</td></tr>" for key, value in items)
 
 
-def render_intraday_dashboard(*, scan: dict, ledger: dict, readiness: dict, scanner: dict) -> str:
+def render_intraday_dashboard(*, scan: dict, ledger: dict, readiness: dict, scanner: dict, view: str = "overview") -> str:
+    if view != "detailed":
+        from intraday_overview import render_overview
+        return render_overview(scan=scan, ledger=ledger, readiness=readiness, scanner=scanner)
+    page = _render_detailed_dashboard(scan=scan, ledger=ledger, readiness=readiness, scanner=scanner)
+    return page.replace("<body>", "<body><nav aria-label='Dashboard views'><a href='/dashboard/intraday'>← Operating overview</a> · Detailed view</nav>").replace("</style>", "table{display:block;overflow-x:auto}section{margin-bottom:14px}a:focus-visible{outline:3px solid #63e6a6}</style>")
+
+
+def _render_detailed_dashboard(*, scan: dict, ledger: dict, readiness: dict, scanner: dict) -> str:
     config = dict(scan.get("config") or {})
     regime = dict(scan.get("regime") or {})
     summary = dict(ledger.get("summary") or {})
