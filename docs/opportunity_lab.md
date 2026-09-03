@@ -49,4 +49,11 @@ The initial research-only web service requires:
 - `OPPORTUNITY_ALPACA_API_KEY_ID`
 - `OPPORTUNITY_ALPACA_API_SECRET_KEY`
 
+The Coinbase funding/basis research adapter additionally uses a Coinbase Advanced Trade key with view-only permission:
+
+- `OPPORTUNITY_COINBASE_API_KEY_NAME`
+- `OPPORTUNITY_COINBASE_API_KEY_SECRET`
+
+The protected `/diagnostics/opportunity_lab/coinbase/status` route tests authentication and returns sanitized perpetual product economics. It deliberately omits account balances and cannot place or cancel orders. Never grant this research key trade, transfer, send, withdrawal, or management permissions.
+
 Do not configure `ADMIN_SECRET`, `WORKER_SECRET`, Regime ledger paths, or Regime live-trading controls on this service. The Alpaca values may initially reference the same underlying account credentials, but their environment-variable names are deliberately separate so the service never inherits trading authority accidentally. Before an execution adapter is introduced, use separately bounded credentials or a separate broker account and add independent Opportunity Lab execution and kill-switch variables.
