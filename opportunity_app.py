@@ -57,9 +57,9 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
 </style></head><body><main><h1>Opportunity Lab</h1><p class="muted">Research only · execution hard-disabled</p>
 <section class="card"><h2>Crypto research</h2><label>Symbol <select id="symbol"><option>BTC/USD</option><option>ETH/USD</option></select></label><label>Days <input id="days" type="number" min="90" max="3650" value="730"></label><label>Timeframe <select id="timeframe"><option>1Hour</option><option>4Hour</option><option>1Day</option></select></label><button id="run">Run research</button><span id="status" class="muted"></span></section>
 <section class="card"><h2>Funding/basis calculator</h2><p class="muted">Positive funding is paid to the short. Prices must be executable spot ask and derivative bid.</p><label>Spot ask <input id="spot" type="number" value="100000"></label><label>Derivative bid <input id="derivative" type="number" value="100500"></label><label>Funding bps / interval <input id="funding" type="number" step="0.01" value="1"></label><label>Hold hours <input id="hold" type="number" value="168"></label><label>Capital $ <input id="capital" type="number" value="1000"></label><button id="basis">Evaluate basis</button></section>
-<section class="card"><h2>CDE funding reconstruction</h2><p class="muted">Research proxy from aligned hourly CDE-future and Coinbase-spot candles. No orders or balances.</p><label>Market <select id="carryMarket"><option>BTC</option><option>ETH</option></select></label><label>Days <input id="carryDays" type="number" min="7" max="365" value="90"></label><label>Total round-trip cost (bps) <input id="carryCost" type="number" min="0" max="1000" step="0.1" value="72"></label><button id="carryRun">Reconstruct funding</button></section>
+<section class="card"><h2>CDE funding reconstruction</h2><p class="muted">Research proxy from aligned completed hourly CDE-future and Coinbase-spot candles. No orders or balances.</p><label>Market <select id="carryMarket"><option>BTC</option><option>ETH</option></select></label><label>Days <input id="carryDays" type="number" min="7" max="365" value="365"></label><label>Primary round-trip cost (bps) <input id="carryCost" type="number" min="0" max="1000" step="0.1" value="139"></label><button id="carryRun">Reconstruct funding</button></section>
 <section class="card"><h2>Result</h2><pre id="result">Choose a market and run the research suite.</pre></section>
-<script>const post=async(path,body)=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Running…';s.className='muted';try{const response=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};document.getElementById('run').onclick=()=>post('/diagnostics/opportunity_lab/backtest/crypto',{symbol:document.getElementById('symbol').value,days:Number(document.getElementById('days').value),timeframe:document.getElementById('timeframe').value});document.getElementById('basis').onclick=()=>post('/diagnostics/opportunity_lab/basis/evaluate',{spot_ask:Number(document.getElementById('spot').value),derivative_bid:Number(document.getElementById('derivative').value),funding_rate_bps:Number(document.getElementById('funding').value),holding_hours:Number(document.getElementById('hold').value),available_capital:Number(document.getElementById('capital').value),spot_ask_size:1000000000,derivative_bid_size:1000000000});document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/reconstruct-funding',{market:document.getElementById('carryMarket').value,days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value)});</script></main></body></html>""", headers={"Cache-Control": "no-store"})
+<script>const post=async(path,body)=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Running…';s.className='muted';try{const response=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};document.getElementById('run').onclick=()=>post('/diagnostics/opportunity_lab/backtest/crypto',{symbol:document.getElementById('symbol').value,days:Number(document.getElementById('days').value),timeframe:document.getElementById('timeframe').value});document.getElementById('basis').onclick=()=>post('/diagnostics/opportunity_lab/basis/evaluate',{spot_ask:Number(document.getElementById('spot').value),derivative_bid:Number(document.getElementById('derivative').value),funding_rate_bps:Number(document.getElementById('funding').value),holding_hours:Number(document.getElementById('hold').value),available_capital:Number(document.getElementById('capital').value),spot_ask_size:1000000000,derivative_bid_size:1000000000});document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/reconstruct-funding',{market:document.getElementById('carryMarket').value,days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value),cost_scenarios_bps:[139,149,260]});</script></main></body></html>""", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/diagnostics/opportunity_lab/backtest/crypto")
@@ -131,7 +131,12 @@ def coinbase_reconstruct_funding(body: dict) -> dict:
         raise HTTPException(status_code=400, detail="market must be BTC or ETH")
     days = max(7, min(365, int(body.get("days") or 90)))
     total_cost_bps = max(0.0, min(1000.0, float(body.get("total_cost_bps") or 72.0)))
-    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    raw_scenarios = body.get("cost_scenarios_bps") or [total_cost_bps]
+    try:
+        cost_scenarios = list(dict.fromkeys(max(0.0, min(1000.0, float(value))) for value in raw_scenarios))[:10]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="cost_scenarios_bps must be a list of numbers") from exc
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(seconds=1)
     start = end - timedelta(days=days)
     future_id, spot_id = mapping[market]
     futures, future_transport = fetch_product_candles(future_id, start=start, end=end)
@@ -140,6 +145,8 @@ def coinbase_reconstruct_funding(body: dict) -> dict:
         raise HTTPException(status_code=502, detail={"future_transport": future_transport, "spot_transport": spot_transport})
     if future_transport.get("truncated") or spot_transport.get("truncated"):
         raise HTTPException(status_code=502, detail={"error": "historical_data_truncated", "future_transport": future_transport, "spot_transport": spot_transport})
+    primary = reconstruct_hourly_funding(futures, spots, total_cost_bps=total_cost_bps)
+    scenario_results = [reconstruct_hourly_funding(futures, spots, total_cost_bps=cost) for cost in cost_scenarios]
     return {
         "ok": True,
         "market": market,
@@ -148,7 +155,15 @@ def coinbase_reconstruct_funding(body: dict) -> dict:
         "requested_days": days,
         "future_transport": future_transport,
         "spot_transport": spot_transport,
-        "reconstruction": reconstruct_hourly_funding(futures, spots, total_cost_bps=total_cost_bps),
+        "completed_candles_only": True,
+        "reconstruction": primary,
+        "cost_scenarios": [{
+            "total_cost_bps": result.get("total_cost_bps"),
+            "net_pnl_bps": result.get("net_pnl_bps"),
+            "return_on_fully_collateralized_capital_pct": result.get("return_on_fully_collateralized_capital_pct"),
+            "annualized_return_on_fully_collateralized_capital_pct": result.get("annualized_return_on_fully_collateralized_capital_pct"),
+            "profitable": result.get("profitable"),
+        } for result in scenario_results],
         "execution_enabled": False,
     }
 
