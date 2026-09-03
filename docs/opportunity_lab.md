@@ -4,7 +4,15 @@ Opportunity Lab is the isolated research, shadow, and eventual execution plane f
 
 ## Locked roadmap
 
-The canonical seven-candidate registry is `opportunity_lab/catalog.py`. A candidate is never removed because early results are poor; its status and evidence are updated instead. The initial active candidate is cost-aware, long/flat Alpaca crypto regime trading because it has the fewest external dependencies.
+The canonical seven-candidate registry is `opportunity_lab/catalog.py`. A candidate is never removed because early results are poor; its status and evidence are updated instead. Full-coverage hourly, four-hour, and daily validation rejected the initial long/flat crypto regime implementation out of sample. Crypto funding/basis is now the active candidate.
+
+## Funding/basis research
+
+`opportunity_lab/crypto_basis.py` evaluates a market-neutral long-spot/short-derivative position from executable ask/bid prices. It accounts for basis convergence, funding, fees on both legs, round-trip slippage, derivative collateral, available capital, and executable depth. Positive normalized funding means the short receives payment.
+
+The calculator reports profit per matched notional separately from annualized return on required capital. Annualization is a comparison metric, not a forecast. The protected dashboard and `/diagnostics/opportunity_lab/basis/evaluate` route accept manually sourced observations; `/diagnostics/opportunity_lab/basis/backtest` accepts normalized historical funding rates. Neither route connects to an exchange or submits orders.
+
+Historical venue adapters must normalize each venue's funding sign, interval, contract size, quote currency, fee tier, and product eligibility before their data can enter this model. Venue availability and account eligibility must be confirmed before execution work begins.
 
 ## Promotion lifecycle
 

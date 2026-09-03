@@ -21,7 +21,9 @@ def test_all_locked_candidates_have_unique_rank_and_key():
     assert len(CANDIDATES) == 7
     assert len({row.key for row in CANDIDATES}) == 7
     assert sorted(row.rank for row in CANDIDATES) == list(range(1, 8))
-    assert next(row for row in candidate_catalog() if row["key"] == "crypto_regime")["status"] == "active"
+    statuses = {row["key"]: row["status"] for row in candidate_catalog()}
+    assert statuses["crypto_basis"] == "active"
+    assert statuses["crypto_regime"] == "researched_rejected"
 
 
 def test_shared_opportunity_computes_net_edge():

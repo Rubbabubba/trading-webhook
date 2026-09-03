@@ -19,9 +19,9 @@ class Candidate:
 
 
 CANDIDATES = (
-    Candidate("crypto_basis", 1, "Crypto funding/basis arbitrage", "market_neutral", "backtest_shadow", "two_leg", ("crypto_spot", "crypto_derivatives"), "queued", "Best scalable neutral candidate; requires a derivatives venue."),
+    Candidate("crypto_basis", 1, "Crypto funding/basis arbitrage", "market_neutral", "backtest_shadow", "two_leg", ("crypto_spot", "crypto_derivatives"), "active", "Active market-neutral research candidate; requires a derivatives venue and matched two-leg accounting."),
     Candidate("sports_prediction_arb", 2, "Sports/prediction-market arbitrage scanner", "arbitrage", "monitor_alert", "multi_venue", ("odds_feed", "prediction_market"), "queued", "Good scanner fit; execution and settlement rules vary by venue."),
-    Candidate("crypto_regime", 3, "Crypto regime trading", "directional", "backtest_shadow", "single_venue", ("alpaca_crypto",), "active", "Fastest path using existing Alpaca transport and control patterns."),
+    Candidate("crypto_regime", 3, "Crypto regime trading", "directional", "backtest_shadow", "single_venue", ("alpaca_crypto",), "researched_rejected", "Rejected in current form after full-coverage hourly, four-hour, and daily validation failed out of sample."),
     Candidate("prediction_market_making", 4, "Prediction-market market making", "market_making", "backtest_shadow", "single_venue", ("prediction_market",), "queued", "API-friendly, but sensitive to liquidity and resolution risk."),
     Candidate("cross_exchange_crypto", 5, "Cross-exchange crypto arbitrage", "arbitrage", "monitor_only", "multi_venue", ("crypto_exchange_a", "crypto_exchange_b"), "queued", "Requires pre-funded inventory and careful transfer accounting."),
     Candidate("triangular_crypto", 6, "Triangular crypto arbitrage", "arbitrage", "monitor_only", "three_leg", ("crypto_exchange_orderbook",), "queued", "Must clear three-leg fees, depth, latency, and fill risk."),
