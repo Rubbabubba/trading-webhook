@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import random
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime
 from statistics import fmean, median, pstdev
 
 
 @dataclass(frozen=True)
 class CryptoRegimeConfig:
+    family: str = "dual_ma"
     fast_window: int = 24
     slow_window: int = 96
     volatility_window: int = 48
+    signal_window: int = 72
+    threshold: float = 0.02
     max_hourly_volatility: float = 0.025
     stop_loss_pct: float = 0.04
     trailing_stop_pct: float = 0.06
@@ -20,10 +24,16 @@ class CryptoRegimeConfig:
 
 
 PARAMETER_GRID = (
-    (12, 72, .03, .05),
-    (24, 96, .04, .06),
-    (24, 168, .04, .08),
-    (48, 168, .05, .08),
+    CryptoRegimeConfig("dual_ma", 12, 72, 48, 72, .02, stop_loss_pct=.03, trailing_stop_pct=.05),
+    CryptoRegimeConfig("dual_ma", 24, 96, 48, 96, .02, stop_loss_pct=.04, trailing_stop_pct=.06),
+    CryptoRegimeConfig("adaptive_trend", 24, 168, 48, 72, .02, stop_loss_pct=.04, trailing_stop_pct=.08),
+    CryptoRegimeConfig("adaptive_trend", 48, 240, 72, 96, .03, stop_loss_pct=.05, trailing_stop_pct=.09),
+    CryptoRegimeConfig("breakout", 24, 96, 48, 72, .01, stop_loss_pct=.035, trailing_stop_pct=.06),
+    CryptoRegimeConfig("breakout", 24, 168, 72, 168, .01, stop_loss_pct=.05, trailing_stop_pct=.09),
+    CryptoRegimeConfig("momentum", 24, 96, 48, 72, .03, stop_loss_pct=.04, trailing_stop_pct=.07),
+    CryptoRegimeConfig("momentum", 24, 168, 72, 168, .06, stop_loss_pct=.06, trailing_stop_pct=.10),
+    CryptoRegimeConfig("mean_reversion", 24, 96, 48, 72, .025, stop_loss_pct=.03, trailing_stop_pct=.08),
+    CryptoRegimeConfig("mean_reversion", 24, 168, 72, 168, .05, stop_loss_pct=.05, trailing_stop_pct=.10),
 )
 
 
@@ -37,24 +47,45 @@ def _drawdown(returns: list[float]) -> float:
     return worst
 
 
+def _signal(closes: list[float], index: int, cfg: CryptoRegimeConfig, volatility: float, *, holding: bool) -> bool:
+    fast = fmean(closes[index - cfg.fast_window + 1:index + 1])
+    slow_values = closes[index - cfg.slow_window + 1:index + 1]
+    slow = fmean(slow_values)
+    price = closes[index]
+    if volatility > cfg.max_hourly_volatility:
+        return False
+    if cfg.family == "dual_ma":
+        return fast > slow
+    if cfg.family == "adaptive_trend":
+        prior_slow = fmean(closes[index - cfg.slow_window:index])
+        return fast > slow and slow > prior_slow
+    if cfg.family == "breakout":
+        prior = closes[index - cfg.signal_window:index]
+        return price > slow if holding else price >= max(prior)
+    if cfg.family == "momentum":
+        momentum = price / closes[index - cfg.signal_window] - 1
+        return momentum > (0 if holding else cfg.threshold) and price > slow
+    if cfg.family == "mean_reversion":
+        return price < slow if holding else price <= slow * (1 - cfg.threshold)
+    raise ValueError(f"unsupported crypto strategy family: {cfg.family}")
+
+
 def replay_crypto_regime(bars: list[dict], config: CryptoRegimeConfig | None = None) -> dict:
     """Replay completed bars only; signals at bar i fill at bar i+1 open."""
     cfg = config or CryptoRegimeConfig()
     rows = sorted((dict(row) for row in bars), key=lambda row: row["ts_utc"])
     closes = [float(row["close"]) for row in rows]
-    minimum = max(cfg.slow_window, cfg.volatility_window) + 1
+    minimum = max(cfg.slow_window, cfg.volatility_window, cfg.signal_window) + 1
     position = None
     trades: list[dict] = []
     fee_rate = (cfg.maker_fee_bps + cfg.slippage_bps) / 10_000.0
     for index in range(minimum, len(rows) - 1):
-        fast = fmean(closes[index - cfg.fast_window + 1:index + 1])
-        slow = fmean(closes[index - cfg.slow_window + 1:index + 1])
         hourly_returns = [closes[j] / closes[j - 1] - 1 for j in range(index - cfg.volatility_window + 2, index + 1)]
         volatility = pstdev(hourly_returns) if len(hourly_returns) > 1 else 0.0
         next_row = rows[index + 1]
         fill = float(next_row["open"])
-        bullish = fast > slow and volatility <= cfg.max_hourly_volatility
-        if position is None and bullish:
+        active = _signal(closes, index, cfg, volatility, holding=position is not None)
+        if position is None and active:
             position = {"entry": fill * (1 + fee_rate), "entry_ts": next_row["ts_utc"], "peak": fill}
             continue
         if position is None:
@@ -64,7 +95,7 @@ def replay_crypto_regime(bars: list[dict], config: CryptoRegimeConfig | None = N
         trail = float(position["peak"]) * (1 - cfg.trailing_stop_pct)
         stop_price = max(stop, trail)
         stop_hit = float(next_row["low"]) <= stop_price
-        if stop_hit or not bullish:
+        if stop_hit or not active:
             raw_exit = min(fill, stop_price) if stop_hit else fill
             exit_price = raw_exit * (1 - fee_rate)
             net_return = exit_price / float(position["entry"]) - 1
@@ -80,18 +111,20 @@ def replay_crypto_regime(bars: list[dict], config: CryptoRegimeConfig | None = N
         "net_return": round(compounded - 1, 6), "annualized_return": round(compounded ** (1 / years) - 1, 6) if years and compounded > 0 else None,
         "win_rate": round(sum(value > 0 for value in values) / len(values), 4) if values else None,
         "average_trade": round(fmean(values), 6) if values else None, "max_drawdown": round(_drawdown(values), 6),
+        "exposure_hours": sum(max(1, int((datetime.fromisoformat(row["exit_ts"]) - datetime.fromisoformat(row["entry_ts"])).total_seconds() // 3600)) for row in trades),
         "trades": trades,
     }
 
 
 def _rank_candidates(bars: list[dict], *, maker_fee_bps: float = 15.0, slippage_bps: float = 3.0) -> list[dict]:
     candidates = []
-    for fast, slow, stop, trail in PARAMETER_GRID:
-        cfg = replace(CryptoRegimeConfig(), fast_window=fast, slow_window=slow, stop_loss_pct=stop, trailing_stop_pct=trail, maker_fee_bps=maker_fee_bps, slippage_bps=slippage_bps)
+    for template in PARAMETER_GRID:
+        cfg = replace(template, maker_fee_bps=maker_fee_bps, slippage_bps=slippage_bps)
         report = replay_crypto_regime(bars, cfg)
         score = float(report["net_return"]) - float(report["max_drawdown"])
-        candidates.append({"config": cfg, "score": round(score, 6), "report": report})
-    return sorted(candidates, key=lambda row: (row["score"], row["report"]["trade_count"]), reverse=True)
+        eligible = report["trade_count"] >= 8 and report["net_return"] > 0 and report["max_drawdown"] <= .35
+        candidates.append({"config": cfg, "eligible": eligible, "score": round(score, 6), "report": report})
+    return sorted(candidates, key=lambda row: (row["eligible"], row["score"], row["report"]["trade_count"]), reverse=True)
 
 
 def walk_forward_crypto(bars: list[dict], *, train_fraction: float = 0.7) -> dict:
@@ -100,13 +133,13 @@ def walk_forward_crypto(bars: list[dict], *, train_fraction: float = 0.7) -> dic
     cut = max(1, min(len(ordered) - 1, int(len(ordered) * train_fraction))) if len(ordered) > 1 else len(ordered)
     train, test = ordered[:cut], ordered[cut:]
     candidates = _rank_candidates(train)
-    selected = candidates[0] if candidates else {"config": CryptoRegimeConfig(), "report": {}}
-    test_report = replay_crypto_regime(test, selected["config"])
+    selected = next((row for row in candidates if row["eligible"]), None)
+    test_report = replay_crypto_regime(test, selected["config"]) if selected else None
     stability = []
     for row in candidates:
         result = replay_crypto_regime(test, row["config"])
-        stability.append({"config": asdict(row["config"]), "train_score": row["score"], "test_net_return": result["net_return"], "test_max_drawdown": result["max_drawdown"], "test_trade_count": result["trade_count"]})
-    return {"train_bars": len(train), "test_bars": len(test), "selected_config": asdict(selected["config"]), "train": selected["report"], "test": test_report, "out_of_sample_positive": bool(test_report.get("net_return", 0) > 0), "candidate_count": len(candidates), "parameter_stability": stability}
+        stability.append({"config": asdict(row["config"]), "train_eligible": row["eligible"], "train_score": row["score"], "test_net_return": result["net_return"], "test_max_drawdown": result["max_drawdown"], "test_trade_count": result["trade_count"]})
+    return {"ready": bool(selected), "reason": None if selected else "no_profitable_train_candidate_passed_drawdown_and_sample_gates", "train_bars": len(train), "test_bars": len(test), "selected_config": asdict(selected["config"]) if selected else None, "train": selected["report"] if selected else None, "test": test_report, "out_of_sample_positive": bool(test_report and test_report.get("net_return", 0) > 0), "candidate_count": len(candidates), "eligible_candidate_count": sum(row["eligible"] for row in candidates), "parameter_stability": stability}
 
 
 def buy_and_hold_benchmark(bars: list[dict], *, fee_bps: float = 15.0, slippage_bps: float = 3.0) -> dict:
@@ -133,11 +166,17 @@ def rolling_walk_forward_crypto(bars: list[dict], *, folds: int = 5) -> dict:
             continue
         train, test = ordered[:test_start], ordered[test_start:test_end]
         ranked = _rank_candidates(train)
-        selected = ranked[0]
+        selected = next((row for row in ranked if row["eligible"]), None)
+        if not selected:
+            results.append({"fold": number + 1, "train_bars": len(train), "test_bars": len(test), "test_start": test[0]["ts_utc"].isoformat(), "test_end": test[-1]["ts_utc"].isoformat(), "selected_config": None, "rejected": True, "reason": "no_eligible_train_candidate", "net_return": 0.0, "max_drawdown": 0.0, "trade_count": 0})
+            continue
         report = replay_crypto_regime(test, selected["config"])
-        results.append({"fold": number + 1, "train_bars": len(train), "test_bars": len(test), "test_start": test[0]["ts_utc"].isoformat(), "test_end": test[-1]["ts_utc"].isoformat(), "selected_config": asdict(selected["config"]), "net_return": report["net_return"], "max_drawdown": report["max_drawdown"], "trade_count": report["trade_count"]})
+        results.append({"fold": number + 1, "train_bars": len(train), "test_bars": len(test), "test_start": test[0]["ts_utc"].isoformat(), "test_end": test[-1]["ts_utc"].isoformat(), "selected_config": asdict(selected["config"]), "rejected": False, "net_return": report["net_return"], "max_drawdown": report["max_drawdown"], "trade_count": report["trade_count"]})
     positive = sum(float(row["net_return"]) > 0 for row in results)
-    return {"fold_count": len(results), "positive_fold_count": positive, "positive_fold_fraction": round(positive / len(results), 4) if results else None, "aggregate_net_return": round(sum(float(row["net_return"]) for row in results), 6), "folds": results}
+    equity = 1.0
+    for row in results:
+        equity *= 1 + float(row["net_return"])
+    return {"fold_count": len(results), "eligible_fold_count": sum(not row.get("rejected") for row in results), "positive_fold_count": positive, "positive_fold_fraction": round(positive / len(results), 4) if results else None, "aggregate_net_return": round(equity - 1, 6), "folds": results}
 
 
 def cost_sensitivity(bars: list[dict], config: CryptoRegimeConfig) -> list[dict]:
@@ -170,6 +209,7 @@ def monte_carlo_trades(trades: list[dict], *, simulations: int = 2000, seed: int
 
 def crypto_research_suite(bars: list[dict]) -> dict:
     holdout = walk_forward_crypto(bars)
-    selected = CryptoRegimeConfig(**holdout["selected_config"])
-    test = holdout["test"]
-    return {"bar_count": len(bars), "benchmark": buy_and_hold_benchmark(bars), "chronological_holdout": holdout, "rolling_walk_forward": rolling_walk_forward_crypto(bars), "cost_sensitivity_on_holdout": cost_sensitivity(sorted(bars, key=lambda row: row["ts_utc"])[holdout["train_bars"]:], selected), "monte_carlo_holdout_trades": monte_carlo_trades(test.get("trades") or []), "research_only": True, "execution_enabled": False}
+    selected = CryptoRegimeConfig(**holdout["selected_config"]) if holdout["selected_config"] else None
+    test = holdout.get("test") or {}
+    test_bars = sorted(bars, key=lambda row: row["ts_utc"])[holdout["train_bars"]:]
+    return {"bar_count": len(bars), "benchmark": buy_and_hold_benchmark(bars), "holdout_benchmark": buy_and_hold_benchmark(test_bars), "chronological_holdout": holdout, "rolling_walk_forward": rolling_walk_forward_crypto(bars), "cost_sensitivity_on_holdout": cost_sensitivity(test_bars, selected) if selected else [], "monte_carlo_holdout_trades": monte_carlo_trades(test.get("trades") or []), "research_only": True, "execution_enabled": False}

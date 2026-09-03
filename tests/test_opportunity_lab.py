@@ -42,8 +42,8 @@ def test_crypto_walk_forward_keeps_chronological_holdout():
     result = walk_forward_crypto(_bars())
     assert result["train_bars"] == 350
     assert result["test_bars"] == 150
-    assert result["candidate_count"] == 4
-    assert len(result["parameter_stability"]) == 4
+    assert result["candidate_count"] == 10
+    assert len(result["parameter_stability"]) == 10
 
 
 def test_full_crypto_research_suite_is_reproducible():
@@ -52,8 +52,18 @@ def test_full_crypto_research_suite_is_reproducible():
     assert first == second
     assert first["benchmark"]["net_return"] is not None
     assert first["rolling_walk_forward"]["fold_count"] == 5
-    assert len(first["cost_sensitivity_on_holdout"]) == 4
+    assert len(first["cost_sensitivity_on_holdout"]) in {0, 4}
     assert first["execution_enabled"] is False
+
+
+def test_negative_training_candidates_are_not_selected():
+    rows = _bars(600)
+    for index, row in enumerate(rows):
+        row["open"] = row["close"] = row["high"] = row["low"] = 100 - index * .05
+    result = walk_forward_crypto(rows)
+    assert result["ready"] is False
+    assert result["selected_config"] is None
+    assert result["test"] is None
 
 
 def test_monte_carlo_reports_empty_sample_without_inventing_evidence():

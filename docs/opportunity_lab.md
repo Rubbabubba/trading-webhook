@@ -23,6 +23,8 @@ The crypto command uses Opportunity Lab-specific Alpaca market-data environment 
 
 The research output includes a fee-adjusted buy-and-hold benchmark, a fixed chronological holdout, five expanding-window walk-forward folds, results for every neighboring parameter set, four fee/slippage stress scenarios, and a deterministic 2,000-run bootstrap of holdout trades. These are diagnostics rather than a live-readiness declaration. Empty trade samples are reported as missing evidence rather than converted into favorable statistics.
 
+The second research generation compares dual moving-average trend, slope-confirmed adaptive trend, channel breakout, volatility-filtered momentum, and long-only mean-reversion configurations. A configuration is ineligible unless its training result is positive, has at least eight closed trades, and keeps compounded drawdown at or below 35%. If every training candidate fails, the lab selects nothing and does not manufacture holdout or Monte Carlo evidence. The output also reports the buy-and-hold result over the exact holdout interval and strategy exposure hours.
+
 ## Service boundary
 
 Deploy the eventual API/dashboard and continuous worker separately from `intraday_app.py`. Use a distinct database schema, worker secret, administrator surface, credentials, risk budget, and emergency stop. Shared code should be limited to generic HTTP, authentication, and reporting utilities.
