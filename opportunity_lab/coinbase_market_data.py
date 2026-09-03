@@ -25,31 +25,58 @@ def credentials_configured() -> bool:
 
 
 def list_perpetual_products() -> tuple[list[dict], dict]:
-    """Return sanitized perpetual product economics without account or order data."""
-    params = {"product_type": "FUTURE", "contract_expiry_type": "PERPETUAL", "limit": "100"}
-    payload, transport = _get("/api/v3/brokerage/products", params)
-    if transport.get("error"):
-        return [], transport
+    """Return sanitized U.S. CFM perpetual products, excluding INTX catalog rows."""
+    raw_products: list[dict] = []
+    page_count = 0
+    for offset in range(0, 1000, 100):
+        params = {"product_type": "FUTURE", "contract_expiry_type": "PERPETUAL", "limit": "100", "offset": str(offset)}
+        payload, transport = _get("/api/v3/brokerage/products", params)
+        if transport.get("error"):
+            return [], {**transport, "pages": page_count}
+        page = payload.get("products") or []
+        raw_products.extend(page)
+        page_count += 1
+        pagination = payload.get("pagination") or {}
+        if len(page) < 100 or not pagination.get("has_next"):
+            break
     rows = []
-    for product in payload.get("products") or []:
+    excluded_intx = 0
+    for product in raw_products:
         details = product.get("future_product_details") or {}
+        product_id = str(product.get("product_id") or "")
+        venue = str(details.get("venue") or product.get("product_venue") or "")
+        if product_id.endswith("-INTX") or venue.lower() in {"neptune", "intx"}:
+            excluded_intx += 1
+            continue
         perpetual = details.get("perpetual_details") or product.get("perpetual_details") or {}
         rows.append({
-            "product_id": product.get("product_id"),
+            "product_id": product_id,
             "display_name": product.get("display_name") or product.get("product_id"),
             "price": _number(product.get("price")),
-            "best_bid": _number(product.get("price")),
-            "best_ask": _number(product.get("price")),
+            "best_bid": _number(product.get("best_bid_price")),
+            "best_ask": _number(product.get("best_ask_price")),
             "index_price": _number(details.get("index_price") or product.get("index_price")),
             "funding_rate": _number(perpetual.get("funding_rate") or details.get("funding_rate") or product.get("funding_rate")),
             "funding_time": perpetual.get("funding_time") or details.get("funding_time") or product.get("funding_time"),
             "funding_interval": details.get("funding_interval") or product.get("funding_interval"),
             "contract_size": _number(details.get("contract_size")),
             "contract_expiry_type": details.get("contract_expiry_type") or product.get("contract_expiry_type"),
-            "venue": details.get("venue") or product.get("product_venue"),
+            "venue": venue or None,
             "trading_disabled": bool(product.get("trading_disabled")),
         })
-    return rows, {**transport, "product_count": len(rows)}
+    return rows, {**transport, "pages": page_count, "catalog_product_count": len(raw_products), "excluded_intx_count": excluded_intx, "product_count": len(rows)}
+
+
+def check_cfm_read_access() -> dict:
+    """Check CFM entitlement while discarding all returned financial values."""
+    _, transport = _get("/api/v3/brokerage/cfm/balance_summary")
+    return {
+        "authenticated": bool(transport.get("authenticated")),
+        "cfm_read_access": not bool(transport.get("error")),
+        "status_code": transport.get("status_code"),
+        "error": transport.get("error"),
+        "account_data_returned": False,
+    }
 
 
 def _credentials() -> tuple[str, str]:

@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from operator_auth import operator_authorized
 from opportunity_lab.catalog import candidate_catalog
-from opportunity_lab.coinbase_market_data import credentials_configured, list_perpetual_products
+from opportunity_lab.coinbase_market_data import check_cfm_read_access, credentials_configured, list_perpetual_products
 from opportunity_lab.crypto_basis import BasisInputs, backtest_funding, evaluate_basis
 from opportunity_lab.crypto_market_data import fetch_crypto_bars
 from opportunity_lab.crypto_regime import crypto_research_suite
@@ -114,6 +114,7 @@ def coinbase_status() -> dict:
         "authenticated": bool(transport.get("authenticated")),
         "perpetual_product_count": len(products),
         "products": products,
+        "cfm_entitlement": check_cfm_read_access(),
         "transport": transport,
         "account_balances_returned": False,
         "execution_enabled": False,
