@@ -11,6 +11,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import jwt
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 
 HOST = "api.coinbase.com"
@@ -51,8 +53,25 @@ def list_perpetual_products() -> tuple[list[dict], dict]:
 
 def _credentials() -> tuple[str, str]:
     name = (os.getenv("OPPORTUNITY_COINBASE_API_KEY_NAME") or "").strip()
-    private_key = (os.getenv("OPPORTUNITY_COINBASE_API_KEY_SECRET") or "").strip().replace("\\n", "\n")
+    private_key = _normalize_private_key(os.getenv("OPPORTUNITY_COINBASE_API_KEY_SECRET") or "")
     return name, private_key
+
+
+def _normalize_private_key(raw: str) -> str:
+    """Accept Coinbase's copied PEM, JSON key download, or quoted PEM value."""
+    value = str(raw or "").strip()
+    try:
+        decoded = json.loads(value)
+        if isinstance(decoded, dict):
+            value = str(decoded.get("privateKey") or decoded.get("private_key") or decoded.get("secret") or "").strip()
+        elif isinstance(decoded, str):
+            value = decoded.strip()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    value = value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
+    if value.startswith('"') and value.endswith('"'):
+        value = value[1:-1].strip()
+    return value.strip()
 
 
 def _token(method: str, path: str) -> str:
@@ -67,7 +86,16 @@ def _token(method: str, path: str) -> str:
         "exp": now + 120,
         "uri": f"{method.upper()} {HOST}{path}",
     }
-    algorithm = "EdDSA" if "BEGIN PRIVATE KEY" in private_key else "ES256"
+    try:
+        loaded_key = load_pem_private_key(private_key.encode("utf-8"), password=None)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("opportunity_coinbase_private_key_format_invalid") from exc
+    if isinstance(loaded_key, ed25519.Ed25519PrivateKey):
+        algorithm = "EdDSA"
+    elif isinstance(loaded_key, ec.EllipticCurvePrivateKey):
+        algorithm = "ES256"
+    else:
+        raise ValueError("opportunity_coinbase_private_key_type_unsupported")
     return jwt.encode(payload, private_key, algorithm=algorithm, headers={"kid": key_name, "nonce": secrets.token_hex()})
 
 
