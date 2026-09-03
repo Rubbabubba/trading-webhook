@@ -7,7 +7,7 @@ def test_email_contains_actionable_risk_and_never_claims_submission():
     message = build_signal_email(signal, plan)
     assert "$42.00" in message["text"]
     assert "BUY LONG" in message["text"]
-    assert "No order has been sent" in message["text"]
+    assert "not an order or fill confirmation" in message["text"]
 
 
 def test_missing_email_configuration_is_safe_noop():
@@ -19,4 +19,4 @@ def test_exit_email_is_actionable_and_does_not_claim_a_close():
     message = build_exit_email("sig-1", record)
     assert "take_profit" in message["subject"]
     assert "$21.00" in message["text"]
-    assert "No close order has been sent" in message["text"]
+    assert "does not confirm a submission or fill" in message["text"]

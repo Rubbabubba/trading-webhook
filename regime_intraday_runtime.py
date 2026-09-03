@@ -313,6 +313,24 @@ class RegimeIntradayRuntime:
                 if close_id:
                     record.setdefault("close_order", {}).update({"status": status, "broker": broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
                     record["status"] = "filled_closed" if status == "filled" else "close_submitted"
+                    if status == "partially_filled":
+                        record["status"] = "close_requires_attention"
+                    if status in {"rejected", "canceled", "expired"}:
+                        # Never replace a partially filled or unverified close with a full spread.
+                        if str(broker.get("filled_qty")) not in {"0", "0.0"} or int(record.get("close_attempt", 1)) >= 3:
+                            record["status"] = "close_requires_attention"
+                        else:
+                            record.setdefault("close_history", []).append(record.pop("close_order"))
+                            record["close_retry_required"] = True
+                            record["status"] = "close_retry_pending"
+                        refreshed.append({"signal_id": signal_id, "status": record["status"]})
+                        continue
+                    if status in {"new", "accepted", "pending_new"}:
+                        submitted = datetime.fromisoformat(str(broker.get("submitted_at") or record["close_order"].get("requested_at") or "").replace("Z", "+00:00"))
+                        if (datetime.now(timezone.utc) - submitted).total_seconds() >= 120:
+                            cancel_order(key, secret, close_id, paper=True)
+                            record["status"] = "close_cancel_requested"
+                            # Wait for broker-confirmed cancellation before repricing next cycle.
                     if status == "filled":
                         record["closed_at"] = broker.get("filled_at") or datetime.now(timezone.utc).isoformat()
                         entry_fill = abs(float(dict(record.get("broker") or {}).get("filled_avg_price") or dict(record.get("plan") or {}).get("limit_debit") or 0))
@@ -346,16 +364,28 @@ class RegimeIntradayRuntime:
                     current = now_ny()
                     decision = spread_exit_decision(plan, valuation, minutes_to_close=max(0, 960 - current.hour * 60 - current.minute),
                                                     take_profit_fraction=_float("REGIME_INTRADAY_TAKE_PROFIT_FRACTION", .5), stop_loss_fraction=_float("REGIME_INTRADAY_STOP_LOSS_FRACTION", .5))
+                    if record.get("close_retry_required"):
+                        decision = {"exit": True, "reason": "close_retry"}
                     record.update({"valuation": valuation, "exit_decision": decision})
+                    if valuation.get("status") != "valued" and (current.hour * 60 + current.minute >= 945 or record.get("close_retry_required")):
+                        record["status"] = "close_requires_attention"
+                        record["exit_decision"] = {"exit": True, "reason": "exit_quote_unavailable"}
+                        refreshed.append({"signal_id": signal_id, "status": "close_requires_attention"})
+                        continue
                     if decision.get("exit") and signal_id not in alerted:
-                        result = send_exit_email(api_key=_env("RESEND_API_KEY") if _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True) else "", to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"),
-                                                 from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"), signal_id=signal_id, record=record)
+                        try:
+                            result = send_exit_email(api_key=_env("RESEND_API_KEY") if _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True) else "", to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"),
+                                                     from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"), signal_id=signal_id, record=record)
+                        except Exception:
+                            result = {"sent": False}
+                            ledger.setdefault("events", []).append({"event": "paper_exit_email_failed", "signal_id": signal_id, "ts_utc": datetime.now(timezone.utc).isoformat()})
                         if result.get("sent"):
                             ledger.setdefault("events", []).append({"event": "paper_exit_email_sent", "signal_id": signal_id, "message_id": result.get("message_id"), "ts_utc": datetime.now(timezone.utc).isoformat()})
                     if decision.get("exit") and _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True) and not record.get("close_order"):
                         credit = float(valuation.get("liquidation_credit") or 0)
                         if credit > 0:
-                            close_client_id = paper_client_order_id(f"close:{signal_id}")
+                            attempt = len(record.get("close_history") or []) + 1
+                            close_client_id = paper_client_order_id(f"close:{signal_id}" if attempt == 1 else f"close:{signal_id}:retry:{attempt}")
                             try:
                                 close = submit_mleg_close_order(key, secret, plan, credit, paper=True, live_enabled=False, client_order_id=close_client_id)
                             except Exception as close_error:
@@ -364,6 +394,8 @@ class RegimeIntradayRuntime:
                                     raise close_error
                                 close = {"submitted": True, "recovered_after_transport_error": True, "paper": True, "order_id": recovered.get("id"), "client_order_id": close_client_id, "status": recovered.get("status"), "order_class": recovered.get("order_class"), "action": "close"}
                             record["close_order"] = {**close, "reason": decision.get("reason"), "requested_at": datetime.now(timezone.utc).isoformat()}
+                            record["close_attempt"] = attempt
+                            record["close_retry_required"] = False
                             record["estimated_realized_dollars"] = round((credit - float(plan.get("limit_debit") or 0)) * 100, 2)
                             record["status"] = "close_submitted"
                             ledger.setdefault("events", []).append({"event": "paper_auto_close_recorded", "signal_id": signal_id, "order_id": close.get("order_id"), "reason": decision.get("reason"), "ts_utc": datetime.now(timezone.utc).isoformat()})

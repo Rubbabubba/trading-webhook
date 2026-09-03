@@ -26,7 +26,7 @@ def build_signal_email(signal: dict[str, Any], plan: dict[str, Any]) -> dict[str
     legs = list(plan.get("legs") or [])
     leg_text = "\n".join(f"- {str(leg.get('side') or '').upper()} {leg.get('symbol')}" for leg in legs)
     signal_id = str(signal.get("signal_id") or "")
-    subject = f"ACTION NEEDED: {signal.get('symbol')} {signal.get('strategy')} paper signal"
+    subject = f"PAPER SIGNAL: {signal.get('symbol')} {signal.get('strategy')}"
     text = (
         "A valid paper-trading candidate passed the signal and contract-selection gates.\n\n"
         f"Signal ID: {signal_id}\n"
@@ -41,7 +41,7 @@ def build_signal_email(signal: dict[str, Any], plan: dict[str, Any]) -> dict[str
         f"Selection source: {dict(plan.get('quote_basis') or {}).get('selection_source')}\n"
         f"Approval expires: {signal.get('approval_expires_at')}\n"
         f"Legs:\n{leg_text}\n\n"
-        "No order has been sent. Return to the Codex trading task to review and explicitly authorize the paper order."
+        "This is a candidate notification, not an order or fill confirmation. Paper automation may submit it if enabled and risk checks pass. Check the intraday dashboard and Alpaca paper orders for execution status."
     )
     return {"subject": subject, "text": text}
 
@@ -63,7 +63,7 @@ def build_exit_email(signal_id: str, record: dict[str, Any]) -> dict[str, str]:
         f"Entry debit: ${float(plan.get('limit_debit') or 0):.2f}\n"
         f"Conservative liquidation credit: ${float(valuation.get('liquidation_credit') or 0):.2f}\n"
         f"Estimated unrealized P/L: ${float(valuation.get('unrealized_dollars') or 0):.2f}\n\n"
-        "No close order has been sent. Return to the Codex trading task to review and explicitly authorize the paper close."
+        "Paper automation may attempt a closing order if enabled. This email does not confirm a submission or fill. Verify the closing order and remaining positions in Alpaca paper; an unfilled or rejected exit needs attention."
     )
     return {"subject": subject, "text": text}
 
