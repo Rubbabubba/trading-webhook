@@ -99,6 +99,7 @@ def test_opportunity_dashboard_is_protected_and_execution_closed(monkeypatch):
     assert response.status_code == 200
     assert "execution hard-disabled" in response.text
     assert "/diagnostics/opportunity_lab/backtest/crypto" in response.text
+    assert "/diagnostics/opportunity_lab/coinbase/reconstruct-funding" in response.text
 
 
 def test_crypto_endpoint_rejects_truncated_history(monkeypatch):
