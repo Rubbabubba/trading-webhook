@@ -314,10 +314,47 @@ class RegimeIntradayRuntime:
                 result = {"submitted": True, "recovered_after_transport_error": True, "paper": True, "order_id": recovered.get("id"), "client_order_id": client_order_id, "status": recovered.get("status"), "order_class": recovered.get("order_class")}
             except Exception:
                 raise HTTPException(status_code=502, detail=f"paper order rejected or unrecoverable: {str(exc)[:300]}") from exc
-        record_broker_order(ledger, signal_id, {**result, "plan": dict(durable.get("plan") or {})})
+        signal = dict(durable.get("signal") or {})
+        record_broker_order(ledger, signal_id, {**result, "plan": dict(durable.get("plan") or {}), "signal": signal,
+                                                "mechanical_test": bool(signal.get("mechanical_test"))})
         ledger["pending_candidates"][signal_id]["status"] = "paper_order_submitted"
         save_ledger(self.ledger_path, ledger)
         return {"ok": True, "mode": "alpaca_paper_roundtrip", "risk_decision": decision, "result": result, "signal_id": signal_id, "live_submission": False}
+
+    def paper_mechanical_drill(self, body: dict) -> dict:
+        self._worker_authorize(body)
+        if not _bool("REGIME_INTRADAY_PAPER_DRILL_ENABLED"):
+            raise HTTPException(status_code=409, detail="paper mechanical drill gate is closed")
+        if str(body.get("confirm") or "") != "SUBMIT_MECHANICAL_PAPER_ROUNDTRIP":
+            raise HTTPException(status_code=409, detail="explicit mechanical-drill confirmation is required")
+        if not is_regular_market_time() or now_ny().time() >= parse_hhmm(_env("REGIME_INTRADAY_LATEST_ENTRY_TIME_NY", "15:30")):
+            raise HTTPException(status_code=409, detail="paper mechanical drill requires the regular entry window")
+        feature = dict(dict(self.last_scan.get("features") or {}).get("SPY") or {})
+        if not feature.get("ready") or feature.get("freshness") != "fresh" or float(feature.get("price") or 0) <= 0:
+            raise HTTPException(status_code=409, detail="fresh ready SPY market data is required")
+        key, secret = self._paper_credentials()
+        cfg = self.config()
+        intent = {"underlying": "SPY", "underlying_price": float(feature["price"]), "option_type": "call",
+                  "position": "defined_risk_debit", "min_dte": cfg.option_min_dte, "max_dte": cfg.option_max_dte,
+                  "target_delta_range": [cfg.option_target_delta_low, cfg.option_target_delta_high],
+                  "max_bid_ask_spread_pct": cfg.option_max_spread_pct, "limit_orders_only": True, "live_submission": False}
+        chain = fetch_option_chain(key, secret, "SPY", feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"),
+                                   timeout=max(5, _int("REGIME_INTRADAY_OPTION_CHAIN_TIMEOUT_SEC", 20)), intent=intent)
+        plan = select_debit_spread(chain, intent, max_loss_dollars=min(100, _float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100)),
+                                   width=_float("REGIME_INTRADAY_SPREAD_WIDTH", 1))
+        if plan.get("status") != "selected":
+            raise HTTPException(status_code=409, detail={"message": "no eligible mechanical-drill spread", "selection": plan})
+        now = datetime.now(timezone.utc)
+        signal_id = f"mechanical-drill-{now.strftime('%Y%m%d-%H%M%S')}"
+        signal = {"signal_id": signal_id, "symbol": "SPY", "strategy": "mechanical_paper_roundtrip",
+                  "underlying_side": "buy", "entry_price": feature["price"], "stop_price": 0,
+                  "target_price": float(feature["price"]) * 10, "mechanical_test": True}
+        ledger = load_ledger(self.ledger_path)
+        record_pending_candidate(ledger, signal, plan, ts_utc=now.isoformat(), expires_at=(now + timedelta(minutes=5)).isoformat())
+        save_ledger(self.ledger_path, ledger)
+        result = self.paper_roundtrip({"worker_secret": body.get("worker_secret"), "signal_id": signal_id})
+        return {**result, "mode": "alpaca_paper_mechanical_drill", "mechanical_test": True,
+                "automatic_close_after_fill": True}
 
     def paper_reconcile(self, body: dict) -> dict:
         self._worker_authorize(body)
@@ -369,6 +406,7 @@ class RegimeIntradayRuntime:
                                 "exit_reason": dict(record.get("close_order") or {}).get("reason"),
                                 "realized_dollars": actual_realized,
                                 "status": "filled_closed",
+                                "mechanical_test": bool(record.get("mechanical_test")),
                             })
                             ledger["closed"] = closed[-500:]
                             ledger.setdefault("events", []).append({"event": "paper_roundtrip_closed", "signal_id": signal_id, "order_id": close_id, "realized_dollars": actual_realized, "ts_utc": record["closed_at"]})
@@ -417,6 +455,8 @@ class RegimeIntradayRuntime:
                     current = now_ny()
                     decision = spread_exit_decision(plan, valuation, minutes_to_close=max(0, 960 - current.hour * 60 - current.minute),
                                                     take_profit_fraction=_float("REGIME_INTRADAY_TAKE_PROFIT_FRACTION", .5), stop_loss_fraction=_float("REGIME_INTRADAY_STOP_LOSS_FRACTION", .5))
+                    if record.get("mechanical_test") and valuation.get("status") == "valued":
+                        decision = {"exit": True, "reason": "mechanical_roundtrip_drill"}
                     if record.get("close_retry_required"):
                         decision = {"exit": True, "reason": "close_retry"}
                     record.update({"valuation": valuation, "exit_decision": decision})

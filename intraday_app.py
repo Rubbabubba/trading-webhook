@@ -52,7 +52,8 @@ app.include_router(build_regime_intraday_router(
     get_scan=lambda: dict(runtime.last_scan), refresh_scan=runtime.scan, get_ledger_payload=runtime.ledger_payload,
     get_readiness_payload=runtime.readiness_payload, get_dashboard_payload=runtime.dashboard_payload,
     html_response=_html, replay=runtime.replay, scan_worker=runtime.scan_worker,
-    paper_roundtrip=runtime.paper_roundtrip, paper_reconcile=runtime.paper_reconcile, paper_close=runtime.paper_close,
+    paper_roundtrip=runtime.paper_roundtrip, paper_mechanical_drill=runtime.paper_mechanical_drill,
+    paper_reconcile=runtime.paper_reconcile, paper_close=runtime.paper_close,
     after_hours_replay=runtime.after_hours_replay,
 ))
 

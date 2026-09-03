@@ -20,7 +20,7 @@ def performance_views(ledger: dict) -> dict:
     shadow = [r for r in ledger.get("closed", []) if not r.get("paper_signal_id") and r.get("status") != "filled_closed"]
     current = [r for r in shadow if r.get("accounting_method") == SHADOW_ACCOUNTING]
     legacy = [r for r in shadow if r.get("accounting_method") != SHADOW_ACCOUNTING]
-    orders = list(dict(ledger.get("orders") or {}).values())
+    orders = [row for row in dict(ledger.get("orders") or {}).values() if not row.get("mechanical_test")]
     closed = [r for r in orders if r.get("status") == "filled_closed"]
     pnl = []
     for row in closed:
@@ -110,7 +110,7 @@ def paper_submission_decision(
     max_daily_loss_dollars: float = 200.0,
 ) -> dict[str, Any]:
     orders = dict(ledger.get("orders") or {})
-    closed = [row for row in ledger.get("closed", []) if row.get("paper_signal_id") or row.get("status") == "filled_closed"]
+    closed = [row for row in ledger.get("closed", []) if (row.get("paper_signal_id") or row.get("status") == "filled_closed") and not row.get("mechanical_test")]
     if not signal_id:
         return {"allowed": False, "reason": "missing_signal_id"}
     if signal_id in orders:

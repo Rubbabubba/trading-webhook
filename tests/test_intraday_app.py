@@ -66,3 +66,10 @@ def test_paper_submit_gate_defaults_closed(monkeypatch, tmp_path):
     response = TestClient(module.app).post("/worker/regime_intraday_paper_roundtrip", json={"worker_secret": "test-worker", "signal_id": "x"})
     assert response.status_code == 409
     assert "gate is closed" in response.text
+
+
+def test_mechanical_drill_gate_defaults_closed(monkeypatch, tmp_path):
+    module = _load(monkeypatch, tmp_path)
+    response = TestClient(module.app).post("/worker/regime_intraday_paper_mechanical_drill", json={"worker_secret": "test-worker", "confirm": "SUBMIT_MECHANICAL_PAPER_ROUNDTRIP"})
+    assert response.status_code == 409
+    assert "drill gate is closed" in response.text

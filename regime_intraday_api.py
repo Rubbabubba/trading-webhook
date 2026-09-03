@@ -21,6 +21,7 @@ def build_regime_intraday_router(
     replay: Callable[[dict], dict],
     scan_worker: Callable[[dict], dict],
     paper_roundtrip: Callable[[dict], dict],
+    paper_mechanical_drill: Callable[[dict], dict],
     paper_reconcile: Callable[[dict], dict],
     paper_close: Callable[[dict], dict],
     after_hours_replay: Callable[[dict], dict],
@@ -62,6 +63,10 @@ def build_regime_intraday_router(
     @router.post("/worker/regime_intraday_paper_roundtrip")
     def worker_regime_intraday_paper_roundtrip(body: dict = Body(default={})):
         return paper_roundtrip(body)
+
+    @router.post("/worker/regime_intraday_paper_mechanical_drill")
+    def worker_regime_intraday_paper_mechanical_drill(body: dict = Body(default={})):
+        return paper_mechanical_drill(body)
 
     @router.post("/worker/regime_intraday_paper_reconcile")
     def worker_regime_intraday_paper_reconcile(body: dict = Body(default={})):

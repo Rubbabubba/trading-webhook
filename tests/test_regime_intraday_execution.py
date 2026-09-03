@@ -165,6 +165,35 @@ def test_scan_worker_auto_submits_one_selected_paper_plan(monkeypatch, tmp_path)
     assert result["paper_auto_submit_enabled"] is True
 
 
+def test_mechanical_drill_tags_candidate_and_uses_normal_roundtrip(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKER_SECRET", "worker")
+    monkeypatch.setenv("REGIME_INTRADAY_PAPER_DRILL_ENABLED", "true")
+    monkeypatch.setenv("REGIME_INTRADAY_LEDGER_PATH", str(tmp_path / "ledger.json"))
+    monkeypatch.setattr(runtime_module, "is_regular_market_time", lambda: True)
+    monkeypatch.setattr(runtime_module, "now_ny", lambda: datetime(2026, 9, 3, 10, 1, tzinfo=ZoneInfo("America/New_York")))
+    monkeypatch.setattr(runtime_module, "fetch_option_chain", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(runtime_module, "select_debit_spread", lambda *_args, **_kwargs: {"status": "selected", "order_class": "mleg", "quantity": 1, "limit_debit": .50, "max_loss_dollars": 50, "legs": []})
+    runtime = RegimeIntradayRuntime()
+    runtime.last_scan = {"features": {"SPY": {"ready": True, "freshness": "fresh", "price": 600}}}
+    captured = {}
+    monkeypatch.setattr(runtime, "paper_roundtrip", lambda body: captured.update(body) or {"ok": True, "signal_id": body["signal_id"]})
+    result = runtime.paper_mechanical_drill({"worker_secret": "worker", "confirm": "SUBMIT_MECHANICAL_PAPER_ROUNDTRIP"})
+    saved = load_ledger(runtime.ledger_path)
+    candidate = saved["pending_candidates"][result["signal_id"]]
+    assert candidate["signal"]["mechanical_test"] is True
+    assert captured["signal_id"] == result["signal_id"]
+    assert result["automatic_close_after_fill"] is True
+
+
+def test_mechanical_orders_are_excluded_from_performance_and_risk():
+    from regime_intraday_ledger import performance_views
+    ledger = empty_ledger()
+    ledger["orders"] = {"drill": {"mechanical_test": True, "status": "filled_closed", "session": "2026-09-03"}}
+    ledger["closed"] = [{"paper_signal_id": "drill", "mechanical_test": True, "status": "filled_closed", "session": "2026-09-03", "realized_dollars": -50}]
+    assert performance_views(ledger)["broker_paper"]["recorded_order_count"] == 0
+    assert paper_submission_decision(ledger, "real-signal", session="2026-09-03", max_consecutive_losses=1)["allowed"] is True
+
+
 def test_reconcile_auto_closes_and_records_filled_paper_roundtrip(monkeypatch, tmp_path):
     ledger_path = tmp_path / "ledger.json"
     monkeypatch.setenv("WORKER_SECRET", "worker")
