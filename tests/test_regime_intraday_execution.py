@@ -212,7 +212,7 @@ def test_paper_submit_recovers_order_after_transport_timeout(monkeypatch, tmp_pa
         {"signal_id": "sig-timeout", "symbol": "SPY"},
         {"status": "selected", "order_class": "mleg", "quantity": 1, "limit_debit": 0.40, "max_loss_dollars": 40, "legs": []},
         ts_utc="2026-09-03T15:00:00+00:00",
-        expires_at="2026-09-03T15:10:00+00:00",
+        expires_at="2099-09-03T15:10:00+00:00",
     )
     save_ledger(str(ledger_path), ledger)
     monkeypatch.setattr(runtime_module, "now_ny", lambda: datetime(2026, 9, 3, 10, 1, tzinfo=ZoneInfo("America/New_York")))

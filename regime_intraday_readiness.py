@@ -26,7 +26,7 @@ def readiness_snapshot(*, config: dict[str, Any], ledger: dict[str, Any], last_s
     if age is None or age > float(config.get("max_scan_age_sec") or 600):
         paper_blockers.append("recent_scan_missing")
     entry_risk = paper_submission_decision(ledger, "readiness:new-entry", session=now.astimezone(ZoneInfo("America/New_York")).date().isoformat(),
-                                          max_trades_per_day=int(config.get("max_trades_per_day", 2)),
+                                          max_trades_per_day=int(config.get("max_trades_per_day", 0)),
                                           max_consecutive_losses=int(config.get("max_consecutive_losses", 2)),
                                           max_daily_loss_dollars=float(config.get("max_daily_loss_dollars", 200)))
     if not entry_risk["allowed"]:

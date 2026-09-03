@@ -23,9 +23,17 @@ def test_readiness_includes_daily_attempt_limit():
     session = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
     ledger = empty_ledger()
     ledger["orders"] = {key: {"session": session, "status": "canceled"} for key in ("a", "b")}
-    result = readiness_snapshot(config={"paper_submit_enabled": True}, ledger=ledger, last_scan={"ts_utc": now.isoformat()}, paper_credentials_present=True)
+    result = readiness_snapshot(config={"paper_submit_enabled": True, "max_trades_per_day": 2}, ledger=ledger, last_scan={"ts_utc": now.isoformat()}, paper_credentials_present=True)
     assert not result["paper_ready"]
     assert "daily_trade_limit" in result["paper_blockers"]
+
+
+def test_zero_attempt_limit_is_unlimited_but_active_order_still_blocks():
+    ledger = empty_ledger()
+    ledger["orders"] = {str(i): {"session": "2026-09-03", "status": "canceled"} for i in range(20)}
+    assert paper_submission_decision(ledger, "new", session="2026-09-03", max_trades_per_day=0)["allowed"]
+    ledger["orders"]["active"] = {"session": "2026-09-03", "status": "new"}
+    assert paper_submission_decision(ledger, "new", session="2026-09-03", max_trades_per_day=0)["reason"] == "active_paper_order_or_position"
 
 
 @pytest.mark.parametrize("side,low,high,expected", [

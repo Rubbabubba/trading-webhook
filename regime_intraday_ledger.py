@@ -116,7 +116,7 @@ def paper_submission_decision(
     if signal_id in orders:
         return {"allowed": False, "reason": "duplicate_signal_order", "existing_order": orders[signal_id]}
     today_orders = [row for row in orders.values() if str(row.get("session") or "") == session]
-    if len(today_orders) >= max(1, int(max_trades_per_day)):
+    if int(max_trades_per_day) > 0 and len(today_orders) >= int(max_trades_per_day):
         return {"allowed": False, "reason": "daily_trade_limit"}
     today_closed = [row for row in closed if str(row.get("session") or _session(str(row.get("exit_ts_utc") or ""))) == session]
     today_closed.sort(key=lambda row: str(row.get("exit_ts_utc") or ""))
@@ -136,7 +136,8 @@ def paper_submission_decision(
     active = [row for row in orders.values() if str(row.get("status") or "").lower() not in {"canceled", "cancelled", "expired", "filled_closed", "rejected"}]
     if active:
         return {"allowed": False, "reason": "active_paper_order_or_position", "active_count": len(active)}
-    return {"allowed": True, "reason": "risk_checks_passed", "today_order_count": len(today_orders), "loss_streak": loss_streak}
+    return {"allowed": True, "reason": "risk_checks_passed", "today_order_count": len(today_orders),
+            "daily_attempt_limit": int(max_trades_per_day) if int(max_trades_per_day) > 0 else None, "loss_streak": loss_streak}
 
 
 def record_broker_order(ledger: dict[str, Any], signal_id: str, record: dict[str, Any], *, ts_utc: str | None = None) -> dict[str, Any]:
