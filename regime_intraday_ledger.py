@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -37,6 +38,40 @@ def performance_views(ledger: dict) -> dict:
 
 def empty_ledger() -> dict[str, Any]:
     return {"version": LEDGER_VERSION, "open": {}, "closed": [], "orders": {}, "pending_candidates": {}, "events": []}
+
+
+def assign_setup_identities(ledger: dict, scan: dict) -> None:
+    """Persist episodes; rearm only after two distinct ready bars without a signal.
+
+    This creates new opportunities, never retries an existing broker submission.
+    Initial episodes preserve old IDs for safe deployment over existing orders.
+    """
+    states = ledger.setdefault("setup_episodes", {})
+    signals = list(scan.get("signals") or [])
+    active_keys = {(s.get("symbol"), s.get("strategy"), s.get("underlying_side")) for s in signals}
+    for state in states.values():
+        feature = dict(dict(scan.get("features") or {}).get(state["symbol"]) or {})
+        stamp = str(feature.get("last_ts") or "")
+        if not feature.get("ready") or not stamp or stamp <= state.get("last_bar", ""):
+            continue
+        key = (state["symbol"], state["strategy"], state["side"])
+        if key not in active_keys:
+            state["absent_bars"] = state.get("absent_bars", 0) + 1
+            if state["absent_bars"] >= 2:
+                state["armed"] = True
+        state["last_bar"] = stamp
+    for signal in signals:
+        key = "|".join(str(signal.get(k) or "") for k in ("symbol", "strategy", "underlying_side"))
+        stamp = str(dict(dict(scan.get("features") or {}).get(signal["symbol"]) or {}).get("last_ts") or "")
+        base = str(signal["signal_id"])
+        state = states.setdefault(key, {"symbol": signal["symbol"], "strategy": signal["strategy"], "side": signal["underlying_side"], "id": base})
+        if state.get("session") and state["session"] != stamp[:10]:
+            state.update(id=base, armed=False)
+        if state.get("armed") and stamp:
+            state["id"] = hashlib.sha256(f"{base}|setup|{stamp}".encode()).hexdigest()[:24]
+        state.update(armed=False, absent_bars=0, last_bar=stamp, session=stamp[:10])
+        signal["base_signal_id"] = base
+        signal["signal_id"] = state["id"]
 
 
 def record_pending_candidate(ledger: dict[str, Any], signal: dict[str, Any], plan: dict[str, Any], *, ts_utc: str, expires_at: str) -> dict[str, Any]:

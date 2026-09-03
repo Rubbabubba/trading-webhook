@@ -87,6 +87,21 @@ def _delta(snapshot: dict) -> float:
     return float(dict(snapshot.get("greeks") or {}).get("delta") or 0.0)
 
 
+def spread_quote_evidence(chain: dict, plan: dict) -> dict:
+    snapshots = dict(chain.get("snapshots") or {})
+    legs = []
+    for leg in plan.get("legs", []):
+        snapshot = dict(snapshots.get(leg.get("symbol")) or {})
+        quote = dict(snapshot.get("latestQuote") or snapshot.get("latest_quote") or {})
+        bid, ask = _quote(snapshot)
+        legs.append({"symbol": leg.get("symbol"), "bid": bid, "ask": ask,
+                     "quote_timestamp": quote.get("t") or quote.get("timestamp")})
+    return {"observed_at": datetime.now(timezone.utc).isoformat(), "legs": legs,
+            "chain": dict(chain.get("chain_diagnostics") or {}),
+            "entry_debit_from_quotes": round(legs[0]["ask"] - legs[1]["bid"], 4) if len(legs) == 2 and legs[0]["ask"] > 0 and legs[1]["bid"] > 0 else None,
+            "note": "Observed quotes, not guaranteed executable prices."}
+
+
 def select_debit_spread(
     chain: dict,
     intent: dict,

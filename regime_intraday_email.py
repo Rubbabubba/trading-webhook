@@ -71,3 +71,12 @@ def build_exit_email(signal_id: str, record: dict[str, Any]) -> dict[str, str]:
 def send_exit_email(*, api_key: str, to_email: str, from_email: str, signal_id: str, record: dict[str, Any], timeout: int = 10) -> dict[str, Any]:
     reason = str(dict(record.get("exit_decision") or {}).get("reason") or "exit")
     return _send_message(api_key=api_key, to_email=to_email, from_email=from_email, message=build_exit_email(signal_id, record), idempotency_key=f"regime-exit-{signal_id}-{reason}", timeout=timeout)
+
+
+def send_order_outcome_email(*, api_key: str, to_email: str, from_email: str, record: dict, timeout: int = 10) -> dict:
+    broker = dict(record.get("broker") or {})
+    status = record.get("status")
+    message = {"subject": f"PAPER ORDER: {dict(record.get('plan') or {}).get('underlying')} — {status}",
+               "text": f"Order: {record.get('order_id')}\nStatus: {status}\nBroker filled quantity: {broker.get('filled_qty')}\nAverage fill price: {broker.get('filled_avg_price')}\nVerify remaining positions and orders in Alpaca paper. No automatic entry repricing or resubmission is performed."}
+    return _send_message(api_key=api_key, to_email=to_email, from_email=from_email, message=message,
+                         idempotency_key=f"paper-outcome-{record.get('order_id')}-{status}", timeout=timeout)

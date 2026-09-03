@@ -14,9 +14,12 @@ from market_clock import is_regular_market_time, now_ny, parse_hhmm
 from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evaluate_regime_intraday
 from regime_intraday_candidates import failed_breakout_fade_candidate, relative_strength_divergence_candidate, trend_pullback_candidate
 from regime_intraday_email import send_exit_email, send_signal_email
+from regime_intraday_email import send_order_outcome_email
+from regime_intraday_options import spread_quote_evidence
 from regime_intraday_executor import cancel_order, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, save_ledger, update_ledger
 from regime_intraday_ledger import performance_views
+from regime_intraday_ledger import assign_setup_identities
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_replay import chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
@@ -122,6 +125,8 @@ class RegimeIntradayRuntime:
             },
         }
         payload.update({"status": "completed", "ts_utc": timestamp, "paper_only": True, "live_submission": False, "market_data": fetch})
+        ledger = load_ledger(self.ledger_path)
+        assign_setup_identities(ledger, payload)
         plans = []
         key = _env("APCA_API_KEY_ID") or self._paper_credentials()[0]
         secret = _env("APCA_API_SECRET_KEY") or self._paper_credentials()[1]
@@ -135,6 +140,10 @@ class RegimeIntradayRuntime:
                     if chain_key not in chains:
                         chains[chain_key] = fetch_option_chain(key, secret, symbol, feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), timeout=max(5, _int("REGIME_INTRADAY_OPTION_CHAIN_TIMEOUT_SEC", 20)), intent=intent)
                     plan = select_debit_spread(chains[chain_key], intent, max_loss_dollars=_float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100), width=_float("REGIME_INTRADAY_SPREAD_WIDTH", 1))
+                    if plan.get("status") == "selected":
+                        plan["selection_quotes"] = spread_quote_evidence(chains[chain_key], plan)
+                        plan["economics"] = {"maximum_reward_to_risk": round(plan["max_profit_dollars"] / plan["max_loss_dollars"], 4),
+                                             "note": "Maximum payoff ratio only; not expected return or an estimate at the underlying target."}
                 except Exception as exc:
                     plan = {"status": "chain_error", "detail": str(exc)[:300], "live_submission": False}
                 plans.append({"signal": {"signal_id": signal.get("signal_id"), "symbol": symbol, "strategy": signal.get("strategy")}, "plan": plan})
@@ -142,7 +151,7 @@ class RegimeIntradayRuntime:
         payload["execution_gate"] = {"paper_enabled": True, "paper_submit_enabled": _bool("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED"),
                                      "live_enabled": False, "live_submission": False, "max_trade_loss_dollars": _float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100),
                                      "max_daily_loss_dollars": _float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200)}
-        ledger = update_ledger(load_ledger(self.ledger_path), payload, max_open_positions=max(1, _int("REGIME_INTRADAY_MAX_OPEN_POSITIONS", 1)),
+        ledger = update_ledger(ledger, payload, max_open_positions=max(1, _int("REGIME_INTRADAY_MAX_OPEN_POSITIONS", 1)),
                                max_daily_loss_r=_float("REGIME_INTRADAY_MAX_DAILY_LOSS_R", 2), ts_utc=timestamp)
         expires = (datetime.fromisoformat(timestamp) + timedelta(seconds=max(60, _int("REGIME_INTRADAY_CANDIDATE_TTL_SEC", 600)))).isoformat()
         signals_by_id = {str(row.get("signal_id")): row for row in payload.get("signals", [])}
@@ -356,6 +365,28 @@ class RegimeIntradayRuntime:
                     refreshed.append({"signal_id": signal_id, "order_id": close_id, "status": record["status"], "action": "close"})
                     continue
                 record.update({"status": status, "broker": broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
+                if status in {"canceled", "expired", "rejected"} and (
+                    str(broker.get("filled_qty")) not in {"0", "0.0"}
+                    or any(str(leg.get("filled_qty")) not in {"0", "0.0"} for leg in (broker.get("legs") or []))
+                ):
+                    record["status"] = "entry_requires_attention"
+                if status in {"canceled", "expired", "rejected"}:
+                    if "terminal_quotes" not in record:
+                        try:
+                            plan = dict(record.get("plan") or {})
+                            chain = fetch_option_chain(key, secret, str(plan.get("underlying") or ""), expiration=plan.get("expiration"), feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), timeout=5)
+                            record["terminal_quotes"] = spread_quote_evidence(chain, plan)
+                        except Exception:
+                            record["terminal_quotes"] = {"status": "unavailable"}
+                    if record.get("outcome_email_status") != record["status"]:
+                        try:
+                            sent = send_order_outcome_email(api_key=_env("RESEND_API_KEY") if _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True) else "", to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"), from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM"), record=record)
+                            if sent.get("sent"):
+                                record["outcome_email_status"] = record["status"]
+                        except Exception:
+                            record["outcome_email_error"] = "delivery_failed"
+                if signal_id in ledger.get("pending_candidates", {}):
+                    ledger["pending_candidates"][signal_id].update(status=record["status"], filled_qty=broker.get("filled_qty"))
                 if status in {"new", "accepted", "pending_new", "partially_filled"} and _bool("REGIME_INTRADAY_PAPER_AUTO_CANCEL_STALE"):
                     submitted = datetime.fromisoformat(str(broker.get("submitted_at") or broker.get("created_at") or "").replace("Z", "+00:00"))
                     if (datetime.now(timezone.utc) - submitted).total_seconds() >= max(30, _int("REGIME_INTRADAY_STALE_ENTRY_SEC", 120)):

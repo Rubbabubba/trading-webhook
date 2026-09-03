@@ -112,7 +112,7 @@ def main() -> None:
         for action, url in (("scan", scan_url), ("reconcile", reconcile_url)):
             try:
                 status, response = _post(url, payload, timeout)
-                attention = [row for row in response.get("refreshed", []) if row.get("status") in {"reconcile_error", "close_requires_attention"}]
+                attention = [row for row in response.get("refreshed", []) if row.get("status") in {"reconcile_error", "close_requires_attention", "entry_requires_attention"}]
                 if attention:
                     cycle_failed = True
                     _log(f"{action}_attention count={len(attention)} statuses={[row.get('status') for row in attention]}")
