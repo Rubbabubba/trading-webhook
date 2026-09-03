@@ -22,7 +22,8 @@ def test_all_locked_candidates_have_unique_rank_and_key():
     assert len({row.key for row in CANDIDATES}) == 7
     assert sorted(row.rank for row in CANDIDATES) == list(range(1, 8))
     statuses = {row["key"]: row["status"] for row in candidate_catalog()}
-    assert statuses["crypto_basis"] == "active"
+    assert statuses["crypto_basis"] == "research_retained"
+    assert statuses["sports_prediction_arb"] == "active"
     assert statuses["crypto_regime"] == "researched_rejected"
 
 
@@ -100,6 +101,7 @@ def test_opportunity_dashboard_is_protected_and_execution_closed(monkeypatch):
     assert "execution hard-disabled" in response.text
     assert "/diagnostics/opportunity_lab/backtest/crypto" in response.text
     assert "/diagnostics/opportunity_lab/coinbase/reconstruct-funding" in response.text
+    assert "/diagnostics/opportunity_lab/arbitrage/scan" in response.text
 
 
 def test_crypto_endpoint_rejects_truncated_history(monkeypatch):

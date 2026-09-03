@@ -14,6 +14,10 @@ The calculator reports profit per matched notional separately from annualized re
 
 Historical venue adapters must normalize each venue's funding sign, interval, contract size, quote currency, fee tier, and product eligibility before their data can enter this model. Venue availability and account eligibility must be confirmed before execution work begins.
 
+## Sports and prediction arbitrage
+
+`opportunity_lab/odds_arbitrage.py` is the venue-neutral scanner core. It normalizes American or decimal prices, adjusts winnings for commission, respects per-leg maximum stake and stake increments, allocates stakes across mutually exclusive outcomes, and verifies the worst rounded payout. An apparent mathematical edge is always blocked until the operator confirms that settlement, overtime, cancellation, participant, and market-definition rules are compatible across venues. The scanner has no bet-submission transport.
+
 For U.S. Coinbase CFM products, `/diagnostics/opportunity_lab/coinbase/reconstruct-funding` reconstructs BTC or ETH hourly funding over 7–365 days from aligned CDE-future and Coinbase-spot hourly candles. It applies Coinbase's published `/24` premium scaling and 75% current/25% previous smoothing, but uses hourly closes instead of the official twenty three-minute representative-price samples. Its output is therefore explicitly a proxy, never official historical funding. Exact U.S. historical funding must be requested from Coinbase and should later be used to validate and calibrate the proxy.
 
 ## Promotion lifecycle
