@@ -10,10 +10,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from operator_auth import operator_authorized
 from opportunity_lab.catalog import candidate_catalog
-from opportunity_lab.coinbase_market_data import check_cfm_read_access, credentials_configured, list_perpetual_products
+from opportunity_lab.coinbase_market_data import check_cfm_read_access, credentials_configured, fetch_product_candles, list_perpetual_products
 from opportunity_lab.crypto_basis import BasisInputs, backtest_funding, evaluate_basis
 from opportunity_lab.crypto_market_data import fetch_crypto_bars
 from opportunity_lab.crypto_regime import crypto_research_suite
+from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
 
 
 APP_VERSION = "opportunity-lab-web-v2"
@@ -117,5 +118,35 @@ def coinbase_status() -> dict:
         "cfm_entitlement": check_cfm_read_access(),
         "transport": transport,
         "account_balances_returned": False,
+        "execution_enabled": False,
+    }
+
+
+@app.post("/diagnostics/opportunity_lab/coinbase/reconstruct-funding")
+def coinbase_reconstruct_funding(body: dict) -> dict:
+    market = str(body.get("market") or "BTC").upper()
+    mapping = {"BTC": ("BIP-20DEC30-CDE", "BTC-USD"), "ETH": ("ETP-20DEC30-CDE", "ETH-USD")}
+    if market not in mapping:
+        raise HTTPException(status_code=400, detail="market must be BTC or ETH")
+    days = max(7, min(365, int(body.get("days") or 90)))
+    total_cost_bps = max(0.0, min(1000.0, float(body.get("total_cost_bps") or 72.0)))
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=days)
+    future_id, spot_id = mapping[market]
+    futures, future_transport = fetch_product_candles(future_id, start=start, end=end)
+    spots, spot_transport = fetch_product_candles(spot_id, start=start, end=end)
+    if future_transport.get("error") or spot_transport.get("error"):
+        raise HTTPException(status_code=502, detail={"future_transport": future_transport, "spot_transport": spot_transport})
+    if future_transport.get("truncated") or spot_transport.get("truncated"):
+        raise HTTPException(status_code=502, detail={"error": "historical_data_truncated", "future_transport": future_transport, "spot_transport": spot_transport})
+    return {
+        "ok": True,
+        "market": market,
+        "future_product_id": future_id,
+        "spot_product_id": spot_id,
+        "requested_days": days,
+        "future_transport": future_transport,
+        "spot_transport": spot_transport,
+        "reconstruction": reconstruct_hourly_funding(futures, spots, total_cost_bps=total_cost_bps),
         "execution_enabled": False,
     }

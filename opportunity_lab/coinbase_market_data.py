@@ -7,6 +7,7 @@ import os
 import secrets
 import time
 import base64
+from datetime import datetime, timezone
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -87,6 +88,47 @@ def check_cfm_read_access() -> dict:
         "status_code": transport.get("status_code"),
         "error": transport.get("error"),
         "account_data_returned": False,
+    }
+
+
+def fetch_product_candles(product_id: str, *, start: datetime, end: datetime, granularity: str = "ONE_HOUR", max_pages: int = 100) -> tuple[list[dict], dict]:
+    """Fetch complete Coinbase candles in bounded 350-bucket requests."""
+    seconds = {"ONE_MINUTE": 60, "FIVE_MINUTE": 300, "ONE_HOUR": 3600, "ONE_DAY": 86400}.get(granularity)
+    if not seconds:
+        return [], {"error": "unsupported_granularity", "granularity": granularity}
+    start_ts, end_ts = int(start.timestamp()), int(end.timestamp())
+    cursor = start_ts
+    rows: dict[int, dict] = {}
+    pages = 0
+    while cursor < end_ts and pages < max(1, min(500, int(max_pages))):
+        chunk_end = min(end_ts, cursor + seconds * 349)
+        payload, transport = _get(
+            f"/api/v3/brokerage/products/{product_id}/candles",
+            {"start": str(cursor), "end": str(chunk_end), "granularity": granularity, "limit": "350"},
+        )
+        if transport.get("error"):
+            return [], {**transport, "product_id": product_id, "pages": pages}
+        for candle in payload.get("candles") or []:
+            timestamp = int(candle.get("start") or 0)
+            if timestamp:
+                rows[timestamp] = {
+                    "timestamp": timestamp,
+                    "close": _number(candle.get("close")),
+                    "volume": _number(candle.get("volume")),
+                }
+        pages += 1
+        cursor = chunk_end + seconds
+    ordered = [rows[key] for key in sorted(rows)]
+    truncated = cursor < end_ts
+    return ordered, {
+        "method": "coinbase_advanced_trade_candles",
+        "product_id": product_id,
+        "granularity": granularity,
+        "requested_start": datetime.fromtimestamp(start_ts, timezone.utc).isoformat(),
+        "requested_end": datetime.fromtimestamp(end_ts, timezone.utc).isoformat(),
+        "pages": pages,
+        "count": len(ordered),
+        "truncated": truncated,
     }
 
 
