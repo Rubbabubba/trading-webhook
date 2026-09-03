@@ -52,6 +52,18 @@ def test_cfm_access_discards_balance_payload(monkeypatch):
     assert "balance_summary" not in result
 
 
+def test_fee_schedule_discards_volume_and_identifiers(monkeypatch):
+    monkeypatch.setattr(coinbase, "_get", lambda *args, **kwargs: ({
+        "fee_tier": {"pricing_tier": "tier", "maker_fee_rate": "0.001", "taker_fee_rate": "0.002"},
+        "margin_rate": "0.5", "advanced_trade_only_volume": 999, "account_uuid": "secret",
+    }, {"authenticated": True, "status_code": 200}))
+    schedules, _ = coinbase.get_fee_schedule()
+    assert schedules["spot"]["maker_fee_rate"] == .001
+    assert schedules["us_derivatives"]["taker_fee_rate"] == .002
+    assert "advanced_trade_only_volume" not in str(schedules)
+    assert "account_uuid" not in str(schedules)
+
+
 def test_missing_credentials_fail_closed(monkeypatch):
     monkeypatch.delenv("OPPORTUNITY_COINBASE_API_KEY_NAME", raising=False)
     monkeypatch.delenv("OPPORTUNITY_COINBASE_API_KEY_SECRET", raising=False)

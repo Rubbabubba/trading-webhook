@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from operator_auth import operator_authorized
 from opportunity_lab.catalog import candidate_catalog
-from opportunity_lab.coinbase_market_data import check_cfm_read_access, credentials_configured, fetch_product_candles, list_perpetual_products
+from opportunity_lab.coinbase_market_data import check_cfm_read_access, credentials_configured, fetch_product_candles, get_fee_schedule, list_perpetual_products
 from opportunity_lab.crypto_basis import BasisInputs, backtest_funding, evaluate_basis
 from opportunity_lab.crypto_market_data import fetch_crypto_bars
 from opportunity_lab.crypto_regime import crypto_research_suite
@@ -149,5 +149,19 @@ def coinbase_reconstruct_funding(body: dict) -> dict:
         "future_transport": future_transport,
         "spot_transport": spot_transport,
         "reconstruction": reconstruct_hourly_funding(futures, spots, total_cost_bps=total_cost_bps),
+        "execution_enabled": False,
+    }
+
+
+@app.get("/diagnostics/opportunity_lab/coinbase/fees")
+def coinbase_fees() -> dict:
+    schedules, transports = get_fee_schedule()
+    if not schedules:
+        raise HTTPException(status_code=502, detail={"error": "coinbase_fee_schedule_unavailable", "transport": transports})
+    return {
+        "ok": True,
+        "fee_schedules": schedules,
+        "rates_are_decimal": True,
+        "balances_volumes_and_identifiers_returned": False,
         "execution_enabled": False,
     }

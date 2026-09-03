@@ -91,6 +91,29 @@ def check_cfm_read_access() -> dict:
     }
 
 
+def get_fee_schedule() -> tuple[dict, dict]:
+    """Return only current rate fields; discard balances, volumes, and identifiers."""
+    schedules = {}
+    transports = {}
+    queries = {
+        "spot": {"product_type": "SPOT"},
+        "us_derivatives": {"product_type": "FUTURE", "contract_expiry_type": "EXPIRING", "product_venue": "FCM"},
+    }
+    for label, params in queries.items():
+        payload, transport = _get("/api/v3/brokerage/transaction_summary", params)
+        transports[label] = transport
+        if transport.get("error"):
+            return {}, transports
+        tier = payload.get("fee_tier") or {}
+        schedules[label] = {
+            "pricing_tier": tier.get("pricing_tier"),
+            "maker_fee_rate": _number(tier.get("maker_fee_rate")),
+            "taker_fee_rate": _number(tier.get("taker_fee_rate")),
+            "margin_rate": _number(payload.get("margin_rate")),
+        }
+    return schedules, transports
+
+
 def fetch_product_candles(product_id: str, *, start: datetime, end: datetime, granularity: str = "ONE_HOUR", max_pages: int = 100) -> tuple[list[dict], dict]:
     """Fetch complete Coinbase candles in bounded 350-bucket requests."""
     seconds = {"ONE_MINUTE": 60, "FIVE_MINUTE": 300, "ONE_HOUR": 3600, "ONE_DAY": 86400}.get(granularity)
