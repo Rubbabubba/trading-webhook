@@ -77,3 +77,13 @@ def test_regime_admin_secret_does_not_authorize_opportunity_lab(monkeypatch):
     monkeypatch.setenv("ADMIN_SECRET", "regime-only")
     client = TestClient(app)
     assert client.get("/diagnostics/opportunity_lab/catalog", headers={"x-admin-secret": "regime-only"}).status_code == 401
+
+
+def test_opportunity_dashboard_is_protected_and_execution_closed(monkeypatch):
+    monkeypatch.setenv("OPPORTUNITY_ADMIN_SECRET", "secret")
+    client = TestClient(app)
+    assert client.get("/dashboard/opportunity-lab").status_code == 401
+    response = client.get("/dashboard/opportunity-lab", headers={"x-admin-secret": "secret"})
+    assert response.status_code == 200
+    assert "execution hard-disabled" in response.text
+    assert "/diagnostics/opportunity_lab/backtest/crypto" in response.text

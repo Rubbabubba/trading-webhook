@@ -29,6 +29,8 @@ Deploy the eventual API/dashboard and continuous worker separately from `intrada
 
 The first web service entry point is `uvicorn opportunity_app:app --host 0.0.0.0 --port $PORT`. Its catalog and backtest routes are operator-protected, and the application contains no execution route or broker-order transport.
 
+The protected `/dashboard/opportunity-lab` page provides a browser runner for BTC/USD and ETH/USD research. HTTP Basic authentication accepts any username and requires `OPPORTUNITY_ADMIN_SECRET` as the password.
+
 ## Render environment
 
 The initial research-only web service requires:
