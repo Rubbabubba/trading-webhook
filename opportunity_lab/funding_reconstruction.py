@@ -24,6 +24,7 @@ def reconstruct_hourly_funding(future_candles: list[dict], spot_candles: list[di
     basis_capture_bps = entry_basis_bps - exit_basis_bps
     net_pnl_bps = funding_bps + basis_capture_bps - float(total_cost_bps)
     hours = len(timestamps)
+    elapsed_hours = max(1.0, (timestamps[-1] - timestamps[0]) / 3600.0)
     return {
         "valid": True,
         "method": "hourly_close_proxy_for_published_cde_formula",
@@ -33,7 +34,9 @@ def reconstruct_hourly_funding(future_candles: list[dict], spot_candles: list[di
             "does not model missed fills, intrahour entry timing, margin calls, or liquidation",
         ],
         "aligned_hours": hours,
-        "coverage_days": round((timestamps[-1] - timestamps[0]) / 86400.0, 3),
+        "elapsed_hours": round(elapsed_hours, 3),
+        "coverage_days": round(elapsed_hours / 24.0, 3),
+        "observation_density": round(hours / (elapsed_hours + 1.0), 6),
         "first_timestamp": timestamps[0],
         "last_timestamp": timestamps[-1],
         "average_hourly_funding_bps": round(mean(rates) * 10_000.0, 6),
@@ -45,7 +48,7 @@ def reconstruct_hourly_funding(future_candles: list[dict], spot_candles: list[di
         "total_cost_bps": round(float(total_cost_bps), 4),
         "net_pnl_bps": round(net_pnl_bps, 4),
         "return_on_fully_collateralized_capital_pct": round(net_pnl_bps / 10_000.0 / 2.0 * 100.0, 6),
-        "annualized_return_on_fully_collateralized_capital_pct": round((net_pnl_bps / 10_000.0 / 2.0) * (8760.0 / hours) * 100.0, 6),
+        "annualized_return_on_fully_collateralized_capital_pct": round((net_pnl_bps / 10_000.0 / 2.0) * (8760.0 / elapsed_hours) * 100.0, 6),
         "profitable": net_pnl_bps > 0,
         "execution_enabled": False,
     }

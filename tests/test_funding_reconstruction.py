@@ -23,3 +23,15 @@ def test_basis_convergence_is_included():
     futures[-1]["close"] = 100
     result = reconstruct_hourly_funding(futures, _candles(100), total_cost_bps=0)
     assert result["basis_capture_bps"] == 100
+
+
+def test_annualization_uses_elapsed_time_not_observation_count():
+    futures = _candles(101)
+    spots = _candles(100)
+    del futures[10:20]
+    del spots[10:20]
+    result = reconstruct_hourly_funding(futures, spots, total_cost_bps=0)
+    assert result["elapsed_hours"] == 47
+    assert result["observation_density"] < 1
+    expected = result["return_on_fully_collateralized_capital_pct"] * 8760 / 47
+    assert abs(result["annualized_return_on_fully_collateralized_capital_pct"] - expected) < .001
