@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from regime_intraday_ledger import performance_views
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +20,7 @@ def render_intraday_dashboard(*, scan: dict, ledger: dict, readiness: dict, scan
     config = dict(scan.get("config") or {})
     regime = dict(scan.get("regime") or {})
     summary = dict(ledger.get("summary") or {})
+    performance = performance_views(ledger)
     pending = dict(ledger.get("pending_candidates") or {})
     orders = dict(ledger.get("orders") or {})
     notifications = dict(readiness.get("notifications") or {})
@@ -47,5 +49,5 @@ body{{margin:0;padding:20px;background:#090f17;color:#eef6ff;font-family:Inter,s
 <section class='card'><h2>Latest actionable signals</h2><table><tr><th>Signal ID</th><th>Symbol</th><th>Strategy</th><th>Side</th><th>Entry</th><th>Stop</th><th>Target</th></tr>{signal_rows}</table></section>
 <section class='card'><h2>Approval queue</h2><table><tr><th>Signal ID</th><th>Status</th><th>Expires</th><th>Max loss</th></tr>{pending_rows}</table></section>
 <section class='card'><h2>Paper order lifecycle</h2><table><tr><th>Signal ID</th><th>Status</th><th>Entry order</th><th>Exit reason</th><th>Close status</th></tr>{order_rows}</table></section>
-<div class='grid'><section class='card'><h2>Paper performance</h2><table>{_rows([('open_count',summary.get('open_count')),('closed_count',summary.get('closed_count')),('realized_r_today',summary.get('realized_r_today')),('win_rate',summary.get('win_rate')),('average_r',summary.get('average_r'))])}</table></section><section class='card'><h2>Worker state</h2><table>{_rows([('last_event',scanner.get('last_event')),('last_status',scanner.get('last_status')),('last_success_utc',scanner.get('last_success_utc')),('consecutive_failures',scanner.get('consecutive_failures'))])}</table></section></div>
+<div class='grid'><section class='card'><h2>Underlying shadow simulation — NOT broker profit</h2><p>Sampled bars only; gaps and costs are not modeled. Legacy records are preserved and excluded from the new-method total.</p><table>{_rows(list(performance['shadow'].items()))}</table></section><section class='card'><h2>Alpaca paper execution — recorded orders</h2><p>Gross P/L uses available broker fills only, before fees. Missing fills are excluded. Verify account inventory in Alpaca.</p><table>{_rows(list(performance['broker_paper'].items()))}</table></section><section class='card'><h2>Worker state</h2><table>{_rows([('last_event',scanner.get('last_event')),('last_status',scanner.get('last_status')),('last_success_utc',scanner.get('last_success_utc')),('consecutive_failures',scanner.get('consecutive_failures'))])}</table></section></div>
 </body></html>"""

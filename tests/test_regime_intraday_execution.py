@@ -61,7 +61,7 @@ def test_ledger_opens_then_closes_at_target():
     second = update_ledger(first, {"ts_utc": "2026-09-02T16:00:00+00:00", "signals": [], "features": {"SPY": {"price": 102.1}}})
     assert second["summary"]["open_count"] == 0
     assert second["closed"][-1]["exit_reason"] == "target"
-    assert second["closed"][-1]["realized_r"] == 2.1
+    assert second["closed"][-1]["realized_r"] == 2.0
 
 
 def test_live_transport_is_closed_without_gate():

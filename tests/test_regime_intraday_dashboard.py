@@ -8,6 +8,9 @@ def test_intraday_dashboard_has_unambiguous_paper_identity():
     assert "LIVE INTRADAY CLOSED" in page
     assert "Legacy live swing account" not in page
     assert "System health" in page
+    assert "Underlying shadow simulation" in page
+    assert "Alpaca paper execution" in page
+    assert "Legacy records are preserved" in page
 
 
 def test_route_catalog_separates_active_intraday_from_legacy_research():

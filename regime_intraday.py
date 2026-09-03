@@ -230,6 +230,9 @@ def evaluate_regime_intraday(bars_by_symbol: dict[str, list[dict]], config: Regi
             if stretched and (bullish_reversal or bearish_reversal):
                 plan = _trade_plan(symbol, "vwap_mean_reversion", "buy" if bullish_reversal else "sell", feature, cfg)
                 plan["target_price"] = round(float(feature["vwap"]), 4)
+                plan["configured_target_r"] = cfg.target_r
+                risk = abs(plan["entry_price"] - plan["stop_price"])
+                plan["target_r"] = round(abs(plan["target_price"] - plan["entry_price"]) / risk, 4) if risk else 0.0
                 signals.append(plan)
     return {
         "ok": True,

@@ -11,6 +11,28 @@ from typing import Any
 
 
 LEDGER_VERSION = "v2-durable-signal-order-ledger"
+SHADOW_ACCOUNTING = "sampled_ohlc_stop_first_v1"
+
+
+def performance_views(ledger: dict) -> dict:
+    """Read-only views; historical rows are never migrated or rewritten."""
+    shadow = [r for r in ledger.get("closed", []) if not r.get("paper_signal_id") and r.get("status") != "filled_closed"]
+    current = [r for r in shadow if r.get("accounting_method") == SHADOW_ACCOUNTING]
+    legacy = [r for r in shadow if r.get("accounting_method") != SHADOW_ACCOUNTING]
+    orders = list(dict(ledger.get("orders") or {}).values())
+    closed = [r for r in orders if r.get("status") == "filled_closed"]
+    pnl = []
+    for row in closed:
+        entry = dict(row.get("broker") or {}).get("filled_avg_price")
+        close = dict(dict(row.get("close_order") or {}).get("broker") or {}).get("filled_avg_price")
+        if entry is not None and close is not None:
+            pnl.append((abs(float(close)) - abs(float(entry))) * 100)
+    return {"shadow": {"open_count": len(ledger.get("open") or {}), "closed_count": len(current),
+                        "total_r": round(sum(float(r.get("realized_r") or 0) for r in current), 4),
+                        "legacy_closed_count": len(legacy), "accounting_method": SHADOW_ACCOUNTING},
+            "broker_paper": {"recorded_order_count": len(orders), "closed_roundtrips": len(closed),
+                             "verified_fill_roundtrips": len(pnl), "missing_fill_roundtrips": len(closed) - len(pnl),
+                             "gross_realized_dollars_from_fills": round(sum(pnl), 2)}}
 
 
 def empty_ledger() -> dict[str, Any]:
@@ -146,12 +168,27 @@ def update_ledger(
         target = float(position.get("target_price") or 0.0)
         stop_hit = price <= stop if side == "buy" else price >= stop
         target_hit = price >= target if side == "buy" else price <= target
+        exit_price = price
+        if position.get("accounting_method") == SHADOW_ACCOUNTING:
+            bar_ts = str(feature.get("last_ts") or "")
+            if bar_ts and bar_ts <= str(position.get("last_evaluated_bar_ts") or ""):
+                continue
+            high = float(feature.get("last_high") or price)
+            low = float(feature.get("last_low") or price)
+            bar_open = float(feature.get("last_open") or price)
+            stop_hit = low <= stop if side == "buy" else high >= stop
+            target_hit = high >= target if side == "buy" else low <= target
+            # When both thresholds occur in the sampled bar, assume the stop came first.
+            exit_price = (min(stop, bar_open) if side == "buy" else max(stop, bar_open)) if stop_hit else target
+            position = {**position, "last_evaluated_bar_ts": bar_ts,
+                        "coverage_note": "Sampled bars only; gaps and execution costs are not modeled."}
+            opened[symbol] = position
         if not (stop_hit or target_hit):
             continue
         entry = float(position.get("entry_price") or 0.0)
         risk = abs(entry - stop)
-        pnl_points = (price - entry) if side == "buy" else (entry - price)
-        row = {**position, "exit_price": price, "exit_ts_utc": now, "exit_reason": "target" if target_hit else "stop", "realized_r": round(pnl_points / risk, 4) if risk > 0 else 0.0}
+        pnl_points = (exit_price - entry) if side == "buy" else (entry - exit_price)
+        row = {**position, "exit_price": exit_price, "exit_ts_utc": now, "exit_reason": "stop" if stop_hit else "target", "realized_r": round(pnl_points / risk, 4) if risk > 0 else 0.0, "status": "shadow_closed"}
         closed.append(row)
         events.append({"event": "shadow_exit", "ts_utc": now, "symbol": symbol, "reason": row["exit_reason"], "realized_r": row["realized_r"]})
         opened.pop(symbol, None)
@@ -162,18 +199,22 @@ def update_ledger(
         symbol = str(signal.get("symbol") or "").upper()
         if blocked or not symbol or symbol in opened or len(opened) >= max(1, int(max_open_positions)):
             continue
-        position = {**dict(signal), "entry_ts_utc": now, "session": session, "status": "shadow_open"}
+        position = {**dict(signal), "entry_ts_utc": now, "session": session, "status": "shadow_open",
+                    "accounting_method": SHADOW_ACCOUNTING,
+                    "last_evaluated_bar_ts": str(dict(features.get(symbol) or {}).get("last_ts") or "")}
         opened[symbol] = position
         events.append({"event": "shadow_entry", "ts_utc": now, "symbol": symbol, "strategy": signal.get("strategy")})
 
     ledger.update({"version": LEDGER_VERSION, "open": opened, "closed": closed[-500:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}), "events": events[-1000:], "updated_at": now})
+    shadow_closed = [r for r in closed if not r.get("paper_signal_id") and r.get("status") != "filled_closed"]
     ledger["summary"] = {
+        "scope": "underlying_shadow_simulation_including_legacy",
         "open_count": len(opened),
-        "closed_count": len(closed),
+        "closed_count": len(shadow_closed),
         "realized_r_today": round(realized_today, 4),
         "daily_loss_blocked": blocked,
-        "win_rate": round(sum(1 for row in closed if float(row.get("realized_r") or 0) > 0) / len(closed), 4) if closed else None,
-        "average_r": round(sum(float(row.get("realized_r") or 0) for row in closed) / len(closed), 4) if closed else None,
+        "win_rate": round(sum(1 for row in shadow_closed if float(row.get("realized_r") or 0) > 0) / len(shadow_closed), 4) if shadow_closed else None,
+        "average_r": round(sum(float(row.get("realized_r") or 0) for row in shadow_closed) / len(shadow_closed), 4) if shadow_closed else None,
         "paper_order_count": len(dict(ledger.get("orders") or {})),
     }
     return ledger

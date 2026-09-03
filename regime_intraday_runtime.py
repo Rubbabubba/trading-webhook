@@ -16,6 +16,7 @@ from regime_intraday_candidates import failed_breakout_fade_candidate, relative_
 from regime_intraday_email import send_exit_email, send_signal_email
 from regime_intraday_executor import cancel_order, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, save_ledger, update_ledger
+from regime_intraday_ledger import performance_views
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_replay import chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
@@ -193,7 +194,7 @@ class RegimeIntradayRuntime:
 
     def ledger_payload(self) -> dict:
         ledger = load_ledger(self.ledger_path)
-        return {"ok": True, "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
+        return {"ok": True, "performance": performance_views(ledger), "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
                 "events": list(ledger.get("events") or [])[-100:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}),
                 "execution_quality": paper_fill_reconciliation(ledger), "last_scan": dict(self.last_scan), "live_submission": False}
 
