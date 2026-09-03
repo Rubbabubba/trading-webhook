@@ -125,12 +125,15 @@ class RegimeIntradayRuntime:
         key = _env("APCA_API_KEY_ID") or self._paper_credentials()[0]
         secret = _env("APCA_API_SECRET_KEY") or self._paper_credentials()[1]
         if _bool("REGIME_INTRADAY_OPTION_CHAIN_ENABLED", True):
-            chains: dict[str, dict] = {}
+            chains: dict[tuple, dict] = {}
             for signal in payload.get("signals", []):
                 symbol = str(signal.get("symbol") or "").upper()
                 try:
-                    chains.setdefault(symbol, fetch_option_chain(key, secret, symbol, feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), timeout=max(5, _int("REGIME_INTRADAY_OPTION_CHAIN_TIMEOUT_SEC", 20))))
-                    plan = select_debit_spread(chains[symbol], dict(signal.get("option_intent") or {}), max_loss_dollars=_float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100), width=_float("REGIME_INTRADAY_SPREAD_WIDTH", 1))
+                    intent = dict(signal.get("option_intent") or {})
+                    chain_key = (symbol, intent.get("option_type"), intent.get("min_dte"), intent.get("max_dte"))
+                    if chain_key not in chains:
+                        chains[chain_key] = fetch_option_chain(key, secret, symbol, feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), timeout=max(5, _int("REGIME_INTRADAY_OPTION_CHAIN_TIMEOUT_SEC", 20)), intent=intent)
+                    plan = select_debit_spread(chains[chain_key], intent, max_loss_dollars=_float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100), width=_float("REGIME_INTRADAY_SPREAD_WIDTH", 1))
                 except Exception as exc:
                     plan = {"status": "chain_error", "detail": str(exc)[:300], "live_submission": False}
                 plans.append({"signal": {"signal_id": signal.get("signal_id"), "symbol": symbol, "strategy": signal.get("strategy")}, "plan": plan})
@@ -359,7 +362,7 @@ class RegimeIntradayRuntime:
                         record["status"] = "cancel_requested"
                 if status == "filled" and isinstance(record.get("plan"), dict):
                     plan = dict(record["plan"])
-                    chain = fetch_option_chain(key, secret, str(plan.get("underlying") or ""), feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"))
+                    chain = fetch_option_chain(key, secret, str(plan.get("underlying") or ""), feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), expiration=plan.get("expiration"))
                     valuation = value_debit_spread(chain, plan)
                     current = now_ny()
                     decision = spread_exit_decision(plan, valuation, minutes_to_close=max(0, 960 - current.hour * 60 - current.minute),

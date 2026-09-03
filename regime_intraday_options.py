@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -17,12 +18,50 @@ from urllib.request import Request, urlopen
 OCC_RE = re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})$")
 
 
-def fetch_option_chain(api_key: str, api_secret: str, underlying: str, *, feed: str = "indicative", timeout: int = 20) -> dict:
-    query = urlencode({"feed": feed, "limit": 1000})
-    url = f"https://data.alpaca.markets/v1beta1/options/snapshots/{underlying}?{query}"
-    request = Request(url, headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret})
-    with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+def fetch_option_chain(api_key: str, api_secret: str, underlying: str, *, feed: str = "indicative", timeout: int = 20,
+                       intent: dict | None = None, as_of: date | None = None, max_pages: int = 10,
+                       expiration: str | None = None) -> dict:
+    params = {"feed": feed, "limit": 1000}
+    if intent:
+        today = as_of or datetime.now(timezone.utc).date()
+        params.update({"type": intent["option_type"],
+                       "expiration_date_gte": (today + timedelta(days=int(intent.get("min_dte") or 7))).isoformat(),
+                       "expiration_date_lte": (today + timedelta(days=int(intent.get("max_dte") or 21))).isoformat()})
+        # Do not filter strikes: delta-eligible legs and their partners must remain available.
+    if expiration:
+        params["expiration_date"] = expiration
+    snapshots, seen = {}, set()
+    deadline = time.monotonic() + timeout
+    pages, reason = 0, "page_limit"
+    for _ in range(max_pages):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            reason = "time_budget"
+            break
+        url = f"https://data.alpaca.markets/v1beta1/options/snapshots/{underlying}?{urlencode(params)}"
+        request = Request(url, headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret})
+        try:
+            with urlopen(request, timeout=remaining) as response:
+                page = json.loads(response.read().decode("utf-8"))
+            if not isinstance(page.get("snapshots"), dict):
+                reason = "invalid_response"
+                break
+        except Exception:
+            reason = "request_failed"
+            break
+        pages += 1
+        snapshots.update(page["snapshots"])
+        token = page.get("next_page_token")
+        if not token:
+            reason = "complete"
+            break
+        if token in seen:
+            reason = "repeated_page_token"
+            break
+        seen.add(token)
+        params["page_token"] = token
+    return {"snapshots": snapshots, "chain_diagnostics": {"complete": reason == "complete", "reason": reason,
+            "pages": pages, "snapshot_count": len(snapshots), "feed": feed}}
 
 
 def parse_occ(symbol: str) -> dict[str, Any] | None:
@@ -58,7 +97,14 @@ def select_debit_spread(
 ) -> dict[str, Any]:
     """Select one liquid long leg and a same-expiry farther-OTM short leg."""
     today = as_of or datetime.now(timezone.utc).date()
-    snapshots = dict(chain.get("snapshots") or chain)
+    diagnostics = {"chain": dict(chain.get("chain_diagnostics") or {}), "rejections": {}}
+    if diagnostics["chain"].get("complete") is False or chain.get("next_page_token"):
+        return {"status": "incomplete_option_chain", "live_submission": False, "diagnostics": diagnostics}
+    snapshots = dict(chain.get("snapshots", chain))
+    diagnostics["snapshot_count"] = len(snapshots)
+    def reject(reason: str) -> None:
+        counts = diagnostics["rejections"]
+        counts[reason] = counts.get(reason, 0) + 1
     option_type = str(intent.get("option_type") or "").lower()
     dte_low = int(intent.get("min_dte") or 7)
     dte_high = int(intent.get("max_dte") or 21)
@@ -69,6 +115,7 @@ def select_debit_spread(
     for symbol, snapshot in snapshots.items():
         parsed = parse_occ(symbol)
         if not parsed or parsed["option_type"] != option_type:
+            reject("invalid_symbol_or_wrong_type")
             continue
         dte = (parsed["expiration"] - today).days
         delta = abs(_delta(dict(snapshot or {})))
@@ -84,8 +131,17 @@ def select_debit_spread(
                 or (option_type == "put" and underlying_price <= parsed["strike"] <= underlying_price * 1.01)
             )
         )
-        if dte_low <= dte <= dte_high and (delta_eligible or moneyness_eligible) and bid > 0 and ask > bid and spread_pct <= max_spread:
+        if not dte_low <= dte <= dte_high:
+            reject("expiration_out_of_range")
+        elif not (delta_eligible or moneyness_eligible):
+            reject("delta_or_moneyness")
+        elif not (bid > 0 and ask > bid):
+            reject("invalid_long_quote")
+        elif spread_pct > max_spread:
+            reject("long_bid_ask_spread")
+        else:
             candidates.append({**parsed, "dte": dte, "delta": delta, "delta_source": "greeks" if delta else "near_money_fallback", "bid": bid, "ask": ask, "spread_pct": spread_pct})
+    diagnostics["eligible_long_legs"] = len(candidates)
     candidates.sort(key=lambda row: (0 if row["delta_source"] == "greeks" else 1, abs(row["delta"] - ((delta_low + delta_high) / 2.0)) if row["delta"] else abs(row["strike"] - underlying_price), row["spread_pct"], row["dte"]))
     for long_leg in candidates:
         target_strike = long_leg["strike"] + width if option_type == "call" else long_leg["strike"] - width
@@ -102,13 +158,16 @@ def select_debit_spread(
             if bid > 0 and ask >= bid and spread_pct <= max_spread:
                 shorts.append({**parsed, "bid": bid, "ask": ask, "delta": abs(_delta(dict(snapshot or {}))), "spread_pct": spread_pct})
         if not shorts:
+            reject("missing_or_ineligible_short_leg")
             continue
         short_leg = min(shorts, key=lambda row: row["spread_pct"])
         debit = round(long_leg["ask"] - short_leg["bid"], 2)
         if debit <= 0 or debit * 100 > max_loss_dollars or debit >= width:
+            reject("debit_or_risk_limit")
             continue
         return {
             "status": "selected",
+            "diagnostics": diagnostics,
             "underlying": intent.get("underlying"),
             "option_type": option_type,
             "order_class": "mleg",
@@ -125,7 +184,7 @@ def select_debit_spread(
             "live_eligible": long_leg["delta_source"] == "greeks",
             "live_submission": False,
         }
-    return {"status": "no_eligible_defined_risk_spread", "live_submission": False, "candidate_count": len(candidates)}
+    return {"status": "no_eligible_defined_risk_spread", "live_submission": False, "candidate_count": len(candidates), "diagnostics": diagnostics}
 
 
 def value_debit_spread(chain: dict, plan: dict) -> dict[str, Any]:
