@@ -25,11 +25,16 @@ def credentials_configured() -> bool:
 
 
 def list_perpetual_products() -> tuple[list[dict], dict]:
-    """Return sanitized U.S. CFM perpetual products, excluding INTX catalog rows."""
+    """Return sanitized U.S. CFM funding-bearing futures, excluding INTX rows.
+
+    Coinbase's U.S. perpetual-style products are long-dated CFM futures and may be
+    classified as EXPIRING rather than PERPETUAL, so discovery cannot filter on
+    contract_expiry_type alone.
+    """
     raw_products: list[dict] = []
     page_count = 0
     for offset in range(0, 1000, 100):
-        params = {"product_type": "FUTURE", "contract_expiry_type": "PERPETUAL", "limit": "100", "offset": str(offset)}
+        params = {"product_type": "FUTURE", "expiring_contract_status": "STATUS_UNEXPIRED", "limit": "100", "offset": str(offset)}
         payload, transport = _get("/api/v3/brokerage/products", params)
         if transport.get("error"):
             return [], {**transport, "pages": page_count}
@@ -49,6 +54,10 @@ def list_perpetual_products() -> tuple[list[dict], dict]:
             excluded_intx += 1
             continue
         perpetual = details.get("perpetual_details") or product.get("perpetual_details") or {}
+        funding_rate = perpetual.get("funding_rate") or details.get("funding_rate") or product.get("funding_rate")
+        funding_interval = details.get("funding_interval") or product.get("funding_interval")
+        if funding_rate in (None, "") and funding_interval in (None, ""):
+            continue
         rows.append({
             "product_id": product_id,
             "display_name": product.get("display_name") or product.get("product_id"),
@@ -56,15 +65,17 @@ def list_perpetual_products() -> tuple[list[dict], dict]:
             "best_bid": _number(product.get("best_bid_price")),
             "best_ask": _number(product.get("best_ask_price")),
             "index_price": _number(details.get("index_price") or product.get("index_price")),
-            "funding_rate": _number(perpetual.get("funding_rate") or details.get("funding_rate") or product.get("funding_rate")),
+            "funding_rate": _number(funding_rate),
             "funding_time": perpetual.get("funding_time") or details.get("funding_time") or product.get("funding_time"),
-            "funding_interval": details.get("funding_interval") or product.get("funding_interval"),
+            "funding_interval": funding_interval,
             "contract_size": _number(details.get("contract_size")),
             "contract_expiry_type": details.get("contract_expiry_type") or product.get("contract_expiry_type"),
+            "contract_expiry": details.get("contract_expiry"),
+            "contract_code": details.get("contract_code"),
             "venue": venue or None,
             "trading_disabled": bool(product.get("trading_disabled")),
         })
-    return rows, {**transport, "pages": page_count, "catalog_product_count": len(raw_products), "excluded_intx_count": excluded_intx, "product_count": len(rows)}
+    return rows, {**transport, "discovery": "all_unexpired_futures_then_funding_filter", "pages": page_count, "catalog_product_count": len(raw_products), "excluded_intx_count": excluded_intx, "product_count": len(rows)}
 
 
 def check_cfm_read_access() -> dict:

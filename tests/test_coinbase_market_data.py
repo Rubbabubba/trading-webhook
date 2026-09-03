@@ -29,11 +29,19 @@ def test_product_response_is_sanitized(monkeypatch):
 def test_intx_products_are_excluded_from_us_research(monkeypatch):
     monkeypatch.setattr(coinbase, "_get", lambda *args, **kwargs: ({"products": [
         {"product_id": "BTC-PERP-INTX", "product_venue": "neptune", "future_product_details": {"contract_expiry_type": "PERPETUAL"}},
-        {"product_id": "BIPZ30", "product_venue": "FCM", "future_product_details": {"contract_expiry_type": "PERPETUAL", "venue": "CDE"}},
+        {"product_id": "BIPZ30", "product_venue": "FCM", "future_product_details": {"contract_expiry_type": "EXPIRING", "venue": "CDE", "funding_interval": "3600s"}},
     ], "pagination": {"has_next": False}}, {"authenticated": True, "status_code": 200}))
     products, transport = coinbase.list_perpetual_products()
     assert [row["product_id"] for row in products] == ["BIPZ30"]
     assert transport["excluded_intx_count"] == 1
+
+
+def test_ordinary_dated_future_without_funding_is_excluded(monkeypatch):
+    monkeypatch.setattr(coinbase, "_get", lambda *args, **kwargs: ({"products": [
+        {"product_id": "BIT-25SEP26-CDE", "product_venue": "FCM", "future_product_details": {"contract_expiry_type": "EXPIRING", "venue": "CDE"}},
+    ], "pagination": {"has_next": False}}, {"authenticated": True, "status_code": 200}))
+    products, _ = coinbase.list_perpetual_products()
+    assert products == []
 
 
 def test_cfm_access_discards_balance_payload(monkeypatch):
