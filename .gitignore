@@ -3,5 +3,6 @@ __pycache__/
 webhook_console.sqlite3
 *.py[cod]
 .pytest_cache/
+.pytest-*/
 .env
 .env.*
