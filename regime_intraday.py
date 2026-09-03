@@ -244,4 +244,35 @@ def evaluate_regime_intraday(bars_by_symbol: dict[str, list[dict]], config: Regi
         "signal_count": len(signals),
         "features": features,
         "config": asdict(cfg),
+        "setup_proximity": _setup_proximity(features, regime, cfg),
     }
+
+
+def _setup_proximity(features: dict[str, dict], regime: dict, config: RegimeIntradayConfig) -> list[dict]:
+    """Report deterministic distance to a mean-reversion setup, not a probability."""
+    rows = []
+    for symbol in config.trade_symbols:
+        feature = dict(features.get(symbol) or {})
+        ready = bool(feature.get("ready"))
+        distance = float(feature.get("vwap_distance_atr") or 0.0)
+        absolute = abs(distance)
+        in_band = config.mean_reversion_min_vwap_atr <= absolute <= config.mean_reversion_max_vwap_atr
+        bullish = distance < 0 and feature.get("price", 0) > feature.get("last_open", 0) and feature.get("price", 0) > feature.get("prior_close", 0)
+        bearish = distance > 0 and feature.get("price", 0) < feature.get("last_open", 0) and feature.get("price", 0) < feature.get("prior_close", 0)
+        regime_ready = regime.get("name") == "range" and config.mean_reversion_enabled
+        if not ready: next_gate = "waiting for fresh complete data"
+        elif not config.mean_reversion_enabled: next_gate = "mean reversion disabled"
+        elif regime.get("name") != "range": next_gate = f"waiting for range regime (currently {regime.get('name') or 'unknown'})"
+        elif absolute < config.mean_reversion_min_vwap_atr: next_gate = "needs more VWAP stretch"
+        elif absolute > config.mean_reversion_max_vwap_atr: next_gate = "overextended; waiting to return to band"
+        elif not (bullish or bearish): next_gate = "waiting for reversal bar confirmation"
+        else: next_gate = "underlying signal ready"
+        rows.append({"symbol": symbol, "strategy": "vwap_mean_reversion", "data_ready": ready,
+                     "regime_ready": regime_ready, "vwap_distance_atr": round(distance, 4),
+                     "required_vwap_atr_band": [config.mean_reversion_min_vwap_atr, config.mean_reversion_max_vwap_atr],
+                     "distance_to_nearest_band_edge_atr": round(config.mean_reversion_min_vwap_atr - absolute, 4) if absolute < config.mean_reversion_min_vwap_atr else round(absolute - config.mean_reversion_max_vwap_atr, 4) if absolute > config.mean_reversion_max_vwap_atr else 0.0,
+                     "stretch_ready": in_band, "reversal_ready": bool(bullish or bearish),
+                     "reversal_direction": "buy" if bullish else "sell" if bearish else None,
+                     "underlying_signal_ready": bool(ready and regime_ready and in_band and (bullish or bearish)),
+                     "option_selection": "pending underlying signal", "next_gate": next_gate})
+    return rows

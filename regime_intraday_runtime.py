@@ -129,8 +129,8 @@ class RegimeIntradayRuntime:
             "signal_count": len(list(primary.get("signals") or [])) + len(list(dia_scan.get("signals") or [])),
             "features": {**dict(primary.get("features") or {}), "DIA": dict(dict(dia_scan.get("features") or {}).get("DIA") or {})},
             "sleeves": {
-                "spy_mean_reversion": {"execution": "paper", "regime": primary.get("regime"), "signal_count": len(list(primary.get("signals") or []))},
-                "dia_mean_reversion": {"execution": "paper" if dia_enabled else "disabled", "regime": dia_scan.get("regime"), "signal_count": len(list(dia_scan.get("signals") or []))},
+                "spy_mean_reversion": {"execution": "paper", "regime": primary.get("regime"), "signal_count": len(list(primary.get("signals") or [])), "setup_proximity": list(primary.get("setup_proximity") or [])},
+                "dia_mean_reversion": {"execution": "paper" if dia_enabled else "disabled", "regime": dia_scan.get("regime"), "signal_count": len(list(dia_scan.get("signals") or [])), "setup_proximity": list(dia_scan.get("setup_proximity") or [])},
             },
         }
         payload.update({"status": "completed", "ts_utc": timestamp, "paper_only": True, "live_submission": False, "market_data": fetch})

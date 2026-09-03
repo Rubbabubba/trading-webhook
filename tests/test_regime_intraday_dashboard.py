@@ -33,6 +33,15 @@ def test_overview_keeps_canceled_orders_out_of_active_list():
     assert "Paper order needs attention" in page
 
 
+def test_overview_shows_setup_proximity_without_probability_claim():
+    scan = {"ts_utc": "2099-09-03T15:00:00+00:00", "setup_proximity": [{"symbol": "SPY", "data_ready": True, "regime_ready": True, "stretch_ready": False, "reversal_ready": True, "vwap_distance_atr": -0.7, "required_vwap_atr_band": [1, 2.75], "distance_to_nearest_band_edge_atr": 0.3, "next_gate": "needs more VWAP stretch"}]}
+    page = render_intraday_dashboard(scan=scan, ledger={}, readiness={"paper_ready": True}, scanner={})
+    assert "Setup proximity" in page
+    assert "needs more VWAP stretch" in page
+    assert "-0.7 ATR from VWAP" in page
+    assert "Rules, not a probability" in page
+
+
 def test_route_catalog_separates_active_intraday_from_legacy_research():
     assert classify_path("/dashboard/intraday", {"GET"})["owner"] == "regime_intraday"
     row = classify_path("/diagnostics/swing_tuning_simulator", {"GET"})

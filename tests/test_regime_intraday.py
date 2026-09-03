@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from regime_intraday import RegimeIntradayConfig, evaluate_regime_intraday
+from regime_intraday import RegimeIntradayConfig, _setup_proximity, evaluate_regime_intraday
 
 
 def _bars(*, rising: bool, final_break: bool = False):
@@ -58,3 +58,14 @@ def test_disabled_momentum_sleeve_emits_no_trend_trade():
     out = evaluate_regime_intraday({"SPY": _bars(rising=True, final_break=True), "QQQ": _bars(rising=True, final_break=True)}, cfg)
     assert out["regime"]["name"] == "trend"
     assert out["signals"] == []
+
+
+def test_setup_proximity_reports_exact_mean_reversion_gates():
+    cfg = RegimeIntradayConfig(trade_symbols=("SPY",))
+    features = {"SPY": {"ready": True, "vwap_distance_atr": -0.7, "price": 99, "last_open": 98, "prior_close": 98.5}}
+    row = _setup_proximity(features, {"name": "range"}, cfg)[0]
+    assert row["regime_ready"] is True
+    assert row["stretch_ready"] is False
+    assert row["reversal_ready"] is True
+    assert row["distance_to_nearest_band_edge_atr"] == 0.3
+    assert row["next_gate"] == "needs more VWAP stretch"

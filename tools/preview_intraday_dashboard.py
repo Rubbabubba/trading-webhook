@@ -19,7 +19,7 @@ class Preview(BaseHTTPRequestHandler):
             scan={"ts_utc": datetime.now(timezone.utc).isoformat(),
                   "regime": {"name": "transition", "direction": None},
                   "config": {"mean_reversion_enabled": True, "trade_symbols": ["SPY"], "symbols": ["SPY", "QQQ"]},
-                  "sleeves": {"spy_mean_reversion": {}, "dia_mean_reversion": {}},
+                  "sleeves": {"spy_mean_reversion": {"setup_proximity": [{"symbol": "SPY", "data_ready": True, "regime_ready": True, "stretch_ready": False, "reversal_ready": True, "vwap_distance_atr": -0.72, "required_vwap_atr_band": [1, 2.75], "distance_to_nearest_band_edge_atr": .28, "next_gate": "needs more VWAP stretch"}]}, "dia_mean_reversion": {"setup_proximity": [{"symbol": "DIA", "data_ready": True, "regime_ready": True, "stretch_ready": True, "reversal_ready": False, "vwap_distance_atr": 1.34, "required_vwap_atr_band": [1, 2.75], "distance_to_nearest_band_edge_atr": 0, "next_gate": "waiting for reversal bar confirmation"}]}},
                   "features": {symbol: {"freshness": "fresh", "bars": 130} for symbol in ("SPY", "QQQ", "DIA")},
                   "paper_auto_submit_enabled": True},
             ledger={}, readiness={"paper_ready": True}, scanner={},
