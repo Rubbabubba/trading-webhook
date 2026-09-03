@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import time
+import base64
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -87,7 +88,13 @@ def _token(method: str, path: str) -> str:
         "uri": f"{method.upper()} {HOST}{path}",
     }
     try:
-        loaded_key = load_pem_private_key(private_key.encode("utf-8"), password=None)
+        if "-----BEGIN" in private_key:
+            loaded_key = load_pem_private_key(private_key.encode("utf-8"), password=None)
+        else:
+            raw_key = base64.b64decode(private_key, validate=True)
+            if len(raw_key) not in {32, 64}:
+                raise ValueError("unexpected Ed25519 key length")
+            loaded_key = ed25519.Ed25519PrivateKey.from_private_bytes(raw_key[:32])
     except (TypeError, ValueError) as exc:
         raise ValueError("opportunity_coinbase_private_key_format_invalid") from exc
     if isinstance(loaded_key, ed25519.Ed25519PrivateKey):
@@ -96,7 +103,7 @@ def _token(method: str, path: str) -> str:
         algorithm = "ES256"
     else:
         raise ValueError("opportunity_coinbase_private_key_type_unsupported")
-    return jwt.encode(payload, private_key, algorithm=algorithm, headers={"kid": key_name, "nonce": secrets.token_hex()})
+    return jwt.encode(payload, loaded_key, algorithm=algorithm, headers={"kid": key_name, "nonce": secrets.token_hex()})
 
 
 def _get(path: str, params: dict | None = None) -> tuple[dict, dict]:

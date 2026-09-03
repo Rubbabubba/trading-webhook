@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 
 import pytest
 
@@ -46,3 +47,10 @@ def test_malformed_key_error_is_sanitized(monkeypatch):
     assert payload == {}
     assert transport["error"] == "opportunity_coinbase_private_key_format_invalid"
     assert "cryptography" not in transport["error"]
+
+
+def test_raw_base64_ed25519_secret_builds_jwt(monkeypatch):
+    monkeypatch.setenv("OPPORTUNITY_COINBASE_API_KEY_NAME", "organizations/a/apiKeys/b")
+    monkeypatch.setenv("OPPORTUNITY_COINBASE_API_KEY_SECRET", base64.b64encode(bytes(range(32))).decode())
+    token = coinbase._token("GET", "/api/v3/brokerage/products")
+    assert token.count(".") == 2
