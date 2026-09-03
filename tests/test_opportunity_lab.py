@@ -102,6 +102,7 @@ def test_opportunity_dashboard_is_protected_and_execution_closed(monkeypatch):
     assert "/diagnostics/opportunity_lab/backtest/crypto" in response.text
     assert "/diagnostics/opportunity_lab/coinbase/reconstruct-funding" in response.text
     assert "/diagnostics/opportunity_lab/arbitrage/scan" in response.text
+    assert "/diagnostics/opportunity_lab/kalshi/scan" in response.text
 
 
 def test_crypto_endpoint_rejects_truncated_history(monkeypatch):

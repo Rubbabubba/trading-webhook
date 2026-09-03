@@ -15,6 +15,7 @@ from opportunity_lab.crypto_basis import BasisInputs, backtest_funding, evaluate
 from opportunity_lab.crypto_market_data import fetch_crypto_bars
 from opportunity_lab.crypto_regime import crypto_research_suite
 from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
+from opportunity_lab.kalshi_market_data import fetch_open_events, rank_event_dislocations
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
 
 
@@ -63,8 +64,16 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
   {"outcome":"Home","venue":"Book A","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0},
   {"outcome":"Away","venue":"Book B","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0}
 ]</textarea><button id="arbRun">Scan opportunity</button></section>
+<section class="card"><h2>Live prediction-market discovery</h2><p class="muted">Unauthenticated Kalshi public data only. Results are gross price-dislocation candidates, not approved trades; fees, complete outcome coverage, account eligibility, and jurisdiction remain blockers.</p><label>Category <select id="kalshiCategory"><option value="">All</option><option>Sports</option><option>Politics</option><option>Economics</option><option>Crypto</option></select></label><label>Pages <input id="kalshiPages" type="number" min="1" max="3" value="1"></label><button id="kalshiRun">Scan live markets</button></section>
 <section class="card"><h2>Result</h2><pre id="result">Choose a market and run the research suite.</pre></section>
-<script>const post=async(path,body)=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Running…';s.className='muted';try{const response=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};document.getElementById('run').onclick=()=>post('/diagnostics/opportunity_lab/backtest/crypto',{symbol:document.getElementById('symbol').value,days:Number(document.getElementById('days').value),timeframe:document.getElementById('timeframe').value});document.getElementById('basis').onclick=()=>post('/diagnostics/opportunity_lab/basis/evaluate',{spot_ask:Number(document.getElementById('spot').value),derivative_bid:Number(document.getElementById('derivative').value),funding_rate_bps:Number(document.getElementById('funding').value),holding_hours:Number(document.getElementById('hold').value),available_capital:Number(document.getElementById('capital').value),spot_ask_size:1000000000,derivative_bid_size:1000000000});document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/reconstruct-funding',{market:document.getElementById('carryMarket').value,days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value),cost_scenarios_bps:[139,149,260]});document.getElementById('arbRun').onclick=()=>{try{post('/diagnostics/opportunity_lab/arbitrage/scan',{quotes:JSON.parse(document.getElementById('arbQuotes').value),bankroll:Number(document.getElementById('arbBankroll').value),minimum_profit:Number(document.getElementById('arbMinProfit').value),stake_increment:.01,rules_compatible:document.getElementById('arbRules').checked})}catch(error){document.getElementById('result').textContent='Invalid quote JSON: '+String(error)}};</script></main></body></html>""", headers={"Cache-Control": "no-store"})
+<script>
+const post=async(path,body)=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Running…';s.className='muted';try{const response=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};
+document.getElementById('run').onclick=()=>post('/diagnostics/opportunity_lab/backtest/crypto',{symbol:document.getElementById('symbol').value,days:Number(document.getElementById('days').value),timeframe:document.getElementById('timeframe').value});
+document.getElementById('basis').onclick=()=>post('/diagnostics/opportunity_lab/basis/evaluate',{spot_ask:Number(document.getElementById('spot').value),derivative_bid:Number(document.getElementById('derivative').value),funding_rate_bps:Number(document.getElementById('funding').value),holding_hours:Number(document.getElementById('hold').value),available_capital:Number(document.getElementById('capital').value),spot_ask_size:1000000000,derivative_bid_size:1000000000});
+document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/reconstruct-funding',{market:document.getElementById('carryMarket').value,days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value),cost_scenarios_bps:[139,149,260]});
+document.getElementById('arbRun').onclick=()=>{try{post('/diagnostics/opportunity_lab/arbitrage/scan',{quotes:JSON.parse(document.getElementById('arbQuotes').value),bankroll:Number(document.getElementById('arbBankroll').value),minimum_profit:Number(document.getElementById('arbMinProfit').value),stake_increment:.01,rules_compatible:document.getElementById('arbRules').checked})}catch(error){document.getElementById('result').textContent='Invalid quote JSON: '+String(error)}};
+document.getElementById('kalshiRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200});
+</script></main></body></html>""", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/diagnostics/opportunity_lab/backtest/crypto")
@@ -214,3 +223,14 @@ def arbitrage_scan(body: dict) -> dict:
         return {"ok": True, "scan": result}
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/diagnostics/opportunity_lab/kalshi/scan")
+def kalshi_scan(body: dict) -> dict:
+    limit = max(1, min(200, int(body.get("limit") or 200)))
+    pages = max(1, min(3, int(body.get("pages") or 1)))
+    category = str(body.get("category") or "").strip()
+    events, transport = fetch_open_events(limit=limit, pages=pages)
+    if transport.get("error"):
+        raise HTTPException(status_code=502, detail={"transport": transport})
+    return {"ok": True, "transport": transport, "scan": rank_event_dislocations(events, category=category), "execution_enabled": False}
