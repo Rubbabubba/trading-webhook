@@ -14,14 +14,14 @@ def _iso(value: datetime) -> str:
 
 
 def fetch_crypto_bars(
-    symbols: list[str], *, start: datetime, end: datetime, timeframe: str = "1Hour", max_pages: int = 100
+    symbols: list[str], *, start: datetime, end: datetime, timeframe: str = "1Hour", max_pages: int = 500
 ) -> tuple[dict[str, list[dict]], dict]:
     """Fetch paginated Alpaca US crypto bars without mutating broker state."""
     normalized = list(dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()))
     output = {symbol: [] for symbol in normalized}
     key = (os.getenv("OPPORTUNITY_ALPACA_API_KEY_ID") or "").strip()
     secret = (os.getenv("OPPORTUNITY_ALPACA_API_SECRET_KEY") or "").strip()
-    debug = {"method": "alpaca_crypto_rest", "timeframe": timeframe, "pages": 0, "count": 0}
+    debug = {"method": "alpaca_crypto_rest", "timeframe": timeframe, "requested_start": _iso(start), "requested_end": _iso(end), "pages": 0, "count": 0}
     if not key or not secret:
         return output, {**debug, "error": "opportunity_alpaca_market_data_credentials_missing"}
     token = None
@@ -48,7 +48,12 @@ def fetch_crypto_bars(
             token = payload.get("next_page_token")
             if not token:
                 break
-        debug.update({"count": sum(len(rows) for rows in output.values()), "truncated": bool(token)})
+        all_rows = [row for rows in output.values() for row in rows]
+        debug.update({"count": len(all_rows), "truncated": bool(token)})
+        if all_rows:
+            earliest = min(row["ts_utc"] for row in all_rows)
+            latest = max(row["ts_utc"] for row in all_rows)
+            debug.update({"actual_start": _iso(earliest), "actual_end": _iso(latest), "coverage_days": round((latest - earliest).total_seconds() / 86400, 2)})
     except Exception as exc:
         debug["error"] = str(exc)[:300]
     return output, debug

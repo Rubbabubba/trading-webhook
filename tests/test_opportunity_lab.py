@@ -97,3 +97,11 @@ def test_opportunity_dashboard_is_protected_and_execution_closed(monkeypatch):
     assert response.status_code == 200
     assert "execution hard-disabled" in response.text
     assert "/diagnostics/opportunity_lab/backtest/crypto" in response.text
+
+
+def test_crypto_endpoint_rejects_truncated_history(monkeypatch):
+    monkeypatch.setenv("OPPORTUNITY_ADMIN_SECRET", "secret")
+    monkeypatch.setattr("opportunity_app.fetch_crypto_bars", lambda *args, **kwargs: ({"BTC/USD": []}, {"truncated": True, "count": 0}))
+    response = TestClient(app).post("/diagnostics/opportunity_lab/backtest/crypto", headers={"x-admin-secret": "secret"}, json={"symbol": "BTC/USD", "days": 1460, "timeframe": "4Hour"})
+    assert response.status_code == 502
+    assert response.json()["detail"]["error"] == "historical_data_truncated"

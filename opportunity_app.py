@@ -70,4 +70,6 @@ def crypto_backtest(body: dict) -> dict:
     bars, transport = fetch_crypto_bars([symbol], start=end - timedelta(days=days), end=end, timeframe=timeframe)
     if transport.get("error"):
         raise HTTPException(status_code=502, detail={"transport": transport})
+    if transport.get("truncated"):
+        raise HTTPException(status_code=502, detail={"error": "historical_data_truncated", "transport": transport})
     return {"ok": True, "symbol": symbol, "requested_days": days, "transport": transport, "research": crypto_research_suite(bars.get(symbol, [])), "execution_enabled": False}
