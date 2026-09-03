@@ -22,6 +22,7 @@ def render_intraday_dashboard(*, scan: dict, ledger: dict, readiness: dict, scan
     summary = dict(ledger.get("summary") or {})
     performance = performance_views(ledger)
     pending = dict(ledger.get("pending_candidates") or {})
+    entry_blocker = ", ".join(readiness.get("paper_blockers") or [])
     orders = dict(ledger.get("orders") or {})
     notifications = dict(readiness.get("notifications") or {})
     signal_rows = "".join(
@@ -29,7 +30,7 @@ def render_intraday_dashboard(*, scan: dict, ledger: dict, readiness: dict, scan
         for row in list(scan.get("signals") or [])
     ) or "<tr><td colspan='7' class='muted'>No actionable signal in the latest scan.</td></tr>"
     pending_rows = "".join(
-        f"<tr><td>{_esc(signal_id)}</td><td>{_esc(row.get('status'))}</td><td>{_esc(row.get('expires_at'))}</td><td>${_esc(dict(row.get('plan') or {}).get('max_loss_dollars'))}</td></tr>"
+        f"<tr><td>{_esc(signal_id)}</td><td>{_esc('blocked: ' + entry_blocker if row.get('status') == 'awaiting_paper_approval' and entry_blocker else row.get('status'))}</td><td>{_esc(row.get('expires_at'))}</td><td>${_esc(dict(row.get('plan') or {}).get('max_loss_dollars'))}</td></tr>"
         for signal_id, row in pending.items()
     ) or "<tr><td colspan='4' class='muted'>No candidates awaiting approval.</td></tr>"
     order_rows = "".join(

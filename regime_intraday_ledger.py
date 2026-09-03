@@ -110,7 +110,7 @@ def paper_submission_decision(
     max_daily_loss_dollars: float = 200.0,
 ) -> dict[str, Any]:
     orders = dict(ledger.get("orders") or {})
-    closed = list(ledger.get("closed") or [])
+    closed = [row for row in ledger.get("closed", []) if row.get("paper_signal_id") or row.get("status") == "filled_closed"]
     if not signal_id:
         return {"allowed": False, "reason": "missing_signal_id"}
     if signal_id in orders:
@@ -119,12 +119,15 @@ def paper_submission_decision(
     if len(today_orders) >= max(1, int(max_trades_per_day)):
         return {"allowed": False, "reason": "daily_trade_limit"}
     today_closed = [row for row in closed if str(row.get("session") or _session(str(row.get("exit_ts_utc") or ""))) == session]
+    today_closed.sort(key=lambda row: str(row.get("exit_ts_utc") or ""))
+    if any(row.get("realized_dollars") is None for row in today_closed):
+        return {"allowed": False, "reason": "broker_realized_pnl_missing"}
     realized_dollars = sum(float(row.get("realized_dollars") or 0.0) for row in today_closed)
     if realized_dollars <= -abs(float(max_daily_loss_dollars)):
         return {"allowed": False, "reason": "daily_loss_lock", "realized_dollars": round(realized_dollars, 2)}
     loss_streak = 0
     for row in reversed(today_closed):
-        if float(row.get("realized_dollars") or row.get("realized_r") or 0.0) < 0:
+        if float(row.get("realized_dollars") or 0.0) < 0:
             loss_streak += 1
         else:
             break

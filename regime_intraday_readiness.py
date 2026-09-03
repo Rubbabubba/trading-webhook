@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+from regime_intraday_ledger import paper_submission_decision
 
 
 def readiness_snapshot(*, config: dict[str, Any], ledger: dict[str, Any], last_scan: dict[str, Any], paper_credentials_present: bool) -> dict[str, Any]:
@@ -23,6 +25,12 @@ def readiness_snapshot(*, config: dict[str, Any], ledger: dict[str, Any], last_s
         paper_blockers.append("paper_submit_gate_closed")
     if age is None or age > float(config.get("max_scan_age_sec") or 600):
         paper_blockers.append("recent_scan_missing")
+    entry_risk = paper_submission_decision(ledger, "readiness:new-entry", session=now.astimezone(ZoneInfo("America/New_York")).date().isoformat(),
+                                          max_trades_per_day=int(config.get("max_trades_per_day", 2)),
+                                          max_consecutive_losses=int(config.get("max_consecutive_losses", 2)),
+                                          max_daily_loss_dollars=float(config.get("max_daily_loss_dollars", 200)))
+    if not entry_risk["allowed"]:
+        paper_blockers.append(entry_risk["reason"])
     live_blockers = list(paper_blockers)
     if str(config.get("option_feed") or "").lower() != "opra":
         live_blockers.append("opra_feed_required")
@@ -38,6 +46,7 @@ def readiness_snapshot(*, config: dict[str, Any], ledger: dict[str, Any], last_s
         live_blockers.append("minimum_shadow_sample_not_met")
     return {
         "paper_ready": not paper_blockers,
+        "entry_risk": entry_risk,
         "paper_blockers": paper_blockers,
         "live_ready": not live_blockers,
         "live_blockers": list(dict.fromkeys(live_blockers)),

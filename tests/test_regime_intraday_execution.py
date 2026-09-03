@@ -119,11 +119,11 @@ def test_paper_lifecycle_locks_active_order_daily_limit_and_loss_streak():
     assert paper_submission_decision(daily, "sig-3", session="2026-09-02", max_trades_per_day=2)["reason"] == "daily_trade_limit"
 
     losses = empty_ledger()
-    losses["closed"] = [{"session": "2026-09-02", "realized_dollars": -10}, {"session": "2026-09-02", "realized_dollars": -5}]
+    losses["closed"] = [{"paper_signal_id": "a", "session": "2026-09-02", "realized_dollars": -10}, {"paper_signal_id": "b", "session": "2026-09-02", "realized_dollars": -5}]
     assert paper_submission_decision(losses, "sig-4", session="2026-09-02", max_consecutive_losses=2)["reason"] == "consecutive_loss_lock"
 
     daily_loss = empty_ledger()
-    daily_loss["closed"] = [{"session": "2026-09-02", "realized_dollars": -200}]
+    daily_loss["closed"] = [{"paper_signal_id": "a", "session": "2026-09-02", "realized_dollars": -200}]
     assert paper_submission_decision(daily_loss, "sig-5", session="2026-09-02", max_daily_loss_dollars=200)["reason"] == "daily_loss_lock"
 
 

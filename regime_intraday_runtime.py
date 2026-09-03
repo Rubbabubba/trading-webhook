@@ -15,6 +15,7 @@ from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evalu
 from regime_intraday_candidates import failed_breakout_fade_candidate, relative_strength_divergence_candidate, trend_pullback_candidate
 from regime_intraday_email import send_exit_email, send_signal_email
 from regime_intraday_email import send_order_outcome_email
+from regime_intraday_entry_guard import pending_entry_invalidation
 from regime_intraday_options import spread_quote_evidence
 from regime_intraday_executor import cancel_order, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, save_ledger, update_ledger
@@ -89,7 +90,10 @@ class RegimeIntradayRuntime:
         snapshot = readiness_snapshot(
             config={"paper_submit_enabled": _bool("REGIME_INTRADAY_PAPER_SUBMIT_ENABLED"), "live_enabled": False,
                     "option_feed": _env("REGIME_INTRADAY_OPTION_FEED", "indicative"), "max_scan_age_sec": _int("REGIME_INTRADAY_MAX_SCAN_AGE_SEC", 600),
-                    "min_shadow_closed": _int("REGIME_INTRADAY_MIN_SHADOW_CLOSED_FOR_LIVE", 10)},
+                    "min_shadow_closed": _int("REGIME_INTRADAY_MIN_SHADOW_CLOSED_FOR_LIVE", 10),
+                    "max_trades_per_day": max(1, _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 2)),
+                    "max_consecutive_losses": max(1, _int("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", 2)),
+                    "max_daily_loss_dollars": _float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200)},
             ledger=ledger, last_scan=self.last_scan, paper_credentials_present=bool(key and secret),
         )
         snapshot["notifications"] = {"email_enabled": _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True),
@@ -389,9 +393,17 @@ class RegimeIntradayRuntime:
                     ledger["pending_candidates"][signal_id].update(status=record["status"], filled_qty=broker.get("filled_qty"))
                 if status in {"new", "accepted", "pending_new", "partially_filled"} and _bool("REGIME_INTRADAY_PAPER_AUTO_CANCEL_STALE"):
                     submitted = datetime.fromisoformat(str(broker.get("submitted_at") or broker.get("created_at") or "").replace("Z", "+00:00"))
-                    if (datetime.now(timezone.utc) - submitted).total_seconds() >= max(30, _int("REGIME_INTRADAY_STALE_ENTRY_SEC", 120)):
+                    signal = dict(dict(ledger.get("pending_candidates", {}).get(signal_id) or {}).get("signal") or {})
+                    feature = dict(dict(self.last_scan.get("features") or {}).get(signal.get("symbol")) or {})
+                    invalidation = pending_entry_invalidation(signal, feature, submitted.isoformat(), datetime.now(timezone.utc))
+                    stale = (datetime.now(timezone.utc) - submitted).total_seconds() >= max(30, _int("REGIME_INTRADAY_STALE_ENTRY_SEC", 120))
+                    if invalidation or stale:
                         cancel_order(key, secret, order_id, paper=True)
                         record["status"] = "cancel_requested"
+                        record["cancel_reason"] = invalidation or "stale_entry"
+                        record["cancel_requested_at"] = datetime.now(timezone.utc).isoformat()
+                        if signal_id in ledger.get("pending_candidates", {}):
+                            ledger["pending_candidates"][signal_id]["status"] = "cancel_requested"
                 if status == "filled" and isinstance(record.get("plan"), dict):
                     plan = dict(record["plan"])
                     chain = fetch_option_chain(key, secret, str(plan.get("underlying") or ""), feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), expiration=plan.get("expiration"))
