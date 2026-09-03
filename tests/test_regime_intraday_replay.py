@@ -58,6 +58,24 @@ def test_replay_and_walk_forward_return_auditable_empty_results():
     assert len(result["test_sessions"]) == 1
 
 
+def test_replay_reports_exact_setup_gate_observations():
+    first = datetime(2026, 8, 3, 14, 30, tzinfo=timezone.utc)
+    bars = {symbol: [_row(first + timedelta(minutes=minute), 100, 101, 99, 100) for minute in range(41)] for symbol in ("SPY", "QQQ")}
+
+    def evaluator(_bars, _config):
+        return {"regime": {"name": "range"}, "signals": [], "setup_proximity": [{
+            "symbol": "SPY", "next_gate": "waiting for reversal bar confirmation",
+            "data_ready": True, "regime_ready": True, "stretch_ready": True, "reversal_ready": False,
+            "underlying_signal_ready": False, "vwap_distance_atr": 1.2,
+            "distance_to_nearest_band_edge_atr": 0,
+        }]}
+
+    result = replay_sessions(bars, evaluator=evaluator)
+    assert result["setup_gate_analysis"]["observation_count"] == 2
+    assert result["setup_gate_analysis"]["next_gate_counts"]["waiting for reversal bar confirmation"] == 2
+    assert result["setup_gate_analysis"]["note"].endswith("not signal probabilities.")
+
+
 def test_mean_reversion_walk_forward_selects_on_train_and_freezes_for_test(monkeypatch):
     first = datetime(2026, 8, 3, 14, 30, tzinfo=timezone.utc)
     bars = {

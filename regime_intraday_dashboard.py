@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import html
-from regime_intraday_ledger import performance_views
+from regime_intraday_ledger import performance_views, setup_observation_summary
 from intraday_monitoring import candidate_views
 from datetime import datetime, timezone
 from typing import Any
@@ -50,6 +50,12 @@ def _render_detailed_dashboard(*, scan: dict, ledger: dict, readiness: dict, sca
         f"<tr><td>{_esc(signal_id)}</td><td>{_esc(row.get('status'))}</td><td>{_esc(row.get('order_id'))}</td><td>{_esc(dict(row.get('exit_decision') or {}).get('reason'))}</td><td>{_esc(dict(row.get('close_order') or {}).get('status'))}</td></tr>"
         for signal_id, row in orders.items()
     ) or "<tr><td colspan='5' class='muted'>No paper orders recorded.</td></tr>"
+    session = str(scan.get("ts_utc") or "")[:10] or None
+    observations = setup_observation_summary(ledger, session=session)
+    observation_rows = "".join(
+        f"<tr><td>{_esc(symbol)}</td><td>{_esc(row.get('observations'))}</td><td>{_esc(row.get('signal_ready'))}</td><td>{_esc(', '.join(f'{key}: {value}' for key, value in dict(row.get('next_gate_counts') or {}).items()))}</td><td>{_esc(dict(row.get('closest_miss') or {}).get('next_gate'))}</td><td>{_esc(dict(row.get('closest_miss') or {}).get('bar_ts'))}</td></tr>"
+        for symbol, row in dict(observations.get("by_symbol") or {}).items()
+    ) or "<tr><td colspan='6' class='muted'>Gate history begins with the first scan after this release.</td></tr>"
     paper_ready = bool(readiness.get("paper_ready"))
     live_ready = bool(readiness.get("live_ready"))
     generated = datetime.now(timezone.utc).isoformat()
@@ -64,6 +70,7 @@ body{{margin:0;padding:20px;background:#090f17;color:#eef6ff;font-family:Inter,s
 <section class='card'><h2>Approval queue</h2><table><tr><th>Signal ID</th><th>Status</th><th>Expires</th><th>Max loss</th></tr>{pending_rows}</table></section>
 <section class='card'><h2>Candidate history — expired, blocked, or submitted</h2><table><tr><th>Signal ID</th><th>Status</th><th>Expires</th></tr>{history_rows}</table></section>
 <section class='card'><h2>Market data freshness at scan time</h2><p>Live entries require completed bars with timestamps no more than 180 seconds old. This does not certify uninterrupted bar coverage.</p><table><tr><th>Symbol</th><th>Bars</th><th>Latest bar</th><th>Age seconds</th><th>Freshness</th></tr>{freshness_rows}</table></section>
+<section class='card'><h2>Today's setup gate history</h2><p>Completed-bar rule observations, not probabilities. This shows which exact gate most often prevented a setup and preserves the closest miss for review.</p><table><tr><th>Symbol</th><th>Bars observed</th><th>Signal-ready bars</th><th>Next-gate counts</th><th>Closest miss</th><th>Time</th></tr>{observation_rows}</table></section>
 <section class='card'><h2>Paper order lifecycle</h2><table><tr><th>Signal ID</th><th>Status</th><th>Entry order</th><th>Exit reason</th><th>Close status</th></tr>{order_rows}</table></section>
 <div class='grid'><section class='card'><h2>Underlying shadow simulation — NOT broker profit</h2><p>Sampled bars only; gaps and costs are not modeled. Legacy records are preserved and excluded from the new-method total.</p><table>{_rows(list(performance['shadow'].items()))}</table></section><section class='card'><h2>Alpaca paper execution — recorded orders</h2><p>Gross P/L uses available broker fills only, before fees. Missing fills are excluded. Verify account inventory in Alpaca.</p><table>{_rows(list(performance['broker_paper'].items()))}</table></section><section class='card'><h2>Worker state</h2><table>{_rows([('last_event',scanner.get('last_event')),('last_status',scanner.get('last_status')),('last_success_utc',scanner.get('last_success_utc')),('consecutive_failures',scanner.get('consecutive_failures'))])}</table></section></div>
 </body></html>"""

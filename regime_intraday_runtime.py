@@ -19,7 +19,7 @@ from regime_intraday_email import send_order_outcome_email
 from regime_intraday_entry_guard import pending_entry_invalidation
 from regime_intraday_options import spread_quote_evidence
 from regime_intraday_executor import cancel_order, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
-from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, save_ledger, update_ledger
+from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, record_setup_observations, save_ledger, setup_observation_summary, update_ledger
 from regime_intraday_ledger import performance_views
 from regime_intraday_ledger import assign_setup_identities
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
@@ -162,6 +162,7 @@ class RegimeIntradayRuntime:
                                      "max_daily_loss_dollars": _float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200)}
         ledger = update_ledger(ledger, payload, max_open_positions=max(1, _int("REGIME_INTRADAY_MAX_OPEN_POSITIONS", 1)),
                                max_daily_loss_r=_float("REGIME_INTRADAY_MAX_DAILY_LOSS_R", 2), ts_utc=timestamp)
+        record_setup_observations(ledger, payload, ts_utc=timestamp)
         expires = (datetime.fromisoformat(timestamp) + timedelta(seconds=max(60, _int("REGIME_INTRADAY_CANDIDATE_TTL_SEC", 600)))).isoformat()
         signals_by_id = {str(row.get("signal_id")): row for row in payload.get("signals", [])}
         for row in plans:
@@ -215,7 +216,9 @@ class RegimeIntradayRuntime:
         views = candidate_views(ledger, now=datetime.now(timezone.utc), blocker=", ".join(self._readiness().get("paper_blockers") or []))
         return {"ok": True, "candidate_queue": views["active"], "candidate_history": views["history"], "performance": performance_views(ledger), "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
                 "events": list(ledger.get("events") or [])[-100:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}),
-                "execution_quality": paper_fill_reconciliation(ledger), "last_scan": dict(self.last_scan), "live_submission": False}
+                "execution_quality": paper_fill_reconciliation(ledger),
+                "setup_observation_summary": setup_observation_summary(ledger, session=now_ny().date().isoformat()),
+                "last_scan": dict(self.last_scan), "live_submission": False}
 
     def readiness_payload(self) -> dict:
         return {"ok": True, **self._readiness(), "hard_controls": {"max_open_positions": _int("REGIME_INTRADAY_MAX_OPEN_POSITIONS", 1),
@@ -278,11 +281,14 @@ class RegimeIntradayRuntime:
             "relative_strength_divergence": replay_sessions(regular, replace(cfg, trade_symbols=("SPY",), momentum_enabled=False, mean_reversion_enabled=False), evaluator=relative_strength_divergence_candidate),
         }
         dia_cfg = replace(cfg, symbols=("SPY", "DIA"), trade_symbols=("DIA",), momentum_enabled=False, mean_reversion_enabled=True)
+        iwm_cfg = replace(cfg, symbols=("SPY", "IWM"), trade_symbols=("IWM",), momentum_enabled=False, mean_reversion_enabled=True)
         dia_holdout = chronological_holdout(regular, dia_cfg, risk_dollars=risk)
+        iwm_holdout = chronological_holdout(regular, iwm_cfg, risk_dollars=risk)
         output = {"ok": True, "generated_utc": datetime.now(timezone.utc).isoformat(), "calendar_days": days, "paper_only": True, "live_submission": False,
                   "cost_model": {"risk_dollars": risk, "round_trip_cost_r": cost_r}, "ranking": ranking, "variants": summaries,
                   "mean_reversion_walk_forward": walk,
-                  "validation_lab": validation_lab(baseline=variants["configured"], walk_forward=walk, instrument_reports=instruments, candidate_reports=candidate_reports, risk_dollars=risk) | {"dia_fixed_holdout": dia_holdout}}
+                  "validation_lab": validation_lab(baseline=variants["configured"], walk_forward=walk, instrument_reports=instruments, candidate_reports=candidate_reports, risk_dollars=risk) | {"dia_fixed_holdout": dia_holdout, "iwm_fixed_holdout": iwm_holdout,
+                  "instrument_policy": "Research only. IWM remains disabled unless its untouched holdout has at least 20 trades and stays positive after 0.30R modeled round-trip cost."}}
         save_ledger(_env("REGIME_INTRADAY_AFTER_HOURS_REPORT_PATH", "/var/data/regime_intraday_after_hours_report.json"), output)
         return output
 

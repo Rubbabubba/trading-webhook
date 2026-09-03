@@ -37,7 +37,65 @@ def performance_views(ledger: dict) -> dict:
 
 
 def empty_ledger() -> dict[str, Any]:
-    return {"version": LEDGER_VERSION, "open": {}, "closed": [], "orders": {}, "pending_candidates": {}, "events": []}
+    return {"version": LEDGER_VERSION, "open": {}, "closed": [], "orders": {}, "pending_candidates": {}, "events": [], "setup_observations": []}
+
+
+def record_setup_observations(ledger: dict[str, Any], scan: dict[str, Any], *, ts_utc: str | None = None, limit: int = 2000) -> dict[str, Any]:
+    """Persist one deterministic gate snapshot per symbol/bar for near-miss analysis."""
+    observed = list(ledger.get("setup_observations") or [])
+    existing = {str(row.get("observation_id") or "") for row in observed}
+    features = dict(scan.get("features") or {})
+    rows = []
+    for sleeve, detail in dict(scan.get("sleeves") or {}).items():
+        for proximity in list(dict(detail or {}).get("setup_proximity") or []):
+            rows.append((sleeve, proximity))
+    if not rows:
+        rows = [("configured", row) for row in list(scan.get("setup_proximity") or [])]
+    for sleeve, proximity in rows:
+        symbol = str(proximity.get("symbol") or "").upper()
+        bar_ts = str(dict(features.get(symbol) or {}).get("last_ts") or "")
+        identity = f"{symbol}|{proximity.get('strategy')}|{bar_ts}"
+        if not symbol or not bar_ts or identity in existing:
+            continue
+        gates = {name: bool(proximity.get(field)) for name, field in (
+            ("data", "data_ready"), ("range_regime", "regime_ready"),
+            ("vwap_stretch", "stretch_ready"), ("reversal_bar", "reversal_ready"),
+        )}
+        observed.append({
+            "observation_id": identity, "ts_utc": ts_utc or scan.get("ts_utc"), "bar_ts": bar_ts,
+            "symbol": symbol, "sleeve": sleeve, "strategy": proximity.get("strategy"),
+            "gates": gates, "gates_passed": sum(gates.values()),
+            "underlying_signal_ready": bool(proximity.get("underlying_signal_ready")),
+            "next_gate": proximity.get("next_gate"),
+            "vwap_distance_atr": proximity.get("vwap_distance_atr"),
+            "distance_to_nearest_band_edge_atr": proximity.get("distance_to_nearest_band_edge_atr"),
+        })
+        existing.add(identity)
+    ledger["setup_observations"] = observed[-max(100, int(limit)):]
+    return ledger
+
+
+def setup_observation_summary(ledger: dict[str, Any], *, session: str | None = None) -> dict[str, Any]:
+    """Aggregate exact blocking gates without presenting them as probabilities."""
+    rows = list(ledger.get("setup_observations") or [])
+    if session:
+        rows = [row for row in rows if str(row.get("bar_ts") or "")[:10] == session]
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "unknown")
+        bucket = by_symbol.setdefault(symbol, {"observations": 0, "signal_ready": 0, "next_gate_counts": {}, "closest_miss": None})
+        bucket["observations"] += 1
+        bucket["signal_ready"] += int(bool(row.get("underlying_signal_ready")))
+        gate = str(row.get("next_gate") or "unknown")
+        bucket["next_gate_counts"][gate] = bucket["next_gate_counts"].get(gate, 0) + 1
+        if not row.get("underlying_signal_ready"):
+            current = bucket.get("closest_miss")
+            candidate = {key: row.get(key) for key in ("bar_ts", "gates_passed", "next_gate", "vwap_distance_atr", "distance_to_nearest_band_edge_atr")}
+            candidate_rank = (int(candidate.get("gates_passed") or 0), -abs(float(candidate.get("distance_to_nearest_band_edge_atr") or 0)))
+            current_rank = (int(current.get("gates_passed") or 0), -abs(float(current.get("distance_to_nearest_band_edge_atr") or 0))) if current else (-1, float("-inf"))
+            if candidate_rank > current_rank:
+                bucket["closest_miss"] = candidate
+    return {"scope": "completed_bar_gate_observations", "session": session, "observation_count": len(rows), "by_symbol": by_symbol}
 
 
 def assign_setup_identities(ledger: dict, scan: dict) -> None:

@@ -79,6 +79,7 @@ def replay_sessions(
     cfg = config or RegimeIntradayConfig()
     sessions = split_sessions(bars_by_symbol, cfg.symbols)
     trades: list[dict] = []
+    setup_observations: list[dict] = []
     regime_counts: dict[str, int] = {}
     accepted_sessions = 0
     for session, day in sorted(sessions.items()):
@@ -103,6 +104,8 @@ def replay_sessions(
             scan = evaluator(prefix, cfg)
             name = str((scan.get("regime") or {}).get("name") or "unknown")
             regime_counts[name] = regime_counts.get(name, 0) + 1
+            for row in list(scan.get("setup_proximity") or []):
+                setup_observations.append({"session": session, "ts": stamp.isoformat(), **dict(row)})
             candidates = [s for s in scan.get("signals", []) if str(s.get("signal_id")) not in seen]
             if not candidates:
                 continue
@@ -118,10 +121,10 @@ def replay_sessions(
                 blocked_until = datetime.fromisoformat(str(trade["exit_ts"]).replace("Z", "+00:00"))
             else:
                 break
-    return _report(trades, len(sessions), accepted_sessions, regime_counts, cfg)
+    return _report(trades, len(sessions), accepted_sessions, regime_counts, cfg, setup_observations)
 
 
-def _report(trades: list[dict], session_count: int, accepted_sessions: int, regime_counts: dict, cfg: RegimeIntradayConfig) -> dict:
+def _report(trades: list[dict], session_count: int, accepted_sessions: int, regime_counts: dict, cfg: RegimeIntradayConfig, setup_observations: list[dict] | None = None) -> dict:
     values = [float(row.get("realized_r") or 0.0) for row in trades]
     equity = peak = drawdown = 0.0
     for value in values:
@@ -133,6 +136,21 @@ def _report(trades: list[dict], session_count: int, accepted_sessions: int, regi
         for key in sorted({str(row.get(field)) for row in trades}):
             subset = [float(row["realized_r"]) for row in trades if str(row.get(field)) == key]
             grouped[f"{field}:{key}"] = {"count": len(subset), "win_rate": round(sum(v > 0 for v in subset) / len(subset), 4), "average_r": round(fmean(subset), 4)}
+    observations = list(setup_observations or [])
+    blockers: dict[str, int] = {}
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for row in observations:
+        gate = str(row.get("next_gate") or "unknown")
+        blockers[gate] = blockers.get(gate, 0) + 1
+        symbol = str(row.get("symbol") or "unknown")
+        bucket = by_symbol.setdefault(symbol, {"observations": 0, "signal_ready": 0, "next_gate_counts": {}, "closest_misses": []})
+        bucket["observations"] += 1
+        bucket["signal_ready"] += int(bool(row.get("underlying_signal_ready")))
+        bucket["next_gate_counts"][gate] = bucket["next_gate_counts"].get(gate, 0) + 1
+        if not row.get("underlying_signal_ready"):
+            bucket["closest_misses"].append({key: row.get(key) for key in ("session", "ts", "next_gate", "vwap_distance_atr", "distance_to_nearest_band_edge_atr", "data_ready", "regime_ready", "stretch_ready", "reversal_ready")})
+    for bucket in by_symbol.values():
+        bucket["closest_misses"] = sorted(bucket["closest_misses"], key=lambda row: (-(sum(bool(row.get(field)) for field in ("data_ready", "regime_ready", "stretch_ready", "reversal_ready"))), abs(float(row.get("distance_to_nearest_band_edge_atr") or 0))))[:10]
     return {
         "ok": True,
         "session_count": session_count,
@@ -144,6 +162,8 @@ def _report(trades: list[dict], session_count: int, accepted_sessions: int, regi
         "max_drawdown_r": round(drawdown, 4),
         "profit_factor_r": round(sum(v for v in values if v > 0) / abs(sum(v for v in values if v < 0)), 4) if any(v < 0 for v in values) else None,
         "regime_evaluations": regime_counts,
+        "setup_gate_analysis": {"observation_count": len(observations), "next_gate_counts": blockers, "by_symbol": by_symbol,
+                                "note": "Completed-bar rule observations, not signal probabilities."},
         "attribution": grouped,
         "config": asdict(cfg),
         "trades": trades,
