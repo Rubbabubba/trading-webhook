@@ -242,7 +242,7 @@ def test_live_market_scan_combines_spy_and_dia_paper_sleeves(monkeypatch, tmp_pa
             "ok": True,
             "regime": {"name": "range"},
             "signals": [{"signal_id": f"signal-{symbol}", "symbol": symbol, "strategy": "vwap_mean_reversion", "underlying_side": "buy", "entry_price": 100, "stop_price": 99, "target_price": 102}],
-            "features": {item: {"price": 100} for item in config.symbols},
+            "features": {item: {"price": 100, "ready": True, "last_ts": "2026-09-03T10:14:00-04:00"} for item in config.symbols},
             "config": {},
         }
 

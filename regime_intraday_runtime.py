@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from intraday_market_data import fetch_minute_bars, fetch_recent_minute_bars
+from intraday_monitoring import apply_live_freshness, candidate_views
 from market_clock import is_regular_market_time, now_ny, parse_hhmm
 from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evaluate_regime_intraday
 from regime_intraday_candidates import failed_breakout_fade_candidate, relative_strength_divergence_candidate, trend_pullback_candidate
@@ -118,6 +119,10 @@ class RegimeIntradayRuntime:
         payload = evaluate_regime_intraday(regular, cfg)
         primary = payload
         dia_scan = evaluate_regime_intraday(regular, dia_cfg) if dia_enabled else {"signals": [], "features": {}, "regime": {"name": "disabled"}}
+        freshness_now = now_ny()
+        apply_live_freshness(primary, now=freshness_now)
+        if dia_enabled:
+            apply_live_freshness(dia_scan, now=freshness_now)
         payload = {
             **primary,
             "signals": [*list(primary.get("signals") or []), *list(dia_scan.get("signals") or [])],
@@ -207,7 +212,8 @@ class RegimeIntradayRuntime:
 
     def ledger_payload(self) -> dict:
         ledger = load_ledger(self.ledger_path)
-        return {"ok": True, "performance": performance_views(ledger), "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
+        views = candidate_views(ledger, now=datetime.now(timezone.utc), blocker=", ".join(self._readiness().get("paper_blockers") or []))
+        return {"ok": True, "candidate_queue": views["active"], "candidate_history": views["history"], "performance": performance_views(ledger), "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
                 "events": list(ledger.get("events") or [])[-100:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}),
                 "execution_quality": paper_fill_reconciliation(ledger), "last_scan": dict(self.last_scan), "live_submission": False}
 
