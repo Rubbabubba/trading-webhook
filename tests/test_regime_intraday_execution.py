@@ -7,7 +7,7 @@ from regime_intraday_ledger import load_ledger, save_ledger
 from regime_intraday_options import parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_executor import build_mleg_close_order, build_mleg_limit_order, paper_client_order_id, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot
-from regime_intraday_runtime import RegimeIntradayRuntime, _confirm_option_stop, _execution_plan_from_fill, _underlying_stop_decision
+from regime_intraday_runtime import RegimeIntradayRuntime, _confirm_option_stop, _execution_plan_from_fill, _underlying_exit_decision
 
 
 def test_close_order_reverses_both_legs_and_uses_credit_price():
@@ -40,13 +40,15 @@ def test_option_stop_requires_two_distinct_confirmation_cycles():
     assert second["confirmations"] == 2
 
 
-def test_underlying_stop_is_immediate_only_on_post_fill_completed_bar():
-    record = {"signal": {"underlying_side": "sell", "stop_price": 534.43},
+def test_underlying_levels_exit_only_on_post_fill_completed_bar_and_stop_wins_ties():
+    record = {"signal": {"underlying_side": "sell", "stop_price": 534.43, "target_price": 534.17},
               "broker": {"filled_at": "2026-09-04T15:00:18+00:00"}}
     prefill = {"ready": True, "last_ts": "2026-09-04T11:00:00-04:00", "last_high": 535}
-    postfill = {"ready": True, "last_ts": "2026-09-04T11:01:00-04:00", "last_high": 534.50}
-    assert _underlying_stop_decision(record, prefill) is None
-    assert _underlying_stop_decision(record, postfill)["reason"] == "underlying_stop"
+    target = {"ready": True, "last_ts": "2026-09-04T11:01:00-04:00", "last_high": 534.30, "last_low": 534.10}
+    both = {"ready": True, "last_ts": "2026-09-04T11:02:00-04:00", "last_high": 534.50, "last_low": 534.10}
+    assert _underlying_exit_decision(record, prefill) is None
+    assert _underlying_exit_decision(record, target)["reason"] == "underlying_target"
+    assert _underlying_exit_decision(record, both)["reason"] == "underlying_stop"
 
 
 def test_signal_generates_stable_broker_idempotency_key():
@@ -259,6 +261,59 @@ def test_reconcile_auto_closes_and_records_filled_paper_roundtrip(monkeypatch, t
     assert saved["orders"]["sig-1"]["status"] == "filled_closed"
     assert saved["closed"][-1]["paper_signal_id"] == "sig-1"
     assert saved["closed"][-1]["realized_dollars"] == 20.0
+
+
+def test_reconcile_underlying_target_submits_close(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "target-ledger.json"
+    monkeypatch.setenv("WORKER_SECRET", "worker")
+    monkeypatch.setenv("ALPACA_PAPER_API_KEY_ID", "key")
+    monkeypatch.setenv("ALPACA_PAPER_API_SECRET_KEY", "secret")
+    monkeypatch.setenv("REGIME_INTRADAY_LEDGER_PATH", str(ledger_path))
+    ledger = empty_ledger()
+    ledger["orders"] = {"target-sig": {"order_id": "entry", "status": "filled", "session": "2026-09-04",
+        "signal": {"symbol": "DIA", "underlying_side": "sell", "stop_price": 535, "target_price": 534},
+        "broker": {"status": "filled", "filled_avg_price": ".50", "filled_at": "2026-09-04T15:00:18+00:00"},
+        "plan": {"underlying": "DIA", "limit_debit": .55, "max_loss_dollars": 55, "max_profit_dollars": 45, "legs": [{"symbol": "LONG"}, {"symbol": "SHORT"}]}}}
+    save_ledger(str(ledger_path), ledger)
+    runtime = RegimeIntradayRuntime()
+    runtime.last_scan = {"features": {"DIA": {"ready": True, "last_ts": "2026-09-04T11:01:00-04:00", "last_high": 534.5, "last_low": 533.9}}}
+    monkeypatch.setattr(runtime_module, "get_order", lambda *a, **k: {"status": "filled", "filled_avg_price": ".50", "filled_at": "2026-09-04T15:00:18+00:00"})
+    monkeypatch.setattr(runtime_module, "fetch_option_chain", lambda *a, **k: {})
+    monkeypatch.setattr(runtime_module, "value_debit_spread", lambda *a, **k: {"status": "valued", "liquidation_credit": .48, "unrealized_dollars": -2})
+    monkeypatch.setattr(runtime_module, "spread_exit_decision", lambda *a, **k: {"exit": False, "reason": "hold"})
+    monkeypatch.setattr(runtime_module, "send_exit_email", lambda **k: {"sent": True, "message_id": "target-email"})
+    monkeypatch.setattr(runtime_module, "submit_mleg_close_order", lambda *a, **k: {"submitted": True, "order_id": "target-close", "status": "new"})
+    runtime.paper_reconcile({"worker_secret": "worker"})
+    record = load_ledger(str(ledger_path))["orders"]["target-sig"]
+    assert record["status"] == "close_submitted"
+    assert record["close_order"]["reason"] == "underlying_target"
+
+
+def test_underlying_exit_with_missing_quote_requires_attention(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "missing-quote-ledger.json"
+    monkeypatch.setenv("WORKER_SECRET", "worker")
+    monkeypatch.setenv("ALPACA_PAPER_API_KEY_ID", "key")
+    monkeypatch.setenv("ALPACA_PAPER_API_SECRET_KEY", "secret")
+    monkeypatch.setenv("REGIME_INTRADAY_LEDGER_PATH", str(ledger_path))
+    ledger = empty_ledger()
+    ledger["orders"] = {"stop-sig": {"order_id": "entry", "status": "filled", "session": "2026-09-04",
+        "signal": {"symbol": "SPY", "underlying_side": "buy", "stop_price": 500, "target_price": 510},
+        "broker": {"status": "filled", "filled_avg_price": ".50", "filled_at": "2026-09-04T15:00:18+00:00"},
+        "plan": {"underlying": "SPY", "limit_debit": .50, "max_loss_dollars": 50, "max_profit_dollars": 50, "legs": [{"symbol": "LONG"}, {"symbol": "SHORT"}]}}}
+    save_ledger(str(ledger_path), ledger)
+    runtime = RegimeIntradayRuntime()
+    runtime.last_scan = {"features": {"SPY": {"ready": True, "last_ts": "2026-09-04T11:01:00-04:00", "last_high": 501, "last_low": 499}}}
+    monkeypatch.setattr(runtime_module, "get_order", lambda *a, **k: {"status": "filled", "filled_avg_price": ".50", "filled_at": "2026-09-04T15:00:18+00:00"})
+    monkeypatch.setattr(runtime_module, "fetch_option_chain", lambda *a, **k: {})
+    monkeypatch.setattr(runtime_module, "value_debit_spread", lambda *a, **k: {"status": "missing_leg_quote"})
+    monkeypatch.setattr(runtime_module, "spread_exit_decision", lambda *a, **k: {"exit": False, "reason": "spread_not_valued"})
+    monkeypatch.setattr(runtime_module, "send_exit_email", lambda **k: {"sent": True, "message_id": "attention-email"})
+    monkeypatch.setattr(runtime_module, "submit_mleg_close_order", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no quote means no close")))
+    runtime.paper_reconcile({"worker_secret": "worker"})
+    record = load_ledger(str(ledger_path))["orders"]["stop-sig"]
+    assert record["status"] == "close_requires_attention"
+    assert record["exit_decision"]["reason"] == "exit_quote_unavailable"
+    assert record["exit_decision"]["trigger_reason"] == "underlying_stop"
 
 
 def test_paper_submit_recovers_order_after_transport_timeout(monkeypatch, tmp_path):

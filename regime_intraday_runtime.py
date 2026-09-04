@@ -108,10 +108,11 @@ def _execution_plan_from_fill(record: dict[str, Any]) -> dict[str, Any]:
     return plan
 
 
-def _underlying_stop_decision(record: dict[str, Any], feature: dict[str, Any]) -> dict[str, Any] | None:
+def _underlying_exit_decision(record: dict[str, Any], feature: dict[str, Any]) -> dict[str, Any] | None:
     signal = dict(record.get("signal") or {})
     stop = float(signal.get("stop_price") or 0)
-    if stop <= 0 or not feature.get("ready"):
+    target = float(signal.get("target_price") or 0)
+    if (stop <= 0 and target <= 0) or not feature.get("ready"):
         return None
     bar_ts = str(feature.get("last_ts") or "")
     filled_at = str(dict(record.get("broker") or {}).get("filled_at") or "")
@@ -123,8 +124,14 @@ def _underlying_stop_decision(record: dict[str, Any], feature: dict[str, Any]) -
     side = str(signal.get("underlying_side") or "buy")
     low = float(feature.get("last_low") or feature.get("price") or 0)
     high = float(feature.get("last_high") or feature.get("price") or 0)
-    hit = low <= stop if side == "buy" else high >= stop
-    return {"exit": True, "reason": "underlying_stop", "underlying_stop": stop, "bar_ts": bar_ts} if hit else None
+    stop_hit = stop > 0 and (low <= stop if side == "buy" else high >= stop)
+    target_hit = target > 0 and (high >= target if side == "buy" else low <= target)
+    # Completed minute bars do not reveal intrabar path; assume the stop occurred first.
+    if stop_hit:
+        return {"exit": True, "reason": "underlying_stop", "underlying_stop": stop, "bar_ts": bar_ts}
+    if target_hit:
+        return {"exit": True, "reason": "underlying_target", "underlying_target": target, "bar_ts": bar_ts}
+    return None
 
 
 def _confirm_option_stop(record: dict[str, Any], decision: dict[str, Any], observed_at: datetime) -> dict[str, Any]:
@@ -580,15 +587,24 @@ class RegimeIntradayRuntime:
                     decision = _confirm_option_stop(record, decision, current)
                     signal = dict(record.get("signal") or {})
                     feature = dict(dict(self.last_scan.get("features") or {}).get(signal.get("symbol") or plan.get("underlying")) or {})
-                    decision = _underlying_stop_decision(record, feature) or decision
+                    decision = _underlying_exit_decision(record, feature) or decision
                     if record.get("mechanical_test") and valuation.get("status") == "valued":
                         decision = {"exit": True, "reason": "mechanical_roundtrip_drill"}
                     if record.get("close_retry_required"):
                         decision = {"exit": True, "reason": "close_retry"}
                     record.update({"valuation": valuation, "exit_decision": decision})
-                    if valuation.get("status") != "valued" and (current.hour * 60 + current.minute >= 945 or record.get("close_retry_required")):
+                    if valuation.get("status") != "valued" and (decision.get("exit") or current.hour * 60 + current.minute >= 945 or record.get("close_retry_required")):
+                        trigger_reason = decision.get("reason")
                         record["status"] = "close_requires_attention"
-                        record["exit_decision"] = {"exit": True, "reason": "exit_quote_unavailable"}
+                        record["exit_decision"] = {"exit": True, "reason": "exit_quote_unavailable", "trigger_reason": trigger_reason}
+                        if signal_id not in alerted:
+                            try:
+                                result = send_exit_email(api_key=_env("RESEND_API_KEY") if _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True) else "", to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"),
+                                                         from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"), signal_id=signal_id, record=record)
+                            except Exception:
+                                result = {"sent": False}
+                            event = "paper_exit_email_sent" if result.get("sent") else "paper_exit_email_failed"
+                            ledger.setdefault("events", []).append({"event": event, "signal_id": signal_id, "message_id": result.get("message_id"), "ts_utc": datetime.now(timezone.utc).isoformat()})
                         refreshed.append({"signal_id": signal_id, "status": "close_requires_attention"})
                         continue
                     if decision.get("exit") and signal_id not in alerted:
