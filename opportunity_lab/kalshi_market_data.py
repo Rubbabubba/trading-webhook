@@ -154,7 +154,7 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
         "mutually_exclusive_no_pair_count": len(no_pair_candidates),
         "mutually_exclusive_no_pairs": no_pair_candidates[:50],
         "closest_no_pair_count": len(closest_no_pairs),
-        "closest_no_pairs": closest_no_pairs[:100],
+        "closest_no_pairs": closest_no_pairs,
         "fee_model": "conservative_general_taker_estimate: ceil_to_cent(0.07*C*P*(1-P)) per leg",
         "skipped": skipped,
         "research_only": True,
