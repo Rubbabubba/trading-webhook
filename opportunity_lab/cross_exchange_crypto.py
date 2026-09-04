@@ -24,11 +24,15 @@ def fetch_coinbase_book(symbol: str, *, limit: int = 50) -> tuple[dict, dict]:
 
 
 def fetch_kraken_book(symbol: str) -> tuple[dict, dict]:
-    product_id = f"{symbol.upper()}/USD"
+    return fetch_kraken_pair(symbol, "USD")
+
+
+def fetch_kraken_pair(base: str, quote: str) -> tuple[dict, dict]:
+    product_id = f"{base.upper()}/{quote.upper()}"
     payload, transport = _get(KRAKEN_BOOK_URL, {"symbol": product_id})
     result = payload.get("result") or {}
     book = result if result.get("bids") is not None else result.get(product_id) or next((value for value in result.values() if isinstance(value, dict)), {})
-    normalized = _book("kraken", symbol, book.get("bids"), book.get("asks"), "price", "qty", None)
+    normalized = _book("kraken", product_id, book.get("bids"), book.get("asks"), "price", "qty", None)
     if payload.get("error") or not normalized["bids"] or not normalized["asks"]:
         transport = {**transport, "error": "empty_or_unrecognized_order_book"}
     return normalized, {**transport, "venue": "kraken", "product_id": product_id, "authenticated": False}

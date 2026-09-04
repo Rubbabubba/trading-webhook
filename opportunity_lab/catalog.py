@@ -24,7 +24,7 @@ CANDIDATES = (
     Candidate("crypto_regime", 3, "Crypto regime trading", "directional", "backtest_shadow", "single_venue", ("alpaca_crypto",), "researched_rejected", "Rejected in current form after full-coverage hourly, four-hour, and daily validation failed out of sample."),
     Candidate("prediction_market_making", 4, "Prediction-market market making", "market_making", "backtest_shadow", "single_venue", ("prediction_market",), "research", "Conservative public-quote screen active; fill history, queue position, series fees, and adverse selection remain unverified."),
     Candidate("cross_exchange_crypto", 5, "Cross-exchange crypto arbitrage", "arbitrage", "monitor_only", "multi_venue", ("coinbase_public_orderbook", "kraken_public_orderbook"), "research", "Depth-aware Coinbase/Kraken public monitor active; requires pre-funded inventory and careful transfer accounting."),
-    Candidate("triangular_crypto", 6, "Triangular crypto arbitrage", "arbitrage", "monitor_only", "three_leg", ("crypto_exchange_orderbook",), "queued", "Must clear three-leg fees, depth, latency, and fill risk."),
+    Candidate("triangular_crypto", 6, "Triangular crypto arbitrage", "arbitrage", "monitor_only", "three_leg", ("kraken_public_orderbook",), "research", "Depth-aware Kraken BTC/USD, ETH/USD, and ETH/BTC cycle monitor active; must clear three fees, latency, and fill risk."),
     Candidate("matched_betting", 7, "Matched betting/promotions", "promotion", "manual_assist", "multi_venue", ("sportsbook_offers", "hedge_venue"), "queued", "Potentially attractive but finite and account-dependent."),
 )
 

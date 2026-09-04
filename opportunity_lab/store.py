@@ -37,6 +37,56 @@ def save_cross_exchange_scans(scans: list[dict]) -> dict:
     return {"configured": True, "saved": True, "observed_at": observed_at.isoformat(), "row_count": len(rows)}
 
 
+def save_triangular_scan(row: dict) -> dict:
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "saved": False, "error": "opportunity_database_not_configured"}
+    if not row.get("ok") or not row.get("scan"):
+        return {"configured": True, "saved": False, "error": "triangular_scan_failed"}
+    import psycopg
+
+    scan, best = row["scan"], row["scan"]["best_cycle"]
+    observed_at = datetime.now(timezone.utc)
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS opportunity_lab")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.triangular_observations (
+            observation_id uuid PRIMARY KEY, observed_at timestamptz NOT NULL, venue text NOT NULL,
+            profitable_cycle_count integer NOT NULL, best_net_profit numeric NOT NULL,
+            best_roi_pct numeric NOT NULL, payload jsonb NOT NULL
+        )""")
+        cursor.execute("INSERT INTO opportunity_lab.triangular_observations VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                       (str(uuid.uuid4()), observed_at, row["venue"], scan["profitable_cycle_count"],
+                        best["net_profit_usd"], best["roi_pct"], json.dumps(row)))
+    return {"configured": True, "saved": True, "observed_at": observed_at.isoformat(), "row_count": 1}
+
+
+def triangular_scoreboard(*, hours: int = 72) -> dict:
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "error": "opportunity_database_not_configured"}
+    import psycopg
+
+    hours = max(1, min(24 * 30, int(hours)))
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.triangular_observations (
+            observation_id uuid PRIMARY KEY, observed_at timestamptz NOT NULL, venue text NOT NULL,
+            profitable_cycle_count integer NOT NULL, best_net_profit numeric NOT NULL,
+            best_roi_pct numeric NOT NULL, payload jsonb NOT NULL
+        )""")
+        cursor.execute("""SELECT count(*), min(observed_at), max(observed_at),
+            coalesce(sum(profitable_cycle_count),0), max(best_net_profit), max(best_roi_pct)
+            FROM opportunity_lab.triangular_observations
+            WHERE observed_at >= now() - (%s * interval '1 hour')""", (hours,))
+        count, first_at, last_at, profitable, best_profit, best_roi = cursor.fetchone()
+    return {"configured": True, "strategy": "kraken_triangular_crypto", "window_hours": hours,
+            "observation_count": count, "first_observed_at": first_at.isoformat() if first_at else None,
+            "last_observed_at": last_at.isoformat() if last_at else None, "profitable_cycle_hits": int(profitable),
+            "best_net_profit": float(best_profit) if best_profit is not None else None,
+            "best_roi_pct": float(best_roi) if best_roi is not None else None,
+            "verdict": "investigate_execution_feasibility" if profitable else "collecting_evidence",
+            "execution_enabled": False}
+
+
 def cross_exchange_scoreboard(*, hours: int = 72) -> dict:
     url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
     if not url:

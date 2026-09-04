@@ -95,3 +95,5 @@ The Opportunity Lab includes a read-only Coinbase/Kraken BTC and ETH spot compar
 Results are based on separately requested public snapshots, so they are never executable guarantees. Simultaneous-fill risk, venue inventory, withdrawal/rebalancing costs, account eligibility, and jurisdiction remain blockers. The scanner cannot submit orders and exposes no balance or account data.
 
 The hourly Opportunity Lab collector stores BTC and ETH observations in `opportunity_lab.cross_exchange_observations`. The profitability scoreboard reports the best fee-adjusted observation and count of positive directions over the selected window.
+
+The Kraken triangular monitor evaluates both USD→BTC→ETH→USD and USD→ETH→BTC→USD using the public BTC/USD, ETH/USD, and ETH/BTC books. It consumes visible depth and compounds the conservative entry-tier taker fee on all three legs. Observations are stored hourly in `opportunity_lab.triangular_observations` and surfaced on the same scoreboard. Three-leg atomicity, latency, and the account's actual fee tier remain explicit blockers.
