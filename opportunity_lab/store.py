@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
 
 from .prediction_market_making import replay_quote
+from .weather_value import calibrate_snapshot
 
 
 def configured() -> bool:
@@ -83,6 +85,47 @@ def save_weather_scan(row: dict) -> dict:
     return {"configured": True, "saved": True, "observed_at": observed_at.isoformat(), "row_count": len(events)}
 
 
+def reconcile_weather_settlements(markets: list[dict]) -> dict:
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "saved": False, "error": "opportunity_database_not_configured"}
+    import psycopg
+
+    settled = {row.get("ticker"): row for row in markets if row.get("ticker") and row.get("result") in {"yes", "no"}}
+    calibrated = []
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS opportunity_lab")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.weather_calibrations (
+            observation_id uuid PRIMARY KEY REFERENCES opportunity_lab.weather_value_observations(observation_id) ON DELETE CASCADE,
+            calibrated_at timestamptz NOT NULL, event_ticker text NOT NULL, forecast_horizon_hours numeric NOT NULL,
+            brier_score numeric NOT NULL, forecast_error_lower_bound_f numeric,
+            paper_realized_pnl numeric NOT NULL, paper_profitable boolean NOT NULL, payload jsonb NOT NULL
+        )""")
+        if not settled:
+            return {"configured": True, "saved": True, "calibration_rows": 0, "settled_market_count": 0}
+        event_tickers = list({row.get("event_ticker") for row in markets if row.get("event_ticker")})
+        cursor.execute("""SELECT w.observation_id, w.observed_at, w.payload
+            FROM opportunity_lab.weather_value_observations w
+            LEFT JOIN opportunity_lab.weather_calibrations c USING (observation_id)
+            WHERE c.observation_id IS NULL AND w.event_ticker = ANY(%s)""", (event_tickers,))
+        for observation_id, observed_at, snapshot in cursor.fetchall():
+            result = calibrate_snapshot(snapshot, settled)
+            if not result:
+                continue
+            target_end = datetime.combine(datetime.fromisoformat(result["target_date"]).date(), time(23, 59),
+                                          tzinfo=ZoneInfo("America/Chicago"))
+            horizon = max(0.0, (target_end - observed_at.astimezone(ZoneInfo("America/Chicago"))).total_seconds() / 3600)
+            pnl = result["paper_trade"]["realized_pnl_per_contract"]
+            result["forecast_horizon_hours"] = round(horizon, 4)
+            cursor.execute("INSERT INTO opportunity_lab.weather_calibrations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                           (observation_id, datetime.now(timezone.utc), result["event_ticker"], horizon,
+                            result["brier_score"], result["forecast_error_lower_bound_f"], pnl, pnl > 0, json.dumps(result)))
+            calibrated.append(result)
+    return {"configured": True, "saved": True, "calibration_rows": len(calibrated),
+            "settled_market_count": len(settled),
+            "paper_profitable_rows": sum(row["paper_trade"]["realized_pnl_per_contract"] > 0 for row in calibrated)}
+
+
 def weather_scoreboard(*, hours: int = 72) -> dict:
     url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
     if not url:
@@ -101,12 +144,35 @@ def weather_scoreboard(*, hours: int = 72) -> dict:
             FROM opportunity_lab.weather_value_observations
             WHERE observed_at >= now() - (%s * interval '1 hour')""", (hours,))
         count, first_at, last_at, positives, best_edge = cursor.fetchone()
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.weather_calibrations (
+            observation_id uuid PRIMARY KEY REFERENCES opportunity_lab.weather_value_observations(observation_id) ON DELETE CASCADE,
+            calibrated_at timestamptz NOT NULL, event_ticker text NOT NULL, forecast_horizon_hours numeric NOT NULL,
+            brier_score numeric NOT NULL, forecast_error_lower_bound_f numeric,
+            paper_realized_pnl numeric NOT NULL, paper_profitable boolean NOT NULL, payload jsonb NOT NULL
+        )""")
+        cursor.execute("""SELECT count(*), count(DISTINCT event_ticker), avg(brier_score),
+            avg(forecast_error_lower_bound_f), sum(paper_realized_pnl), count(*) FILTER (WHERE paper_profitable)
+            FROM opportunity_lab.weather_calibrations""")
+        calibration_count, settled_events, avg_brier, avg_error_floor, paper_pnl, paper_wins = cursor.fetchone()
+    evidence_complete = settled_events >= 30
+    if not evidence_complete:
+        verdict = "collecting_calibration_evidence"
+    elif paper_pnl is not None and paper_pnl > 0 and avg_brier is not None and avg_brier < .15:
+        verdict = "investigate_execution_feasibility"
+    else:
+        verdict = "reject_or_retune_weather_model"
     return {"configured": True, "strategy": "dallas_daily_temperature_value", "window_hours": hours,
             "observation_count": count, "first_observed_at": first_at.isoformat() if first_at else None,
             "last_observed_at": last_at.isoformat() if last_at else None,
             "positive_uncalibrated_model_candidates": int(positives),
             "best_uncalibrated_model_edge": float(best_edge) if best_edge is not None else None,
-            "verdict": "collecting_calibration_evidence", "execution_enabled": False}
+            "calibration": {"snapshot_count": calibration_count, "settled_event_count": settled_events,
+                            "required_settled_events": 30, "evidence_complete": evidence_complete,
+                            "average_brier_score": float(avg_brier) if avg_brier is not None else None,
+                            "average_forecast_error_lower_bound_f": float(avg_error_floor) if avg_error_floor is not None else None,
+                            "paper_realized_pnl_per_contract_sum": float(paper_pnl) if paper_pnl is not None else None,
+                            "paper_profitable_snapshot_count": paper_wins},
+            "verdict": verdict, "execution_enabled": False}
 
 
 def triangular_scoreboard(*, hours: int = 72) -> dict:

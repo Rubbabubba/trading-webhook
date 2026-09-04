@@ -1,6 +1,6 @@
 from datetime import date
 
-from opportunity_lab.weather_value import _temperatures_for_date, _ticker_date, score_event
+from opportunity_lab.weather_value import _temperatures_for_date, _ticker_date, calibrate_snapshot, score_event
 
 
 def test_weather_event_scores_brackets_and_never_becomes_eligible():
@@ -28,3 +28,18 @@ def test_partial_local_day_is_rejected():
     partial = [{"startTime": f"2026-09-04T{hour:02d}:00:00-05:00", "temperature": 80, "temperatureUnit": "F"}
                for hour in range(12, 24)]
     assert _temperatures_for_date(partial, date(2026, 9, 4)) == []
+
+
+def test_settled_snapshot_calculates_brier_and_paper_pnl():
+    snapshot = score_event("E", [
+        {"ticker": "LOW", "strike_type": "less", "cap_strike": 71, "yes_sub_title": "low",
+         "yes_ask_dollars": ".10", "yes_ask_size_fp": "4", "no_ask_dollars": ".92", "yes_bid_size_fp": "3"},
+        {"ticker": "MID", "strike_type": "between", "floor_strike": 75, "cap_strike": 76, "yes_sub_title": "mid",
+         "yes_ask_dollars": ".20", "yes_ask_size_fp": "5", "no_ask_dollars": ".82", "yes_bid_size_fp": "2"},
+    ], forecast_mean_f=75.5, sigma_f=2.5, extreme="low", target_date=date(2026, 9, 5))
+    result = calibrate_snapshot(snapshot, {"LOW": {"ticker": "LOW", "result": "no", "strike_type": "less", "cap_strike": 71},
+                                           "MID": {"ticker": "MID", "result": "yes", "strike_type": "between", "floor_strike": 75, "cap_strike": 76}})
+    assert result is not None
+    assert result["market_count"] == 2
+    assert result["forecast_error_lower_bound_f"] == 0
+    assert result["paper_trade"]["realized_pnl_per_contract"] > 0

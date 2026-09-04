@@ -27,6 +27,16 @@ def fetch_series_markets(series_ticker: str, *, limit: int = 1000) -> tuple[list
     return market_payload.get("markets") or [], series_payload.get("series") or {}, transport
 
 
+def fetch_settled_series_markets(series_ticker: str, *, min_settled_ts: int, limit: int = 1000) -> tuple[list[dict], dict]:
+    payload, transport = _get("/markets", {"series_ticker": series_ticker, "status": "settled",
+                                           "min_settled_ts": int(min_settled_ts),
+                                           "limit": max(1, min(1000, int(limit)))})
+    markets = payload.get("markets") or []
+    return markets, {**transport, "method": "kalshi_public_rest", "path": "/trade-api/v2/markets",
+                     "series_ticker": series_ticker, "status_filter": "settled", "market_count": len(markets),
+                     "authenticated": False}
+
+
 def fetch_open_events(*, limit: int = 200, pages: int = 1) -> tuple[list[dict], dict]:
     """Fetch open events and nested quotes without credentials or account data."""
     limit = max(1, min(200, int(limit)))

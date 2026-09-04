@@ -16,14 +16,16 @@ from opportunity_lab.crypto_market_data import fetch_crypto_bars
 from opportunity_lab.crypto_regime import crypto_research_suite
 from opportunity_lab.cross_exchange_crypto import collect_cross_exchange
 from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
-from opportunity_lab.kalshi_market_data import fetch_open_events, fetch_recent_trades, rank_event_dislocations
+from opportunity_lab.kalshi_market_data import (fetch_open_events, fetch_recent_trades, fetch_settled_series_markets,
+                                                rank_event_dislocations)
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
 from opportunity_lab.prediction_market_making import screen_market_making
 from opportunity_lab.triangular_crypto import collect_triangular
 from opportunity_lab.weather_value import collect_dallas_weather
 from opportunity_lab.store import (configured as store_configured, cross_exchange_scoreboard, triangular_scoreboard,
                                    kalshi_scoreboard, recent_runs, save_cross_exchange_scans, save_kalshi_scan,
-                                   save_triangular_scan, save_weather_scan, weather_scoreboard)
+                                   reconcile_weather_settlements, save_triangular_scan, save_weather_scan,
+                                   weather_scoreboard)
 
 
 APP_VERSION = "opportunity-lab-web-v2"
@@ -324,6 +326,12 @@ def collect_kalshi(body: dict) -> dict:
     triangular_persistence = save_triangular_scan(triangular)
     weather = collect_dallas_weather(sigma_f=2.5)
     weather_persistence = save_weather_scan(weather)
+    settled_weather, settlement_transports = [], {}
+    for series_ticker in ("KXHIGHTDAL", "KXLOWTDAL"):
+        rows, settled_transport = fetch_settled_series_markets(
+            series_ticker, min_settled_ts=int((datetime.now(timezone.utc) - timedelta(days=14)).timestamp()))
+        settled_weather.extend(rows); settlement_transports[series_ticker] = settled_transport
+    weather_calibration = reconcile_weather_settlements(settled_weather)
     return {"ok": True, "transport": transport, "scan_summary": {
         "events_received": scan["events_received"], "candidate_count": scan["candidate_count"],
         "price_dislocation_count": scan["price_dislocation_count"],
@@ -339,7 +347,8 @@ def collect_kalshi(body: dict) -> dict:
         "triangular_persistence": triangular_persistence,
         "weather": {"ok": weather["ok"], "event_count": weather.get("event_count"),
                     "best_candidate": weather.get("best_candidate")},
-        "weather_persistence": weather_persistence, "execution_enabled": False}
+        "weather_persistence": weather_persistence, "weather_settlement_transports": settlement_transports,
+        "weather_calibration": weather_calibration, "execution_enabled": False}
 
 
 @app.get("/diagnostics/opportunity_lab/kalshi/history")

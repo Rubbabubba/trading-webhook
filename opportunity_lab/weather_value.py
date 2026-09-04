@@ -93,6 +93,35 @@ def score_event(event_ticker: str, markets: list[dict], *, forecast_mean_f: floa
                          "series_fee_and_account_eligibility_not_verified"], "execution_enabled": False}
 
 
+def calibrate_snapshot(snapshot: dict, settled_markets: dict[str, dict]) -> dict | None:
+    """Score one saved forecast snapshot after every bracket has a final result."""
+    yes_candidates = {row["ticker"]: row for row in snapshot.get("candidates") or [] if row.get("side") == "yes"}
+    if not yes_candidates or any(str((settled_markets.get(ticker) or {}).get("result") or "").lower() not in {"yes", "no"}
+                                 for ticker in yes_candidates):
+        return None
+    scores, outcomes = [], {}
+    for ticker, candidate in yes_candidates.items():
+        outcome = 1.0 if settled_markets[ticker]["result"].lower() == "yes" else 0.0
+        probability = float(candidate["model_probability"])
+        scores.append((probability - outcome) ** 2)
+        outcomes[ticker] = int(outcome)
+    ranked = list(snapshot.get("candidates") or [])
+    best = max(ranked, key=lambda row: float(row.get("model_edge_after_fee") or -999))
+    won = outcomes[best["ticker"]] == (1 if best["side"] == "yes" else 0)
+    realized = (1.0 if won else 0.0) - float(best["ask"]) - float(best["estimated_taker_fee_per_contract"])
+    winning = next((settled_markets[ticker] for ticker, outcome in outcomes.items() if outcome == 1), None)
+    error_floor = _distance_to_winning_bracket(float(snapshot["forecast_mean_f"]), winning) if winning else None
+    return {"event_ticker": snapshot["event_ticker"], "target_date": snapshot["target_date"],
+            "extreme": snapshot["extreme"], "forecast_mean_f": snapshot["forecast_mean_f"],
+            "brier_score": round(sum(scores) / len(scores), 8), "market_count": len(scores),
+            "winning_ticker": winning.get("ticker") if winning else None,
+            "forecast_error_lower_bound_f": round(error_floor, 4) if error_floor is not None else None,
+            "paper_trade": {"ticker": best["ticker"], "side": best["side"], "ask": best["ask"],
+                            "fee": best["estimated_taker_fee_per_contract"], "won": won,
+                            "realized_pnl_per_contract": round(realized, 6)},
+            "execution_enabled": False}
+
+
 def _market_probability(market: dict, mean: float, sigma: float) -> float | None:
     sigma = max(.1, float(sigma))
     strike_type = market.get("strike_type")
@@ -104,6 +133,18 @@ def _market_probability(market: dict, mean: float, sigma: float) -> float | None
         return 1 - cdf(floor + .5)
     if strike_type == "between" and floor is not None and cap is not None:
         return max(0.0, cdf(cap + .5) - cdf(floor - .5))
+    return None
+
+
+def _distance_to_winning_bracket(value: float, market: dict) -> float | None:
+    strike_type = market.get("strike_type")
+    floor = _number(market.get("floor_strike")); cap = _number(market.get("cap_strike"))
+    if strike_type == "less" and cap is not None:
+        return max(0.0, value - (cap - .5))
+    if strike_type == "greater" and floor is not None:
+        return max(0.0, (floor + .5) - value)
+    if strike_type == "between" and floor is not None and cap is not None:
+        return max(0.0, (floor - .5) - value, value - (cap + .5))
     return None
 
 
