@@ -1,4 +1,4 @@
-from regime_intraday_email import build_exit_email, build_signal_email, send_signal_email
+from regime_intraday_email import build_entry_lifecycle_email, build_exit_email, build_signal_email, send_signal_email
 
 
 def test_email_contains_actionable_risk_and_never_claims_submission():
@@ -20,3 +20,14 @@ def test_exit_email_is_actionable_and_does_not_claim_a_close():
     assert "take_profit" in message["subject"]
     assert "$21.00" in message["text"]
     assert "does not confirm a submission or fill" in message["text"]
+
+
+def test_entry_lifecycle_emails_distinguish_submission_from_fill():
+    record = {"order_id": "order-1", "status": "new", "plan": {"underlying": "SPY", "limit_debit": .77,
+              "max_loss_dollars": 77, "legs": [{"side": "buy", "symbol": "LONG"}, {"side": "sell", "symbol": "SHORT"}]},
+              "broker": {"status": "filled", "filled_qty": "1", "filled_avg_price": "0.76", "filled_at": "now"}}
+    submitted = build_entry_lifecycle_email("sig-1", record, "submitted")
+    filled = build_entry_lifecycle_email("sig-1", record, "filled")
+    assert "does not confirm a fill" in submitted["text"]
+    assert "PAPER ENTRY FILLED" in filled["subject"]
+    assert "Average fill debit: $0.76" in filled["text"]

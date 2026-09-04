@@ -70,3 +70,22 @@ def test_quote_evidence_retains_timestamps_and_both_sides():
     evidence = spread_quote_evidence(chain, {"legs": [{"symbol": "long"}, {"symbol": "short"}]})
     assert evidence["entry_debit_from_quotes"] == .6
     assert evidence["legs"][1]["quote_timestamp"] == "then"
+
+
+def test_entry_submission_email_failure_is_retried_by_reconcile(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKER_SECRET", "test")
+    monkeypatch.setenv("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", "true")
+    monkeypatch.setenv("REGIME_INTRADAY_ALERT_EMAIL_TO", "operator@example.com")
+    runtime = runtime_module.RegimeIntradayRuntime()
+    runtime.ledger_path = str(tmp_path / "ledger.json")
+    ledger = empty_ledger()
+    ledger["orders"]["sig"] = {"order_id": "entry", "status": "new", "plan": {"underlying": "SPY"}, "entry_lifecycle_notifications": "v1",
+                                     "entry_submitted_email_attempts": 1, "entry_submitted_email_error": "provider_error"}
+    save_ledger(runtime.ledger_path, ledger)
+    monkeypatch.setattr(runtime_module, "get_order", lambda *a, **k: {"status": "new", "submitted_at": "2099-09-03T15:00:00+00:00"})
+    monkeypatch.setattr(runtime_module, "send_entry_lifecycle_email", lambda **k: {"sent": True, "message_id": "retry-1"})
+    runtime.paper_reconcile({"worker_secret": "test"})
+    record = load_ledger(runtime.ledger_path)["orders"]["sig"]
+    assert record["entry_submitted_email_sent"] is True
+    assert record["entry_submitted_email_attempts"] == 2
+    assert "entry_submitted_email_error" not in record

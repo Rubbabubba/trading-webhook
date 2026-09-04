@@ -14,7 +14,7 @@ from intraday_monitoring import apply_live_freshness, candidate_views
 from market_clock import is_regular_market_time, now_ny, parse_hhmm
 from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evaluate_regime_intraday
 from regime_intraday_candidates import failed_breakout_fade_candidate, relative_strength_divergence_candidate, trend_pullback_candidate
-from regime_intraday_email import send_exit_email, send_signal_email
+from regime_intraday_email import send_entry_lifecycle_email, send_exit_email, send_signal_email
 from regime_intraday_email import send_order_outcome_email
 from regime_intraday_entry_guard import pending_entry_invalidation
 from regime_intraday_options import spread_quote_evidence
@@ -48,6 +48,40 @@ def _float(name: str, default: float) -> float:
         return float(_env(name, str(default)))
     except ValueError:
         return default
+
+
+def _attempt_entry_lifecycle_email(ledger: dict[str, Any], signal_id: str, record: dict[str, Any], stage: str) -> None:
+    if record.get("entry_lifecycle_notifications") != "v1":
+        return
+    sent_key = f"entry_{stage}_email_sent"
+    if record.get(sent_key):
+        return
+    timestamp = datetime.now(timezone.utc).isoformat()
+    attempts_key = f"entry_{stage}_email_attempts"
+    record[attempts_key] = int(record.get(attempts_key) or 0) + 1
+    try:
+        result = send_entry_lifecycle_email(
+            api_key=_env("RESEND_API_KEY") if _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True) else "",
+            to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"),
+            from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"),
+            signal_id=signal_id,
+            record=record,
+            stage=stage,
+        )
+    except Exception as exc:
+        result = {"sent": False, "reason": "provider_error", "detail": str(exc)[:200]}
+    if result.get("sent"):
+        record[sent_key] = True
+        record[f"entry_{stage}_email_sent_at"] = timestamp
+        record.pop(f"entry_{stage}_email_error", None)
+        ledger.setdefault("events", []).append({"event": f"paper_entry_{stage}_email_sent", "signal_id": signal_id,
+                                                "message_id": result.get("message_id"), "ts_utc": timestamp})
+    else:
+        record[f"entry_{stage}_email_error"] = result.get("reason") or "delivery_failed"
+        record[f"entry_{stage}_email_last_attempt_at"] = timestamp
+        ledger.setdefault("events", []).append({"event": f"paper_entry_{stage}_email_failed", "signal_id": signal_id,
+                                                "reason": record[f"entry_{stage}_email_error"], "ts_utc": timestamp})
+    ledger["events"] = list(ledger.get("events") or [])[-1000:]
 
 
 class RegimeIntradayRuntime:
@@ -322,8 +356,11 @@ class RegimeIntradayRuntime:
                 raise HTTPException(status_code=502, detail=f"paper order rejected or unrecoverable: {str(exc)[:300]}") from exc
         signal = dict(durable.get("signal") or {})
         record_broker_order(ledger, signal_id, {**result, "plan": dict(durable.get("plan") or {}), "signal": signal,
-                                                "mechanical_test": bool(signal.get("mechanical_test"))})
+                                                "mechanical_test": bool(signal.get("mechanical_test")),
+                                                "entry_lifecycle_notifications": "v1"})
         ledger["pending_candidates"][signal_id]["status"] = "paper_order_submitted"
+        save_ledger(self.ledger_path, ledger)
+        _attempt_entry_lifecycle_email(ledger, signal_id, ledger["orders"][signal_id], "submitted")
         save_ledger(self.ledger_path, ledger)
         return {"ok": True, "mode": "alpaca_paper_roundtrip", "risk_decision": decision, "result": result, "signal_id": signal_id, "live_submission": False}
 
@@ -373,6 +410,10 @@ class RegimeIntradayRuntime:
             if not order_id:
                 continue
             try:
+                _attempt_entry_lifecycle_email(ledger, signal_id, record, "submitted")
+                recorded_entry_broker = dict(record.get("broker") or {})
+                if str(recorded_entry_broker.get("status") or "").lower() == "filled" or recorded_entry_broker.get("filled_at"):
+                    _attempt_entry_lifecycle_email(ledger, signal_id, record, "filled")
                 close_id = str(dict(record.get("close_order") or {}).get("order_id") or "")
                 broker = get_order(key, secret, close_id or order_id, paper=True)
                 status = str(broker.get("status") or "").lower()
@@ -419,6 +460,8 @@ class RegimeIntradayRuntime:
                     refreshed.append({"signal_id": signal_id, "order_id": close_id, "status": record["status"], "action": "close"})
                     continue
                 record.update({"status": status, "broker": broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
+                if status == "filled":
+                    _attempt_entry_lifecycle_email(ledger, signal_id, record, "filled")
                 if status in {"canceled", "expired", "rejected"} and (
                     str(broker.get("filled_qty")) not in {"0", "0.0"}
                     or any(str(leg.get("filled_qty")) not in {"0", "0.0"} for leg in (broker.get("legs") or []))

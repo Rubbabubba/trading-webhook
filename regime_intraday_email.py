@@ -50,6 +50,42 @@ def send_signal_email(*, api_key: str, to_email: str, from_email: str, signal: d
     return _send_message(api_key=api_key, to_email=to_email, from_email=from_email, message=build_signal_email(signal, plan), idempotency_key=f"regime-signal-{str(signal.get('signal_id') or '')}", timeout=timeout)
 
 
+def build_entry_lifecycle_email(signal_id: str, record: dict[str, Any], stage: str) -> dict[str, str]:
+    plan = dict(record.get("plan") or {})
+    broker = dict(record.get("broker") or {})
+    underlying = plan.get("underlying") or dict(record.get("signal") or {}).get("symbol")
+    legs = list(plan.get("legs") or [])
+    leg_text = "\n".join(f"- {str(leg.get('side') or '').upper()} {leg.get('symbol')}" for leg in legs)
+    if stage == "filled":
+        fill = abs(float(broker.get("filled_avg_price") or 0))
+        subject = f"PAPER ENTRY FILLED: {underlying} spread"
+        lead = "Alpaca reports that the paper entry spread filled."
+        detail = f"Filled quantity: {broker.get('filled_qty')}\nAverage fill debit: ${fill:.2f}\nFilled at: {broker.get('filled_at')}"
+    else:
+        subject = f"PAPER ORDER SUBMITTED: {underlying} spread"
+        lead = "Alpaca accepted a paper entry order. This does not confirm a fill."
+        detail = f"Broker status: {broker.get('status') or record.get('status')}\nLimit debit: ${float(plan.get('limit_debit') or 0):.2f}"
+    text = (
+        f"{lead}\n\n"
+        f"Signal ID: {signal_id}\n"
+        f"Order: {record.get('order_id')}\n"
+        f"Underlying: {underlying}\n"
+        f"{detail}\n"
+        f"Maximum loss at entry: ${float(plan.get('max_loss_dollars') or 0):.2f}\n"
+        f"Legs:\n{leg_text}\n\n"
+        "Paper account only. Verify the order and position directly in Alpaca."
+    )
+    return {"subject": subject, "text": text}
+
+
+def send_entry_lifecycle_email(*, api_key: str, to_email: str, from_email: str, signal_id: str, record: dict[str, Any], stage: str, timeout: int = 10) -> dict[str, Any]:
+    if stage not in {"submitted", "filled"}:
+        raise ValueError("entry lifecycle email stage must be submitted or filled")
+    return _send_message(api_key=api_key, to_email=to_email, from_email=from_email,
+                         message=build_entry_lifecycle_email(signal_id, record, stage),
+                         idempotency_key=f"regime-entry-{signal_id}-{stage}", timeout=timeout)
+
+
 def build_exit_email(signal_id: str, record: dict[str, Any]) -> dict[str, str]:
     plan = dict(record.get("plan") or {})
     valuation = dict(record.get("valuation") or {})
