@@ -50,6 +50,13 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+def _effective_max_consecutive_losses(session: str | None = None) -> int:
+    session = session or now_ny().date().isoformat()
+    if _env("REGIME_INTRADAY_CONSECUTIVE_LOSS_BYPASS_SESSION") == session:
+        return 0
+    return max(0, _int("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", 2))
+
+
 def _attempt_entry_lifecycle_email(ledger: dict[str, Any], signal_id: str, record: dict[str, Any], stage: str) -> None:
     if record.get("entry_lifecycle_notifications") != "v1":
         return
@@ -177,7 +184,7 @@ class RegimeIntradayRuntime:
                     "option_feed": _env("REGIME_INTRADAY_OPTION_FEED", "indicative"), "max_scan_age_sec": _int("REGIME_INTRADAY_MAX_SCAN_AGE_SEC", 600),
                     "min_shadow_closed": _int("REGIME_INTRADAY_MIN_SHADOW_CLOSED_FOR_LIVE", 10),
                     "max_trades_per_day": max(0, _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 0)),
-                    "max_consecutive_losses": max(1, _int("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", 2)),
+                    "max_consecutive_losses": _effective_max_consecutive_losses(),
                     "max_daily_loss_dollars": _float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200)},
             ledger=ledger, last_scan=self.last_scan, paper_credentials_present=bool(key and secret),
         )
@@ -306,7 +313,8 @@ class RegimeIntradayRuntime:
 
     def readiness_payload(self) -> dict:
         return {"ok": True, **self._readiness(), "hard_controls": {"max_open_positions": _int("REGIME_INTRADAY_MAX_OPEN_POSITIONS", 1),
-                "max_trades_per_day": _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 0), "max_consecutive_losses": _int("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", 2),
+                "max_trades_per_day": _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 0), "max_consecutive_losses": _effective_max_consecutive_losses(),
+                "consecutive_loss_bypass_session": _env("REGIME_INTRADAY_CONSECUTIVE_LOSS_BYPASS_SESSION"),
                 "max_trade_loss_dollars": _float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100), "max_daily_loss_dollars": _float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200),
                 "latest_entry_time_ny": _env("REGIME_INTRADAY_LATEST_ENTRY_TIME_NY", "15:30"), "forced_exit_time_ny": _env("REGIME_INTRADAY_FORCED_EXIT_TIME_NY", "15:45")}}
 
@@ -388,7 +396,7 @@ class RegimeIntradayRuntime:
         if not durable:
             raise HTTPException(status_code=409, detail="no fresh selected option spread is available")
         decision = paper_submission_decision(ledger, signal_id, session=now_ny().date().isoformat(), max_trades_per_day=max(0, _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 0)),
-                                             max_consecutive_losses=max(1, _int("REGIME_INTRADAY_MAX_CONSECUTIVE_LOSSES", 2)),
+                                             max_consecutive_losses=_effective_max_consecutive_losses(now_ny().date().isoformat()),
                                              max_daily_loss_dollars=_float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200))
         if not decision.get("allowed"):
             raise HTTPException(status_code=409, detail=decision)

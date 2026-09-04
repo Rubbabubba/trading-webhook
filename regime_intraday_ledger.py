@@ -189,7 +189,7 @@ def paper_submission_decision(
             loss_streak += 1
         else:
             break
-    if loss_streak >= max(1, int(max_consecutive_losses)):
+    if int(max_consecutive_losses) > 0 and loss_streak >= int(max_consecutive_losses):
         return {"allowed": False, "reason": "consecutive_loss_lock", "loss_streak": loss_streak}
     active = [row for row in orders.values() if str(row.get("status") or "").lower() not in {"canceled", "cancelled", "expired", "filled_closed", "rejected"}]
     if active:

@@ -151,6 +151,9 @@ def test_paper_lifecycle_locks_active_order_daily_limit_and_loss_streak():
     losses = empty_ledger()
     losses["closed"] = [{"paper_signal_id": "a", "session": "2026-09-02", "realized_dollars": -10}, {"paper_signal_id": "b", "session": "2026-09-02", "realized_dollars": -5}]
     assert paper_submission_decision(losses, "sig-4", session="2026-09-02", max_consecutive_losses=2)["reason"] == "consecutive_loss_lock"
+    bypassed = paper_submission_decision(losses, "sig-4", session="2026-09-02", max_consecutive_losses=0)
+    assert bypassed["allowed"] is True
+    assert bypassed["loss_streak"] == 2
 
     daily_loss = empty_ledger()
     daily_loss["closed"] = [{"paper_signal_id": "a", "session": "2026-09-02", "realized_dollars": -200}]
