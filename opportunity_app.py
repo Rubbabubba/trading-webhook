@@ -22,14 +22,14 @@ from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, sc
 from opportunity_lab.prediction_market_making import screen_market_making
 from opportunity_lab.triangular_crypto import collect_triangular
 from opportunity_lab.weather_value import collect_dallas_weather
-from opportunity_lab.weather_backtest import historical_dallas_backtest
+from opportunity_lab.weather_backtest import historical_dallas_backtest, walk_forward_dallas
 from opportunity_lab.store import (configured as store_configured, cross_exchange_scoreboard, triangular_scoreboard,
                                    kalshi_scoreboard, recent_runs, save_cross_exchange_scans, save_kalshi_scan,
                                    reconcile_weather_settlements, save_triangular_scan, save_weather_scan,
                                    weather_scoreboard)
 
 
-APP_VERSION = "opportunity-lab-web-v3"
+APP_VERSION = "opportunity-lab-web-v4"
 app = FastAPI(title="Opportunity Lab", docs_url=None, redoc_url=None)
 
 
@@ -79,7 +79,7 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
 <section class="card"><h2>Cross-exchange crypto monitor</h2><p class="muted">Public Coinbase and Kraken order books. Sweeps executable depth and deducts conservative taker fees. No orders, balances, or credentials.</p><label>Market <select id="crossSymbol"><option>BTC</option><option>ETH</option></select></label><label>Maximum per-leg notional $ <input id="crossNotional" type="number" min="10" max="100000" value="1000"></label><button id="crossRun">Compare venues</button></section>
 <section class="card"><h2>Triangular crypto monitor</h2><p class="muted">Public Kraken BTC/USD, ETH/USD, and ETH/BTC books. Models both three-leg cycles with depth and a fee on every leg.</p><label>Starting USD <input id="triangleCapital" type="number" min="10" max="100000" value="1000"></label><button id="triangleRun">Scan both cycles</button></section>
 <section class="card"><h2>Dallas weather-value research</h2><p class="muted">NWS DFW hourly forecast proxy versus active Kalshi Dallas high/low contracts. Research is blocked from eligibility until forecast and settlement-source errors are calibrated.</p><label>Assumed forecast error σ°F <input id="weatherSigma" type="number" min="0.5" max="10" step="0.1" value="2.5"></label><button id="weatherRun">Score Dallas weather</button></section>
-<section class="card"><h2>Historical Dallas weather backtest</h2><p class="muted">Archived 24-hour-prior GFS forecasts versus settled Kalshi high/low markets, priced from the latest hourly candle no later than Dallas midnight. Research only.</p><label>Days <input id="weatherHistoryDays" type="number" min="7" max="90" value="30"></label><label>Assumed forecast error σ°F <input id="weatherHistorySigma" type="number" min="0.5" max="10" step="0.1" value="2.5"></label><label>Minimum edge after fee <input id="weatherHistoryEdge" type="number" min="0" max="0.5" step="0.01" value="0.05"></label><button id="weatherHistoryRun">Run historical backtest</button></section>
+<section class="card"><h2>Historical Dallas weather backtest</h2><p class="muted">Archived 24-hour-prior GFS forecasts versus settled Kalshi high/low markets, priced from the latest hourly candle no later than Dallas midnight. Research only.</p><label>Days <input id="weatherHistoryDays" type="number" min="7" max="90" value="30"></label><label>Assumed forecast error σ°F <input id="weatherHistorySigma" type="number" min="0.5" max="10" step="0.1" value="2.5"></label><label>Minimum edge after fee <input id="weatherHistoryEdge" type="number" min="0" max="0.5" step="0.01" value="0.05"></label><button id="weatherHistoryRun">Run historical backtest</button><button id="weatherWalkRun">Run 60-day walk-forward</button></section>
 <section class="card"><h2>Profitability scoreboard</h2><p class="muted">Fee-adjusted evidence from durable Kalshi observations. The verdict is mechanical; it cannot enable execution.</p><button id="scoreboardRun">Load 72-hour scoreboard</button></section>
 <section class="card"><h2>Result</h2><button id="copyResult" type="button">Copy result</button><span id="copyStatus" class="muted"></span><pre id="result">Choose a market and run the research suite.</pre></section>
 <script>
@@ -95,6 +95,7 @@ document.getElementById('crossRun').onclick=()=>post('/diagnostics/opportunity_l
 document.getElementById('triangleRun').onclick=()=>post('/diagnostics/opportunity_lab/triangular/scan',{starting_usd:Number(document.getElementById('triangleCapital').value)});
 document.getElementById('weatherRun').onclick=()=>post('/diagnostics/opportunity_lab/weather/dallas',{sigma_f:Number(document.getElementById('weatherSigma').value)});
 document.getElementById('weatherHistoryRun').onclick=()=>post('/diagnostics/opportunity_lab/weather/dallas/backtest',{days:Number(document.getElementById('weatherHistoryDays').value),sigma_f:Number(document.getElementById('weatherHistorySigma').value),minimum_edge:Number(document.getElementById('weatherHistoryEdge').value),lead_days:1});
+document.getElementById('weatherWalkRun').onclick=()=>post('/diagnostics/opportunity_lab/weather/dallas/walk-forward',{days:60,lead_days:1});
 document.getElementById('scoreboardRun').onclick=async()=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Loading…';try{const response=await fetch('/diagnostics/opportunity_lab/scoreboard?hours=72');const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};
 document.getElementById('copyResult').onclick=async()=>{const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(document.getElementById('result').textContent);status.textContent=' Copied';status.className='ok'}catch(error){status.textContent=' Copy failed—select the result manually';status.className='bad'}};
 </script></main></body></html>""", headers={"Cache-Control": "no-store"})
@@ -314,6 +315,16 @@ def weather_dallas_backtest(body: dict) -> dict:
     lead_days = max(1, min(7, int(body.get("lead_days") or 1)))
     minimum_edge = max(0.0, min(.5, float(body.get("minimum_edge") if body.get("minimum_edge") is not None else .05)))
     result = historical_dallas_backtest(days=days, sigma_f=sigma, lead_days=lead_days, minimum_edge=minimum_edge)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result)
+    return result
+
+
+@app.post("/diagnostics/opportunity_lab/weather/dallas/walk-forward")
+def weather_dallas_walk_forward(body: dict) -> dict:
+    days = max(21, min(90, int(body.get("days") or 60)))
+    lead_days = max(1, min(7, int(body.get("lead_days") or 1)))
+    result = walk_forward_dallas(days=days, lead_days=lead_days)
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result)
     return result

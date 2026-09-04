@@ -73,12 +73,68 @@ def build_historical_snapshot(event_ticker: str, markets: list[dict], candle_set
 def historical_dallas_backtest(*, days: int = 30, sigma_f: float = 2.5, lead_days: int = 1,
                                minimum_edge: float = .05) -> dict:
     days = max(7, min(90, int(days)))
+    cases, metadata = _collect_historical_cases(days, lead_days)
+    if not metadata.get("ok"):
+        return metadata
+    results = _evaluate_cases(cases, sigma_f=sigma_f, minimum_edge=minimum_edge)
+    return {**metadata, **_summary(results), "minimum_model_edge_after_fee": minimum_edge,
+            "events": results}
+
+
+def walk_forward_dallas(*, days: int = 60, lead_days: int = 1,
+                        sigma_grid: tuple[float, ...] = (1.5, 2.0, 2.5, 3.0, 3.5, 4.0),
+                        edge_grid: tuple[float, ...] = (.03, .05, .08, .10, .15)) -> dict:
+    """Tune on the oldest two-thirds, then report one untouched validation result."""
+    days = max(21, min(90, int(days)))
+    cases, metadata = _collect_historical_cases(days, lead_days)
+    if not metadata.get("ok"):
+        return metadata
+    ordered_dates = sorted({case["target"] for case in cases})
+    split_index = max(1, int(len(ordered_dates) * 2 / 3))
+    calibration_dates = set(ordered_dates[:split_index])
+    calibration_cases = [case for case in cases if case["target"] in calibration_dates]
+    validation_cases = [case for case in cases if case["target"] not in calibration_dates]
+    grid = []
+    for sigma in sigma_grid:
+        for edge in edge_grid:
+            summary = _summary(_evaluate_cases(calibration_cases, sigma_f=sigma, minimum_edge=edge))
+            grid.append({"sigma_f": sigma, "minimum_edge": edge, **summary})
+    viable = [row for row in grid if row["paper_trade_count"] >= max(5, len(calibration_dates) // 4)]
+    ranked = viable or grid
+    ranked.sort(key=lambda row: (row["paper_pnl_per_one_contract_each_trade"],
+                                 row["paper_win_rate"] or 0, row["paper_trade_count"]), reverse=True)
+    selected = ranked[0]
+    validation_results = _evaluate_cases(validation_cases, sigma_f=selected["sigma_f"],
+                                         minimum_edge=selected["minimum_edge"])
+    validation = _summary(validation_results)
+    calibration_profitable = selected["paper_pnl_per_one_contract_each_trade"] > 0
+    out_of_sample_profitable = (validation["paper_trade_count"] >= 5 and
+                                validation["paper_pnl_per_one_contract_each_trade"] > 0)
+    passes = calibration_profitable and out_of_sample_profitable
+    return {**metadata, "method": "chronological_two_thirds_calibration_one_third_validation",
+            "split": {"calibration_start": ordered_dates[0].isoformat() if ordered_dates else None,
+                      "calibration_end": ordered_dates[split_index - 1].isoformat() if ordered_dates else None,
+                      "validation_start": ordered_dates[split_index].isoformat() if len(ordered_dates) > split_index else None,
+                      "validation_end": ordered_dates[-1].isoformat() if ordered_dates else None},
+            "grid_size": len(grid), "selected_parameters": {"sigma_f": selected["sigma_f"],
+                                                               "minimum_edge": selected["minimum_edge"]},
+            "calibration": {key: value for key, value in selected.items()
+                            if key not in {"sigma_f", "minimum_edge", "events"}},
+            "validation": validation, "validation_events": validation_results,
+            "calibration_profitable": calibration_profitable,
+            "out_of_sample_profitable": out_of_sample_profitable,
+            "model_retained": passes,
+            "verdict": "retain_for_forward_validation" if passes else "reject_or_redesign_current_weather_model",
+            "eligible": False, "execution_enabled": False}
+
+
+def _collect_historical_cases(days: int, lead_days: int) -> tuple[list[dict], dict]:
     today = datetime.now(LOCAL).date()
     start_date, end_date = today - timedelta(days=days), today - timedelta(days=1)
     forecasts, forecast_transport = fetch_archived_gfs(start_date, end_date, lead_days=lead_days)
     if forecast_transport.get("error"):
-        return {"ok": False, "forecast_transport": forecast_transport, "execution_enabled": False}
-    rows, transports, results = [], {}, []
+        return [], {"ok": False, "forecast_transport": forecast_transport, "execution_enabled": False}
+    rows, transports, cases = [], {}, []
     min_settled = int(datetime.combine(start_date, time.min, LOCAL).timestamp())
     for extreme, series_ticker in SERIES.items():
         markets, transport = fetch_settled_series_markets(series_ticker, min_settled_ts=min_settled)
@@ -103,33 +159,45 @@ def historical_dallas_backtest(*, days: int = 30, sigma_f: float = 2.5, lead_day
             candle_errors.append({"event_ticker": event_ticker, "error": candle_transport.get("error")})
             continue
         forecast = max(values) if extreme == "high" else min(values)
-        snapshot = build_historical_snapshot(event_ticker, markets, candles, forecast_mean_f=forecast,
-                                             sigma_f=sigma_f, extreme=extreme, target_date=target)
-        calibration = calibrate_snapshot(snapshot, {row["ticker"]: row for row in markets}) if snapshot else None
+        cases.append({"event_ticker": event_ticker, "markets": markets, "candles": candles,
+                      "forecast": forecast, "extreme": extreme, "target": target})
+    metadata = {"ok": True, "location": "Dallas / CLIDFW", "requested_days": days,
+                "forecast_transport": forecast_transport, "market_transports": transports,
+                "decision_policy": "latest completed hourly Kalshi candle no later than 00:00 America/Chicago on target date",
+                "candle_errors": candle_errors,
+                "limitations": ["archived GFS is not the NWS forecaster grid or Kalshi settlement source",
+                                "hourly candle closing asks are historical quote proxies, not guaranteed fills",
+                                "one-contract results exclude bankroll sizing and opportunity scarcity"],
+                "eligible": False, "blockers": ["historical_proxy_requires_validation_against_forward_snapshots",
+                                                   "settlement_source_model_mismatch"],
+                "research_only": True, "execution_enabled": False}
+    return cases, metadata
+
+
+def _evaluate_cases(cases: list[dict], *, sigma_f: float, minimum_edge: float) -> list[dict]:
+    results = []
+    for case in cases:
+        snapshot = build_historical_snapshot(case["event_ticker"], case["markets"], case["candles"],
+                                             forecast_mean_f=case["forecast"], sigma_f=sigma_f,
+                                             extreme=case["extreme"], target_date=case["target"])
+        calibration = calibrate_snapshot(snapshot, {row["ticker"]: row for row in case["markets"]}) if snapshot else None
         if calibration:
             best_edge = max(float(row.get("model_edge_after_fee") or -999) for row in snapshot["candidates"])
             calibration["paper_trade"]["model_edge_after_fee"] = round(best_edge, 6)
             calibration["paper_trade"]["taken"] = best_edge >= minimum_edge
             results.append(calibration)
+    return results
+
+
+def _summary(results: list[dict]) -> dict:
     trades = [row["paper_trade"] for row in results if row["paper_trade"]["taken"]]
     pnl = [row["realized_pnl_per_contract"] for row in trades]
     briers = [row["brier_score"] for row in results]
-    return {"ok": True, "location": "Dallas / CLIDFW", "requested_days": days,
-            "forecast_transport": forecast_transport, "market_transports": transports,
-            "decision_policy": "latest completed hourly Kalshi candle no later than 00:00 America/Chicago on target date",
-            "minimum_model_edge_after_fee": minimum_edge,
-            "event_count": len(results), "average_brier_score": round(sum(briers) / len(briers), 8) if briers else None,
+    return {"event_count": len(results), "average_brier_score": round(sum(briers) / len(briers), 8) if briers else None,
             "paper_trade_count": len(trades),
             "paper_pnl_per_one_contract_each_trade": round(sum(pnl), 6),
             "paper_profitable_event_count": sum(value > 0 for value in pnl),
-            "paper_win_rate": round(sum(value > 0 for value in pnl) / len(pnl), 6) if pnl else None,
-            "events": results, "candle_errors": candle_errors,
-            "limitations": ["archived GFS is not the NWS forecaster grid or Kalshi settlement source",
-                            "hourly candle closing asks are historical quote proxies, not guaranteed fills",
-                            "one-contract results exclude bankroll sizing and opportunity scarcity"],
-            "eligible": False, "blockers": ["historical_proxy_requires_validation_against_forward_snapshots",
-                                               "settlement_source_model_mismatch"],
-            "research_only": True, "execution_enabled": False}
+            "paper_win_rate": round(sum(value > 0 for value in pnl) / len(pnl), 6) if pnl else None}
 
 
 def _close(row) -> float | None:
