@@ -60,6 +60,55 @@ def save_triangular_scan(row: dict) -> dict:
     return {"configured": True, "saved": True, "observed_at": observed_at.isoformat(), "row_count": 1}
 
 
+def save_weather_scan(row: dict) -> dict:
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "saved": False, "error": "opportunity_database_not_configured"}
+    if not row.get("ok"):
+        return {"configured": True, "saved": False, "error": "weather_scan_failed"}
+    import psycopg
+
+    observed_at, events = datetime.now(timezone.utc), list(row.get("events") or [])
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS opportunity_lab")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.weather_value_observations (
+            observation_id uuid PRIMARY KEY, observed_at timestamptz NOT NULL, event_ticker text NOT NULL,
+            target_date date NOT NULL, best_model_edge numeric NOT NULL, positive_candidate_count integer NOT NULL,
+            payload jsonb NOT NULL
+        )""")
+        for event in events:
+            cursor.execute("INSERT INTO opportunity_lab.weather_value_observations VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                           (str(uuid.uuid4()), observed_at, event["event_ticker"], event["target_date"],
+                            event["best_model_edge_after_fee"], event["positive_model_edge_count"], json.dumps(event)))
+    return {"configured": True, "saved": True, "observed_at": observed_at.isoformat(), "row_count": len(events)}
+
+
+def weather_scoreboard(*, hours: int = 72) -> dict:
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "error": "opportunity_database_not_configured"}
+    import psycopg
+
+    hours = max(1, min(24 * 30, int(hours)))
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.weather_value_observations (
+            observation_id uuid PRIMARY KEY, observed_at timestamptz NOT NULL, event_ticker text NOT NULL,
+            target_date date NOT NULL, best_model_edge numeric NOT NULL, positive_candidate_count integer NOT NULL,
+            payload jsonb NOT NULL
+        )""")
+        cursor.execute("""SELECT count(*), min(observed_at), max(observed_at),
+            coalesce(sum(positive_candidate_count),0), max(best_model_edge)
+            FROM opportunity_lab.weather_value_observations
+            WHERE observed_at >= now() - (%s * interval '1 hour')""", (hours,))
+        count, first_at, last_at, positives, best_edge = cursor.fetchone()
+    return {"configured": True, "strategy": "dallas_daily_temperature_value", "window_hours": hours,
+            "observation_count": count, "first_observed_at": first_at.isoformat() if first_at else None,
+            "last_observed_at": last_at.isoformat() if last_at else None,
+            "positive_uncalibrated_model_candidates": int(positives),
+            "best_uncalibrated_model_edge": float(best_edge) if best_edge is not None else None,
+            "verdict": "collecting_calibration_evidence", "execution_enabled": False}
+
+
 def triangular_scoreboard(*, hours: int = 72) -> dict:
     url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
     if not url:

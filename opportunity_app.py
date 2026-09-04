@@ -20,9 +20,10 @@ from opportunity_lab.kalshi_market_data import fetch_open_events, fetch_recent_t
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
 from opportunity_lab.prediction_market_making import screen_market_making
 from opportunity_lab.triangular_crypto import collect_triangular
+from opportunity_lab.weather_value import collect_dallas_weather
 from opportunity_lab.store import (configured as store_configured, cross_exchange_scoreboard, triangular_scoreboard,
                                    kalshi_scoreboard, recent_runs, save_cross_exchange_scans, save_kalshi_scan,
-                                   save_triangular_scan)
+                                   save_triangular_scan, save_weather_scan, weather_scoreboard)
 
 
 APP_VERSION = "opportunity-lab-web-v2"
@@ -42,7 +43,7 @@ async def protect_diagnostics(request: Request, call_next):
 
 @app.get("/")
 def root() -> dict:
-    return {"ok": True, "service": "opportunity_lab", "version": APP_VERSION, "candidate_count": 7, "execution_enabled": False, "live_submission": False}
+    return {"ok": True, "service": "opportunity_lab", "version": APP_VERSION, "candidate_count": 8, "execution_enabled": False, "live_submission": False}
 
 
 @app.get("/health")
@@ -74,6 +75,7 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
 <section class="card"><h2>Prediction-market maker simulator</h2><p class="muted">Snapshot screen only. Models two-sided fills, maker fees, adverse selection, and unpaired inventory; it does not place orders.</p><label>Pages <input id="makerPages" type="number" min="1" max="3" value="1"></label><label>Quote size <input id="makerSize" type="number" min="0.01" step="0.01" value="10"></label><label>Maker fee coefficient <input id="makerFee" type="number" min="0" max="1" step="0.0001" value="0.0175"></label><button id="makerRun">Run maker screen</button></section>
 <section class="card"><h2>Cross-exchange crypto monitor</h2><p class="muted">Public Coinbase and Kraken order books. Sweeps executable depth and deducts conservative taker fees. No orders, balances, or credentials.</p><label>Market <select id="crossSymbol"><option>BTC</option><option>ETH</option></select></label><label>Maximum per-leg notional $ <input id="crossNotional" type="number" min="10" max="100000" value="1000"></label><button id="crossRun">Compare venues</button></section>
 <section class="card"><h2>Triangular crypto monitor</h2><p class="muted">Public Kraken BTC/USD, ETH/USD, and ETH/BTC books. Models both three-leg cycles with depth and a fee on every leg.</p><label>Starting USD <input id="triangleCapital" type="number" min="10" max="100000" value="1000"></label><button id="triangleRun">Scan both cycles</button></section>
+<section class="card"><h2>Dallas weather-value research</h2><p class="muted">NWS DFW hourly forecast proxy versus active Kalshi Dallas high/low contracts. Research is blocked from eligibility until forecast and settlement-source errors are calibrated.</p><label>Assumed forecast error σ°F <input id="weatherSigma" type="number" min="0.5" max="10" step="0.1" value="2.5"></label><button id="weatherRun">Score Dallas weather</button></section>
 <section class="card"><h2>Profitability scoreboard</h2><p class="muted">Fee-adjusted evidence from durable Kalshi observations. The verdict is mechanical; it cannot enable execution.</p><button id="scoreboardRun">Load 72-hour scoreboard</button></section>
 <section class="card"><h2>Result</h2><button id="copyResult" type="button">Copy result</button><span id="copyStatus" class="muted"></span><pre id="result">Choose a market and run the research suite.</pre></section>
 <script>
@@ -87,6 +89,7 @@ document.getElementById('kalshiSave').onclick=()=>post('/diagnostics/opportunity
 document.getElementById('makerRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/market-making',{pages:Number(document.getElementById('makerPages').value),limit:200,quote_size:Number(document.getElementById('makerSize').value),maker_fee_coefficient:Number(document.getElementById('makerFee').value)});
 document.getElementById('crossRun').onclick=()=>post('/diagnostics/opportunity_lab/cross-exchange/scan',{symbol:document.getElementById('crossSymbol').value,max_notional:Number(document.getElementById('crossNotional').value)});
 document.getElementById('triangleRun').onclick=()=>post('/diagnostics/opportunity_lab/triangular/scan',{starting_usd:Number(document.getElementById('triangleCapital').value)});
+document.getElementById('weatherRun').onclick=()=>post('/diagnostics/opportunity_lab/weather/dallas',{sigma_f:Number(document.getElementById('weatherSigma').value)});
 document.getElementById('scoreboardRun').onclick=async()=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Loading…';try{const response=await fetch('/diagnostics/opportunity_lab/scoreboard?hours=72');const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};
 document.getElementById('copyResult').onclick=async()=>{const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(document.getElementById('result').textContent);status.textContent=' Copied';status.className='ok'}catch(error){status.textContent=' Copy failed—select the result manually';status.className='bad'}};
 </script></main></body></html>""", headers={"Cache-Control": "no-store"})
@@ -290,6 +293,15 @@ def triangular_scan(body: dict) -> dict:
     return result
 
 
+@app.post("/diagnostics/opportunity_lab/weather/dallas")
+def weather_dallas(body: dict) -> dict:
+    sigma = max(.5, min(10.0, float(body.get("sigma_f") or 2.5)))
+    result = collect_dallas_weather(sigma_f=sigma)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result)
+    return result
+
+
 @app.post("/worker/opportunity-lab/collect-kalshi")
 def collect_kalshi(body: dict) -> dict:
     expected = (os.getenv("OPPORTUNITY_WORKER_SECRET") or "").strip()
@@ -310,6 +322,8 @@ def collect_kalshi(body: dict) -> dict:
     cross_persistence = save_cross_exchange_scans(cross_exchange)
     triangular = collect_triangular(starting_usd=1000)
     triangular_persistence = save_triangular_scan(triangular)
+    weather = collect_dallas_weather(sigma_f=2.5)
+    weather_persistence = save_weather_scan(weather)
     return {"ok": True, "transport": transport, "scan_summary": {
         "events_received": scan["events_received"], "candidate_count": scan["candidate_count"],
         "price_dislocation_count": scan["price_dislocation_count"],
@@ -322,7 +336,10 @@ def collect_kalshi(body: dict) -> dict:
                             "best_direction": row.get("scan", {}).get("best_direction")} for row in cross_exchange],
         "cross_exchange_persistence": cross_persistence,
         "triangular": {"ok": triangular["ok"], "best_cycle": triangular.get("scan", {}).get("best_cycle")},
-        "triangular_persistence": triangular_persistence, "execution_enabled": False}
+        "triangular_persistence": triangular_persistence,
+        "weather": {"ok": weather["ok"], "event_count": weather.get("event_count"),
+                    "best_candidate": weather.get("best_candidate")},
+        "weather_persistence": weather_persistence, "execution_enabled": False}
 
 
 @app.get("/diagnostics/opportunity_lab/kalshi/history")
@@ -334,4 +351,5 @@ def kalshi_history(limit: int = 50) -> dict:
 def profitability_scoreboard(hours: int = 72) -> dict:
     return {"ok": True, "candidates": candidate_catalog(), "kalshi": kalshi_scoreboard(hours=hours),
             "cross_exchange_crypto": cross_exchange_scoreboard(hours=hours),
-            "triangular_crypto": triangular_scoreboard(hours=hours), "execution_enabled": False}
+            "triangular_crypto": triangular_scoreboard(hours=hours),
+            "weather_prediction_value": weather_scoreboard(hours=hours), "execution_enabled": False}

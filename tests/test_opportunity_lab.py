@@ -18,9 +18,9 @@ def _bars(count=500):
 
 
 def test_all_locked_candidates_have_unique_rank_and_key():
-    assert len(CANDIDATES) == 7
-    assert len({row.key for row in CANDIDATES}) == 7
-    assert sorted(row.rank for row in CANDIDATES) == list(range(1, 8))
+    assert len(CANDIDATES) == 8
+    assert len({row.key for row in CANDIDATES}) == 8
+    assert sorted(row.rank for row in CANDIDATES) == list(range(1, 9))
     statuses = {row["key"]: row["status"] for row in candidate_catalog()}
     assert statuses["crypto_basis"] == "research_retained"
     assert statuses["sports_prediction_arb"] == "active"
@@ -82,7 +82,7 @@ def test_opportunity_app_is_hard_closed(monkeypatch):
     assert client.get("/diagnostics/opportunity_lab/catalog").status_code == 401
     catalog_response = client.get("/diagnostics/opportunity_lab/catalog", headers={"x-admin-secret": "secret"})
     assert catalog_response.status_code == 200
-    assert len(catalog_response.json()["candidates"]) == 7
+    assert len(catalog_response.json()["candidates"]) == 8
 
 
 def test_regime_admin_secret_does_not_authorize_opportunity_lab(monkeypatch):

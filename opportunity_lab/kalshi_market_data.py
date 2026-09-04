@@ -13,6 +13,20 @@ from urllib.request import Request, urlopen
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
 
+def fetch_series_markets(series_ticker: str, *, limit: int = 1000) -> tuple[list[dict], dict, dict]:
+    """Fetch active markets plus series metadata for one recurring Kalshi series."""
+    series_payload, series_transport = _get(f"/series/{series_ticker}", {})
+    if series_transport.get("error"):
+        return [], {}, {**series_transport, "path": f"/trade-api/v2/series/{series_ticker}"}
+    market_payload, market_transport = _get("/markets", {
+        "series_ticker": series_ticker, "status": "open", "limit": max(1, min(1000, int(limit))),
+    })
+    transport = {**market_transport, "method": "kalshi_public_rest", "path": "/trade-api/v2/markets",
+                 "series_ticker": series_ticker, "market_count": len(market_payload.get("markets") or []),
+                 "authenticated": False}
+    return market_payload.get("markets") or [], series_payload.get("series") or {}, transport
+
+
 def fetch_open_events(*, limit: int = 200, pages: int = 1) -> tuple[list[dict], dict]:
     """Fetch open events and nested quotes without credentials or account data."""
     limit = max(1, min(200, int(limit)))
