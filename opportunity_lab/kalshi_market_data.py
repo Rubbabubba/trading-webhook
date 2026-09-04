@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -40,10 +42,12 @@ def fetch_open_events(*, limit: int = 200, pages: int = 1) -> tuple[list[dict], 
     }
 
 
-def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_market_count: int = 2) -> dict:
+def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_market_count: int = 2, now: datetime | None = None) -> dict:
     """Rank complete-set candidates using displayed YES asks; fees remain unmodeled."""
     wanted = category.strip().casefold()
     candidates = []
+    no_pair_candidates = []
+    now = now or datetime.now(timezone.utc)
     skipped = {"category": 0, "not_mutually_exclusive": 0, "too_few_quoted_markets": 0}
     for event in events:
         event_category = str(event.get("category") or "")
@@ -68,6 +72,44 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
                 "rules_primary": market.get("rules_primary"),
                 "rules_secondary": market.get("rules_secondary"),
             })
+        pair_legs = []
+        for market in event.get("markets") or []:
+            no_ask = _positive_number(market.get("no_ask_dollars"))
+            if no_ask is None:
+                yes_bid = _positive_number(market.get("yes_bid_dollars"))
+                no_ask = 1.0 - yes_bid if yes_bid is not None else None
+            size = _positive_number(market.get("yes_bid_size_fp"))
+            if no_ask is None or no_ask >= 1 or size is None:
+                continue
+            pair_legs.append({
+                "ticker": market.get("ticker"),
+                "outcome": market.get("yes_sub_title") or market.get("title") or market.get("ticker"),
+                "no_ask_dollars": no_ask,
+                "no_ask_size_contracts": size,
+                "close_time": market.get("close_time"),
+            })
+        for left_index, left in enumerate(pair_legs):
+            for right in pair_legs[left_index + 1:]:
+                contracts = math.floor(min(left["no_ask_size_contracts"], right["no_ask_size_contracts"]) * 100) / 100
+                fees = _taker_fee(left["no_ask_dollars"], contracts) + _taker_fee(right["no_ask_dollars"], contracts)
+                cost = contracts * (left["no_ask_dollars"] + right["no_ask_dollars"])
+                net_profit = contracts - cost - fees
+                if net_profit <= 0:
+                    continue
+                settlement = _latest_time(left.get("close_time"), right.get("close_time"))
+                days = max((settlement - now).total_seconds() / 86400, 1 / 24) if settlement else None
+                roi = net_profit / (cost + fees) * 100 if cost + fees else 0
+                annualized = ((1 + roi / 100) ** (365 / days) - 1) * 100 if days else None
+                no_pair_candidates.append({
+                    "event_ticker": event.get("event_ticker"), "title": event.get("title"), "category": event_category,
+                    "strategy": "buy_no_on_two_mutually_exclusive_outcomes", "contracts": contracts,
+                    "cost_before_fees": round(cost, 4), "estimated_taker_fees": round(fees, 4),
+                    "minimum_settlement_payout": round(contracts, 4), "estimated_net_profit": round(net_profit, 4),
+                    "estimated_net_roi_pct": round(roi, 6), "days_to_latest_close": round(days, 3) if days else None,
+                    "annualized_return_pct": round(annualized, 6) if annualized is not None else None,
+                    "legs": [left, right], "eligible": False,
+                    "blockers": ["series_specific_fee_not_verified", "account_and_jurisdiction_not_verified"],
+                })
         if len(legs) < minimum_market_count:
             skipped["too_few_quoted_markets"] += 1
             continue
@@ -91,6 +133,7 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
             "legs": legs,
         })
     candidates.sort(key=lambda row: (row["gross_profit_at_displayed_size"], row["gross_roi_pct_before_fees"]), reverse=True)
+    no_pair_candidates.sort(key=lambda row: (row["annualized_return_pct"] or -1, row["estimated_net_profit"]), reverse=True)
     return {
         "source": "kalshi_public_market_data",
         "events_received": len(events),
@@ -98,10 +141,29 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
         "candidate_count": len(candidates),
         "price_dislocation_count": sum(row["price_dislocation"] for row in candidates),
         "candidates": candidates,
+        "mutually_exclusive_no_pair_count": len(no_pair_candidates),
+        "mutually_exclusive_no_pairs": no_pair_candidates[:50],
+        "fee_model": "conservative_general_taker_estimate: ceil_to_cent(0.07*C*P*(1-P)) per leg",
         "skipped": skipped,
         "research_only": True,
         "execution_enabled": False,
     }
+
+
+def _taker_fee(price: float, contracts: float) -> float:
+    return math.ceil((0.07 * contracts * price * (1 - price)) * 100 - 1e-12) / 100
+
+
+def _latest_time(*values: str | None) -> datetime | None:
+    parsed = []
+    for value in values:
+        if not value:
+            continue
+        try:
+            parsed.append(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError:
+            continue
+    return max(parsed) if parsed else None
 
 
 def _positive_number(value) -> float | None:

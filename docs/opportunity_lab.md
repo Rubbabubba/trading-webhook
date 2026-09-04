@@ -20,6 +20,8 @@ Historical venue adapters must normalize each venue's funding sign, interval, co
 
 `opportunity_lab/kalshi_market_data.py` reads unauthenticated public Kalshi events and nested market quotes. It ranks displayed complete-set price dislocations but deliberately leaves every result ineligible until outcome exhaustiveness, actual fees, account eligibility, and jurisdiction are verified. It never reads an account or submits an order.
 
+For events explicitly marked mutually exclusive, the collector also evaluates every two-outcome strategy that buys NO on both outcomes. Because both outcomes cannot resolve YES, at least one NO contract must pay out; this does not require the event's displayed markets to exhaust every possible result. The estimate uses displayed size, a conservative general taker-fee formula, and the latest leg close time. Results remain blocked pending the applicable series fee schedule and account/jurisdiction verification.
+
 For U.S. Coinbase CFM products, `/diagnostics/opportunity_lab/coinbase/reconstruct-funding` reconstructs BTC or ETH hourly funding over 7–365 days from aligned CDE-future and Coinbase-spot hourly candles. It applies Coinbase's published `/24` premium scaling and 75% current/25% previous smoothing, but uses hourly closes instead of the official twenty three-minute representative-price samples. Its output is therefore explicitly a proxy, never official historical funding. Exact U.S. historical funding must be requested from Coinbase and should later be used to validate and calibrate the proxy.
 
 ## Promotion lifecycle
