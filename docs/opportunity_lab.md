@@ -88,3 +88,10 @@ Do not reuse `DATABASE_URL`, `WORKER_SECRET`, or any Regime schema. Free Render 
 The protected `/diagnostics/opportunity_lab/coinbase/status` route tests authentication and returns sanitized perpetual product economics. It deliberately omits account balances and cannot place or cancel orders. Never grant this research key trade, transfer, send, withdrawal, or management permissions.
 
 Do not configure `ADMIN_SECRET`, `WORKER_SECRET`, Regime ledger paths, or Regime live-trading controls on this service. The Alpaca values may initially reference the same underlying account credentials, but their environment-variable names are deliberately separate so the service never inherits trading authority accidentally. Before an execution adapter is introduced, use separately bounded credentials or a separate broker account and add independent Opportunity Lab execution and kill-switch variables.
+# Cross-exchange crypto monitor
+
+The Opportunity Lab includes a read-only Coinbase/Kraken BTC and ETH spot comparison. It requests public order books, sweeps multiple price levels up to the configured per-leg notional, and evaluates both buy/sell venue directions. The default model uses the observed Coinbase Intro 1 taker rate (1.2%) and Kraken entry-tier taker rate (0.8%).
+
+Results are based on separately requested public snapshots, so they are never executable guarantees. Simultaneous-fill risk, venue inventory, withdrawal/rebalancing costs, account eligibility, and jurisdiction remain blockers. The scanner cannot submit orders and exposes no balance or account data.
+
+The hourly Opportunity Lab collector stores BTC and ETH observations in `opportunity_lab.cross_exchange_observations`. The profitability scoreboard reports the best fee-adjusted observation and count of positive directions over the selected window.

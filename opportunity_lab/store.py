@@ -14,6 +14,63 @@ def configured() -> bool:
     return bool((os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip())
 
 
+def save_cross_exchange_scans(scans: list[dict]) -> dict:
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "saved": False, "error": "opportunity_database_not_configured"}
+    import psycopg
+
+    observed_at = datetime.now(timezone.utc)
+    rows = [row for row in scans if row.get("ok") and row.get("scan")]
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS opportunity_lab")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.cross_exchange_observations (
+            observation_id uuid PRIMARY KEY, observed_at timestamptz NOT NULL, symbol text NOT NULL,
+            profitable_direction_count integer NOT NULL, best_net_profit numeric NOT NULL,
+            best_roi_pct numeric NOT NULL, payload jsonb NOT NULL
+        )""")
+        for row in rows:
+            scan, best = row["scan"], row["scan"]["best_direction"]
+            cursor.execute("INSERT INTO opportunity_lab.cross_exchange_observations VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                           (str(uuid.uuid4()), observed_at, row["symbol"], scan["profitable_direction_count"],
+                            best["net_profit"], best["roi_on_fully_collateralized_capital_pct"], json.dumps(row)))
+    return {"configured": True, "saved": True, "observed_at": observed_at.isoformat(), "row_count": len(rows)}
+
+
+def cross_exchange_scoreboard(*, hours: int = 72) -> dict:
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "error": "opportunity_database_not_configured"}
+    import psycopg
+
+    hours = max(1, min(24 * 30, int(hours)))
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.cross_exchange_observations (
+            observation_id uuid PRIMARY KEY, observed_at timestamptz NOT NULL, symbol text NOT NULL,
+            profitable_direction_count integer NOT NULL, best_net_profit numeric NOT NULL,
+            best_roi_pct numeric NOT NULL, payload jsonb NOT NULL
+        )""")
+        cursor.execute("""SELECT count(*), min(observed_at), max(observed_at),
+            coalesce(sum(profitable_direction_count),0), max(best_net_profit), max(best_roi_pct)
+            FROM opportunity_lab.cross_exchange_observations
+            WHERE observed_at >= now() - (%s * interval '1 hour')""", (hours,))
+        count, first_at, last_at, profitable, best_profit, best_roi = cursor.fetchone()
+        cursor.execute("""SELECT symbol, best_net_profit, best_roi_pct, observed_at, payload
+            FROM opportunity_lab.cross_exchange_observations
+            WHERE observed_at >= now() - (%s * interval '1 hour')
+            ORDER BY best_net_profit DESC LIMIT 1""", (hours,))
+        best = cursor.fetchone()
+    return {"configured": True, "strategy": "coinbase_kraken_cross_exchange", "window_hours": hours,
+            "observation_count": count, "first_observed_at": first_at.isoformat() if first_at else None,
+            "last_observed_at": last_at.isoformat() if last_at else None, "profitable_direction_hits": int(profitable),
+            "best_net_profit": float(best_profit) if best_profit is not None else None,
+            "best_roi_pct": float(best_roi) if best_roi is not None else None,
+            "best_observation": ({"symbol": best[0], "net_profit": float(best[1]), "roi_pct": float(best[2]),
+                                  "observed_at": best[3].isoformat(), "direction": best[4]["scan"]["best_direction"]} if best else None),
+            "verdict": "investigate_execution_feasibility" if profitable else "collecting_evidence",
+            "execution_enabled": False}
+
+
 def save_kalshi_scan(scan: dict, transport: dict) -> dict:
     url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
     if not url:
