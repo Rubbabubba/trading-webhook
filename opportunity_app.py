@@ -15,7 +15,7 @@ from opportunity_lab.crypto_basis import BasisInputs, backtest_funding, evaluate
 from opportunity_lab.crypto_market_data import fetch_crypto_bars
 from opportunity_lab.crypto_regime import crypto_research_suite
 from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
-from opportunity_lab.kalshi_market_data import fetch_open_events, rank_event_dislocations
+from opportunity_lab.kalshi_market_data import fetch_open_events, fetch_recent_trades, rank_event_dislocations
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
 from opportunity_lab.prediction_market_making import screen_market_making
 from opportunity_lab.store import configured as store_configured, kalshi_scoreboard, recent_runs, save_kalshi_scan
@@ -273,6 +273,10 @@ def collect_kalshi(body: dict) -> dict:
         raise HTTPException(status_code=502, detail={"transport": transport})
     scan = rank_event_dislocations(events)
     scan["market_making"] = screen_market_making(events)
+    trades, trade_transport = fetch_recent_trades(min_ts=int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()))
+    if trade_transport.get("error"):
+        raise HTTPException(status_code=502, detail={"trade_transport": trade_transport})
+    scan["_public_trades"] = trades
     return {"ok": True, "transport": transport, "scan_summary": {
         "events_received": scan["events_received"], "candidate_count": scan["candidate_count"],
         "price_dislocation_count": scan["price_dislocation_count"],
@@ -280,7 +284,7 @@ def collect_kalshi(body: dict) -> dict:
         "closest_no_pair_count": scan["closest_no_pair_count"],
         "market_making_market_count": scan["market_making"]["market_count"],
         "market_making_conservative_positive_count": scan["market_making"]["conservative_positive_count"],
-    }, "persistence": save_kalshi_scan(scan, transport), "execution_enabled": False}
+    }, "trade_transport": trade_transport, "persistence": save_kalshi_scan(scan, transport), "execution_enabled": False}
 
 
 @app.get("/diagnostics/opportunity_lab/kalshi/history")

@@ -24,6 +24,8 @@ For events explicitly marked mutually exclusive, the collector also evaluates ev
 
 The collector also persists a two-sided market-making screen for every market with a valid top-of-book spread and depth. It models optimistic, base, and conservative fill/adverse-selection scenarios and applies the quadratic maker-fee coefficient even though some series do not charge maker fees. The screen is not a fill backtest: queue position, series-specific fees, and actual fills remain blockers, and no order transport exists.
 
+On each scheduled run, the collector also downloads up to three pages of public trades from the prior two hours. The replay compares those prints with the previous stored quote, credits a hypothetical maker fill only after qualifying trade volume clears the displayed queue ahead, pairs opposing fills, marks residual inventory against the next executable quote, and deducts the conservative maker-fee estimate. Public prints cannot prove an account-specific fill or continuous quote presence, so replay profits remain ineligible research evidence.
+
 For U.S. Coinbase CFM products, `/diagnostics/opportunity_lab/coinbase/reconstruct-funding` reconstructs BTC or ETH hourly funding over 7–365 days from aligned CDE-future and Coinbase-spot hourly candles. It applies Coinbase's published `/24` premium scaling and 75% current/25% previous smoothing, but uses hourly closes instead of the official twenty three-minute representative-price samples. Its output is therefore explicitly a proxy, never official historical funding. Exact U.S. historical funding must be requested from Coinbase and should later be used to validate and calibrate the proxy.
 
 ## Promotion lifecycle

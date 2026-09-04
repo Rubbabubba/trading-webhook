@@ -42,6 +42,28 @@ def fetch_open_events(*, limit: int = 200, pages: int = 1) -> tuple[list[dict], 
     }
 
 
+def fetch_recent_trades(*, min_ts: int, limit: int = 1000, pages: int = 3) -> tuple[list[dict], dict]:
+    """Fetch public trade prints after a Unix timestamp."""
+    limit = max(1, min(1000, int(limit)))
+    pages = max(1, min(10, int(pages)))
+    trades, cursor, page_count = [], "", 0
+    for _ in range(pages):
+        params = {"min_ts": int(min_ts), "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        payload, transport = _get("/markets/trades", params)
+        if transport.get("error"):
+            return trades, {**transport, "pages": page_count, "trade_count": len(trades)}
+        trades.extend(payload.get("trades") or [])
+        page_count += 1
+        cursor = str(payload.get("cursor") or "")
+        if not cursor:
+            break
+    return trades, {"method": "kalshi_public_rest", "path": "/trade-api/v2/markets/trades",
+                    "authenticated": False, "pages": page_count, "trade_count": len(trades),
+                    "more_available": bool(cursor)}
+
+
 def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_market_count: int = 2, now: datetime | None = None) -> dict:
     """Rank complete-set candidates using displayed YES asks; fees remain unmodeled."""
     wanted = category.strip().casefold()

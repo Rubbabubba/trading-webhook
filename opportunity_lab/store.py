@@ -7,6 +7,8 @@ import os
 import uuid
 from datetime import datetime, timezone
 
+from .prediction_market_making import replay_quote
+
 
 def configured() -> bool:
     return bool((os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip())
@@ -23,6 +25,7 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
     pairs = list(scan.get("mutually_exclusive_no_pairs") or [])
     closest_pairs = list(scan.get("closest_no_pairs") or [])
     maker_rows = list((scan.get("market_making") or {}).get("candidates") or [])
+    trades = list(scan.get("_public_trades") or [])
     summary = {
         "events_received": scan.get("events_received"),
         "candidate_count": scan.get("candidate_count"),
@@ -58,6 +61,19 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
                 conservative_roi_pct numeric NOT NULL, payload jsonb NOT NULL,
                 PRIMARY KEY (run_id, ticker)
             )""")
+            cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.market_making_replays (
+                run_id uuid NOT NULL REFERENCES opportunity_lab.scan_runs(run_id) ON DELETE CASCADE,
+                ticker text NOT NULL, net_marked_pnl numeric NOT NULL, roi_pct numeric NOT NULL,
+                profitable boolean NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, ticker)
+            )""")
+            previous_rows = {}
+            if maker_rows and trades:
+                tickers = [row["ticker"] for row in maker_rows]
+                cursor.execute("""SELECT DISTINCT ON (m.ticker) m.ticker, m.payload
+                    FROM opportunity_lab.market_making_observations m
+                    JOIN opportunity_lab.scan_runs r USING (run_id)
+                    WHERE m.ticker = ANY(%s) ORDER BY m.ticker, r.observed_at DESC""", (tickers,))
+                previous_rows = {row[0]: row[1] for row in cursor.fetchall()}
             cursor.execute(
                 "INSERT INTO opportunity_lab.scan_runs VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
                 (run_id, observed_at, "kalshi_public_market_data", int(transport.get("pages") or 0),
@@ -84,8 +100,22 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
                     (run_id, row.get("ticker"), conservative.get("estimated_net_profit") or 0,
                      conservative.get("estimated_roi_on_quote_capital_pct") or 0, json.dumps(row)),
                 )
+            replay_rows = []
+            for current in maker_rows:
+                previous = previous_rows.get(current.get("ticker"))
+                if not previous:
+                    continue
+                replay = replay_quote(previous, current, trades)
+                replay_rows.append(replay)
+                cursor.execute(
+                    "INSERT INTO opportunity_lab.market_making_replays VALUES (%s,%s,%s,%s,%s,%s::jsonb)",
+                    (run_id, replay["ticker"], replay["net_marked_pnl"], replay["roi_on_quote_capital_pct"],
+                     replay["profitable"], json.dumps(replay)),
+                )
     return {"configured": True, "saved": True, "run_id": run_id, "observed_at": observed_at.isoformat(),
-            "pair_rows": len(pairs), "near_miss_rows": len(closest_pairs), "market_making_rows": len(maker_rows)}
+            "pair_rows": len(pairs), "near_miss_rows": len(closest_pairs), "market_making_rows": len(maker_rows),
+            "market_making_replay_rows": len(replay_rows),
+            "market_making_profitable_replays": sum(row["profitable"] for row in replay_rows)}
 
 
 def recent_runs(limit: int = 50) -> dict:

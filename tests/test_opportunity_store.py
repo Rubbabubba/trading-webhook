@@ -12,6 +12,7 @@ def test_worker_requires_separate_secret(monkeypatch):
 def test_worker_collects_and_persists_without_execution(monkeypatch):
     monkeypatch.setenv("OPPORTUNITY_WORKER_SECRET", "worker-only")
     monkeypatch.setattr("opportunity_app.fetch_open_events", lambda **kwargs: ([], {"pages": 1, "event_count": 0, "more_available": False}))
+    monkeypatch.setattr("opportunity_app.fetch_recent_trades", lambda **kwargs: ([], {"pages": 1, "trade_count": 0}))
     monkeypatch.setattr("opportunity_app.save_kalshi_scan", lambda scan, transport: {"configured": True, "saved": True, "run_id": "x"})
     response = TestClient(app).post("/worker/opportunity-lab/collect-kalshi", json={"worker_secret": "worker-only"})
     assert response.status_code == 200
