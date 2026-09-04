@@ -17,6 +17,7 @@ from opportunity_lab.crypto_regime import crypto_research_suite
 from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
 from opportunity_lab.kalshi_market_data import fetch_open_events, rank_event_dislocations
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
+from opportunity_lab.store import configured as store_configured, recent_runs, save_kalshi_scan
 
 
 APP_VERSION = "opportunity-lab-web-v2"
@@ -235,3 +236,26 @@ def kalshi_scan(body: dict) -> dict:
     if transport.get("error"):
         raise HTTPException(status_code=502, detail={"transport": transport})
     return {"ok": True, "transport": transport, "scan": rank_event_dislocations(events, category=category), "execution_enabled": False}
+
+
+@app.post("/worker/opportunity-lab/collect-kalshi")
+def collect_kalshi(body: dict) -> dict:
+    expected = (os.getenv("OPPORTUNITY_WORKER_SECRET") or "").strip()
+    if not expected or str(body.get("worker_secret") or "") != expected:
+        raise HTTPException(status_code=401, detail="invalid opportunity worker secret")
+    pages = max(1, min(10, int(body.get("pages") or 10)))
+    limit = max(1, min(200, int(body.get("limit") or 200)))
+    events, transport = fetch_open_events(limit=limit, pages=pages)
+    if transport.get("error"):
+        raise HTTPException(status_code=502, detail={"transport": transport})
+    scan = rank_event_dislocations(events)
+    return {"ok": True, "transport": transport, "scan_summary": {
+        "events_received": scan["events_received"], "candidate_count": scan["candidate_count"],
+        "price_dislocation_count": scan["price_dislocation_count"],
+        "mutually_exclusive_no_pair_count": scan["mutually_exclusive_no_pair_count"],
+    }, "persistence": save_kalshi_scan(scan, transport), "execution_enabled": False}
+
+
+@app.get("/diagnostics/opportunity_lab/kalshi/history")
+def kalshi_history(limit: int = 50) -> dict:
+    return {"ok": True, "database_configured": store_configured(), **recent_runs(limit), "execution_enabled": False}

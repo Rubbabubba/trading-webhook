@@ -51,6 +51,8 @@ The first web service entry point is `uvicorn opportunity_app:app --host 0.0.0.0
 
 The protected `/dashboard/opportunity-lab` page provides a browser runner for BTC/USD and ETH/USD research. HTTP Basic authentication accepts any username and requires `OPPORTUNITY_ADMIN_SECRET` as the password.
 
+The one-shot `opportunity_lab_worker.py` process calls only `/worker/opportunity-lab/collect-kalshi`. That route requires its own `OPPORTUNITY_WORKER_SECRET`, scans public market data, and persists only scan summaries and fee-positive pair candidates in the dedicated `opportunity_lab` PostgreSQL schema. It cannot invoke Regime worker routes or submit orders. `/diagnostics/opportunity_lab/kalshi/history` reports recent collection runs.
+
 ## Render environment
 
 The initial research-only web service requires:
@@ -63,6 +65,19 @@ The Coinbase funding/basis research adapter additionally uses a Coinbase Advance
 
 - `OPPORTUNITY_COINBASE_API_KEY_NAME`
 - `OPPORTUNITY_COINBASE_API_KEY_SECRET`
+
+Continuous observation additionally requires:
+
+- `OPPORTUNITY_DATABASE_URL` — the internal URL for a separate Render Postgres database
+- `OPPORTUNITY_WORKER_SECRET` — a new random secret used only by the Opportunity Lab collector
+
+A scheduled collector service uses:
+
+- `OPPORTUNITY_SERVICE_URL=https://opportunity-lab.onrender.com`
+- `OPPORTUNITY_WORKER_SECRET` — the same Opportunity Lab-only worker secret
+- command: `python opportunity_lab_worker.py`
+
+Do not reuse `DATABASE_URL`, `WORKER_SECRET`, or any Regime schema. Free Render Postgres is suitable only for the initial validation window because it expires after 30 days and has no backups.
 
 The protected `/diagnostics/opportunity_lab/coinbase/status` route tests authentication and returns sanitized perpetual product economics. It deliberately omits account balances and cannot place or cancel orders. Never grant this research key trade, transfer, send, withdrawal, or management permissions.
 
