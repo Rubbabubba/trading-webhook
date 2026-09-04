@@ -1,0 +1,25 @@
+name: Opportunity Lab collector
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+concurrency:
+  group: opportunity-lab-collector
+  cancel-in-progress: false
+
+jobs:
+  collect-kalshi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Trigger read-only Kalshi collection
+        env:
+          WORKER_SECRET: ${{ secrets.OPPORTUNITY_WORKER_SECRET }}
+        run: |
+          body=$(jq -cn --arg secret "$WORKER_SECRET" '{worker_secret:$secret,pages:10,limit:200}')
+          curl --fail-with-body --retry 2 --retry-all-errors --max-time 180 \
+            --header "Content-Type: application/json" \
+            --data "$body" \
+            https://opportunity-lab.onrender.com/worker/opportunity-lab/collect-kalshi

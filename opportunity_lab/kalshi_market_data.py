@@ -47,6 +47,7 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
     wanted = category.strip().casefold()
     candidates = []
     no_pair_candidates = []
+    closest_no_pairs = []
     now = now or datetime.now(timezone.utc)
     skipped = {"category": 0, "not_mutually_exclusive": 0, "too_few_quoted_markets": 0}
     for event in events:
@@ -88,28 +89,36 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
                 "no_ask_size_contracts": size,
                 "close_time": market.get("close_time"),
             })
+        event_best_pair = None
         for left_index, left in enumerate(pair_legs):
             for right in pair_legs[left_index + 1:]:
                 contracts = math.floor(min(left["no_ask_size_contracts"], right["no_ask_size_contracts"]) * 100) / 100
                 fees = _taker_fee(left["no_ask_dollars"], contracts) + _taker_fee(right["no_ask_dollars"], contracts)
                 cost = contracts * (left["no_ask_dollars"] + right["no_ask_dollars"])
                 net_profit = contracts - cost - fees
-                if net_profit <= 0:
-                    continue
                 settlement = _latest_time(left.get("close_time"), right.get("close_time"))
                 days = max((settlement - now).total_seconds() / 86400, 1 / 24) if settlement else None
                 roi = net_profit / (cost + fees) * 100 if cost + fees else 0
-                annualized = ((1 + roi / 100) ** (365 / days) - 1) * 100 if days else None
-                no_pair_candidates.append({
+                annualized = ((1 + roi / 100) ** (365 / days) - 1) * 100 if days and roi > -100 else None
+                pair = {
                     "event_ticker": event.get("event_ticker"), "title": event.get("title"), "category": event_category,
                     "strategy": "buy_no_on_two_mutually_exclusive_outcomes", "contracts": contracts,
                     "cost_before_fees": round(cost, 4), "estimated_taker_fees": round(fees, 4),
                     "minimum_settlement_payout": round(contracts, 4), "estimated_net_profit": round(net_profit, 4),
                     "estimated_net_roi_pct": round(roi, 6), "days_to_latest_close": round(days, 3) if days else None,
                     "annualized_return_pct": round(annualized, 6) if annualized is not None else None,
+                    "shortfall_to_break_even": round(max(0, -net_profit), 4),
+                    "profitable_after_estimated_fees": net_profit > 0,
                     "legs": [left, right], "eligible": False,
-                    "blockers": ["series_specific_fee_not_verified", "account_and_jurisdiction_not_verified"],
-                })
+                    "blockers": (["series_specific_fee_not_verified", "account_and_jurisdiction_not_verified"]
+                                 if net_profit > 0 else ["not_profitable_after_estimated_fees"]),
+                }
+                if event_best_pair is None or pair["estimated_net_roi_pct"] > event_best_pair["estimated_net_roi_pct"]:
+                    event_best_pair = pair
+                if net_profit > 0:
+                    no_pair_candidates.append(pair)
+        if event_best_pair is not None:
+            closest_no_pairs.append(event_best_pair)
         if len(legs) < minimum_market_count:
             skipped["too_few_quoted_markets"] += 1
             continue
@@ -134,6 +143,7 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
         })
     candidates.sort(key=lambda row: (row["gross_profit_at_displayed_size"], row["gross_roi_pct_before_fees"]), reverse=True)
     no_pair_candidates.sort(key=lambda row: (row["annualized_return_pct"] or -1, row["estimated_net_profit"]), reverse=True)
+    closest_no_pairs.sort(key=lambda row: (row["estimated_net_roi_pct"], row["estimated_net_profit"]), reverse=True)
     return {
         "source": "kalshi_public_market_data",
         "events_received": len(events),
@@ -143,6 +153,8 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
         "candidates": candidates,
         "mutually_exclusive_no_pair_count": len(no_pair_candidates),
         "mutually_exclusive_no_pairs": no_pair_candidates[:50],
+        "closest_no_pair_count": len(closest_no_pairs),
+        "closest_no_pairs": closest_no_pairs[:100],
         "fee_model": "conservative_general_taker_estimate: ceil_to_cent(0.07*C*P*(1-P)) per leg",
         "skipped": skipped,
         "research_only": True,

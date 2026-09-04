@@ -43,4 +43,23 @@ def test_mutually_exclusive_no_pair_models_fees_and_time():
     assert pair["cost_before_fees"] == 6.4
     assert pair["estimated_taker_fees"] == .28
     assert pair["estimated_net_profit"] == 1.32
+    assert pair["profitable_after_estimated_fees"] is True
+    assert result["closest_no_pairs"][0] == pair
     assert pair["eligible"] is False
+
+
+def test_closest_no_pair_is_retained_when_not_profitable():
+    result = rank_event_dislocations([{
+        "event_ticker": "NO-EDGE", "title": "No edge", "category": "Politics", "mutually_exclusive": True,
+        "markets": [
+            {"ticker": "A", "yes_bid_dollars": ".50", "yes_bid_size_fp": "10"},
+            {"ticker": "B", "yes_bid_dollars": ".49", "yes_bid_size_fp": "10"},
+        ],
+    }])
+    assert result["mutually_exclusive_no_pair_count"] == 0
+    assert result["closest_no_pair_count"] == 1
+    pair = result["closest_no_pairs"][0]
+    assert pair["estimated_net_profit"] < 0
+    assert pair["shortfall_to_break_even"] > 0
+    assert pair["profitable_after_estimated_fees"] is False
+    assert pair["blockers"] == ["not_profitable_after_estimated_fees"]

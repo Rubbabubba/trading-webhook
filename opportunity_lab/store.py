@@ -21,11 +21,13 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
     run_id = str(uuid.uuid4())
     observed_at = datetime.now(timezone.utc)
     pairs = list(scan.get("mutually_exclusive_no_pairs") or [])
+    closest_pairs = list(scan.get("closest_no_pairs") or [])
     summary = {
         "events_received": scan.get("events_received"),
         "candidate_count": scan.get("candidate_count"),
         "price_dislocation_count": scan.get("price_dislocation_count"),
         "mutually_exclusive_no_pair_count": scan.get("mutually_exclusive_no_pair_count"),
+        "closest_no_pair_count": scan.get("closest_no_pair_count"),
         "category_filter": scan.get("category_filter"),
         "fee_model": scan.get("fee_model"),
     }
@@ -43,6 +45,12 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
                 estimated_net_roi_pct numeric NOT NULL, annualized_return_pct numeric,
                 payload jsonb NOT NULL, PRIMARY KEY (run_id, event_ticker, leg_key)
             )""")
+            cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.near_miss_observations (
+                run_id uuid NOT NULL REFERENCES opportunity_lab.scan_runs(run_id) ON DELETE CASCADE,
+                event_ticker text NOT NULL, leg_key text NOT NULL, estimated_net_profit numeric NOT NULL,
+                estimated_net_roi_pct numeric NOT NULL, shortfall_to_break_even numeric NOT NULL,
+                payload jsonb NOT NULL, PRIMARY KEY (run_id, event_ticker)
+            )""")
             cursor.execute(
                 "INSERT INTO opportunity_lab.scan_runs VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
                 (run_id, observed_at, "kalshi_public_market_data", int(transport.get("pages") or 0),
@@ -55,7 +63,15 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
                     (run_id, pair.get("event_ticker"), leg_key, pair.get("estimated_net_profit") or 0,
                      pair.get("estimated_net_roi_pct") or 0, pair.get("annualized_return_pct"), json.dumps(pair)),
                 )
-    return {"configured": True, "saved": True, "run_id": run_id, "observed_at": observed_at.isoformat(), "pair_rows": len(pairs)}
+            for pair in closest_pairs:
+                leg_key = "|".join(sorted(str(leg.get("ticker") or "") for leg in pair.get("legs") or []))
+                cursor.execute(
+                    "INSERT INTO opportunity_lab.near_miss_observations VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                    (run_id, pair.get("event_ticker"), leg_key, pair.get("estimated_net_profit") or 0,
+                     pair.get("estimated_net_roi_pct") or 0, pair.get("shortfall_to_break_even") or 0, json.dumps(pair)),
+                )
+    return {"configured": True, "saved": True, "run_id": run_id, "observed_at": observed_at.isoformat(),
+            "pair_rows": len(pairs), "near_miss_rows": len(closest_pairs)}
 
 
 def recent_runs(limit: int = 50) -> dict:
