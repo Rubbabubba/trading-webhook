@@ -26,6 +26,8 @@ The collector also persists a two-sided market-making screen for every market wi
 
 On each scheduled run, the collector also downloads up to three pages of public trades from the prior two hours. The replay compares those prints with the previous stored quote, credits a hypothetical maker fill only after qualifying trade volume clears the displayed queue ahead, pairs opposing fills, marks residual inventory against the next executable quote, and deducts the conservative maker-fee estimate. Public prints cannot prove an account-specific fill or continuous quote presence, so replay profits remain ineligible research evidence.
 
+The market-making evidence report chronologically separates the oldest two-thirds of stored replays from the newest third. It reports observed fills, paired round trips, marked P&L, and profitable replay counts for both periods. Retention requires at least 30 calibration replays, 15 validation replays, and positive marked P&L in both; an unsuccessful formulation remains available for retuning rather than retiring the candidate category.
+
 For U.S. Coinbase CFM products, `/diagnostics/opportunity_lab/coinbase/reconstruct-funding` reconstructs BTC or ETH hourly funding over 7–365 days from aligned CDE-future and Coinbase-spot hourly candles. It applies Coinbase's published `/24` premium scaling and 75% current/25% previous smoothing, but uses hourly closes instead of the official twenty three-minute representative-price samples. Its output is therefore explicitly a proxy, never official historical funding. Exact U.S. historical funding must be requested from Coinbase and should later be used to validate and calibrate the proxy.
 
 ## Promotion lifecycle

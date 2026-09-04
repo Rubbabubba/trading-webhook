@@ -24,7 +24,7 @@ def test_all_locked_candidates_have_unique_rank_and_key():
     statuses = {row["key"]: row["status"] for row in candidate_catalog()}
     assert statuses["crypto_basis"] == "research_retained"
     assert statuses["sports_prediction_arb"] == "active"
-    assert statuses["crypto_regime"] == "researched_rejected"
+    assert statuses["crypto_regime"] == "retuning"
 
 
 def test_shared_opportunity_computes_net_edge():

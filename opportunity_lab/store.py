@@ -411,3 +411,54 @@ def kalshi_scoreboard(*, hours: int = 72, required_runs: int = 60) -> dict:
             "shortfall_to_break_even": float(closest[2]), "event_ticker": closest[3], "leg_key": closest[4]} if closest else None),
         "verdict": verdict, "rationale": rationale, "execution_enabled": False,
     }
+
+
+def market_making_scoreboard(*, hours: int = 24 * 30) -> dict:
+    """Chronologically split stored queue-clearing maker replays."""
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "error": "opportunity_database_not_configured"}
+    import psycopg
+
+    hours = max(1, min(24 * 90, int(hours)))
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.market_making_replays (
+            run_id uuid NOT NULL, ticker text NOT NULL, net_marked_pnl numeric NOT NULL,
+            roi_pct numeric NOT NULL, profitable boolean NOT NULL, payload jsonb NOT NULL,
+            PRIMARY KEY (run_id, ticker))""")
+        cursor.execute("""SELECT r.observed_at, m.net_marked_pnl, m.roi_pct, m.profitable, m.payload
+            FROM opportunity_lab.market_making_replays m
+            JOIN opportunity_lab.scan_runs r USING (run_id)
+            WHERE r.observed_at >= now() - (%s * interval '1 hour')
+            ORDER BY r.observed_at, m.ticker""", (hours,))
+        rows = cursor.fetchall()
+    split = int(len(rows) * 2 / 3)
+    calibration_summary = _maker_replay_summary(rows[:split])
+    validation_summary = _maker_replay_summary(rows[split:])
+    retained = (calibration_summary["replay_count"] >= 30 and validation_summary["replay_count"] >= 15
+                and calibration_summary["net_marked_pnl"] > 0 and validation_summary["net_marked_pnl"] > 0)
+    return {"configured": True, "strategy": "kalshi_queue_clearing_public_trade_replay", "window_hours": hours,
+            "method": "chronological_two_thirds_calibration_one_third_validation",
+            "calibration": calibration_summary, "validation": validation_summary,
+            "model_retained": retained,
+            "verdict": "retain_for_forward_validation" if retained else "keep_testing_or_retune",
+            "limitations": ["public prints cannot prove account-specific fills",
+                            "quote persistence between hourly snapshots is assumed",
+                            "residual inventory is marked at the next displayed executable quote",
+                            "series-specific maker fee applicability remains unverified"],
+            "eligible": False, "execution_enabled": False}
+
+
+def _maker_replay_summary(rows: list[tuple]) -> dict:
+    payloads = [row[4] or {} for row in rows]
+    pnl = [float(row[1]) for row in rows]
+    return {"replay_count": len(rows), "first_observed_at": rows[0][0].isoformat() if rows else None,
+            "last_observed_at": rows[-1][0].isoformat() if rows else None,
+            "replays_with_any_fill": sum((float(row.get("simulated_buy_fills") or 0) > 0 or
+                                          float(row.get("simulated_sell_fills") or 0) > 0) for row in payloads),
+            "profitable_replay_count": sum(bool(row[3]) for row in rows),
+            "net_marked_pnl": round(sum(pnl), 6),
+            "average_pnl_per_replay": round(sum(pnl) / len(pnl), 8) if pnl else None,
+            "total_simulated_buy_fills": round(sum(float(row.get("simulated_buy_fills") or 0) for row in payloads), 6),
+            "total_simulated_sell_fills": round(sum(float(row.get("simulated_sell_fills") or 0) for row in payloads), 6),
+            "total_paired_round_trips": round(sum(float(row.get("paired_round_trips") or 0) for row in payloads), 6)}

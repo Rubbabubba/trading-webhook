@@ -26,10 +26,10 @@ from opportunity_lab.weather_backtest import historical_dallas_backtest, walk_fo
 from opportunity_lab.store import (configured as store_configured, cross_exchange_scoreboard, triangular_scoreboard,
                                    kalshi_scoreboard, recent_runs, save_cross_exchange_scans, save_kalshi_scan,
                                    reconcile_weather_settlements, save_triangular_scan, save_weather_scan,
-                                   weather_scoreboard)
+                                   weather_scoreboard, market_making_scoreboard)
 
 
-APP_VERSION = "opportunity-lab-web-v4"
+APP_VERSION = "opportunity-lab-web-v5"
 app = FastAPI(title="Opportunity Lab", docs_url=None, redoc_url=None)
 
 
@@ -75,7 +75,7 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
   {"outcome":"Away","venue":"Book B","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0}
 ]</textarea><button id="arbRun">Scan opportunity</button></section>
 <section class="card"><h2>Live prediction-market discovery</h2><p class="muted">Unauthenticated Kalshi public data only. Results are gross price-dislocation candidates, not approved trades; fees, complete outcome coverage, account eligibility, and jurisdiction remain blockers.</p><label>Category <select id="kalshiCategory"><option value="">All</option><option>Sports</option><option>Politics</option><option>Economics</option><option>Crypto</option></select></label><label>Pages <input id="kalshiPages" type="number" min="1" max="3" value="1"></label><button id="kalshiRun">Scan live markets</button><button id="kalshiSave">Scan and save</button></section>
-<section class="card"><h2>Prediction-market maker simulator</h2><p class="muted">Snapshot screen only. Models two-sided fills, maker fees, adverse selection, and unpaired inventory; it does not place orders.</p><label>Pages <input id="makerPages" type="number" min="1" max="3" value="1"></label><label>Quote size <input id="makerSize" type="number" min="0.01" step="0.01" value="10"></label><label>Maker fee coefficient <input id="makerFee" type="number" min="0" max="1" step="0.0001" value="0.0175"></label><button id="makerRun">Run maker screen</button></section>
+<section class="card"><h2>Prediction-market maker simulator</h2><p class="muted">Models queue-clearing fills from public trades, one-sided inventory, next-quote marking, and maker fees. It does not place orders.</p><label>Pages <input id="makerPages" type="number" min="1" max="3" value="1"></label><label>Quote size <input id="makerSize" type="number" min="0.01" step="0.01" value="10"></label><label>Maker fee coefficient <input id="makerFee" type="number" min="0" max="1" step="0.0001" value="0.0175"></label><button id="makerRun">Run maker screen</button><button id="makerEvidence">Load replay evidence</button></section>
 <section class="card"><h2>Cross-exchange crypto monitor</h2><p class="muted">Public Coinbase and Kraken order books. Sweeps executable depth and deducts conservative taker fees. No orders, balances, or credentials.</p><label>Market <select id="crossSymbol"><option>BTC</option><option>ETH</option></select></label><label>Maximum per-leg notional $ <input id="crossNotional" type="number" min="10" max="100000" value="1000"></label><button id="crossRun">Compare venues</button></section>
 <section class="card"><h2>Triangular crypto monitor</h2><p class="muted">Public Kraken BTC/USD, ETH/USD, and ETH/BTC books. Models both three-leg cycles with depth and a fee on every leg.</p><label>Starting USD <input id="triangleCapital" type="number" min="10" max="100000" value="1000"></label><button id="triangleRun">Scan both cycles</button></section>
 <section class="card"><h2>Dallas weather-value research</h2><p class="muted">NWS DFW hourly forecast proxy versus active Kalshi Dallas high/low contracts. Research is blocked from eligibility until forecast and settlement-source errors are calibrated.</p><label>Assumed forecast error σ°F <input id="weatherSigma" type="number" min="0.5" max="10" step="0.1" value="2.5"></label><button id="weatherRun">Score Dallas weather</button></section>
@@ -91,6 +91,7 @@ document.getElementById('arbRun').onclick=()=>{try{post('/diagnostics/opportunit
 document.getElementById('kalshiRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200});
 document.getElementById('kalshiSave').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200,persist:true});
 document.getElementById('makerRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/market-making',{pages:Number(document.getElementById('makerPages').value),limit:200,quote_size:Number(document.getElementById('makerSize').value),maker_fee_coefficient:Number(document.getElementById('makerFee').value)});
+document.getElementById('makerEvidence').onclick=async()=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Loading…';try{const response=await fetch('/diagnostics/opportunity_lab/kalshi/market-making/evidence?hours=720');const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};
 document.getElementById('crossRun').onclick=()=>post('/diagnostics/opportunity_lab/cross-exchange/scan',{symbol:document.getElementById('crossSymbol').value,max_notional:Number(document.getElementById('crossNotional').value)});
 document.getElementById('triangleRun').onclick=()=>post('/diagnostics/opportunity_lab/triangular/scan',{starting_usd:Number(document.getElementById('triangleCapital').value)});
 document.getElementById('weatherRun').onclick=()=>post('/diagnostics/opportunity_lab/weather/dallas',{sigma_f:Number(document.getElementById('weatherSigma').value)});
@@ -278,6 +279,11 @@ def kalshi_market_making(body: dict) -> dict:
             "execution_enabled": False}
 
 
+@app.get("/diagnostics/opportunity_lab/kalshi/market-making/evidence")
+def kalshi_market_making_evidence(hours: int = 720) -> dict:
+    return {"ok": True, "evidence": market_making_scoreboard(hours=hours), "execution_enabled": False}
+
+
 @app.post("/diagnostics/opportunity_lab/cross-exchange/scan")
 def cross_exchange_scan(body: dict) -> dict:
     symbol = str(body.get("symbol") or "BTC").upper()
@@ -387,4 +393,5 @@ def profitability_scoreboard(hours: int = 72) -> dict:
     return {"ok": True, "candidates": candidate_catalog(), "kalshi": kalshi_scoreboard(hours=hours),
             "cross_exchange_crypto": cross_exchange_scoreboard(hours=hours),
             "triangular_crypto": triangular_scoreboard(hours=hours),
+            "prediction_market_making": market_making_scoreboard(hours=max(hours, 720)),
             "weather_prediction_value": weather_scoreboard(hours=hours), "execution_enabled": False}
