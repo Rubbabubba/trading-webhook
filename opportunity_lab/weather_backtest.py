@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from urllib.error import HTTPError, URLError
@@ -126,6 +127,92 @@ def walk_forward_dallas(*, days: int = 60, lead_days: int = 1,
             "model_retained": passes,
             "verdict": "retain_for_forward_validation" if passes else "reject_or_redesign_current_weather_model",
             "eligible": False, "execution_enabled": False}
+
+
+def bias_corrected_walk_forward_dallas(*, days: int = 60, lead_days: int = 1) -> dict:
+    """Test expanding, past-only bias/error calibration and side-specific entries."""
+    days = max(30, min(90, int(days)))
+    cases, metadata = _collect_historical_cases(days, lead_days)
+    if not metadata.get("ok"):
+        return metadata
+    dates = sorted({case["target"] for case in cases})
+    split_index = max(1, int(len(dates) * 2 / 3))
+    calibration_dates, validation_dates = set(dates[:split_index]), set(dates[split_index:])
+    grid = []
+    for window in (7, 14, 28):
+        for edge in (.03, .05, .08, .10, .15):
+            for side in ("all", "yes", "no"):
+                results = _evaluate_bias_cases(cases, window=window, minimum_edge=edge, side=side)
+                calibration = _summary([row for row in results if date.fromisoformat(row["target_date"]) in calibration_dates])
+                grid.append({"window": window, "minimum_edge": edge, "side": side, **calibration})
+    viable = [row for row in grid if row["paper_trade_count"] >= 10]
+    ranked = viable or grid
+    ranked.sort(key=lambda row: (row["paper_pnl_per_one_contract_each_trade"],
+                                 row["paper_win_rate"] or 0, row["paper_trade_count"]), reverse=True)
+    selected = ranked[0]
+    all_results = _evaluate_bias_cases(cases, window=selected["window"],
+                                       minimum_edge=selected["minimum_edge"], side=selected["side"])
+    validation_results = [row for row in all_results if date.fromisoformat(row["target_date"]) in validation_dates]
+    validation = _summary(validation_results)
+    calibration_profitable = selected["paper_pnl_per_one_contract_each_trade"] > 0
+    validation_profitable = (validation["paper_trade_count"] >= 5 and
+                             validation["paper_pnl_per_one_contract_each_trade"] > 0)
+    retained = calibration_profitable and validation_profitable
+    return {**metadata, "strategy": "expanding_past_only_bias_corrected_gfs",
+            "method": "grid_on_oldest_two_thirds_then_untouched_newest_third",
+            "grid_size": len(grid), "selected_parameters": {key: selected[key] for key in ("window", "minimum_edge", "side")},
+            "split": {"calibration_start": dates[0].isoformat() if dates else None,
+                      "calibration_end": dates[split_index - 1].isoformat() if dates else None,
+                      "validation_start": dates[split_index].isoformat() if len(dates) > split_index else None,
+                      "validation_end": dates[-1].isoformat() if dates else None},
+            "calibration": {key: value for key, value in selected.items()
+                            if key not in {"window", "minimum_edge", "side"}},
+            "validation": validation, "validation_events": validation_results,
+            "calibration_profitable": calibration_profitable, "out_of_sample_profitable": validation_profitable,
+            "model_retained": retained, "verdict": "retain_for_forward_validation" if retained else "continue_retuning",
+            "eligible": False, "execution_enabled": False}
+
+
+def _evaluate_bias_cases(cases: list[dict], *, window: int, minimum_edge: float, side: str) -> list[dict]:
+    errors: dict[str, list[float]] = defaultdict(list)
+    results = []
+    for case in sorted(cases, key=lambda row: (row["target"], row["extreme"])):
+        history = errors[case["extreme"]][-window:]
+        observed = _observed_temperature(case["markets"])
+        if len(history) >= 7:
+            bias = statistics.mean(history)
+            sigma = max(1.0, statistics.pstdev(history) if len(history) > 1 else 2.5)
+            corrected = case["forecast"] + bias
+            snapshot = build_historical_snapshot(case["event_ticker"], case["markets"], case["candles"],
+                                                 forecast_mean_f=corrected, sigma_f=sigma,
+                                                 extreme=case["extreme"], target_date=case["target"])
+            calibration = calibrate_snapshot(snapshot, {row["ticker"]: row for row in case["markets"]}) if snapshot else None
+            candidates = [row for row in (snapshot or {}).get("candidates", []) if side == "all" or row["side"] == side]
+            if calibration and candidates:
+                best = max(candidates, key=lambda row: float(row["model_edge_after_fee"]))
+                result = str(next((row.get("result") for row in case["markets"] if row.get("ticker") == best["ticker"]), ""))
+                won = result == best["side"]
+                pnl = (1.0 if won else 0.0) - float(best["ask"]) - float(best["estimated_taker_fee_per_contract"])
+                calibration["raw_forecast_f"] = round(case["forecast"], 4)
+                calibration["rolling_bias_f"] = round(bias, 4)
+                calibration["rolling_sigma_f"] = round(sigma, 4)
+                calibration["paper_trade"] = {"ticker": best["ticker"], "side": best["side"], "ask": best["ask"],
+                                                "fee": best["estimated_taker_fee_per_contract"], "won": won,
+                                                "model_edge_after_fee": best["model_edge_after_fee"],
+                                                "taken": float(best["model_edge_after_fee"]) >= minimum_edge,
+                                                "realized_pnl_per_contract": round(pnl, 6)}
+                results.append(calibration)
+        if observed is not None:
+            errors[case["extreme"]].append(observed - case["forecast"])
+    return results
+
+
+def _observed_temperature(markets: list[dict]) -> float | None:
+    winning = next((row for row in markets if str(row.get("result") or "").lower() == "yes"), None)
+    try:
+        return float(winning.get("expiration_value")) if winning else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _collect_historical_cases(days: int, lead_days: int) -> tuple[list[dict], dict]:

@@ -26,7 +26,7 @@ CANDIDATES = (
     Candidate("cross_exchange_crypto", 5, "Cross-exchange crypto arbitrage", "arbitrage", "monitor_only", "multi_venue", ("coinbase_public_orderbook", "kraken_public_orderbook"), "research", "Depth-aware Coinbase/Kraken public monitor active; requires pre-funded inventory and careful transfer accounting."),
     Candidate("triangular_crypto", 6, "Triangular crypto arbitrage", "arbitrage", "monitor_only", "three_leg", ("kraken_public_orderbook",), "research", "Depth-aware Kraken BTC/USD, ETH/USD, and ETH/BTC cycle monitor active; must clear three fees, latency, and fill risk."),
     Candidate("matched_betting", 7, "Matched betting/promotions", "promotion", "manual_assist", "multi_venue", ("sportsbook_offers", "hedge_venue"), "queued", "Potentially attractive but finite and account-dependent."),
-    Candidate("weather_prediction_value", 8, "Weather prediction-market value", "forecast_value", "monitor_only", "single_venue", ("nws_forecast", "kalshi_prediction_market"), "retuning", "Uncorrected GFS formulation failed calibration; candidate retained for bias-corrected, ensemble, horizon, and tail-bracket hypotheses."),
+    Candidate("weather_prediction_value", 8, "Weather prediction-market value", "forecast_value", "monitor_only", "single_venue", ("nws_forecast", "kalshi_prediction_market"), "forward_validation", "Bias-corrected expanding-window GFS v2 passed its initial chronological holdout with a small edge; forward executable-price validation remains required."),
 )
 
 

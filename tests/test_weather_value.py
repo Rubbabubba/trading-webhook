@@ -1,7 +1,7 @@
 from datetime import date
 
 from opportunity_lab.weather_value import _temperatures_for_date, _ticker_date, calibrate_snapshot, score_event
-from opportunity_lab.weather_backtest import build_historical_snapshot
+from opportunity_lab.weather_backtest import _observed_temperature, build_historical_snapshot
 
 
 def test_weather_event_scores_brackets_and_never_becomes_eligible():
@@ -60,3 +60,10 @@ def test_historical_snapshot_uses_only_candles_at_or_before_local_midnight():
     assert snapshot is not None
     assert snapshot["candidates"][0]["ask"] != .9
     assert snapshot["latest_quote_timestamp"] <= snapshot["decision_cutoff"]
+
+
+def test_actual_weather_settlement_value_is_read_from_winning_bracket():
+    assert _observed_temperature([
+        {"ticker": "A", "result": "no", "expiration_value": "94.00"},
+        {"ticker": "B", "result": "yes", "expiration_value": "94.00"},
+    ]) == 94.0
