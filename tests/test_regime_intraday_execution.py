@@ -7,7 +7,7 @@ from regime_intraday_ledger import load_ledger, save_ledger
 from regime_intraday_options import parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_executor import build_mleg_close_order, build_mleg_limit_order, paper_client_order_id, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot
-from regime_intraday_runtime import RegimeIntradayRuntime
+from regime_intraday_runtime import RegimeIntradayRuntime, _confirm_option_stop, _execution_plan_from_fill, _underlying_stop_decision
 
 
 def test_close_order_reverses_both_legs_and_uses_credit_price():
@@ -17,6 +17,36 @@ def test_close_order_reverses_both_legs_and_uses_credit_price():
     assert payload["client_order_id"] == "close-key"
     assert [leg["side"] for leg in payload["legs"]] == ["sell", "buy"]
     assert [leg["position_intent"] for leg in payload["legs"]] == ["sell_to_close", "buy_to_close"]
+
+
+def test_post_fill_economics_use_actual_broker_debit():
+    record = {"plan": {"limit_debit": .80, "max_loss_dollars": 80, "max_profit_dollars": 20},
+              "broker": {"filled_avg_price": "0.75"}}
+    plan = _execution_plan_from_fill(record)
+    assert plan["limit_debit"] == .75
+    assert plan["max_loss_dollars"] == 75
+    assert plan["max_profit_dollars"] == 25
+
+
+def test_option_stop_requires_two_distinct_confirmation_cycles():
+    record = {}
+    raw = {"exit": True, "reason": "option_stop", "limit_credit": .30}
+    first = _confirm_option_stop(record, raw, datetime(2026, 9, 4, 10, 0, 10, tzinfo=ZoneInfo("America/New_York")))
+    duplicate = _confirm_option_stop(record, raw, datetime(2026, 9, 4, 10, 0, 50, tzinfo=ZoneInfo("America/New_York")))
+    second = _confirm_option_stop(record, raw, datetime(2026, 9, 4, 10, 1, 5, tzinfo=ZoneInfo("America/New_York")))
+    assert first["reason"] == "option_stop_pending_confirmation"
+    assert duplicate["confirmations"] == 1
+    assert second["exit"] is True
+    assert second["confirmations"] == 2
+
+
+def test_underlying_stop_is_immediate_only_on_post_fill_completed_bar():
+    record = {"signal": {"underlying_side": "sell", "stop_price": 534.43},
+              "broker": {"filled_at": "2026-09-04T15:00:18+00:00"}}
+    prefill = {"ready": True, "last_ts": "2026-09-04T11:00:00-04:00", "last_high": 535}
+    postfill = {"ready": True, "last_ts": "2026-09-04T11:01:00-04:00", "last_high": 534.50}
+    assert _underlying_stop_decision(record, prefill) is None
+    assert _underlying_stop_decision(record, postfill)["reason"] == "underlying_stop"
 
 
 def test_signal_generates_stable_broker_idempotency_key():

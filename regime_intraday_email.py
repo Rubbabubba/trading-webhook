@@ -96,7 +96,7 @@ def build_exit_email(signal_id: str, record: dict[str, Any]) -> dict[str, str]:
         f"Signal ID: {signal_id}\n"
         f"Underlying: {plan.get('underlying')}\n"
         f"Exit reason: {decision.get('reason')}\n"
-        f"Entry debit: ${float(plan.get('limit_debit') or 0):.2f}\n"
+        f"Entry debit: ${float(record.get('entry_fill_debit') or plan.get('limit_debit') or 0):.2f}\n"
         f"Conservative liquidation credit: ${float(valuation.get('liquidation_credit') or 0):.2f}\n"
         f"Estimated unrealized P/L: ${float(valuation.get('unrealized_dollars') or 0):.2f}\n\n"
         "Paper automation may attempt a closing order if enabled. This email does not confirm a submission or fill. Verify the closing order and remaining positions in Alpaca paper; an unfilled or rejected exit needs attention."

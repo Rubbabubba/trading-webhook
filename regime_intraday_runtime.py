@@ -84,6 +84,56 @@ def _attempt_entry_lifecycle_email(ledger: dict[str, Any], signal_id: str, recor
     ledger["events"] = list(ledger.get("events") or [])[-1000:]
 
 
+def _execution_plan_from_fill(record: dict[str, Any]) -> dict[str, Any]:
+    """Use the broker's actual entry debit for all post-fill economics."""
+    plan = dict(record.get("plan") or {})
+    fill = abs(float(dict(record.get("broker") or {}).get("filled_avg_price") or 0))
+    if fill <= 0:
+        return plan
+    original_debit = float(plan.get("limit_debit") or 0)
+    original_reward = float(plan.get("max_profit_dollars") or 0) / 100
+    width = original_debit + original_reward
+    plan.update(limit_debit=fill, max_loss_dollars=round(fill * 100, 2))
+    if width > fill:
+        plan["max_profit_dollars"] = round((width - fill) * 100, 2)
+    record["entry_fill_debit"] = fill
+    return plan
+
+
+def _underlying_stop_decision(record: dict[str, Any], feature: dict[str, Any]) -> dict[str, Any] | None:
+    signal = dict(record.get("signal") or {})
+    stop = float(signal.get("stop_price") or 0)
+    if stop <= 0 or not feature.get("ready"):
+        return None
+    bar_ts = str(feature.get("last_ts") or "")
+    filled_at = str(dict(record.get("broker") or {}).get("filled_at") or "")
+    try:
+        if filled_at and bar_ts and datetime.fromisoformat(bar_ts.replace("Z", "+00:00")) <= datetime.fromisoformat(filled_at.replace("Z", "+00:00")):
+            return None
+    except ValueError:
+        return None
+    side = str(signal.get("underlying_side") or "buy")
+    low = float(feature.get("last_low") or feature.get("price") or 0)
+    high = float(feature.get("last_high") or feature.get("price") or 0)
+    hit = low <= stop if side == "buy" else high >= stop
+    return {"exit": True, "reason": "underlying_stop", "underlying_stop": stop, "bar_ts": bar_ts} if hit else None
+
+
+def _confirm_option_stop(record: dict[str, Any], decision: dict[str, Any], observed_at: datetime) -> dict[str, Any]:
+    if decision.get("reason") != "option_stop":
+        record["option_stop_confirmations"] = 0
+        record.pop("option_stop_last_confirmation_cycle", None)
+        return decision
+    cycle = observed_at.replace(second=0, microsecond=0).isoformat()
+    if record.get("option_stop_last_confirmation_cycle") != cycle:
+        record["option_stop_confirmations"] = int(record.get("option_stop_confirmations") or 0) + 1
+        record["option_stop_last_confirmation_cycle"] = cycle
+    confirmations = int(record.get("option_stop_confirmations") or 0)
+    if confirmations < 2:
+        return {**decision, "exit": False, "reason": "option_stop_pending_confirmation", "confirmations": confirmations, "required_confirmations": 2}
+    return {**decision, "confirmations": confirmations, "required_confirmations": 2}
+
+
 class RegimeIntradayRuntime:
     """Owns volatile scan state and the durable paper lifecycle."""
 
@@ -509,11 +559,16 @@ class RegimeIntradayRuntime:
                             ledger["pending_candidates"][signal_id]["status"] = "cancel_requested"
                 if status == "filled" and isinstance(record.get("plan"), dict):
                     plan = dict(record["plan"])
+                    execution_plan = _execution_plan_from_fill(record)
                     chain = fetch_option_chain(key, secret, str(plan.get("underlying") or ""), feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), expiration=plan.get("expiration"))
-                    valuation = value_debit_spread(chain, plan)
+                    valuation = value_debit_spread(chain, execution_plan)
                     current = now_ny()
-                    decision = spread_exit_decision(plan, valuation, minutes_to_close=max(0, 960 - current.hour * 60 - current.minute),
+                    decision = spread_exit_decision(execution_plan, valuation, minutes_to_close=max(0, 960 - current.hour * 60 - current.minute),
                                                     take_profit_fraction=_float("REGIME_INTRADAY_TAKE_PROFIT_FRACTION", .5), stop_loss_fraction=_float("REGIME_INTRADAY_STOP_LOSS_FRACTION", .5))
+                    decision = _confirm_option_stop(record, decision, current)
+                    signal = dict(record.get("signal") or {})
+                    feature = dict(dict(self.last_scan.get("features") or {}).get(signal.get("symbol") or plan.get("underlying")) or {})
+                    decision = _underlying_stop_decision(record, feature) or decision
                     if record.get("mechanical_test") and valuation.get("status") == "valued":
                         decision = {"exit": True, "reason": "mechanical_roundtrip_drill"}
                     if record.get("close_retry_required"):
@@ -548,7 +603,7 @@ class RegimeIntradayRuntime:
                             record["close_order"] = {**close, "reason": decision.get("reason"), "requested_at": datetime.now(timezone.utc).isoformat()}
                             record["close_attempt"] = attempt
                             record["close_retry_required"] = False
-                            record["estimated_realized_dollars"] = round((credit - float(plan.get("limit_debit") or 0)) * 100, 2)
+                            record["estimated_realized_dollars"] = round((credit - float(execution_plan.get("limit_debit") or 0)) * 100, 2)
                             record["status"] = "close_submitted"
                             ledger.setdefault("events", []).append({"event": "paper_auto_close_recorded", "signal_id": signal_id, "order_id": close.get("order_id"), "reason": decision.get("reason"), "ts_utc": datetime.now(timezone.utc).isoformat()})
                 refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": record.get("status")})
