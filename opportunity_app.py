@@ -17,7 +17,7 @@ from opportunity_lab.crypto_regime import crypto_research_suite
 from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
 from opportunity_lab.kalshi_market_data import fetch_open_events, rank_event_dislocations
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
-from opportunity_lab.store import configured as store_configured, recent_runs, save_kalshi_scan
+from opportunity_lab.store import configured as store_configured, kalshi_scoreboard, recent_runs, save_kalshi_scan
 
 
 APP_VERSION = "opportunity-lab-web-v2"
@@ -66,6 +66,7 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
   {"outcome":"Away","venue":"Book B","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0}
 ]</textarea><button id="arbRun">Scan opportunity</button></section>
 <section class="card"><h2>Live prediction-market discovery</h2><p class="muted">Unauthenticated Kalshi public data only. Results are gross price-dislocation candidates, not approved trades; fees, complete outcome coverage, account eligibility, and jurisdiction remain blockers.</p><label>Category <select id="kalshiCategory"><option value="">All</option><option>Sports</option><option>Politics</option><option>Economics</option><option>Crypto</option></select></label><label>Pages <input id="kalshiPages" type="number" min="1" max="3" value="1"></label><button id="kalshiRun">Scan live markets</button><button id="kalshiSave">Scan and save</button></section>
+<section class="card"><h2>Profitability scoreboard</h2><p class="muted">Fee-adjusted evidence from durable Kalshi observations. The verdict is mechanical; it cannot enable execution.</p><button id="scoreboardRun">Load 72-hour scoreboard</button></section>
 <section class="card"><h2>Result</h2><button id="copyResult" type="button">Copy result</button><span id="copyStatus" class="muted"></span><pre id="result">Choose a market and run the research suite.</pre></section>
 <script>
 const post=async(path,body)=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Running…';s.className='muted';try{const response=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};
@@ -75,6 +76,7 @@ document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_l
 document.getElementById('arbRun').onclick=()=>{try{post('/diagnostics/opportunity_lab/arbitrage/scan',{quotes:JSON.parse(document.getElementById('arbQuotes').value),bankroll:Number(document.getElementById('arbBankroll').value),minimum_profit:Number(document.getElementById('arbMinProfit').value),stake_increment:.01,rules_compatible:document.getElementById('arbRules').checked})}catch(error){document.getElementById('result').textContent='Invalid quote JSON: '+String(error)}};
 document.getElementById('kalshiRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200});
 document.getElementById('kalshiSave').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200,persist:true});
+document.getElementById('scoreboardRun').onclick=async()=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Loading…';try{const response=await fetch('/diagnostics/opportunity_lab/scoreboard?hours=72');const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};
 document.getElementById('copyResult').onclick=async()=>{const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(document.getElementById('result').textContent);status.textContent=' Copied';status.className='ok'}catch(error){status.textContent=' Copy failed—select the result manually';status.className='bad'}};
 </script></main></body></html>""", headers={"Cache-Control": "no-store"})
 
@@ -256,9 +258,16 @@ def collect_kalshi(body: dict) -> dict:
         "events_received": scan["events_received"], "candidate_count": scan["candidate_count"],
         "price_dislocation_count": scan["price_dislocation_count"],
         "mutually_exclusive_no_pair_count": scan["mutually_exclusive_no_pair_count"],
+        "closest_no_pair_count": scan["closest_no_pair_count"],
     }, "persistence": save_kalshi_scan(scan, transport), "execution_enabled": False}
 
 
 @app.get("/diagnostics/opportunity_lab/kalshi/history")
 def kalshi_history(limit: int = 50) -> dict:
     return {"ok": True, "database_configured": store_configured(), **recent_runs(limit), "execution_enabled": False}
+
+
+@app.get("/diagnostics/opportunity_lab/scoreboard")
+def profitability_scoreboard(hours: int = 72) -> dict:
+    return {"ok": True, "candidates": candidate_catalog(), "kalshi": kalshi_scoreboard(hours=hours),
+            "execution_enabled": False}

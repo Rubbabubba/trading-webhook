@@ -89,3 +89,59 @@ def recent_runs(limit: int = 50) -> dict:
         "run_id": row[0], "observed_at": row[1].isoformat(), "pages": row[2], "event_count": row[3],
         "more_available": row[4], "no_pair_count": row[5], "summary": row[6],
     } for row in rows]}
+
+
+def kalshi_scoreboard(*, hours: int = 72, required_runs: int = 60) -> dict:
+    """Summarize fee-adjusted evidence and issue a mechanical research verdict."""
+    url = (os.getenv("OPPORTUNITY_DATABASE_URL") or "").strip()
+    if not url:
+        return {"configured": False, "error": "opportunity_database_not_configured"}
+    import psycopg
+
+    hours = max(1, min(24 * 30, int(hours)))
+    required_runs = max(1, int(required_runs))
+    with psycopg.connect(url) as connection, connection.cursor() as cursor:
+        cursor.execute("""SELECT count(*), coalesce(sum(event_count), 0), min(observed_at), max(observed_at),
+            coalesce(sum(no_pair_count), 0)
+            FROM opportunity_lab.scan_runs
+            WHERE observed_at >= now() - (%s * interval '1 hour')""", (hours,))
+        run_count, events_scanned, first_at, last_at, profitable_pair_hits = cursor.fetchone()
+        cursor.execute("""SELECT max(estimated_net_profit), max(estimated_net_roi_pct)
+            FROM opportunity_lab.pair_opportunities p JOIN opportunity_lab.scan_runs r USING (run_id)
+            WHERE r.observed_at >= now() - (%s * interval '1 hour')""", (hours,))
+        best_profit, best_profitable_roi = cursor.fetchone()
+        cursor.execute("""SELECT estimated_net_profit, estimated_net_roi_pct, shortfall_to_break_even,
+            event_ticker, leg_key FROM opportunity_lab.near_miss_observations n
+            JOIN opportunity_lab.scan_runs r USING (run_id)
+            WHERE r.observed_at >= now() - (%s * interval '1 hour')
+            ORDER BY estimated_net_roi_pct DESC, estimated_net_profit DESC LIMIT 1""", (hours,))
+        closest = cursor.fetchone()
+
+    span_hours = ((last_at - first_at).total_seconds() / 3600) if first_at and last_at else 0.0
+    evidence_complete = run_count >= required_runs and span_hours >= hours - 2
+    closest_roi = float(closest[1]) if closest else None
+    if profitable_pair_hits:
+        verdict = "investigate_execution_feasibility"
+        rationale = "At least one displayed pair remained positive after the conservative fee estimate."
+    elif not evidence_complete:
+        verdict = "collecting_evidence"
+        rationale = f"Need at least {required_runs} runs spanning approximately {hours} hours before rejection."
+    elif closest_roi is not None and closest_roi >= -0.25:
+        verdict = "continue_high_frequency_validation"
+        rationale = "No profit yet, but the best observation was within 0.25% ROI of break-even."
+    else:
+        verdict = "reject_current_strategy"
+        rationale = "No fee-adjusted profit and the closest observation was not near break-even."
+    return {
+        "configured": True, "strategy": "kalshi_mutually_exclusive_no_pairs", "window_hours": hours,
+        "required_runs": required_runs, "run_count": run_count, "events_scanned": int(events_scanned),
+        "first_observed_at": first_at.isoformat() if first_at else None,
+        "last_observed_at": last_at.isoformat() if last_at else None,
+        "observation_span_hours": round(span_hours, 3), "evidence_complete": evidence_complete,
+        "profitable_pair_hits": int(profitable_pair_hits),
+        "best_estimated_net_profit": float(best_profit) if best_profit is not None else None,
+        "best_profitable_roi_pct": float(best_profitable_roi) if best_profitable_roi is not None else None,
+        "closest_observation": ({"estimated_net_profit": float(closest[0]), "estimated_net_roi_pct": float(closest[1]),
+            "shortfall_to_break_even": float(closest[2]), "event_ticker": closest[3], "leg_key": closest[4]} if closest else None),
+        "verdict": verdict, "rationale": rationale, "execution_enabled": False,
+    }

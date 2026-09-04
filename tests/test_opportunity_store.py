@@ -26,3 +26,18 @@ def test_operator_scan_can_persist(monkeypatch):
     response = TestClient(app).post("/diagnostics/opportunity_lab/kalshi/scan", headers={"x-admin-secret": "admin"}, json={"persist": True})
     assert response.status_code == 200
     assert response.json()["persistence"]["saved"] is True
+
+
+def test_scoreboard_route_is_protected():
+    response = TestClient(app).get("/diagnostics/opportunity_lab/scoreboard")
+    assert response.status_code == 401
+
+
+def test_scoreboard_route_remains_non_executing(monkeypatch):
+    monkeypatch.setenv("OPPORTUNITY_ADMIN_SECRET", "admin")
+    monkeypatch.setattr("opportunity_app.kalshi_scoreboard", lambda **kwargs: {"verdict": "collecting_evidence"})
+    response = TestClient(app).get(
+        "/diagnostics/opportunity_lab/scoreboard?hours=72", headers={"x-admin-secret": "admin"})
+    assert response.status_code == 200
+    assert response.json()["kalshi"]["verdict"] == "collecting_evidence"
+    assert response.json()["execution_enabled"] is False

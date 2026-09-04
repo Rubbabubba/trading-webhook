@@ -51,7 +51,9 @@ The first web service entry point is `uvicorn opportunity_app:app --host 0.0.0.0
 
 The protected `/dashboard/opportunity-lab` page provides a browser runner for BTC/USD and ETH/USD research. HTTP Basic authentication accepts any username and requires `OPPORTUNITY_ADMIN_SECRET` as the password.
 
-The one-shot `opportunity_lab_worker.py` process calls only `/worker/opportunity-lab/collect-kalshi`. That route requires its own `OPPORTUNITY_WORKER_SECRET`, scans public market data, and persists only scan summaries and fee-positive pair candidates in the dedicated `opportunity_lab` PostgreSQL schema. It cannot invoke Regime worker routes or submit orders. `/diagnostics/opportunity_lab/kalshi/history` reports recent collection runs.
+The one-shot `opportunity_lab_worker.py` process calls only `/worker/opportunity-lab/collect-kalshi`. That route requires its own `OPPORTUNITY_WORKER_SECRET`, scans public market data, and persists scan summaries, fee-positive pair candidates, and the closest fee-adjusted pair in every eligible event in the dedicated `opportunity_lab` PostgreSQL schema. It cannot invoke Regime worker routes or submit orders. `/diagnostics/opportunity_lab/kalshi/history` reports recent collection runs.
+
+`/diagnostics/opportunity_lab/scoreboard` aggregates the most recent observation window. After at least 60 runs spanning approximately 72 hours, it recommends investigating execution feasibility if any pair was fee-positive, continuing higher-frequency validation if the closest result was within 0.25% ROI of break-even, or rejecting the current strategy otherwise. This verdict is research metadata and cannot enable execution.
 
 ## Render environment
 
