@@ -1,6 +1,7 @@
 from datetime import date
 
 from opportunity_lab.weather_value import _temperatures_for_date, _ticker_date, calibrate_snapshot, score_event
+from opportunity_lab.weather_backtest import build_historical_snapshot
 
 
 def test_weather_event_scores_brackets_and_never_becomes_eligible():
@@ -43,3 +44,19 @@ def test_settled_snapshot_calculates_brier_and_paper_pnl():
     assert result["market_count"] == 2
     assert result["forecast_error_lower_bound_f"] == 0
     assert result["paper_trade"]["realized_pnl_per_contract"] > 0
+
+
+def test_historical_snapshot_uses_only_candles_at_or_before_local_midnight():
+    markets = [{"ticker": "MID", "strike_type": "between", "floor_strike": 75, "cap_strike": 76,
+                "yes_sub_title": "75 to 76"}]
+    candles = {"MID": [
+        {"end_period_ts": 1788584400, "yes_ask": {"close_dollars": ".20"},
+         "yes_bid": {"close_dollars": ".18"}},
+        {"end_period_ts": 1788588000, "yes_ask": {"close_dollars": ".90"},
+         "yes_bid": {"close_dollars": ".88"}},
+    ]}
+    snapshot = build_historical_snapshot("KXLOWTDAL-26SEP05", markets, candles, forecast_mean_f=75.5,
+                                         sigma_f=2.5, extreme="low", target_date=date(2026, 9, 5))
+    assert snapshot is not None
+    assert snapshot["candidates"][0]["ask"] != .9
+    assert snapshot["latest_quote_timestamp"] <= snapshot["decision_cutoff"]

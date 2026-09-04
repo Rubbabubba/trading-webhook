@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -35,6 +36,20 @@ def fetch_settled_series_markets(series_ticker: str, *, min_settled_ts: int, lim
     return markets, {**transport, "method": "kalshi_public_rest", "path": "/trade-api/v2/markets",
                      "series_ticker": series_ticker, "status_filter": "settled", "market_count": len(markets),
                      "authenticated": False}
+
+
+def fetch_event_candlesticks(series_ticker: str, event_ticker: str, *, start_ts: int, end_ts: int,
+                             period_interval: int = 60) -> tuple[dict[str, list[dict]], dict]:
+    """Fetch public bid/ask candles for all markets in one event."""
+    path = f"/series/{series_ticker}/events/{event_ticker}/candlesticks"
+    payload, transport = _get(path, {"start_ts": int(start_ts), "end_ts": int(end_ts),
+                                     "period_interval": int(period_interval)})
+    tickers = payload.get("market_tickers") or []
+    series = payload.get("market_candlesticks") or []
+    candles = {str(ticker): rows for ticker, rows in zip(tickers, series) if isinstance(rows, list)}
+    return candles, {**transport, "method": "kalshi_public_rest", "path": f"/trade-api/v2{path}",
+                     "series_ticker": series_ticker, "event_ticker": event_ticker,
+                     "market_count": len(candles), "authenticated": False}
 
 
 def fetch_open_events(*, limit: int = 200, pages: int = 1) -> tuple[list[dict], dict]:
@@ -232,7 +247,7 @@ def _positive_number(value) -> float | None:
         return None
 
 
-def _get(path: str, params: dict) -> tuple[dict, dict]:
+def _get(path: str, params: dict, *, _retry: bool = True) -> tuple[dict, dict]:
     url = f"{BASE_URL}{path}?{urlencode(params)}"
     request = Request(url, headers={"Accept": "application/json", "User-Agent": "OpportunityLab/1.0"})
     try:
@@ -240,6 +255,13 @@ def _get(path: str, params: dict) -> tuple[dict, dict]:
             payload = json.loads(response.read().decode("utf-8"))
             return payload, {"status_code": response.status, "authenticated": False}
     except HTTPError as exc:
+        if exc.code == 429 and _retry:
+            try:
+                delay = min(2.0, max(.25, float(exc.headers.get("Retry-After") or 1)))
+            except (TypeError, ValueError):
+                delay = 1.0
+            time.sleep(delay)
+            return _get(path, params, _retry=False)
         return {}, {"status_code": exc.code, "authenticated": False, "error": f"kalshi_http_{exc.code}"}
     except (URLError, TimeoutError, json.JSONDecodeError) as exc:
         return {}, {"authenticated": False, "error": f"kalshi_transport_error:{type(exc).__name__}"}
