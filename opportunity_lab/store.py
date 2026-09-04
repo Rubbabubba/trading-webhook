@@ -256,6 +256,9 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
         "closest_no_pair_count": scan.get("closest_no_pair_count"),
         "category_filter": scan.get("category_filter"),
         "fee_model": scan.get("fee_model"),
+        "logical_arbitrage_complement_count": (scan.get("logical_arbitrage") or {}).get("complement_count"),
+        "logical_arbitrage_nested_threshold_count": (scan.get("logical_arbitrage") or {}).get("nested_threshold_count"),
+        "logical_arbitrage_profitable_count": (scan.get("logical_arbitrage") or {}).get("profitable_count"),
     }
     with psycopg.connect(url) as connection:
         with connection.cursor() as cursor:

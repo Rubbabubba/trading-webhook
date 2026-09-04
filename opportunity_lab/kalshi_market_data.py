@@ -223,6 +223,83 @@ def rank_event_dislocations(events: list[dict], *, category: str = "", minimum_m
     }
 
 
+def rank_logical_arbitrage(events: list[dict]) -> dict:
+    """Find fee-adjusted complements and nested-threshold dominance within one event."""
+    complements, nested = [], []
+    for event in events:
+        markets = event.get("markets") or []
+        for market in markets:
+            yes_ask = _positive_number(market.get("yes_ask_dollars"))
+            no_ask = _positive_number(market.get("no_ask_dollars"))
+            if no_ask is None:
+                yes_bid = _positive_number(market.get("yes_bid_dollars"))
+                no_ask = 1 - yes_bid if yes_bid is not None else None
+            yes_size = _positive_number(market.get("yes_ask_size_fp"))
+            no_size = _positive_number(market.get("yes_bid_size_fp"))
+            if yes_ask is not None and no_ask is not None and yes_size and no_size:
+                row = _guaranteed_pair(event, market, "yes", yes_ask, yes_size,
+                                       market, "no", no_ask, no_size, "same_contract_yes_plus_no")
+                complements.append(row)
+        threshold_markets = [market for market in markets if market.get("strike_type") in {"greater", "less"}]
+        for left_index, left in enumerate(threshold_markets):
+            for right in threshold_markets[left_index + 1:]:
+                if left.get("strike_type") != right.get("strike_type"):
+                    continue
+                broader, narrower = _broader_and_narrower(left, right)
+                if not broader or not narrower:
+                    continue
+                yes_ask = _positive_number(broader.get("yes_ask_dollars"))
+                no_ask = _positive_number(narrower.get("no_ask_dollars"))
+                if no_ask is None:
+                    yes_bid = _positive_number(narrower.get("yes_bid_dollars"))
+                    no_ask = 1 - yes_bid if yes_bid is not None else None
+                yes_size = _positive_number(broader.get("yes_ask_size_fp"))
+                no_size = _positive_number(narrower.get("yes_bid_size_fp"))
+                if yes_ask is not None and no_ask is not None and yes_size and no_size:
+                    nested.append(_guaranteed_pair(event, broader, "yes", yes_ask, yes_size,
+                                                   narrower, "no", no_ask, no_size,
+                                                   "broader_yes_plus_narrower_no"))
+    for rows in (complements, nested):
+        rows.sort(key=lambda row: (row["estimated_net_profit"], row["estimated_net_roi_pct"]), reverse=True)
+    profitable = [row for row in complements + nested if row["profitable_after_estimated_fees"]]
+    return {"strategy": "kalshi_logical_guaranteed_payout_scan", "complement_count": len(complements),
+            "nested_threshold_count": len(nested), "profitable_count": len(profitable),
+            "profitable_candidates": sorted(profitable, key=lambda row: row["estimated_net_profit"], reverse=True),
+            "closest_complements": complements[:25], "closest_nested_thresholds": nested[:25],
+            "fee_model": "conservative_general_taker_estimate_per_leg", "research_only": True,
+            "eligible": False, "execution_enabled": False}
+
+
+def _broader_and_narrower(left: dict, right: dict) -> tuple[dict | None, dict | None]:
+    strike_type = left.get("strike_type")
+    key = "floor_strike" if strike_type == "greater" else "cap_strike"
+    left_strike, right_strike = _positive_number(left.get(key)), _positive_number(right.get(key))
+    if left_strike is None or right_strike is None or left_strike == right_strike:
+        return None, None
+    if strike_type == "greater":
+        return (left, right) if left_strike < right_strike else (right, left)
+    return (left, right) if left_strike > right_strike else (right, left)
+
+
+def _guaranteed_pair(event: dict, first: dict, first_side: str, first_ask: float, first_size: float,
+                     second: dict, second_side: str, second_ask: float, second_size: float,
+                     structure: str) -> dict:
+    contracts = math.floor(min(first_size, second_size) * 100) / 100
+    cost = contracts * (first_ask + second_ask)
+    fees = _taker_fee(first_ask, contracts) + _taker_fee(second_ask, contracts)
+    profit = contracts - cost - fees
+    return {"event_ticker": event.get("event_ticker"), "title": event.get("title"), "structure": structure,
+            "contracts": contracts, "cost_before_fees": round(cost, 4), "estimated_taker_fees": round(fees, 4),
+            "minimum_settlement_payout": round(contracts, 4), "estimated_net_profit": round(profit, 4),
+            "estimated_net_roi_pct": round(profit / (cost + fees) * 100, 6) if cost + fees else None,
+            "profitable_after_estimated_fees": profit > 0,
+            "legs": [{"ticker": first.get("ticker"), "side": first_side, "ask": first_ask},
+                     {"ticker": second.get("ticker"), "side": second_side, "ask": second_ask}],
+            "eligible": False, "blockers": (["series_specific_fee_not_verified", "account_and_jurisdiction_not_verified"]
+                                               if profit > 0 else ["not_profitable_after_estimated_fees"]),
+            "execution_enabled": False}
+
+
 def _taker_fee(price: float, contracts: float) -> float:
     return math.ceil((0.07 * contracts * price * (1 - price)) * 100 - 1e-12) / 100
 

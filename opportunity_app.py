@@ -17,7 +17,7 @@ from opportunity_lab.crypto_regime import crypto_research_suite
 from opportunity_lab.cross_exchange_crypto import collect_cross_exchange
 from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
 from opportunity_lab.kalshi_market_data import (fetch_open_events, fetch_recent_trades, fetch_settled_series_markets,
-                                                rank_event_dislocations)
+                                                rank_event_dislocations, rank_logical_arbitrage)
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
 from opportunity_lab.prediction_market_making import screen_market_making
 from opportunity_lab.triangular_crypto import collect_triangular
@@ -30,7 +30,7 @@ from opportunity_lab.store import (configured as store_configured, cross_exchang
                                    weather_scoreboard, market_making_scoreboard)
 
 
-APP_VERSION = "opportunity-lab-web-v7"
+APP_VERSION = "opportunity-lab-web-v8"
 app = FastAPI(title="Opportunity Lab", docs_url=None, redoc_url=None)
 
 
@@ -262,6 +262,7 @@ def kalshi_scan(body: dict) -> dict:
     if transport.get("error"):
         raise HTTPException(status_code=502, detail={"transport": transport})
     scan = rank_event_dislocations(events, category=category)
+    scan["logical_arbitrage"] = rank_logical_arbitrage(events)
     scan["market_making"] = screen_market_making(events)
     persistence = save_kalshi_scan(scan, transport) if body.get("persist") is True else {"configured": store_configured(), "saved": False}
     return {"ok": True, "transport": transport, "scan": scan, "persistence": persistence, "execution_enabled": False}
@@ -359,6 +360,7 @@ def collect_kalshi(body: dict) -> dict:
     if transport.get("error"):
         raise HTTPException(status_code=502, detail={"transport": transport})
     scan = rank_event_dislocations(events)
+    scan["logical_arbitrage"] = rank_logical_arbitrage(events)
     scan["market_making"] = screen_market_making(events)
     trades, trade_transport = fetch_recent_trades(min_ts=int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()))
     if trade_transport.get("error"):
@@ -383,6 +385,7 @@ def collect_kalshi(body: dict) -> dict:
         "closest_no_pair_count": scan["closest_no_pair_count"],
         "market_making_market_count": scan["market_making"]["market_count"],
         "market_making_conservative_positive_count": scan["market_making"]["conservative_positive_count"],
+        "logical_arbitrage_profitable_count": scan["logical_arbitrage"]["profitable_count"],
     }, "trade_transport": trade_transport, "persistence": save_kalshi_scan(scan, transport),
         "cross_exchange": [{"symbol": row["symbol"], "ok": row["ok"],
                             "best_direction": row.get("scan", {}).get("best_direction")} for row in cross_exchange],

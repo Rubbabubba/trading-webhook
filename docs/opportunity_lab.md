@@ -30,6 +30,8 @@ The market-making evidence report chronologically separates the oldest two-third
 
 Each new replay also reports queue-position sensitivity with 0%, 25%, 50%, and 100% of the displayed depth assumed ahead of the hypothetical order. The 100% case remains the conservative headline. Comparing the scenarios identifies whether an apparent edge is robust or depends on unrealistically favorable queue placement.
 
+The Kalshi scan also tests two additional guaranteed-payout structures. A complement buys YES and NO on the same contract when combined executable asks plus fees fall below $1. A nested-threshold pair buys YES on a broader threshold and NO on its narrower subset; its minimum payout is $1 in every possible outcome. Displayed depth limits both legs, and estimated taker fees are deducted before a result is called profitable. Counts and profitable hits are retained with each scheduled scan.
+
 For U.S. Coinbase CFM products, `/diagnostics/opportunity_lab/coinbase/reconstruct-funding` reconstructs BTC or ETH hourly funding over 7–365 days from aligned CDE-future and Coinbase-spot hourly candles. It applies Coinbase's published `/24` premium scaling and 75% current/25% previous smoothing, but uses hourly closes instead of the official twenty three-minute representative-price samples. Its output is therefore explicitly a proxy, never official historical funding. Exact U.S. historical funding must be requested from Coinbase and should later be used to validate and calibrate the proxy.
 
 ## Promotion lifecycle

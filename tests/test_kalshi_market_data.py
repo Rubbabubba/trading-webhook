@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from opportunity_lab.kalshi_market_data import rank_event_dislocations
+from opportunity_lab.kalshi_market_data import rank_event_dislocations, rank_logical_arbitrage
 
 
 def test_rank_event_dislocation_is_never_marked_executable():
@@ -63,3 +63,27 @@ def test_closest_no_pair_is_retained_when_not_profitable():
     assert pair["shortfall_to_break_even"] > 0
     assert pair["profitable_after_estimated_fees"] is False
     assert pair["blockers"] == ["not_profitable_after_estimated_fees"]
+
+
+def test_logical_scanner_finds_same_contract_complement():
+    result = rank_logical_arbitrage([{"event_ticker": "E", "markets": [{
+        "ticker": "M", "yes_ask_dollars": ".40", "no_ask_dollars": ".40",
+        "yes_ask_size_fp": "10", "yes_bid_size_fp": "8",
+    }]}])
+    assert result["complement_count"] == 1
+    assert result["profitable_count"] == 1
+    assert result["profitable_candidates"][0]["minimum_settlement_payout"] == 8
+    assert result["execution_enabled"] is False
+
+
+def test_logical_scanner_finds_nested_greater_threshold_dominance():
+    result = rank_logical_arbitrage([{"event_ticker": "TEMP", "markets": [
+        {"ticker": "GT70", "strike_type": "greater", "floor_strike": 70,
+         "yes_ask_dollars": ".40", "yes_ask_size_fp": "5"},
+        {"ticker": "GT80", "strike_type": "greater", "floor_strike": 80,
+         "no_ask_dollars": ".40", "yes_bid_size_fp": "5"},
+    ]}])
+    row = result["profitable_candidates"][0]
+    assert row["structure"] == "broader_yes_plus_narrower_no"
+    assert row["legs"][0]["ticker"] == "GT70"
+    assert row["legs"][1]["ticker"] == "GT80"
