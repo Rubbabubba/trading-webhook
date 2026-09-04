@@ -34,6 +34,8 @@ The Kalshi scan also tests two additional guaranteed-payout structures. A comple
 
 For U.S. Coinbase CFM products, `/diagnostics/opportunity_lab/coinbase/reconstruct-funding` reconstructs BTC or ETH hourly funding over 7–365 days from aligned CDE-future and Coinbase-spot hourly candles. It applies Coinbase's published `/24` premium scaling and 75% current/25% previous smoothing, but uses hourly closes instead of the official twenty three-minute representative-price samples. Its output is therefore explicitly a proxy, never official historical funding. Exact U.S. historical funding must be requested from Coinbase and should later be used to validate and calibrate the proxy.
 
+The conditional ETH carry walk-forward searches funding thresholds, required persistence, fixed holding periods, and maximum entry basis across 240 configurations. Parameters are selected only on the oldest two-thirds of aligned hourly history and evaluated once on the untouched newest third. The default 139 bps round-trip cost represents the observed Coinbase maker tiers on both spot and CDE legs; it remains configurable for stress testing. Reconstructed funding, assumed maker fills, hedge continuity, margin, and liquidation are explicit limitations, and execution remains disabled.
+
 ## Promotion lifecycle
 
 `queued -> research -> backtest_passed -> shadow -> limited_live -> live`

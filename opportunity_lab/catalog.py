@@ -19,7 +19,7 @@ class Candidate:
 
 
 CANDIDATES = (
-    Candidate("crypto_basis", 1, "Crypto funding/basis arbitrage", "market_neutral", "backtest_shadow", "two_leg", ("crypto_spot", "crypto_derivatives"), "research_retained", "ETH retained as long-duration research; BTC rejected and current fees prevent dependable short-horizon carry."),
+    Candidate("crypto_basis", 1, "Crypto funding/basis arbitrage", "market_neutral", "backtest_shadow", "two_leg", ("crypto_spot", "crypto_derivatives"), "retuning", "ETH conditional-entry walk-forward active; tests funding persistence, basis limits, holding periods, and actual Coinbase fee-tier cost scenarios."),
     Candidate("sports_prediction_arb", 2, "Sports/prediction-market arbitrage scanner", "arbitrage", "monitor_alert", "multi_venue", ("odds_feed", "prediction_market"), "active", "Active scanner build; execution and settlement rules vary by venue."),
     Candidate("crypto_regime", 3, "Crypto regime trading", "directional", "backtest_shadow", "single_venue", ("alpaca_crypto",), "retuning", "Original formulation failed out of sample; candidate retained for genuinely different regime, volatility, and relative-strength hypotheses."),
     Candidate("prediction_market_making", 4, "Prediction-market market making", "market_making", "backtest_shadow", "single_venue", ("prediction_market",), "research", "Conservative public-quote screen active; fill history, queue position, series fees, and adverse selection remain unverified."),

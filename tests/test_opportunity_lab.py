@@ -22,7 +22,7 @@ def test_all_locked_candidates_have_unique_rank_and_key():
     assert len({row.key for row in CANDIDATES}) == 8
     assert sorted(row.rank for row in CANDIDATES) == list(range(1, 9))
     statuses = {row["key"]: row["status"] for row in candidate_catalog()}
-    assert statuses["crypto_basis"] == "research_retained"
+    assert statuses["crypto_basis"] == "retuning"
     assert statuses["sports_prediction_arb"] == "active"
     assert statuses["crypto_regime"] == "retuning"
 

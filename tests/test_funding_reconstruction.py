@@ -1,4 +1,4 @@
-from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
+from opportunity_lab.funding_reconstruction import conditional_carry_walk_forward, reconstruct_hourly_funding
 
 
 def _candles(price, count=48):
@@ -44,3 +44,15 @@ def test_rolling_holds_charge_cost_on_each_entry():
     assert seven_day["sample_count"] > 0
     assert seven_day["profitable_fraction"] == 0
     assert seven_day["maximum_net_pnl_bps"] < 0
+
+
+def test_conditional_carry_is_chronological_and_never_executable():
+    futures = _candles(101, 24 * 90)
+    spots = _candles(100, 24 * 90)
+    result = conditional_carry_walk_forward(futures, spots, total_cost_bps=10)
+    assert result["valid"] is True
+    assert result["grid_size"] == 240
+    assert result["split_timestamp"] == futures[int(len(futures) * 2 / 3)]["timestamp"]
+    assert result["calibration"]["trade_count"] > 0
+    assert result["eligible"] is False
+    assert result["execution_enabled"] is False

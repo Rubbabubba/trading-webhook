@@ -15,7 +15,7 @@ from opportunity_lab.crypto_basis import BasisInputs, backtest_funding, evaluate
 from opportunity_lab.crypto_market_data import fetch_crypto_bars
 from opportunity_lab.crypto_regime import crypto_research_suite
 from opportunity_lab.cross_exchange_crypto import collect_cross_exchange
-from opportunity_lab.funding_reconstruction import reconstruct_hourly_funding
+from opportunity_lab.funding_reconstruction import conditional_carry_walk_forward, reconstruct_hourly_funding
 from opportunity_lab.kalshi_market_data import (fetch_open_events, fetch_recent_trades, fetch_settled_series_markets,
                                                 rank_event_dislocations, rank_logical_arbitrage)
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
@@ -30,7 +30,7 @@ from opportunity_lab.store import (configured as store_configured, cross_exchang
                                    weather_scoreboard, market_making_scoreboard)
 
 
-APP_VERSION = "opportunity-lab-web-v8"
+APP_VERSION = "opportunity-lab-web-v9"
 app = FastAPI(title="Opportunity Lab", docs_url=None, redoc_url=None)
 
 
@@ -70,7 +70,7 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
 </style></head><body><main><h1>Opportunity Lab</h1><p class="muted">Research only · execution hard-disabled</p>
 <section class="card"><h2>Crypto research</h2><label>Symbol <select id="symbol"><option>BTC/USD</option><option>ETH/USD</option></select></label><label>Days <input id="days" type="number" min="90" max="3650" value="730"></label><label>Timeframe <select id="timeframe"><option>1Hour</option><option>4Hour</option><option>1Day</option></select></label><button id="run">Run research</button><span id="status" class="muted"></span></section>
 <section class="card"><h2>Funding/basis calculator</h2><p class="muted">Positive funding is paid to the short. Prices must be executable spot ask and derivative bid.</p><label>Spot ask <input id="spot" type="number" value="100000"></label><label>Derivative bid <input id="derivative" type="number" value="100500"></label><label>Funding bps / interval <input id="funding" type="number" step="0.01" value="1"></label><label>Hold hours <input id="hold" type="number" value="168"></label><label>Capital $ <input id="capital" type="number" value="1000"></label><button id="basis">Evaluate basis</button></section>
-<section class="card"><h2>CDE funding reconstruction</h2><p class="muted">Research proxy from aligned completed hourly CDE-future and Coinbase-spot candles. No orders or balances.</p><label>Market <select id="carryMarket"><option>BTC</option><option>ETH</option></select></label><label>Days <input id="carryDays" type="number" min="7" max="365" value="365"></label><label>Primary round-trip cost (bps) <input id="carryCost" type="number" min="0" max="1000" step="0.1" value="139"></label><button id="carryRun">Reconstruct funding</button></section>
+<section class="card"><h2>CDE funding reconstruction</h2><p class="muted">Research proxy from aligned completed hourly CDE-future and Coinbase-spot candles. No orders or balances.</p><label>Market <select id="carryMarket"><option>BTC</option><option>ETH</option></select></label><label>Days <input id="carryDays" type="number" min="7" max="365" value="365"></label><label>Primary round-trip cost (bps) <input id="carryCost" type="number" min="0" max="1000" step="0.1" value="139"></label><button id="carryRun">Reconstruct funding</button><button id="carryConditional">Run conditional ETH carry</button></section>
 <section class="card"><h2>Sports / prediction arbitrage scanner</h2><p class="muted">Enter one best quote for every mutually exclusive outcome. Confirm rules only after checking settlement terms, overtime treatment, void rules, limits, and currency. Commission is a decimal fraction of winnings (for example, 0.02 = 2%).</p><label>Bankroll $ <input id="arbBankroll" type="number" min="1" step="0.01" value="1000"></label><label>Minimum profit $ <input id="arbMinProfit" type="number" min="0" step="0.01" value="1"></label><label><input id="arbRules" type="checkbox"> Market and settlement rules confirmed compatible</label><textarea id="arbQuotes">[
   {"outcome":"Home","venue":"Book A","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0},
   {"outcome":"Away","venue":"Book B","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0}
@@ -88,6 +88,7 @@ const post=async(path,body)=>{const s=document.getElementById('status'),r=docume
 document.getElementById('run').onclick=()=>post('/diagnostics/opportunity_lab/backtest/crypto',{symbol:document.getElementById('symbol').value,days:Number(document.getElementById('days').value),timeframe:document.getElementById('timeframe').value});
 document.getElementById('basis').onclick=()=>post('/diagnostics/opportunity_lab/basis/evaluate',{spot_ask:Number(document.getElementById('spot').value),derivative_bid:Number(document.getElementById('derivative').value),funding_rate_bps:Number(document.getElementById('funding').value),holding_hours:Number(document.getElementById('hold').value),available_capital:Number(document.getElementById('capital').value),spot_ask_size:1000000000,derivative_bid_size:1000000000});
 document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/reconstruct-funding',{market:document.getElementById('carryMarket').value,days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value),cost_scenarios_bps:[139,149,260]});
+document.getElementById('carryConditional').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/conditional-carry',{days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value)});
 document.getElementById('arbRun').onclick=()=>{try{post('/diagnostics/opportunity_lab/arbitrage/scan',{quotes:JSON.parse(document.getElementById('arbQuotes').value),bankroll:Number(document.getElementById('arbBankroll').value),minimum_profit:Number(document.getElementById('arbMinProfit').value),stake_increment:.01,rules_compatible:document.getElementById('arbRules').checked})}catch(error){document.getElementById('result').textContent='Invalid quote JSON: '+String(error)}};
 document.getElementById('kalshiRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200});
 document.getElementById('kalshiSave').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200,persist:true});
@@ -208,6 +209,25 @@ def coinbase_reconstruct_funding(body: dict) -> dict:
         } for result in scenario_results],
         "execution_enabled": False,
     }
+
+
+@app.post("/diagnostics/opportunity_lab/coinbase/conditional-carry")
+def coinbase_conditional_carry(body: dict) -> dict:
+    days = max(90, min(365, int(body.get("days") or 365)))
+    total_cost_bps = max(0.0, min(1000.0, float(body.get("total_cost_bps") if body.get("total_cost_bps") is not None else 139.0)))
+    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(seconds=1)
+    start = end - timedelta(days=days)
+    futures, future_transport = fetch_product_candles("ETP-20DEC30-CDE", start=start, end=end)
+    spots, spot_transport = fetch_product_candles("ETH-USD", start=start, end=end)
+    if future_transport.get("error") or spot_transport.get("error"):
+        raise HTTPException(status_code=502, detail={"future_transport": future_transport, "spot_transport": spot_transport})
+    if future_transport.get("truncated") or spot_transport.get("truncated"):
+        raise HTTPException(status_code=502, detail={"error": "historical_data_truncated",
+                                                     "future_transport": future_transport, "spot_transport": spot_transport})
+    return {"ok": True, "market": "ETH", "requested_days": days, "future_transport": future_transport,
+            "spot_transport": spot_transport,
+            "research": conditional_carry_walk_forward(futures, spots, total_cost_bps=total_cost_bps),
+            "execution_enabled": False}
 
 
 @app.get("/diagnostics/opportunity_lab/coinbase/fees")
