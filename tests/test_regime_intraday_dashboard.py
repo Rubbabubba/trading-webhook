@@ -15,7 +15,7 @@ def test_intraday_dashboard_has_unambiguous_paper_identity():
 
 def test_detailed_dashboard_preserves_metrics_and_navigation():
     page = render_intraday_dashboard(scan={}, ledger={}, readiness={}, scanner={}, view="detailed")
-    for label in ("Underlying shadow simulation", "Alpaca paper execution", "Legacy records are preserved", "Candidate history", "Market data freshness", "Today's setup gate history", "Worker state", "Operating overview"):
+    for label in ("Underlying shadow simulation", "Alpaca paper execution", "Legacy records are preserved", "Candidate history", "Market data freshness", "Today's setup gate history", "Entry execution evidence", "Worker state", "Operating overview"):
         assert label in page
 
 

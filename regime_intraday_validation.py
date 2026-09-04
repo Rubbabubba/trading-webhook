@@ -19,6 +19,79 @@ def _seconds_between(start: Any, end: Any) -> float | None:
         return None
 
 
+def update_canceled_entry_outcomes(ledger: dict[str, Any], scan: dict[str, Any]) -> None:
+    """Advance explicitly counterfactual outcomes for zero-fill entry cancellations."""
+    features = dict(scan.get("features") or {})
+    for signal_id, record in dict(ledger.get("orders") or {}).items():
+        if record.get("mechanical_test") or str(record.get("status") or "").lower() not in {"canceled", "cancelled", "expired", "rejected"}:
+            continue
+        broker = dict(record.get("broker") or {})
+        if float(broker.get("filled_qty") or 0) != 0:
+            continue
+        signal = dict(record.get("signal") or {})
+        symbol = str(signal.get("symbol") or "").upper()
+        feature = dict(features.get(symbol) or {})
+        bar_ts = str(feature.get("last_ts") or "")
+        if not feature.get("ready") or not bar_ts:
+            continue
+        outcome = dict(record.get("counterfactual_underlying_outcome") or {})
+        if outcome.get("status") in {"stop", "target", "eod"} or bar_ts <= str(outcome.get("last_evaluated_bar_ts") or ""):
+            continue
+        entry, stop, target = (float(signal.get(key) or 0) for key in ("entry_price", "stop_price", "target_price"))
+        if min(entry, stop, target) <= 0:
+            continue
+        side = str(signal.get("underlying_side") or "buy")
+        high = float(feature.get("last_high") or feature.get("price") or 0)
+        low = float(feature.get("last_low") or feature.get("price") or 0)
+        price = float(feature.get("price") or 0)
+        stop_hit = low <= stop if side == "buy" else high >= stop
+        target_hit = high >= target if side == "buy" else low <= target
+        reason, exit_price = ("stop", stop) if stop_hit else (("target", target) if target_hit else ("tracking", None))
+        try:
+            stamp = datetime.fromisoformat(bar_ts.replace("Z", "+00:00"))
+            if reason == "tracking" and stamp.hour * 60 + stamp.minute >= 15 * 60 + 45:
+                reason, exit_price = "eod", price
+        except (TypeError, ValueError):
+            pass
+        risk = abs(entry - stop)
+        points = ((exit_price - entry) if side == "buy" else (entry - exit_price)) if exit_price is not None else None
+        record["counterfactual_underlying_outcome"] = {
+            "status": reason, "last_evaluated_bar_ts": bar_ts, "exit_price": exit_price,
+            "realized_r": round(points / risk, 4) if points is not None and risk else None,
+            "assumption": "Assumes the canceled spread filled when the underlying signal fired; not broker P/L.",
+            "coverage": "Observed completed bars after cancellation; earlier intrabar path may be unavailable.",
+            "stop_first_when_same_bar_touches_both": True,
+        }
+
+
+def entry_execution_analysis(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Summarize fill evidence and counterfactual outcomes without recommending repricing."""
+    rows = []
+    for signal_id, record in dict(ledger.get("orders") or {}).items():
+        if record.get("mechanical_test"):
+            continue
+        plan = dict(record.get("plan") or {})
+        selected = dict(plan.get("selection_quotes") or {})
+        terminal = dict(record.get("terminal_quotes") or {})
+        limit = float(plan.get("limit_debit") or 0)
+        terminal_debit = terminal.get("entry_debit_from_quotes")
+        required = max(0.0, float(terminal_debit) - limit) if terminal_debit is not None and limit else None
+        broker = dict(record.get("broker") or {})
+        rows.append({
+            "signal_id": signal_id, "symbol": plan.get("underlying"), "status": record.get("status"),
+            "limit_debit": limit or None, "selection_quote_debit": selected.get("entry_debit_from_quotes"),
+            "terminal_quote_debit": terminal_debit, "quote_path_points": len(record.get("entry_quote_path") or []),
+            "submit_to_terminal_seconds": _seconds_between(broker.get("submitted_at") or record.get("recorded_at"), broker.get("canceled_at") or record.get("cancel_requested_at") or record.get("reconciled_at")),
+            "required_limit_increase_at_terminal": round(required, 4) if required is not None else None,
+            "terminal_quote_was_within_one_cent": bool(required is not None and required <= 0.01),
+            "counterfactual_underlying_outcome": record.get("counterfactual_underlying_outcome"),
+            "note": "Quotes do not prove a fill; counterfactual outcomes are not broker P/L.",
+        })
+    canceled = [row for row in rows if str(row.get("status") or "").lower() in {"canceled", "cancelled", "expired", "rejected"}]
+    return {"order_count": len(rows), "zero_fill_terminal_count": len(canceled), "rows": rows[-100:],
+            "policy": "Observational only; no automatic entry repricing or resubmission."}
+
+
 def paper_fill_reconciliation(ledger: dict[str, Any], *, minimum_roundtrips: int = 20) -> dict[str, Any]:
     rows = []
     pending = dict(ledger.get("pending_candidates") or {})

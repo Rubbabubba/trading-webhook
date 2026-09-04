@@ -1,4 +1,4 @@
-from regime_intraday_validation import cost_stress, daily_goal_feasibility, latency_stress, monte_carlo_daily, paper_fill_reconciliation, parameter_stability, validation_lab
+from regime_intraday_validation import cost_stress, daily_goal_feasibility, entry_execution_analysis, latency_stress, monte_carlo_daily, paper_fill_reconciliation, parameter_stability, update_canceled_entry_outcomes, validation_lab
 
 
 def _report(values):
@@ -70,3 +70,28 @@ def test_daily_goal_feasibility_exposes_required_risk_instead_of_promising_incom
     assert result["modeled_average_daily_dollars"] == 38.0
     assert result["goals"][0]["required_risk_per_trade_dollars"] == 263.16
     assert result["goals"][0]["fits_current_100_dollar_trade_cap"] is False
+
+
+def test_canceled_entry_counterfactual_is_stop_first_and_not_broker_pnl():
+    ledger = {"orders": {"sig": {"status": "canceled", "broker": {"filled_qty": "0"}, "signal": {
+        "symbol": "SPY", "underlying_side": "buy", "entry_price": 100, "stop_price": 99, "target_price": 102,
+    }}}}
+    scan = {"features": {"SPY": {"ready": True, "last_ts": "2026-09-04T10:30:00-04:00", "last_high": 103, "last_low": 98, "price": 101}}}
+    update_canceled_entry_outcomes(ledger, scan)
+    outcome = ledger["orders"]["sig"]["counterfactual_underlying_outcome"]
+    assert outcome["status"] == "stop"
+    assert outcome["realized_r"] == -1.0
+    assert "not broker P/L" in outcome["assumption"]
+
+
+def test_entry_execution_analysis_reports_quote_gap_without_claiming_fill():
+    ledger = {"orders": {"sig": {"status": "canceled", "plan": {"underlying": "SPY", "limit_debit": .52,
+        "selection_quotes": {"entry_debit_from_quotes": .52}}, "terminal_quotes": {"entry_debit_from_quotes": .54},
+        "broker": {"submitted_at": "2026-09-04T14:15:00+00:00", "canceled_at": "2026-09-04T14:18:00+00:00"},
+        "entry_quote_path": [{}, {}]}}}
+    result = entry_execution_analysis(ledger)
+    row = result["rows"][0]
+    assert row["required_limit_increase_at_terminal"] == .02
+    assert row["terminal_quote_was_within_one_cent"] is False
+    assert row["quote_path_points"] == 2
+    assert result["policy"].startswith("Observational only")

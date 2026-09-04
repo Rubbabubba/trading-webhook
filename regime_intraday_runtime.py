@@ -25,7 +25,7 @@ from regime_intraday_ledger import assign_setup_identities
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_replay import chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
-from regime_intraday_validation import paper_fill_reconciliation, validation_lab
+from regime_intraday_validation import entry_execution_analysis, paper_fill_reconciliation, update_canceled_entry_outcomes, validation_lab
 
 
 def _env(name: str, default: str = "") -> str:
@@ -216,7 +216,7 @@ class RegimeIntradayRuntime:
         views = candidate_views(ledger, now=datetime.now(timezone.utc), blocker=", ".join(self._readiness().get("paper_blockers") or []))
         return {"ok": True, "candidate_queue": views["active"], "candidate_history": views["history"], "performance": performance_views(ledger), "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
                 "events": list(ledger.get("events") or [])[-100:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}),
-                "execution_quality": paper_fill_reconciliation(ledger),
+                "execution_quality": paper_fill_reconciliation(ledger), "entry_execution": entry_execution_analysis(ledger),
                 "setup_observation_summary": setup_observation_summary(ledger, session=now_ny().date().isoformat()),
                 "last_scan": dict(self.last_scan), "live_submission": False}
 
@@ -442,6 +442,16 @@ class RegimeIntradayRuntime:
                 if signal_id in ledger.get("pending_candidates", {}):
                     ledger["pending_candidates"][signal_id].update(status=record["status"], filled_qty=broker.get("filled_qty"))
                 if status in {"new", "accepted", "pending_new", "partially_filled"} and _bool("REGIME_INTRADAY_PAPER_AUTO_CANCEL_STALE"):
+                    try:
+                        plan = dict(record.get("plan") or {})
+                        chain = fetch_option_chain(key, secret, str(plan.get("underlying") or ""), expiration=plan.get("expiration"), feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), timeout=5)
+                        quote = spread_quote_evidence(chain, plan)
+                        path = list(record.get("entry_quote_path") or [])
+                        if quote.get("entry_debit_from_quotes") is not None:
+                            path.append(quote)
+                            record["entry_quote_path"] = path[-20:]
+                    except Exception:
+                        pass
                     submitted = datetime.fromisoformat(str(broker.get("submitted_at") or broker.get("created_at") or "").replace("Z", "+00:00"))
                     signal = dict(dict(ledger.get("pending_candidates", {}).get(signal_id) or {}).get("signal") or {})
                     feature = dict(dict(self.last_scan.get("features") or {}).get(signal.get("symbol")) or {})
@@ -501,6 +511,7 @@ class RegimeIntradayRuntime:
                 refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": record.get("status")})
             except Exception as exc:
                 refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": "reconcile_error", "detail": str(exc)[:200]})
+        update_canceled_entry_outcomes(ledger, self.last_scan)
         save_ledger(self.ledger_path, ledger)
         return {"ok": True, "refreshed": refreshed, "live_submission": False, "automatic_exit_submission": _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True)}
 
