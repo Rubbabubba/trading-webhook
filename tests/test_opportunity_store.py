@@ -41,3 +41,13 @@ def test_scoreboard_route_remains_non_executing(monkeypatch):
     assert response.status_code == 200
     assert response.json()["kalshi"]["verdict"] == "collecting_evidence"
     assert response.json()["execution_enabled"] is False
+
+
+def test_market_making_route_remains_non_executing(monkeypatch):
+    monkeypatch.setenv("OPPORTUNITY_ADMIN_SECRET", "admin")
+    monkeypatch.setattr("opportunity_app.fetch_open_events", lambda **kwargs: ([], {"pages": 1, "event_count": 0}))
+    response = TestClient(app).post("/diagnostics/opportunity_lab/kalshi/market-making",
+                                    headers={"x-admin-secret": "admin"}, json={"quote_size": 10})
+    assert response.status_code == 200
+    assert response.json()["market_making"]["market_count"] == 0
+    assert response.json()["execution_enabled"] is False

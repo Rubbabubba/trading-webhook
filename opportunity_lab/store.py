@@ -22,6 +22,7 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
     observed_at = datetime.now(timezone.utc)
     pairs = list(scan.get("mutually_exclusive_no_pairs") or [])
     closest_pairs = list(scan.get("closest_no_pairs") or [])
+    maker_rows = list((scan.get("market_making") or {}).get("candidates") or [])
     summary = {
         "events_received": scan.get("events_received"),
         "candidate_count": scan.get("candidate_count"),
@@ -51,6 +52,12 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
                 estimated_net_roi_pct numeric NOT NULL, shortfall_to_break_even numeric NOT NULL,
                 payload jsonb NOT NULL, PRIMARY KEY (run_id, event_ticker)
             )""")
+            cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.market_making_observations (
+                run_id uuid NOT NULL REFERENCES opportunity_lab.scan_runs(run_id) ON DELETE CASCADE,
+                ticker text NOT NULL, conservative_net_profit numeric NOT NULL,
+                conservative_roi_pct numeric NOT NULL, payload jsonb NOT NULL,
+                PRIMARY KEY (run_id, ticker)
+            )""")
             cursor.execute(
                 "INSERT INTO opportunity_lab.scan_runs VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
                 (run_id, observed_at, "kalshi_public_market_data", int(transport.get("pages") or 0),
@@ -70,8 +77,15 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
                     (run_id, pair.get("event_ticker"), leg_key, pair.get("estimated_net_profit") or 0,
                      pair.get("estimated_net_roi_pct") or 0, pair.get("shortfall_to_break_even") or 0, json.dumps(pair)),
                 )
+            for row in maker_rows:
+                conservative = row.get("scenarios", {}).get("conservative", {})
+                cursor.execute(
+                    "INSERT INTO opportunity_lab.market_making_observations VALUES (%s,%s,%s,%s,%s::jsonb)",
+                    (run_id, row.get("ticker"), conservative.get("estimated_net_profit") or 0,
+                     conservative.get("estimated_roi_on_quote_capital_pct") or 0, json.dumps(row)),
+                )
     return {"configured": True, "saved": True, "run_id": run_id, "observed_at": observed_at.isoformat(),
-            "pair_rows": len(pairs), "near_miss_rows": len(closest_pairs)}
+            "pair_rows": len(pairs), "near_miss_rows": len(closest_pairs), "market_making_rows": len(maker_rows)}
 
 
 def recent_runs(limit: int = 50) -> dict:
