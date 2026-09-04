@@ -17,3 +17,12 @@ def test_worker_collects_and_persists_without_execution(monkeypatch):
     assert response.status_code == 200
     assert response.json()["persistence"]["saved"] is True
     assert response.json()["execution_enabled"] is False
+
+
+def test_operator_scan_can_persist(monkeypatch):
+    monkeypatch.setenv("OPPORTUNITY_ADMIN_SECRET", "admin")
+    monkeypatch.setattr("opportunity_app.fetch_open_events", lambda **kwargs: ([], {"pages": 1, "event_count": 0, "more_available": False}))
+    monkeypatch.setattr("opportunity_app.save_kalshi_scan", lambda scan, transport: {"configured": True, "saved": True, "run_id": "x"})
+    response = TestClient(app).post("/diagnostics/opportunity_lab/kalshi/scan", headers={"x-admin-secret": "admin"}, json={"persist": True})
+    assert response.status_code == 200
+    assert response.json()["persistence"]["saved"] is True

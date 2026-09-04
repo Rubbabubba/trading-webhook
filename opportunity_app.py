@@ -65,7 +65,7 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
   {"outcome":"Home","venue":"Book A","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0},
   {"outcome":"Away","venue":"Book B","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0}
 ]</textarea><button id="arbRun">Scan opportunity</button></section>
-<section class="card"><h2>Live prediction-market discovery</h2><p class="muted">Unauthenticated Kalshi public data only. Results are gross price-dislocation candidates, not approved trades; fees, complete outcome coverage, account eligibility, and jurisdiction remain blockers.</p><label>Category <select id="kalshiCategory"><option value="">All</option><option>Sports</option><option>Politics</option><option>Economics</option><option>Crypto</option></select></label><label>Pages <input id="kalshiPages" type="number" min="1" max="3" value="1"></label><button id="kalshiRun">Scan live markets</button></section>
+<section class="card"><h2>Live prediction-market discovery</h2><p class="muted">Unauthenticated Kalshi public data only. Results are gross price-dislocation candidates, not approved trades; fees, complete outcome coverage, account eligibility, and jurisdiction remain blockers.</p><label>Category <select id="kalshiCategory"><option value="">All</option><option>Sports</option><option>Politics</option><option>Economics</option><option>Crypto</option></select></label><label>Pages <input id="kalshiPages" type="number" min="1" max="3" value="1"></label><button id="kalshiRun">Scan live markets</button><button id="kalshiSave">Scan and save</button></section>
 <section class="card"><h2>Result</h2><button id="copyResult" type="button">Copy result</button><span id="copyStatus" class="muted"></span><pre id="result">Choose a market and run the research suite.</pre></section>
 <script>
 const post=async(path,body)=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Running…';s.className='muted';try{const response=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};
@@ -74,6 +74,7 @@ document.getElementById('basis').onclick=()=>post('/diagnostics/opportunity_lab/
 document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/reconstruct-funding',{market:document.getElementById('carryMarket').value,days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value),cost_scenarios_bps:[139,149,260]});
 document.getElementById('arbRun').onclick=()=>{try{post('/diagnostics/opportunity_lab/arbitrage/scan',{quotes:JSON.parse(document.getElementById('arbQuotes').value),bankroll:Number(document.getElementById('arbBankroll').value),minimum_profit:Number(document.getElementById('arbMinProfit').value),stake_increment:.01,rules_compatible:document.getElementById('arbRules').checked})}catch(error){document.getElementById('result').textContent='Invalid quote JSON: '+String(error)}};
 document.getElementById('kalshiRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200});
+document.getElementById('kalshiSave').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200,persist:true});
 document.getElementById('copyResult').onclick=async()=>{const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(document.getElementById('result').textContent);status.textContent=' Copied';status.className='ok'}catch(error){status.textContent=' Copy failed—select the result manually';status.className='bad'}};
 </script></main></body></html>""", headers={"Cache-Control": "no-store"})
 
@@ -235,7 +236,9 @@ def kalshi_scan(body: dict) -> dict:
     events, transport = fetch_open_events(limit=limit, pages=pages)
     if transport.get("error"):
         raise HTTPException(status_code=502, detail={"transport": transport})
-    return {"ok": True, "transport": transport, "scan": rank_event_dislocations(events, category=category), "execution_enabled": False}
+    scan = rank_event_dislocations(events, category=category)
+    persistence = save_kalshi_scan(scan, transport) if body.get("persist") is True else {"configured": store_configured(), "saved": False}
+    return {"ok": True, "transport": transport, "scan": scan, "persistence": persistence, "execution_enabled": False}
 
 
 @app.post("/worker/opportunity-lab/collect-kalshi")
