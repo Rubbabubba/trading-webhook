@@ -19,6 +19,7 @@ def build_regime_intraday_router(
     get_dashboard_payload: Callable[[], dict],
     html_response: Callable[[str], HTMLResponse],
     replay: Callable[[dict], dict],
+    option_replay: Callable[[dict], dict],
     scan_worker: Callable[[dict], dict],
     paper_roundtrip: Callable[[dict], dict],
     paper_mechanical_drill: Callable[[dict], dict],
@@ -55,6 +56,11 @@ def build_regime_intraday_router(
     def diagnostics_regime_intraday_replay(request: Request, body: dict = Body(default={})):
         del request
         return replay(body)
+
+    @router.post("/diagnostics/regime_intraday_option_replay")
+    def diagnostics_regime_intraday_option_replay(request: Request, body: dict = Body(default={})):
+        del request
+        return option_replay(body)
 
     @router.post("/worker/regime_intraday_scan")
     def worker_regime_intraday_scan(body: dict = Body(default={})):

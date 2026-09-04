@@ -17,6 +17,7 @@ def test_intraday_app_has_no_swing_routes(monkeypatch, tmp_path):
     assert "/dashboard/intraday" in paths
     assert "/worker/regime_intraday_scan" in paths
     assert "/worker/regime_intraday_after_hours_replay" in paths
+    assert "/diagnostics/regime_intraday_option_replay" in paths
     assert not any("swing" in path for path in paths)
     assert "/worker/exit" not in paths
     assert "/worker/scan_entries" not in paths
@@ -38,6 +39,10 @@ def test_operator_routes_require_auth(monkeypatch, tmp_path):
     assert client.get("/diagnostics/regime_intraday_ledger").status_code == 401
     assert client.get("/diagnostics/regime_intraday_ledger", headers={"x-admin-secret": "test-admin"}).status_code == 200
     assert client.get("/diagnostics/swing_tuning_simulator").status_code == 404
+    assert client.post("/diagnostics/regime_intraday_option_replay", json={}).status_code == 401
+    replay = client.post("/diagnostics/regime_intraday_option_replay", json={"cases": []}, headers={"x-admin-secret": "test-admin"})
+    assert replay.status_code == 200
+    assert replay.json()["live_submission"] is False
 
 
 def test_worker_requires_worker_secret(monkeypatch, tmp_path):

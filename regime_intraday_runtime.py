@@ -23,6 +23,7 @@ from regime_intraday_ledger import load_ledger, paper_submission_decision, pendi
 from regime_intraday_ledger import performance_views
 from regime_intraday_ledger import assign_setup_identities
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
+from regime_intraday_option_replay import replay_option_batch
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_replay import chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
 from regime_intraday_validation import entry_execution_analysis, paper_fill_reconciliation, update_canceled_entry_outcomes, validation_lab
@@ -338,6 +339,9 @@ class RegimeIntradayRuntime:
         if body.get("walk_forward"):
             result["walk_forward"] = walk_forward(regular, cfg)
         return result
+
+    def option_replay(self, body: dict) -> dict:
+        return replay_option_batch(body)
 
     def after_hours_replay(self, body: dict) -> dict:
         self._worker_authorize(body)
