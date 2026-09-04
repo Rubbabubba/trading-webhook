@@ -452,6 +452,14 @@ def market_making_scoreboard(*, hours: int = 24 * 30) -> dict:
 def _maker_replay_summary(rows: list[tuple]) -> dict:
     payloads = [row[4] or {} for row in rows]
     pnl = [float(row[1]) for row in rows]
+    queue_sensitivity = {}
+    for fraction in ("0.0", "0.25", "0.5", "1.0"):
+        scenarios = [(row.get("queue_position_sensitivity") or {}).get(fraction) for row in payloads]
+        scenarios = [row for row in scenarios if row]
+        scenario_pnl = [float(row.get("net_marked_pnl") or 0) for row in scenarios]
+        queue_sensitivity[fraction] = {"replay_count": len(scenarios),
+                                       "replays_with_any_fill": sum(float(row.get("simulated_buy_fills") or 0) > 0 or float(row.get("simulated_sell_fills") or 0) > 0 for row in scenarios),
+                                       "net_marked_pnl": round(sum(scenario_pnl), 6)}
     return {"replay_count": len(rows), "first_observed_at": rows[0][0].isoformat() if rows else None,
             "last_observed_at": rows[-1][0].isoformat() if rows else None,
             "replays_with_any_fill": sum((float(row.get("simulated_buy_fills") or 0) > 0 or
@@ -461,4 +469,5 @@ def _maker_replay_summary(rows: list[tuple]) -> dict:
             "average_pnl_per_replay": round(sum(pnl) / len(pnl), 8) if pnl else None,
             "total_simulated_buy_fills": round(sum(float(row.get("simulated_buy_fills") or 0) for row in payloads), 6),
             "total_simulated_sell_fills": round(sum(float(row.get("simulated_sell_fills") or 0) for row in payloads), 6),
-            "total_paired_round_trips": round(sum(float(row.get("paired_round_trips") or 0) for row in payloads), 6)}
+            "total_paired_round_trips": round(sum(float(row.get("paired_round_trips") or 0) for row in payloads), 6),
+            "queue_position_sensitivity": queue_sensitivity}

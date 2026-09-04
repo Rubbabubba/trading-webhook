@@ -28,6 +28,8 @@ On each scheduled run, the collector also downloads up to three pages of public 
 
 The market-making evidence report chronologically separates the oldest two-thirds of stored replays from the newest third. It reports observed fills, paired round trips, marked P&L, and profitable replay counts for both periods. Retention requires at least 30 calibration replays, 15 validation replays, and positive marked P&L in both; an unsuccessful formulation remains available for retuning rather than retiring the candidate category.
 
+Each new replay also reports queue-position sensitivity with 0%, 25%, 50%, and 100% of the displayed depth assumed ahead of the hypothetical order. The 100% case remains the conservative headline. Comparing the scenarios identifies whether an apparent edge is robust or depends on unrealistically favorable queue placement.
+
 For U.S. Coinbase CFM products, `/diagnostics/opportunity_lab/coinbase/reconstruct-funding` reconstructs BTC or ETH hourly funding over 7–365 days from aligned CDE-future and Coinbase-spot hourly candles. It applies Coinbase's published `/24` premium scaling and 75% current/25% previous smoothing, but uses hourly closes instead of the official twenty three-minute representative-price samples. Its output is therefore explicitly a proxy, never official historical funding. Exact U.S. historical funding must be requested from Coinbase and should later be used to validate and calibrate the proxy.
 
 ## Promotion lifecycle

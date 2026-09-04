@@ -63,12 +63,14 @@ def screen_market_making(events: list[dict], *, quote_size: float = 10.0, maker_
     }
 
 
-def replay_quote(previous: dict, current: dict, trades: list[dict], *, maker_fee_coefficient: float = 0.0175) -> dict:
+def replay_quote(previous: dict, current: dict, trades: list[dict], *, maker_fee_coefficient: float = 0.0175,
+                 queue_ahead_fraction: float = 1.0) -> dict:
     """Replay public prints against one earlier quote, requiring queue-ahead clearance."""
     ticker = previous.get("ticker")
     bid, ask = float(previous["yes_bid"]), float(previous["yes_ask"])
     size = float(previous["modeled_quote_size"])
-    bid_queue, ask_queue = float(previous["bid_depth"]), float(previous["ask_depth"])
+    queue_ahead_fraction = max(0.0, min(1.0, float(queue_ahead_fraction)))
+    displayed_bid_depth, displayed_ask_depth = float(previous["bid_depth"]), float(previous["ask_depth"])
     buy_volume = sell_volume = 0.0
     trade_count = 0
     for trade in trades:
@@ -83,24 +85,40 @@ def replay_quote(previous: dict, current: dict, trades: list[dict], *, maker_fee
             buy_volume += count
         elif taker_side == "yes" and price >= ask:
             sell_volume += count
-    buy_fills = min(size, max(0.0, buy_volume - bid_queue))
-    sell_fills = min(size, max(0.0, sell_volume - ask_queue))
-    paired = min(buy_fills, sell_fills)
-    long_inventory, short_inventory = buy_fills - paired, sell_fills - paired
     current_bid, current_ask = float(current["yes_bid"]), float(current["yes_ask"])
-    gross = paired * (ask - bid) + long_inventory * (current_bid - bid) + short_inventory * (ask - current_ask)
-    fees = (maker_fee_coefficient * buy_fills * bid * (1 - bid)
-            + maker_fee_coefficient * sell_fills * ask * (1 - ask))
+    def outcome(fraction: float) -> dict:
+        bid_queue, ask_queue = displayed_bid_depth * fraction, displayed_ask_depth * fraction
+        buy_fills = min(size, max(0.0, buy_volume - bid_queue))
+        sell_fills = min(size, max(0.0, sell_volume - ask_queue))
+        paired = min(buy_fills, sell_fills)
+        long_inventory, short_inventory = buy_fills - paired, sell_fills - paired
+        gross = paired * (ask - bid) + long_inventory * (current_bid - bid) + short_inventory * (ask - current_ask)
+        fees = (maker_fee_coefficient * buy_fills * bid * (1 - bid)
+                + maker_fee_coefficient * sell_fills * ask * (1 - ask))
+        return {"queue_ahead_fraction": fraction, "bid_queue_ahead": bid_queue, "ask_queue_ahead": ask_queue,
+                "simulated_buy_fills": buy_fills, "simulated_sell_fills": sell_fills,
+                "paired_round_trips": paired, "ending_long_inventory": long_inventory,
+                "ending_short_inventory": short_inventory, "gross_marked_pnl": gross,
+                "estimated_maker_fees": fees, "net_marked_pnl": gross - fees}
+    selected = outcome(queue_ahead_fraction)
+    sensitivity = {str(fraction): {key: round(value, 6) if isinstance(value, float) else value
+                                   for key, value in outcome(fraction).items()}
+                   for fraction in (0.0, .25, .5, 1.0)}
+    buy_fills, sell_fills = selected["simulated_buy_fills"], selected["simulated_sell_fills"]
+    paired = selected["paired_round_trips"]
+    long_inventory, short_inventory = selected["ending_long_inventory"], selected["ending_short_inventory"]
+    gross, fees, net = selected["gross_marked_pnl"], selected["estimated_maker_fees"], selected["net_marked_pnl"]
     capital = max(size * ask, 0.01)
-    net = gross - fees
     return {
         "ticker": ticker, "trade_count": trade_count, "qualifying_buy_volume": round(buy_volume, 6),
-        "qualifying_sell_volume": round(sell_volume, 6), "bid_queue_ahead": bid_queue,
-        "ask_queue_ahead": ask_queue, "simulated_buy_fills": round(buy_fills, 6),
+        "qualifying_sell_volume": round(sell_volume, 6), "queue_ahead_fraction": queue_ahead_fraction,
+        "bid_queue_ahead": round(selected["bid_queue_ahead"], 6),
+        "ask_queue_ahead": round(selected["ask_queue_ahead"], 6), "simulated_buy_fills": round(buy_fills, 6),
         "simulated_sell_fills": round(sell_fills, 6), "paired_round_trips": round(paired, 6),
         "ending_long_inventory": round(long_inventory, 6), "ending_short_inventory": round(short_inventory, 6),
         "gross_marked_pnl": round(gross, 6), "estimated_maker_fees": round(fees, 6),
         "net_marked_pnl": round(net, 6), "roi_on_quote_capital_pct": round(net / capital * 100, 6),
+        "queue_position_sensitivity": sensitivity,
         "profitable": net > 0, "eligible": False,
         "blockers": ["public_trade_inference_not_account_fill", "quote_persistence_between_snapshots_unknown",
                      "series_fee_not_verified", "account_and_jurisdiction_not_verified"],

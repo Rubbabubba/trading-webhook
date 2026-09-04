@@ -42,3 +42,14 @@ def test_maker_replay_summary_reports_fills_and_pnl():
     assert result["replays_with_any_fill"] == 1
     assert result["net_marked_pnl"] == .06
     assert result["total_paired_round_trips"] == 1
+
+
+def test_replay_reports_queue_position_sensitivity():
+    previous = {"ticker": "M", "yes_bid": .40, "yes_ask": .45, "bid_depth": 100, "ask_depth": 100,
+                "modeled_quote_size": 2}
+    current = {"ticker": "M", "yes_bid": .41, "yes_ask": .46}
+    trades = [{"ticker": "M", "yes_price_dollars": ".40", "count_fp": "2", "taker_side": "no"}]
+    result = replay_quote(previous, current, trades, maker_fee_coefficient=0)
+    assert result["simulated_buy_fills"] == 0
+    assert result["queue_position_sensitivity"]["0.0"]["simulated_buy_fills"] == 2
+    assert result["queue_position_sensitivity"]["1.0"]["simulated_buy_fills"] == 0
