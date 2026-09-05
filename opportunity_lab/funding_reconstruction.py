@@ -128,6 +128,90 @@ def conditional_carry_walk_forward(future_candles: list[dict], spot_candles: lis
             "eligible": False, "execution_enabled": False}
 
 
+def cost_recovery_carry_walk_forward(future_candles: list[dict], spot_candles: list[dict], *,
+                                     total_cost_bps: float = 139.0) -> dict:
+    """Test long-duration exits that wait for gross carry to recover costs."""
+    timestamps, rates, bases = _carry_series(future_candles, spot_candles)
+    if len(timestamps) < 24 * 120:
+        return {"valid": False, "reason": "insufficient_aligned_hourly_candles", "aligned_hours": len(timestamps),
+                "execution_enabled": False}
+    split = int(len(timestamps) * 2 / 3)
+    grid = []
+    for threshold in (.02, .05, .10, .20):
+        for persistence in (12, 24, 48):
+            for maximum_hold in (24 * 30, 24 * 60, 24 * 90):
+                for target in (10, 25, 50):
+                    trades = _cost_recovery_trades(timestamps, rates, bases, 0, split, threshold=threshold,
+                                                   persistence=persistence, maximum_hold=maximum_hold,
+                                                   target_net_bps=target, total_cost_bps=total_cost_bps)
+                    grid.append({"minimum_hourly_funding_bps": threshold, "persistence_hours": persistence,
+                                 "maximum_holding_days": maximum_hold // 24, "target_net_bps": target,
+                                 **_carry_summary(trades)})
+    viable = [row for row in grid if row["trade_count"] >= 2]
+    ranked = viable or grid
+    ranked.sort(key=lambda row: (row["total_net_pnl_bps"], row["average_net_pnl_bps"] or -999), reverse=True)
+    selected = ranked[0]
+    validation_trades = _cost_recovery_trades(
+        timestamps, rates, bases, split, len(timestamps), threshold=selected["minimum_hourly_funding_bps"],
+        persistence=selected["persistence_hours"], maximum_hold=selected["maximum_holding_days"] * 24,
+        target_net_bps=selected["target_net_bps"], total_cost_bps=total_cost_bps)
+    validation = _carry_summary(validation_trades)
+    retained = selected["total_net_pnl_bps"] > 0 and validation["trade_count"] >= 1 and validation["total_net_pnl_bps"] > 0
+    return {"valid": True, "strategy": "long_duration_cost_recovery_eth_carry", "aligned_hours": len(timestamps),
+            "total_cost_bps_per_trade": total_cost_bps, "grid_size": len(grid),
+            "method": "parameter_grid_on_oldest_two_thirds_then_untouched_newest_third",
+            "split_timestamp": timestamps[split],
+            "selected_parameters": {key: selected[key] for key in ("minimum_hourly_funding_bps", "persistence_hours",
+                                                                     "maximum_holding_days", "target_net_bps")},
+            "calibration": {key: value for key, value in selected.items() if key not in {
+                "minimum_hourly_funding_bps", "persistence_hours", "maximum_holding_days", "target_net_bps"}},
+            "validation": validation, "validation_trades": validation_trades,
+            "model_retained": retained, "verdict": "retain_for_forward_validation" if retained else "continue_retuning",
+            "limitations": ["funding is reconstructed from hourly closes rather than official three-minute TWAP samples",
+                            "positions are assumed continuously hedged and maker-filled on both legs",
+                            "margin calls, liquidation, borrow constraints, and taxes are not modeled"],
+            "eligible": False, "execution_enabled": False}
+
+
+def _carry_series(future_candles: list[dict], spot_candles: list[dict]):
+    futures = {int(row["timestamp"]): float(row["close"]) for row in future_candles if row.get("close")}
+    spots = {int(row["timestamp"]): float(row["close"]) for row in spot_candles if row.get("close")}
+    timestamps = sorted(set(futures).intersection(spots))
+    rates, bases, previous = [], [], 0.0
+    for stamp in timestamps:
+        basis = (futures[stamp] / spots[stamp] - 1.0) * 10_000.0
+        rate = 0.75 * (basis / 10_000.0 / 24.0) + 0.25 * previous
+        rates.append(rate * 10_000.0); bases.append(basis); previous = rate
+    return timestamps, rates, bases
+
+
+def _cost_recovery_trades(timestamps, rates, bases, start, stop, *, threshold, persistence,
+                          maximum_hold, target_net_bps, total_cost_bps):
+    trades, index = [], max(start, persistence - 1)
+    while index + 1 < stop:
+        if min(rates[index - persistence + 1:index + 1]) < threshold:
+            index += 1
+            continue
+        entry, cumulative = index, 0.0
+        final = min(entry + maximum_hold, stop - 1)
+        exit_reason = "maximum_hold"
+        for current in range(entry, final + 1):
+            cumulative += rates[current]
+            gross = cumulative + bases[entry] - bases[current]
+            if current > entry and gross >= total_cost_bps + target_net_bps:
+                final, exit_reason = current, "cost_and_profit_target_recovered"
+                break
+        gross = cumulative + bases[entry] - bases[final]
+        net = gross - total_cost_bps
+        trades.append({"entry_timestamp": timestamps[entry], "exit_timestamp": timestamps[final],
+                       "holding_hours": final - entry, "exit_reason": exit_reason,
+                       "entry_basis_bps": round(bases[entry], 4), "exit_basis_bps": round(bases[final], 4),
+                       "funding_pnl_bps": round(cumulative, 4), "gross_pnl_bps": round(gross, 4),
+                       "net_pnl_bps": round(net, 4)})
+        index = final + 1
+    return trades
+
+
 def _conditional_trades(timestamps, rates, bases, start, stop, *, threshold, persistence, hold,
                         maximum_basis, total_cost_bps):
     trades, index = [], max(start, persistence - 1)

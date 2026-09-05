@@ -1,4 +1,5 @@
-from opportunity_lab.funding_reconstruction import conditional_carry_walk_forward, reconstruct_hourly_funding
+from opportunity_lab.funding_reconstruction import (conditional_carry_walk_forward, cost_recovery_carry_walk_forward,
+                                                    reconstruct_hourly_funding)
 
 
 def _candles(price, count=48):
@@ -54,5 +55,17 @@ def test_conditional_carry_is_chronological_and_never_executable():
     assert result["grid_size"] == 240
     assert result["split_timestamp"] == futures[int(len(futures) * 2 / 3)]["timestamp"]
     assert result["calibration"]["trade_count"] > 0
+    assert result["eligible"] is False
+    assert result["execution_enabled"] is False
+
+
+def test_cost_recovery_carry_waits_for_target_and_remains_nonexecuting():
+    futures = _candles(101, 24 * 365)
+    spots = _candles(100, 24 * 365)
+    result = cost_recovery_carry_walk_forward(futures, spots, total_cost_bps=10)
+    assert result["valid"] is True
+    assert result["grid_size"] == 108
+    assert result["calibration"]["trade_count"] > 0
+    assert result["validation"]["trade_count"] > 0
     assert result["eligible"] is False
     assert result["execution_enabled"] is False

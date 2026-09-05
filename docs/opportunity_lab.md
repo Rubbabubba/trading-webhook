@@ -36,6 +36,8 @@ For U.S. Coinbase CFM products, `/diagnostics/opportunity_lab/coinbase/reconstru
 
 The conditional ETH carry walk-forward searches funding thresholds, required persistence, fixed holding periods, and maximum entry basis across 240 configurations. Parameters are selected only on the oldest two-thirds of aligned hourly history and evaluated once on the untouched newest third. The default 139 bps round-trip cost represents the observed Coinbase maker tiers on both spot and CDE legs; it remains configurable for stress testing. Reconstructed funding, assumed maker fills, hedge continuity, margin, and liquidation are explicit limitations, and execution remains disabled.
 
+The long-duration cost-recovery variant searches 108 combinations of entry funding, persistence, 30/60/90-day maximum holds, and 10/25/50 bps net-profit targets. Once entered, a position exits as soon as reconstructed funding plus basis convergence covers the complete round-trip cost and target; otherwise it exits at the maximum hold. Selection and validation remain chronologically separated, and every trade reports its exit reason and gross-versus-net economics.
+
 ## Promotion lifecycle
 
 `queued -> research -> backtest_passed -> shadow -> limited_live -> live`
