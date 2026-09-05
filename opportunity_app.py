@@ -21,6 +21,7 @@ from opportunity_lab.funding_reconstruction import (conditional_carry_walk_forwa
 from opportunity_lab.kalshi_market_data import (fetch_open_events, fetch_recent_trades, fetch_settled_series_markets,
                                                 rank_event_dislocations, rank_logical_arbitrage)
 from opportunity_lab.odds_arbitrage import OutcomeQuote, american_to_decimal, scan_arbitrage
+from opportunity_lab.matched_promotions import evaluate_promotions
 from opportunity_lab.prediction_market_making import screen_market_making
 from opportunity_lab.triangular_crypto import collect_triangular
 from opportunity_lab.weather_value import collect_dallas_weather
@@ -32,7 +33,7 @@ from opportunity_lab.store import (configured as store_configured, cross_exchang
                                    weather_scoreboard, market_making_scoreboard)
 
 
-APP_VERSION = "opportunity-lab-web-v12"
+APP_VERSION = "opportunity-lab-web-v13"
 app = FastAPI(title="Opportunity Lab", docs_url=None, redoc_url=None)
 
 
@@ -78,6 +79,9 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
   {"outcome":"Home","venue":"Book A","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0},
   {"outcome":"Away","venue":"Book B","odds_format":"american","odds":110,"max_stake":1000,"commission_rate":0}
 ]</textarea><button id="arbRun">Scan opportunity</button></section>
+<section class="card"><h2>Matched promotions</h2><p class="muted">Manual-assist economics only. Positive results remain blocked until Texas availability, account eligibility, and exact terms are confirmed.</p><textarea id="promoOffers">[
+  {"name":"Example bonus bet","venue":"Example","type":"bonus_bet","bonus_amount":100,"promo_decimal_odds":3.0,"hedge_decimal_odds":2.0,"hedge_commission_rate":0,"qualifying_loss":0,"withdrawal_cost":0,"texas_available":false,"account_eligible":false,"terms_confirmed":false}
+]</textarea><button id="promoRun">Evaluate promotions</button></section>
 <section class="card"><h2>Live prediction-market discovery</h2><p class="muted">Unauthenticated Kalshi public data only. Results are gross price-dislocation candidates, not approved trades; fees, complete outcome coverage, account eligibility, and jurisdiction remain blockers.</p><label>Category <select id="kalshiCategory"><option value="">All</option><option>Sports</option><option>Politics</option><option>Economics</option><option>Crypto</option></select></label><label>Pages <input id="kalshiPages" type="number" min="1" max="3" value="1"></label><button id="kalshiRun">Scan live markets</button><button id="kalshiSave">Scan and save</button></section>
 <section class="card"><h2>Prediction-market maker simulator</h2><p class="muted">Models queue-clearing fills from public trades, one-sided inventory, next-quote marking, and maker fees. It does not place orders.</p><label>Pages <input id="makerPages" type="number" min="1" max="3" value="1"></label><label>Quote size <input id="makerSize" type="number" min="0.01" step="0.01" value="10"></label><label>Maker fee coefficient <input id="makerFee" type="number" min="0" max="1" step="0.0001" value="0.0175"></label><button id="makerRun">Run maker screen</button><button id="makerEvidence">Load replay evidence</button></section>
 <section class="card"><h2>Cross-exchange crypto monitor</h2><p class="muted">Public Coinbase and Kraken order books. Sweeps executable depth and deducts conservative taker fees. No orders, balances, or credentials.</p><label>Market <select id="crossSymbol"><option>BTC</option><option>ETH</option></select></label><label>Maximum per-leg notional $ <input id="crossNotional" type="number" min="10" max="100000" value="1000"></label><button id="crossRun">Compare venues</button></section>
@@ -95,6 +99,7 @@ document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_l
 document.getElementById('carryConditional').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/conditional-carry',{days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value)});
 document.getElementById('carryRecovery').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/cost-recovery-carry',{days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value)});
 document.getElementById('arbRun').onclick=()=>{try{post('/diagnostics/opportunity_lab/arbitrage/scan',{quotes:JSON.parse(document.getElementById('arbQuotes').value),bankroll:Number(document.getElementById('arbBankroll').value),minimum_profit:Number(document.getElementById('arbMinProfit').value),stake_increment:.01,rules_compatible:document.getElementById('arbRules').checked})}catch(error){document.getElementById('result').textContent='Invalid quote JSON: '+String(error)}};
+document.getElementById('promoRun').onclick=()=>{try{post('/diagnostics/opportunity_lab/promotions/evaluate',{offers:JSON.parse(document.getElementById('promoOffers').value)})}catch(error){document.getElementById('result').textContent='Invalid promotion JSON: '+String(error)}};
 document.getElementById('kalshiRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200});
 document.getElementById('kalshiSave').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/scan',{category:document.getElementById('kalshiCategory').value,pages:Number(document.getElementById('kalshiPages').value),limit:200,persist:true});
 document.getElementById('makerRun').onclick=()=>post('/diagnostics/opportunity_lab/kalshi/market-making',{pages:Number(document.getElementById('makerPages').value),limit:200,quote_size:Number(document.getElementById('makerSize').value),maker_fee_coefficient:Number(document.getElementById('makerFee').value)});
@@ -310,6 +315,14 @@ def arbitrage_scan(body: dict) -> dict:
         return {"ok": True, "scan": result}
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/diagnostics/opportunity_lab/promotions/evaluate")
+def promotions_evaluate(body: dict) -> dict:
+    offers = body.get("offers") or []
+    if not isinstance(offers, list) or len(offers) > 100:
+        raise HTTPException(status_code=400, detail="offers must be a list of at most 100 entries")
+    return {"ok": True, "evaluation": evaluate_promotions(offers), "execution_enabled": False}
 
 
 @app.post("/diagnostics/opportunity_lab/kalshi/scan")
