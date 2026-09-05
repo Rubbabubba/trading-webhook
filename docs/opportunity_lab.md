@@ -14,6 +14,10 @@ The calculator reports profit per matched notional separately from annualized re
 
 Historical venue adapters must normalize each venue's funding sign, interval, contract size, quote currency, fee tier, and product eligibility before their data can enter this model. Venue availability and account eligibility must be confirmed before execution work begins.
 
+## Crypto hypothesis lab
+
+The dedicated crypto hypothesis lab isolates two genuinely different research families. The volatility-filtered breakout study searches 48 lookback, trend, volatility, stop, and trailing-stop combinations separately for BTC and ETH. The BTC/ETH relative-strength study searches 54 momentum, rebalance, absolute-strength, and relative-edge combinations, rotates at the following bar's open, and charges costs on every exit and entry. Each family selects parameters on the oldest two-thirds and reports only the frozen configuration on the untouched newest third; open positions at a boundary are not credited as completed trades.
+
 ## Sports and prediction arbitrage
 
 `opportunity_lab/odds_arbitrage.py` is the venue-neutral scanner core. It normalizes American or decimal prices, adjusts winnings for commission, respects per-leg maximum stake and stake increments, allocates stakes across mutually exclusive outcomes, and verifies the worst rounded payout. An apparent mathematical edge is always blocked until the operator confirms that settlement, overtime, cancellation, participant, and market-definition rules are compatible across venues. The scanner has no bet-submission transport.

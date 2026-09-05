@@ -14,6 +14,7 @@ from opportunity_lab.coinbase_market_data import check_cfm_read_access, credenti
 from opportunity_lab.crypto_basis import BasisInputs, backtest_funding, evaluate_basis
 from opportunity_lab.crypto_market_data import fetch_crypto_bars
 from opportunity_lab.crypto_regime import crypto_research_suite
+from opportunity_lab.crypto_hypotheses import crypto_hypothesis_walk_forward
 from opportunity_lab.cross_exchange_crypto import collect_cross_exchange
 from opportunity_lab.funding_reconstruction import (conditional_carry_walk_forward, cost_recovery_carry_walk_forward,
                                                      reconstruct_hourly_funding)
@@ -31,7 +32,7 @@ from opportunity_lab.store import (configured as store_configured, cross_exchang
                                    weather_scoreboard, market_making_scoreboard)
 
 
-APP_VERSION = "opportunity-lab-web-v11"
+APP_VERSION = "opportunity-lab-web-v12"
 app = FastAPI(title="Opportunity Lab", docs_url=None, redoc_url=None)
 
 
@@ -70,6 +71,7 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
 .card{background:#151d33;border:1px solid #2a385c;border-radius:12px;padding:20px;margin:16px 0}button,input,select,textarea{font:inherit;padding:9px;margin:4px;background:#202c49;color:#fff;border:1px solid #52658e;border-radius:6px}button{cursor:pointer;background:#3157c8}textarea{display:block;width:calc(100% - 26px);min-height:150px;font-family:ui-monospace,monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#080c18;padding:16px;border-radius:8px;max-height:65vh;overflow:auto}.muted{color:#aebbd7}.ok{color:#71e6a0}.bad{color:#ff8c8c}
 </style></head><body><main><h1>Opportunity Lab</h1><p class="muted">Research only · execution hard-disabled</p>
 <section class="card"><h2>Crypto research</h2><label>Symbol <select id="symbol"><option>BTC/USD</option><option>ETH/USD</option></select></label><label>Days <input id="days" type="number" min="90" max="3650" value="730"></label><label>Timeframe <select id="timeframe"><option>1Hour</option><option>4Hour</option><option>1Day</option></select></label><button id="run">Run research</button><span id="status" class="muted"></span></section>
+<section class="card"><h2>Crypto hypothesis lab</h2><p class="muted">Dedicated volatility-breakout and BTC/ETH relative-strength walk-forward tests using completed Alpaca bars.</p><label>Days <input id="hypothesisDays" type="number" min="180" max="3650" value="730"></label><button id="hypothesisRun">Run new hypotheses</button></section>
 <section class="card"><h2>Funding/basis calculator</h2><p class="muted">Positive funding is paid to the short. Prices must be executable spot ask and derivative bid.</p><label>Spot ask <input id="spot" type="number" value="100000"></label><label>Derivative bid <input id="derivative" type="number" value="100500"></label><label>Funding bps / interval <input id="funding" type="number" step="0.01" value="1"></label><label>Hold hours <input id="hold" type="number" value="168"></label><label>Capital $ <input id="capital" type="number" value="1000"></label><button id="basis">Evaluate basis</button></section>
 <section class="card"><h2>CDE funding reconstruction</h2><p class="muted">Research proxy from aligned completed hourly CDE-future and Coinbase-spot candles. No orders or balances.</p><label>Market <select id="carryMarket"><option>BTC</option><option>ETH</option></select></label><label>Days <input id="carryDays" type="number" min="7" max="365" value="365"></label><label>Primary round-trip cost (bps) <input id="carryCost" type="number" min="0" max="1000" step="0.1" value="139"></label><button id="carryRun">Reconstruct funding</button><button id="carryConditional">Run conditional ETH carry</button><button id="carryRecovery">Run long-duration cost recovery</button></section>
 <section class="card"><h2>Sports / prediction arbitrage scanner</h2><p class="muted">Enter one best quote for every mutually exclusive outcome. Confirm rules only after checking settlement terms, overtime treatment, void rules, limits, and currency. Commission is a decimal fraction of winnings (for example, 0.02 = 2%).</p><label>Bankroll $ <input id="arbBankroll" type="number" min="1" step="0.01" value="1000"></label><label>Minimum profit $ <input id="arbMinProfit" type="number" min="0" step="0.01" value="1"></label><label><input id="arbRules" type="checkbox"> Market and settlement rules confirmed compatible</label><textarea id="arbQuotes">[
@@ -87,6 +89,7 @@ body{font-family:system-ui;background:#0b1020;color:#edf2ff;margin:0;padding:28p
 <script>
 const post=async(path,body)=>{const s=document.getElementById('status'),r=document.getElementById('result');s.textContent=' Running…';s.className='muted';try{const response=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(JSON.stringify(data));r.textContent=JSON.stringify(data,null,2);s.textContent=' Complete';s.className='ok'}catch(error){r.textContent=String(error);s.textContent=' Failed';s.className='bad'}};
 document.getElementById('run').onclick=()=>post('/diagnostics/opportunity_lab/backtest/crypto',{symbol:document.getElementById('symbol').value,days:Number(document.getElementById('days').value),timeframe:document.getElementById('timeframe').value});
+document.getElementById('hypothesisRun').onclick=()=>post('/diagnostics/opportunity_lab/backtest/crypto-hypotheses',{days:Number(document.getElementById('hypothesisDays').value)});
 document.getElementById('basis').onclick=()=>post('/diagnostics/opportunity_lab/basis/evaluate',{spot_ask:Number(document.getElementById('spot').value),derivative_bid:Number(document.getElementById('derivative').value),funding_rate_bps:Number(document.getElementById('funding').value),holding_hours:Number(document.getElementById('hold').value),available_capital:Number(document.getElementById('capital').value),spot_ask_size:1000000000,derivative_bid_size:1000000000});
 document.getElementById('carryRun').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/reconstruct-funding',{market:document.getElementById('carryMarket').value,days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value),cost_scenarios_bps:[139,149,260]});
 document.getElementById('carryConditional').onclick=()=>post('/diagnostics/opportunity_lab/coinbase/conditional-carry',{days:Number(document.getElementById('carryDays').value),total_cost_bps:Number(document.getElementById('carryCost').value)});
@@ -123,6 +126,21 @@ def crypto_backtest(body: dict) -> dict:
     if transport.get("truncated"):
         raise HTTPException(status_code=502, detail={"error": "historical_data_truncated", "transport": transport})
     return {"ok": True, "symbol": symbol, "requested_days": days, "transport": transport, "research": crypto_research_suite(bars.get(symbol, [])), "execution_enabled": False}
+
+
+@app.post("/diagnostics/opportunity_lab/backtest/crypto-hypotheses")
+def crypto_hypotheses_backtest(body: dict) -> dict:
+    days = max(180, min(3650, int(body.get("days") or 730)))
+    end = datetime.now(timezone.utc)
+    bars, transport = fetch_crypto_bars(["BTC/USD", "ETH/USD"], start=end - timedelta(days=days), end=end,
+                                        timeframe="1Hour")
+    if transport.get("error"):
+        raise HTTPException(status_code=502, detail={"transport": transport})
+    if transport.get("truncated"):
+        raise HTTPException(status_code=502, detail={"error": "historical_data_truncated", "transport": transport})
+    return {"ok": True, "requested_days": days, "transport": transport,
+            "research": crypto_hypothesis_walk_forward(bars.get("BTC/USD", []), bars.get("ETH/USD", [])),
+            "execution_enabled": False}
 
 
 @app.post("/diagnostics/opportunity_lab/basis/evaluate")
