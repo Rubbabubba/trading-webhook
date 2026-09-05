@@ -193,14 +193,18 @@ def _cost_recovery_trades(timestamps, rates, bases, start, stop, *, threshold, p
             index += 1
             continue
         entry, cumulative = index, 0.0
-        final = min(entry + maximum_hold, stop - 1)
+        required_final = entry + maximum_hold
+        final = min(required_final, stop - 1)
         exit_reason = "maximum_hold"
+        target_recovered = False
         for current in range(entry, final + 1):
             cumulative += rates[current]
             gross = cumulative + bases[entry] - bases[current]
             if current > entry and gross >= total_cost_bps + target_net_bps:
-                final, exit_reason = current, "cost_and_profit_target_recovered"
+                final, exit_reason, target_recovered = current, "cost_and_profit_target_recovered", True
                 break
+        if not target_recovered and required_final >= stop:
+            break
         gross = cumulative + bases[entry] - bases[final]
         net = gross - total_cost_bps
         trades.append({"entry_timestamp": timestamps[entry], "exit_timestamp": timestamps[final],

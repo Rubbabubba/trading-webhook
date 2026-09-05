@@ -38,6 +38,8 @@ The conditional ETH carry walk-forward searches funding thresholds, required per
 
 The long-duration cost-recovery variant searches 108 combinations of entry funding, persistence, 30/60/90-day maximum holds, and 10/25/50 bps net-profit targets. Once entered, a position exits as soon as reconstructed funding plus basis convergence covers the complete round-trip cost and target; otherwise it exits at the maximum hold. Selection and validation remain chronologically separated, and every trade reports its exit reason and gross-versus-net economics.
 
+Positions that have not reached either exit before the end of their calibration or validation period are censored and excluded. They are never force-marked at the final available candle or treated as completed evidence.
+
 ## Promotion lifecycle
 
 `queued -> research -> backtest_passed -> shadow -> limited_live -> live`

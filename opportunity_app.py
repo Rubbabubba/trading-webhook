@@ -31,7 +31,7 @@ from opportunity_lab.store import (configured as store_configured, cross_exchang
                                    weather_scoreboard, market_making_scoreboard)
 
 
-APP_VERSION = "opportunity-lab-web-v10"
+APP_VERSION = "opportunity-lab-web-v11"
 app = FastAPI(title="Opportunity Lab", docs_url=None, redoc_url=None)
 
 

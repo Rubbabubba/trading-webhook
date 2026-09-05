@@ -1,5 +1,5 @@
 from opportunity_lab.funding_reconstruction import (conditional_carry_walk_forward, cost_recovery_carry_walk_forward,
-                                                    reconstruct_hourly_funding)
+                                                    reconstruct_hourly_funding, _cost_recovery_trades)
 
 
 def _candles(price, count=48):
@@ -69,3 +69,13 @@ def test_cost_recovery_carry_waits_for_target_and_remains_nonexecuting():
     assert result["validation"]["trade_count"] > 0
     assert result["eligible"] is False
     assert result["execution_enabled"] is False
+
+
+def test_cost_recovery_drops_position_censored_by_period_end():
+    timestamps = list(range(100))
+    rates = [.01] * 100
+    bases = [0.0] * 100
+    trades = _cost_recovery_trades(timestamps, rates, bases, 0, 100, threshold=0,
+                                   persistence=1, maximum_hold=200, target_net_bps=50,
+                                   total_cost_bps=139)
+    assert trades == []
