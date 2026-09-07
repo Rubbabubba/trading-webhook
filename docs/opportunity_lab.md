@@ -32,6 +32,8 @@ The collector also persists a two-sided market-making screen for every market wi
 
 On each scheduled run, the collector also downloads up to three pages of public trades from the prior two hours. The replay compares those prints with the previous stored quote, credits a hypothetical maker fill only after qualifying trade volume clears the displayed queue ahead, pairs opposing fills, marks residual inventory against the next executable quote, and deducts the conservative maker-fee estimate. Public prints cannot prove an account-specific fill or continuous quote presence, so replay profits remain ineligible research evidence.
 
+The hourly worker scans three 200-event pages. Previous-quote matching is limited to the preceding three hours and backed by ticker/run and observation-time indexes, preventing the replay lookup from slowing as the historical evidence tables grow. Larger scans remain available manually but are not part of the latency-sensitive scheduled collection.
+
 The market-making evidence report chronologically separates the oldest two-thirds of stored replays from the newest third. It reports observed fills, paired round trips, marked P&L, and profitable replay counts for both periods. Retention requires at least 30 calibration replays, 15 validation replays, and positive marked P&L in both; an unsuccessful formulation remains available for retuning rather than retiring the candidate category.
 
 Each new replay also reports queue-position sensitivity with 0%, 25%, 50%, and 100% of the displayed depth assumed ahead of the hypothetical order. The 100% case remains the conservative headline. Comparing the scenarios identifies whether an apparent edge is robust or depends on unrealistically favorable queue placement.

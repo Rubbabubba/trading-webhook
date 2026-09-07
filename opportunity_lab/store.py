@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .prediction_market_making import replay_quote
@@ -286,6 +286,10 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
                 conservative_roi_pct numeric NOT NULL, payload jsonb NOT NULL,
                 PRIMARY KEY (run_id, ticker)
             )""")
+            cursor.execute("""CREATE INDEX IF NOT EXISTS market_making_observations_ticker_run_idx
+                ON opportunity_lab.market_making_observations (ticker, run_id)""")
+            cursor.execute("""CREATE INDEX IF NOT EXISTS scan_runs_observed_at_idx
+                ON opportunity_lab.scan_runs (observed_at DESC)""")
             cursor.execute("""CREATE TABLE IF NOT EXISTS opportunity_lab.market_making_replays (
                 run_id uuid NOT NULL REFERENCES opportunity_lab.scan_runs(run_id) ON DELETE CASCADE,
                 ticker text NOT NULL, net_marked_pnl numeric NOT NULL, roi_pct numeric NOT NULL,
@@ -297,7 +301,9 @@ def save_kalshi_scan(scan: dict, transport: dict) -> dict:
                 cursor.execute("""SELECT DISTINCT ON (m.ticker) m.ticker, m.payload
                     FROM opportunity_lab.market_making_observations m
                     JOIN opportunity_lab.scan_runs r USING (run_id)
-                    WHERE m.ticker = ANY(%s) ORDER BY m.ticker, r.observed_at DESC""", (tickers,))
+                    WHERE m.ticker = ANY(%s) AND r.observed_at >= %s
+                    ORDER BY m.ticker, r.observed_at DESC""",
+                    (tickers, observed_at - timedelta(hours=3)))
                 previous_rows = {row[0]: row[1] for row in cursor.fetchall()}
             cursor.execute(
                 "INSERT INTO opportunity_lab.scan_runs VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
