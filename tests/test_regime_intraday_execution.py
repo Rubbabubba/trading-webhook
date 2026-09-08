@@ -378,6 +378,12 @@ def test_live_market_scan_combines_spy_and_dia_paper_sleeves(monkeypatch, tmp_pa
     result = RegimeIntradayRuntime().scan()
 
     assert {row["symbol"] for row in result["signals"]} == {"SPY", "DIA"}
+    assert {row["symbol"] for row in result["research_signals"]} == {"QQQ", "IWM"}
     assert result["sleeves"]["spy_mean_reversion"]["execution"] == "paper"
     assert result["sleeves"]["dia_mean_reversion"]["execution"] == "paper"
+    assert result["sleeves"]["qqq_mean_reversion"]["execution"] == "shadow_only"
+    assert result["sleeves"]["iwm_mean_reversion"]["execution"] == "shadow_only"
+    saved = load_ledger(str(tmp_path / "ledger.json"))
+    assert {row["signal"]["symbol"] for row in saved["signal_shadow_candidates"].values()} == {"SPY", "DIA", "QQQ", "IWM"}
+    assert all(row["submission_status"] == "research_shadow_only" for row in saved["signal_shadow_candidates"].values() if row["signal"]["symbol"] in {"QQQ", "IWM"})
     assert result["live_submission"] is False

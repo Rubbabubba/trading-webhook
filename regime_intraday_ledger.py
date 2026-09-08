@@ -44,18 +44,20 @@ def record_signal_shadow_candidates(ledger: dict[str, Any], scan: dict[str, Any]
     """Retain every distinct signal as an execution-free forward observation."""
     rows = dict(ledger.get("signal_shadow_candidates") or {})
     plans_by_id = {str(dict(row.get("signal") or {}).get("signal_id") or ""): dict(row.get("plan") or {}) for row in plans}
+    research_ids = {str(row.get("signal_id") or "") for row in list(scan.get("research_signals") or [])}
     features = dict(scan.get("features") or {})
-    for signal in list(scan.get("signals") or []):
+    for signal in [*list(scan.get("signals") or []), *list(scan.get("research_signals") or [])]:
         signal_id = str(signal.get("signal_id") or "")
         if not signal_id or signal_id in rows:
             continue
         plan = plans_by_id.get(signal_id, {})
         symbol = str(signal.get("symbol") or "").upper()
+        submission_status = "research_shadow_only" if signal_id in research_ids else ("eligible_unsubmitted" if plan.get("status") == "selected" else "option_plan_rejected")
         rows[signal_id] = {
             "signal_id": signal_id, "base_signal_id": signal.get("base_signal_id") or signal_id,
             "signal": dict(signal), "created_at": ts_utc, "session": ts_utc[:10],
             "last_evaluated_bar_ts": str(dict(features.get(symbol) or {}).get("last_ts") or ""),
-            "status": "tracking", "submission_status": "eligible_unsubmitted" if plan.get("status") == "selected" else "option_plan_rejected",
+            "status": "tracking", "submission_status": submission_status,
             "option_plan_status": plan.get("status") or "not_evaluated", "option_plan_reason": plan.get("reason") or plan.get("detail"),
             "accounting": "completed_underlying_bars_stop_first; counterfactual only; not broker P/L",
         }
@@ -171,7 +173,7 @@ def assign_setup_identities(ledger: dict, scan: dict) -> None:
     Initial episodes preserve old IDs for safe deployment over existing orders.
     """
     states = ledger.setdefault("setup_episodes", {})
-    signals = list(scan.get("signals") or [])
+    signals = [*list(scan.get("signals") or []), *list(scan.get("research_signals") or [])]
     active_keys = {(s.get("symbol"), s.get("strategy"), s.get("underlying_side")) for s in signals}
     for state in states.values():
         feature = dict(dict(scan.get("features") or {}).get(state["symbol"]) or {})

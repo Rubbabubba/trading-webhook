@@ -175,6 +175,10 @@ class RegimeIntradayRuntime:
     def dia_config(self) -> RegimeIntradayConfig:
         return replace(self.config(), symbols=("SPY", "DIA"), trade_symbols=("DIA",), momentum_enabled=False, mean_reversion_enabled=True)
 
+    def research_config(self, symbol: str) -> RegimeIntradayConfig:
+        symbol = str(symbol).upper()
+        return replace(self.config(), symbols=("SPY", symbol), trade_symbols=(symbol,), momentum_enabled=False, mean_reversion_enabled=True)
+
     @staticmethod
     def _paper_credentials() -> tuple[str, str]:
         return _env("ALPACA_PAPER_API_KEY_ID"), _env("ALPACA_PAPER_API_SECRET_KEY")
@@ -210,11 +214,12 @@ class RegimeIntradayRuntime:
         cfg = self.config()
         dia_enabled = _bool("REGIME_INTRADAY_DIA_PAPER_ENABLED", True)
         dia_cfg = self.dia_config()
+        research_symbols = tuple(value.strip().upper() for value in _env("REGIME_INTRADAY_RESEARCH_SHADOW_SYMBOLS", "QQQ,IWM").split(",") if value.strip().upper() in {"QQQ", "IWM"})
         if _bool("ONLY_MARKET_HOURS", True) and not is_regular_market_time():
             self.last_scan = {"ok": True, "version": REGIME_INTRADAY_VERSION, "status": "skipped_outside_market_hours", "ts_utc": timestamp,
                               "paper_only": True, "live_submission": False, "symbols": list(cfg.symbols)}
             return self.last_scan
-        requested_symbols = list(dict.fromkeys([*cfg.symbols, *(dia_cfg.symbols if dia_enabled else ())]))
+        requested_symbols = list(dict.fromkeys([*cfg.symbols, *(dia_cfg.symbols if dia_enabled else ()), *research_symbols]))
         bars, fetch = fetch_recent_minute_bars(requested_symbols)
         today = now_ny().date()
         regular = {symbol: [row for row in bars.get(symbol, []) if row["ts_ny"].date() == today and is_regular_market_time(row["ts_ny"])] for symbol in requested_symbols}
@@ -223,18 +228,25 @@ class RegimeIntradayRuntime:
         payload = evaluate_regime_intraday(regular, cfg)
         primary = payload
         dia_scan = evaluate_regime_intraday(regular, dia_cfg) if dia_enabled else {"signals": [], "features": {}, "regime": {"name": "disabled"}}
+        research_scans = {symbol: evaluate_regime_intraday(regular, self.research_config(symbol)) for symbol in research_symbols}
         freshness_now = now_ny()
         apply_live_freshness(primary, now=freshness_now)
         if dia_enabled:
             apply_live_freshness(dia_scan, now=freshness_now)
+        for research_scan in research_scans.values():
+            apply_live_freshness(research_scan, now=freshness_now)
+        research_signals = [signal for research_scan in research_scans.values() for signal in list(research_scan.get("signals") or [])]
         payload = {
             **primary,
             "signals": [*list(primary.get("signals") or []), *list(dia_scan.get("signals") or [])],
             "signal_count": len(list(primary.get("signals") or [])) + len(list(dia_scan.get("signals") or [])),
-            "features": {**dict(primary.get("features") or {}), "DIA": dict(dict(dia_scan.get("features") or {}).get("DIA") or {})},
+            "research_signals": research_signals,
+            "research_signal_count": len(research_signals),
+            "features": {**dict(primary.get("features") or {}), "DIA": dict(dict(dia_scan.get("features") or {}).get("DIA") or {}), **{symbol: dict(dict(research_scans[symbol].get("features") or {}).get(symbol) or {}) for symbol in research_symbols}},
             "sleeves": {
                 "spy_mean_reversion": {"execution": "paper", "regime": primary.get("regime"), "signal_count": len(list(primary.get("signals") or [])), "setup_proximity": list(primary.get("setup_proximity") or [])},
                 "dia_mean_reversion": {"execution": "paper" if dia_enabled else "disabled", "regime": dia_scan.get("regime"), "signal_count": len(list(dia_scan.get("signals") or [])), "setup_proximity": list(dia_scan.get("setup_proximity") or [])},
+                **{f"{symbol.lower()}_mean_reversion": {"execution": "shadow_only", "regime": research_scans[symbol].get("regime"), "signal_count": len(list(research_scans[symbol].get("signals") or [])), "setup_proximity": list(research_scans[symbol].get("setup_proximity") or [])} for symbol in research_symbols},
             },
         }
         payload.update({"status": "completed", "ts_utc": timestamp, "paper_only": True, "live_submission": False, "market_data": fetch})
