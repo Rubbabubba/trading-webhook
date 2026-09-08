@@ -1,0 +1,254 @@
+{
+  "version": "sports_value_v2.0",
+  "games": [
+    {
+      "slug": "mlb_401816854",
+      "config": "mlb_401816854.json",
+      "league": "mlb",
+      "game": "Cleveland Guardians at Baltimore Orioles",
+      "kickoff": "2026-09-08T22:35:00+00:00",
+      "stop_at": "2026-09-09T10:35:00+00:00"
+    },
+    {
+      "slug": "mlb_401816856",
+      "config": "mlb_401816856.json",
+      "league": "mlb",
+      "game": "Houston Astros at Philadelphia Phillies",
+      "kickoff": "2026-09-08T22:40:00+00:00",
+      "stop_at": "2026-09-09T10:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816857",
+      "config": "mlb_401816857.json",
+      "league": "mlb",
+      "game": "Minnesota Twins at Detroit Tigers",
+      "kickoff": "2026-09-08T22:40:00+00:00",
+      "stop_at": "2026-09-09T10:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816858",
+      "config": "mlb_401816858.json",
+      "league": "mlb",
+      "game": "New York Mets at Miami Marlins",
+      "kickoff": "2026-09-08T22:40:00+00:00",
+      "stop_at": "2026-09-09T10:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816853",
+      "config": "mlb_401816853.json",
+      "league": "mlb",
+      "game": "Los Angeles Angels at Boston Red Sox",
+      "kickoff": "2026-09-08T22:45:00+00:00",
+      "stop_at": "2026-09-09T10:45:00+00:00"
+    },
+    {
+      "slug": "mlb_401816855",
+      "config": "mlb_401816855.json",
+      "league": "mlb",
+      "game": "Colorado Rockies at New York Yankees",
+      "kickoff": "2026-09-08T23:05:00+00:00",
+      "stop_at": "2026-09-09T11:05:00+00:00"
+    },
+    {
+      "slug": "mlb_401816859",
+      "config": "mlb_401816859.json",
+      "league": "mlb",
+      "game": "Tampa Bay Rays at Atlanta Braves",
+      "kickoff": "2026-09-08T23:15:00+00:00",
+      "stop_at": "2026-09-09T11:15:00+00:00"
+    },
+    {
+      "slug": "mlb_401816860",
+      "config": "mlb_401816860.json",
+      "league": "mlb",
+      "game": "Arizona Diamondbacks at Kansas City Royals",
+      "kickoff": "2026-09-08T23:40:00+00:00",
+      "stop_at": "2026-09-09T11:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816861",
+      "config": "mlb_401816861.json",
+      "league": "mlb",
+      "game": "Chicago Cubs at Milwaukee Brewers",
+      "kickoff": "2026-09-08T23:40:00+00:00",
+      "stop_at": "2026-09-09T11:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816862",
+      "config": "mlb_401816862.json",
+      "league": "mlb",
+      "game": "Pittsburgh Pirates at Chicago White Sox",
+      "kickoff": "2026-09-08T23:40:00+00:00",
+      "stop_at": "2026-09-09T11:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816865",
+      "config": "mlb_401816865.json",
+      "league": "mlb",
+      "game": "Texas Rangers at Seattle Mariners",
+      "kickoff": "2026-09-09T01:40:00+00:00",
+      "stop_at": "2026-09-09T13:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816866",
+      "config": "mlb_401816866.json",
+      "league": "mlb",
+      "game": "Toronto Blue Jays at Athletics Athletics",
+      "kickoff": "2026-09-09T01:40:00+00:00",
+      "stop_at": "2026-09-09T13:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816867",
+      "config": "mlb_401816867.json",
+      "league": "mlb",
+      "game": "Washington Nationals at San Diego Padres",
+      "kickoff": "2026-09-09T01:40:00+00:00",
+      "stop_at": "2026-09-09T13:40:00+00:00"
+    },
+    {
+      "slug": "mlb_401816864",
+      "config": "mlb_401816864.json",
+      "league": "mlb",
+      "game": "St. Louis Cardinals at San Francisco Giants",
+      "kickoff": "2026-09-09T01:45:00+00:00",
+      "stop_at": "2026-09-09T13:45:00+00:00"
+    },
+    {
+      "slug": "mlb_401816863",
+      "config": "mlb_401816863.json",
+      "league": "mlb",
+      "game": "Cincinnati Reds at Los Angeles Dodgers",
+      "kickoff": "2026-09-09T02:10:00+00:00",
+      "stop_at": "2026-09-09T14:10:00+00:00"
+    },
+    {
+      "slug": "nfl_401872656",
+      "config": "nfl_401872656.json",
+      "league": "nfl",
+      "game": "New England Patriots at Seattle Seahawks",
+      "kickoff": "2026-09-10T00:20:00+00:00",
+      "stop_at": "2026-09-10T12:20:00+00:00"
+    },
+    {
+      "slug": "nfl_401872657",
+      "config": "nfl_401872657.json",
+      "league": "nfl",
+      "game": "San Francisco 49ers at Los Angeles Rams",
+      "kickoff": "2026-09-11T00:35:00+00:00",
+      "stop_at": "2026-09-11T12:35:00+00:00"
+    },
+    {
+      "slug": "nfl_401872925",
+      "config": "nfl_401872925.json",
+      "league": "nfl",
+      "game": "Tampa Bay Buccaneers at Cincinnati Bengals",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00"
+    },
+    {
+      "slug": "nfl_401872923",
+      "config": "nfl_401872923.json",
+      "league": "nfl",
+      "game": "New Orleans Saints at Detroit Lions",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00"
+    },
+    {
+      "slug": "nfl_401872924",
+      "config": "nfl_401872924.json",
+      "league": "nfl",
+      "game": "New York Jets at Tennessee Titans",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00"
+    },
+    {
+      "slug": "nfl_401872659",
+      "config": "nfl_401872659.json",
+      "league": "nfl",
+      "game": "Baltimore Ravens at Indianapolis Colts",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00"
+    },
+    {
+      "slug": "nfl_401872658",
+      "config": "nfl_401872658.json",
+      "league": "nfl",
+      "game": "Atlanta Falcons at Pittsburgh Steelers",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00"
+    },
+    {
+      "slug": "nfl_401872661",
+      "config": "nfl_401872661.json",
+      "league": "nfl",
+      "game": "Chicago Bears at Carolina Panthers",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00"
+    },
+    {
+      "slug": "nfl_401872922",
+      "config": "nfl_401872922.json",
+      "league": "nfl",
+      "game": "Cleveland Browns at Jacksonville Jaguars",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00"
+    },
+    {
+      "slug": "nfl_401872660",
+      "config": "nfl_401872660.json",
+      "league": "nfl",
+      "game": "Buffalo Bills at Houston Texans",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00"
+    },
+    {
+      "slug": "nfl_401872928",
+      "config": "nfl_401872928.json",
+      "league": "nfl",
+      "game": "Miami Dolphins at Las Vegas Raiders",
+      "kickoff": "2026-09-13T20:25:00+00:00",
+      "stop_at": "2026-09-14T08:25:00+00:00"
+    },
+    {
+      "slug": "nfl_401872927",
+      "config": "nfl_401872927.json",
+      "league": "nfl",
+      "game": "Green Bay Packers at Minnesota Vikings",
+      "kickoff": "2026-09-13T20:25:00+00:00",
+      "stop_at": "2026-09-14T08:25:00+00:00"
+    },
+    {
+      "slug": "nfl_401872929",
+      "config": "nfl_401872929.json",
+      "league": "nfl",
+      "game": "Washington Commanders at Philadelphia Eagles",
+      "kickoff": "2026-09-13T20:25:00+00:00",
+      "stop_at": "2026-09-14T08:25:00+00:00"
+    },
+    {
+      "slug": "nfl_401872926",
+      "config": "nfl_401872926.json",
+      "league": "nfl",
+      "game": "Arizona Cardinals at Los Angeles Chargers",
+      "kickoff": "2026-09-13T20:25:00+00:00",
+      "stop_at": "2026-09-14T08:25:00+00:00"
+    },
+    {
+      "slug": "nfl_401872930",
+      "config": "nfl_401872930.json",
+      "league": "nfl",
+      "game": "Dallas Cowboys at New York Giants",
+      "kickoff": "2026-09-14T00:20:00+00:00",
+      "stop_at": "2026-09-14T12:20:00+00:00"
+    },
+    {
+      "slug": "nfl_401872931",
+      "config": "nfl_401872931.json",
+      "league": "nfl",
+      "game": "Denver Broncos at Kansas City Chiefs",
+      "kickoff": "2026-09-15T00:15:00+00:00",
+      "stop_at": "2026-09-15T12:15:00+00:00"
+    }
+  ],
+  "unmatched": []
+}

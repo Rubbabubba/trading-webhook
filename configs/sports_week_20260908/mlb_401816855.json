@@ -1,0 +1,53 @@
+{
+  "initial_cash_cents": 100000,
+  "max_trade_cents": 1000,
+  "max_contracts": 10,
+  "max_loss_cents": 2000,
+  "max_entries": 5,
+  "entry_edge": 0.08,
+  "exit_hold_margin": 0.02,
+  "stop_loss_fraction": 0.25,
+  "max_entry_loss_fraction": 0.12,
+  "max_spread": 0.03,
+  "slippage_per_contract": 0.01,
+  "fee_coefficient": 0.07,
+  "max_price_move": 0.02,
+  "max_signal_age_seconds": 90,
+  "feed_grace_seconds": 300,
+  "break_grace_seconds": 1800,
+  "poll_seconds": 20,
+  "confirmation_seconds": 10,
+  "pending_expiry_seconds": 65,
+  "cooldown_seconds": 300,
+  "markout_horizons": [
+    60,
+    300,
+    900
+  ],
+  "league": "mlb",
+  "event_id": "401816855",
+  "game": "Colorado Rockies at New York Yankees",
+  "home_team_id": "10",
+  "away_team_id": "27",
+  "markets": {
+    "home": "KXMLBGAME-26SEP081905COLNYY-NYY",
+    "away": "KXMLBGAME-26SEP081905COLNYY-COL"
+  },
+  "market_event": "KXMLBGAME-26SEP081905COLNYY",
+  "kickoff": "2026-09-08T23:05:00+00:00",
+  "stop_at": "2026-09-09T11:05:00+00:00",
+  "mapping_evidence": {
+    "home": {
+      "ticker": "KXMLBGAME-26SEP081905COLNYY-NYY",
+      "title": "New York Y wins",
+      "rules_primary": "If New York Y wins the Colorado vs New York Y professional baseball game originally scheduled for Sep 8, 2026 at 7:05 PM EDT, then the market resolves to Yes.",
+      "rules_secondary": "The following market refers to the Colorado vs New York Y professional baseball game originally scheduled for Sep 8, 2026 at 7:05 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+    },
+    "away": {
+      "ticker": "KXMLBGAME-26SEP081905COLNYY-COL",
+      "title": "Colorado wins",
+      "rules_primary": "If Colorado wins the Colorado vs New York Y professional baseball game originally scheduled for Sep 8, 2026 at 7:05 PM EDT, then the market resolves to Yes.",
+      "rules_secondary": "The following market refers to the Colorado vs New York Y professional baseball game originally scheduled for Sep 8, 2026 at 7:05 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+    }
+  }
+}

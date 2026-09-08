@@ -1,0 +1,53 @@
+{
+  "initial_cash_cents": 100000,
+  "max_trade_cents": 1000,
+  "max_contracts": 10,
+  "max_loss_cents": 2000,
+  "max_entries": 5,
+  "entry_edge": 0.08,
+  "exit_hold_margin": 0.02,
+  "stop_loss_fraction": 0.25,
+  "max_entry_loss_fraction": 0.12,
+  "max_spread": 0.03,
+  "slippage_per_contract": 0.01,
+  "fee_coefficient": 0.07,
+  "max_price_move": 0.02,
+  "max_signal_age_seconds": 90,
+  "feed_grace_seconds": 300,
+  "break_grace_seconds": 1800,
+  "poll_seconds": 20,
+  "confirmation_seconds": 10,
+  "pending_expiry_seconds": 65,
+  "cooldown_seconds": 300,
+  "markout_horizons": [
+    60,
+    300,
+    900
+  ],
+  "league": "nfl",
+  "event_id": "401872661",
+  "game": "Chicago Bears at Carolina Panthers",
+  "home_team_id": "29",
+  "away_team_id": "3",
+  "markets": {
+    "home": "KXNFLGAME-26SEP13CHICAR-CAR",
+    "away": "KXNFLGAME-26SEP13CHICAR-CHI"
+  },
+  "market_event": "KXNFLGAME-26SEP13CHICAR",
+  "kickoff": "2026-09-13T17:00:00+00:00",
+  "stop_at": "2026-09-14T05:00:00+00:00",
+  "mapping_evidence": {
+    "home": {
+      "ticker": "KXNFLGAME-26SEP13CHICAR-CAR",
+      "title": "Chicago vs Carolina Pro Football game: Carolina wins?",
+      "rules_primary": "If Carolina wins the Chicago vs Carolina professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+      "rules_secondary": "The following market refers to the team who wins the Chicago vs Carolina professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+    },
+    "away": {
+      "ticker": "KXNFLGAME-26SEP13CHICAR-CHI",
+      "title": "Chicago vs Carolina Pro Football game: Chicago wins?",
+      "rules_primary": "If Chicago wins the Chicago vs Carolina professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+      "rules_secondary": "The following market refers to the team who wins the Chicago vs Carolina professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+    }
+  }
+}
