@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 from regime_intraday_ledger import paper_submission_decision
+from regime_intraday_validation import broker_promotion_evidence
 
 
 def readiness_snapshot(*, config: dict[str, Any], ledger: dict[str, Any], last_scan: dict[str, Any], paper_credentials_present: bool) -> dict[str, Any]:
@@ -28,7 +29,8 @@ def readiness_snapshot(*, config: dict[str, Any], ledger: dict[str, Any], last_s
     entry_risk = paper_submission_decision(ledger, "readiness:new-entry", session=now.astimezone(ZoneInfo("America/New_York")).date().isoformat(),
                                           max_trades_per_day=int(config.get("max_trades_per_day", 0)),
                                           max_consecutive_losses=int(config.get("max_consecutive_losses", 2)),
-                                          max_daily_loss_dollars=float(config.get("max_daily_loss_dollars", 200)))
+                                          max_daily_loss_dollars=float(config.get("max_daily_loss_dollars", 200)),
+                                          reentry_cooldown_minutes=int(config.get("reentry_cooldown_minutes", 30)), now_utc=now.isoformat())
     if not entry_risk["allowed"]:
         paper_blockers.append(entry_risk["reason"])
     live_blockers = list(paper_blockers)
@@ -44,6 +46,8 @@ def readiness_snapshot(*, config: dict[str, Any], ledger: dict[str, Any], last_s
         live_blockers.append("paper_exit_recovery_required")
     if len(closed) < int(config.get("min_shadow_closed") or 10):
         live_blockers.append("minimum_shadow_sample_not_met")
+    evidence = broker_promotion_evidence(ledger, minimum_roundtrips=int(config.get("min_broker_roundtrips") or 30), target_roundtrips=int(config.get("target_broker_roundtrips") or 50), estimated_round_trip_fees_dollars=float(config.get("estimated_round_trip_fees_dollars") or 1.30))
+    live_blockers.extend(evidence["blockers"])
     return {
         "paper_ready": not paper_blockers,
         "entry_risk": entry_risk,
@@ -55,5 +59,6 @@ def readiness_snapshot(*, config: dict[str, Any], ledger: dict[str, Any], last_s
         "live_eligible_spread_count": len(live_selected),
         "paper_order_count": len(paper_orders),
         "shadow_closed_count": len(closed),
+        "promotion_evidence": evidence,
         "live_submission": False,
     }

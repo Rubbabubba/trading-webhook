@@ -19,14 +19,14 @@ from regime_intraday_email import send_order_outcome_email
 from regime_intraday_entry_guard import pending_entry_invalidation
 from regime_intraday_options import spread_quote_evidence
 from regime_intraday_executor import cancel_order, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
-from regime_intraday_ledger import load_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, record_setup_observations, save_ledger, setup_observation_summary, update_ledger
+from regime_intraday_ledger import load_ledger, mark_signal_submission, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, record_setup_observations, record_signal_shadow_candidates, save_ledger, setup_observation_summary, update_ledger, update_signal_shadow_outcomes
 from regime_intraday_ledger import performance_views
 from regime_intraday_ledger import assign_setup_identities
 from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_option_replay import replay_option_batch
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_replay import chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
-from regime_intraday_validation import entry_execution_analysis, paper_fill_reconciliation, update_canceled_entry_outcomes, validation_lab
+from regime_intraday_validation import broker_promotion_evidence, entry_execution_analysis, paper_fill_reconciliation, update_canceled_entry_outcomes, validation_lab
 
 
 def _env(name: str, default: str = "") -> str:
@@ -134,7 +134,7 @@ def _underlying_exit_decision(record: dict[str, Any], feature: dict[str, Any]) -
     return None
 
 
-def _confirm_option_stop(record: dict[str, Any], decision: dict[str, Any], observed_at: datetime) -> dict[str, Any]:
+def _confirm_option_stop(record: dict[str, Any], decision: dict[str, Any], observed_at: datetime, required_confirmations: int = 2) -> dict[str, Any]:
     if decision.get("reason") != "option_stop":
         record["option_stop_confirmations"] = 0
         record.pop("option_stop_last_confirmation_cycle", None)
@@ -144,9 +144,10 @@ def _confirm_option_stop(record: dict[str, Any], decision: dict[str, Any], obser
         record["option_stop_confirmations"] = int(record.get("option_stop_confirmations") or 0) + 1
         record["option_stop_last_confirmation_cycle"] = cycle
     confirmations = int(record.get("option_stop_confirmations") or 0)
-    if confirmations < 2:
-        return {**decision, "exit": False, "reason": "option_stop_pending_confirmation", "confirmations": confirmations, "required_confirmations": 2}
-    return {**decision, "confirmations": confirmations, "required_confirmations": 2}
+    required = max(1, int(required_confirmations))
+    if confirmations < required:
+        return {**decision, "exit": False, "reason": "option_stop_pending_confirmation", "confirmations": confirmations, "required_confirmations": required}
+    return {**decision, "confirmations": confirmations, "required_confirmations": required}
 
 
 class RegimeIntradayRuntime:
@@ -193,7 +194,11 @@ class RegimeIntradayRuntime:
                     "min_shadow_closed": _int("REGIME_INTRADAY_MIN_SHADOW_CLOSED_FOR_LIVE", 10),
                     "max_trades_per_day": max(0, _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 0)),
                     "max_consecutive_losses": _effective_max_consecutive_losses(),
-                    "max_daily_loss_dollars": _float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200)},
+                    "max_daily_loss_dollars": _float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200),
+                    "reentry_cooldown_minutes": _int("REGIME_INTRADAY_REENTRY_COOLDOWN_MINUTES", 30),
+                    "min_broker_roundtrips": _int("REGIME_INTRADAY_MIN_BROKER_ROUNDTRIPS_FOR_PROMOTION", 30),
+                    "target_broker_roundtrips": _int("REGIME_INTRADAY_TARGET_BROKER_ROUNDTRIPS_FOR_PROMOTION", 50),
+                    "estimated_round_trip_fees_dollars": _float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)},
             ledger=ledger, last_scan=self.last_scan, paper_credentials_present=bool(key and secret),
         )
         snapshot["notifications"] = {"email_enabled": _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True),
@@ -261,6 +266,8 @@ class RegimeIntradayRuntime:
                                      "max_daily_loss_dollars": _float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200)}
         ledger = update_ledger(ledger, payload, max_open_positions=max(1, _int("REGIME_INTRADAY_MAX_OPEN_POSITIONS", 1)),
                                max_daily_loss_r=_float("REGIME_INTRADAY_MAX_DAILY_LOSS_R", 2), ts_utc=timestamp)
+        update_signal_shadow_outcomes(ledger, payload)
+        record_signal_shadow_candidates(ledger, payload, plans, ts_utc=timestamp)
         record_setup_observations(ledger, payload, ts_utc=timestamp)
         expires = (datetime.fromisoformat(timestamp) + timedelta(seconds=max(60, _int("REGIME_INTRADAY_CANDIDATE_TTL_SEC", 600)))).isoformat()
         signals_by_id = {str(row.get("signal_id")): row for row in payload.get("signals", [])}
@@ -316,6 +323,8 @@ class RegimeIntradayRuntime:
         return {"ok": True, "candidate_queue": views["active"], "candidate_history": views["history"], "performance": performance_views(ledger), "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
                 "events": list(ledger.get("events") or [])[-100:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}),
                 "execution_quality": paper_fill_reconciliation(ledger), "entry_execution": entry_execution_analysis(ledger),
+                "promotion_evidence": broker_promotion_evidence(ledger, minimum_roundtrips=_int("REGIME_INTRADAY_MIN_BROKER_ROUNDTRIPS_FOR_PROMOTION", 30), target_roundtrips=_int("REGIME_INTRADAY_TARGET_BROKER_ROUNDTRIPS_FOR_PROMOTION", 50), estimated_round_trip_fees_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)),
+                "signal_shadow_candidates": dict(ledger.get("signal_shadow_candidates") or {}),
                 "setup_observation_summary": setup_observation_summary(ledger, session=now_ny().date().isoformat()),
                 "last_scan": dict(self.last_scan), "live_submission": False}
 
@@ -352,6 +361,8 @@ class RegimeIntradayRuntime:
 
     def after_hours_replay(self, body: dict) -> dict:
         self._worker_authorize(body)
+        ledger = load_ledger(self.ledger_path)
+        calibration = paper_fill_reconciliation(ledger, minimum_roundtrips=_int("REGIME_INTRADAY_MIN_BROKER_ROUNDTRIPS_FOR_PROMOTION", 30), risk_dollars=_float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100), estimated_round_trip_fees_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30))
         days = max(30, min(252, int(body.get("calendar_days") or 180)))
         end = datetime.now(timezone.utc)
         research_symbols = ["SPY", "QQQ", "IWM", "DIA"]
@@ -367,7 +378,9 @@ class RegimeIntradayRuntime:
             "vwap_mean_reversion_only": replay_sessions(regular, replace(cfg, momentum_enabled=False, mean_reversion_enabled=True)),
         }
         risk = _float("REGIME_INTRADAY_MAX_TRADE_LOSS_DOLLARS", 100)
-        cost_r = _float("REGIME_INTRADAY_REPLAY_ROUND_TRIP_COST_R", 0.12)
+        configured_cost_r = _float("REGIME_INTRADAY_REPLAY_ROUND_TRIP_COST_R", 0.12)
+        observed_cost_r = float(calibration.get("observed_adverse_execution_cost_r") or 0)
+        cost_r = max(configured_cost_r, observed_cost_r)
         summaries = {name: {key: value for key, value in report.items() if key != "trades"} | {"cost_adjusted": cost_adjusted_report(report, risk_dollars=risk, round_trip_cost_r=cost_r)} for name, report in variants.items()}
         ranking = sorted(summaries, key=lambda name: float(dict(summaries[name].get("cost_adjusted") or {}).get("net_average_r") or -999), reverse=True)
         walk = mean_reversion_walk_forward(regular, cfg, risk_dollars=risk, round_trip_cost_r=cost_r)
@@ -388,7 +401,7 @@ class RegimeIntradayRuntime:
         dia_holdout = chronological_holdout(regular, dia_cfg, risk_dollars=risk)
         iwm_holdout = chronological_holdout(regular, iwm_cfg, risk_dollars=risk)
         output = {"ok": True, "generated_utc": datetime.now(timezone.utc).isoformat(), "calendar_days": days, "paper_only": True, "live_submission": False,
-                  "cost_model": {"risk_dollars": risk, "round_trip_cost_r": cost_r}, "ranking": ranking, "variants": summaries,
+                  "cost_model": {"risk_dollars": risk, "round_trip_cost_r": cost_r, "configured_floor_r": configured_cost_r, "paper_fill_calibration": calibration}, "ranking": ranking, "variants": summaries,
                   "mean_reversion_walk_forward": walk,
                   "validation_lab": validation_lab(baseline=variants["configured"], walk_forward=walk, instrument_reports=instruments, candidate_reports=candidate_reports, risk_dollars=risk) | {"dia_fixed_holdout": dia_holdout, "iwm_fixed_holdout": iwm_holdout,
                   "instrument_policy": "Research only. IWM remains disabled unless its untouched holdout has at least 20 trades and stays positive after 0.30R modeled round-trip cost."}}
@@ -408,8 +421,12 @@ class RegimeIntradayRuntime:
             raise HTTPException(status_code=409, detail="no fresh selected option spread is available")
         decision = paper_submission_decision(ledger, signal_id, session=now_ny().date().isoformat(), max_trades_per_day=max(0, _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 0)),
                                              max_consecutive_losses=_effective_max_consecutive_losses(now_ny().date().isoformat()),
-                                             max_daily_loss_dollars=_float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200))
+                                             max_daily_loss_dollars=_float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200),
+                                             reentry_cooldown_minutes=max(0, _int("REGIME_INTRADAY_REENTRY_COOLDOWN_MINUTES", 30)),
+                                             now_utc=datetime.now(timezone.utc).isoformat())
         if not decision.get("allowed"):
+            mark_signal_submission(ledger, signal_id, "blocked", str(decision.get("reason") or "risk_check"))
+            save_ledger(self.ledger_path, ledger)
             raise HTTPException(status_code=409, detail=decision)
         key, secret = self._paper_credentials()
         client_order_id = paper_client_order_id(signal_id)
@@ -428,6 +445,7 @@ class RegimeIntradayRuntime:
                                                 "mechanical_test": bool(signal.get("mechanical_test")),
                                                 "entry_lifecycle_notifications": "v1"})
         ledger["pending_candidates"][signal_id]["status"] = "paper_order_submitted"
+        mark_signal_submission(ledger, signal_id, "submitted")
         save_ledger(self.ledger_path, ledger)
         _attempt_entry_lifecycle_email(ledger, signal_id, ledger["orders"][signal_id], "submitted")
         save_ledger(self.ledger_path, ledger)
@@ -582,9 +600,12 @@ class RegimeIntradayRuntime:
                     chain = fetch_option_chain(key, secret, str(plan.get("underlying") or ""), feed=_env("REGIME_INTRADAY_OPTION_FEED", "indicative"), expiration=plan.get("expiration"))
                     valuation = value_debit_spread(chain, execution_plan)
                     current = now_ny()
+                    indicative = _env("REGIME_INTRADAY_OPTION_FEED", "indicative").lower() == "indicative"
+                    stop_fraction = _float("REGIME_INTRADAY_INDICATIVE_EMERGENCY_STOP_LOSS_FRACTION", .85) if indicative else _float("REGIME_INTRADAY_STOP_LOSS_FRACTION", .5)
+                    confirmations = _int("REGIME_INTRADAY_INDICATIVE_OPTION_STOP_CONFIRMATIONS", 3) if indicative else 2
                     decision = spread_exit_decision(execution_plan, valuation, minutes_to_close=max(0, 960 - current.hour * 60 - current.minute),
-                                                    take_profit_fraction=_float("REGIME_INTRADAY_TAKE_PROFIT_FRACTION", .5), stop_loss_fraction=_float("REGIME_INTRADAY_STOP_LOSS_FRACTION", .5))
-                    decision = _confirm_option_stop(record, decision, current)
+                                                    take_profit_fraction=_float("REGIME_INTRADAY_TAKE_PROFIT_FRACTION", .5), stop_loss_fraction=stop_fraction)
+                    decision = _confirm_option_stop(record, decision, current, confirmations)
                     signal = dict(record.get("signal") or {})
                     feature = dict(dict(self.last_scan.get("features") or {}).get(signal.get("symbol") or plan.get("underlying")) or {})
                     decision = _underlying_exit_decision(record, feature) or decision

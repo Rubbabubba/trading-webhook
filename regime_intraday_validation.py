@@ -92,7 +92,7 @@ def entry_execution_analysis(ledger: dict[str, Any]) -> dict[str, Any]:
             "policy": "Observational only; no automatic entry repricing or resubmission."}
 
 
-def paper_fill_reconciliation(ledger: dict[str, Any], *, minimum_roundtrips: int = 20) -> dict[str, Any]:
+def paper_fill_reconciliation(ledger: dict[str, Any], *, minimum_roundtrips: int = 20, risk_dollars: float = 100.0, estimated_round_trip_fees_dollars: float = 0.0) -> dict[str, Any]:
     rows = []
     pending = dict(ledger.get("pending_candidates") or {})
     for signal_id, record in dict(ledger.get("orders") or {}).items():
@@ -120,16 +120,52 @@ def paper_fill_reconciliation(ledger: dict[str, Any], *, minimum_roundtrips: int
             "signal_to_submit_seconds": _seconds_between(dict(pending.get(signal_id) or {}).get("created_at"), record.get("recorded_at")),
             "submit_to_fill_seconds": _seconds_between(entry_broker.get("submitted_at"), entry_broker.get("filled_at")),
         })
-    slippage = [float(row["adverse_slippage_dollars"]) for row in rows if row.get("adverse_slippage_dollars") is not None]
+    slippage = [max(0.0, float(row["adverse_slippage_dollars"])) for row in rows if row.get("adverse_slippage_dollars") is not None]
     realized = [float(row["actual_realized_dollars"]) for row in rows if row.get("actual_realized_dollars") is not None]
     return {
         "roundtrip_count": len(rows),
         "minimum_roundtrips": int(minimum_roundtrips),
         "forward_validation_ready": len(rows) >= int(minimum_roundtrips),
         "average_adverse_slippage_dollars": round(fmean(slippage), 2) if slippage else None,
+        "observed_adverse_execution_cost_r": round((fmean(slippage) + abs(float(estimated_round_trip_fees_dollars))) / max(1.0, float(risk_dollars)), 4) if slippage else None,
+        "estimated_round_trip_fees_dollars": abs(float(estimated_round_trip_fees_dollars)),
+        "calibration_confidence": "usable" if len(rows) >= int(minimum_roundtrips) else "low_sample",
         "actual_total_realized_dollars": round(sum(realized), 2),
         "actual_win_rate": round(sum(value > 0 for value in realized) / len(realized), 4) if realized else None,
         "rows": rows[-100:],
+    }
+
+
+def broker_promotion_evidence(ledger: dict[str, Any], *, minimum_roundtrips: int = 30, target_roundtrips: int = 50, estimated_round_trip_fees_dollars: float = 1.30) -> dict[str, Any]:
+    """Require independent, positive after-fee paper evidence; never enables live trading."""
+    values = []
+    bases = set()
+    for signal_id, record in dict(ledger.get("orders") or {}).items():
+        if record.get("mechanical_test") or str(record.get("status") or "").lower() != "filled_closed":
+            continue
+        signal = dict(record.get("signal") or {})
+        base = str(signal.get("base_signal_id") or signal_id)
+        if base in bases:
+            continue
+        entry = dict(record.get("broker") or {}).get("filled_avg_price")
+        close = dict(dict(record.get("close_order") or {}).get("broker") or {}).get("filled_avg_price")
+        if entry is None or close is None:
+            continue
+        bases.add(base)
+        values.append((abs(float(close)) - abs(float(entry))) * 100 - abs(float(estimated_round_trip_fees_dollars)))
+    count = len(values)
+    expectancy = fmean(values) if values else None
+    blockers = []
+    if count < int(minimum_roundtrips):
+        blockers.append(f"minimum_{int(minimum_roundtrips)}_independent_broker_roundtrips_not_met")
+    if expectancy is None or expectancy <= 0:
+        blockers.append("after_fee_broker_expectancy_not_positive")
+    return {
+        "independent_roundtrips": count, "minimum_roundtrips": int(minimum_roundtrips), "target_roundtrips": int(target_roundtrips),
+        "estimated_round_trip_fees_dollars": float(estimated_round_trip_fees_dollars),
+        "after_fee_total_dollars": round(sum(values), 2), "after_fee_expectancy_dollars": round(expectancy, 2) if expectancy is not None else None,
+        "after_fee_win_rate": round(sum(value > 0 for value in values) / count, 4) if count else None,
+        "evidence_gate_pass": not blockers, "blockers": blockers, "live_submission": False,
     }
 
 

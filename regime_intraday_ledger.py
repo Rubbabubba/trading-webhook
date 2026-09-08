@@ -37,7 +37,73 @@ def performance_views(ledger: dict) -> dict:
 
 
 def empty_ledger() -> dict[str, Any]:
-    return {"version": LEDGER_VERSION, "open": {}, "closed": [], "orders": {}, "pending_candidates": {}, "events": [], "setup_observations": []}
+    return {"version": LEDGER_VERSION, "open": {}, "closed": [], "orders": {}, "pending_candidates": {}, "events": [], "setup_observations": [], "signal_shadow_candidates": {}}
+
+
+def record_signal_shadow_candidates(ledger: dict[str, Any], scan: dict[str, Any], plans: list[dict[str, Any]], *, ts_utc: str, limit: int = 2000) -> None:
+    """Retain every distinct signal as an execution-free forward observation."""
+    rows = dict(ledger.get("signal_shadow_candidates") or {})
+    plans_by_id = {str(dict(row.get("signal") or {}).get("signal_id") or ""): dict(row.get("plan") or {}) for row in plans}
+    features = dict(scan.get("features") or {})
+    for signal in list(scan.get("signals") or []):
+        signal_id = str(signal.get("signal_id") or "")
+        if not signal_id or signal_id in rows:
+            continue
+        plan = plans_by_id.get(signal_id, {})
+        symbol = str(signal.get("symbol") or "").upper()
+        rows[signal_id] = {
+            "signal_id": signal_id, "base_signal_id": signal.get("base_signal_id") or signal_id,
+            "signal": dict(signal), "created_at": ts_utc, "session": ts_utc[:10],
+            "last_evaluated_bar_ts": str(dict(features.get(symbol) or {}).get("last_ts") or ""),
+            "status": "tracking", "submission_status": "eligible_unsubmitted" if plan.get("status") == "selected" else "option_plan_rejected",
+            "option_plan_status": plan.get("status") or "not_evaluated", "option_plan_reason": plan.get("reason") or plan.get("detail"),
+            "accounting": "completed_underlying_bars_stop_first; counterfactual only; not broker P/L",
+        }
+    ledger["signal_shadow_candidates"] = dict(list(rows.items())[-max(100, int(limit)):])
+
+
+def update_signal_shadow_outcomes(ledger: dict[str, Any], scan: dict[str, Any]) -> None:
+    """Advance all retained signals independently, including rejected entries."""
+    features = dict(scan.get("features") or {})
+    for row in dict(ledger.get("signal_shadow_candidates") or {}).values():
+        if row.get("status") != "tracking":
+            continue
+        signal = dict(row.get("signal") or {})
+        symbol = str(signal.get("symbol") or "").upper()
+        feature = dict(features.get(symbol) or {})
+        bar_ts = str(feature.get("last_ts") or "")
+        if not feature.get("ready") or not bar_ts or bar_ts <= str(row.get("last_evaluated_bar_ts") or ""):
+            continue
+        entry, stop, target = (float(signal.get(key) or 0) for key in ("entry_price", "stop_price", "target_price"))
+        if min(entry, stop, target) <= 0:
+            continue
+        side = str(signal.get("underlying_side") or "buy")
+        high, low = float(feature.get("last_high") or 0), float(feature.get("last_low") or 0)
+        stop_hit = low <= stop if side == "buy" else high >= stop
+        target_hit = high >= target if side == "buy" else low <= target
+        row["last_evaluated_bar_ts"] = bar_ts
+        eod = False
+        if not (stop_hit or target_hit):
+            try:
+                stamp = datetime.fromisoformat(bar_ts.replace("Z", "+00:00"))
+                eod = stamp.hour * 60 + stamp.minute >= 15 * 60 + 45
+            except (TypeError, ValueError):
+                pass
+            if not eod:
+                continue
+        exit_price = stop if stop_hit else (target if target_hit else float(feature.get("price") or entry))
+        risk = abs(entry - stop)
+        points = exit_price - entry if side == "buy" else entry - exit_price
+        row.update(status="closed", exit_reason="stop" if stop_hit else ("target" if target_hit else "eod"), exit_price=exit_price,
+                   exit_ts_utc=scan.get("ts_utc"), realized_r=round(points / risk, 4) if risk else None)
+
+
+def mark_signal_submission(ledger: dict[str, Any], signal_id: str, status: str, reason: str | None = None) -> None:
+    row = dict(ledger.get("signal_shadow_candidates") or {}).get(signal_id)
+    if row is not None:
+        row["submission_status"] = status
+        if reason:
+            row["submission_reason"] = reason
 
 
 def record_setup_observations(ledger: dict[str, Any], scan: dict[str, Any], *, ts_utc: str | None = None, limit: int = 2000) -> dict[str, Any]:
@@ -166,6 +232,8 @@ def paper_submission_decision(
     max_trades_per_day: int = 2,
     max_consecutive_losses: int = 2,
     max_daily_loss_dollars: float = 200.0,
+    reentry_cooldown_minutes: int = 30,
+    now_utc: str | None = None,
 ) -> dict[str, Any]:
     orders = dict(ledger.get("orders") or {})
     closed = [row for row in ledger.get("closed", []) if (row.get("paper_signal_id") or row.get("status") == "filled_closed") and not row.get("mechanical_test")]
@@ -173,6 +241,16 @@ def paper_submission_decision(
         return {"allowed": False, "reason": "missing_signal_id"}
     if signal_id in orders:
         return {"allowed": False, "reason": "duplicate_signal_order", "existing_order": orders[signal_id]}
+    candidate = dict(dict(ledger.get("pending_candidates") or {}).get(signal_id) or {})
+    candidate_signal = dict(candidate.get("signal") or {})
+    candidate_base = str(candidate_signal.get("base_signal_id") or signal_id)
+    candidate_symbol = str(candidate_signal.get("symbol") or "").upper()
+    for prior_id, row in orders.items():
+        if row.get("mechanical_test") or str(row.get("session") or "") != session:
+            continue
+        prior_signal = dict(row.get("signal") or dict(dict(ledger.get("pending_candidates") or {}).get(prior_id) or {}).get("signal") or {})
+        if str(prior_signal.get("base_signal_id") or prior_id) == candidate_base:
+            return {"allowed": False, "reason": "same_base_setup_lock", "base_signal_id": candidate_base, "prior_signal_id": prior_id}
     today_orders = [row for row in orders.values() if str(row.get("session") or "") == session]
     if int(max_trades_per_day) > 0 and len(today_orders) >= int(max_trades_per_day):
         return {"allowed": False, "reason": "daily_trade_limit"}
@@ -183,6 +261,17 @@ def paper_submission_decision(
     realized_dollars = sum(float(row.get("realized_dollars") or 0.0) for row in today_closed)
     if realized_dollars <= -abs(float(max_daily_loss_dollars)):
         return {"allowed": False, "reason": "daily_loss_lock", "realized_dollars": round(realized_dollars, 2)}
+    if candidate_symbol and int(reentry_cooldown_minutes) > 0 and today_closed:
+        stopped = [row for row in today_closed if float(row.get("realized_dollars") or 0) < 0 and str(dict(dict(orders.get(str(row.get("paper_signal_id") or "")) or {}).get("signal") or {}).get("symbol") or "").upper() == candidate_symbol]
+        if stopped:
+            try:
+                last_exit = datetime.fromisoformat(str(stopped[-1].get("exit_ts_utc") or "").replace("Z", "+00:00"))
+                current = datetime.fromisoformat(str(now_utc or _now()).replace("Z", "+00:00"))
+                remaining = int(reentry_cooldown_minutes) * 60 - int((current - last_exit).total_seconds())
+                if remaining > 0:
+                    return {"allowed": False, "reason": "post_stop_cooldown", "symbol": candidate_symbol, "remaining_seconds": remaining}
+            except (TypeError, ValueError):
+                pass
     loss_streak = 0
     for row in reversed(today_closed):
         if float(row.get("realized_dollars") or 0.0) < 0:

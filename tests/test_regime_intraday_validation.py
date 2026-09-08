@@ -1,4 +1,4 @@
-from regime_intraday_validation import cost_stress, daily_goal_feasibility, entry_execution_analysis, latency_stress, monte_carlo_daily, paper_fill_reconciliation, parameter_stability, update_canceled_entry_outcomes, validation_lab
+from regime_intraday_validation import broker_promotion_evidence, cost_stress, daily_goal_feasibility, entry_execution_analysis, latency_stress, monte_carlo_daily, paper_fill_reconciliation, parameter_stability, update_canceled_entry_outcomes, validation_lab
 
 
 def _report(values):
@@ -95,3 +95,14 @@ def test_entry_execution_analysis_reports_quote_gap_without_claiming_fill():
     assert row["terminal_quote_was_within_one_cent"] is False
     assert row["quote_path_points"] == 2
     assert result["policy"].startswith("Observational only")
+
+
+def test_broker_promotion_requires_independent_positive_after_fee_evidence():
+    def order(base, pnl):
+        return {"status": "filled_closed", "signal": {"base_signal_id": base}, "broker": {"filled_avg_price": 1.0},
+                "close_order": {"broker": {"filled_avg_price": 1.0 + pnl / 100}}}
+    ledger = {"orders": {"a": order("same", 10), "b": order("same", 20), "c": order("other", -5)}}
+    result = broker_promotion_evidence(ledger, minimum_roundtrips=2, target_roundtrips=3, estimated_round_trip_fees_dollars=1)
+    assert result["independent_roundtrips"] == 2
+    assert result["after_fee_expectancy_dollars"] == 1.5
+    assert result["evidence_gate_pass"] is True

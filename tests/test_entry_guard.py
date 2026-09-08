@@ -36,6 +36,23 @@ def test_zero_attempt_limit_is_unlimited_but_active_order_still_blocks():
     assert paper_submission_decision(ledger, "new", session="2026-09-03", max_trades_per_day=0)["reason"] == "active_paper_order_or_position"
 
 
+def test_same_base_setup_cannot_reenter_after_closed_order():
+    ledger = empty_ledger()
+    ledger["pending_candidates"] = {"second": {"signal": {"signal_id": "second", "base_signal_id": "base", "symbol": "SPY"}}}
+    ledger["orders"] = {"first": {"session": "2026-09-08", "status": "filled_closed", "signal": {"base_signal_id": "base", "symbol": "SPY"}}}
+    assert paper_submission_decision(ledger, "second", session="2026-09-08")["reason"] == "same_base_setup_lock"
+
+
+def test_post_stop_cooldown_blocks_new_setup_on_same_symbol():
+    ledger = empty_ledger()
+    ledger["pending_candidates"] = {"new": {"signal": {"base_signal_id": "new-base", "symbol": "SPY"}}}
+    ledger["orders"] = {"old": {"session": "2026-09-08", "status": "filled_closed", "signal": {"symbol": "SPY", "base_signal_id": "old-base"}}}
+    ledger["closed"] = [{"paper_signal_id": "old", "session": "2026-09-08", "exit_ts_utc": "2026-09-08T14:30:00+00:00", "realized_dollars": -23}]
+    result = paper_submission_decision(ledger, "new", session="2026-09-08", now_utc="2026-09-08T14:41:00+00:00", reentry_cooldown_minutes=30)
+    assert result["reason"] == "post_stop_cooldown"
+    assert result["remaining_seconds"] == 1140
+
+
 @pytest.mark.parametrize("side,low,high,expected", [
     ("buy", 98, 101, "underlying_stop_breached"),
     ("buy", 100, 103, "underlying_target_already_reached"),

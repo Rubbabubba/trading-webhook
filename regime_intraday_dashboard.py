@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 from regime_intraday_ledger import performance_views, setup_observation_summary
-from regime_intraday_validation import entry_execution_analysis
+from regime_intraday_validation import broker_promotion_evidence, entry_execution_analysis
 from intraday_monitoring import candidate_views
 from datetime import datetime, timezone
 from typing import Any
@@ -58,6 +58,16 @@ def _render_detailed_dashboard(*, scan: dict, ledger: dict, readiness: dict, sca
         for symbol, row in dict(observations.get("by_symbol") or {}).items()
     ) or "<tr><td colspan='6' class='muted'>Gate history begins with the first scan after this release.</td></tr>"
     entry_analysis = entry_execution_analysis(ledger)
+    promotion = dict(readiness.get("promotion_evidence") or broker_promotion_evidence(ledger))
+    signal_shadows = list(dict(ledger.get("signal_shadow_candidates") or {}).values())
+    shadow_closed = [row for row in signal_shadows if row.get("status") == "closed"]
+    shadow_summary = {
+        "recorded_signals": len(signal_shadows), "closed_outcomes": len(shadow_closed),
+        "option_plan_rejected": sum(row.get("submission_status") == "option_plan_rejected" for row in signal_shadows),
+        "risk_blocked": sum(row.get("submission_status") == "blocked" for row in signal_shadows),
+        "submitted": sum(row.get("submission_status") == "submitted" for row in signal_shadows),
+        "average_underlying_r": round(sum(float(row.get("realized_r") or 0) for row in shadow_closed) / len(shadow_closed), 4) if shadow_closed else None,
+    }
     execution_rows = "".join(
         f"<tr><td>{_esc(row.get('signal_id'))}</td><td>{_esc(row.get('status'))}</td><td>{_esc(row.get('limit_debit'))}</td><td>{_esc(row.get('selection_quote_debit'))}</td><td>{_esc(row.get('terminal_quote_debit'))}</td><td>{_esc(row.get('required_limit_increase_at_terminal'))}</td><td>{_esc(dict(row.get('counterfactual_underlying_outcome') or {}).get('status'))}</td><td>{_esc(dict(row.get('counterfactual_underlying_outcome') or {}).get('realized_r'))}</td></tr>"
         for row in list(entry_analysis.get("rows") or [])
@@ -79,5 +89,6 @@ body{{margin:0;padding:20px;background:#090f17;color:#eef6ff;font-family:Inter,s
 <section class='card'><h2>Today's setup gate history</h2><p>Completed-bar rule observations, not probabilities. This shows which exact gate most often prevented a setup and preserves the closest miss for review.</p><table><tr><th>Symbol</th><th>Bars observed</th><th>Signal-ready bars</th><th>Next-gate counts</th><th>Closest miss</th><th>Time</th></tr>{observation_rows}</table></section>
 <section class='card'><h2>Paper order lifecycle</h2><table><tr><th>Signal ID</th><th>Status</th><th>Entry order</th><th>Submitted email</th><th>Filled email</th><th>Exit reason</th><th>Close status</th></tr>{order_rows}</table></section>
 <section class='card'><h2>Entry execution evidence</h2><p>Observational only. Quotes do not prove fills, and canceled-order outcomes assume an entry that did not occur. No automatic repricing or resubmission is performed.</p><table><tr><th>Signal ID</th><th>Status</th><th>Limit</th><th>Selection quote</th><th>Terminal quote</th><th>Required increase</th><th>Counterfactual outcome</th><th>Counterfactual R</th></tr>{execution_rows}</table></section>
+<div class='grid'><section class='card'><h2>Independent broker evidence gate</h2><p>Paper only. Re-entries from the same base setup count once. Positive expectancy is measured after estimated fees.</p><table>{_rows(list(promotion.items()))}</table></section><section class='card'><h2>All-signal shadow evidence</h2><p>Includes submitted, risk-blocked, and option-plan-rejected signals. Outcomes use completed underlying bars and are not broker profit.</p><table>{_rows(list(shadow_summary.items()))}</table></section></div>
 <div class='grid'><section class='card'><h2>Underlying shadow simulation — NOT broker profit</h2><p>Sampled bars only; gaps and costs are not modeled. Legacy records are preserved and excluded from the new-method total.</p><table>{_rows(list(performance['shadow'].items()))}</table></section><section class='card'><h2>Alpaca paper execution — recorded orders</h2><p>Gross P/L uses available broker fills only, before fees. Missing fills are excluded. Verify account inventory in Alpaca.</p><table>{_rows(list(performance['broker_paper'].items()))}</table></section><section class='card'><h2>Worker state</h2><table>{_rows([('last_event',scanner.get('last_event')),('last_status',scanner.get('last_status')),('last_success_utc',scanner.get('last_success_utc')),('consecutive_failures',scanner.get('consecutive_failures'))])}</table></section></div>
 </body></html>"""

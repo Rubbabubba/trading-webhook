@@ -40,6 +40,17 @@ def test_option_stop_requires_two_distinct_confirmation_cycles():
     assert second["confirmations"] == 2
 
 
+def test_indicative_emergency_stop_can_require_three_cycles():
+    record = {}
+    raw = {"exit": True, "reason": "option_stop"}
+    zone = ZoneInfo("America/New_York")
+    one = _confirm_option_stop(record, raw, datetime(2026, 9, 4, 10, 0, tzinfo=zone), 3)
+    two = _confirm_option_stop(record, raw, datetime(2026, 9, 4, 10, 1, tzinfo=zone), 3)
+    three = _confirm_option_stop(record, raw, datetime(2026, 9, 4, 10, 2, tzinfo=zone), 3)
+    assert not one["exit"] and not two["exit"]
+    assert three["exit"] and three["required_confirmations"] == 3
+
+
 def test_underlying_levels_exit_only_on_post_fill_completed_bar_and_stop_wins_ties():
     record = {"signal": {"underlying_side": "sell", "stop_price": 534.43, "target_price": 534.17},
               "broker": {"filled_at": "2026-09-04T15:00:18+00:00"}}
