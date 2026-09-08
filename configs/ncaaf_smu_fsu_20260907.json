@@ -1,0 +1,31 @@
+{
+  "event_id": "401858212",
+  "game": "SMU at Florida State",
+  "home_team_id": "52",
+  "away_team_id": "2567",
+  "markets": {
+    "home": "KXNCAAFGAME-26SEP07SMUFSU-FSU",
+    "away": "KXNCAAFGAME-26SEP07SMUFSU-SMU"
+  },
+  "kickoff": "2026-09-07T23:30:00Z",
+  "stop_at": "2026-09-08T08:00:00Z",
+  "initial_cash_cents": 100000,
+  "max_trade_cents": 1000,
+  "max_contracts": 10,
+  "max_loss_cents": 2000,
+  "max_entries": 20,
+  "entry_edge": 0.08,
+  "exit_hold_margin": 0.02,
+  "stop_loss_fraction": 0.25,
+  "max_hold_seconds": 1800,
+  "max_signal_age_seconds": 90,
+  "max_spread": 0.05,
+  "slippage_per_contract": 0.01,
+  "fee_coefficient": 0.07,
+  "poll_seconds": 15,
+  "pregame_poll_seconds": 60,
+  "confirmation_seconds": 10,
+  "pending_expiry_seconds": 45,
+  "max_price_move": 0.02,
+  "cooldown_seconds": 120
+}

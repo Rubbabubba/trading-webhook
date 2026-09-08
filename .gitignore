@@ -6,3 +6,6 @@ webhook_console.sqlite3
 .pytest-*/
 .env
 .env.*
+kalshi_paper.sqlite3*
+KALSHI_STOP
+ncaaf_paper/
