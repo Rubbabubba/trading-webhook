@@ -9,6 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from regime_intraday_options import debit_vertical_integrity
 
 
 LEDGER_VERSION = "v2-durable-signal-order-ledger"
@@ -23,17 +24,27 @@ def performance_views(ledger: dict) -> dict:
     orders = [row for row in dict(ledger.get("orders") or {}).values() if not row.get("mechanical_test")]
     closed = [r for r in orders if r.get("status") == "filled_closed"]
     pnl = []
+    valid_pnl = []
+    invalid = 0
     for row in closed:
         entry = dict(row.get("broker") or {}).get("filled_avg_price")
         close = dict(dict(row.get("close_order") or {}).get("broker") or {}).get("filled_avg_price")
         if entry is not None and close is not None:
-            pnl.append((abs(float(close)) - abs(float(entry))) * 100)
+            value = (abs(float(close)) - abs(float(entry))) * 100
+            pnl.append(value)
+            integrity = debit_vertical_integrity(dict(row.get("plan") or {}), entry_debit=abs(float(entry)), exit_credit=abs(float(close)))
+            if integrity["valid"]:
+                valid_pnl.append(value)
+            else:
+                invalid += 1
     return {"shadow": {"open_count": len(ledger.get("open") or {}), "closed_count": len(current),
                         "total_r": round(sum(float(r.get("realized_r") or 0) for r in current), 4),
                         "legacy_closed_count": len(legacy), "accounting_method": SHADOW_ACCOUNTING},
             "broker_paper": {"recorded_order_count": len(orders), "closed_roundtrips": len(closed),
                              "verified_fill_roundtrips": len(pnl), "missing_fill_roundtrips": len(closed) - len(pnl),
-                             "gross_realized_dollars_from_fills": round(sum(pnl), 2)}}
+                             "economically_valid_roundtrips": len(valid_pnl), "economically_invalid_roundtrips": invalid,
+                             "gross_realized_dollars_all_fills": round(sum(pnl), 2),
+                             "gross_realized_dollars_from_fills": round(sum(valid_pnl), 2)}}
 
 
 def empty_ledger() -> dict[str, Any]:

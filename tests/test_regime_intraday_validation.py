@@ -49,7 +49,7 @@ def test_paper_fill_reconciliation_measures_actual_slippage_and_stays_locked():
         "orders": {"sig-1": {
             "status": "filled_closed",
             "recorded_at": "2026-09-03T14:00:30+00:00",
-            "plan": {"underlying": "SPY", "limit_debit": 0.40},
+            "plan": {"underlying": "SPY", "limit_debit": 0.40, "legs": [{"symbol": "SPY260918C00500000", "side": "buy"}, {"symbol": "SPY260918C00501000", "side": "sell"}]},
             "broker": {"submitted_at": "2026-09-03T14:00:31+00:00", "filled_at": "2026-09-03T14:00:40+00:00", "filled_avg_price": "0.42"},
             "valuation": {"liquidation_credit": 0.70},
             "close_order": {"broker": {"filled_avg_price": "-0.68"}},
@@ -99,10 +99,23 @@ def test_entry_execution_analysis_reports_quote_gap_without_claiming_fill():
 
 def test_broker_promotion_requires_independent_positive_after_fee_evidence():
     def order(base, pnl):
-        return {"status": "filled_closed", "signal": {"base_signal_id": base}, "broker": {"filled_avg_price": 1.0},
+        return {"status": "filled_closed", "signal": {"base_signal_id": base}, "plan": {"legs": [{"symbol": "SPY260918C00500000", "side": "buy"}, {"symbol": "SPY260918C00502000", "side": "sell"}]}, "broker": {"filled_avg_price": 1.0},
                 "close_order": {"broker": {"filled_avg_price": 1.0 + pnl / 100}}}
     ledger = {"orders": {"a": order("same", 10), "b": order("same", 20), "c": order("other", -5)}}
     result = broker_promotion_evidence(ledger, minimum_roundtrips=2, target_roundtrips=3, estimated_round_trip_fees_dollars=1)
     assert result["independent_roundtrips"] == 2
     assert result["after_fee_expectancy_dollars"] == 1.5
     assert result["evidence_gate_pass"] is True
+
+
+def test_impossible_vertical_fill_is_excluded_from_expectancy():
+    ledger = {"orders": {"bad": {"status": "filled_closed", "signal": {"base_signal_id": "bad"},
+        "plan": {"limit_debit": .90, "legs": [{"symbol": "DIA260925P00531000", "side": "buy"}, {"symbol": "DIA260925P00530000", "side": "sell"}]},
+        "broker": {"filled_avg_price": .90}, "valuation": {"liquidation_credit": 1.20},
+        "close_order": {"broker": {"filled_avg_price": 1.20}}}}}
+    reconciliation = paper_fill_reconciliation(ledger)
+    promotion = broker_promotion_evidence(ledger)
+    assert reconciliation["economically_invalid_roundtrips"] == 1
+    assert reconciliation["economically_valid_roundtrips"] == 0
+    assert reconciliation["actual_total_realized_dollars"] == 0
+    assert promotion["independent_roundtrips"] == 0

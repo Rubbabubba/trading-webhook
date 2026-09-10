@@ -87,6 +87,37 @@ def _delta(snapshot: dict) -> float:
     return float(dict(snapshot.get("greeks") or {}).get("delta") or 0.0)
 
 
+def debit_vertical_integrity(plan: dict, *, entry_debit: float | None = None, exit_credit: float | None = None) -> dict[str, Any]:
+    """Validate structure and bounded economics for a two-leg debit vertical."""
+    reasons = []
+    legs = list(plan.get("legs") or [])
+    parsed = [parse_occ(str(leg.get("symbol") or "")) for leg in legs]
+    if len(legs) != 2 or any(item is None for item in parsed):
+        reasons.append("invalid_or_missing_vertical_legs")
+        return {"valid": False, "reasons": reasons, "width": None}
+    long_leg, short_leg = legs
+    long_contract, short_contract = parsed
+    if str(long_leg.get("side") or "").lower() != "buy" or str(short_leg.get("side") or "").lower() != "sell":
+        reasons.append("invalid_opening_sides")
+    if (long_contract["root"], long_contract["expiration"], long_contract["option_type"]) != (short_contract["root"], short_contract["expiration"], short_contract["option_type"]):
+        reasons.append("mismatched_vertical_contracts")
+    width = abs(float(long_contract["strike"]) - float(short_contract["strike"]))
+    if width <= 0:
+        reasons.append("zero_width_vertical")
+    option_type = str(long_contract["option_type"])
+    if option_type == "call" and float(long_contract["strike"]) >= float(short_contract["strike"]):
+        reasons.append("call_long_strike_not_below_short")
+    if option_type == "put" and float(long_contract["strike"]) <= float(short_contract["strike"]):
+        reasons.append("put_long_strike_not_above_short")
+    tolerance = 0.011
+    if entry_debit is not None and (float(entry_debit) <= 0 or float(entry_debit) >= width + tolerance):
+        reasons.append("entry_debit_outside_vertical_bounds")
+    if exit_credit is not None and (float(exit_credit) < 0 or float(exit_credit) > width + tolerance):
+        reasons.append("exit_credit_outside_vertical_bounds")
+    return {"valid": not reasons, "reasons": reasons, "width": round(width, 4), "option_type": option_type,
+            "long_strike": long_contract["strike"], "short_strike": short_contract["strike"]}
+
+
 def spread_quote_evidence(chain: dict, plan: dict) -> dict:
     snapshots = dict(chain.get("snapshots") or {})
     legs = []
@@ -208,6 +239,9 @@ def value_debit_spread(chain: dict, plan: dict) -> dict[str, Any]:
     legs = list(plan.get("legs") or [])
     if len(legs) != 2:
         return {"status": "invalid_plan"}
+    structure = debit_vertical_integrity(plan, entry_debit=float(plan.get("limit_debit") or 0))
+    if not structure["valid"]:
+        return {"status": "invalid_vertical_plan", "integrity": structure}
     long_snapshot = dict(snapshots.get(str(legs[0].get("symbol") or "")) or {})
     short_snapshot = dict(snapshots.get(str(legs[1].get("symbol") or "")) or {})
     long_bid, long_ask = _quote(long_snapshot)
@@ -215,6 +249,10 @@ def value_debit_spread(chain: dict, plan: dict) -> dict[str, Any]:
     if min(long_bid, long_ask, short_bid, short_ask) <= 0:
         return {"status": "missing_leg_quote"}
     credit = round(max(0.01, long_bid - short_ask), 2)
+    integrity = debit_vertical_integrity(plan, entry_debit=float(plan.get("limit_debit") or 0), exit_credit=credit)
+    if not integrity["valid"]:
+        return {"status": "invalid_vertical_quote", "liquidation_credit": credit, "integrity": integrity,
+                "quote_basis": {"long_bid": long_bid, "short_ask": short_ask}}
     debit = float(plan.get("limit_debit") or 0.0)
     return {
         "status": "valued",
@@ -223,6 +261,7 @@ def value_debit_spread(chain: dict, plan: dict) -> dict[str, Any]:
         "unrealized_dollars": round((credit - debit) * 100, 2),
         "unrealized_return_pct": round((credit / debit) - 1.0, 4) if debit > 0 else None,
         "quote_basis": {"long_bid": long_bid, "short_ask": short_ask},
+        "integrity": integrity,
     }
 
 

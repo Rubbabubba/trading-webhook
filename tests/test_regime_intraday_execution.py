@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import regime_intraday_runtime as runtime_module
 from regime_intraday_ledger import empty_ledger, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, update_ledger
 from regime_intraday_ledger import load_ledger, save_ledger
-from regime_intraday_options import parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
+from regime_intraday_options import debit_vertical_integrity, parse_occ, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_executor import build_mleg_close_order, build_mleg_limit_order, paper_client_order_id, submit_mleg_limit_order
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_runtime import RegimeIntradayRuntime, _confirm_option_stop, _execution_plan_from_fill, _underlying_exit_decision
@@ -135,12 +135,22 @@ def test_indicative_feed_can_select_paper_plan_without_greeks():
 
 
 def test_conservative_spread_valuation_and_exit():
-    plan = {"limit_debit": 0.30, "max_profit_dollars": 70.0, "legs": [{"symbol": "LONG"}, {"symbol": "SHORT"}]}
-    chain = {"snapshots": {"LONG": _snapshot(0.65, 0.67, 0.6), "SHORT": _snapshot(0.19, 0.20, 0.4)}}
+    long_symbol, short_symbol = "SPY260918C00500000", "SPY260918C00501000"
+    plan = {"limit_debit": 0.30, "max_profit_dollars": 70.0, "legs": [{"symbol": long_symbol, "side": "buy"}, {"symbol": short_symbol, "side": "sell"}]}
+    chain = {"snapshots": {long_symbol: _snapshot(0.65, 0.67, 0.6), short_symbol: _snapshot(0.19, 0.20, 0.4)}}
     valuation = value_debit_spread(chain, plan)
     assert valuation["liquidation_credit"] == 0.45
     assert valuation["unrealized_dollars"] == 15.0
     assert spread_exit_decision(plan, valuation, minutes_to_close=10)["reason"] == "end_of_day"
+
+
+def test_vertical_integrity_rejects_reversed_call_and_credit_above_width():
+    reversed_call = {"legs": [{"symbol": "SPY260930C00773000", "side": "buy"}, {"symbol": "SPY260930C00772000", "side": "sell"}]}
+    assert debit_vertical_integrity(reversed_call, entry_debit=.85, exit_credit=.41)["reasons"] == ["call_long_strike_not_below_short"]
+    valid_structure = {"legs": [{"symbol": "DIA260925P00531000", "side": "buy"}, {"symbol": "DIA260925P00530000", "side": "sell"}]}
+    result = debit_vertical_integrity(valid_structure, entry_debit=.90, exit_credit=1.20)
+    assert result["valid"] is False
+    assert "exit_credit_outside_vertical_bounds" in result["reasons"]
 
 
 def test_durable_signal_order_deduplication():
@@ -338,7 +348,7 @@ def test_paper_submit_recovers_order_after_transport_timeout(monkeypatch, tmp_pa
     record_pending_candidate(
         ledger,
         {"signal_id": "sig-timeout", "symbol": "SPY"},
-        {"status": "selected", "order_class": "mleg", "quantity": 1, "limit_debit": 0.40, "max_loss_dollars": 40, "legs": []},
+        {"status": "selected", "order_class": "mleg", "quantity": 1, "limit_debit": 0.40, "max_loss_dollars": 40, "legs": [{"symbol": "SPY260918C00500000", "side": "buy"}, {"symbol": "SPY260918C00501000", "side": "sell"}]},
         ts_utc="2026-09-03T15:00:00+00:00",
         expires_at="2099-09-03T15:10:00+00:00",
     )

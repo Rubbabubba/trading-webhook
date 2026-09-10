@@ -8,6 +8,7 @@ from statistics import fmean
 from typing import Any
 
 from regime_intraday_replay import cost_adjusted_report
+from regime_intraday_options import debit_vertical_integrity
 
 
 def _seconds_between(start: Any, end: Any) -> float | None:
@@ -108,6 +109,7 @@ def paper_fill_reconciliation(ledger: dict[str, Any], *, minimum_roundtrips: int
         actual_exit = abs(float(close_broker.get("filled_avg_price") or expected_exit))
         realized = round((actual_exit - actual_entry) * 100, 2) if actual_entry and actual_exit else None
         adverse_slippage = round(((actual_entry - expected_entry) + (expected_exit - actual_exit)) * 100, 2) if expected_entry and expected_exit else None
+        integrity = debit_vertical_integrity(plan, entry_debit=actual_entry, exit_credit=actual_exit)
         rows.append({
             "signal_id": signal_id,
             "symbol": plan.get("underlying"),
@@ -117,15 +119,20 @@ def paper_fill_reconciliation(ledger: dict[str, Any], *, minimum_roundtrips: int
             "actual_exit_credit": actual_exit or None,
             "actual_realized_dollars": realized,
             "adverse_slippage_dollars": adverse_slippage,
+            "economic_integrity": integrity,
+            "economically_valid": integrity["valid"],
             "signal_to_submit_seconds": _seconds_between(dict(pending.get(signal_id) or {}).get("created_at"), record.get("recorded_at")),
             "submit_to_fill_seconds": _seconds_between(entry_broker.get("submitted_at"), entry_broker.get("filled_at")),
         })
-    slippage = [max(0.0, float(row["adverse_slippage_dollars"])) for row in rows if row.get("adverse_slippage_dollars") is not None]
-    realized = [float(row["actual_realized_dollars"]) for row in rows if row.get("actual_realized_dollars") is not None]
+    valid_rows = [row for row in rows if row.get("economically_valid")]
+    slippage = [max(0.0, float(row["adverse_slippage_dollars"])) for row in valid_rows if row.get("adverse_slippage_dollars") is not None]
+    realized = [float(row["actual_realized_dollars"]) for row in valid_rows if row.get("actual_realized_dollars") is not None]
     return {
         "roundtrip_count": len(rows),
         "minimum_roundtrips": int(minimum_roundtrips),
-        "forward_validation_ready": len(rows) >= int(minimum_roundtrips),
+        "economically_valid_roundtrips": len(valid_rows),
+        "economically_invalid_roundtrips": len(rows) - len(valid_rows),
+        "forward_validation_ready": len(valid_rows) >= int(minimum_roundtrips),
         "average_adverse_slippage_dollars": round(fmean(slippage), 2) if slippage else None,
         "observed_adverse_execution_cost_r": round((fmean(slippage) + abs(float(estimated_round_trip_fees_dollars))) / max(1.0, float(risk_dollars)), 4) if slippage else None,
         "estimated_round_trip_fees_dollars": abs(float(estimated_round_trip_fees_dollars)),
@@ -150,6 +157,9 @@ def broker_promotion_evidence(ledger: dict[str, Any], *, minimum_roundtrips: int
         entry = dict(record.get("broker") or {}).get("filled_avg_price")
         close = dict(dict(record.get("close_order") or {}).get("broker") or {}).get("filled_avg_price")
         if entry is None or close is None:
+            continue
+        integrity = debit_vertical_integrity(dict(record.get("plan") or {}), entry_debit=abs(float(entry)), exit_credit=abs(float(close)))
+        if not integrity["valid"]:
             continue
         bases.add(base)
         values.append((abs(float(close)) - abs(float(entry))) * 100 - abs(float(estimated_round_trip_fees_dollars)))

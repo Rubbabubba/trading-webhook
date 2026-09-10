@@ -22,7 +22,7 @@ from regime_intraday_executor import cancel_order, get_order, get_order_by_clien
 from regime_intraday_ledger import load_ledger, mark_signal_submission, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, record_setup_observations, record_signal_shadow_candidates, save_ledger, setup_observation_summary, update_ledger, update_signal_shadow_outcomes
 from regime_intraday_ledger import performance_views
 from regime_intraday_ledger import assign_setup_identities
-from regime_intraday_options import fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
+from regime_intraday_options import debit_vertical_integrity, fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_option_replay import replay_option_batch
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_replay import chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
@@ -431,6 +431,11 @@ class RegimeIntradayRuntime:
         durable = pending_candidate(ledger, signal_id, now_utc=datetime.now(timezone.utc).isoformat())
         if not durable:
             raise HTTPException(status_code=409, detail="no fresh selected option spread is available")
+        plan_integrity = debit_vertical_integrity(dict(durable.get("plan") or {}), entry_debit=float(dict(durable.get("plan") or {}).get("limit_debit") or 0))
+        if not plan_integrity["valid"]:
+            mark_signal_submission(ledger, signal_id, "blocked", "invalid_vertical_plan")
+            save_ledger(self.ledger_path, ledger)
+            raise HTTPException(status_code=409, detail={"reason": "invalid_vertical_plan", "integrity": plan_integrity})
         decision = paper_submission_decision(ledger, signal_id, session=now_ny().date().isoformat(), max_trades_per_day=max(0, _int("REGIME_INTRADAY_MAX_TRADES_PER_DAY", 0)),
                                              max_consecutive_losses=_effective_max_consecutive_losses(now_ny().date().isoformat()),
                                              max_daily_loss_dollars=_float("REGIME_INTRADAY_MAX_DAILY_LOSS_DOLLARS", 200),

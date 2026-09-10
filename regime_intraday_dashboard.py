@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 from regime_intraday_ledger import performance_views, setup_observation_summary
-from regime_intraday_validation import broker_promotion_evidence, entry_execution_analysis
+from regime_intraday_validation import broker_promotion_evidence, entry_execution_analysis, paper_fill_reconciliation
 from intraday_monitoring import candidate_views
 from datetime import datetime, timezone
 from typing import Any
@@ -59,6 +59,8 @@ def _render_detailed_dashboard(*, scan: dict, ledger: dict, readiness: dict, sca
     ) or "<tr><td colspan='6' class='muted'>Gate history begins with the first scan after this release.</td></tr>"
     entry_analysis = entry_execution_analysis(ledger)
     promotion = dict(readiness.get("promotion_evidence") or broker_promotion_evidence(ledger))
+    fill_quality = paper_fill_reconciliation(ledger)
+    invalid_fill_rows = ", ".join(f"{row.get('signal_id')}: {', '.join(dict(row.get('economic_integrity') or {}).get('reasons') or [])}" for row in fill_quality.get("rows", []) if not row.get("economically_valid")) or "none"
     signal_shadows = list(dict(ledger.get("signal_shadow_candidates") or {}).values())
     shadow_closed = [row for row in signal_shadows if row.get("status") == "closed"]
     shadow_summary = {
@@ -90,6 +92,7 @@ body{{margin:0;padding:20px;background:#090f17;color:#eef6ff;font-family:Inter,s
 <section class='card'><h2>Today's setup gate history</h2><p>Completed-bar rule observations, not probabilities. This shows which exact gate most often prevented a setup and preserves the closest miss for review.</p><table><tr><th>Symbol</th><th>Bars observed</th><th>Signal-ready bars</th><th>Next-gate counts</th><th>Closest miss</th><th>Time</th></tr>{observation_rows}</table></section>
 <section class='card'><h2>Paper order lifecycle</h2><table><tr><th>Signal ID</th><th>Status</th><th>Entry order</th><th>Submitted email</th><th>Filled email</th><th>Exit reason</th><th>Close status</th></tr>{order_rows}</table></section>
 <section class='card'><h2>Entry execution evidence</h2><p>Observational only. Quotes do not prove fills, and canceled-order outcomes assume an entry that did not occur. No automatic repricing or resubmission is performed.</p><table><tr><th>Signal ID</th><th>Status</th><th>Limit</th><th>Selection quote</th><th>Terminal quote</th><th>Required increase</th><th>Counterfactual outcome</th><th>Counterfactual R</th></tr>{execution_rows}</table></section>
+<section class='card'><h2>Vertical execution integrity</h2><p>Malformed structures and spread prices outside their strike-width bounds are excluded from expectancy. Broker records remain unchanged as mechanical evidence.</p><table>{_rows([('recorded_roundtrips',fill_quality.get('roundtrip_count')),('economically_valid',fill_quality.get('economically_valid_roundtrips')),('economically_invalid',fill_quality.get('economically_invalid_roundtrips')),('invalid_details',invalid_fill_rows)])}</table></section>
 <div class='grid'><section class='card'><h2>Independent broker evidence gate</h2><p>Paper only. Re-entries from the same base setup count once. Positive expectancy is measured after estimated fees.</p><table>{_rows(list(promotion.items()))}</table></section><section class='card'><h2>All-signal shadow evidence</h2><p>Includes submitted, risk-blocked, and option-plan-rejected signals. Outcomes use completed underlying bars and are not broker profit.</p><table>{_rows(list(shadow_summary.items()))}</table></section></div>
 <div class='grid'><section class='card'><h2>Underlying shadow simulation — NOT broker profit</h2><p>Sampled bars only; gaps and costs are not modeled. Legacy records are preserved and excluded from the new-method total.</p><table>{_rows(list(performance['shadow'].items()))}</table></section><section class='card'><h2>Alpaca paper execution — recorded orders</h2><p>Gross P/L uses available broker fills only, before fees. Missing fills are excluded. Verify account inventory in Alpaca.</p><table>{_rows(list(performance['broker_paper'].items()))}</table></section><section class='card'><h2>Worker state</h2><table>{_rows([('last_event',scanner.get('last_event')),('last_status',scanner.get('last_status')),('last_success_utc',scanner.get('last_success_utc')),('consecutive_failures',scanner.get('consecutive_failures'))])}</table></section></div>
 </body></html>"""
