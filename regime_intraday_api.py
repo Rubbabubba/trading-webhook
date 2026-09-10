@@ -26,6 +26,7 @@ def build_regime_intraday_router(
     paper_reconcile: Callable[[dict], dict],
     paper_close: Callable[[dict], dict],
     after_hours_replay: Callable[[dict], dict],
+    daily_review: Callable[[dict], dict],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -85,5 +86,9 @@ def build_regime_intraday_router(
     @router.post("/worker/regime_intraday_after_hours_replay")
     def worker_regime_intraday_after_hours_replay(body: dict = Body(default={})):
         return after_hours_replay(body)
+
+    @router.post("/worker/regime_intraday_daily_review")
+    def worker_regime_intraday_daily_review(body: dict = Body(default={})):
+        return daily_review(body)
 
     return router

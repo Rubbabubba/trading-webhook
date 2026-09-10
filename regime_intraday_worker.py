@@ -55,14 +55,25 @@ def main() -> None:
     scan_url = (os.getenv("REGIME_INTRADAY_SCAN_URL") or f"{base_url}/worker/regime_intraday_scan").strip()
     reconcile_url = (os.getenv("REGIME_INTRADAY_RECONCILE_URL") or f"{base_url}/worker/regime_intraday_paper_reconcile").strip()
     replay_url = (os.getenv("REGIME_INTRADAY_REPLAY_URL") or f"{base_url}/worker/regime_intraday_after_hours_replay").strip()
+    daily_review_url = (os.getenv("REGIME_INTRADAY_DAILY_REVIEW_URL") or f"{base_url}/worker/regime_intraday_daily_review").strip()
     payload = {"worker_secret": secret}
     replay_date = None
+    review_date = None
 
     _log(f"boot version={WORKER_VERSION} interval_sec={interval} timeout_sec={timeout}")
     while True:
         started = time.monotonic()
         cycle_failed = False
         ny_now = datetime.now(ZoneInfo("America/New_York"))
+        review_hour, review_minute = (int(value) for value in (os.getenv("REGIME_INTRADAY_DAILY_REVIEW_TIME_NY") or "08:00").split(":", 1))
+        if ny_now.weekday() < 5 and ny_now.time() >= clock_time(review_hour, review_minute) and review_date != ny_now.date():
+            try:
+                status, response = _post(daily_review_url, payload, timeout)
+                _log(f"daily_review_ok http={status} status={response.get('status')} session={response.get('session')} email_sent={response.get('email_sent')} live_submission={response.get('live_submission', False)}")
+                review_date = ny_now.date()
+            except Exception as error:
+                cycle_failed = True
+                _log(f"daily_review_error kind={type(error).__name__} detail={str(error)[:300]}")
         if ny_now.weekday() < 5 and ny_now.time() >= clock_time(16, 5) and replay_date != ny_now.date():
             try:
                 validation_days = max(60, min(252, _env_int("REGIME_INTRADAY_VALIDATION_DAYS", 180)))

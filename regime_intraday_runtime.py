@@ -14,7 +14,7 @@ from intraday_monitoring import apply_live_freshness, candidate_views
 from market_clock import is_regular_market_time, now_ny, parse_hhmm
 from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evaluate_regime_intraday
 from regime_intraday_candidates import failed_breakout_fade_candidate, relative_strength_divergence_candidate, trend_pullback_candidate
-from regime_intraday_email import send_entry_lifecycle_email, send_exit_email, send_signal_email
+from regime_intraday_email import send_daily_review_email, send_entry_lifecycle_email, send_exit_email, send_signal_email
 from regime_intraday_email import send_order_outcome_email
 from regime_intraday_entry_guard import pending_entry_invalidation
 from regime_intraday_options import spread_quote_evidence
@@ -419,6 +419,70 @@ class RegimeIntradayRuntime:
                   "instrument_policy": "Research only. IWM remains disabled unless its untouched holdout has at least 20 trades and stays positive after 0.30R modeled round-trip cost."}}
         save_ledger(_env("REGIME_INTRADAY_AFTER_HOURS_REPORT_PATH", "/var/data/regime_intraday_after_hours_report.json"), output)
         return output
+
+    def daily_review(self, body: dict) -> dict:
+        self._worker_authorize(body)
+        ledger = load_ledger(self.ledger_path)
+        today = now_ny().date().isoformat()
+        sessions = {
+            str(row.get("session") or "") for row in dict(ledger.get("orders") or {}).values()
+            if str(row.get("session") or "") and str(row.get("session")) < today
+        }
+        sessions.update(
+            str(row.get("session") or "") for row in dict(ledger.get("signal_shadow_candidates") or {}).values()
+            if str(row.get("session") or "") and str(row.get("session")) < today
+        )
+        session = max(sessions) if sessions else None
+        if not session:
+            return {"ok": True, "status": "no_completed_session", "email_sent": False, "live_submission": False}
+        prior = next((event for event in reversed(list(ledger.get("events") or [])) if event.get("event") == "daily_review_email_sent" and event.get("session") == session), None)
+        if prior:
+            return {"ok": True, "status": "already_sent", "session": session, "email_sent": True, "message_id": prior.get("message_id"), "live_submission": False}
+        orders = {signal_id: row for signal_id, row in dict(ledger.get("orders") or {}).items() if not row.get("mechanical_test") and str(row.get("session") or "") == session}
+        session_ledger = {**ledger, "orders": orders}
+        quality = paper_fill_reconciliation(session_ledger, estimated_round_trip_fees_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30))
+        completed = [row for row in orders.values() if str(row.get("status") or "").lower() == "filled_closed"]
+        filled_entries = [row for row in orders.values() if float(dict(row.get("broker") or {}).get("filled_qty") or 0) > 0]
+        zero_fill = [row for row in orders.values() if str(row.get("status") or "").lower() in {"canceled", "cancelled", "expired", "rejected"} and float(dict(row.get("broker") or {}).get("filled_qty") or 0) == 0]
+        quality_rows = list(quality.get("rows") or [])
+        valid_rows = [row for row in quality_rows if row.get("economically_valid")]
+        shadows = [row for row in dict(ledger.get("signal_shadow_candidates") or {}).values() if str(row.get("session") or "") == session and row.get("status") == "closed"]
+        by_symbol: dict[str, dict[str, Any]] = {}
+        for row in shadows:
+            symbol = str(dict(row.get("signal") or {}).get("symbol") or "unknown")
+            bucket = by_symbol.setdefault(symbol, {"count": 0, "total_r": 0.0})
+            bucket["count"] += 1
+            bucket["total_r"] += float(row.get("realized_r") or 0)
+        for bucket in by_symbol.values():
+            bucket["average_r"] = round(bucket["total_r"] / bucket["count"], 4) if bucket["count"] else None
+            bucket["total_r"] = round(bucket["total_r"], 4)
+        current_revision = _env("RENDER_GIT_COMMIT") or _env("REGIME_INTRADAY_RELEASE_REVISION") or "unknown"
+        previous_revision = str(ledger.get("daily_review_last_revision") or "") or None
+        fees = abs(_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)) * len(valid_rows)
+        review = {
+            "session": session, "orders_submitted": len(orders), "filled_entries": len(filled_entries),
+            "completed_roundtrips": len(completed), "zero_fill_orders": len(zero_fill),
+            "gross_all_fills_dollars": round(sum(float(row.get("actual_realized_dollars") or 0) for row in quality_rows), 2),
+            "gross_valid_fills_dollars": round(sum(float(row.get("actual_realized_dollars") or 0) for row in valid_rows), 2),
+            "net_after_estimated_fees_dollars": round(sum(float(row.get("actual_realized_dollars") or 0) for row in valid_rows) - fees, 2),
+            "execution_integrity": {"valid_roundtrips": len(valid_rows), "invalid_roundtrips": len(quality_rows) - len(valid_rows),
+                                    "invalid_details": "; ".join(f"{row.get('signal_id')}: {','.join(dict(row.get('economic_integrity') or {}).get('reasons') or [])}" for row in quality_rows if not row.get("economically_valid"))},
+            "shadow_research": {"closed_count": len(shadows), "average_r": round(sum(float(row.get("realized_r") or 0) for row in shadows) / len(shadows), 4) if shadows else None, "by_symbol": by_symbol},
+            "promotion_evidence": broker_promotion_evidence(ledger, minimum_roundtrips=_int("REGIME_INTRADAY_MIN_BROKER_ROUNDTRIPS_FOR_PROMOTION", 30), target_roundtrips=_int("REGIME_INTRADAY_TARGET_BROKER_ROUNDTRIPS_FOR_PROMOTION", 50), estimated_round_trip_fees_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)),
+            "release_changes": {"current_revision": current_revision, "previous_revision": previous_revision,
+                                "revision_changed": previous_revision is not None and current_revision != previous_revision,
+                                "note": "Production revision changed since the prior report." if previous_revision and current_revision != previous_revision else "No production revision change detected since the prior report."},
+            "paper_only": True, "live_submission": False,
+        }
+        if not _bool("REGIME_INTRADAY_DAILY_REVIEW_EMAIL_ENABLED", True):
+            return {"ok": True, "status": "email_disabled", "session": session, "review": review, "email_sent": False, "live_submission": False}
+        result = send_daily_review_email(api_key=_env("RESEND_API_KEY"), to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"), from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"), review=review)
+        if result.get("sent"):
+            ledger.setdefault("events", []).append({"event": "daily_review_email_sent", "session": session, "message_id": result.get("message_id"), "ts_utc": datetime.now(timezone.utc).isoformat(), "revision": current_revision})
+            ledger["events"] = ledger["events"][-1000:]
+            ledger["daily_review_last_revision"] = current_revision
+            save_ledger(self.ledger_path, ledger)
+        return {"ok": True, "status": "sent" if result.get("sent") else result.get("reason"), "session": session, "review": review, "email_sent": bool(result.get("sent")), "message_id": result.get("message_id"), "live_submission": False}
 
     def paper_roundtrip(self, body: dict) -> dict:
         self._worker_authorize(body)

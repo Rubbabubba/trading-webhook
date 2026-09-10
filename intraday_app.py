@@ -56,6 +56,7 @@ app.include_router(build_regime_intraday_router(
     paper_roundtrip=runtime.paper_roundtrip, paper_mechanical_drill=runtime.paper_mechanical_drill,
     paper_reconcile=runtime.paper_reconcile, paper_close=runtime.paper_close,
     after_hours_replay=runtime.after_hours_replay,
+    daily_review=runtime.daily_review,
 ))
 
 

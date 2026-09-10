@@ -116,3 +116,50 @@ def send_order_outcome_email(*, api_key: str, to_email: str, from_email: str, re
                "text": f"Order: {record.get('order_id')}\nStatus: {status}\nBroker filled quantity: {broker.get('filled_qty')}\nAverage fill price: {broker.get('filled_avg_price')}\nVerify remaining positions and orders in Alpaca paper. No automatic entry repricing or resubmission is performed."}
     return _send_message(api_key=api_key, to_email=to_email, from_email=from_email, message=message,
                          idempotency_key=f"paper-outcome-{record.get('order_id')}-{status}", timeout=timeout)
+
+
+def build_daily_review_email(review: dict[str, Any]) -> dict[str, str]:
+    session = str(review.get("session") or "unknown")
+    net_dollars = float(review.get("net_after_estimated_fees_dollars") or 0)
+    changes = dict(review.get("release_changes") or {})
+    integrity = dict(review.get("execution_integrity") or {})
+    promotion = dict(review.get("promotion_evidence") or {})
+    shadow = dict(review.get("shadow_research") or {})
+    subject = f"PAPER DAILY REVIEW: {session} — {'-' if net_dollars < 0 else '+'}${abs(net_dollars):.2f}"
+    text = (
+        f"Paper-trading review for {session}\n\n"
+        "BROKER-PAPER PERFORMANCE\n"
+        f"Orders submitted: {review.get('orders_submitted')}\n"
+        f"Filled entries: {review.get('filled_entries')}\n"
+        f"Completed roundtrips: {review.get('completed_roundtrips')}\n"
+        f"Zero-fill cancellations/rejections: {review.get('zero_fill_orders')}\n"
+        f"Gross P/L from all fills: ${float(review.get('gross_all_fills_dollars') or 0):+.2f}\n"
+        f"Economically valid gross P/L: ${float(review.get('gross_valid_fills_dollars') or 0):+.2f}\n"
+        f"Net after estimated fees: {'-' if net_dollars < 0 else '+'}${abs(net_dollars):.2f}\n\n"
+        "EXECUTION INTEGRITY\n"
+        f"Valid roundtrips: {integrity.get('valid_roundtrips')}\n"
+        f"Invalid roundtrips: {integrity.get('invalid_roundtrips')}\n"
+        f"Invalid details: {integrity.get('invalid_details') or 'none'}\n\n"
+        "SHADOW RESEARCH (NOT BROKER P/L)\n"
+        f"Closed observations: {shadow.get('closed_count')}\n"
+        f"Average underlying R: {shadow.get('average_r')}\n"
+        f"By symbol: {json.dumps(shadow.get('by_symbol') or {}, separators=(',', ':'))}\n\n"
+        "EVIDENCE GATE\n"
+        f"Independent valid roundtrips: {promotion.get('independent_roundtrips')} / minimum {promotion.get('minimum_roundtrips')} / target {promotion.get('target_roundtrips')}\n"
+        f"After-fee expectancy: {promotion.get('after_fee_expectancy_dollars')}\n"
+        f"Gate passed: {promotion.get('evidence_gate_pass')}\n"
+        f"Blockers: {', '.join(promotion.get('blockers') or []) or 'none'}\n\n"
+        "CHANGES, BUILDS, AND DEPLOYS\n"
+        f"Current deployed revision: {changes.get('current_revision') or 'unknown'}\n"
+        f"Previous reported revision: {changes.get('previous_revision') or 'none'}\n"
+        f"Deployment changed since prior review: {changes.get('revision_changed')}\n"
+        f"Build/deploy note: {changes.get('note')}\n\n"
+        "Paper account only. Live trading remains disabled. Results do not guarantee future profitability."
+    )
+    return {"subject": subject, "text": text}
+
+
+def send_daily_review_email(*, api_key: str, to_email: str, from_email: str, review: dict[str, Any], timeout: int = 15) -> dict[str, Any]:
+    session = str(review.get("session") or "unknown")
+    return _send_message(api_key=api_key, to_email=to_email, from_email=from_email,
+                         message=build_daily_review_email(review), idempotency_key=f"regime-daily-review-{session}", timeout=timeout)

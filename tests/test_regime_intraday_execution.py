@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import regime_intraday_runtime as runtime_module
@@ -219,6 +219,51 @@ def test_scan_worker_auto_submits_one_selected_paper_plan(monkeypatch, tmp_path)
     assert submitted == ["sig-1"]
     assert result["auto_submission"]["signal_id"] == "sig-1"
     assert result["paper_auto_submit_enabled"] is True
+
+
+def test_daily_review_uses_latest_prior_session_and_sends_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKER_SECRET", "worker")
+    monkeypatch.setenv("REGIME_INTRADAY_LEDGER_PATH", str(tmp_path / "ledger.json"))
+    monkeypatch.setenv("REGIME_INTRADAY_ALERT_EMAIL_TO", "owner@gmail.com")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "revision-2")
+    runtime = RegimeIntradayRuntime()
+    ledger = empty_ledger()
+    plan = {"underlying": "SPY", "limit_debit": .40, "legs": [
+        {"symbol": "SPY260918C00500000", "side": "buy"},
+        {"symbol": "SPY260918C00501000", "side": "sell"},
+    ]}
+    ledger["daily_review_last_revision"] = "revision-1"
+    ledger["orders"] = {
+        "filled": {"session": "2026-09-09", "status": "filled_closed", "signal": {"base_signal_id": "base-1"},
+                   "plan": plan, "broker": {"filled_qty": "1", "filled_avg_price": ".40"},
+                   "close_order": {"broker": {"filled_avg_price": ".60"}}},
+        "canceled": {"session": "2026-09-09", "status": "canceled", "plan": plan,
+                     "broker": {"filled_qty": "0"}},
+        "today": {"session": "2026-09-10", "status": "canceled", "plan": plan,
+                  "broker": {"filled_qty": "0"}},
+    }
+    ledger["signal_shadow_candidates"] = {
+        "shadow": {"session": "2026-09-09", "status": "closed", "realized_r": .5,
+                   "signal": {"symbol": "QQQ"}},
+    }
+    save_ledger(runtime.ledger_path, ledger)
+    monkeypatch.setattr("regime_intraday_runtime.now_ny", lambda: datetime(2026, 9, 10, 8, 1, tzinfo=timezone.utc))
+    sent = []
+    monkeypatch.setattr("regime_intraday_runtime.send_daily_review_email", lambda **kwargs: sent.append(kwargs["review"]) or {"sent": True, "message_id": "mail-1"})
+
+    result = runtime.daily_review({"worker_secret": "worker"})
+    again = runtime.daily_review({"worker_secret": "worker"})
+
+    assert result["session"] == "2026-09-09"
+    assert result["review"]["orders_submitted"] == 2
+    assert result["review"]["completed_roundtrips"] == 1
+    assert result["review"]["zero_fill_orders"] == 1
+    assert result["review"]["net_after_estimated_fees_dollars"] == 18.7
+    assert result["review"]["shadow_research"]["by_symbol"]["QQQ"]["average_r"] == .5
+    assert result["review"]["release_changes"]["revision_changed"] is True
+    assert again["status"] == "already_sent"
+    assert len(sent) == 1
 
 
 def test_mechanical_drill_tags_candidate_and_uses_normal_roundtrip(monkeypatch, tmp_path):

@@ -1,4 +1,4 @@
-from regime_intraday_email import build_entry_lifecycle_email, build_exit_email, build_signal_email, send_signal_email
+from regime_intraday_email import build_daily_review_email, build_entry_lifecycle_email, build_exit_email, build_signal_email, send_signal_email
 
 
 def test_email_contains_actionable_risk_and_never_claims_submission():
@@ -31,3 +31,21 @@ def test_entry_lifecycle_emails_distinguish_submission_from_fill():
     assert "does not confirm a fill" in submitted["text"]
     assert "PAPER ENTRY FILLED" in filled["subject"]
     assert "Average fill debit: $0.76" in filled["text"]
+
+
+def test_daily_review_email_reports_performance_and_deployment_change():
+    message = build_daily_review_email({
+        "session": "2026-09-09", "net_after_estimated_fees_dollars": 18.70,
+        "orders_submitted": 2, "filled_entries": 1, "completed_roundtrips": 1,
+        "zero_fill_orders": 1, "gross_all_fills_dollars": 20,
+        "gross_valid_fills_dollars": 20,
+        "execution_integrity": {"valid_roundtrips": 1, "invalid_roundtrips": 0},
+        "shadow_research": {"closed_count": 1, "average_r": .5, "by_symbol": {"QQQ": {"count": 1, "average_r": .5}}},
+        "promotion_evidence": {"independent_roundtrips": 1, "minimum_roundtrips": 30, "target_roundtrips": 50, "after_fee_expectancy_dollars": 18.7, "evidence_gate_pass": False, "blockers": ["sample"]},
+        "release_changes": {"current_revision": "new-sha", "previous_revision": "old-sha", "revision_changed": True, "note": "Production revision changed since the prior report."},
+    })
+    assert "2026-09-09" in message["subject"]
+    assert "+$18.70" in message["subject"]
+    assert "Current deployed revision: new-sha" in message["text"]
+    assert "Deployment changed since prior review: True" in message["text"]
+    assert "Live trading remains disabled" in message["text"]
