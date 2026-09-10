@@ -262,7 +262,21 @@ def paper_submission_decision(
         if row.get("mechanical_test") or str(row.get("session") or "") != session:
             continue
         prior_signal = dict(row.get("signal") or dict(dict(ledger.get("pending_candidates") or {}).get(prior_id) or {}).get("signal") or {})
-        if str(prior_signal.get("base_signal_id") or prior_id) == candidate_base:
+        status = str(row.get("status") or "").lower()
+        broker = dict(row.get("broker") or {})
+        terminal = status in {"canceled", "cancelled", "expired", "rejected"}
+        fill_values = [broker.get("filled_qty"), *[leg.get("filled_qty") for leg in list(broker.get("legs") or [])]]
+        quantities = []
+        for value in fill_values:
+            try:
+                if value is not None:
+                    quantities.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        explicit_fill_evidence = any(value > 0 for value in quantities)
+        verified_zero_fill = terminal and bool(quantities) and all(value == 0 for value in quantities)
+        consumes_setup = explicit_fill_evidence or not verified_zero_fill
+        if consumes_setup and str(prior_signal.get("base_signal_id") or prior_id) == candidate_base:
             return {"allowed": False, "reason": "same_base_setup_lock", "base_signal_id": candidate_base, "prior_signal_id": prior_id}
     today_orders = [row for row in orders.values() if str(row.get("session") or "") == session]
     if int(max_trades_per_day) > 0 and len(today_orders) >= int(max_trades_per_day):

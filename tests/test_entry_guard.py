@@ -39,8 +39,24 @@ def test_zero_attempt_limit_is_unlimited_but_active_order_still_blocks():
 def test_same_base_setup_cannot_reenter_after_closed_order():
     ledger = empty_ledger()
     ledger["pending_candidates"] = {"second": {"signal": {"signal_id": "second", "base_signal_id": "base", "symbol": "SPY"}}}
-    ledger["orders"] = {"first": {"session": "2026-09-08", "status": "filled_closed", "signal": {"base_signal_id": "base", "symbol": "SPY"}}}
+    ledger["orders"] = {"first": {"session": "2026-09-08", "status": "filled_closed", "broker": {"filled_qty": "1"}, "signal": {"base_signal_id": "base", "symbol": "SPY"}}}
     assert paper_submission_decision(ledger, "second", session="2026-09-08")["reason"] == "same_base_setup_lock"
+
+
+def test_verified_zero_fill_cancellation_does_not_consume_rearmed_setup():
+    ledger = empty_ledger()
+    ledger["pending_candidates"] = {"rearmed": {"signal": {"signal_id": "rearmed", "base_signal_id": "base", "symbol": "SPY"}}}
+    ledger["orders"] = {"first": {"session": "2026-09-10", "status": "canceled", "broker": {"filled_qty": "0", "legs": [{"filled_qty": "0"}, {"filled_qty": "0"}]}, "signal": {"base_signal_id": "base", "symbol": "SPY"}}}
+    result = paper_submission_decision(ledger, "rearmed", session="2026-09-10")
+    assert result["allowed"] is True
+
+
+def test_ambiguous_or_partial_cancellation_still_consumes_setup():
+    for broker in ({}, {"filled_qty": "0.5"}):
+        ledger = empty_ledger()
+        ledger["pending_candidates"] = {"rearmed": {"signal": {"base_signal_id": "base", "symbol": "SPY"}}}
+        ledger["orders"] = {"first": {"session": "2026-09-10", "status": "canceled", "broker": broker, "signal": {"base_signal_id": "base", "symbol": "SPY"}}}
+        assert paper_submission_decision(ledger, "rearmed", session="2026-09-10")["reason"] == "same_base_setup_lock"
 
 
 def test_post_stop_cooldown_blocks_new_setup_on_same_symbol():
