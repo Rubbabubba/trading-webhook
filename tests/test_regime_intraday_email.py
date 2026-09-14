@@ -1,4 +1,4 @@
-from regime_intraday_email import build_daily_review_email, build_entry_lifecycle_email, build_exit_email, build_signal_email, send_signal_email
+from regime_intraday_email import build_daily_review_email, build_entry_lifecycle_email, build_exit_email, build_reconciliation_complete_email, build_signal_email, send_signal_email
 
 
 def test_email_contains_actionable_risk_and_never_claims_submission():
@@ -56,3 +56,15 @@ def test_daily_review_email_reports_performance_and_deployment_change():
     assert "Fill rate: 0.5" in message["text"]
     assert "Canceled setups later reaching target: 1" in message["text"]
     assert "Live trading remains disabled" in message["text"]
+
+
+def test_reconciliation_complete_email_distinguishes_verified_and_unresolved():
+    message = build_reconciliation_complete_email({
+        "completed_roundtrips": 2, "verified_roundtrips": 1, "unresolved_roundtrips": 1,
+        "previous_reported_gross_pnl_dollars": -94, "verified_gross_pnl_dollars": 29.90,
+        "unresolved": [{"signal_id": "spy-1", "symbol": "SPY", "reasons": ["verified_leg_fills_missing"]}],
+    })
+    assert "1 verified, 1 unresolved" in message["subject"]
+    assert "Previous reported gross P/L: $-94.00" in message["text"]
+    assert "Corrected verified gross P/L: $+29.90" in message["text"]
+    assert "SPY / spy-1: verified_leg_fills_missing" in message["text"]

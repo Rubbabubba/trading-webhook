@@ -190,3 +190,37 @@ def send_daily_review_email(*, api_key: str, to_email: str, from_email: str, rev
     session = str(review.get("session") or "unknown")
     return _send_message(api_key=api_key, to_email=to_email, from_email=from_email,
                          message=build_daily_review_email(review), idempotency_key=f"regime-daily-review-{session}", timeout=timeout)
+
+
+def build_reconciliation_complete_email(summary: dict[str, Any]) -> dict[str, str]:
+    unresolved = list(summary.get("unresolved") or [])
+    unresolved_text = "\n".join(
+        f"- {row.get('symbol') or 'unknown'} / {row.get('signal_id')}: {', '.join(row.get('reasons') or []) or 'missing evidence'}"
+        for row in unresolved
+    ) or "none"
+    corrected = summary.get("verified_gross_pnl_dollars")
+    corrected_text = f"${float(corrected):+.2f}" if corrected is not None else "unavailable"
+    prior = summary.get("previous_reported_gross_pnl_dollars")
+    prior_text = f"${float(prior):+.2f}" if prior is not None else "unavailable"
+    return {
+        "subject": f"PAPER RECONCILIATION COMPLETE — {summary.get('verified_roundtrips')} verified, {summary.get('unresolved_roundtrips')} unresolved",
+        "text": (
+            "Historical paper roundtrip reconciliation has completed.\n\n"
+            f"Completed roundtrips examined: {summary.get('completed_roundtrips')}\n"
+            f"Verified from option-leg fills: {summary.get('verified_roundtrips')}\n"
+            f"Unresolved: {summary.get('unresolved_roundtrips')}\n"
+            f"Previous reported gross P/L: {prior_text}\n"
+            f"Corrected verified gross P/L: {corrected_text}\n\n"
+            "UNRESOLVED ROUNDTRIPS\n"
+            f"{unresolved_text}\n\n"
+            "Verified P/L uses broker option-leg fills only. Quotes and parent-order prices are not substituted. "
+            "Paper account only; live trading remains disabled."
+        ),
+    }
+
+
+def send_reconciliation_complete_email(*, api_key: str, to_email: str, from_email: str, summary: dict[str, Any], timeout: int = 15) -> dict[str, Any]:
+    fingerprint = str(summary.get("fingerprint") or "historical")
+    return _send_message(api_key=api_key, to_email=to_email, from_email=from_email,
+                         message=build_reconciliation_complete_email(summary),
+                         idempotency_key=f"regime-fill-reconciliation-{fingerprint}", timeout=timeout)

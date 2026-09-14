@@ -14,7 +14,7 @@ from intraday_monitoring import apply_live_freshness, candidate_views
 from market_clock import is_regular_market_time, now_ny, parse_hhmm
 from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evaluate_regime_intraday
 from regime_intraday_candidates import failed_breakout_fade_candidate, relative_strength_divergence_candidate, trend_pullback_candidate
-from regime_intraday_email import send_daily_review_email, send_entry_lifecycle_email, send_exit_email, send_signal_email
+from regime_intraday_email import send_daily_review_email, send_entry_lifecycle_email, send_exit_email, send_reconciliation_complete_email, send_signal_email
 from regime_intraday_email import send_order_outcome_email
 from regime_intraday_entry_guard import pending_entry_invalidation
 from regime_intraday_options import spread_quote_evidence
@@ -606,6 +606,10 @@ class RegimeIntradayRuntime:
         self._worker_authorize(body)
         key, secret = self._paper_credentials()
         ledger = load_ledger(self.ledger_path)
+        historical_records = [row for row in dict(ledger.get("orders") or {}).values()
+                              if not row.get("mechanical_test") and str(row.get("status") or "").lower() == "filled_closed"]
+        previous_values = [float(row["actual_realized_dollars"]) for row in historical_records if row.get("actual_realized_dollars") is not None]
+        previous_reported_total = round(sum(previous_values), 2) if previous_values else None
         alerted = {str(event.get("signal_id") or "") for event in ledger.get("events", []) if event.get("event") == "paper_exit_email_sent"}
         refreshed = []
         for signal_id, record in dict(ledger.get("orders") or {}).items():
@@ -793,8 +797,43 @@ class RegimeIntradayRuntime:
             except Exception as exc:
                 refreshed.append({"signal_id": signal_id, "order_id": order_id, "status": "reconcile_error", "detail": str(exc)[:200]})
         update_canceled_entry_outcomes(ledger, self.last_scan)
+        completed = [(signal_id, row) for signal_id, row in dict(ledger.get("orders") or {}).items()
+                     if not row.get("mechanical_test") and str(row.get("status") or "").lower() == "filled_closed"]
+        reconciled = [(signal_id, row, dict(row.get("verified_roundtrip") or {})) for signal_id, row in completed
+                      if isinstance(row.get("verified_roundtrip"), dict)]
+        verified = [(signal_id, row, result) for signal_id, row, result in reconciled if result.get("complete")]
+        unresolved = [{"signal_id": signal_id, "symbol": dict(row.get("plan") or {}).get("underlying"),
+                       "reasons": list(result.get("problems") or [])}
+                      for signal_id, row, result in reconciled if not result.get("complete")]
+        reconciliation = {
+            "status": "complete" if completed and len(reconciled) == len(completed) else ("not_applicable" if not completed else "in_progress"),
+            "completed_roundtrips": len(completed), "processed_roundtrips": len(reconciled),
+            "verified_roundtrips": len(verified), "unresolved_roundtrips": len(unresolved), "unresolved": unresolved,
+            "previous_reported_gross_pnl_dollars": previous_reported_total,
+            "verified_gross_pnl_dollars": round(sum(float(result.get("realized_dollars") or 0) for _, _, result in verified), 2) if verified else None,
+            "live_submission": False,
+        }
+        reconciliation["fingerprint"] = "-".join(sorted(signal_id for signal_id, _ in completed))[:180] or "none"
+        prior_notice = any(event.get("event") == "historical_fill_reconciliation_email_sent" for event in ledger.get("events", []))
+        if reconciliation["status"] == "complete" and not prior_notice:
+            try:
+                sent = send_reconciliation_complete_email(
+                    api_key=_env("RESEND_API_KEY") if _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True) else "",
+                    to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"),
+                    from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"),
+                    summary=reconciliation,
+                )
+            except Exception as exc:
+                sent = {"sent": False, "reason": type(exc).__name__}
+            reconciliation["email_sent"] = bool(sent.get("sent"))
+            if sent.get("sent"):
+                ledger.setdefault("events", []).append({"event": "historical_fill_reconciliation_email_sent",
+                    "message_id": sent.get("message_id"), "ts_utc": datetime.now(timezone.utc).isoformat(),
+                    "fingerprint": reconciliation["fingerprint"]})
+        else:
+            reconciliation["email_sent"] = False
         save_ledger(self.ledger_path, ledger)
-        return {"ok": True, "refreshed": refreshed, "live_submission": False, "automatic_exit_submission": _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True)}
+        return {"ok": True, "refreshed": refreshed, "reconciliation": reconciliation, "live_submission": False, "automatic_exit_submission": _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True)}
 
     def paper_close(self, body: dict) -> dict:
         self._worker_authorize(body)

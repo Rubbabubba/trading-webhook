@@ -316,6 +316,8 @@ def test_reconcile_auto_closes_and_records_filled_paper_roundtrip(monkeypatch, t
     monkeypatch.setattr(runtime_module, "value_debit_spread", lambda *_args, **_kwargs: {"status": "valued", "liquidation_credit": 0.50})
     monkeypatch.setattr(runtime_module, "spread_exit_decision", lambda *_args, **_kwargs: {"exit": True, "reason": "profit_target"})
     monkeypatch.setattr(runtime_module, "send_exit_email", lambda **_kwargs: {"sent": True, "message_id": "email-1"})
+    reconciliation_emails = []
+    monkeypatch.setattr(runtime_module, "send_reconciliation_complete_email", lambda **kwargs: reconciliation_emails.append(kwargs["summary"]) or {"sent": True, "message_id": "reconciliation-1"})
     monkeypatch.setattr(runtime_module, "submit_mleg_close_order", lambda *_args, **_kwargs: {"submitted": True, "paper": True, "order_id": "close-1", "status": "new"})
     runtime = RegimeIntradayRuntime()
 
@@ -323,11 +325,16 @@ def test_reconcile_auto_closes_and_records_filled_paper_roundtrip(monkeypatch, t
     assert first["automatic_exit_submission"] is True
     assert load_ledger(str(ledger_path))["orders"]["sig-1"]["status"] == "close_submitted"
 
-    runtime.paper_reconcile({"worker_secret": "worker"})
+    second = runtime.paper_reconcile({"worker_secret": "worker"})
     saved = load_ledger(str(ledger_path))
     assert saved["orders"]["sig-1"]["status"] == "filled_closed"
     assert saved["closed"][-1]["paper_signal_id"] == "sig-1"
     assert saved["closed"][-1]["realized_dollars"] == 20.0
+    assert second["reconciliation"]["status"] == "complete"
+    assert second["reconciliation"]["verified_roundtrips"] == 1
+    assert second["reconciliation"]["email_sent"] is True
+    runtime.paper_reconcile({"worker_secret": "worker"})
+    assert len(reconciliation_emails) == 1
 
 
 def test_reconcile_underlying_target_submits_close(monkeypatch, tmp_path):
