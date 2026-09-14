@@ -14,12 +14,13 @@ from intraday_monitoring import apply_live_freshness, candidate_views
 from market_clock import is_regular_market_time, now_ny, parse_hhmm
 from regime_intraday import REGIME_INTRADAY_VERSION, RegimeIntradayConfig, evaluate_regime_intraday
 from regime_intraday_candidates import failed_breakout_fade_candidate, relative_strength_divergence_candidate, trend_pullback_candidate
-from regime_intraday_email import send_daily_review_email, send_entry_lifecycle_email, send_exit_email, send_reconciliation_complete_email, send_signal_email
+from regime_intraday_email import send_daily_review_email, send_entry_lifecycle_email, send_exit_email, send_forensic_report_email, send_reconciliation_complete_email, send_signal_email
 from regime_intraday_email import send_order_outcome_email
 from regime_intraday_entry_guard import pending_entry_invalidation
 from regime_intraday_options import spread_quote_evidence
 from regime_intraday_executor import cancel_order, get_fill_activities, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
 from regime_intraday_fill_accounting import verified_roundtrip
+from regime_intraday_forensics import roundtrip_forensic_report
 from regime_intraday_ledger import load_ledger, mark_signal_submission, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, record_setup_observations, record_signal_shadow_candidates, save_ledger, setup_observation_summary, update_ledger, update_signal_shadow_outcomes
 from regime_intraday_ledger import performance_views
 from regime_intraday_ledger import assign_setup_identities
@@ -337,6 +338,7 @@ class RegimeIntradayRuntime:
         return {"ok": True, "candidate_queue": views["active"], "candidate_history": views["history"], "performance": performance_views(ledger), "summary": dict(ledger.get("summary") or {}), "open": dict(ledger.get("open") or {}), "closed": list(ledger.get("closed") or [])[-50:],
                 "events": list(ledger.get("events") or [])[-100:], "orders": dict(ledger.get("orders") or {}), "pending_candidates": dict(ledger.get("pending_candidates") or {}),
                 "execution_quality": paper_fill_reconciliation(ledger), "entry_execution": entry_execution_analysis(ledger),
+                "roundtrip_forensics": roundtrip_forensic_report(ledger, estimated_fee_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)),
                 "promotion_evidence": broker_promotion_evidence(ledger, minimum_roundtrips=_int("REGIME_INTRADAY_MIN_BROKER_ROUNDTRIPS_FOR_PROMOTION", 30), target_roundtrips=_int("REGIME_INTRADAY_TARGET_BROKER_ROUNDTRIPS_FOR_PROMOTION", 50), estimated_round_trip_fees_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)),
                 "signal_shadow_candidates": dict(ledger.get("signal_shadow_candidates") or {}),
                 "setup_observation_summary": setup_observation_summary(ledger, session=now_ny().date().isoformat()),
@@ -832,8 +834,24 @@ class RegimeIntradayRuntime:
                     "fingerprint": reconciliation["fingerprint"]})
         else:
             reconciliation["email_sent"] = False
+        forensic = roundtrip_forensic_report(ledger, estimated_fee_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30))
+        prior_forensic = any(event.get("event") == "roundtrip_forensic_email_sent_v1" for event in ledger.get("events", []))
+        if reconciliation["status"] == "complete" and forensic["status"] == "complete" and not prior_forensic:
+            try:
+                forensic_sent = send_forensic_report_email(
+                    api_key=_env("RESEND_API_KEY") if _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True) else "",
+                    to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"),
+                    from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"), report=forensic)
+            except Exception as exc:
+                forensic_sent = {"sent": False, "reason": type(exc).__name__}
+            forensic["email_sent"] = bool(forensic_sent.get("sent"))
+            if forensic_sent.get("sent"):
+                ledger.setdefault("events", []).append({"event": "roundtrip_forensic_email_sent_v1",
+                    "message_id": forensic_sent.get("message_id"), "ts_utc": datetime.now(timezone.utc).isoformat()})
+        else:
+            forensic["email_sent"] = False
         save_ledger(self.ledger_path, ledger)
-        return {"ok": True, "refreshed": refreshed, "reconciliation": reconciliation, "live_submission": False, "automatic_exit_submission": _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True)}
+        return {"ok": True, "refreshed": refreshed, "reconciliation": reconciliation, "forensics": forensic, "live_submission": False, "automatic_exit_submission": _bool("REGIME_INTRADAY_PAPER_AUTO_EXIT", True)}
 
     def paper_close(self, body: dict) -> dict:
         self._worker_authorize(body)

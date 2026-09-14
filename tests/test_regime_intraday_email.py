@@ -1,4 +1,4 @@
-from regime_intraday_email import build_daily_review_email, build_entry_lifecycle_email, build_exit_email, build_reconciliation_complete_email, build_signal_email, send_signal_email
+from regime_intraday_email import build_daily_review_email, build_entry_lifecycle_email, build_exit_email, build_forensic_report_email, build_reconciliation_complete_email, build_signal_email, send_signal_email
 
 
 def test_email_contains_actionable_risk_and_never_claims_submission():
@@ -68,3 +68,12 @@ def test_reconciliation_complete_email_distinguishes_verified_and_unresolved():
     assert "Previous reported gross P/L: $-94.00" in message["text"]
     assert "Corrected verified gross P/L: $+29.90" in message["text"]
     assert "SPY / spy-1: verified_leg_fills_missing" in message["text"]
+
+
+def test_forensic_email_contains_trade_and_cohort_evidence():
+    message = build_forensic_report_email({"verified_roundtrips": 1, "gross_pnl_dollars": 20, "net_after_estimated_fees_dollars": 18.7, "win_rate": 1,
+        "by_symbol": {"SPY": {"count": 1}}, "by_exit_reason": {"target": {"count": 1}}, "by_attribution": {"profitable_roundtrip": {"count": 1}},
+        "trades": [{"symbol": "SPY", "signal_id": "sig", "exit_reason": "target", "entry_debit": .3, "exit_credit": .5, "gross_pnl_dollars": 20, "net_pnl_dollars": 18.7, "attribution": "profitable_roundtrip", "hold_minutes": 5}], "conclusion": "Keep paper-only."})
+    assert "PAPER FORENSIC REVIEW" in message["subject"]
+    assert "SPY sig" in message["text"]
+    assert "profitable_roundtrip" in message["text"]
