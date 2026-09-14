@@ -1,0 +1,220 @@
+{
+  "version": "sports_paper_research_1.0",
+  "execution_enabled": false,
+  "first_date": "2026-09-10",
+  "last_date": "2026-09-17",
+  "stop_at": "2026-09-18T12:00:00Z",
+  "holding_seconds": [
+    300,
+    900
+  ],
+  "entry_margin": {
+    "mlb": 0.08,
+    "ncaaf": 0.04,
+    "epl": 0.06,
+    "mls": 0.06,
+    "atp": 0.08,
+    "wta": 0.08
+  },
+  "sources": {
+    "ncaaf": {
+      "sport": "football/college-football",
+      "series": "KXNCAAFGAME"
+    },
+    "epl": {
+      "sport": "soccer/eng.1",
+      "series": "KXEPLGAME"
+    },
+    "mls": {
+      "sport": "soccer/usa.1",
+      "series": "KXMLSGAME"
+    },
+    "atp": {
+      "sport": "tennis/atp",
+      "series": "KXATPMATCH"
+    },
+    "wta": {
+      "sport": "tennis/wta",
+      "series": "KXWTAMATCH"
+    }
+  },
+  "archives": {
+    "expansion": "sports_paper/expansion_20260910/capture.sqlite3",
+    "capture": "sports_paper/capture_20260910/capture.sqlite3"
+  },
+  "mlb_games": [
+    {
+      "league": "mlb",
+      "event_id": "401816885",
+      "game": "Tampa Bay Rays at Atlanta Braves",
+      "home_team_id": "15",
+      "away_team_id": "30",
+      "markets": {
+        "home": "KXMLBGAME-26SEP101215TBATL-ATL",
+        "away": "KXMLBGAME-26SEP101215TBATL-TB"
+      },
+      "market_event": "KXMLBGAME-26SEP101215TBATL",
+      "kickoff": "2026-09-10T16:15:00+00:00",
+      "stop_at": "2026-09-11T04:15:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXMLBGAME-26SEP101215TBATL-ATL",
+          "title": "Atlanta wins",
+          "rules_primary": "If Atlanta wins the Tampa Bay vs Atlanta professional baseball game originally scheduled for Sep 10, 2026 at 12:15 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Tampa Bay vs Atlanta professional baseball game originally scheduled for Sep 10, 2026 at 12:15 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXMLBGAME-26SEP101215TBATL-TB",
+          "title": "Tampa Bay wins",
+          "rules_primary": "If Tampa Bay wins the Tampa Bay vs Atlanta professional baseball game originally scheduled for Sep 10, 2026 at 12:15 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Tampa Bay vs Atlanta professional baseball game originally scheduled for Sep 10, 2026 at 12:15 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      },
+      "reference_game_pk": 824872,
+      "archive": "capture",
+      "series": "KXMLBGAME",
+      "sport": "baseball/mlb"
+    },
+    {
+      "league": "mlb",
+      "event_id": "401816884",
+      "game": "Houston Astros at Philadelphia Phillies",
+      "home_team_id": "22",
+      "away_team_id": "18",
+      "markets": {
+        "home": "KXMLBGAME-26SEP101305HOUPHI-PHI",
+        "away": "KXMLBGAME-26SEP101305HOUPHI-HOU"
+      },
+      "market_event": "KXMLBGAME-26SEP101305HOUPHI",
+      "kickoff": "2026-09-10T17:05:00+00:00",
+      "stop_at": "2026-09-11T05:05:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXMLBGAME-26SEP101305HOUPHI-PHI",
+          "title": "Philadelphia wins",
+          "rules_primary": "If Philadelphia wins the Houston vs Philadelphia professional baseball game originally scheduled for Sep 10, 2026 at 1:05 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Houston vs Philadelphia professional baseball game originally scheduled for Sep 10, 2026 at 1:05 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXMLBGAME-26SEP101305HOUPHI-HOU",
+          "title": "Houston wins",
+          "rules_primary": "If Houston wins the Houston vs Philadelphia professional baseball game originally scheduled for Sep 10, 2026 at 1:05 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Houston vs Philadelphia professional baseball game originally scheduled for Sep 10, 2026 at 1:05 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      },
+      "reference_game_pk": 823413,
+      "archive": "capture",
+      "series": "KXMLBGAME",
+      "sport": "baseball/mlb"
+    },
+    {
+      "league": "mlb",
+      "event_id": "401816887",
+      "game": "Texas Rangers at Seattle Mariners",
+      "home_team_id": "12",
+      "away_team_id": "13",
+      "markets": {
+        "home": "KXMLBGAME-26SEP101610TEXSEA-SEA",
+        "away": "KXMLBGAME-26SEP101610TEXSEA-TEX"
+      },
+      "market_event": "KXMLBGAME-26SEP101610TEXSEA",
+      "kickoff": "2026-09-10T20:10:00+00:00",
+      "stop_at": "2026-09-11T08:10:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXMLBGAME-26SEP101610TEXSEA-SEA",
+          "title": "Seattle wins",
+          "rules_primary": "If Seattle wins the Texas vs Seattle professional baseball game originally scheduled for Sep 10, 2026 at 4:10 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Texas vs Seattle professional baseball game originally scheduled for Sep 10, 2026 at 4:10 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXMLBGAME-26SEP101610TEXSEA-TEX",
+          "title": "Texas wins",
+          "rules_primary": "If Texas wins the Texas vs Seattle professional baseball game originally scheduled for Sep 10, 2026 at 4:10 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Texas vs Seattle professional baseball game originally scheduled for Sep 10, 2026 at 4:10 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      },
+      "reference_game_pk": 823088,
+      "archive": "capture",
+      "series": "KXMLBGAME",
+      "sport": "baseball/mlb"
+    },
+    {
+      "league": "mlb",
+      "event_id": "401816883",
+      "game": "Colorado Rockies at New York Yankees",
+      "home_team_id": "10",
+      "away_team_id": "27",
+      "markets": {
+        "home": "KXMLBGAME-26SEP101905COLNYY-NYY",
+        "away": "KXMLBGAME-26SEP101905COLNYY-COL"
+      },
+      "market_event": "KXMLBGAME-26SEP101905COLNYY",
+      "kickoff": "2026-09-10T23:05:00+00:00",
+      "stop_at": "2026-09-11T11:05:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXMLBGAME-26SEP101905COLNYY-NYY",
+          "title": "New York Y wins",
+          "rules_primary": "If New York Y wins the Colorado vs New York Y professional baseball game originally scheduled for Sep 10, 2026 at 7:05 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Colorado vs New York Y professional baseball game originally scheduled for Sep 10, 2026 at 7:05 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXMLBGAME-26SEP101905COLNYY-COL",
+          "title": "Colorado wins",
+          "rules_primary": "If Colorado wins the Colorado vs New York Y professional baseball game originally scheduled for Sep 10, 2026 at 7:05 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Colorado vs New York Y professional baseball game originally scheduled for Sep 10, 2026 at 7:05 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      },
+      "reference_game_pk": 823499,
+      "archive": "capture",
+      "series": "KXMLBGAME",
+      "sport": "baseball/mlb"
+    },
+    {
+      "league": "mlb",
+      "event_id": "401816886",
+      "game": "Pittsburgh Pirates at Chicago White Sox",
+      "home_team_id": "4",
+      "away_team_id": "23",
+      "markets": {
+        "home": "KXMLBGAME-26SEP101940PITCWS-CWS",
+        "away": "KXMLBGAME-26SEP101940PITCWS-PIT"
+      },
+      "market_event": "KXMLBGAME-26SEP101940PITCWS",
+      "kickoff": "2026-09-10T23:40:00+00:00",
+      "stop_at": "2026-09-11T11:40:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXMLBGAME-26SEP101940PITCWS-CWS",
+          "title": "Chicago WS wins",
+          "rules_primary": "If Chicago WS wins the Pittsburgh vs Chicago WS professional baseball game originally scheduled for Sep 10, 2026 at 7:40 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Pittsburgh vs Chicago WS professional baseball game originally scheduled for Sep 10, 2026 at 7:40 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXMLBGAME-26SEP101940PITCWS-PIT",
+          "title": "Pittsburgh wins",
+          "rules_primary": "If Pittsburgh wins the Pittsburgh vs Chicago WS professional baseball game originally scheduled for Sep 10, 2026 at 7:40 PM EDT, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the Pittsburgh vs Chicago WS professional baseball game originally scheduled for Sep 10, 2026 at 7:40 PM EDT. If this game is postponed or delayed, the market will remain open and close after the rescheduled game has finished (within two days). If the game is cancelled or rescheduled to over two days away, the market will resolve to a fair price in accordance with the rules.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      },
+      "reference_game_pk": 824550,
+      "archive": "capture",
+      "series": "KXMLBGAME",
+      "sport": "baseball/mlb"
+    }
+  ],
+  "source_sha256": {
+    "opportunity_lab/sports_capture_expansion.py": "918e03693467d08d1b2eabba8384c1a85f4e958bc1febde1854e9f2a3005469e",
+    "opportunity_lab/sports_capture_v3.py": "ea9f08eeedab778d84faa380048913bf5a1ad2ad16384fb307a93e9d95f0bdee",
+    "opportunity_lab/college_football_paper.py": "2bdb5d8b78fa4b809bd6a293c200cf1d331c6944c48fd510b7706dc6a2f2e5ae",
+    "opportunity_lab/sports_paper_v2.py": "4839f02b2cebc85c873756a7f2ac57caa27e6bbbc2d4007283016701d1f90f32",
+    "opportunity_lab/kalshi_market_data.py": "bb1cc228204db75e0a35ea8042f052a091a98ffbde319c4b9e42e778f16fffca",
+    "opportunity_lab/kalshi_bot.py": "d99d82af95e63f2e69aefc33accfe21a24077b0ca88765b2d940aa3b98aa59f5",
+    "opportunity_lab/sports_paper_research.py": "569f1c698d4ceace45edf30ac7c30cd9191c098bbd2f74651701f2d7ce278010",
+    "opportunity_lab/sports_research_models.py": "21fd7b59daf8f8fcadb581a6f46fd2340bb8599e93474d3b684fd0616f03e676",
+    "opportunity_lab/sports_research_mapping.py": "d70e3f12420a269e80bb82cf5a6fc3a6e31890cf52edca973dedd8138ba3ccef",
+    "opportunity_lab/sports_research_execution.py": "291963bbcc827e71fd494e840f8ae581939d30984541a4063694534d2778f88e"
+  },
+  "protocol": "Prospective exploratory paper only. Never trade retroactively. Freeze pregame anchor before kickoff; model calibration and profitability remain unvalidated. $1000 separate accounts per game and holding horizon, max $10 entry, ten contracts, five entries, $20 account halt, 25% position stop, four-cent spread, one-cent slippage each way, current quadratic fee multiplier with conservative whole-cent rounding. Requires new selected-book observation 10-180 seconds after staging. No real orders or Novig API."
+}

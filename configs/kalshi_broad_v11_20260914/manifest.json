@@ -1,0 +1,18 @@
+{
+  "version": "broad_paper_1.1",
+  "execution_enabled": false,
+  "stop_at": "2026-09-21T14:30:00+00:00",
+  "source_sha256": {
+    "opportunity_lab/college_football_paper.py": "2bdb5d8b78fa4b809bd6a293c200cf1d331c6944c48fd510b7706dc6a2f2e5ae",
+    "opportunity_lab/kalshi_market_data.py": "bb1cc228204db75e0a35ea8042f052a091a98ffbde319c4b9e42e778f16fffca",
+    "opportunity_lab/sports_capture_v3.py": "ea9f08eeedab778d84faa380048913bf5a1ad2ad16384fb307a93e9d95f0bdee",
+    "opportunity_lab/sports_market_lab_v12.py": "fe9e3d58d06c59d25982554b408056b8ea2899bebfe24136a53a3c331fb87654",
+    "opportunity_lab/sports_research_execution.py": "291963bbcc827e71fd494e840f8ae581939d30984541a4063694534d2778f88e",
+    "opportunity_lab/kalshi_broad_paper_v11.py": "8d56ab912237f588cb880d5af2ea01e12f83c3be9a5f5877105058e7ec386633"
+  },
+  "hypothesis": "A four-cent fall from the observed five-minute midpoint may revert enough to cover costs plus two cents; exploratory, unvalidated.",
+  "selection": "Open binary markets discovered prospectively with explicit rules, supported fees, close within seven-day run. Category rotation plus dedicated MLB/NFL discovery. Four non-sports category series scanned per cycle, rotating categories and series.",
+  "controls": "Scheduled entries on same sampled universe; not a matched randomized portfolio. Separate 300/900 horizons.",
+  "risk": "One contract per trial; at most 12 combined staged/open trials, at most one event per arm concurrently, no new entries after arm realized loss reaches $10. Existing versions unchanged. Capacity reserved: six per arm, twelve combined.",
+  "review": "Review zero entries every 30 minutes with blockers; review all losses after each cycle. At 20 closed trials spanning at least 5 events evaluate category/arm costs and loss; register a single prospective replacement hypothesis only after review. Never tune historical returns into success."
+}

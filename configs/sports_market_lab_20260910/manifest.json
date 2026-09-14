@@ -1,0 +1,916 @@
+{
+  "version": "sports_market_lab_1.0",
+  "execution_enabled": false,
+  "mode": "fixed_schedule_quote_probes",
+  "stop_at": "2026-09-18T12:00:00+00:00",
+  "series": {
+    "KXNFL3QTOTAL": "nfl",
+    "KXMLS1HSPREAD": "mls",
+    "KXMLS2HTOTAL": "mls",
+    "KXEPLSCORE": "epl",
+    "KXNFL1HTEAMTOTAL": "nfl",
+    "KXNFLTD": "nfl",
+    "KXNFLTOTAL": "nfl",
+    "KXMLBOUTS": "mlb",
+    "KXNFL4QSPREAD": "nfl",
+    "KXNFL1QTOTAL": "nfl",
+    "KXNFLTEAMYDS": "nfl",
+    "KXNFLTEAMTD": "nfl",
+    "KXMLBINNINGTOTAL": "mlb",
+    "KXEPL1HBTTS": "epl",
+    "KXMLBSPREAD": "mlb",
+    "KXMLSGAME": "mls",
+    "KXMLS2HSPREAD": "mls",
+    "KXATPGAMETOTAL": "atp",
+    "KXATPSETSWEEP": "atp",
+    "KXMLBF5SPREAD": "mlb",
+    "KXNCAAF2HTOTAL": "ncaaf",
+    "KXNCAAF1HTEAMTOTAL": "ncaaf",
+    "KXNFLGAME": "nfl",
+    "KXMLBF5TOTAL": "mlb",
+    "KXEPLGAME": "epl",
+    "KXNCAAF2QSPREAD": "ncaaf",
+    "KXEPLANYGOAL": "epl",
+    "KXEPL2HBTTS": "epl",
+    "KXNFLPASSYDS": "nfl",
+    "KXNFLPASSTDS": "nfl",
+    "KXATPEXACTMATCH": "atp",
+    "KXNCAAFTOTAL": "ncaaf",
+    "KXEPL1HSPREAD": "epl",
+    "KXATPSETWINNER": "atp",
+    "KXMLBHR": "mlb",
+    "KXMLBSB": "mlb",
+    "KXMLSBTTS": "mls",
+    "KXMLBHIT": "mlb",
+    "KXNCAAF4QSPREAD": "ncaaf",
+    "KXATPMATCH": "atp",
+    "KXNFL1QSPREAD": "nfl",
+    "KXNCAAF2HSPREAD": "ncaaf",
+    "KXNFLTEAMTOTAL": "nfl",
+    "KXNFL2QTOTAL": "nfl",
+    "KXEPL2HSPREAD": "epl",
+    "KXNCAAF4QTOTAL": "ncaaf",
+    "KXEPLTEAMTOTAL": "epl",
+    "KXNFLSPREAD": "nfl",
+    "KXNFL1HSPREAD": "nfl",
+    "KXMLS2HBTTS": "mls",
+    "KXNFLREC": "nfl",
+    "KXNFLRSHYDS": "nfl",
+    "KXMLSTOTAL": "mls",
+    "KXWTAGAME": "wta",
+    "KXNCAAF1QSPREAD": "ncaaf",
+    "KXEPL2HTOTAL": "epl",
+    "KXNFL4QTOTAL": "nfl",
+    "KXMLBRBI": "mlb",
+    "KXNFL2QSPREAD": "nfl",
+    "KXNCAAFTEAMTOTAL": "ncaaf",
+    "KXMLS1HBTTS": "mls",
+    "KXMLBTOTAL": "mlb",
+    "KXMLBGAME": "mlb",
+    "KXEPL1HTOTAL": "epl",
+    "KXNCAAF3QSPREAD": "ncaaf",
+    "KXNCAAF1HSPREAD": "ncaaf",
+    "KXATPGAMESPREAD": "atp",
+    "KXMLSSCORE": "mls",
+    "KXMLSSPREAD": "mls",
+    "KXMLBTEAMTOTAL": "mlb",
+    "KXNFL2HTOTAL": "nfl",
+    "KXEPL1HSCORE": "epl",
+    "KXATPGAME": "atp",
+    "KXNCAAF3QTOTAL": "ncaaf",
+    "KXNCAAFSPREAD": "ncaaf",
+    "KXNCAAFGAME": "ncaaf",
+    "KXMLS1HTOTAL": "mls",
+    "KXNCAAF1HTOTAL": "ncaaf",
+    "KXMLS1HSCORE": "mls",
+    "KXNFL2HSPREAD": "nfl",
+    "KXWTAEXACTMATCH": "wta",
+    "KXWTASETWINNER": "wta",
+    "KXNCAAFTEAMYDS": "ncaaf",
+    "KXEPLTOTAL": "epl",
+    "KXNFL3QSPREAD": "nfl",
+    "KXATPTOTALSETS": "atp",
+    "KXNFLRECYDS": "nfl",
+    "KXEPLBTTS": "epl",
+    "KXNFL1HTOTAL": "nfl",
+    "KXNCAAFTEAMTD": "ncaaf",
+    "KXWTAMATCH": "wta",
+    "KXMLSTEAMTOTAL": "mls",
+    "KXNCAAF1QTOTAL": "ncaaf",
+    "KXEPLSPREAD": "epl",
+    "KXNCAAF2QTOTAL": "ncaaf"
+  },
+  "game_ledgers": [
+    "sports_paper/research_20260910/paper.sqlite3"
+  ],
+  "extra_games": [
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872657",
+      "game": "San Francisco 49ers at Los Angeles Rams",
+      "home_team_id": "14",
+      "away_team_id": "25",
+      "markets": {
+        "home": "KXNFLGAME-26SEP10SFLAR-LAR",
+        "away": "KXNFLGAME-26SEP10SFLAR-SF"
+      },
+      "market_event": "KXNFLGAME-26SEP10SFLAR",
+      "kickoff": "2026-09-11T00:35:00+00:00",
+      "stop_at": "2026-09-11T12:35:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP10SFLAR-LAR",
+          "title": "San Francisco vs Los Angeles R Pro Football game: Los Angeles R wins?",
+          "rules_primary": "If Los Angeles R wins the San Francisco vs Los Angeles R professional football game originally scheduled for Sep 10, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the San Francisco vs Los Angeles R professional football game originally scheduled for Sep 10, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP10SFLAR-SF",
+          "title": "San Francisco vs Los Angeles R Pro Football game: San Francisco wins?",
+          "rules_primary": "If San Francisco wins the San Francisco vs Los Angeles R professional football game originally scheduled for Sep 10, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the San Francisco vs Los Angeles R professional football game originally scheduled for Sep 10, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872658",
+      "game": "Atlanta Falcons at Pittsburgh Steelers",
+      "home_team_id": "23",
+      "away_team_id": "1",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13ATLPIT-PIT",
+        "away": "KXNFLGAME-26SEP13ATLPIT-ATL"
+      },
+      "market_event": "KXNFLGAME-26SEP13ATLPIT",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13ATLPIT-PIT",
+          "title": "Atlanta vs Pittsburgh Pro Football game: Pittsburgh wins?",
+          "rules_primary": "If Pittsburgh wins the Atlanta vs Pittsburgh professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Atlanta vs Pittsburgh professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13ATLPIT-ATL",
+          "title": "Atlanta vs Pittsburgh Pro Football game: Atlanta wins?",
+          "rules_primary": "If Atlanta wins the Atlanta vs Pittsburgh professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Atlanta vs Pittsburgh professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872659",
+      "game": "Baltimore Ravens at Indianapolis Colts",
+      "home_team_id": "11",
+      "away_team_id": "33",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13BALIND-IND",
+        "away": "KXNFLGAME-26SEP13BALIND-BAL"
+      },
+      "market_event": "KXNFLGAME-26SEP13BALIND",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13BALIND-IND",
+          "title": "Baltimore vs Indianapolis Pro Football game: Indianapolis wins?",
+          "rules_primary": "If Indianapolis wins the Baltimore vs Indianapolis professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Baltimore vs Indianapolis professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13BALIND-BAL",
+          "title": "Baltimore vs Indianapolis Pro Football game: Baltimore wins?",
+          "rules_primary": "If Baltimore wins the Baltimore vs Indianapolis professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Baltimore vs Indianapolis professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872660",
+      "game": "Buffalo Bills at Houston Texans",
+      "home_team_id": "34",
+      "away_team_id": "2",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13BUFHOU-HOU",
+        "away": "KXNFLGAME-26SEP13BUFHOU-BUF"
+      },
+      "market_event": "KXNFLGAME-26SEP13BUFHOU",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13BUFHOU-HOU",
+          "title": "Buffalo vs Houston Pro Football game: Houston wins?",
+          "rules_primary": "If Houston wins the Buffalo vs Houston professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Buffalo vs Houston professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13BUFHOU-BUF",
+          "title": "Buffalo vs Houston Pro Football game: Buffalo wins?",
+          "rules_primary": "If Buffalo wins the Buffalo vs Houston professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Buffalo vs Houston professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872661",
+      "game": "Chicago Bears at Carolina Panthers",
+      "home_team_id": "29",
+      "away_team_id": "3",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13CHICAR-CAR",
+        "away": "KXNFLGAME-26SEP13CHICAR-CHI"
+      },
+      "market_event": "KXNFLGAME-26SEP13CHICAR",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13CHICAR-CAR",
+          "title": "Chicago vs Carolina Pro Football game: Carolina wins?",
+          "rules_primary": "If Carolina wins the Chicago vs Carolina professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Chicago vs Carolina professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13CHICAR-CHI",
+          "title": "Chicago vs Carolina Pro Football game: Chicago wins?",
+          "rules_primary": "If Chicago wins the Chicago vs Carolina professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Chicago vs Carolina professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872922",
+      "game": "Cleveland Browns at Jacksonville Jaguars",
+      "home_team_id": "30",
+      "away_team_id": "5",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13CLEJAC-JAC",
+        "away": "KXNFLGAME-26SEP13CLEJAC-CLE"
+      },
+      "market_event": "KXNFLGAME-26SEP13CLEJAC",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13CLEJAC-JAC",
+          "title": "Cleveland vs Jacksonville Pro Football game: Jacksonville wins?",
+          "rules_primary": "If Jacksonville wins the Cleveland vs Jacksonville professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Cleveland vs Jacksonville professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13CLEJAC-CLE",
+          "title": "Cleveland vs Jacksonville Pro Football game: Cleveland wins?",
+          "rules_primary": "If Cleveland wins the Cleveland vs Jacksonville professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Cleveland vs Jacksonville professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872923",
+      "game": "New Orleans Saints at Detroit Lions",
+      "home_team_id": "8",
+      "away_team_id": "18",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13NODET-DET",
+        "away": "KXNFLGAME-26SEP13NODET-NO"
+      },
+      "market_event": "KXNFLGAME-26SEP13NODET",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13NODET-DET",
+          "title": "New Orleans vs Detroit Pro Football game: Detroit wins?",
+          "rules_primary": "If Detroit wins the New Orleans vs Detroit professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the New Orleans vs Detroit professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13NODET-NO",
+          "title": "New Orleans vs Detroit Pro Football game: New Orleans wins?",
+          "rules_primary": "If New Orleans wins the New Orleans vs Detroit professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the New Orleans vs Detroit professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872924",
+      "game": "New York Jets at Tennessee Titans",
+      "home_team_id": "10",
+      "away_team_id": "20",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13NYJTEN-TEN",
+        "away": "KXNFLGAME-26SEP13NYJTEN-NYJ"
+      },
+      "market_event": "KXNFLGAME-26SEP13NYJTEN",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13NYJTEN-TEN",
+          "title": "New York J vs Tennessee Pro Football game: Tennessee wins?",
+          "rules_primary": "If Tennessee wins the New York J vs Tennessee professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the New York J vs Tennessee professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13NYJTEN-NYJ",
+          "title": "New York J vs Tennessee Pro Football game: New York J wins?",
+          "rules_primary": "If New York J wins the New York J vs Tennessee professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the New York J vs Tennessee professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872925",
+      "game": "Tampa Bay Buccaneers at Cincinnati Bengals",
+      "home_team_id": "4",
+      "away_team_id": "27",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13TBCIN-CIN",
+        "away": "KXNFLGAME-26SEP13TBCIN-TB"
+      },
+      "market_event": "KXNFLGAME-26SEP13TBCIN",
+      "kickoff": "2026-09-13T17:00:00+00:00",
+      "stop_at": "2026-09-14T05:00:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13TBCIN-CIN",
+          "title": "Tampa Bay vs Cincinnati Pro Football game: Cincinnati wins?",
+          "rules_primary": "If Cincinnati wins the Tampa Bay vs Cincinnati professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Tampa Bay vs Cincinnati professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13TBCIN-TB",
+          "title": "Tampa Bay vs Cincinnati Pro Football game: Tampa Bay wins?",
+          "rules_primary": "If Tampa Bay wins the Tampa Bay vs Cincinnati professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Tampa Bay vs Cincinnati professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872926",
+      "game": "Arizona Cardinals at Los Angeles Chargers",
+      "home_team_id": "24",
+      "away_team_id": "22",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13ARILAC-LAC",
+        "away": "KXNFLGAME-26SEP13ARILAC-ARI"
+      },
+      "market_event": "KXNFLGAME-26SEP13ARILAC",
+      "kickoff": "2026-09-13T20:25:00+00:00",
+      "stop_at": "2026-09-14T08:25:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13ARILAC-LAC",
+          "title": "Arizona vs Los Angeles C Pro Football game: Los Angeles C wins?",
+          "rules_primary": "If Los Angeles C wins the Arizona vs Los Angeles C professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Arizona vs Los Angeles C professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13ARILAC-ARI",
+          "title": "Arizona vs Los Angeles C Pro Football game: Arizona wins?",
+          "rules_primary": "If Arizona wins the Arizona vs Los Angeles C professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Arizona vs Los Angeles C professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872927",
+      "game": "Green Bay Packers at Minnesota Vikings",
+      "home_team_id": "16",
+      "away_team_id": "9",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13GBMIN-MIN",
+        "away": "KXNFLGAME-26SEP13GBMIN-GB"
+      },
+      "market_event": "KXNFLGAME-26SEP13GBMIN",
+      "kickoff": "2026-09-13T20:25:00+00:00",
+      "stop_at": "2026-09-14T08:25:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13GBMIN-MIN",
+          "title": "Green Bay vs Minnesota Pro Football game: Minnesota wins?",
+          "rules_primary": "If Minnesota wins the Green Bay vs Minnesota professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Green Bay vs Minnesota professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13GBMIN-GB",
+          "title": "Green Bay vs Minnesota Pro Football game: Green Bay wins?",
+          "rules_primary": "If Green Bay wins the Green Bay vs Minnesota professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Green Bay vs Minnesota professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872928",
+      "game": "Miami Dolphins at Las Vegas Raiders",
+      "home_team_id": "13",
+      "away_team_id": "15",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13MIALV-LV",
+        "away": "KXNFLGAME-26SEP13MIALV-MIA"
+      },
+      "market_event": "KXNFLGAME-26SEP13MIALV",
+      "kickoff": "2026-09-13T20:25:00+00:00",
+      "stop_at": "2026-09-14T08:25:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13MIALV-LV",
+          "title": "Miami vs Las Vegas Pro Football game: Las Vegas wins?",
+          "rules_primary": "If Las Vegas wins the Miami vs Las Vegas professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Miami vs Las Vegas professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13MIALV-MIA",
+          "title": "Miami vs Las Vegas Pro Football game: Miami wins?",
+          "rules_primary": "If Miami wins the Miami vs Las Vegas professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Miami vs Las Vegas professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872929",
+      "game": "Washington Commanders at Philadelphia Eagles",
+      "home_team_id": "21",
+      "away_team_id": "28",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13WASPHI-PHI",
+        "away": "KXNFLGAME-26SEP13WASPHI-WAS"
+      },
+      "market_event": "KXNFLGAME-26SEP13WASPHI",
+      "kickoff": "2026-09-13T20:25:00+00:00",
+      "stop_at": "2026-09-14T08:25:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13WASPHI-PHI",
+          "title": "Washington vs Philadelphia Pro Football game: Philadelphia wins?",
+          "rules_primary": "If Philadelphia wins the Washington vs Philadelphia professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Washington vs Philadelphia professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13WASPHI-WAS",
+          "title": "Washington vs Philadelphia Pro Football game: Washington wins?",
+          "rules_primary": "If Washington wins the Washington vs Philadelphia professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Washington vs Philadelphia professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872930",
+      "game": "Dallas Cowboys at New York Giants",
+      "home_team_id": "19",
+      "away_team_id": "6",
+      "markets": {
+        "home": "KXNFLGAME-26SEP13DALNYG-NYG",
+        "away": "KXNFLGAME-26SEP13DALNYG-DAL"
+      },
+      "market_event": "KXNFLGAME-26SEP13DALNYG",
+      "kickoff": "2026-09-14T00:20:00+00:00",
+      "stop_at": "2026-09-14T12:20:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP13DALNYG-NYG",
+          "title": "Dallas vs New York G Pro Football game: New York G wins?",
+          "rules_primary": "If New York G wins the Dallas vs New York G professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Dallas vs New York G professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP13DALNYG-DAL",
+          "title": "Dallas vs New York G Pro Football game: Dallas wins?",
+          "rules_primary": "If Dallas wins the Dallas vs New York G professional football game originally scheduled for Sep 13, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Dallas vs New York G professional football game originally scheduled for Sep 13, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    },
+    {
+      "initial_cash_cents": 100000,
+      "max_trade_cents": 1000,
+      "max_contracts": 10,
+      "max_loss_cents": 2000,
+      "max_entries": 5,
+      "entry_edge": 0.08,
+      "exit_hold_margin": 0.02,
+      "stop_loss_fraction": 0.25,
+      "max_entry_loss_fraction": 0.12,
+      "max_spread": 0.03,
+      "slippage_per_contract": 0.01,
+      "fee_coefficient": 0.07,
+      "max_price_move": 0.02,
+      "max_signal_age_seconds": 90,
+      "feed_grace_seconds": 300,
+      "break_grace_seconds": 1800,
+      "poll_seconds": 20,
+      "confirmation_seconds": 10,
+      "pending_expiry_seconds": 65,
+      "cooldown_seconds": 300,
+      "markout_horizons": [
+        60,
+        300,
+        900
+      ],
+      "league": "nfl",
+      "event_id": "401872931",
+      "game": "Denver Broncos at Kansas City Chiefs",
+      "home_team_id": "12",
+      "away_team_id": "7",
+      "markets": {
+        "home": "KXNFLGAME-26SEP14DENKC-KC",
+        "away": "KXNFLGAME-26SEP14DENKC-DEN"
+      },
+      "market_event": "KXNFLGAME-26SEP14DENKC",
+      "kickoff": "2026-09-15T00:15:00+00:00",
+      "stop_at": "2026-09-15T12:15:00+00:00",
+      "mapping_evidence": {
+        "home": {
+          "ticker": "KXNFLGAME-26SEP14DENKC-KC",
+          "title": "Denver vs Kansas City Pro Football game: Kansas City wins?",
+          "rules_primary": "If Kansas City wins the Denver vs Kansas City professional football game originally scheduled for Sep 14, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Denver vs Kansas City professional football game originally scheduled for Sep 14, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        },
+        "away": {
+          "ticker": "KXNFLGAME-26SEP14DENKC-DEN",
+          "title": "Denver vs Kansas City Pro Football game: Denver wins?",
+          "rules_primary": "If Denver wins the Denver vs Kansas City professional football game originally scheduled for Sep 14, 2026, then the market resolves to Yes.",
+          "rules_secondary": "The following market refers to the team who wins the Denver vs Kansas City professional football game originally scheduled for Sep 14, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair market price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+        }
+      }
+    }
+  ],
+  "source_sha256": {
+    "opportunity_lab/college_football_paper.py": "2bdb5d8b78fa4b809bd6a293c200cf1d331c6944c48fd510b7706dc6a2f2e5ae",
+    "opportunity_lab/kalshi_bot.py": "d99d82af95e63f2e69aefc33accfe21a24077b0ca88765b2d940aa3b98aa59f5",
+    "opportunity_lab/kalshi_market_data.py": "bb1cc228204db75e0a35ea8042f052a091a98ffbde319c4b9e42e778f16fffca",
+    "opportunity_lab/sports_capture_expansion.py": "918e03693467d08d1b2eabba8384c1a85f4e958bc1febde1854e9f2a3005469e",
+    "opportunity_lab/sports_capture_v3.py": "ea9f08eeedab778d84faa380048913bf5a1ad2ad16384fb307a93e9d95f0bdee",
+    "opportunity_lab/sports_market_lab.py": "a1f2e408a829f7b82ad729d7794f7e084d43fb79f43f40f12724afa63b3de3b1",
+    "opportunity_lab/sports_paper_research.py": "569f1c698d4ceace45edf30ac7c30cd9191c098bbd2f74651701f2d7ce278010",
+    "opportunity_lab/sports_paper_v2.py": "4839f02b2cebc85c873756a7f2ac57caa27e6bbbc2d4007283016701d1f90f32",
+    "opportunity_lab/sports_research_execution.py": "291963bbcc827e71fd494e840f8ae581939d30984541a4063694534d2778f88e",
+    "opportunity_lab/sports_research_mapping.py": "d70e3f12420a269e80bb82cf5a6fc3a6e31890cf52edca973dedd8138ba3ccef",
+    "opportunity_lab/sports_research_models.py": "21fd7b59daf8f8fcadb581a6f46fd2340bb8599e93474d3b684fd0616f03e676"
+  }
+}

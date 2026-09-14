@@ -1,0 +1,237 @@
+{
+  "version": "ncaaf_churn_1.1",
+  "execution_enabled": false,
+  "registered_at": "2026-09-13T02:18:36.657845+00:00",
+  "stop_at": "2026-09-18T12:00:00+00:00",
+  "source_ledger": "sports_paper/live_v34_20260913/paper.sqlite3",
+  "output": "sports_paper/churn_v11_20260913",
+  "games": [
+    {
+      "archive": "expansion",
+      "away_team_id": "16",
+      "event_id": "401860883",
+      "game": "Sacramento State Hornets at Fresno State Bulldogs",
+      "home_team_id": "278",
+      "kickoff": "2026-09-13T02:30:00+00:00",
+      "league": "ncaaf",
+      "mapping_evidence": {
+        "date_eastern": "2026-09-12",
+        "markets": {
+          "away": {
+            "rules_primary": "If Sacramento St. wins the Sacramento St. vs Fresno St. college football game originally scheduled for Sep 12, 2026, then the market resolves to Yes.",
+            "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the NCAA. All trademarks, logos, and brand names are the property of their respective owners.",
+            "ticker": "KXNCAAFGAME-26SEP12SACFRES-SAC",
+            "yes_sub_title": "Sacramento St."
+          },
+          "home": {
+            "rules_primary": "If Fresno St. wins the Sacramento St. vs Fresno St. college football game originally scheduled for Sep 12, 2026, then the market resolves to Yes.",
+            "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the NCAA. All trademarks, logos, and brand names are the property of their respective owners.",
+            "ticker": "KXNCAAFGAME-26SEP12SACFRES-FRES",
+            "yes_sub_title": "Fresno St."
+          }
+        },
+        "participants": {
+          "away": [
+            "sacramentostate",
+            "sacramentostatehornets"
+          ],
+          "home": [
+            "fresnostate",
+            "fresnostatebulldogs"
+          ]
+        }
+      },
+      "market_event": "KXNCAAFGAME-26SEP12SACFRES",
+      "markets": {
+        "away": "KXNCAAFGAME-26SEP12SACFRES-SAC",
+        "home": "KXNCAAFGAME-26SEP12SACFRES-FRES"
+      },
+      "series": "KXNCAAFGAME",
+      "sport": "football/college-football",
+      "stop_at": "2026-09-13T14:30:00+00:00"
+    },
+    {
+      "archive": "expansion",
+      "away_team_id": "147",
+      "event_id": "401864500",
+      "game": "Montana State Bobcats at Nevada Wolf Pack",
+      "home_team_id": "2440",
+      "kickoff": "2026-09-13T02:30:00+00:00",
+      "league": "ncaaf",
+      "mapping_evidence": {
+        "date_eastern": "2026-09-12",
+        "markets": {
+          "away": {
+            "rules_primary": "If Montana St. wins the Montana St. vs Nevada college football game originally scheduled for Sep 12, 2026, then the market resolves to Yes.",
+            "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the NCAA. All trademarks, logos, and brand names are the property of their respective owners.",
+            "ticker": "KXNCAAFGAME-26SEP12MTSTNEV-MTST",
+            "yes_sub_title": "Montana St."
+          },
+          "home": {
+            "rules_primary": "If Nevada wins the Montana St. vs Nevada college football game originally scheduled for Sep 12, 2026, then the market resolves to Yes.",
+            "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the NCAA. All trademarks, logos, and brand names are the property of their respective owners.",
+            "ticker": "KXNCAAFGAME-26SEP12MTSTNEV-NEV",
+            "yes_sub_title": "Nevada"
+          }
+        },
+        "participants": {
+          "away": [
+            "montanastate",
+            "montanastatebobcats"
+          ],
+          "home": [
+            "nevada",
+            "nevadawolfpack"
+          ]
+        }
+      },
+      "market_event": "KXNCAAFGAME-26SEP12MTSTNEV",
+      "markets": {
+        "away": "KXNCAAFGAME-26SEP12MTSTNEV-MTST",
+        "home": "KXNCAAFGAME-26SEP12MTSTNEV-NEV"
+      },
+      "series": "KXNCAAFGAME",
+      "sport": "football/college-football",
+      "stop_at": "2026-09-13T14:30:00+00:00"
+    },
+    {
+      "archive": "expansion",
+      "away_team_id": "309",
+      "event_id": "401858445",
+      "game": "Louisiana Ragin' Cajuns at USC Trojans",
+      "home_team_id": "30",
+      "kickoff": "2026-09-13T03:00:00+00:00",
+      "league": "ncaaf",
+      "mapping_evidence": {
+        "date_eastern": "2026-09-12",
+        "markets": {
+          "away": {
+            "rules_primary": "If Louisiana wins the Louisiana vs USC college football game originally scheduled for Sep 12, 2026, then the market resolves to Yes.",
+            "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the NCAA. All trademarks, logos, and brand names are the property of their respective owners.",
+            "ticker": "KXNCAAFGAME-26SEP12ULLUSC-ULL",
+            "yes_sub_title": "Louisiana"
+          },
+          "home": {
+            "rules_primary": "If USC wins the Louisiana vs USC college football game originally scheduled for Sep 12, 2026, then the market resolves to Yes.",
+            "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the NCAA. All trademarks, logos, and brand names are the property of their respective owners.",
+            "ticker": "KXNCAAFGAME-26SEP12ULLUSC-USC",
+            "yes_sub_title": "USC"
+          }
+        },
+        "participants": {
+          "away": [
+            "louisiana",
+            "louisianaragincajuns"
+          ],
+          "home": [
+            "usc",
+            "usctrojans"
+          ]
+        }
+      },
+      "market_event": "KXNCAAFGAME-26SEP12ULLUSC",
+      "markets": {
+        "away": "KXNCAAFGAME-26SEP12ULLUSC-ULL",
+        "home": "KXNCAAFGAME-26SEP12ULLUSC-USC"
+      },
+      "series": "KXNCAAFGAME",
+      "sport": "football/college-football",
+      "stop_at": "2026-09-13T15:00:00+00:00"
+    },
+    {
+      "archive": "expansion",
+      "away_team_id": "183",
+      "event_id": "401858225",
+      "game": "Syracuse Orange at Pittsburgh Panthers",
+      "home_team_id": "221",
+      "kickoff": "2026-09-17T23:30:00+00:00",
+      "league": "ncaaf",
+      "mapping_evidence": {
+        "date_eastern": "2026-09-17",
+        "markets": {
+          "away": {
+            "rules_primary": "If Syracuse wins the Syracuse vs Pittsburgh college football game originally scheduled for Sep 17, 2026, then the market resolves to Yes.",
+            "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the NCAA. All trademarks, logos, and brand names are the property of their respective owners.",
+            "ticker": "KXNCAAFGAME-26SEP17SYRPITT-SYR",
+            "yes_sub_title": "Syracuse"
+          },
+          "home": {
+            "rules_primary": "If Pittsburgh wins the Syracuse vs Pittsburgh college football game originally scheduled for Sep 17, 2026, then the market resolves to Yes.",
+            "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the NCAA. All trademarks, logos, and brand names are the property of their respective owners.",
+            "ticker": "KXNCAAFGAME-26SEP17SYRPITT-PITT",
+            "yes_sub_title": "Pittsburgh"
+          }
+        },
+        "participants": {
+          "away": [
+            "syracuse",
+            "syracuseorange"
+          ],
+          "home": [
+            "pitt",
+            "pittsburgh",
+            "pittsburghpanthers"
+          ]
+        }
+      },
+      "market_event": "KXNCAAFGAME-26SEP17SYRPITT",
+      "markets": {
+        "away": "KXNCAAFGAME-26SEP17SYRPITT-SYR",
+        "home": "KXNCAAFGAME-26SEP17SYRPITT-PITT"
+      },
+      "series": "KXNCAAFGAME",
+      "sport": "football/college-football",
+      "stop_at": "2026-09-18T11:30:00+00:00"
+    }
+  ],
+  "arms": {
+    "control": "unchanged five-entry cap",
+    "one_entry": "one filled entry per game; same exit, fees, liquidity, freshness and loss guards"
+  },
+  "hypothesis": "Reduce repeated transaction costs and repeated exposure to the same forecast. Exploratory risk-reduction test, not a predicted profitable strategy.",
+  "evidence": "sports_paper/live_v33_20260912/automatic_review/reentry_cost_audit.json",
+  "evaluation": "Preregistered future games only. Compare matched arms on identical newly observed inputs and reader delay. Report net, costs, entries, drawdown, missed subsequent winners and unresolved exposure separately by game and holding horizon. Lower activity alone is not success. No tuning or promotion until all matched cohort games complete. Existing live3.3 remains unchanged.",
+  "source_sha256": {
+    "opportunity_lab/college_football_paper.py": "2bdb5d8b78fa4b809bd6a293c200cf1d331c6944c48fd510b7706dc6a2f2e5ae",
+    "opportunity_lab/kalshi_bot.py": "d99d82af95e63f2e69aefc33accfe21a24077b0ca88765b2d940aa3b98aa59f5",
+    "opportunity_lab/kalshi_market_data.py": "bb1cc228204db75e0a35ea8042f052a091a98ffbde319c4b9e42e778f16fffca",
+    "opportunity_lab/sports_capture_expansion.py": "918e03693467d08d1b2eabba8384c1a85f4e958bc1febde1854e9f2a3005469e",
+    "opportunity_lab/sports_capture_v3.py": "ea9f08eeedab778d84faa380048913bf5a1ad2ad16384fb307a93e9d95f0bdee",
+    "opportunity_lab/sports_paper_research.py": "569f1c698d4ceace45edf30ac7c30cd9191c098bbd2f74651701f2d7ce278010",
+    "opportunity_lab/sports_paper_v2.py": "4839f02b2cebc85c873756a7f2ac57caa27e6bbbc2d4007283016701d1f90f32",
+    "opportunity_lab/sports_research_execution.py": "291963bbcc827e71fd494e840f8ae581939d30984541a4063694534d2778f88e",
+    "opportunity_lab/sports_research_mapping.py": "d70e3f12420a269e80bb82cf5a6fc3a6e31890cf52edca973dedd8138ba3ccef",
+    "opportunity_lab/sports_research_models.py": "21fd7b59daf8f8fcadb581a6f46fd2340bb8599e93474d3b684fd0616f03e676",
+    "opportunity_lab/sports_market_lab_v11.py": "5c62b59641468c428a64a0ba57e8e17b3dbbf4b1a7729378f422ef77afec3ca9",
+    "opportunity_lab/sports_market_lab_v12.py": "fe9e3d58d06c59d25982554b408056b8ea2899bebfe24136a53a3c331fb87654",
+    "opportunity_lab/sports_live_books.py": "7bc28691f3b80169ea94e368d5266bd3db2860c0fe8a5173d8044e8b825403b4",
+    "opportunity_lab/sports_live_coverage.py": "0d448cc80578666521a5204de96e58e64ed2c5ccdf8a9704af0e530ad65d366f",
+    "opportunity_lab/sports_live_execution.py": "71390c49eed9f8e9bc49b080b1f87534803c2ad2bcaf6093b17681dcb11a60f3",
+    "opportunity_lab/sports_live_report.py": "1ee8ea73ee3c3763cdbe7292709827a1fe591e507e5431ea7cac0a43e8cbcc45",
+    "opportunity_lab/sports_live_sync.py": "cfee80d2f141c18b494cdc966a7f242b157e40d36db6cba8995453d9df41134a",
+    "opportunity_lab/sports_live_timing.py": "0e1f30cd7c9c71c2319ab1304282cf678eaf37f9f048b9494587b4aacbe7d941",
+    "opportunity_lab/sports_live_v3.py": "06c974f38972c96f8e4b50d4b83df0ccc740a0de787acc6ea7311309b7713df0",
+    "opportunity_lab/sports_paper_research_v11.py": "c80178ea50f0a219550cc0812170f1336696470094df8922459864d2f858b7f8",
+    "opportunity_lab/sports_research_models_v11.py": "e71ec39ee515ea746b0c12a7628ceec666734e560e16ccce6316336865e44e54",
+    "opportunity_lab/sports_live_v31.py": "b23a650ae9eb4306a547369e46034c31cbe367402cdde1c2471c7ffa0b42024d",
+    "opportunity_lab/sports_live_sync_v31.py": "6795b2c1daa3ec872cb1d4f6f90ad76b89f31795e1ed75f36782de7459e12430",
+    "opportunity_lab/sports_live_report_v31.py": "9856f05ff6e64e820c27c15dc57683297724fb7893ac42c95d7c4daf20a2223a",
+    "opportunity_lab/sports_live_v32.py": "926bf3ea6bf851fbbd314cb80d109d88b389366bedc03b7d614c1cd0af8d6f6d",
+    "opportunity_lab/sports_live_books_v32.py": "195bd2741f78fb04140403f53f7eb4eb36b200c66e1fc92aef1783240b36c424",
+    "opportunity_lab/sports_live_report_v32.py": "ab64012e38a4e9e56e5f820d4f9ab5f40b1435b1bc5e83038a2cab0264b15b83",
+    "opportunity_lab/sports_live_v33.py": "d36308ed2f7ef603dd4ad5f07f387c08169e05153805d2d2b2c8da2c6fa6fe99",
+    "opportunity_lab/sports_live_books_v33.py": "fffe28ed3cf452256a65ee331efc716f79a84afd1b7f001bb54023d9ecc5355d",
+    "opportunity_lab/sports_live_report_v33.py": "829cfb97637eff7b9524ac9707f4f73a2a7499589f4082a1d27f201e9ec5a1f0",
+    "opportunity_lab/sports_live_load.py": "0662a6068b6d0336a7263d6868a22945b75a0396e98578bb3989144e3c837036",
+    "opportunity_lab/sports_churn_paper.py": "d6600eee72841af303b6b441d5aa46a32b3725c3417f9ba49f293f8b31ed3b32"
+  },
+  "previous_lineage": null,
+  "lineage": {
+    "copied_from": "C:\\Users\\matth\\OneDrive\\Documents\\GitHub\\trading-webhook\\sports_paper\\churn_20260913\\paper.sqlite3",
+    "at": "2026-09-13T02:57:18.666376+00:00",
+    "account_rows_identical": true,
+    "rules_unchanged": true,
+    "note": "Do not double count inherited history."
+  },
+  "operational_migration_at": "2026-09-13T02:57:18.666376+00:00"
+}

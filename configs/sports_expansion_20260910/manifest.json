@@ -1,0 +1,38 @@
+{
+  "version": "expansion_capture_1.0",
+  "execution_enabled": false,
+  "first_date": "2026-09-10",
+  "last_date": "2026-09-17",
+  "stop_at": "2026-09-18T12:00:00Z",
+  "sources": {
+    "ncaaf": {
+      "sport": "football/college-football",
+      "series": "KXNCAAFGAME"
+    },
+    "epl": {
+      "sport": "soccer/eng.1",
+      "series": "KXEPLGAME"
+    },
+    "mls": {
+      "sport": "soccer/usa.1",
+      "series": "KXMLSGAME"
+    },
+    "atp": {
+      "sport": "tennis/atp",
+      "series": "KXATPMATCH"
+    },
+    "wta": {
+      "sport": "tennis/wta",
+      "series": "KXWTAMATCH"
+    }
+  },
+  "source_sha256": {
+    "opportunity_lab/sports_capture_expansion.py": "918e03693467d08d1b2eabba8384c1a85f4e958bc1febde1854e9f2a3005469e",
+    "opportunity_lab/sports_capture_v3.py": "ea9f08eeedab778d84faa380048913bf5a1ad2ad16384fb307a93e9d95f0bdee",
+    "opportunity_lab/college_football_paper.py": "2bdb5d8b78fa4b809bd6a293c200cf1d331c6944c48fd510b7706dc6a2f2e5ae",
+    "opportunity_lab/sports_paper_v2.py": "4839f02b2cebc85c873756a7f2ac57caa27e6bbbc2d4007283016701d1f90f32",
+    "opportunity_lab/kalshi_market_data.py": "bb1cc228204db75e0a35ea8042f052a091a98ffbde319c4b9e42e778f16fffca",
+    "opportunity_lab/kalshi_bot.py": "d99d82af95e63f2e69aefc33accfe21a24077b0ca88765b2d940aa3b98aa59f5"
+  },
+  "protocol": "Raw-only; discovery every 300s; sampled books/state every 60s plus cycle overruns. All dated in-range winner markets; US Open only for tennis. Draw retained; cross-source mapping unvalidated. No automatic paper trading."
+}
