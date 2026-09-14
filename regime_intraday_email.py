@@ -224,3 +224,24 @@ def send_reconciliation_complete_email(*, api_key: str, to_email: str, from_emai
     return _send_message(api_key=api_key, to_email=to_email, from_email=from_email,
                          message=build_reconciliation_complete_email(summary),
                          idempotency_key=f"regime-fill-reconciliation-{fingerprint}", timeout=timeout)
+
+
+def build_forensic_report_email(report: dict[str, Any]) -> dict[str, str]:
+    trades = "\n".join(
+        f"- {row.get('symbol')} {row.get('signal_id')}: {row.get('exit_reason')}; debit {row.get('entry_debit')}; "
+        f"credit {row.get('exit_credit')}; gross ${float(row.get('gross_pnl_dollars') or 0):+.2f}; "
+        f"net ${float(row.get('net_pnl_dollars') or 0):+.2f}; {row.get('attribution')}; held {row.get('hold_minutes')} min"
+        for row in report.get("trades") or []
+    ) or "No verified roundtrips."
+    return {"subject": f"PAPER FORENSIC REVIEW — {report.get('verified_roundtrips')} roundtrips, ${float(report.get('net_after_estimated_fees_dollars') or 0):+.2f} net",
+            "text": (f"Verified roundtrip forensic review\n\nGross P/L: ${float(report.get('gross_pnl_dollars') or 0):+.2f}\n"
+                     f"Net after estimated fees: ${float(report.get('net_after_estimated_fees_dollars') or 0):+.2f}\nWin rate: {report.get('win_rate')}\n\n"
+                     f"BY SYMBOL\n{json.dumps(report.get('by_symbol') or {}, separators=(',', ':'))}\n\n"
+                     f"BY EXIT REASON\n{json.dumps(report.get('by_exit_reason') or {}, separators=(',', ':'))}\n\n"
+                     f"ATTRIBUTION\n{json.dumps(report.get('by_attribution') or {}, separators=(',', ':'))}\n\n"
+                     f"TRADE-BY-TRADE\n{trades}\n\n{report.get('conclusion')}\nPaper account only; live trading remains disabled.")}
+
+
+def send_forensic_report_email(*, api_key: str, to_email: str, from_email: str, report: dict[str, Any], timeout: int = 15) -> dict[str, Any]:
+    return _send_message(api_key=api_key, to_email=to_email, from_email=from_email,
+                         message=build_forensic_report_email(report), idempotency_key="regime-roundtrip-forensic-v1", timeout=timeout)
