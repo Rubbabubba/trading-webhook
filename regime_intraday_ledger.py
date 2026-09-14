@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from regime_intraday_options import debit_vertical_integrity
+from regime_intraday_fill_accounting import verified_roundtrip
 
 
 LEDGER_VERSION = "v2-durable-signal-order-ledger"
@@ -27,12 +28,12 @@ def performance_views(ledger: dict) -> dict:
     valid_pnl = []
     invalid = 0
     for row in closed:
-        entry = dict(row.get("broker") or {}).get("filled_avg_price")
-        close = dict(dict(row.get("close_order") or {}).get("broker") or {}).get("filled_avg_price")
-        if entry is not None and close is not None:
-            value = (abs(float(close)) - abs(float(entry))) * 100
+        verified = verified_roundtrip(row)
+        if verified["complete"]:
+            entry, close = float(verified["entry_debit"]), float(verified["exit_credit"])
+            value = float(verified["realized_dollars"])
             pnl.append(value)
-            integrity = debit_vertical_integrity(dict(row.get("plan") or {}), entry_debit=abs(float(entry)), exit_credit=abs(float(close)))
+            integrity = debit_vertical_integrity(dict(row.get("plan") or {}), entry_debit=entry, exit_credit=close)
             if integrity["valid"]:
                 valid_pnl.append(value)
             else:

@@ -6,6 +6,7 @@ import json
 import hashlib
 import re
 from typing import Any
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -139,6 +140,19 @@ def get_order_by_client_id(api_key: str, api_secret: str, client_order_id: str, 
     with urlopen(request, timeout=timeout) as response:
         row = json.loads(response.read().decode("utf-8"))
     return {key: row.get(key) for key in ("id", "client_order_id", "status", "created_at", "submitted_at", "filled_at", "filled_qty", "filled_avg_price", "limit_price", "order_class", "legs")}
+
+
+def get_fill_activities(api_key: str, api_secret: str, order_id: str, *, paper: bool = True, timeout: int = 20) -> list[dict[str, Any]]:
+    """Retrieve authoritative fill activities associated with one order."""
+    if not order_id:
+        return []
+    base = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
+    query = urlencode({"order_id": order_id, "direction": "asc", "page_size": 100})
+    request = Request(f"{base}/v2/account/activities/FILL?{query}", headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret})
+    with urlopen(request, timeout=timeout) as response:
+        rows = json.loads(response.read().decode("utf-8"))
+    return [{key: row.get(key) for key in ("id", "order_id", "symbol", "side", "qty", "price", "transaction_time", "type")}
+            for row in list(rows or [])]
 
 
 def cancel_order(api_key: str, api_secret: str, order_id: str, *, paper: bool = True, timeout: int = 20) -> None:

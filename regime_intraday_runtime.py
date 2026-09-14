@@ -18,7 +18,8 @@ from regime_intraday_email import send_daily_review_email, send_entry_lifecycle_
 from regime_intraday_email import send_order_outcome_email
 from regime_intraday_entry_guard import pending_entry_invalidation
 from regime_intraday_options import spread_quote_evidence
-from regime_intraday_executor import cancel_order, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
+from regime_intraday_executor import cancel_order, get_fill_activities, get_order, get_order_by_client_id, paper_client_order_id, submit_mleg_close_order, submit_mleg_limit_order
+from regime_intraday_fill_accounting import verified_roundtrip
 from regime_intraday_ledger import load_ledger, mark_signal_submission, paper_submission_decision, pending_candidate, record_broker_order, record_pending_candidate, record_setup_observations, record_signal_shadow_candidates, save_ledger, setup_observation_summary, update_ledger, update_signal_shadow_outcomes
 from regime_intraday_ledger import performance_views
 from regime_intraday_ledger import assign_setup_identities
@@ -461,6 +462,22 @@ class RegimeIntradayRuntime:
         current_revision = _env("RENDER_GIT_COMMIT") or _env("REGIME_INTRADAY_RELEASE_REVISION") or "unknown"
         previous_revision = str(ledger.get("daily_review_last_revision") or "") or None
         fees = abs(_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)) * len(valid_rows)
+        trade_postmortems = []
+        fee_per_trade = abs(_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30))
+        for row in quality_rows:
+            gross = row.get("actual_realized_dollars")
+            trade_postmortems.append({
+                "signal_id": row.get("signal_id"), "symbol": row.get("symbol"), "strategy": row.get("strategy"),
+                "exit_reason": row.get("exit_reason"), "entry_debit": row.get("actual_entry_debit"),
+                "exit_credit": row.get("actual_exit_credit"), "gross_pnl_dollars": gross,
+                "estimated_fees_dollars": fee_per_trade if row.get("fill_evidence_complete") else None,
+                "net_pnl_dollars": round(float(gross) - fee_per_trade, 2) if gross is not None else None,
+                "fill_evidence": row.get("pnl_status"), "fill_sources": row.get("fill_sources"),
+                "diagnosis": ("The setup reached its configured target, but option-spread execution still lost money." if row.get("exit_reason") == "underlying_target" and gross is not None and float(gross) < 0 else
+                              "The configured stop closed the setup at a loss." if "stop" in str(row.get("exit_reason") or "") and gross is not None and float(gross) < 0 else
+                              "Verified fills show a profitable roundtrip." if gross is not None and float(gross) > 0 else
+                              "P/L is unresolved because complete leg-level broker fills are missing."),
+            })
         review = {
             "session": session, "orders_submitted": len(orders), "filled_entries": len(filled_entries),
             "completed_roundtrips": len(completed), "zero_fill_orders": len(zero_fill),
@@ -470,6 +487,7 @@ class RegimeIntradayRuntime:
             "execution_integrity": {"valid_roundtrips": len(valid_rows), "invalid_roundtrips": len(quality_rows) - len(valid_rows),
                                     "invalid_details": "; ".join(f"{row.get('signal_id')}: {','.join(dict(row.get('economic_integrity') or {}).get('reasons') or [])}" for row in quality_rows if not row.get("economically_valid"))},
             "entry_execution": entry_quality,
+            "trade_postmortems": trade_postmortems,
             "shadow_research": {"closed_count": len(shadows), "average_r": round(sum(float(row.get("realized_r") or 0) for row in shadows) / len(shadows), 4) if shadows else None, "by_symbol": by_symbol},
             "promotion_evidence": broker_promotion_evidence(ledger, minimum_roundtrips=_int("REGIME_INTRADAY_MIN_BROKER_ROUNDTRIPS_FOR_PROMOTION", 30), target_roundtrips=_int("REGIME_INTRADAY_TARGET_BROKER_ROUNDTRIPS_FOR_PROMOTION", 50), estimated_round_trip_fees_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)),
             "release_changes": {"current_revision": current_revision, "previous_revision": previous_revision,
@@ -602,6 +620,11 @@ class RegimeIntradayRuntime:
                 close_id = str(dict(record.get("close_order") or {}).get("order_id") or "")
                 broker = get_order(key, secret, close_id or order_id, paper=True)
                 status = str(broker.get("status") or "").lower()
+                if status == "filled" and not broker.get("fill_activities"):
+                    try:
+                        broker["fill_activities"] = get_fill_activities(key, secret, close_id or order_id, paper=True)
+                    except Exception as exc:
+                        record["fill_activity_error"] = type(exc).__name__
                 if close_id:
                     record.setdefault("close_order", {}).update({"status": status, "broker": broker, "reconciled_at": datetime.now(timezone.utc).isoformat()})
                     record["status"] = "filled_closed" if status == "filled" else "close_submitted"
@@ -625,10 +648,21 @@ class RegimeIntradayRuntime:
                             # Wait for broker-confirmed cancellation before repricing next cycle.
                     if status == "filled":
                         record["closed_at"] = broker.get("filled_at") or datetime.now(timezone.utc).isoformat()
-                        entry_fill = abs(float(dict(record.get("broker") or {}).get("filled_avg_price") or dict(record.get("plan") or {}).get("limit_debit") or 0))
-                        close_fill = abs(float(broker.get("filled_avg_price") or dict(record.get("valuation") or {}).get("liquidation_credit") or 0))
-                        actual_realized = round((close_fill - entry_fill) * 100, 2) if entry_fill and close_fill else record.get("estimated_realized_dollars")
-                        record["actual_realized_dollars"] = actual_realized
+                        entry_broker = dict(record.get("broker") or {})
+                        if not entry_broker.get("fill_activities"):
+                            try:
+                                entry_broker["fill_activities"] = get_fill_activities(key, secret, order_id, paper=True)
+                                record["broker"] = entry_broker
+                            except Exception as exc:
+                                record["entry_fill_activity_error"] = type(exc).__name__
+                        verified = verified_roundtrip(record)
+                        actual_realized = verified.get("realized_dollars")
+                        record["verified_roundtrip"] = verified
+                        record["pnl_status"] = "verified_leg_fills" if verified["complete"] else "unresolved_verified_leg_fills_missing"
+                        if actual_realized is not None:
+                            record["actual_realized_dollars"] = actual_realized
+                        else:
+                            record.pop("actual_realized_dollars", None)
                         closed = list(ledger.get("closed") or [])
                         if not any(str(row.get("paper_signal_id") or "") == signal_id for row in closed):
                             closed.append({
@@ -637,6 +671,7 @@ class RegimeIntradayRuntime:
                                 "exit_ts_utc": record["closed_at"],
                                 "exit_reason": dict(record.get("close_order") or {}).get("reason"),
                                 "realized_dollars": actual_realized,
+                                "pnl_status": record["pnl_status"],
                                 "status": "filled_closed",
                                 "mechanical_test": bool(record.get("mechanical_test")),
                             })

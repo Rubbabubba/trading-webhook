@@ -128,6 +128,14 @@ def build_daily_review_email(review: dict[str, Any]) -> dict[str, str]:
     shadow = dict(review.get("shadow_research") or {})
     entry = dict(review.get("entry_execution") or {})
     qualification = dict(review.get("qualification") or {})
+    postmortems = list(review.get("trade_postmortems") or [])
+    postmortem_text = "\n".join(
+        f"- {row.get('symbol')} / {row.get('signal_id')}: exit={row.get('exit_reason') or 'unknown'}, "
+        f"entry={row.get('entry_debit')}, exit credit={row.get('exit_credit')}, "
+        f"gross={row.get('gross_pnl_dollars')}, net after estimated fees={row.get('net_pnl_dollars')}, "
+        f"evidence={row.get('fill_evidence')}. {row.get('diagnosis')}"
+        for row in postmortems
+    ) or "No completed roundtrips."
     subject = f"PAPER DAILY REVIEW: {session} — {'-' if net_dollars < 0 else '+'}${abs(net_dollars):.2f}"
     text = (
         f"Paper-trading review for {session}\n\n"
@@ -143,6 +151,8 @@ def build_daily_review_email(review: dict[str, Any]) -> dict[str, str]:
         f"Valid roundtrips: {integrity.get('valid_roundtrips')}\n"
         f"Invalid roundtrips: {integrity.get('invalid_roundtrips')}\n"
         f"Invalid details: {integrity.get('invalid_details') or 'none'}\n\n"
+        "ROUNDTRIP POSTMORTEMS\n"
+        f"{postmortem_text}\n\n"
         "ENTRY FILL QUALITY\n"
         f"Fill rate: {entry.get('fill_rate')}\n"
         f"Average zero-fill quote drift: {entry.get('average_zero_fill_quote_drift')}\n"

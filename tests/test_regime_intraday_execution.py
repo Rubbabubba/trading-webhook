@@ -236,8 +236,8 @@ def test_daily_review_uses_latest_prior_session_and_sends_once(monkeypatch, tmp_
     ledger["daily_review_last_revision"] = "revision-1"
     ledger["orders"] = {
         "filled": {"session": "2026-09-09", "status": "filled_closed", "signal": {"base_signal_id": "base-1"},
-                   "plan": plan, "broker": {"filled_qty": "1", "filled_avg_price": ".40"},
-                   "close_order": {"broker": {"filled_avg_price": ".60"}}},
+                   "plan": plan, "broker": {"filled_qty": "1", "legs": [{"symbol": "SPY260918C00500000", "side": "buy", "filled_qty": 1, "filled_avg_price": 1.0}, {"symbol": "SPY260918C00501000", "side": "sell", "filled_qty": 1, "filled_avg_price": .6}]},
+                   "close_order": {"broker": {"legs": [{"symbol": "SPY260918C00500000", "side": "sell", "filled_qty": 1, "filled_avg_price": 1.2}, {"symbol": "SPY260918C00501000", "side": "buy", "filled_qty": 1, "filled_avg_price": .6}]}}},
         "canceled": {"session": "2026-09-09", "status": "canceled", "plan": plan,
                      "broker": {"filled_qty": "0"}},
         "today": {"session": "2026-09-10", "status": "canceled", "plan": plan,
@@ -307,10 +307,11 @@ def test_reconcile_auto_closes_and_records_filled_paper_roundtrip(monkeypatch, t
         "order_id": "entry-1",
         "status": "filled",
         "session": "2026-09-02",
-        "plan": {"underlying": "SPY", "limit_debit": 0.30, "legs": [{"symbol": "LONG"}, {"symbol": "SHORT"}]},
+        "plan": {"underlying": "SPY", "limit_debit": 0.30, "legs": [{"symbol": "LONG", "side": "buy"}, {"symbol": "SHORT", "side": "sell"}]},
     }}
     save_ledger(str(ledger_path), ledger)
     monkeypatch.setattr(runtime_module, "get_order", lambda *_args, **_kwargs: {"status": "filled", "filled_at": "2026-09-02T20:00:00+00:00"})
+    monkeypatch.setattr(runtime_module, "get_fill_activities", lambda _key, _secret, order_id, **_kwargs: ([{"symbol": "LONG", "side": "buy", "qty": 1, "price": 1.0}, {"symbol": "SHORT", "side": "sell", "qty": 1, "price": .7}] if order_id == "entry-1" else [{"symbol": "LONG", "side": "sell", "qty": 1, "price": 1.2}, {"symbol": "SHORT", "side": "buy", "qty": 1, "price": .7}]))
     monkeypatch.setattr(runtime_module, "fetch_option_chain", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(runtime_module, "value_debit_spread", lambda *_args, **_kwargs: {"status": "valued", "liquidation_credit": 0.50})
     monkeypatch.setattr(runtime_module, "spread_exit_decision", lambda *_args, **_kwargs: {"exit": True, "reason": "profit_target"})

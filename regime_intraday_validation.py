@@ -9,6 +9,7 @@ from typing import Any
 
 from regime_intraday_replay import cost_adjusted_report
 from regime_intraday_options import debit_vertical_integrity
+from regime_intraday_fill_accounting import verified_roundtrip
 
 
 def _seconds_between(start: Any, end: Any) -> float | None:
@@ -157,16 +158,14 @@ def paper_fill_reconciliation(ledger: dict[str, Any], *, minimum_roundtrips: int
         if str(record.get("status") or "").lower() != "filled_closed":
             continue
         plan = dict(record.get("plan") or {})
-        entry_broker = dict(record.get("broker") or {})
-        close = dict(record.get("close_order") or {})
-        close_broker = dict(close.get("broker") or {})
         expected_entry = float(plan.get("limit_debit") or 0)
-        actual_entry = abs(float(entry_broker.get("filled_avg_price") or expected_entry))
         expected_exit = float(dict(record.get("valuation") or {}).get("liquidation_credit") or 0)
-        actual_exit = abs(float(close_broker.get("filled_avg_price") or expected_exit))
-        realized = round((actual_exit - actual_entry) * 100, 2) if actual_entry and actual_exit else None
-        adverse_slippage = round(((actual_entry - expected_entry) + (expected_exit - actual_exit)) * 100, 2) if expected_entry and expected_exit else None
-        integrity = debit_vertical_integrity(plan, entry_debit=actual_entry, exit_credit=actual_exit)
+        verified = verified_roundtrip(record)
+        actual_entry, actual_exit = verified.get("entry_debit"), verified.get("exit_credit")
+        realized = verified.get("realized_dollars")
+        adverse_slippage = round(((float(actual_entry) - expected_entry) + (expected_exit - float(actual_exit))) * 100, 2) if actual_entry is not None and actual_exit is not None and expected_entry and expected_exit else None
+        integrity = debit_vertical_integrity(plan, entry_debit=actual_entry, exit_credit=actual_exit) if verified["complete"] else {"valid": False, "reasons": list(verified.get("problems") or [])}
+        entry_broker = dict(record.get("broker") or {})
         rows.append({
             "signal_id": signal_id,
             "symbol": plan.get("underlying"),
@@ -175,9 +174,14 @@ def paper_fill_reconciliation(ledger: dict[str, Any], *, minimum_roundtrips: int
             "expected_exit_credit": expected_exit or None,
             "actual_exit_credit": actual_exit or None,
             "actual_realized_dollars": realized,
+            "fill_evidence_complete": verified["complete"],
+            "fill_sources": {"entry": verified["entry"].get("source"), "close": verified["close"].get("source")},
+            "pnl_status": "verified_leg_fills" if verified["complete"] else "unresolved_verified_leg_fills_missing",
+            "exit_reason": dict(record.get("close_order") or {}).get("reason"),
+            "strategy": dict(record.get("signal") or {}).get("strategy"),
             "adverse_slippage_dollars": adverse_slippage,
             "economic_integrity": integrity,
-            "economically_valid": integrity["valid"],
+            "economically_valid": bool(verified["complete"] and integrity["valid"]),
             "signal_to_submit_seconds": _seconds_between(dict(pending.get(signal_id) or {}).get("created_at"), record.get("recorded_at")),
             "submit_to_fill_seconds": _seconds_between(entry_broker.get("submitted_at"), entry_broker.get("filled_at")),
         })
@@ -211,15 +215,15 @@ def broker_promotion_evidence(ledger: dict[str, Any], *, minimum_roundtrips: int
         base = str(signal.get("base_signal_id") or signal_id)
         if base in bases:
             continue
-        entry = dict(record.get("broker") or {}).get("filled_avg_price")
-        close = dict(dict(record.get("close_order") or {}).get("broker") or {}).get("filled_avg_price")
-        if entry is None or close is None:
+        verified = verified_roundtrip(record)
+        if not verified["complete"]:
             continue
-        integrity = debit_vertical_integrity(dict(record.get("plan") or {}), entry_debit=abs(float(entry)), exit_credit=abs(float(close)))
+        entry, close = float(verified["entry_debit"]), float(verified["exit_credit"])
+        integrity = debit_vertical_integrity(dict(record.get("plan") or {}), entry_debit=entry, exit_credit=close)
         if not integrity["valid"]:
             continue
         bases.add(base)
-        values.append((abs(float(close)) - abs(float(entry))) * 100 - abs(float(estimated_round_trip_fees_dollars)))
+        values.append(float(verified["realized_dollars"]) - abs(float(estimated_round_trip_fees_dollars)))
     count = len(values)
     expectancy = fmean(values) if values else None
     blockers = []
